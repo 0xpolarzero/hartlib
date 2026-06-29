@@ -1,37 +1,32 @@
-import { BunRuntime } from "@effect/platform-bun"
-import { Effect } from "effect"
-import { loadApiConfig } from "./config"
-import { routeRequest } from "./http"
-import { JsonLoggerLayer, serviceLogFields } from "./logging"
-import { routes } from "./routes"
+import { BunRuntime } from "@effect/platform-bun";
+import { Effect } from "effect";
+import { loadApiConfig } from "./config";
+import { routeRequest } from "./http";
+import { JsonLoggerLayer, serviceLogFields } from "./logging";
+import { routes } from "./routes";
 
-const program = Effect.gen(function*() {
-  const config = yield* loadApiConfig
+const program = Effect.gen(function* () {
+  const config = yield* loadApiConfig;
 
   yield* Effect.logInfo("starting api").pipe(
     Effect.annotateLogs({
       ...serviceLogFields,
       host: config.host,
       port: config.port,
-      nodeEnv: config.nodeEnv
-    })
-  )
+      nodeEnv: config.nodeEnv,
+    }),
+  );
 
   Bun.serve({
     hostname: config.host,
     port: config.port,
     fetch: (request) =>
-      Effect.runPromise(
-        routeRequest(routes, request).pipe(
-          Effect.provide(JsonLoggerLayer)
-        )
-      )
-  })
+      Effect.runPromise(routeRequest(routes, request).pipe(Effect.provide(JsonLoggerLayer))),
+  });
 
-  yield* Effect.never
-})
+  yield* Effect.never;
+});
 
-BunRuntime.runMain(program.pipe(
-  Effect.provide(JsonLoggerLayer),
-  Effect.annotateLogs(serviceLogFields)
-))
+BunRuntime.runMain(
+  program.pipe(Effect.provide(JsonLoggerLayer), Effect.annotateLogs(serviceLogFields)),
+);

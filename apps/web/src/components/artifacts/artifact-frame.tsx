@@ -1,11 +1,11 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { cn } from "@/lib/utils"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 type ArtifactFrameProps = {
-  title: string
-  html: string
-  className?: string
-}
+  title: string;
+  html: string;
+  className?: string;
+};
 
 export function ArtifactFrame({ title, html, className }: ArtifactFrameProps) {
   return (
@@ -22,7 +22,7 @@ export function ArtifactFrame({ title, html, className }: ArtifactFrameProps) {
         />
       </CardContent>
     </Card>
-  )
+  );
 }
 
 function buildArtifactDocument(html: string) {
@@ -41,5 +41,5 @@ function buildArtifactDocument(html: string) {
     </style>
   </head>
   <body>${html}</body>
-</html>`
+</html>`;
 }

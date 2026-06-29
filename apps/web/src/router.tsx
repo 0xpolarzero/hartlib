@@ -1,46 +1,46 @@
-import { QueryClientProvider, type QueryClient } from "@tanstack/react-query"
+import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import {
   Outlet,
   createRootRouteWithContext,
   createRoute,
-  createRouter
-} from "@tanstack/react-router"
+  createRouter,
+} from "@tanstack/react-router";
 
-import { ArtifactFrame } from "@/components/artifacts/artifact-frame"
-import { AppShell } from "@/components/layout/app-shell"
-import { Button } from "@/components/ui/button"
-import { queryClient } from "@/lib/query-client"
+import { ArtifactFrame } from "@/components/artifacts/artifact-frame";
+import { AppShell } from "@/components/layout/app-shell";
+import { Button } from "@/components/ui/button";
+import { queryClient } from "@/lib/query-client";
 
 type RouterContext = {
-  queryClient: QueryClient
-}
+  queryClient: QueryClient;
+};
 
 const rootRoute = createRootRouteWithContext<RouterContext>()({
-  component: RootLayout
-})
+  component: RootLayout,
+});
 
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: HomeRoute
-})
+  component: HomeRoute,
+});
 
 const chatRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/chat/$chatId",
-  component: ChatRoute
-})
+  component: ChatRoute,
+});
 
-const routeTree = rootRoute.addChildren([indexRoute, chatRoute])
+const routeTree = rootRoute.addChildren([indexRoute, chatRoute]);
 
 export const router = createRouter({
   routeTree,
-  context: { queryClient }
-})
+  context: { queryClient },
+});
 
 declare module "@tanstack/react-router" {
   interface Register {
-    router: typeof router
+    router: typeof router;
   }
 }
 
@@ -51,7 +51,7 @@ function RootLayout() {
         <Outlet />
       </AppShell>
     </QueryClientProvider>
-  )
+  );
 }
 
 function HomeRoute() {
@@ -63,8 +63,8 @@ function HomeRoute() {
           Publisher issues, client archive search, and AI chat.
         </h1>
         <p className="text-base leading-7 text-muted-foreground">
-          This frontend shell is ready for authenticated app routes, TanStack
-          state wiring, and sandboxed AI artifacts.
+          This frontend shell is ready for authenticated app routes, TanStack state wiring, and
+          sandboxed AI artifacts.
         </p>
       </div>
 
@@ -74,7 +74,7 @@ function HomeRoute() {
         </Button>
       </div>
     </section>
-  )
+  );
 }
 
 function ChatRoute() {
@@ -89,13 +89,9 @@ function ChatRoute() {
         </div>
       </div>
 
-      <ArtifactFrame
-        title="Artifact preview"
-        html={sampleArtifactHtml}
-        className="min-h-[32rem]"
-      />
+      <ArtifactFrame title="Artifact preview" html={sampleArtifactHtml} className="min-h-[32rem]" />
     </section>
-  )
+  );
 }
 
 const sampleArtifactHtml = `
@@ -106,4 +102,4 @@ const sampleArtifactHtml = `
       AI-generated HTML artifacts will render in this sandbox.
     </p>
   </main>
-`
+`;

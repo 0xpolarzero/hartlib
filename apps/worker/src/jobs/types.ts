@@ -13,16 +13,16 @@ export type JobKind =
   | "generate_export"
   | "purge_deleted_chats"
   | "purge_deleted_files"
-  | "check_artifact"
+  | "check_artifact";
 
 export interface JobRecord {
-  readonly id: string
-  readonly kind: JobKind
-  readonly payload: unknown
-  readonly attempts: number
+  readonly id: string;
+  readonly kind: JobKind;
+  readonly payload: unknown;
+  readonly attempts: number;
 }
 
 export interface JobResult {
-  readonly status: "completed" | "failed" | "retry"
-  readonly message?: string
+  readonly status: "completed" | "failed" | "retry";
+  readonly message?: string;
 }

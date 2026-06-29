@@ -1,11 +1,9 @@
 {
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "skipLibCheck": true,
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
+    "composite": true,
     "allowSyntheticDefaultImports": true,
-    "strict": true,
-    "noEmit": true
+    "types": ["node"]
   },
   "include": ["vite.config.ts", "tailwind.config.ts"]
 }

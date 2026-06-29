@@ -28,5 +28,5 @@ export const jobSql = {
         failed_at = now(),
         error = $2
     where id = $1
-  `
-} as const
+  `,
+} as const;

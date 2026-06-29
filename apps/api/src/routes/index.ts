@@ -2,15 +2,11 @@ import {
   artifactApplyPatchRoute,
   artifactCheckRoute,
   artifactListFilesRoute,
-  artifactReadFileRoute
-} from "./artifacts"
-import {
-  listIssuesToolRoute,
-  readIssueToolRoute,
-  searchIssuesToolRoute
-} from "./ai-tools"
-import { chatStreamRoute } from "./chat"
-import { healthRoute } from "./health"
+  artifactReadFileRoute,
+} from "./artifacts";
+import { listIssuesToolRoute, readIssueToolRoute, searchIssuesToolRoute } from "./ai-tools";
+import { chatStreamRoute } from "./chat";
+import { healthRoute } from "./health";
 
 export const routes = [
   healthRoute,
@@ -21,5 +17,5 @@ export const routes = [
   artifactListFilesRoute,
   artifactReadFileRoute,
   artifactApplyPatchRoute,
-  artifactCheckRoute
-] as const
+  artifactCheckRoute,
+] as const;
