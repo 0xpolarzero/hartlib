@@ -117,7 +117,7 @@ An issue is a scheduled publication.
 
 An issue contains one or more brief documents.
 
-Each brief document has a required PDF and an optional EPUB.
+Each brief document has a required PDF.
 
 Issue fields:
 
@@ -130,7 +130,6 @@ Brief document fields:
 
 - title
 - PDF
-- EPUB
 
 ## Subscription Branding
 
