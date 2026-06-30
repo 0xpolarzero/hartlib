@@ -156,17 +156,17 @@ function App() {
                 </h1>
                 <span className="font-mono text-[11px] font-medium text-faint">(demo)</span>
               </div>
-              <div className="flex items-center gap-2">
-                <TabsList className="h-auto rounded-sm border border-rule bg-paper p-0.5">
+              <div className="flex items-center gap-1.5">
+                <TabsList className="h-6 rounded-sm bg-canvas p-px">
                   <TabsTrigger
                     value="publisher"
-                    className="rounded-sm px-2 py-0.5 text-[0.7rem] font-medium data-[state=active]:bg-surface data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:hover:text-ink data-[state=inactive]:text-muted"
+                    className="h-5 rounded-sm px-2 text-[0.66rem] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
                   >
                     Publisher
                   </TabsTrigger>
                   <TabsTrigger
                     value="client"
-                    className="rounded-sm px-2 py-0.5 text-[0.7rem] font-medium data-[state=active]:bg-surface data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:hover:text-ink data-[state=inactive]:text-muted"
+                    className="h-5 rounded-sm px-2 text-[0.66rem] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
                   >
                     Client
                   </TabsTrigger>
@@ -177,11 +177,11 @@ function App() {
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="size-7 text-faint hover:text-accent"
+                      className="size-5 text-faint/70 hover:bg-rule/45 hover:text-muted"
                       onClick={handleResetDemoStorage}
                       aria-label="Réinitialiser les données locales de la démo"
                     >
-                      <RotateCcw className="size-4" aria-hidden="true" />
+                      <RotateCcw className="size-3" aria-hidden="true" />
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" align="end" sideOffset={8}>
