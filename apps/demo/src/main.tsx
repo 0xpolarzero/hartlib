@@ -82,14 +82,26 @@ function App() {
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
     demoDataset.sources[0]?.id ?? null,
   );
+  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
 
   function handleRoleChange(next: DemoRole) {
     setRole(next);
     // Publisher lands directly on its first source; client lands on the sources list.
     setSelectedSourceId(next === "publisher" ? (demoDataset.sources[0]?.id ?? null) : null);
+    setSelectedIssueId(null);
+  }
+
+  function handleSelectSource(id: string | null) {
+    setSelectedSourceId(id);
+    setSelectedIssueId(null);
   }
 
   const selectedSource = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
+  const selectedIssue =
+    selectedSource && selectedIssueId
+      ? (issuesBySourceId.get(selectedSource.id) ?? []).find((issue) => issue.id === selectedIssueId) ??
+        null
+      : null;
 
   return (
     <TooltipProvider>
@@ -126,25 +138,37 @@ function App() {
               items={
                 selectedSource
                   ? [
-                      { label: "Fils", onClick: () => setSelectedSourceId(null) },
-                      { label: selectedSource.name },
+                      { label: "Fils", onClick: () => handleSelectSource(null) },
+                      ...(selectedIssue
+                        ? [
+                            {
+                              label: selectedSource.name,
+                              onClick: () => setSelectedIssueId(null),
+                            },
+                            { label: selectedIssue.title },
+                          ]
+                        : [{ label: selectedSource.name }]),
                     ]
                   : [{ label: "Fils" }]
               }
             />
           </div>
           <TabsContent value="publisher" className="mt-0">
-            {selectedSource ? (
-              <PublisherSourceDetail source={selectedSource} />
+            {selectedSource && selectedIssue ? (
+              <PublisherPublicationDetail issue={selectedIssue} />
+            ) : selectedSource ? (
+              <PublisherSourceDetail source={selectedSource} onSelectIssue={setSelectedIssueId} />
             ) : (
-              <PublisherSourcesList onSelect={setSelectedSourceId} />
+              <PublisherSourcesList onSelect={handleSelectSource} />
             )}
           </TabsContent>
           <TabsContent value="client" className="mt-0">
-            {selectedSource ? (
+            {selectedSource && selectedIssue ? (
+              <ClientPublicationDetail issue={selectedIssue} />
+            ) : selectedSource ? (
               <ClientSourceDetail source={selectedSource} />
             ) : (
-              <ClientSourcesList onSelect={setSelectedSourceId} />
+              <ClientSourcesList onSelect={handleSelectSource} />
             )}
           </TabsContent>
         </div>
@@ -353,23 +377,14 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
   );
 }
 
-function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
+function PublisherSourceDetail({
+  source,
+  onSelectIssue,
+}: {
+  source: DemoSubscriptionSource;
+  onSelectIssue: (id: string) => void;
+}) {
   const issues = issuesBySourceId.get(source.id) ?? [];
-  const [subscriberStatuses, setSubscriberStatuses] = useState<Record<string, SubscriberStatus>>(
-    {},
-  );
-  const [deletedSubscriberIds, setDeletedSubscriberIds] = useState<readonly string[]>([]);
-
-  function handleToggleSubscriberStatus(id: string) {
-    setSubscriberStatuses((current) => ({
-      ...current,
-      [id]: current[id] === "paused" ? "active" : "paused",
-    }));
-  }
-
-  function handleDeleteSubscriber(id: string) {
-    setDeletedSubscriberIds((current) => (current.includes(id) ? current : [...current, id]));
-  }
 
   return (
     <div className="space-y-8">
@@ -382,24 +397,70 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
             <span className="font-mono tracking-normal text-faint/60">{issues.length}</span>
           </h3>
           <div className="mt-4">
-            <IssueTable issues={issues} compact />
+            <IssueTable issues={issues} compact onSelectIssue={onSelectIssue} />
           </div>
         </section>
 
         <section>
           <h3 className="text-xs font-normal uppercase tracking-[0.16em] text-faint">Abonnés</h3>
-          <div className="mt-4">
-            <SubscriberTable
-              source={source}
-              statuses={subscriberStatuses}
-              deletedIds={deletedSubscriberIds}
-              onToggleStatus={handleToggleSubscriberStatus}
-              onDelete={handleDeleteSubscriber}
-            />
+          <div className="mt-4 space-y-3">
+            {demoClients.map((client) => (
+              <div key={client.id} className="rounded-sm border border-rule bg-paper p-3">
+                <div className="font-semibold text-ink">{client.name}</div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                  <Metric label="Utilisateurs" value={String(client.users)} />
+                  <Metric label="Depuis" value={formatShortDate(source.subscribedSince)} />
+                </div>
+              </div>
+            ))}
           </div>
         </section>
       </div>
 
+    </div>
+  );
+}
+
+function PublisherPublicationDetail({ issue }: { issue: DemoIssue }) {
+  const source = sourceById.get(issue.sourceId);
+
+  return (
+    <div className="space-y-8">
+      <section>
+        <h2 className="font-display text-2xl font-medium text-ink">{issue.title}</h2>
+        <div className="mt-2 font-mono text-[11px] uppercase tracking-wider text-faint">
+          {source?.name} / {formatDate(issue.publicationDate)}
+        </div>
+        <p className="mt-4 max-w-3xl font-serif text-sm leading-6 text-muted">{issue.summary}</p>
+      </section>
+
+      <section className="grid gap-0 md:grid-cols-3">
+        <StatBlock label="Ouvertures" value={String(issue.metrics.opens)} detail="Cumul" />
+        <StatBlock label="Téléchargements" value={String(issue.metrics.downloads)} detail="Cumul" />
+        <StatBlock
+          label="Contexte"
+          value={String(issue.metrics.aiContextPulls)}
+          detail="Lectures IA"
+          accent
+        />
+      </section>
+
+      <section>
+        <h3 className="text-xs font-normal uppercase tracking-[0.16em] text-faint">Documents</h3>
+        <div className="mt-4 divide-y divide-rule">
+          {issue.documents.map((doc) => (
+            <div key={doc.id} className="py-3 first:pt-0 last:pb-0">
+              <div className="font-medium text-ink">{doc.title}</div>
+              <div className="mt-0.5 font-mono text-[11px] text-faint">
+                {doc.fileName} / {doc.pageCount} pages
+              </div>
+              <p className="mt-2 font-serif text-sm leading-6 text-muted">
+                {doc.extractedTextPreview}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
@@ -573,6 +634,10 @@ function ClientSourceDetail({ source }: { source: DemoSubscriptionSource }) {
   );
 }
 
+function ClientPublicationDetail({ issue }: { issue: DemoIssue }) {
+  return <PublisherPublicationDetail issue={issue} />;
+}
+
 // --- Sub-components ---
 
 function SectionTitle({ title }: { title: string }) {
@@ -662,21 +727,17 @@ type PublicationRow = {
   contextPulls: number;
 };
 
-type SubscriberStatus = "active" | "paused";
-
-type SubscriberRow = {
-  id: string;
-  company: string;
-  email: string;
-  subscribedSince: string;
-  status: SubscriberStatus;
-  statusRank: number;
-};
-
 const publicationColumnHelper = createColumnHelper<PublicationRow>();
-const subscriberColumnHelper = createColumnHelper<SubscriberRow>();
 
-function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact?: boolean }) {
+function IssueTable({
+  issues,
+  compact,
+  onSelectIssue,
+}: {
+  issues: readonly DemoIssue[];
+  compact?: boolean;
+  onSelectIssue?: (id: string) => void;
+}) {
   const [sorting, setSorting] = useState<SortingState>([
     { id: "publicationDate", desc: true },
   ]);
@@ -756,7 +817,11 @@ function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact
       </TableHeader>
       <TableBody>
         {table.getRowModel().rows.map((row) => (
-          <TableRow key={row.id}>
+          <TableRow
+            key={row.id}
+            className={cn(onSelectIssue && "cursor-pointer")}
+            onClick={() => onSelectIssue?.(row.original.id)}
+          >
             {row.getVisibleCells().map((cell) => {
               if (cell.column.id === "title") {
                 return (
