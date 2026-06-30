@@ -266,7 +266,6 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-end gap-1 font-mono text-[11px] uppercase tracking-wider text-faint">
-        <span>Affichage</span>
         {(Object.keys(filSortLabels) as FilSortId[]).map((id) => {
           const active = currentSortId === id;
           return (
