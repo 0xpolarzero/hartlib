@@ -13,6 +13,7 @@ export {
 export { Input, type InputProps } from "./components/ui/input";
 export { Label } from "./components/ui/label";
 export { Rule, Separator } from "./components/ui/separator";
+export { DataTable, SortableTableHead } from "./components/ui/data-table";
 export {
   Table,
   TableBody,

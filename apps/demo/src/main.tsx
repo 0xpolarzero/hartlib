@@ -1,7 +1,5 @@
 import { createRoot } from "react-dom/client";
 import {
-  ArrowDown,
-  ArrowUp,
   BookOpen,
   Bot,
   CalendarClock,
@@ -33,6 +31,7 @@ import {
 import {
   ArtifactFrame,
   Button,
+  DataTable,
   Table,
   TableBody,
   TableCell,
@@ -56,7 +55,6 @@ import {
   getCoreRowModel,
   getSortedRowModel,
   useReactTable,
-  type Column,
   type SortingState,
 } from "@tanstack/react-table";
 
@@ -308,58 +306,6 @@ type FilRow = {
 
 const filColumnHelper = createColumnHelper<FilRow>();
 
-function SortableTableHead<TData>({
-  column,
-  align = "left",
-  children,
-}: {
-  column: Column<TData, unknown>;
-  align?: "left" | "right";
-  children: React.ReactNode;
-}) {
-  const sorted = column.getIsSorted();
-
-  return (
-    <TableHead className={cn(align === "right" && "text-right")}>
-      {!column.getCanSort() ? (
-        <span
-          className={cn(
-            "flex h-6 w-full items-center text-faint",
-            align === "right" ? "justify-end text-right" : "justify-start text-left",
-          )}
-        >
-          {children}
-        </span>
-      ) : (
-        <button
-          type="button"
-          onClick={column.getToggleSortingHandler()}
-          className={cn(
-            "group flex h-6 w-full items-center text-faint",
-            align === "right" ? "justify-end text-right" : "justify-start text-left",
-          )}
-        >
-          <span className="inline-flex max-w-full items-center gap-1">
-            <span className="min-w-0 truncate">{children}</span>
-            <span className="flex size-3 shrink-0 items-center justify-center">
-              {sorted === "desc" ? (
-                <ArrowDown className="size-3 text-ink" aria-hidden="true" />
-              ) : sorted === "asc" ? (
-                <ArrowUp className="size-3 text-ink" aria-hidden="true" />
-              ) : (
-                <ChevronsUpDown
-                  className="size-3 opacity-0 transition-opacity duration-fast group-hover:opacity-100"
-                  aria-hidden="true"
-                />
-              )}
-            </span>
-          </span>
-        </button>
-      )}
-    </TableHead>
-  );
-}
-
 function SourcesTable({
   issuesBySourceId,
   onSelect,
@@ -417,52 +363,28 @@ function SourcesTable({
   });
 
   return (
-    <div>
-      <Table>
-        <TableHeader>
-          {table.getHeaderGroups().map((headerGroup) => (
-            <TableRow key={headerGroup.id}>
-              {headerGroup.headers.map((header) => {
-                return (
-                  <SortableTableHead key={header.id} column={header.column}>
-                    {flexRender(header.column.columnDef.header, header.getContext())}
-                  </SortableTableHead>
-                );
-              })}
-            </TableRow>
-          ))}
-        </TableHeader>
-        <TableBody>
-          {table.getRowModel().rows.map((row) => (
-            <TableRow
-              key={row.id}
-              className="cursor-pointer"
-              onClick={() => onSelect(row.original.id)}
-            >
-              {row.getVisibleCells().map((cell) => {
-                return (
-                  <TableCell key={cell.id} className="tabular-nums text-ink">
-                    {cell.column.id === "lastPublishedAt" ? (
-                      row.original.lastPublishedAt ? (
-                        formatDate(row.original.lastPublishedAt)
-                      ) : (
-                        "—"
-                      )
-                    ) : cell.column.id === "name" ? (
-                      <span className="font-medium text-ink">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </span>
-                    ) : (
-                      flexRender(cell.column.columnDef.cell, cell.getContext())
-                    )}
-                  </TableCell>
-                );
-              })}
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
+    <DataTable<FilRow>
+      table={table}
+      renderContent={renderTableContent}
+      onRowClick={(row) => onSelect(row.original.id)}
+      renderCell={(cell, row) => (
+        <TableCell key={cell.id} className="tabular-nums text-ink">
+          {cell.column.id === "lastPublishedAt" ? (
+            row.original.lastPublishedAt ? (
+              formatDate(row.original.lastPublishedAt)
+            ) : (
+              "—"
+            )
+          ) : cell.column.id === "name" ? (
+            <span className="font-medium text-ink">
+              {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
+            </span>
+          ) : (
+            renderTableContent(cell.column.columnDef.cell, cell.getContext())
+          )}
+        </TableCell>
+      )}
+    />
   );
 }
 
@@ -1073,6 +995,13 @@ type DraftSubscriberErrors = Partial<Record<keyof DraftSubscriber, string>>;
 const publicationColumnHelper = createColumnHelper<PublicationRow>();
 const subscriberColumnHelper = createColumnHelper<SubscriberRow>();
 
+function renderTableContent(renderer: unknown, context: unknown) {
+  return flexRender(
+    renderer as Parameters<typeof flexRender>[0],
+    context as Parameters<typeof flexRender>[1],
+  );
+}
+
 function IssueTable({
   issues,
   compact,
@@ -1156,103 +1085,73 @@ function IssueTable({
   });
 
   return (
-    <Table>
-      <TableHeader>
-        {table.getHeaderGroups().map((headerGroup) => (
-          <TableRow key={headerGroup.id}>
-            {headerGroup.headers.map((header) => {
-              const alignRight = header.column.id === "actions";
-              return (
-                <SortableTableHead
-                  key={header.id}
-                  column={header.column}
-                  align={alignRight ? "right" : "left"}
-                >
-                  {flexRender(header.column.columnDef.header, header.getContext())}
-                </SortableTableHead>
-              );
-            })}
-          </TableRow>
-        ))}
-      </TableHeader>
-      <TableBody>
-        {table.getRowModel().rows.map((row) => (
-          <TableRow
-            key={row.id}
-            className={cn(onSelectIssue && "cursor-pointer")}
-            onClick={() => onSelectIssue?.(row.original.id)}
-          >
-            {row.getVisibleCells().map((cell) => {
-              if (cell.column.id === "title") {
-                return (
-                  <TableCell key={cell.id}>
-                    <div className="max-w-[24rem] truncate font-medium text-ink">
-                      {row.original.title}
-                    </div>
-                  </TableCell>
-                );
-              }
-              if (cell.column.id === "actions") {
-                return (
-                  <TableCell key={cell.id} className="text-right">
-                    {row.original.status === "scheduled" && onDeleteIssue ? (
-                      <ConfirmingDeleteButton
-                        confirmLabel="Confirmer"
-                        idleLabel="Supprimer la publication programmée"
-                        onConfirm={() => onDeleteIssue(row.original.id)}
-                      />
-                    ) : null}
-                  </TableCell>
-                );
-              }
-              if (cell.column.id === "publicationDate") {
-                return (
-                  <TableCell
-                    key={cell.id}
-                    className="whitespace-nowrap font-mono text-[11px] text-faint"
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <span>{formatDate(row.original.publicationDate)}</span>
-                      {row.original.status === "scheduled" ? <ScheduledPublicationIcon /> : null}
-                    </span>
-                  </TableCell>
-                );
-              }
-              if (
-                row.original.status === "scheduled" &&
-                (cell.column.id === "opens" ||
-                  cell.column.id === "downloads" ||
-                  cell.column.id === "contextPulls")
-              ) {
-                return (
-                  <TableCell
-                    key={cell.id}
-                    className="whitespace-nowrap font-mono text-[11px] text-faint"
-                  >
-                    -
-                  </TableCell>
-                );
-              }
-              if (cell.column.id === "contextPulls") {
-                return (
-                  <TableCell
-                    key={cell.id}
-                    className="whitespace-nowrap tabular-nums font-medium text-accent"
-                  >
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </TableCell>
-                );
-              }
-              return (
-                <TableCell key={cell.id} className="whitespace-nowrap tabular-nums text-ink">
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </TableCell>
-              );
-            })}
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+    <DataTable<PublicationRow>
+      table={table}
+      renderContent={renderTableContent}
+      getHeaderAlign={(header) => (header.column.id === "actions" ? "right" : "left")}
+      {...(onSelectIssue ? { onRowClick: (row) => onSelectIssue(row.original.id) } : {})}
+      renderCell={(cell, row) => {
+        if (cell.column.id === "title") {
+          return (
+            <TableCell key={cell.id}>
+              <div className="max-w-[24rem] truncate font-medium text-ink">
+                {row.original.title}
+              </div>
+            </TableCell>
+          );
+        }
+        if (cell.column.id === "actions") {
+          return (
+            <TableCell key={cell.id} className="text-right">
+              {row.original.status === "scheduled" && onDeleteIssue ? (
+                <ConfirmingDeleteButton
+                  confirmLabel="Confirmer"
+                  idleLabel="Supprimer la publication programmée"
+                  onConfirm={() => onDeleteIssue(row.original.id)}
+                />
+              ) : null}
+            </TableCell>
+          );
+        }
+        if (cell.column.id === "publicationDate") {
+          return (
+            <TableCell key={cell.id} className="whitespace-nowrap font-mono text-[11px] text-faint">
+              <span className="inline-flex items-center gap-2">
+                <span>{formatDate(row.original.publicationDate)}</span>
+                {row.original.status === "scheduled" ? <ScheduledPublicationIcon /> : null}
+              </span>
+            </TableCell>
+          );
+        }
+        if (
+          row.original.status === "scheduled" &&
+          (cell.column.id === "opens" ||
+            cell.column.id === "downloads" ||
+            cell.column.id === "contextPulls")
+        ) {
+          return (
+            <TableCell key={cell.id} className="whitespace-nowrap font-mono text-[11px] text-faint">
+              -
+            </TableCell>
+          );
+        }
+        if (cell.column.id === "contextPulls") {
+          return (
+            <TableCell
+              key={cell.id}
+              className="whitespace-nowrap tabular-nums font-medium text-accent"
+            >
+              {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
+            </TableCell>
+          );
+        }
+        return (
+          <TableCell key={cell.id} className="whitespace-nowrap tabular-nums text-ink">
+            {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
+          </TableCell>
+        );
+      }}
+    />
   );
 }
 
@@ -1689,30 +1588,14 @@ function SubscriberTable({
   }
 
   return (
-    <Table>
-      <TableHeader>
-        {table.getHeaderGroups().map((headerGroup) => (
-          <TableRow key={headerGroup.id}>
-            {headerGroup.headers.map((header) => {
-              if (header.column.id === "statusRank") {
-                return <TableHead key={header.id} className="hidden" />;
-              }
-              const alignRight = header.column.id === "actions";
-              return (
-                <SortableTableHead
-                  key={header.id}
-                  column={header.column}
-                  align={alignRight ? "right" : "left"}
-                >
-                  {flexRender(header.column.columnDef.header, header.getContext())}
-                </SortableTableHead>
-              );
-            })}
-          </TableRow>
-        ))}
-      </TableHeader>
-      <TableBody>
-        {draft ? (
+    <DataTable<SubscriberRow>
+      table={table}
+      renderContent={renderTableContent}
+      hiddenColumnIds={["statusRank"]}
+      getHeaderAlign={(header) => (header.column.id === "actions" ? "right" : "left")}
+      getRowClassName={(row) => (row.original.status === "paused" ? "opacity-60" : undefined)}
+      renderBeforeRows={() =>
+        draft ? (
           <DraftSubscriberTableRow
             draft={draft}
             errors={draftErrors}
@@ -1724,50 +1607,39 @@ function SubscriberTable({
               onUpdateDraft(nextDraft);
             }}
           />
-        ) : null}
-        {table.getRowModel().rows.map((row) => {
-          const isPaused = row.original.status === "paused";
+        ) : null
+      }
+      renderCell={(cell, row) => {
+        if (cell.column.id === "company") {
           return (
-            <TableRow key={row.id} className={cn(isPaused && "opacity-60")}>
-              {row.getVisibleCells().map((cell) => {
-                if (cell.column.id === "statusRank") return null;
-                if (cell.column.id === "company") {
-                  return (
-                    <TableCell key={cell.id}>
-                      <div className="max-w-[12rem] truncate font-medium text-ink">
-                        {row.original.company}
-                      </div>
-                    </TableCell>
-                  );
-                }
-                if (cell.column.id === "email") {
-                  return (
-                    <TableCell key={cell.id} className="font-mono text-[11px] text-muted">
-                      <div className="max-w-[14rem] truncate">{row.original.email}</div>
-                    </TableCell>
-                  );
-                }
-                if (cell.column.id === "subscribedSince") {
-                  return (
-                    <TableCell
-                      key={cell.id}
-                      className="whitespace-nowrap font-mono text-[11px] text-faint"
-                    >
-                      {formatDate(row.original.subscribedSince)}
-                    </TableCell>
-                  );
-                }
-                return (
-                  <TableCell key={cell.id} className="text-right">
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </TableCell>
-                );
-              })}
-            </TableRow>
+            <TableCell key={cell.id}>
+              <div className="max-w-[12rem] truncate font-medium text-ink">
+                {row.original.company}
+              </div>
+            </TableCell>
           );
-        })}
-      </TableBody>
-    </Table>
+        }
+        if (cell.column.id === "email") {
+          return (
+            <TableCell key={cell.id} className="font-mono text-[11px] text-muted">
+              <div className="max-w-[14rem] truncate">{row.original.email}</div>
+            </TableCell>
+          );
+        }
+        if (cell.column.id === "subscribedSince") {
+          return (
+            <TableCell key={cell.id} className="whitespace-nowrap font-mono text-[11px] text-faint">
+              {formatDate(row.original.subscribedSince)}
+            </TableCell>
+          );
+        }
+        return (
+          <TableCell key={cell.id} className="text-right">
+            {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
+          </TableCell>
+        );
+      }}
+    />
   );
 }
 

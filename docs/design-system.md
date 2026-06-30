@@ -138,6 +138,14 @@ Dense, hairline-ruled data table with optional sticky header.
 
 Prop `stickyHeader={true}` on `TableHeader` enables sticky positioning with `z-10` and `bg-paper`. The table must be inside a scroll container with defined height for sticky to function.
 
+### DataTable
+
+TanStack Table renderer for dense product tables that share Pressroom header, sorting, and row chrome while keeping domain-specific cells in the consuming app.
+
+- `DataTable` — renders TanStack header groups, sortable headers, body rows, optional leading rows, row click behavior, hidden columns, and custom cell rendering
+- `SortableTableHead` — standalone sortable header cell used by `DataTable`
+- Sorting state, column definitions, row models, and domain cell content remain owned by the feature
+
 ### ArtifactFrame
 
 Renders HTML content on a paper surface inside a sandboxed iframe. Used for reading issue documents and AI-generated artifacts.
@@ -183,6 +191,7 @@ The `@brief/ui` package exports:
 | Card      | —                               | Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent, CardFooter                                     |
 | Badge     | —                               | 6 variants: default, secondary, destructive, outline, success, warning                                                |
 | Table     | —                               | Table, TableHeader, TableBody, TableFooter, TableRow, TableHead, TableCell, TableCaption; stickyHeader on TableHeader |
+| DataTable | TanStack Table                  | Shared renderer for sortable dense product tables; feature code supplies columns, sorting state, and cell content     |
 | Separator | `@radix-ui/react-separator`     | Replaces the hand-written Rule; Rule exported as alias for backward compat                                            |
 | Tabs      | `@radix-ui/react-tabs`          | Tabs, TabsList, TabsTrigger, TabsContent; replaces hand-rolled switcher patterns                                      |
 | Input     | —                               | Styled text input using `--radius`                                                                                    |
