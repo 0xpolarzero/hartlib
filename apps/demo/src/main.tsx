@@ -1,11 +1,8 @@
 import { createRoot } from "react-dom/client";
 import {
-  ArrowDown,
-  ArrowUp,
   BookOpen,
   Bot,
   ChevronRight,
-  ChevronsUpDown,
   Info,
   Lock,
   MessageSquare,
@@ -48,7 +45,6 @@ import {
   getCoreRowModel,
   getSortedRowModel,
   useReactTable,
-  type Column,
   type SortingState,
 } from "@tanstack/react-table";
 
@@ -201,50 +197,22 @@ type FilRow = {
 
 const filColumnHelper = createColumnHelper<FilRow>();
 
-function SortableHead({
-  column,
-  align = "left",
-  children,
-}: {
-  column: Column<FilRow, unknown>;
-  align?: "left" | "right";
-  children: React.ReactNode;
-}) {
-  const sorted = column.getIsSorted();
-  return (
-    <TableHead className={cn("group", align === "right" && "text-right")}>
-      <button
-        type="button"
-        onClick={column.getToggleSortingHandler()}
-        className={cn(
-          "flex h-8 w-full items-center text-faint",
-          align === "right" ? "justify-end text-right" : "justify-start text-left",
-        )}
-      >
-        <span className="inline-flex max-w-full items-center gap-1">
-          <span className="min-w-0 truncate">{children}</span>
-          <span className="flex size-3 shrink-0 items-center justify-center">
-            {sorted === "desc" ? (
-              <ArrowDown className="size-3 text-ink" aria-hidden="true" />
-            ) : sorted === "asc" ? (
-              <ArrowUp className="size-3 text-ink" aria-hidden="true" />
-            ) : (
-              <ChevronsUpDown
-                className="size-3 opacity-0 transition-opacity duration-fast group-hover:opacity-100"
-                aria-hidden="true"
-              />
-            )}
-          </span>
-        </span>
-      </button>
-    </TableHead>
-  );
-}
+type FilSortId = "lastPublishedAt" | "name" | "issueCount" | "subscriberCount";
+
+const filSortLabels: Record<FilSortId, string> = {
+  lastPublishedAt: "Dernière publication",
+  name: "Fil",
+  issueCount: "Publications",
+  subscriberCount: "Abonnés",
+};
 
 function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
   const [sorting, setSorting] = useState<SortingState>([
     { id: "lastPublishedAt", desc: true },
   ]);
+
+  const currentSort = sorting[0] ?? { id: "lastPublishedAt", desc: true };
+  const currentSortId = currentSort.id as FilSortId;
 
   const rows = useMemo<FilRow[]>(
     () =>
@@ -272,7 +240,7 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
           const av = a.original.lastPublishedAt;
           const bv = b.original.lastPublishedAt;
           if (!av && !bv) return 0;
-          if (!av) return 1; // fils without publication sort last either way
+          if (!av) return 1;
           if (!bv) return -1;
           return av < bv ? -1 : av > bv ? 1 : 0;
         },
@@ -291,56 +259,83 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
     getSortedRowModel: getSortedRowModel(),
   });
 
+  function setSort(id: FilSortId) {
+    setSorting([{ id, desc: id === currentSortId ? !currentSort.desc : id !== "name" }]);
+  }
+
   return (
-    <Table>
-      <TableHeader>
-        {table.getHeaderGroups().map((headerGroup) => (
-          <TableRow key={headerGroup.id}>
-            {headerGroup.headers.map((header) => {
-              const align = header.id === "name" ? "left" : "right";
-              return (
-                <SortableHead key={header.id} column={header.column} align={align}>
-                  {flexRender(header.column.columnDef.header, header.getContext())}
-                </SortableHead>
-              );
-            })}
-          </TableRow>
-        ))}
-      </TableHeader>
-      <TableBody>
-        {table.getRowModel().rows.map((row) => (
-          <TableRow
-            key={row.id}
-            className="cursor-pointer"
-            onClick={() => onSelect(row.original.id)}
-          >
-            {row.getVisibleCells().map((cell) => {
-              const align = cell.column.id === "name" ? "left" : "right";
-              return (
-                <TableCell
-                  key={cell.id}
-                  className={cn(align === "right" && "text-right tabular-nums text-ink")}
+    <div className="space-y-2">
+      <div className="flex items-center justify-end gap-1 font-mono text-[11px] uppercase tracking-wider text-faint">
+        <span>Affichage</span>
+        {(Object.keys(filSortLabels) as FilSortId[]).map((id) => {
+          const active = currentSortId === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setSort(id)}
+              className={cn(
+                "rounded-xs px-1.5 py-0.5 transition-colors duration-fast hover:bg-surface hover:text-muted",
+                active && "bg-surface text-ink",
+              )}
+            >
+              {filSortLabels[id]}
+              {active ? (currentSort.desc ? " ↓" : " ↑") : null}
+            </button>
+          );
+        })}
+      </div>
+
+      <Table>
+        <TableHeader>
+          {table.getHeaderGroups().map((headerGroup) => (
+            <TableRow key={headerGroup.id}>
+              {headerGroup.headers.map((header) => (
+                <TableHead
+                  key={header.id}
+                  className={cn(header.id !== "name" && "text-right")}
                 >
-                  {cell.column.id === "lastPublishedAt" ? (
-                    row.original.lastPublishedAt ? (
-                      formatDate(row.original.lastPublishedAt)
+                  {flexRender(header.column.columnDef.header, header.getContext())}
+                </TableHead>
+              ))}
+            </TableRow>
+          ))}
+        </TableHeader>
+        <TableBody>
+          {table.getRowModel().rows.map((row) => (
+            <TableRow
+              key={row.id}
+              className="cursor-pointer"
+              onClick={() => onSelect(row.original.id)}
+            >
+              {row.getVisibleCells().map((cell) => {
+                const align = cell.column.id === "name" ? "left" : "right";
+                return (
+                  <TableCell
+                    key={cell.id}
+                    className={cn(align === "right" && "text-right tabular-nums text-ink")}
+                  >
+                    {cell.column.id === "lastPublishedAt" ? (
+                      row.original.lastPublishedAt ? (
+                        formatDate(row.original.lastPublishedAt)
+                      ) : (
+                        "—"
+                      )
+                    ) : cell.column.id === "name" ? (
+                      <span className="font-medium text-ink">
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </span>
                     ) : (
-                      "—"
-                    )
-                  ) : cell.column.id === "name" ? (
-                    <span className="font-medium text-ink">
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </span>
-                  ) : (
-                    flexRender(cell.column.columnDef.cell, cell.getContext())
-                  )}
-                </TableCell>
-              );
-            })}
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+                      flexRender(cell.column.columnDef.cell, cell.getContext())
+                    )}
+                  </TableCell>
+                );
+              })}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   );
 }
 
