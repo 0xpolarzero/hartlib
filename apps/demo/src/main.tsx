@@ -200,19 +200,11 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
           return (
             <TableRow
               key={source.id}
-              className="group cursor-pointer"
+              className="cursor-pointer"
               onClick={() => onSelect(source.id)}
             >
               <TableCell>
-                <div className="flex items-center gap-2.5">
-                  <span
-                    className="size-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: source.branding.accentColor }}
-                    aria-hidden="true"
-                  />
-                  <span className="font-medium text-ink">{source.name}</span>
-                  <ChevronRight className="ml-auto size-4 shrink-0 text-faint opacity-0 transition-opacity duration-fast group-hover:opacity-100" aria-hidden="true" />
-                </div>
+                <span className="font-medium text-ink">{source.name}</span>
               </TableCell>
               <TableCell className="text-right tabular-nums text-ink">
                 {issues.length}
@@ -519,11 +511,6 @@ function SourceRow({
       className="block w-full py-3 text-left transition-colors duration-fast disabled:cursor-default enabled:hover:bg-surface/60 first:pt-0 last:pb-0"
     >
       <div className="flex items-start gap-3">
-        <span
-          className="mt-1.5 size-2 shrink-0 rounded-full"
-          style={{ backgroundColor: source.branding.accentColor }}
-          aria-hidden="true"
-        />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-ink">{source.name}</span>
