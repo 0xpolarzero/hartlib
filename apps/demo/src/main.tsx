@@ -67,7 +67,7 @@ const sourceById = new Map(demoDataset.sources.map((s) => [s.id, s]));
 const primaryChat = demoDataset.chats[0];
 const primaryArtifact = demoDataset.artifacts[0];
 const editableFieldChromeClass =
-  "rounded-sm border border-transparent bg-transparent outline-none transition-colors duration-fast hover:border-rule hover:bg-surface/60 focus:border-ring focus:bg-paper focus:ring-2 focus:ring-ring/20";
+  "rounded-sm border border-rule/70 bg-paper/35 outline-none transition-colors duration-fast hover:border-rule hover:bg-paper/70 focus:border-ring focus:bg-paper focus:ring-2 focus:ring-ring/20";
 const demoSubscriberProfiles = [
   {
     id: demoDataset.companies.client.id,
@@ -566,6 +566,13 @@ function PublisherPublicationDetail({
     });
   }
 
+  function deleteDocument(documentId: string) {
+    onUpdateIssue?.({
+      ...issue,
+      documents: issue.documents.filter((doc) => doc.id !== documentId),
+    });
+  }
+
   function handleAddDocument() {
     onUpdateIssue?.({
       ...issue,
@@ -576,7 +583,7 @@ function PublisherPublicationDetail({
   return (
     <div className="space-y-8">
       <section>
-        <div className="flex items-start gap-3">
+        <div className="flex items-center gap-3">
           <div className="min-w-0 flex-1">
             {editable ? (
               <input
@@ -613,7 +620,7 @@ function PublisherPublicationDetail({
                 }}
                 className={cn(
                   editableFieldChromeClass,
-                  "px-1 py-0.5 font-mono text-[11px] uppercase tracking-wider text-faint focus:text-accent",
+                  "publication-date-input px-1 py-0.5 font-mono text-[11px] uppercase tracking-wider text-faint focus:text-accent",
                 )}
                 aria-label="Date de publication"
               />
@@ -656,6 +663,7 @@ function PublisherPublicationDetail({
           <DocumentsTable
             documents={issue.documents}
             editable={editable}
+            onDeleteDocument={deleteDocument}
             onUpdateDocument={updateDocument}
           />
         </div>
@@ -1110,7 +1118,9 @@ function IssueTable({
               if (cell.column.id === "title") {
                 return (
                   <TableCell key={cell.id}>
-                    <div className="font-medium text-ink">{row.original.title}</div>
+                    <div className="max-w-[24rem] truncate font-medium text-ink">
+                      {row.original.title}
+                    </div>
                   </TableCell>
                 );
               }
@@ -1131,7 +1141,7 @@ function IssueTable({
                 return (
                   <TableCell
                     key={cell.id}
-                    className="font-mono text-[11px] text-faint"
+                    className="whitespace-nowrap font-mono text-[11px] text-faint"
                     title={
                       row.original.status === "scheduled" ? "Publication programmée" : undefined
                     }
@@ -1150,20 +1160,26 @@ function IssueTable({
                   cell.column.id === "contextPulls")
               ) {
                 return (
-                  <TableCell key={cell.id} className="font-mono text-[11px] text-faint">
+                  <TableCell
+                    key={cell.id}
+                    className="whitespace-nowrap font-mono text-[11px] text-faint"
+                  >
                     -
                   </TableCell>
                 );
               }
               if (cell.column.id === "contextPulls") {
                 return (
-                  <TableCell key={cell.id} className="tabular-nums font-medium text-accent">
+                  <TableCell
+                    key={cell.id}
+                    className="whitespace-nowrap tabular-nums font-medium text-accent"
+                  >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </TableCell>
                 );
               }
               return (
-                <TableCell key={cell.id} className="tabular-nums text-ink">
+                <TableCell key={cell.id} className="whitespace-nowrap tabular-nums text-ink">
                   {flexRender(cell.column.columnDef.cell, cell.getContext())}
                 </TableCell>
               );
@@ -1178,10 +1194,12 @@ function IssueTable({
 function DocumentsTable({
   documents,
   editable,
+  onDeleteDocument,
   onUpdateDocument,
 }: {
   documents: readonly DocumentRow[];
   editable: boolean;
+  onDeleteDocument: (documentId: string) => void;
   onUpdateDocument: (documentId: string, patch: Partial<DocumentRow>) => void;
 }) {
   if (documents.length === 0) {
@@ -1199,12 +1217,13 @@ function DocumentsTable({
           <TableHead>Titre</TableHead>
           <TableHead>Description</TableHead>
           <TableHead>PDF</TableHead>
+          {editable ? <TableHead className="text-right" /> : null}
         </TableRow>
       </TableHeader>
       <TableBody>
         {documents.map((doc) => (
           <TableRow key={doc.id}>
-            <TableCell>
+            <TableCell className="align-top">
               {editable ? (
                 <InlineInput
                   value={doc.title}
@@ -1215,7 +1234,7 @@ function DocumentsTable({
                 <span className="font-medium text-ink">{doc.title}</span>
               )}
             </TableCell>
-            <TableCell className="max-w-md">
+            <TableCell className="max-w-md align-top">
               {editable ? (
                 <InlineInput
                   value={doc.extractedTextPreview}
@@ -1231,7 +1250,7 @@ function DocumentsTable({
                 </span>
               )}
             </TableCell>
-            <TableCell className="font-mono text-[11px] text-faint">
+            <TableCell className="align-top font-mono text-[11px] text-faint">
               {editable ? (
                 <InlineInput
                   value={doc.fileName}
@@ -1242,6 +1261,15 @@ function DocumentsTable({
                 `${doc.fileName} / ${doc.pageCount} pages`
               )}
             </TableCell>
+            {editable ? (
+              <TableCell className="align-top text-right">
+                <ConfirmingDeleteButton
+                  confirmLabel="Confirmer"
+                  idleLabel="Supprimer le document"
+                  onConfirm={() => onDeleteDocument(doc.id)}
+                />
+              </TableCell>
+            ) : null}
           </TableRow>
         ))}
       </TableBody>
@@ -1334,13 +1362,13 @@ function ScheduledPublicationIcon({ className }: { className?: string }) {
   return (
     <span
       className={cn(
-        "inline-flex size-5 items-center justify-center rounded-sm border border-accent/30 bg-accent/10 align-middle text-accent",
+        "inline-flex size-4 items-center justify-center rounded-sm border border-accent/30 bg-accent/10 align-middle text-accent",
         className,
       )}
       title="Publication programmée"
       aria-label="Publication programmée"
     >
-      <CalendarClock className="size-3.5" aria-hidden="true" />
+      <CalendarClock className="size-3" aria-hidden="true" />
     </span>
   );
 }
@@ -1380,15 +1408,16 @@ function ConfirmingDeleteButton({
   }, [confirming]);
 
   return (
-    <div ref={rootRef} className="inline-flex">
+    <div ref={rootRef} className="flex justify-end leading-none">
       <Button
         type="button"
-        variant={confirming ? "destructive" : "ghost"}
+        variant="ghost"
         size="icon"
         className={cn(
-          "size-7",
-          !confirming &&
-            "text-faint/70 hover:bg-surface hover:text-destructive focus-visible:text-destructive",
+          "!size-5",
+          confirming
+            ? "text-destructive hover:bg-rule/45 hover:text-destructive"
+            : "text-faint/70 hover:bg-rule/45 hover:text-destructive focus-visible:text-destructive",
         )}
         onClick={(event) => {
           event.stopPropagation();
@@ -1402,9 +1431,9 @@ function ConfirmingDeleteButton({
         aria-label={confirming ? confirmLabel : idleLabel}
       >
         {confirming ? (
-          <Check className="size-4" aria-hidden="true" />
+          <Check className="size-3.5" aria-hidden="true" />
         ) : (
-          <Trash2 className="size-4" aria-hidden="true" />
+          <Trash2 className="size-3.5" aria-hidden="true" />
         )}
       </Button>
     </div>
@@ -1446,7 +1475,7 @@ function SubscriberTable({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7 text-faint/70 hover:bg-surface hover:text-muted focus-visible:text-muted"
+                className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-muted focus-visible:text-muted"
                 onClick={(event) => {
                   event.stopPropagation();
                   onToggleStatus(row.id);
@@ -1454,9 +1483,9 @@ function SubscriberTable({
                 aria-label={isPaused ? "Reprendre l'abonnement" : "Mettre en pause l'abonnement"}
               >
                 {isPaused ? (
-                  <Play className="size-4" aria-hidden="true" />
+                  <Play className="size-3.5" aria-hidden="true" />
                 ) : (
-                  <Pause className="size-4" aria-hidden="true" />
+                  <Pause className="size-3.5" aria-hidden="true" />
                 )}
               </Button>
               <ConfirmingDeleteButton
@@ -1530,20 +1559,25 @@ function SubscriberTable({
                 if (cell.column.id === "company") {
                   return (
                     <TableCell key={cell.id}>
-                      <div className="font-medium text-ink">{row.original.company}</div>
+                      <div className="max-w-[12rem] truncate font-medium text-ink">
+                        {row.original.company}
+                      </div>
                     </TableCell>
                   );
                 }
                 if (cell.column.id === "email") {
                   return (
                     <TableCell key={cell.id} className="font-mono text-[11px] text-muted">
-                      {row.original.email}
+                      <div className="max-w-[14rem] truncate">{row.original.email}</div>
                     </TableCell>
                   );
                 }
                 if (cell.column.id === "subscribedSince") {
                   return (
-                    <TableCell key={cell.id} className="font-mono text-[11px] text-faint">
+                    <TableCell
+                      key={cell.id}
+                      className="whitespace-nowrap font-mono text-[11px] text-faint"
+                    >
                       {formatDate(row.original.subscribedSince)}
                     </TableCell>
                   );

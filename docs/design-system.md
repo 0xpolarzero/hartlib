@@ -95,7 +95,7 @@ Apps must load fonts via Google Fonts `<link>` in their `index.html`. Include th
 
 ### Button
 
-Flat button, `rounded-sm` (4px radius). No drop shadows.
+Flat button, `rounded-sm` backed by `--radius` (`0.5px`). No drop shadows.
 
 - **Variants**: `default` (ink fill, paper text), `secondary` (1px ink/15 border, no fill, light hover fill), `ghost` (muted text, underline-on-hover)
 - **Sizes**: `default` (h-9, 14px), `sm` (h-7, 12px)
@@ -104,7 +104,7 @@ Flat button, `rounded-sm` (4px radius). No drop shadows.
 
 ### Card
 
-Minimal raised surface, 4px radius (`rounded-sm`), 1px rule border, paper background.
+Minimal raised surface, `--radius` (`0.5px`) via `rounded-sm`, 1px rule border, paper background.
 
 - `Card` — wrapper
 - `CardHeader` — padded header section
@@ -142,7 +142,7 @@ Prop `stickyHeader={true}` on `TableHeader` enables sticky positioning with `z-1
 
 Renders HTML content on a paper surface inside a sandboxed iframe. Used for reading issue documents and AI-generated artifacts.
 
-- Paper background (`--color-paper`), 1px rule border, `rounded-sm`
+- Paper background (`--color-paper`), 1px rule border, `rounded-sm` backed by `--radius`
 - Title bar in bottom-bordered strip, 11px uppercase tracked label
 - Crop-mark corner detail: tiny L-shaped rule at top-right (print "datadrop" metaphor)
 - Sandboxed iframe with CSP: `default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'`
@@ -185,7 +185,7 @@ The `@brief/ui` package exports:
 | Table     | —                               | Table, TableHeader, TableBody, TableFooter, TableRow, TableHead, TableCell, TableCaption; stickyHeader on TableHeader |
 | Separator | `@radix-ui/react-separator`     | Replaces the hand-written Rule; Rule exported as alias for backward compat                                            |
 | Tabs      | `@radix-ui/react-tabs`          | Tabs, TabsList, TabsTrigger, TabsContent; replaces hand-rolled switcher patterns                                      |
-| Input     | —                               | Styled text input, 4px radius                                                                                         |
+| Input     | —                               | Styled text input using `--radius`                                                                                    |
 | Label     | `@radix-ui/react-label`         | Associated with inputs via peer targeting                                                                             |
 | Textarea  | —                               | Same styling as Input                                                                                                 |
 | Tooltip   | `@radix-ui/react-tooltip`       | TooltipProvider, Tooltip, TooltipTrigger, TooltipContent                                                              |
@@ -203,7 +203,7 @@ The `@brief/ui` package exports:
 | `bg-secondary`           | kept as-is (`surface`)               | Maps correctly                                         |
 | `bg-destructive`         | kept as-is (`danger`)                | Maps correctly                                         |
 | `border-border`          | kept as-is (`--color-border` = rule) | Maps correctly                                         |
-| `rounded-md/lg`          | `rounded-sm` (4px)                   | Pressroom base radius is 4px                           |
+| `rounded-md/lg`          | `rounded-sm`                         | Pressroom base radius is `--radius` (`0.5px`)          |
 
 ### Usage
 
