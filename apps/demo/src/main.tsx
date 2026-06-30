@@ -214,6 +214,16 @@ function SortableTableHead<TData>({
 
   return (
     <TableHead className={cn(align === "right" && "text-right")}>
+      {!column.getCanSort() ? (
+        <span
+          className={cn(
+            "flex h-6 w-full items-center text-faint",
+            align === "right" ? "justify-end text-right" : "justify-start text-left",
+          )}
+        >
+          {children}
+        </span>
+      ) : (
       <button
         type="button"
         onClick={column.getToggleSortingHandler()}
@@ -238,6 +248,7 @@ function SortableTableHead<TData>({
           </span>
         </span>
       </button>
+      )}
     </TableHead>
   );
 }
@@ -344,6 +355,21 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
 
 function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
   const issues = issuesBySourceId.get(source.id) ?? [];
+  const [subscriberStatuses, setSubscriberStatuses] = useState<Record<string, SubscriberStatus>>(
+    {},
+  );
+  const [deletedSubscriberIds, setDeletedSubscriberIds] = useState<readonly string[]>([]);
+
+  function handleToggleSubscriberStatus(id: string) {
+    setSubscriberStatuses((current) => ({
+      ...current,
+      [id]: current[id] === "paused" ? "active" : "paused",
+    }));
+  }
+
+  function handleDeleteSubscriber(id: string) {
+    setDeletedSubscriberIds((current) => (current.includes(id) ? current : [...current, id]));
+  }
 
   return (
     <div className="space-y-8">
@@ -351,9 +377,9 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
 
       <div className="animate-in stagger-1 grid gap-8 xl:grid-cols-[1.3fr_0.7fr]">
         <section>
-          <h3 className="flex items-center gap-2 text-xs font-normal uppercase tracking-[0.16em] text-faint">
+          <h3 className="flex items-center gap-3 text-xs font-normal uppercase tracking-[0.16em] text-faint">
             <span>Publications</span>
-            <span className="font-mono tracking-normal text-faint">{issues.length}</span>
+            <span className="font-mono tracking-normal text-faint/60">{issues.length}</span>
           </h3>
           <div className="mt-4">
             <IssueTable issues={issues} compact />
@@ -362,16 +388,14 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
 
         <section>
           <h3 className="text-xs font-normal uppercase tracking-[0.16em] text-faint">Abonnés</h3>
-          <div className="mt-4 space-y-3">
-            {demoClients.map((client) => (
-              <div key={client.id} className="rounded-sm border border-rule bg-paper p-3">
-                <div className="font-semibold text-ink">{client.name}</div>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                  <Metric label="Utilisateurs" value={String(client.users)} />
-                  <Metric label="Depuis" value={formatShortDate(source.subscribedSince)} />
-                </div>
-              </div>
-            ))}
+          <div className="mt-4">
+            <SubscriberTable
+              source={source}
+              statuses={subscriberStatuses}
+              deletedIds={deletedSubscriberIds}
+              onToggleStatus={handleToggleSubscriberStatus}
+              onDelete={handleDeleteSubscriber}
+            />
           </div>
         </section>
       </div>
@@ -638,7 +662,19 @@ type PublicationRow = {
   contextPulls: number;
 };
 
+type SubscriberStatus = "active" | "paused";
+
+type SubscriberRow = {
+  id: string;
+  company: string;
+  email: string;
+  subscribedSince: string;
+  status: SubscriberStatus;
+  statusRank: number;
+};
+
 const publicationColumnHelper = createColumnHelper<PublicationRow>();
+const subscriberColumnHelper = createColumnHelper<SubscriberRow>();
 
 function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact?: boolean }) {
   const [sorting, setSorting] = useState<SortingState>([
