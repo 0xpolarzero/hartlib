@@ -483,9 +483,20 @@ function PublisherSourceDetail({
     `brief:demo:publisher-subscribers:${source.id}`,
     { statuses: {}, deletedIds: [] },
   );
+  const [draftSubscriber, setDraftSubscriber] = useState<DraftSubscriber | null>(null);
   const subscribers = useMemo(
     () => buildSubscriberRows(source, subscriberState),
     [source, subscriberState],
+  );
+  const subscriberCompanies = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...subscribers.map((row) => row.company),
+          ...demoSubscriberProfiles.map((profile) => profile.company),
+        ]),
+      ).sort((a, b) => a.localeCompare(b)),
+    [subscribers],
   );
 
   function handleToggleSubscriberStatus(id: string) {
@@ -505,6 +516,26 @@ function PublisherSourceDetail({
         ? current.deletedIds
         : [...current.deletedIds, id],
     }));
+  }
+
+  function handleAddSubscriber() {
+    setDraftSubscriber((current) => current ?? { company: "", email: "" });
+  }
+
+  function handleCreateSubscriber(draft: DraftSubscriber) {
+    const subscriber: CreatedSubscriberRow = {
+      id: `subscriber_demo_${Date.now()}`,
+      company: draft.company.trim(),
+      email: draft.email.trim(),
+      subscribedSince: new Date().toISOString(),
+      status: "active",
+    };
+
+    setSubscriberState((current) => ({
+      ...current,
+      created: [...(current.created ?? []), subscriber],
+    }));
+    setDraftSubscriber(null);
   }
 
   return (
@@ -530,10 +561,20 @@ function PublisherSourceDetail({
         </section>
 
         <section>
-          <SectionHeader title="Abonnés" count={subscribers.length} />
+          <SectionHeader
+            title="Abonnés"
+            count={subscribers.length}
+            actionLabel="Ajouter un abonné"
+            onAdd={handleAddSubscriber}
+          />
           <div className="mt-4">
             <SubscriberTable
               rows={subscribers}
+              draft={draftSubscriber}
+              companyOptions={subscriberCompanies}
+              onCancelDraft={() => setDraftSubscriber(null)}
+              onCreateDraft={handleCreateSubscriber}
+              onUpdateDraft={setDraftSubscriber}
               onToggleStatus={handleToggleSubscriberStatus}
               onDelete={handleDeleteSubscriber}
             />
@@ -1002,6 +1043,7 @@ type SubscriberStatus = "active" | "paused";
 type SubscriberSessionState = {
   statuses: Record<string, SubscriberStatus>;
   deletedIds: readonly string[];
+  created?: readonly CreatedSubscriberRow[];
 };
 
 type SubscriberRow = {
@@ -1012,6 +1054,21 @@ type SubscriberRow = {
   status: SubscriberStatus;
   statusRank: number;
 };
+
+type CreatedSubscriberRow = {
+  id: string;
+  company: string;
+  email: string;
+  subscribedSince: string;
+  status: SubscriberStatus;
+};
+
+type DraftSubscriber = {
+  company: string;
+  email: string;
+};
+
+type DraftSubscriberErrors = Partial<Record<keyof DraftSubscriber, string>>;
 
 const publicationColumnHelper = createColumnHelper<PublicationRow>();
 const subscriberColumnHelper = createColumnHelper<SubscriberRow>();
@@ -1517,14 +1574,25 @@ function ConfirmingDeleteButton({
 
 function SubscriberTable({
   rows,
+  draft,
+  companyOptions,
+  onCancelDraft,
+  onCreateDraft,
+  onUpdateDraft,
   onToggleStatus,
   onDelete,
 }: {
   rows: SubscriberRow[];
+  draft: DraftSubscriber | null;
+  companyOptions: readonly string[];
+  onCancelDraft: () => void;
+  onCreateDraft: (draft: DraftSubscriber) => void;
+  onUpdateDraft: (draft: DraftSubscriber) => void;
   onToggleStatus: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "company", desc: false }]);
+  const [draftErrors, setDraftErrors] = useState<DraftSubscriberErrors>({});
 
   const columns = useMemo(
     () => [
@@ -1593,7 +1661,26 @@ function SubscriberTable({
     getRowId: (row) => row.id,
   });
 
-  if (rows.length === 0) {
+  function handleConfirmDraft() {
+    if (!draft) return;
+
+    const errors = validateDraftSubscriber(draft, rows);
+    setDraftErrors(errors);
+    if (Object.keys(errors).length > 0) return;
+
+    onCreateDraft({
+      company: draft.company.trim(),
+      email: draft.email.trim(),
+    });
+    setDraftErrors({});
+  }
+
+  function handleCancelDraft() {
+    setDraftErrors({});
+    onCancelDraft();
+  }
+
+  if (rows.length === 0 && !draft) {
     return (
       <div className="rounded-sm border border-rule bg-paper px-4 py-8 text-center text-sm text-muted">
         Aucun abonné.
@@ -1625,6 +1712,19 @@ function SubscriberTable({
         ))}
       </TableHeader>
       <TableBody>
+        {draft ? (
+          <DraftSubscriberTableRow
+            draft={draft}
+            errors={draftErrors}
+            companyOptions={companyOptions}
+            onCancel={handleCancelDraft}
+            onConfirm={handleConfirmDraft}
+            onUpdate={(nextDraft) => {
+              setDraftErrors((current) => clearResolvedDraftErrors(current, nextDraft, rows));
+              onUpdateDraft(nextDraft);
+            }}
+          />
+        ) : null}
         {table.getRowModel().rows.map((row) => {
           const isPaused = row.original.status === "paused";
           return (
@@ -1671,12 +1771,298 @@ function SubscriberTable({
   );
 }
 
+function DraftSubscriberTableRow({
+  draft,
+  errors,
+  companyOptions,
+  onCancel,
+  onConfirm,
+  onUpdate,
+}: {
+  draft: DraftSubscriber;
+  errors: DraftSubscriberErrors;
+  companyOptions: readonly string[];
+  onCancel: () => void;
+  onConfirm: () => void;
+  onUpdate: (draft: DraftSubscriber) => void;
+}) {
+  return (
+    <TableRow className="bg-paper/45">
+      <TableCell className="align-top">
+        <DraftCompanyCombobox
+          value={draft.company}
+          options={companyOptions}
+          error={errors.company}
+          autoFocus
+          onChange={(company) => onUpdate({ ...draft, company })}
+          onConfirm={onConfirm}
+        />
+      </TableCell>
+      <TableCell className="align-top">
+        <DraftEmailInput
+          value={draft.email}
+          error={errors.email}
+          onChange={(email) => onUpdate({ ...draft, email })}
+          onConfirm={onConfirm}
+        />
+      </TableCell>
+      <TableCell className="whitespace-nowrap align-top font-mono text-[11px] text-faint">
+        -
+      </TableCell>
+      <TableCell className="pt-2.5 align-top text-right">
+        <div className="flex items-center justify-end gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-accent focus-visible:text-accent"
+            onClick={(event) => {
+              event.stopPropagation();
+              onConfirm();
+            }}
+            aria-label="Créer l'abonné"
+          >
+            <Check className="size-3.5" aria-hidden="true" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-destructive focus-visible:text-destructive"
+            onClick={(event) => {
+              event.stopPropagation();
+              onCancel();
+            }}
+            aria-label="Annuler la création de l'abonné"
+          >
+            <Trash2 className="size-3.5" aria-hidden="true" />
+          </Button>
+        </div>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function DraftCompanyCombobox({
+  value,
+  options,
+  error,
+  autoFocus,
+  onChange,
+  onConfirm,
+}: {
+  value: string;
+  options: readonly string[];
+  error: string | undefined;
+  autoFocus?: boolean;
+  onChange: (value: string) => void;
+  onConfirm: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listboxId = "draft-subscriber-company-options";
+  const normalizedValue = value.trim().toLocaleLowerCase("fr-FR");
+  const filteredOptions = options
+    .filter((option) => option.toLocaleLowerCase("fr-FR").includes(normalizedValue))
+    .slice(0, 5);
+  const exactMatch = options.some(
+    (option) => option.toLocaleLowerCase("fr-FR") === normalizedValue,
+  );
+  const canCreate = value.trim().length > 0 && !exactMatch;
+  const comboboxOptions = [
+    ...filteredOptions.map((option) => ({
+      id: option,
+      label: option,
+      value: option,
+      kind: "existing" as const,
+    })),
+    ...(canCreate
+      ? [
+          {
+            id: `create-${value.trim()}`,
+            label: `Créer "${value.trim()}"`,
+            value: value.trim(),
+            kind: "create" as const,
+          },
+        ]
+      : []),
+  ];
+  const activeOption = comboboxOptions[activeIndex];
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [value]);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    inputRef.current?.focus();
+  }, [autoFocus]);
+
+  function selectOption(option: (typeof comboboxOptions)[number]) {
+    onChange(option.value);
+    setOpen(false);
+    setActiveIndex(0);
+  }
+
+  return (
+    <div className="relative">
+      <div className="relative">
+        <input
+          ref={inputRef}
+          value={value}
+          onFocus={() => setOpen(true)}
+          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+          onChange={(event) => {
+            onChange(event.target.value);
+            setOpen(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setOpen(true);
+              setActiveIndex((index) =>
+                comboboxOptions.length === 0 ? 0 : (index + 1) % comboboxOptions.length,
+              );
+              return;
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setOpen(true);
+              setActiveIndex((index) =>
+                comboboxOptions.length === 0
+                  ? 0
+                  : (index - 1 + comboboxOptions.length) % comboboxOptions.length,
+              );
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setOpen(false);
+              return;
+            }
+            if (event.key === "Enter") {
+              event.preventDefault();
+              if (open && activeOption) {
+                selectOption(activeOption);
+                return;
+              }
+              onConfirm();
+            }
+          }}
+          aria-label="Société"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={open}
+          aria-controls={listboxId}
+          aria-activedescendant={open && activeOption ? `${listboxId}-${activeIndex}` : undefined}
+          aria-invalid={Boolean(error)}
+          className={cn(
+            editableFieldChromeClass,
+            "w-full px-1 py-0.5 pr-6 text-sm font-medium text-ink",
+            error && "border-destructive/60 focus:border-destructive focus:ring-destructive/20",
+          )}
+        />
+        <ChevronsUpDown
+          className="pointer-events-none absolute right-1.5 top-1/2 size-3 -translate-y-1/2 text-faint"
+          aria-hidden="true"
+        />
+      </div>
+      {error ? <p className="mt-1 text-[11px] leading-4 text-destructive">{error}</p> : null}
+      {open && comboboxOptions.length > 0 ? (
+        <div
+          id={listboxId}
+          role="listbox"
+          className="absolute left-0 right-0 top-[calc(100%+4px)] z-20 overflow-hidden rounded-sm border border-rule bg-paper shadow-sm"
+        >
+          {comboboxOptions.map((option, index) =>
+            option.kind === "existing" ? (
+              <button
+                key={option.id}
+                id={`${listboxId}-${index}`}
+                type="button"
+                role="option"
+                aria-selected={index === activeIndex}
+                className={cn(
+                  "flex w-full items-center justify-between px-2 py-1.5 text-left text-xs text-muted hover:bg-rule/45 hover:text-ink",
+                  index === activeIndex && "bg-rule/45 text-ink",
+                )}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => selectOption(option)}
+              >
+                <span className="truncate">{option.label}</span>
+                {option.value.toLocaleLowerCase("fr-FR") === normalizedValue ? (
+                  <Check className="size-3 text-accent" aria-hidden="true" />
+                ) : null}
+              </button>
+            ) : (
+              <button
+                key={option.id}
+                id={`${listboxId}-${index}`}
+                type="button"
+                role="option"
+                aria-selected={index === activeIndex}
+                className={cn(
+                  "flex w-full items-center gap-1.5 border-t border-rule px-2 py-1.5 text-left text-xs text-muted hover:bg-rule/45 hover:text-ink",
+                  index === activeIndex && "bg-rule/45 text-ink",
+                )}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => selectOption(option)}
+              >
+                <Plus className="size-3 text-accent" aria-hidden="true" />
+                <span className="min-w-0 truncate">{option.label}</span>
+              </button>
+            ),
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DraftEmailInput({
+  value,
+  error,
+  onChange,
+  onConfirm,
+}: {
+  value: string;
+  error: string | undefined;
+  onChange: (value: string) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div>
+      <input
+        value={value}
+        type="email"
+        inputMode="email"
+        autoComplete="email"
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") onConfirm();
+        }}
+        aria-label="Email"
+        aria-invalid={Boolean(error)}
+        className={cn(
+          editableFieldChromeClass,
+          "w-full px-1 py-0.5 font-mono text-[11px] text-muted",
+          error && "border-destructive/60 focus:border-destructive focus:ring-destructive/20",
+        )}
+      />
+      {error ? <p className="mt-1 text-[11px] leading-4 text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
 function buildSubscriberRows(
   source: DemoSubscriptionSource,
   state: SubscriberSessionState,
 ): SubscriberRow[] {
   const baseDate = new Date(source.subscribedSince).getTime();
-  return demoSubscriberProfiles
+  const seededRows = demoSubscriberProfiles
     .slice(0, Math.max(1, source.subscriberCount))
     .map((profile, index) => {
       const status: SubscriberStatus =
@@ -1691,6 +2077,60 @@ function buildSubscriberRows(
       };
     })
     .filter((row) => !state.deletedIds.includes(row.id));
+
+  const createdRows = (state.created ?? [])
+    .filter((row) => !state.deletedIds.includes(row.id))
+    .map((row) => {
+      const status = state.statuses[row.id] === "paused" ? "paused" : row.status;
+      return {
+        ...row,
+        status,
+        statusRank: status === "active" ? 0 : 1,
+      };
+    });
+
+  return [...seededRows, ...createdRows];
+}
+
+function validateDraftSubscriber(
+  draft: DraftSubscriber,
+  rows: readonly SubscriberRow[],
+): DraftSubscriberErrors {
+  const errors: DraftSubscriberErrors = {};
+  const company = draft.company.trim();
+  const email = draft.email.trim();
+
+  if (!company) {
+    errors.company = "La société est requise.";
+  }
+
+  if (!email) {
+    errors.email = "L'email est requis.";
+  } else if (!isValidEmail(email)) {
+    errors.email = "Entrez un email valide.";
+  } else if (
+    rows.some((row) => row.email.toLocaleLowerCase("fr-FR") === email.toLocaleLowerCase("fr-FR"))
+  ) {
+    errors.email = "Cet email est déjà abonné.";
+  }
+
+  return errors;
+}
+
+function clearResolvedDraftErrors(
+  errors: DraftSubscriberErrors,
+  draft: DraftSubscriber,
+  rows: readonly SubscriberRow[],
+): DraftSubscriberErrors {
+  if (Object.keys(errors).length === 0) return errors;
+  const nextErrors = validateDraftSubscriber(draft, rows);
+  return Object.fromEntries(
+    Object.entries(errors).filter(([field]) => nextErrors[field as keyof DraftSubscriber]),
+  );
+}
+
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 function ArchiveIssue({ issue }: { issue: DemoIssue }) {

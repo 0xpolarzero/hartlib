@@ -132,7 +132,7 @@ Production authentication still uses Clerk.
 
 The demo UI is primarily seeded, with local-only editable flows where the product story requires creation or scheduling.
 
-Local demo edits are browser-scoped and do not imply backend persistence. Publication and document edits persist to `localStorage`; uploaded demo PDF blobs persist to IndexedDB and are referenced by the document metadata in `localStorage`.
+Local demo edits are browser-scoped and do not imply backend persistence. Publication, document, and subscriber edits persist to `localStorage`; uploaded demo PDF blobs persist to IndexedDB and are referenced by the document metadata in `localStorage`.
 
 Read-only or guarded areas mean:
 
