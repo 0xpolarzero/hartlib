@@ -202,7 +202,7 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
           return (
             <TableRow
               key={source.id}
-              className="cursor-pointer"
+              className="group cursor-pointer"
               onClick={() => onSelect(source.id)}
             >
               <TableCell>
@@ -223,6 +223,7 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
                     />
                     {source.state === "active" ? "Actif" : "Pause"}
                   </span>
+                  <ChevronRight className="ml-auto size-4 shrink-0 text-faint opacity-0 transition-opacity duration-fast group-hover:opacity-100" aria-hidden="true" />
                 </div>
               </TableCell>
               <TableCell className="text-right tabular-nums text-ink">
