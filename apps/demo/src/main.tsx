@@ -86,21 +86,52 @@ const demoSubscriberProfiles = [
 ];
 // --- App ---
 
+function getDemoRolePath(role: DemoRole) {
+  return role === "client" ? "/client" : "/publisher";
+}
+
+function getDemoRoleFromPath(): DemoRole {
+  if (typeof window === "undefined") return "publisher";
+  return window.location.pathname.startsWith("/client") ? "client" : "publisher";
+}
+
 function App() {
-  const [role, setRole] = useState<DemoRole>("publisher");
+  const [role, setRole] = useState<DemoRole>(() => getDemoRoleFromPath());
   const [issues, setIssues, resetIssues] = useSessionState<DemoIssue[]>(
     "brief:demo:issues:v1",
     () => demoDataset.issues.map(cloneIssue),
   );
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
-    demoDataset.sources[0]?.id ?? null,
+    role === "publisher" ? (demoDataset.sources[0]?.id ?? null) : null,
   );
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
   const [resetVersion, setResetVersion] = useState(0);
   const issuesBySourceId = useMemo(() => buildIssuesBySourceId(issues), [issues]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const expectedPath = getDemoRolePath(role);
+    if (window.location.pathname !== expectedPath) {
+      window.history.replaceState(null, "", expectedPath);
+    }
+
+    function handlePopState() {
+      const next = getDemoRoleFromPath();
+      setRole(next);
+      setSelectedSourceId(next === "publisher" ? (demoDataset.sources[0]?.id ?? null) : null);
+      setSelectedIssueId(null);
+    }
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [role]);
+
   function handleRoleChange(next: DemoRole) {
+    if (next === role) return;
     setRole(next);
+    if (typeof window !== "undefined") {
+      window.history.pushState(null, "", getDemoRolePath(next));
+    }
     // Publisher lands directly on its first source; client lands on the sources list.
     setSelectedSourceId(next === "publisher" ? (demoDataset.sources[0]?.id ?? null) : null);
     setSelectedIssueId(null);

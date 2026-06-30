@@ -45,6 +45,8 @@ The demo has two seeded accounts:
 
 The demo lets the user switch between the publisher and client views.
 
+The demo exposes the publisher and client views as routable pages at `/publisher` and `/client`.
+
 The demo uses shared product components and shared backend logic where possible.
 
 Reusable demo and MVP UI or product logic belongs in packages, not inside `apps/web` or `apps/demo`.
