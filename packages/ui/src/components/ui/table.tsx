@@ -56,7 +56,7 @@ export function TableRow({ className, ...props }: React.HTMLAttributes<HTMLTable
     <tr
       data-slot="table-row"
       className={cn(
-        "transition-colors duration-fast hover:bg-surface/60 data-[state=selected]:bg-surface",
+        "transition-colors duration-fast data-[state=selected]:bg-surface",
         className,
       )}
       {...props}
