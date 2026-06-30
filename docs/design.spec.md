@@ -53,7 +53,7 @@ The demo uses fixture data only where real customer data would otherwise be need
 
 The demo uses local browser storage for lightweight interaction state.
 
-Demo interactions can create and edit fixture-shaped records when needed to show a workflow.
+Demo interactions can create, edit, and delete fixture-shaped records when needed to show a workflow.
 
 Demo local edits are persisted in `localStorage` only and are not sent to a backend.
 
