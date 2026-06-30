@@ -1,18 +1,13 @@
 import { createRoot } from "react-dom/client";
 import {
-  BookOpen,
   Bot,
   CalendarClock,
   Check,
-  ChevronRight,
   ChevronsUpDown,
   Info,
-  Lock,
-  MessageSquare,
   Pause,
   Play,
   Plus,
-  Search,
   Send,
   Trash2,
   Upload,
@@ -29,7 +24,6 @@ import {
   type DemoSubscriptionSource,
 } from "@brief/demo-data";
 import {
-  ArtifactFrame,
   Button,
   DataTable,
   Table,
@@ -64,7 +58,6 @@ import "./styles.css";
 
 const sourceById = new Map(demoDataset.sources.map((s) => [s.id, s]));
 const primaryChat = demoDataset.chats[0];
-const primaryArtifact = demoDataset.artifacts[0];
 const editableFieldChromeClass =
   "rounded-sm border border-rule/70 bg-paper/35 outline-none transition-colors duration-fast hover:border-rule hover:bg-paper/70 focus:border-ring focus:bg-paper focus:ring-2 focus:ring-ring/20";
 const demoSubscriberProfiles = [
@@ -225,20 +218,33 @@ function App() {
             <div className="mb-6">
               <Crumbs
                 items={
-                  selectedSource
-                    ? [
-                        { label: "Fils", onClick: () => handleSelectSource(null) },
-                        ...(selectedIssue
-                          ? [
-                              {
-                                label: selectedSource.name,
-                                onClick: () => setSelectedIssueId(null),
-                              },
-                              { label: selectedIssue.title },
-                            ]
-                          : [{ label: selectedSource.name }]),
-                      ]
-                    : [{ label: "Fils" }]
+                  role === "client"
+                    ? selectedIssue
+                      ? [
+                          {
+                            label: "Chat",
+                            onClick: () => {
+                              setSelectedSourceId(null);
+                              setSelectedIssueId(null);
+                            },
+                          },
+                          { label: selectedIssue.title },
+                        ]
+                      : [{ label: "Chat" }]
+                    : selectedSource
+                      ? [
+                          { label: "Fils", onClick: () => handleSelectSource(null) },
+                          ...(selectedIssue
+                            ? [
+                                {
+                                  label: selectedSource.name,
+                                  onClick: () => setSelectedIssueId(null),
+                                },
+                                { label: selectedIssue.title },
+                              ]
+                            : [{ label: selectedSource.name }]),
+                        ]
+                      : [{ label: "Fils" }]
                 }
               />
             </div>
@@ -266,15 +272,16 @@ function App() {
               )}
             </TabsContent>
             <TabsContent value="client" className="mt-0">
-              {selectedSource && selectedIssue ? (
+              {selectedIssue ? (
                 <ClientPublicationDetail issue={selectedIssue} />
-              ) : selectedSource ? (
-                <ClientSourceDetail
-                  source={selectedSource}
-                  issues={issuesBySourceId.get(selectedSource.id) ?? []}
-                />
               ) : (
-                <ClientSourcesList issues={issues} onSelect={handleSelectSource} />
+                <ClientSourcesList
+                  issues={issues}
+                  onSelectIssue={(issue) => {
+                    setSelectedSourceId(issue.sourceId);
+                    setSelectedIssueId(issue.id);
+                  }}
+                />
               )}
             </TabsContent>
           </div>
@@ -681,181 +688,53 @@ function PublisherPublicationDetail({
 
 function ClientSourcesList({
   issues,
-  onSelect,
+  onSelectIssue,
 }: {
   issues: readonly DemoIssue[];
-  onSelect: (id: string) => void;
+  onSelectIssue: (issue: DemoIssue) => void;
 }) {
-  const activeSources = demoDataset.sources;
   const publishedIssues = issues.filter((issue) => issue.status === "published");
-  const availableCredits =
-    demoDataset.aiPlan.monthlyCredits +
-    demoDataset.aiPlan.extraCredits -
-    demoDataset.aiPlan.monthlyCreditsUsed -
-    demoDataset.aiPlan.extraCreditsUsed;
-  const usedCredits = demoDataset.aiPlan.monthlyCreditsUsed + demoDataset.aiPlan.extraCreditsUsed;
+  const [excludedIssueIds, setExcludedIssueIds] = useSessionState<readonly string[]>(
+    "brief:demo:client-context-exclusions:v1",
+    [],
+  );
+  const excludedIssueIdSet = useMemo(() => new Set(excludedIssueIds), [excludedIssueIds]);
 
-  const readSources = useMemo(() => {
-    if (!primaryChat?.messages) return [];
-    const labels = new Set<string>();
-    primaryChat.messages.forEach((msg) => {
-      msg.citations?.forEach((c) => labels.add(c.label));
-    });
-    return Array.from(labels);
-  }, []);
+  function handleToggleContext(issueId: string) {
+    setExcludedIssueIds((current) =>
+      current.includes(issueId) ? current.filter((id) => id !== issueId) : [...current, issueId],
+    );
+  }
 
   return (
-    <div className="space-y-8">
-      <div className="animate-in stagger-1">
-        <StatsGrid>
-          <StatBlock
-            label="Fils actifs"
-            value={String(activeSources.length)}
-            detail="Abonnements livres"
-          />
-          <StatBlock
-            label="Publications archivées"
-            value={String(publishedIssues.length)}
-            detail="Consultables"
-          />
-          <StatBlock
-            label="Credits IA"
-            value={availableCredits.toLocaleString("fr-FR")}
-            detail={`${usedCredits.toLocaleString("fr-FR")} consommés`}
-          />
-          <StatBlock
-            label="Renouvellement"
-            value={formatShortDate(demoDataset.aiPlan.renewsAt)}
-            detail={`Plan ${demoDataset.aiPlan.tier}`}
-          />
-        </StatsGrid>
-      </div>
-
-      <div className="animate-in stagger-2 grid gap-8 xl:grid-cols-[0.85fr_1.15fr]">
-        <div className="space-y-8">
-          <section>
-            <div className="mt-4 divide-y divide-rule">
-              {demoDataset.sources.map((source) => (
-                <SourceRow
-                  key={source.id}
-                  source={source}
-                  perspective="client"
-                  latestIssue={publishedIssues.find((issue) => issue.sourceId === source.id)}
-                  onSelect={() => onSelect(source.id)}
-                />
-              ))}
-            </div>
-          </section>
-
-          <section>
-            <SectionTitle title="Recherche archivée" />
-            <div className="mt-4">
-              <div className="flex items-center gap-2 rounded-sm border border-rule bg-surface px-3 py-2 text-muted">
-                <Search className="size-4 shrink-0" aria-hidden="true" />
-                <span className="truncate text-sm">
-                  Rechercher dans les publications livrées...
-                </span>
-                <Lock className="ml-auto size-4 shrink-0" aria-hidden="true" />
-              </div>
-              <div className="mt-3 flex flex-wrap gap-3">
-                {["credit", "raccordement", "EUR/USD", "industrie"].map((tag) => (
-                  <span key={tag} className="font-mono text-[11px] text-faint">
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </section>
+    <div className="space-y-7">
+      <section className="animate-in stagger-1 max-w-4xl">
+        <div className="space-y-3">
+          {primaryChat?.messages.map((message) => (
+            <ChatBubble key={message.id} message={message} />
+          )) ?? null}
         </div>
 
-        <section>
-          <SectionTitle title="Chat représenté" />
-          <div className="mt-4 space-y-3">
-            {primaryChat?.messages.map((message) => (
-              <ChatBubble key={message.id} message={message} />
-            )) ?? null}
-          </div>
+        <div className="mt-4 flex items-center gap-2 rounded-sm border border-dashed border-rule bg-surface px-3 py-2 text-muted">
+          <span className="min-w-0 flex-1 truncate text-sm">
+            Le chat demo ne peut pas envoyer de nouveau message.
+          </span>
+          <Button disabled>
+            <Send className="size-4" aria-hidden="true" />
+            Envoyer
+          </Button>
+        </div>
+      </section>
 
-          {readSources.length > 0 && (
-            <div className="mt-4 space-y-1">
-              <div className="font-mono text-[10px] uppercase tracking-wider text-faint">
-                Fils consultés
-              </div>
-              {readSources.map((source) => (
-                <div
-                  key={source}
-                  className="flex items-center gap-1.5 font-mono text-[11px] text-muted"
-                >
-                  <span className="size-1.5 rounded-full bg-accent" aria-hidden="true" />
-                  {source}
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="mt-4 flex items-center gap-2 rounded-sm border border-dashed border-rule bg-surface px-3 py-2 text-muted">
-            <span className="min-w-0 flex-1 truncate text-sm">
-              Le chat demo ne peut pas envoyer de nouveau message.
-            </span>
-            <Button disabled>
-              <Send className="size-4" aria-hidden="true" />
-              Envoyer
-            </Button>
-          </div>
-        </section>
-      </div>
-
-      <div className="animate-in stagger-3 grid gap-8 xl:grid-cols-[1.1fr_0.9fr]">
-        <section>
-          <SectionTitle title="Citations et fils lus" />
-          <div className="mt-4 divide-y divide-rule">
-            {primaryChat?.messages
-              .flatMap((message) => message.citations ?? [])
-              .map((citation) => (
-                <div key={citation.id} className="py-3 first:pt-0 last:pb-0">
-                  <div className="font-medium text-ink">
-                    {citation.label}, p. {citation.page}
-                  </div>
-                  <div className="mt-0.5 font-serif text-sm leading-6 text-muted">
-                    {citation.quote}
-                  </div>
-                </div>
-              )) ?? null}
-          </div>
-        </section>
-
-        <section>
-          <SectionTitle title={primaryArtifact?.title ?? "Artifact"} />
-          <ArtifactFrame
-            title={primaryArtifact?.title ?? "Artifact"}
-            html={buildMarkdownArtifactHtml(primaryArtifact?.files[0]?.content ?? "")}
-            className="mt-4"
+      <section className="animate-in stagger-2">
+        <SectionHeader title="Publications" count={publishedIssues.length} />
+        <div className="mt-3">
+          <ClientPublicationsTable
+            issues={publishedIssues}
+            excludedIssueIds={excludedIssueIdSet}
+            onSelectIssue={onSelectIssue}
+            onToggleContext={handleToggleContext}
           />
-        </section>
-      </div>
-    </div>
-  );
-}
-
-function ClientSourceDetail({
-  source,
-  issues,
-}: {
-  source: DemoSubscriptionSource;
-  issues: readonly DemoIssue[];
-}) {
-  const publishedIssues = issues.filter((issue) => issue.status === "published");
-
-  return (
-    <div className="space-y-8">
-      <p className="font-serif text-sm leading-6 text-muted">{source.description}</p>
-
-      <section className="animate-in stagger-1">
-        <SectionTitle title="Issue archive" />
-        <div className="mt-4 divide-y divide-rule">
-          {publishedIssues.map((issue) => (
-            <ArchiveIssue key={issue.id} issue={issue} />
-          ))}
         </div>
       </section>
     </div>
@@ -864,6 +743,119 @@ function ClientSourceDetail({
 
 function ClientPublicationDetail({ issue }: { issue: DemoIssue }) {
   return <PublisherPublicationDetail issue={issue} />;
+}
+
+function ClientPublicationsTable({
+  issues,
+  excludedIssueIds,
+  onSelectIssue,
+  onToggleContext,
+}: {
+  issues: readonly DemoIssue[];
+  excludedIssueIds: ReadonlySet<string>;
+  onSelectIssue: (issue: DemoIssue) => void;
+  onToggleContext: (issueId: string) => void;
+}) {
+  const [sorting, setSorting] = useState<SortingState>([{ id: "publicationDate", desc: true }]);
+  const rows = useMemo<ClientPublicationRow[]>(
+    () =>
+      issues.map((issue) => ({
+        id: issue.id,
+        issue,
+        sourceName: sourceById.get(issue.sourceId)?.name ?? "",
+        title: issue.title,
+        publicationDate: issue.publicationDate,
+        includedInContext: !excludedIssueIds.has(issue.id),
+      })),
+    [excludedIssueIds, issues],
+  );
+
+  const columns = useMemo(
+    () => [
+      clientPublicationColumnHelper.accessor("sourceName", { header: "Fil" }),
+      clientPublicationColumnHelper.accessor("title", { header: "Publication" }),
+      clientPublicationColumnHelper.accessor("publicationDate", { header: "Date" }),
+      clientPublicationColumnHelper.accessor("includedInContext", {
+        header: () => (
+          <span className="inline-flex items-center gap-1">
+            Contexte
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Info className="size-3 text-faint" aria-hidden="true" />
+              </TooltipTrigger>
+              <TooltipContent side="top" align="center">
+                Décochez une publication pour l'exclure du contexte de ce chat.
+              </TooltipContent>
+            </Tooltip>
+          </span>
+        ),
+        enableSorting: false,
+      }),
+    ],
+    [],
+  );
+
+  const table = useReactTable({
+    data: rows,
+    columns,
+    state: { sorting },
+    onSortingChange: setSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+  });
+
+  return (
+    <DataTable<ClientPublicationRow>
+      table={table}
+      renderContent={renderTableContent}
+      getHeaderAlign={(header) => (header.column.id === "includedInContext" ? "right" : "left")}
+      onRowClick={(row) => onSelectIssue(row.original.issue)}
+      renderCell={(cell, row) => {
+        if (cell.column.id === "sourceName") {
+          return (
+            <TableCell key={cell.id} className="max-w-[12rem] text-muted">
+              <div className="truncate">{row.original.sourceName}</div>
+            </TableCell>
+          );
+        }
+        if (cell.column.id === "title") {
+          return (
+            <TableCell key={cell.id}>
+              <div className="max-w-[28rem] truncate font-medium text-ink">
+                {row.original.title}
+              </div>
+            </TableCell>
+          );
+        }
+        if (cell.column.id === "publicationDate") {
+          return (
+            <TableCell key={cell.id} className="whitespace-nowrap font-mono text-[11px] text-faint">
+              {formatDate(row.original.publicationDate)}
+            </TableCell>
+          );
+        }
+        if (cell.column.id === "includedInContext") {
+          return (
+            <TableCell key={cell.id} className="text-right">
+              <input
+                type="checkbox"
+                checked={row.original.includedInContext}
+                onClick={(event) => event.stopPropagation()}
+                onChange={() => onToggleContext(row.original.id)}
+                aria-label={`Inclure ${row.original.title} dans le contexte`}
+                className="size-3.5 rounded-sm accent-accent"
+              />
+            </TableCell>
+          );
+        }
+        return (
+          <TableCell key={cell.id}>
+            {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
+          </TableCell>
+        );
+      }}
+    />
+  );
 }
 
 // --- Sub-components ---
@@ -908,75 +900,6 @@ function SectionHeader({
   );
 }
 
-function StatsGrid({ children }: { children: React.ReactNode }) {
-  return <div className="grid gap-0 md:grid-cols-4">{children}</div>;
-}
-
-function StatBlock({
-  label,
-  value,
-  detail,
-  accent,
-}: {
-  label: string;
-  value: string;
-  detail?: string;
-  accent?: boolean;
-}) {
-  return (
-    <div className="border-b border-rule pb-4 md:border-b-0 md:border-r md:border-rule md:px-4 last:md:border-r-0 first:md:pl-0 last:md:pr-0">
-      <div className="font-mono text-[11px] uppercase tracking-wider text-muted">{label}</div>
-      <div
-        className={cn(
-          "mt-1 font-display text-3xl font-medium",
-          accent ? "text-accent" : "text-ink",
-        )}
-      >
-        {value}
-      </div>
-      {detail && <div className="mt-0.5 text-xs text-faint">{detail}</div>}
-    </div>
-  );
-}
-
-function SourceRow({
-  source,
-  perspective,
-  latestIssue,
-  onSelect,
-}: {
-  source: DemoSubscriptionSource;
-  perspective: DemoRole;
-  latestIssue?: DemoIssue | undefined;
-  onSelect?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      disabled={!onSelect}
-      className="block w-full py-3 text-left transition-colors duration-fast disabled:cursor-default enabled:hover:bg-surface/60 first:pt-0 last:pb-0"
-    >
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-ink">{source.name}</span>
-          </div>
-          <div className="mt-0.5 text-xs text-muted">
-            {perspective === "client" ? source.branding.publisherName : source.description}
-          </div>
-          <div className="mt-1 text-sm text-ink">
-            {latestIssue?.title ?? "Aucune publication livrée"}
-          </div>
-        </div>
-        {onSelect ? (
-          <ChevronRight className="mt-1 size-4 shrink-0 text-faint" aria-hidden="true" />
-        ) : null}
-      </div>
-    </button>
-  );
-}
-
 type PublicationRow = {
   id: string;
   issue: DemoIssue;
@@ -987,6 +910,15 @@ type PublicationRow = {
   downloads: number;
   contextPulls: number;
   status: DemoIssue["status"];
+};
+
+type ClientPublicationRow = {
+  id: string;
+  issue: DemoIssue;
+  sourceName: string;
+  title: string;
+  publicationDate: string;
+  includedInContext: boolean;
 };
 
 type DocumentRow = DemoIssue["documents"][number];
@@ -1024,6 +956,7 @@ type DraftSubscriber = {
 type DraftSubscriberErrors = Partial<Record<keyof DraftSubscriber, string>>;
 
 const publicationColumnHelper = createColumnHelper<PublicationRow>();
+const clientPublicationColumnHelper = createColumnHelper<ClientPublicationRow>();
 const subscriberColumnHelper = createColumnHelper<SubscriberRow>();
 
 function renderTableContent(renderer: unknown, context: unknown) {
@@ -2036,43 +1969,6 @@ function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function ArchiveIssue({ issue }: { issue: DemoIssue }) {
-  const source = sourceById.get(issue.sourceId);
-
-  return (
-    <div className="py-4 first:pt-0 last:pb-0">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div className="min-w-0">
-          <div className="font-semibold text-ink">{issue.title}</div>
-          <div className="mt-0.5 font-mono text-[11px] uppercase tracking-wider text-faint">
-            {source?.name} &middot; {formatDate(issue.publicationDate)}
-          </div>
-          <p className="mt-2 font-serif text-sm leading-6 text-muted">{issue.summary}</p>
-          {issue.documents.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5">
-              {issue.documents.map((doc) => (
-                <span key={doc.id} className="font-mono text-[11px] text-faint">
-                  {doc.title}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="flex shrink-0 gap-2">
-          <Button variant="secondary" disabled>
-            <BookOpen className="size-4" aria-hidden="true" />
-            Lire
-          </Button>
-          <Button variant="ghost" disabled>
-            <MessageSquare className="size-4" aria-hidden="true" />
-            Citer
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function ChatBubble({ message }: { message: DemoChatMessage }) {
   const isAssistant = message.author === "assistant";
 
@@ -2114,13 +2010,6 @@ function formatDate(value: string) {
     day: "numeric",
     month: "long",
     year: "numeric",
-  }).format(new Date(value));
-}
-
-function formatShortDate(value: string) {
-  return new Intl.DateTimeFormat("fr-FR", {
-    day: "numeric",
-    month: "short",
   }).format(new Date(value));
 }
 
@@ -2324,64 +2213,6 @@ function useSessionState<T>(
 
   return [value, update, reset];
 }
-function buildMarkdownArtifactHtml(markdown: string) {
-  const lines = markdown
-    .trim()
-    .split("\n")
-    .filter((line) => line.trim().startsWith("|"));
-  const [headerLine, , ...rowLines] = lines;
-
-  if (!headerLine) {
-    return `<pre>${escapeHtml(markdown)}</pre>`;
-  }
-
-  const headers = splitMarkdownRow(headerLine);
-  const rows = rowLines.map(splitMarkdownRow);
-
-  return `<table style="width:100%;border-collapse:collapse;font:14px ui-sans-serif,system-ui,sans-serif;">
-    <thead>
-      <tr>${headers
-        .map(
-          (header) =>
-            `<th style="text-align:left;border-bottom:1px solid #d6d3ce;padding:10px;color:#334155;">${escapeHtml(
-              header,
-            )}</th>`,
-        )
-        .join("")}</tr>
-    </thead>
-    <tbody>
-      ${rows
-        .map(
-          (row) =>
-            `<tr>${row
-              .map(
-                (cell) =>
-                  `<td style="border-bottom:1px solid #e7e5e0;padding:10px;color:#0f172a;vertical-align:top;">${escapeHtml(
-                    cell,
-                  )}</td>`,
-              )
-              .join("")}</tr>`,
-        )
-        .join("")}
-    </tbody>
-  </table>`;
-}
-
-function splitMarkdownRow(row: string) {
-  return row
-    .split("|")
-    .slice(1, -1)
-    .map((cell) => cell.trim());
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
 // --- Mount ---
 
 createRoot(document.getElementById("root")!).render(<App />);

@@ -69,6 +69,8 @@ The demo chat is pre-populated with representative messages.
 
 The demo does not send new chat messages.
 
+The client demo root centers on one chat and a compact table of delivered publications that can be included in or removed from the chat context.
+
 The demo client already has an active AI plan.
 
 ## Product Promise
