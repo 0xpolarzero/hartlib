@@ -1,8 +1,11 @@
 import { createRoot } from "react-dom/client";
 import {
+  ArrowDown,
+  ArrowUp,
   BookOpen,
   Bot,
   ChevronRight,
+  ChevronsUpDown,
   Info,
   Lock,
   MessageSquare,
@@ -38,6 +41,16 @@ import {
   TooltipTrigger,
   cn,
 } from "@brief/ui";
+
+import {
+  createColumnHelper,
+  flexRender,
+  getCoreRowModel,
+  getSortedRowModel,
+  useReactTable,
+  type Column,
+  type SortingState,
+} from "@tanstack/react-table";
 
 import "./styles.css";
 
@@ -178,42 +191,153 @@ function PublisherSourcesList({ onSelect }: { onSelect: (id: string) => void }) 
   );
 }
 
+type FilRow = {
+  id: string;
+  name: string;
+  issueCount: number;
+  lastPublishedAt: string | null;
+  subscriberCount: number;
+};
+
+const filColumnHelper = createColumnHelper<FilRow>();
+
+function SortableHead({
+  column,
+  align = "left",
+  children,
+}: {
+  column: Column<FilRow, unknown>;
+  align?: "left" | "right";
+  children: React.ReactNode;
+}) {
+  const sorted = column.getIsSorted();
+  return (
+    <TableHead className={cn("group", align === "right" && "text-right")}>
+      <button
+        type="button"
+        onClick={column.getToggleSortingHandler()}
+        className={cn(
+          "inline-flex h-5 items-center gap-1 align-middle transition-colors duration-fast",
+          align === "right" && "justify-end",
+          sorted ? "text-ink" : "text-faint hover:text-muted",
+        )}
+      >
+        <span>{children}</span>
+        <span className="flex size-3 shrink-0 items-center justify-center">
+          {sorted === "desc" ? (
+            <ArrowDown className="size-3" aria-hidden="true" />
+          ) : sorted === "asc" ? (
+            <ArrowUp className="size-3" aria-hidden="true" />
+          ) : (
+            <ChevronsUpDown
+              className="size-3 opacity-0 transition-opacity duration-fast group-hover:opacity-100"
+              aria-hidden="true"
+            />
+          )}
+        </span>
+      </button>
+    </TableHead>
+  );
+}
+
 function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
+  const [sorting, setSorting] = useState<SortingState>([
+    { id: "lastPublishedAt", desc: true },
+  ]);
+
+  const rows = useMemo<FilRow[]>(
+    () =>
+      demoDataset.sources.map((source) => {
+        const issues = issuesBySourceId.get(source.id) ?? [];
+        return {
+          id: source.id,
+          name: source.name,
+          issueCount: issues.length,
+          lastPublishedAt: issues[0]?.publicationDate ?? null,
+          subscriberCount: source.subscriberCount,
+        };
+      }),
+    [],
+  );
+
+  const columns = useMemo(
+    () => [
+      filColumnHelper.accessor("name", { header: "Fil" }),
+      filColumnHelper.accessor("issueCount", { header: "Publications" }),
+      filColumnHelper.accessor((row) => row.lastPublishedAt ?? "", {
+        id: "lastPublishedAt",
+        header: "Dernière publication",
+        sortingFn: (a, b) => {
+          const av = a.original.lastPublishedAt;
+          const bv = b.original.lastPublishedAt;
+          if (!av && !bv) return 0;
+          if (!av) return 1; // fils without publication sort last either way
+          if (!bv) return -1;
+          return av < bv ? -1 : av > bv ? 1 : 0;
+        },
+      }),
+      filColumnHelper.accessor("subscriberCount", { header: "Abonnés" }),
+    ],
+    [],
+  );
+
+  const table = useReactTable({
+    data: rows,
+    columns,
+    state: { sorting },
+    onSortingChange: setSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+  });
+
   return (
     <Table>
       <TableHeader>
-        <TableRow>
-          <TableHead>Fil</TableHead>
-          <TableHead className="text-right">Publications</TableHead>
-          <TableHead className="text-right">Derniere publication</TableHead>
-          <TableHead className="text-right">Abonnes</TableHead>
-        </TableRow>
+        {table.getHeaderGroups().map((headerGroup) => (
+          <TableRow key={headerGroup.id}>
+            {headerGroup.headers.map((header) => {
+              const align = header.id === "name" ? "left" : "right";
+              return (
+                <SortableHead key={header.id} column={header.column} align={align}>
+                  {flexRender(header.column.columnDef.header, header.getContext())}
+                </SortableHead>
+              );
+            })}
+          </TableRow>
+        ))}
       </TableHeader>
       <TableBody>
-        {demoDataset.sources.map((source) => {
-          const issues = issuesBySourceId.get(source.id) ?? [];
-          const latestIssue = issues[0];
-          return (
-            <TableRow
-              key={source.id}
-              className="cursor-pointer"
-              onClick={() => onSelect(source.id)}
-            >
-              <TableCell>
-                <span className="font-medium text-ink">{source.name}</span>
-              </TableCell>
-              <TableCell className="text-right tabular-nums text-ink">
-                {issues.length}
-              </TableCell>
-              <TableCell className="text-right tabular-nums text-ink">
-                {latestIssue ? formatDate(latestIssue.publicationDate) : "—"}
-              </TableCell>
-              <TableCell className="text-right tabular-nums text-ink">
-                {source.subscriberCount}
-              </TableCell>
-            </TableRow>
-          );
-        })}
+        {table.getRowModel().rows.map((row) => (
+          <TableRow
+            key={row.id}
+            className="cursor-pointer"
+            onClick={() => onSelect(row.original.id)}
+          >
+            {row.getVisibleCells().map((cell) => {
+              const align = cell.column.id === "name" ? "left" : "right";
+              return (
+                <TableCell
+                  key={cell.id}
+                  className={cn(align === "right" && "text-right tabular-nums text-ink")}
+                >
+                  {cell.column.id === "lastPublishedAt" ? (
+                    row.original.lastPublishedAt ? (
+                      formatDate(row.original.lastPublishedAt)
+                    ) : (
+                      "—"
+                    )
+                  ) : cell.column.id === "name" ? (
+                    <span className="font-medium text-ink">
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </span>
+                  ) : (
+                    flexRender(cell.column.columnDef.cell, cell.getContext())
+                  )}
+                </TableCell>
+              );
+            })}
+          </TableRow>
+        ))}
       </TableBody>
     </Table>
   );
@@ -228,14 +352,14 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
 
       <div className="animate-in stagger-1 grid gap-8 xl:grid-cols-[1.3fr_0.7fr]">
         <section>
-          <SectionTitle title="Publications livrees" />
+          <SectionTitle title="Publications livrées" />
           <div className="mt-4">
             <IssueTable issues={issues} compact />
           </div>
         </section>
 
         <section>
-          <SectionTitle title="Clients actuellement abonnes" />
+          <SectionTitle title="Clients actuellement abonnés" />
           <div className="mt-4 space-y-3">
             {demoClients.map((client) => (
               <div key={client.id} className="rounded-sm border border-rule bg-paper p-3">
@@ -253,9 +377,9 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
       <section className="animate-in stagger-3">
         <SectionTitle title="Garde-fous demo" />
         <div className="mt-4 divide-y divide-rule">
-          <Guardrail text="Aucune creation, invitation, publication ou suppression disponible." />
-          <Guardrail text="Les donnees d'usage sont agregees; aucun plan IA client n'est visible cote editeur." />
-          <Guardrail text="Les publications livrees restent visibles et non modifiables." />
+          <Guardrail text="Aucune création, invitation, publication ou suppression disponible." />
+          <Guardrail text="Les données d'usage sont agrégées; aucun plan IA client n'est visible côté éditeur." />
+          <Guardrail text="Les publications livrées restent visibles et non modifiables." />
         </div>
       </section>
     </div>
@@ -292,14 +416,14 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
             detail="Abonnements livres"
           />
           <StatBlock
-            label="Publications archivees"
+            label="Publications archivées"
             value={String(demoDataset.issues.length)}
             detail="Consultables"
           />
           <StatBlock
             label="Credits IA"
             value={availableCredits.toLocaleString("fr-FR")}
-            detail={`${usedCredits.toLocaleString("fr-FR")} consommes`}
+            detail={`${usedCredits.toLocaleString("fr-FR")} consommés`}
           />
           <StatBlock
             label="Renouvellement"
@@ -325,11 +449,11 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
           </section>
 
           <section>
-            <SectionTitle title="Recherche archive" />
+            <SectionTitle title="Recherche archivée" />
             <div className="mt-4">
               <div className="flex items-center gap-2 rounded-sm border border-rule bg-surface px-3 py-2 text-muted">
                 <Search className="size-4 shrink-0" aria-hidden="true" />
-                <span className="truncate text-sm">Rechercher dans les publications livrees...</span>
+                <span className="truncate text-sm">Rechercher dans les publications livrées...</span>
                 <Lock className="ml-auto size-4 shrink-0" aria-hidden="true" />
               </div>
               <div className="mt-3 flex flex-wrap gap-3">
@@ -344,7 +468,7 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
         </div>
 
         <section>
-          <SectionTitle title="Chat represente" />
+          <SectionTitle title="Chat représenté" />
           <div className="mt-4 space-y-3">
             {primaryChat?.messages.map((message) => (
               <ChatBubble key={message.id} message={message} />
@@ -354,7 +478,7 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
           {readSources.length > 0 && (
             <div className="mt-4 space-y-1">
               <div className="font-mono text-[10px] uppercase tracking-wider text-faint">
-                Fils consultes
+                Fils consultés
               </div>
               {readSources.map((source) => (
                 <div
@@ -499,7 +623,7 @@ function SourceRow({
           <div className="mt-0.5 text-xs text-muted">
             {perspective === "client" ? source.branding.publisherName : source.description}
           </div>
-          <div className="mt-1 text-sm text-ink">{latestIssue?.title ?? "Aucune publication livree"}</div>
+          <div className="mt-1 text-sm text-ink">{latestIssue?.title ?? "Aucune publication livrée"}</div>
         </div>
         {onSelect ? (
           <ChevronRight className="mt-1 size-4 shrink-0 text-faint" aria-hidden="true" />
@@ -519,20 +643,20 @@ function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact
             <TableHead className="hidden md:table-cell">Fil</TableHead>
           ) : null}
           <TableHead className="text-right">Ouvertures</TableHead>
-          <TableHead className="text-right">Telechargements</TableHead>
-          <TableHead className="text-right">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="inline-flex cursor-pointer items-center gap-1">
-                  Contexte
+          <TableHead className="text-right">Téléchargements</TableHead>
+         <TableHead className="text-right">
+            <span className="inline-flex items-center gap-1">
+              Contexte
+              <Tooltip>
+                <TooltipTrigger asChild>
                   <Info className="size-3 text-faint" aria-hidden="true" />
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top" align="center">
-                Nombre de fois ou l'archive a ete lue par l'IA pour repondre.
-              </TooltipContent>
-            </Tooltip>
-          </TableHead>
+                </TooltipTrigger>
+                <TooltipContent side="top" align="center">
+                  Nombre de fois où l'archive a été lue par l'IA pour répondre.
+                </TooltipContent>
+              </Tooltip>
+            </span>
+         </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
