@@ -17,10 +17,11 @@ import {
   Search,
   Send,
   Trash2,
+  Upload,
   Users,
   RotateCcw,
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   demoDataset,
@@ -567,6 +568,7 @@ function PublisherPublicationDetail({
   }
 
   function deleteDocument(documentId: string) {
+    void deleteDemoPdf(documentId).catch(() => {});
     onUpdateIssue?.({
       ...issue,
       documents: issue.documents.filter((doc) => doc.id !== documentId),
@@ -577,6 +579,14 @@ function PublisherPublicationDetail({
     onUpdateIssue?.({
       ...issue,
       documents: [...issue.documents, createDraftDocument(issue.id, issue.documents.length + 1)],
+    });
+  }
+
+  function handleUploadDocumentPdf(documentId: string, file: File) {
+    void storeDemoPdf(documentId, file).catch(() => {});
+    updateDocument(documentId, {
+      fileName: file.name,
+      storagePath: `indexeddb://${demoPdfDatabaseName}/${demoPdfStoreName}/${documentId}`,
     });
   }
 
@@ -665,6 +675,7 @@ function PublisherPublicationDetail({
             editable={editable}
             onDeleteDocument={deleteDocument}
             onUpdateDocument={updateDocument}
+            onUploadDocumentPdf={handleUploadDocumentPdf}
           />
         </div>
       </section>
@@ -1196,11 +1207,13 @@ function DocumentsTable({
   editable,
   onDeleteDocument,
   onUpdateDocument,
+  onUploadDocumentPdf,
 }: {
   documents: readonly DocumentRow[];
   editable: boolean;
   onDeleteDocument: (documentId: string) => void;
   onUpdateDocument: (documentId: string, patch: Partial<DocumentRow>) => void;
+  onUploadDocumentPdf: (documentId: string, file: File) => void;
 }) {
   if (documents.length === 0) {
     return (
@@ -1250,19 +1263,19 @@ function DocumentsTable({
                 </span>
               )}
             </TableCell>
-            <TableCell className="align-top font-mono text-[11px] text-faint">
+            <TableCell className="max-w-44 align-top font-mono text-[11px] text-faint">
               {editable ? (
-                <InlineInput
+                <PdfUploadControl
+                  documentId={doc.id}
                   value={doc.fileName}
-                  ariaLabel="Nom du PDF"
-                  onChange={(fileName) => onUpdateDocument(doc.id, { fileName })}
+                  onUpload={(file) => onUploadDocumentPdf(doc.id, file)}
                 />
               ) : (
-                `${doc.fileName} / ${doc.pageCount} pages`
+                <span>{doc.fileName ? `${doc.fileName} / ${doc.pageCount} pages` : "-"}</span>
               )}
             </TableCell>
             {editable ? (
-              <TableCell className="align-top text-right">
+              <TableCell className="pt-2.5 align-top text-right">
                 <ConfirmingDeleteButton
                   confirmLabel="Confirmer"
                   idleLabel="Supprimer le document"
@@ -1274,6 +1287,64 @@ function DocumentsTable({
         ))}
       </TableBody>
     </Table>
+  );
+}
+
+function PdfUploadControl({
+  documentId,
+  value,
+  onUpload,
+}: {
+  documentId: string;
+  value: string;
+  onUpload: (file: File) => void;
+}) {
+  const inputId = `pdf-upload-${documentId}`;
+
+  function handleChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) return;
+    onUpload(file);
+  }
+
+  if (value) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span tabIndex={0} className="block max-w-44 truncate text-faint outline-none">
+            {value}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" align="start">
+          {value}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <div className="leading-none">
+      <input
+        id={inputId}
+        type="file"
+        accept="application/pdf,.pdf"
+        className="sr-only"
+        onChange={handleChange}
+      />
+      <label
+        htmlFor={inputId}
+        className={cn(
+          "inline-flex h-7 cursor-pointer items-center justify-center gap-1.5 rounded-sm px-2 text-[11px] font-medium transition-colors duration-fast",
+          "border border-rule/70 bg-paper/35 text-muted hover:border-rule hover:bg-rule/45 hover:text-ink",
+          "focus-within:ring-2 focus-within:ring-ring/20",
+        )}
+      >
+        <Upload className="size-3.5" aria-hidden="true" />
+        Importer
+      </label>
+    </div>
   );
 }
 
@@ -1789,11 +1860,11 @@ function createDraftDocument(issueId: string, index: number): DemoIssue["documen
     id,
     issueId,
     title: `Document ${index}`,
-    fileName: `document-demo-${index}.pdf`,
+    fileName: "",
     pageCount: 1,
     language: "fr",
     indexingStatus: "indexed",
-    storagePath: `demo/local/${issueId}/${id}.pdf`,
+    storagePath: "",
     extractedTextPreview: "Description éditable du document.",
     metrics: {
       opens: 0,
@@ -1805,12 +1876,68 @@ function createDraftDocument(issueId: string, index: number): DemoIssue["documen
 
 function resetDemoStorage() {
   if (typeof window === "undefined") return;
+  void clearDemoPdfStorage().catch(() => {});
   const keys = Array.from({ length: window.localStorage.length }, (_, index) =>
     window.localStorage.key(index),
   ).filter((key): key is string => Boolean(key?.startsWith("brief:demo:")));
   for (const key of keys) {
     window.localStorage.removeItem(key);
   }
+}
+
+const demoPdfDatabaseName = "brief-demo-pdfs";
+const demoPdfStoreName = "pdfs";
+
+function openDemoPdfDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === "undefined" || !window.indexedDB) {
+      reject(new Error("IndexedDB is not available."));
+      return;
+    }
+
+    const request = window.indexedDB.open(demoPdfDatabaseName, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore(demoPdfStoreName);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("Failed to open demo PDF storage."));
+  });
+}
+
+function storeDemoPdf(documentId: string, file: File): Promise<void> {
+  return runDemoPdfTransaction("readwrite", (store) => {
+    store.put(file, documentId);
+  });
+}
+
+function deleteDemoPdf(documentId: string): Promise<void> {
+  return runDemoPdfTransaction("readwrite", (store) => {
+    store.delete(documentId);
+  });
+}
+
+function clearDemoPdfStorage(): Promise<void> {
+  return runDemoPdfTransaction("readwrite", (store) => {
+    store.clear();
+  });
+}
+
+async function runDemoPdfTransaction(
+  mode: IDBTransactionMode,
+  work: (store: IDBObjectStore) => void,
+): Promise<void> {
+  if (typeof window === "undefined" || !window.indexedDB) return;
+
+  const db = await openDemoPdfDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(demoPdfStoreName, mode);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error("Demo PDF storage failed."));
+    transaction.onabort = () => reject(transaction.error ?? new Error("Demo PDF storage aborted."));
+    work(transaction.objectStore(demoPdfStoreName));
+  }).finally(() => {
+    db.close();
+  });
 }
 
 // --- Browser-persisted state (demo only) ---

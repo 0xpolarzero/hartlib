@@ -130,12 +130,14 @@ Account switching is demo-only.
 
 Production authentication still uses Clerk.
 
-The demo UI is read-only.
+The demo UI is primarily seeded, with local-only editable flows where the product story requires creation or scheduling.
 
-Read-only means:
+Local demo edits are browser-scoped and do not imply backend persistence. Publication and document edits persist to `localStorage`; uploaded demo PDF blobs persist to IndexedDB and are referenced by the document metadata in `localStorage`.
+
+Read-only or guarded areas mean:
 
 - publisher controls are visible only when useful for understanding the product
-- publisher create, upload, edit, publish, invite, billing, and destructive actions are disabled or hidden
+- publisher create, upload, edit, publish, invite, billing, and destructive actions are disabled, hidden, or local-only depending on the scenario
 - client admin controls are visible only when useful for understanding the product
 - chat send is disabled
 - pre-populated chat content is shown through the real chat UI
