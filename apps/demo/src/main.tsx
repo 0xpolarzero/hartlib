@@ -217,22 +217,24 @@ function SortableHead({
         type="button"
         onClick={column.getToggleSortingHandler()}
         className={cn(
-          "flex h-8 w-full items-center gap-1 text-faint",
+          "flex h-8 w-full items-center text-faint",
           align === "right" ? "justify-end text-right" : "justify-start text-left",
         )}
       >
-        <span className="min-w-0 truncate">{children}</span>
-        <span className="flex size-3 shrink-0 items-center justify-center">
-          {sorted === "desc" ? (
-            <ArrowDown className="size-3 text-ink" aria-hidden="true" />
-          ) : sorted === "asc" ? (
-            <ArrowUp className="size-3 text-ink" aria-hidden="true" />
-          ) : (
-            <ChevronsUpDown
-              className="size-3 opacity-0 transition-opacity duration-fast group-hover:opacity-100"
-              aria-hidden="true"
-            />
-          )}
+        <span className="inline-flex max-w-full items-center gap-1">
+          <span className="min-w-0 truncate">{children}</span>
+          <span className="flex size-3 shrink-0 items-center justify-center">
+            {sorted === "desc" ? (
+              <ArrowDown className="size-3 text-ink" aria-hidden="true" />
+            ) : sorted === "asc" ? (
+              <ArrowUp className="size-3 text-ink" aria-hidden="true" />
+            ) : (
+              <ChevronsUpDown
+                className="size-3 opacity-0 transition-opacity duration-fast group-hover:opacity-100"
+                aria-hidden="true"
+              />
+            )}
+          </span>
         </span>
       </button>
     </TableHead>
