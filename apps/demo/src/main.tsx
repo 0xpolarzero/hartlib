@@ -113,10 +113,10 @@ function App() {
               items={
                 selectedSource
                   ? [
-                      { label: "Sources", onClick: () => setSelectedSourceId(null) },
+                      { label: "Fils", onClick: () => setSelectedSourceId(null) },
                       { label: selectedSource.name },
                     ]
-                  : [{ label: "Sources" }]
+                  : [{ label: "Fils" }]
               }
             />
           </div>
@@ -183,7 +183,7 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Source</TableHead>
+          <TableHead>Fil</TableHead>
           <TableHead className="text-right">Publications</TableHead>
           <TableHead className="text-right">Derniere publication</TableHead>
           <TableHead className="text-right">Abonnes</TableHead>
@@ -287,7 +287,7 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
       <div className="animate-in stagger-1">
         <StatsGrid>
           <StatBlock
-            label="Sources actives"
+            label="Fils actifs"
             value={String(activeSources.length)}
             detail="Abonnements livres"
           />
@@ -354,7 +354,7 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
           {readSources.length > 0 && (
             <div className="mt-4 space-y-1">
               <div className="font-mono text-[10px] uppercase tracking-wider text-faint">
-                Sources consultees
+                Fils consultes
               </div>
               {readSources.map((source) => (
                 <div
@@ -382,7 +382,7 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
 
       <div className="animate-in stagger-3 grid gap-8 xl:grid-cols-[1.1fr_0.9fr]">
         <section>
-          <SectionTitle title="Citations et sources lues" />
+          <SectionTitle title="Citations et fils lus" />
           <div className="mt-4 divide-y divide-rule">
             {primaryChat?.messages
               .flatMap((message) => message.citations ?? [])
@@ -516,7 +516,7 @@ function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact
         <TableRow>
           <TableHead>Publication</TableHead>
           {!compact ? (
-            <TableHead className="hidden md:table-cell">Source</TableHead>
+            <TableHead className="hidden md:table-cell">Fil</TableHead>
           ) : null}
           <TableHead className="text-right">Ouvertures</TableHead>
           <TableHead className="text-right">Telechargements</TableHead>
