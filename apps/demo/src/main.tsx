@@ -74,7 +74,6 @@ const demoClients = [
     lastActive: formatDate(primaryChat?.updatedAt ?? demoDataset.generatedAt),
   },
 ];
-
 // --- App ---
 
 function App() {
@@ -432,17 +431,6 @@ function PublisherPublicationDetail({ issue }: { issue: DemoIssue }) {
           {source?.name} / {formatDate(issue.publicationDate)}
         </div>
         <p className="mt-4 max-w-3xl font-serif text-sm leading-6 text-muted">{issue.summary}</p>
-      </section>
-
-      <section className="grid gap-0 md:grid-cols-3">
-        <StatBlock label="Ouvertures" value={String(issue.metrics.opens)} detail="Cumul" />
-        <StatBlock label="Téléchargements" value={String(issue.metrics.downloads)} detail="Cumul" />
-        <StatBlock
-          label="Contexte"
-          value={String(issue.metrics.aiContextPulls)}
-          detail="Lectures IA"
-          accent
-        />
       </section>
 
       <section>
