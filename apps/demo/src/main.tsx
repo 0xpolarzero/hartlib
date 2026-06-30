@@ -80,6 +80,10 @@ const demoSubscriberProfiles = [
 ];
 // --- App ---
 
+function isDemoPdfPath(pathname: string) {
+  return pathname.startsWith("/demo/pdfs/") && pathname.endsWith(".pdf");
+}
+
 type DemoRoute = {
   role: DemoRole;
   sourceId: string | null;
@@ -1395,7 +1399,7 @@ function PdfName({ document }: { document: DocumentRow }) {
         setError("Impossible d'ouvrir ce PDF.");
         return;
       }
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      window.setTimeout(() => URL.revokeObjectURL(url), 300_000);
     } catch {
       setError("Impossible d'ouvrir ce PDF.");
     }
@@ -1405,8 +1409,14 @@ function PdfName({ document }: { document: DocumentRow }) {
     <a
       href={publicUrl}
       target="_blank"
-      rel="noreferrer"
-      className="inline-flex max-w-44 items-center gap-1.5 text-faint outline-none transition-colors duration-fast hover:text-ink focus-visible:text-ink"
+      rel="noopener noreferrer"
+      className="inline-flex max-w-44 items-center gap-1.5 text-left text-faint outline-none transition-colors duration-fast hover:text-ink focus-visible:text-ink"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        setError(null);
+      }}
+      onAuxClick={(event) => event.stopPropagation()}
     >
       <span className="min-w-0 truncate">{label}</span>
       <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
@@ -1415,7 +1425,14 @@ function PdfName({ document }: { document: DocumentRow }) {
     <button
       type="button"
       className="inline-flex max-w-44 items-center gap-1.5 text-left text-faint outline-none transition-colors duration-fast hover:text-ink focus-visible:text-ink"
-      onClick={() => void handleUploadedPdfOpen()}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void handleUploadedPdfOpen();
+      }}
+      onAuxClick={(event) => event.stopPropagation()}
+      aria-label={`Ouvrir ${document.fileName} dans un nouvel onglet`}
     >
       <span className="min-w-0 truncate">{label}</span>
       <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
@@ -1437,7 +1454,10 @@ function PdfName({ document }: { document: DocumentRow }) {
 
 function getPublicPdfUrl(document: DocumentRow) {
   if (!document.storagePath || document.storagePath.startsWith("indexeddb://")) return null;
-  return document.storagePath.startsWith("/") ? document.storagePath : `/${document.storagePath}`;
+  const path = document.storagePath.startsWith("/")
+    ? document.storagePath
+    : `/${document.storagePath}`;
+  return typeof window === "undefined" ? path : new URL(path, window.location.origin).href;
 }
 
 function PdfUploadControl({
@@ -2413,4 +2433,6 @@ function useSessionState<T>(
 }
 // --- Mount ---
 
-createRoot(document.getElementById("root")!).render(<App />);
+if (!isDemoPdfPath(window.location.pathname)) {
+  createRoot(document.getElementById("root")!).render(<App />);
+}

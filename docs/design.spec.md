@@ -51,7 +51,7 @@ Demo breadcrumbs use those real paths as navigation links.
 
 Client publication routes resolve only to delivered published issues.
 
-Document PDF filenames open the PDF itself in a new browser tab. Seeded demo documents use real static PDF assets. Uploaded demo PDFs are read from browser storage and opened from browser object URLs. If an uploaded PDF is missing from browser storage, the document table shows an error instead of a fallback document.
+Document PDF filenames for seeded demo documents open the static PDF file directly in a new browser tab. Uploaded demo PDFs are read from browser storage and opened from browser object URLs. If an uploaded PDF is missing from browser storage, the document table shows an error instead of a fallback document.
 
 The demo uses shared product components and shared backend logic where possible.
 
