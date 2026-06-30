@@ -20,7 +20,6 @@ import {
 } from "@brief/demo-data";
 import {
   ArtifactFrame,
-  Badge,
   Button,
   Table,
   TableBody,
@@ -190,15 +189,14 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
         <TableRow>
           <TableHead>Source</TableHead>
           <TableHead className="text-right">Issues</TableHead>
-          <TableHead className="text-right">Opens</TableHead>
-          <TableHead className="text-right">Downloads</TableHead>
-          <TableHead className="text-right">Context pulls</TableHead>
+          <TableHead className="text-right">Last issue</TableHead>
+          <TableHead className="text-right">Subscribers</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {demoDataset.sources.map((source) => {
           const issues = issuesBySourceId.get(source.id) ?? [];
-          const totals = sourceTotals(issues);
+          const latestIssue = issues[0];
           return (
             <TableRow
               key={source.id}
@@ -213,16 +211,6 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
                     aria-hidden="true"
                   />
                   <span className="font-medium text-ink">{source.name}</span>
-                  <span className="ml-1 inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-faint">
-                    <span
-                      className={cn(
-                        "size-1.5 rounded-full",
-                        source.state === "active" ? "bg-success" : "bg-warning",
-                      )}
-                      aria-hidden="true"
-                    />
-                    {source.state === "active" ? "Actif" : "Pause"}
-                  </span>
                   <ChevronRight className="ml-auto size-4 shrink-0 text-faint opacity-0 transition-opacity duration-fast group-hover:opacity-100" aria-hidden="true" />
                 </div>
               </TableCell>
@@ -230,13 +218,10 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
                 {issues.length}
               </TableCell>
               <TableCell className="text-right tabular-nums text-ink">
-                {totals.opens}
+                {latestIssue ? formatDate(latestIssue.publicationDate) : "—"}
               </TableCell>
               <TableCell className="text-right tabular-nums text-ink">
-                {totals.downloads}
-              </TableCell>
-              <TableCell className="text-right tabular-nums font-medium text-accent">
-                {totals.contextPulls}
+                {source.subscriberCount}
               </TableCell>
             </TableRow>
           );
@@ -307,7 +292,7 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
 // --- Client Views ---
 
 function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
-  const activeSources = demoDataset.sources.filter((source) => source.state === "active");
+  const activeSources = demoDataset.sources;
   const availableCredits =
     demoDataset.aiPlan.monthlyCredits +
     demoDataset.aiPlan.extraCredits -
@@ -542,9 +527,6 @@ function SourceRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-ink">{source.name}</span>
-            <Badge variant={source.state === "active" ? "success" : "warning"}>
-              {source.state === "active" ? "Actif" : "Pause"}
-            </Badge>
           </div>
           <div className="mt-0.5 text-xs text-muted">
             {perspective === "client" ? source.branding.publisherName : source.description}

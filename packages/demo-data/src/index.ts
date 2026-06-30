@@ -40,8 +40,8 @@ export type DemoSubscriptionSource = {
   clientCompanyId: string;
   name: string;
   description: string;
-  state: "active" | "paused";
   subscribedSince: string;
+  subscriberCount: number;
   latestIssueId: string;
   aiEnabled: boolean;
   branding: {
@@ -242,8 +242,8 @@ export const demoSources: readonly DemoSubscriptionSource[] = [
     clientCompanyId: demoClientCompany.id,
     name: "Veille Regulation Financiere",
     description: "Brief hebdomadaire sur l'AMF, l'ACPR, l'ESMA et les obligations de conformite.",
-    state: "active",
     subscribedSince: "2025-11-03T09:00:00.000Z",
+    subscriberCount: 3,
     latestIssueId: "issue_regfin_2026_06_24",
     aiEnabled: true,
     branding: {
@@ -260,8 +260,8 @@ export const demoSources: readonly DemoSubscriptionSource[] = [
     name: "Energie & Industrie Europe",
     description:
       "Analyse mensuelle des politiques energetiques, prix, capacites et appels d'offres.",
-    state: "paused",
     subscribedSince: "2025-08-18T09:00:00.000Z",
+    subscriberCount: 1,
     latestIssueId: "issue_energy_2026_05_30",
     aiEnabled: true,
     branding: {
