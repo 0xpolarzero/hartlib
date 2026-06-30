@@ -523,7 +523,7 @@ function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact
           <TableHead className="text-right">
             <Tooltip>
               <TooltipTrigger asChild>
-                <span className="inline-flex cursor-help items-center gap-1">
+                <span className="inline-flex cursor-pointer items-center gap-1">
                   Contexte
                   <Info className="size-3 text-faint" aria-hidden="true" />
                 </span>
