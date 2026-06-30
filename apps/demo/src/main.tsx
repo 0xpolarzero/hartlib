@@ -185,8 +185,8 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
         <TableRow>
           <TableHead>Source</TableHead>
           <TableHead className="text-right">Issues</TableHead>
-          <TableHead className="text-right">Last issue</TableHead>
-          <TableHead className="text-right">Subscribers</TableHead>
+          <TableHead className="text-right">Derniere issue</TableHead>
+          <TableHead className="text-right">Abonnes</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -514,17 +514,17 @@ function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Issue</TableHead>
+          <TableHead>Livraison</TableHead>
           {!compact ? (
             <TableHead className="hidden md:table-cell">Source</TableHead>
           ) : null}
-          <TableHead className="text-right">Opens</TableHead>
-          <TableHead className="text-right">Downloads</TableHead>
+          <TableHead className="text-right">Ouvertures</TableHead>
+          <TableHead className="text-right">Telechargements</TableHead>
           <TableHead className="text-right">
             <Tooltip>
               <TooltipTrigger asChild>
                 <span className="inline-flex cursor-help items-center gap-1">
-                  Context
+                  Contexte
                   <Info className="size-3 text-faint" aria-hidden="true" />
                 </span>
               </TooltipTrigger>
