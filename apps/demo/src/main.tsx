@@ -182,13 +182,13 @@ function App() {
                 <TabsList className="h-6 rounded-sm bg-canvas p-px">
                   <TabsTrigger
                     value="publisher"
-                    className="h-5 rounded-sm px-2 text-[0.66rem] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
+                    className="h-5 rounded-sm px-2 !text-[12px] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
                   >
                     Publisher
                   </TabsTrigger>
                   <TabsTrigger
                     value="client"
-                    className="h-5 rounded-sm px-2 text-[0.66rem] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
+                    className="h-5 rounded-sm px-2 !text-[12px] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
                   >
                     Client
                   </TabsTrigger>
