@@ -265,6 +265,7 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
   const columns = useMemo(
     () => [
       filColumnHelper.accessor("name", { header: "Fil" }),
+      filColumnHelper.accessor("subscriberCount", { header: "Abonnés" }),
       filColumnHelper.accessor("issueCount", { header: "Publications" }),
       filColumnHelper.accessor((row) => row.lastPublishedAt ?? "", {
         id: "lastPublishedAt",
@@ -278,7 +279,6 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
           return av < bv ? -1 : av > bv ? 1 : 0;
         },
       }),
-      filColumnHelper.accessor("subscriberCount", { header: "Abonnés" }),
     ],
     [],
   );
@@ -706,7 +706,6 @@ function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact
         {table.getHeaderGroups().map((headerGroup) => (
           <TableRow key={headerGroup.id}>
             {headerGroup.headers.map((header) => {
-              if (header.column.id === "publicationDate") return null;
               return (
                 <SortableTableHead key={header.id} column={header.column}>
                   {flexRender(header.column.columnDef.header, header.getContext())}
@@ -720,14 +719,17 @@ function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact
         {table.getRowModel().rows.map((row) => (
           <TableRow key={row.id}>
             {row.getVisibleCells().map((cell) => {
-              if (cell.column.id === "publicationDate") return null;
               if (cell.column.id === "title") {
                 return (
                   <TableCell key={cell.id}>
                     <div className="font-medium text-ink">{row.original.title}</div>
-                    <div className="font-mono text-[11px] text-faint">
-                      {formatDate(row.original.publicationDate)}
-                    </div>
+                  </TableCell>
+                );
+              }
+              if (cell.column.id === "publicationDate") {
+                return (
+                  <TableCell key={cell.id} className="font-mono text-[11px] text-faint">
+                    {formatDate(row.original.publicationDate)}
                   </TableCell>
                 );
               }
