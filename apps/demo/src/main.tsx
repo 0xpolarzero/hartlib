@@ -9,8 +9,12 @@ import {
   Info,
   Lock,
   MessageSquare,
+  Pause,
+  Play,
+  Plus,
   Search,
   Send,
+  Trash2,
   Users,
 } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
@@ -57,31 +61,37 @@ import "./styles.css";
 // --- Data helpers ---
 
 const sourceById = new Map(demoDataset.sources.map((s) => [s.id, s]));
-const latestIssueBySourceId = new Map(demoDataset.issues.map((i) => [i.sourceId, i]));
-const issuesBySourceId = new Map<string, readonly DemoIssue[]>();
-for (const issue of demoDataset.issues) {
-  const arr = issuesBySourceId.get(issue.sourceId) ?? [];
-  issuesBySourceId.set(issue.sourceId, [...arr, issue]);
-}
 const primaryChat = demoDataset.chats[0];
 const primaryArtifact = demoDataset.artifacts[0];
-const demoClients = [
+const demoSubscriberProfiles = [
   {
     id: demoDataset.companies.client.id,
-    name: demoDataset.companies.client.name,
-    users: 1,
-    subscriptions: demoDataset.sources.length,
-    lastActive: formatDate(primaryChat?.updatedAt ?? demoDataset.generatedAt),
+    company: demoDataset.companies.client.name,
+    email: demoDataset.users.client.email,
+  },
+  {
+    id: "client_saint_honore_capital",
+    company: "Saint-Honore Capital",
+    email: "operations@saint-honore-capital.example",
+  },
+  {
+    id: "client_lutetia_risk_advisory",
+    company: "Lutetia Risk Advisory",
+    email: "veille@lutetia-risk.example",
   },
 ];
 // --- App ---
 
 function App() {
   const [role, setRole] = useState<DemoRole>("publisher");
+  const [issues, setIssues] = useSessionState<DemoIssue[]>("brief:demo:issues:v1", () =>
+    demoDataset.issues.map(cloneIssue),
+  );
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
     demoDataset.sources[0]?.id ?? null,
   );
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
+  const issuesBySourceId = useMemo(() => buildIssuesBySourceId(issues), [issues]);
 
   function handleRoleChange(next: DemoRole) {
     setRole(next);
@@ -98,81 +108,106 @@ function App() {
   const selectedSource = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
   const selectedIssue =
     selectedSource && selectedIssueId
-      ? (issuesBySourceId.get(selectedSource.id) ?? []).find((issue) => issue.id === selectedIssueId) ??
-        null
+      ? ((issuesBySourceId.get(selectedSource.id) ?? []).find(
+          (issue) => issue.id === selectedIssueId,
+        ) ?? null)
       : null;
+
+  function handleCreateIssue(sourceId: string) {
+    const issue = createDraftIssue(sourceId);
+    setIssues((current) => [issue, ...current]);
+    setSelectedIssueId(issue.id);
+  }
+
+  function handleUpdateIssue(nextIssue: DemoIssue) {
+    setIssues((current) => current.map((issue) => (issue.id === nextIssue.id ? nextIssue : issue)));
+  }
 
   return (
     <TooltipProvider>
       <Tabs value={role} onValueChange={(v) => handleRoleChange(v as DemoRole)}>
-      <main className="min-h-screen bg-canvas text-ink">
-        <header className="border-b border-rule bg-paper/80 backdrop-blur">
-          <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
-            <div className="flex items-baseline gap-1.5">
-              <h1 className="font-display text-xl font-medium text-ink">
-                brief<span className="text-accent">.</span>
-              </h1>
-              <span className="font-mono text-[11px] font-medium text-faint">(demo)</span>
+        <main className="min-h-screen bg-canvas text-ink">
+          <header className="border-b border-rule bg-paper/80 backdrop-blur">
+            <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
+              <div className="flex items-baseline gap-1.5">
+                <h1 className="font-display text-xl font-medium text-ink">
+                  brief<span className="text-accent">.</span>
+                </h1>
+                <span className="font-mono text-[11px] font-medium text-faint">(demo)</span>
+              </div>
+              <TabsList className="h-auto rounded-sm border border-rule bg-paper p-0.5">
+                <TabsTrigger
+                  value="publisher"
+                  className="rounded-sm px-2 py-0.5 text-[0.7rem] font-medium data-[state=active]:bg-surface data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:hover:text-ink data-[state=inactive]:text-muted"
+                >
+                  Publisher
+                </TabsTrigger>
+                <TabsTrigger
+                  value="client"
+                  className="rounded-sm px-2 py-0.5 text-[0.7rem] font-medium data-[state=active]:bg-surface data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:hover:text-ink data-[state=inactive]:text-muted"
+                >
+                  Client
+                </TabsTrigger>
+              </TabsList>
             </div>
-            <TabsList className="h-auto rounded-sm border border-rule bg-paper p-0.5">
-              <TabsTrigger
-                value="publisher"
-                className="rounded-sm px-2 py-0.5 text-[0.7rem] font-medium data-[state=active]:bg-surface data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:hover:text-ink data-[state=inactive]:text-muted"
-              >
-                Publisher
-              </TabsTrigger>
-              <TabsTrigger
-                value="client"
-                className="rounded-sm px-2 py-0.5 text-[0.7rem] font-medium data-[state=active]:bg-surface data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:hover:text-ink data-[state=inactive]:text-muted"
-              >
-                Client
-              </TabsTrigger>
-            </TabsList>
-          </div>
-        </header>
+          </header>
 
-        <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-          <div className="mb-6">
-            <Crumbs
-              items={
-                selectedSource
-                  ? [
-                      { label: "Fils", onClick: () => handleSelectSource(null) },
-                      ...(selectedIssue
-                        ? [
-                            {
-                              label: selectedSource.name,
-                              onClick: () => setSelectedIssueId(null),
-                            },
-                            { label: selectedIssue.title },
-                          ]
-                        : [{ label: selectedSource.name }]),
-                    ]
-                  : [{ label: "Fils" }]
-              }
-            />
+          <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+            <div className="mb-6">
+              <Crumbs
+                items={
+                  selectedSource
+                    ? [
+                        { label: "Fils", onClick: () => handleSelectSource(null) },
+                        ...(selectedIssue
+                          ? [
+                              {
+                                label: selectedSource.name,
+                                onClick: () => setSelectedIssueId(null),
+                              },
+                              { label: selectedIssue.title },
+                            ]
+                          : [{ label: selectedSource.name }]),
+                      ]
+                    : [{ label: "Fils" }]
+                }
+              />
+            </div>
+            <TabsContent value="publisher" className="mt-0">
+              {selectedSource && selectedIssue ? (
+                <PublisherPublicationDetail
+                  issue={selectedIssue}
+                  onUpdateIssue={handleUpdateIssue}
+                />
+              ) : selectedSource ? (
+                <PublisherSourceDetail
+                  source={selectedSource}
+                  issues={issuesBySourceId.get(selectedSource.id) ?? []}
+                  onCreateIssue={handleCreateIssue}
+                  onSelectIssue={setSelectedIssueId}
+                />
+              ) : (
+                <PublisherSourcesList
+                  issuesBySourceId={issuesBySourceId}
+                  onSelect={handleSelectSource}
+                />
+              )}
+            </TabsContent>
+            <TabsContent value="client" className="mt-0">
+              {selectedSource && selectedIssue ? (
+                <ClientPublicationDetail issue={selectedIssue} />
+              ) : selectedSource ? (
+                <ClientSourceDetail
+                  source={selectedSource}
+                  issues={issuesBySourceId.get(selectedSource.id) ?? []}
+                />
+              ) : (
+                <ClientSourcesList issues={issues} onSelect={handleSelectSource} />
+              )}
+            </TabsContent>
           </div>
-          <TabsContent value="publisher" className="mt-0">
-            {selectedSource && selectedIssue ? (
-              <PublisherPublicationDetail issue={selectedIssue} />
-            ) : selectedSource ? (
-              <PublisherSourceDetail source={selectedSource} onSelectIssue={setSelectedIssueId} />
-            ) : (
-              <PublisherSourcesList onSelect={handleSelectSource} />
-            )}
-          </TabsContent>
-          <TabsContent value="client" className="mt-0">
-            {selectedSource && selectedIssue ? (
-              <ClientPublicationDetail issue={selectedIssue} />
-            ) : selectedSource ? (
-              <ClientSourceDetail source={selectedSource} />
-            ) : (
-              <ClientSourcesList onSelect={handleSelectSource} />
-            )}
-          </TabsContent>
-        </div>
-      </main>
-    </Tabs>
+        </main>
+      </Tabs>
     </TooltipProvider>
   );
 }
@@ -206,10 +241,16 @@ function Crumbs({ items }: { items: readonly Crumb[] }) {
 
 // --- Publisher View ---
 
-function PublisherSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
+function PublisherSourcesList({
+  issuesBySourceId,
+  onSelect,
+}: {
+  issuesBySourceId: ReadonlyMap<string, readonly DemoIssue[]>;
+  onSelect: (id: string) => void;
+}) {
   return (
     <section className="animate-in stagger-1">
-      <SourcesTable onSelect={onSelect} />
+      <SourcesTable issuesBySourceId={issuesBySourceId} onSelect={onSelect} />
     </section>
   );
 }
@@ -247,53 +288,59 @@ function SortableTableHead<TData>({
           {children}
         </span>
       ) : (
-      <button
-        type="button"
-        onClick={column.getToggleSortingHandler()}
-        className={cn(
-          "group flex h-6 w-full items-center text-faint",
-          align === "right" ? "justify-end text-right" : "justify-start text-left",
-        )}
-      >
-        <span className="inline-flex max-w-full items-center gap-1">
-          <span className="min-w-0 truncate">{children}</span>
-          <span className="flex size-3 shrink-0 items-center justify-center">
-            {sorted === "desc" ? (
-              <ArrowDown className="size-3 text-ink" aria-hidden="true" />
-            ) : sorted === "asc" ? (
-              <ArrowUp className="size-3 text-ink" aria-hidden="true" />
-            ) : (
-              <ChevronsUpDown
-                className="size-3 opacity-0 transition-opacity duration-fast group-hover:opacity-100"
-                aria-hidden="true"
-              />
-            )}
+        <button
+          type="button"
+          onClick={column.getToggleSortingHandler()}
+          className={cn(
+            "group flex h-6 w-full items-center text-faint",
+            align === "right" ? "justify-end text-right" : "justify-start text-left",
+          )}
+        >
+          <span className="inline-flex max-w-full items-center gap-1">
+            <span className="min-w-0 truncate">{children}</span>
+            <span className="flex size-3 shrink-0 items-center justify-center">
+              {sorted === "desc" ? (
+                <ArrowDown className="size-3 text-ink" aria-hidden="true" />
+              ) : sorted === "asc" ? (
+                <ArrowUp className="size-3 text-ink" aria-hidden="true" />
+              ) : (
+                <ChevronsUpDown
+                  className="size-3 opacity-0 transition-opacity duration-fast group-hover:opacity-100"
+                  aria-hidden="true"
+                />
+              )}
+            </span>
           </span>
-        </span>
-      </button>
+        </button>
       )}
     </TableHead>
   );
 }
 
-function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
-  const [sorting, setSorting] = useState<SortingState>([
-    { id: "lastPublishedAt", desc: true },
-  ]);
+function SourcesTable({
+  issuesBySourceId,
+  onSelect,
+}: {
+  issuesBySourceId: ReadonlyMap<string, readonly DemoIssue[]>;
+  onSelect: (id: string) => void;
+}) {
+  const [sorting, setSorting] = useState<SortingState>([{ id: "lastPublishedAt", desc: true }]);
 
   const rows = useMemo<FilRow[]>(
     () =>
       demoDataset.sources.map((source) => {
         const issues = issuesBySourceId.get(source.id) ?? [];
+        const latestPublishedIssue =
+          issues.find((issue) => issue.status === "published") ?? issues[0];
         return {
           id: source.id,
           name: source.name,
           issueCount: issues.length,
-          lastPublishedAt: issues[0]?.publicationDate ?? null,
+          lastPublishedAt: latestPublishedIssue?.publicationDate ?? null,
           subscriberCount: source.subscriberCount,
         };
       }),
-    [],
+    [issuesBySourceId],
   );
 
   const columns = useMemo(
@@ -378,12 +425,42 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
 
 function PublisherSourceDetail({
   source,
+  issues,
+  onCreateIssue,
   onSelectIssue,
 }: {
   source: DemoSubscriptionSource;
+  issues: readonly DemoIssue[];
+  onCreateIssue: (sourceId: string) => void;
   onSelectIssue: (id: string) => void;
 }) {
-  const issues = issuesBySourceId.get(source.id) ?? [];
+  const [subscriberState, setSubscriberState] = useSessionState<SubscriberSessionState>(
+    `brief:demo:publisher-subscribers:${source.id}`,
+    { statuses: {}, deletedIds: [] },
+  );
+  const subscribers = useMemo(
+    () => buildSubscriberRows(source, subscriberState),
+    [source, subscriberState],
+  );
+
+  function handleToggleSubscriberStatus(id: string) {
+    setSubscriberState((current) => ({
+      ...current,
+      statuses: {
+        ...current.statuses,
+        [id]: current.statuses[id] === "paused" ? "active" : "paused",
+      },
+    }));
+  }
+
+  function handleDeleteSubscriber(id: string) {
+    setSubscriberState((current) => ({
+      ...current,
+      deletedIds: current.deletedIds.includes(id)
+        ? current.deletedIds
+        : [...current.deletedIds, id],
+    }));
+  }
 
   return (
     <div className="space-y-8">
@@ -391,62 +468,118 @@ function PublisherSourceDetail({
 
       <div className="animate-in stagger-1 grid gap-8 xl:grid-cols-[1.3fr_0.7fr]">
         <section>
-          <h3 className="flex items-center gap-3 text-xs font-normal uppercase tracking-[0.16em] text-faint">
-            <span>Publications</span>
-            <span className="font-mono tracking-normal text-faint/60">{issues.length}</span>
-          </h3>
+          <SectionHeader
+            title="Publications"
+            count={issues.length}
+            actionLabel="Créer une publication"
+            onAdd={() => onCreateIssue(source.id)}
+          />
           <div className="mt-4">
             <IssueTable issues={issues} compact onSelectIssue={onSelectIssue} />
           </div>
         </section>
 
         <section>
-          <h3 className="text-xs font-normal uppercase tracking-[0.16em] text-faint">Abonnés</h3>
-          <div className="mt-4 space-y-3">
-            {demoClients.map((client) => (
-              <div key={client.id} className="rounded-sm border border-rule bg-paper p-3">
-                <div className="font-semibold text-ink">{client.name}</div>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                  <Metric label="Utilisateurs" value={String(client.users)} />
-                  <Metric label="Depuis" value={formatShortDate(source.subscribedSince)} />
-                </div>
-              </div>
-            ))}
+          <SectionHeader title="Abonnés" count={subscribers.length} />
+          <div className="mt-4">
+            <SubscriberTable
+              rows={subscribers}
+              onToggleStatus={handleToggleSubscriberStatus}
+              onDelete={handleDeleteSubscriber}
+            />
           </div>
         </section>
       </div>
-
     </div>
   );
 }
 
-function PublisherPublicationDetail({ issue }: { issue: DemoIssue }) {
+function PublisherPublicationDetail({
+  issue,
+  onUpdateIssue,
+}: {
+  issue: DemoIssue;
+  onUpdateIssue?: (issue: DemoIssue) => void;
+}) {
   const source = sourceById.get(issue.sourceId);
+  const editable = Boolean(onUpdateIssue) && isEditableIssue(issue);
+
+  function updateIssue(patch: Partial<DemoIssue>) {
+    onUpdateIssue?.({ ...issue, ...patch });
+  }
+
+  function updateDocument(documentId: string, patch: Partial<DemoIssue["documents"][number]>) {
+    onUpdateIssue?.({
+      ...issue,
+      documents: issue.documents.map((doc) => (doc.id === documentId ? { ...doc, ...patch } : doc)),
+    });
+  }
+
+  function handleAddDocument() {
+    onUpdateIssue?.({
+      ...issue,
+      documents: [...issue.documents, createDraftDocument(issue.id, issue.documents.length + 1)],
+    });
+  }
 
   return (
     <div className="space-y-8">
       <section>
-        <h2 className="font-display text-2xl font-medium text-ink">{issue.title}</h2>
+        {editable ? (
+          <input
+            value={issue.title}
+            onChange={(event) => updateIssue({ title: event.target.value })}
+            className="w-full border-0 bg-transparent p-0 font-display text-2xl font-medium text-ink outline-none transition-colors duration-fast focus:text-accent"
+            aria-label="Titre de la publication"
+          />
+        ) : (
+          <h2 className="font-display text-2xl font-medium text-ink">{issue.title}</h2>
+        )}
         <div className="mt-2 font-mono text-[11px] uppercase tracking-wider text-faint">
-          {source?.name} / {formatDate(issue.publicationDate)}
+          {source?.name} /{" "}
+          {editable ? (
+            <input
+              type="datetime-local"
+              value={toDatetimeLocalValue(issue.publicationDate)}
+              onChange={(event) => {
+                if (!event.target.value) return;
+                updateIssue({ publicationDate: new Date(event.target.value).toISOString() });
+              }}
+              className="border-0 bg-transparent p-0 font-mono text-[11px] uppercase tracking-wider text-faint outline-none focus:text-accent"
+              aria-label="Date de publication"
+            />
+          ) : (
+            formatDate(issue.publicationDate)
+          )}
+          {issue.status === "scheduled" ? (
+            <span className="ml-2 text-accent">Planifiée</span>
+          ) : null}
         </div>
-        <p className="mt-4 max-w-3xl font-serif text-sm leading-6 text-muted">{issue.summary}</p>
+        {editable ? (
+          <textarea
+            value={issue.summary}
+            onChange={(event) => updateIssue({ summary: event.target.value })}
+            className="mt-4 min-h-20 w-full max-w-3xl resize-y border-0 bg-transparent p-0 font-serif text-sm leading-6 text-muted outline-none transition-colors duration-fast focus:text-ink"
+            aria-label="Résumé de la publication"
+          />
+        ) : (
+          <p className="mt-4 max-w-3xl font-serif text-sm leading-6 text-muted">{issue.summary}</p>
+        )}
       </section>
 
       <section>
-        <h3 className="text-xs font-normal uppercase tracking-[0.16em] text-faint">Documents</h3>
-        <div className="mt-4 divide-y divide-rule">
-          {issue.documents.map((doc) => (
-            <div key={doc.id} className="py-3 first:pt-0 last:pb-0">
-              <div className="font-medium text-ink">{doc.title}</div>
-              <div className="mt-0.5 font-mono text-[11px] text-faint">
-                {doc.fileName} / {doc.pageCount} pages
-              </div>
-              <p className="mt-2 font-serif text-sm leading-6 text-muted">
-                {doc.extractedTextPreview}
-              </p>
-            </div>
-          ))}
+        <SectionHeader
+          title="Documents"
+          count={issue.documents.length}
+          actionLabel="Ajouter un document"
+          onAdd={editable ? handleAddDocument : undefined}
+        />
+        <div className="mt-4">
+          <DocumentsTable
+            documents={issue.documents}
+            editable={editable}
+            onUpdateDocument={updateDocument}
+          />
         </div>
       </section>
     </div>
@@ -455,8 +588,15 @@ function PublisherPublicationDetail({ issue }: { issue: DemoIssue }) {
 
 // --- Client Views ---
 
-function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
+function ClientSourcesList({
+  issues,
+  onSelect,
+}: {
+  issues: readonly DemoIssue[];
+  onSelect: (id: string) => void;
+}) {
   const activeSources = demoDataset.sources;
+  const publishedIssues = issues.filter((issue) => issue.status === "published");
   const availableCredits =
     demoDataset.aiPlan.monthlyCredits +
     demoDataset.aiPlan.extraCredits -
@@ -484,7 +624,7 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
           />
           <StatBlock
             label="Publications archivées"
-            value={String(demoDataset.issues.length)}
+            value={String(publishedIssues.length)}
             detail="Consultables"
           />
           <StatBlock
@@ -509,6 +649,7 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
                   key={source.id}
                   source={source}
                   perspective="client"
+                  latestIssue={publishedIssues.find((issue) => issue.sourceId === source.id)}
                   onSelect={() => onSelect(source.id)}
                 />
               ))}
@@ -520,7 +661,9 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
             <div className="mt-4">
               <div className="flex items-center gap-2 rounded-sm border border-rule bg-surface px-3 py-2 text-muted">
                 <Search className="size-4 shrink-0" aria-hidden="true" />
-                <span className="truncate text-sm">Rechercher dans les publications livrées...</span>
+                <span className="truncate text-sm">
+                  Rechercher dans les publications livrées...
+                </span>
                 <Lock className="ml-auto size-4 shrink-0" aria-hidden="true" />
               </div>
               <div className="mt-3 flex flex-wrap gap-3">
@@ -603,8 +746,14 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
   );
 }
 
-function ClientSourceDetail({ source }: { source: DemoSubscriptionSource }) {
-  const issues = issuesBySourceId.get(source.id) ?? [];
+function ClientSourceDetail({
+  source,
+  issues,
+}: {
+  source: DemoSubscriptionSource;
+  issues: readonly DemoIssue[];
+}) {
+  const publishedIssues = issues.filter((issue) => issue.status === "published");
 
   return (
     <div className="space-y-8">
@@ -613,7 +762,7 @@ function ClientSourceDetail({ source }: { source: DemoSubscriptionSource }) {
       <section className="animate-in stagger-1">
         <SectionTitle title="Issue archive" />
         <div className="mt-4 divide-y divide-rule">
-          {issues.map((issue) => (
+          {publishedIssues.map((issue) => (
             <ArchiveIssue key={issue.id} issue={issue} />
           ))}
         </div>
@@ -634,6 +783,37 @@ function SectionTitle({ title }: { title: string }) {
       <span className="size-1.5 rounded-full bg-accent/70" aria-hidden="true" />
       <h3 className="text-sm font-semibold text-ink">{title}</h3>
     </div>
+  );
+}
+
+function SectionHeader({
+  title,
+  count,
+  actionLabel,
+  onAdd,
+}: {
+  title: string;
+  count: number;
+  actionLabel?: string;
+  onAdd?: (() => void) | undefined;
+}) {
+  return (
+    <h3 className="flex items-center gap-3 text-xs font-normal uppercase tracking-[0.16em] text-faint">
+      <span>{title}</span>
+      <span className="font-mono tracking-normal text-faint/60">{count}</span>
+      {onAdd ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="ml-auto size-7 text-faint hover:text-accent"
+          onClick={onAdd}
+          aria-label={actionLabel ?? `Ajouter ${title.toLowerCase()}`}
+        >
+          <Plus className="size-4" aria-hidden="true" />
+        </Button>
+      ) : null}
+    </h3>
   );
 }
 
@@ -671,14 +851,14 @@ function StatBlock({
 function SourceRow({
   source,
   perspective,
+  latestIssue,
   onSelect,
 }: {
   source: DemoSubscriptionSource;
   perspective: DemoRole;
+  latestIssue?: DemoIssue | undefined;
   onSelect?: () => void;
 }) {
-  const latestIssue = latestIssueBySourceId.get(source.id);
-
   return (
     <button
       type="button"
@@ -694,7 +874,9 @@ function SourceRow({
           <div className="mt-0.5 text-xs text-muted">
             {perspective === "client" ? source.branding.publisherName : source.description}
           </div>
-          <div className="mt-1 text-sm text-ink">{latestIssue?.title ?? "Aucune publication livrée"}</div>
+          <div className="mt-1 text-sm text-ink">
+            {latestIssue?.title ?? "Aucune publication livrée"}
+          </div>
         </div>
         {onSelect ? (
           <ChevronRight className="mt-1 size-4 shrink-0 text-faint" aria-hidden="true" />
@@ -713,9 +895,30 @@ type PublicationRow = {
   opens: number;
   downloads: number;
   contextPulls: number;
+  status: DemoIssue["status"];
+};
+
+type DocumentRow = DemoIssue["documents"][number];
+
+type SubscriberStatus = "active" | "paused";
+
+type SubscriberSessionState = {
+  statuses: Record<string, SubscriberStatus>;
+  deletedIds: readonly string[];
+};
+
+type SubscriberRow = {
+  id: string;
+  company: string;
+  email: string;
+  subscribedSince: string;
+  status: SubscriberStatus;
+  statusRank: number;
 };
 
 const publicationColumnHelper = createColumnHelper<PublicationRow>();
+const subscriberColumnHelper = createColumnHelper<SubscriberRow>();
+const documentColumnHelper = createColumnHelper<DocumentRow>();
 
 function IssueTable({
   issues,
@@ -726,9 +929,7 @@ function IssueTable({
   compact?: boolean;
   onSelectIssue?: (id: string) => void;
 }) {
-  const [sorting, setSorting] = useState<SortingState>([
-    { id: "publicationDate", desc: true },
-  ]);
+  const [sorting, setSorting] = useState<SortingState>([{ id: "publicationDate", desc: true }]);
 
   const rows = useMemo<PublicationRow[]>(
     () =>
@@ -741,6 +942,7 @@ function IssueTable({
         opens: issue.metrics.opens,
         downloads: issue.metrics.downloads,
         contextPulls: issue.metrics.aiContextPulls,
+        status: issue.status,
       })),
     [issues],
   );
@@ -821,7 +1023,10 @@ function IssueTable({
               if (cell.column.id === "publicationDate") {
                 return (
                   <TableCell key={cell.id} className="font-mono text-[11px] text-faint">
-                    {formatDate(row.original.publicationDate)}
+                    <span>{formatDate(row.original.publicationDate)}</span>
+                    {row.original.status === "scheduled" ? (
+                      <span className="ml-2 text-accent">Planifiée</span>
+                    ) : null}
                   </TableCell>
                 );
               }
@@ -843,6 +1048,308 @@ function IssueTable({
       </TableBody>
     </Table>
   );
+}
+
+function DocumentsTable({
+  documents,
+  editable,
+  onUpdateDocument,
+}: {
+  documents: readonly DocumentRow[];
+  editable: boolean;
+  onUpdateDocument: (documentId: string, patch: Partial<DocumentRow>) => void;
+}) {
+  const columns = useMemo(
+    () => [
+      documentColumnHelper.accessor("title", { header: "Titre" }),
+      documentColumnHelper.accessor("extractedTextPreview", { header: "Description" }),
+      documentColumnHelper.accessor("fileName", { header: "PDF" }),
+    ],
+    [],
+  );
+  const table = useReactTable({
+    data: [...documents],
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+  });
+
+  if (documents.length === 0) {
+    return (
+      <div className="rounded-sm border border-rule bg-paper px-4 py-8 text-center text-sm text-muted">
+        Aucun document.
+      </div>
+    );
+  }
+
+  return (
+    <Table>
+      <TableHeader>
+        {table.getHeaderGroups().map((headerGroup) => (
+          <TableRow key={headerGroup.id}>
+            {headerGroup.headers.map((header) => (
+              <TableHead key={header.id}>
+                {flexRender(header.column.columnDef.header, header.getContext())}
+              </TableHead>
+            ))}
+          </TableRow>
+        ))}
+      </TableHeader>
+      <TableBody>
+        {table.getRowModel().rows.map((row) => (
+          <TableRow key={row.id}>
+            {row.getVisibleCells().map((cell) => {
+              const doc = row.original;
+              if (cell.column.id === "title") {
+                return (
+                  <TableCell key={cell.id}>
+                    {editable ? (
+                      <InlineInput
+                        value={doc.title}
+                        ariaLabel="Titre du document"
+                        onChange={(title) => onUpdateDocument(doc.id, { title })}
+                      />
+                    ) : (
+                      <span className="font-medium text-ink">{doc.title}</span>
+                    )}
+                  </TableCell>
+                );
+              }
+              if (cell.column.id === "extractedTextPreview") {
+                return (
+                  <TableCell key={cell.id} className="max-w-md">
+                    {editable ? (
+                      <InlineInput
+                        value={doc.extractedTextPreview}
+                        ariaLabel="Description du document"
+                        onChange={(extractedTextPreview) =>
+                          onUpdateDocument(doc.id, { extractedTextPreview })
+                        }
+                      />
+                    ) : (
+                      <span className="font-serif text-sm leading-6 text-muted">
+                        {doc.extractedTextPreview}
+                      </span>
+                    )}
+                  </TableCell>
+                );
+              }
+              return (
+                <TableCell key={cell.id} className="font-mono text-[11px] text-faint">
+                  {editable ? (
+                    <InlineInput
+                      value={doc.fileName}
+                      ariaLabel="Nom du PDF"
+                      onChange={(fileName) => onUpdateDocument(doc.id, { fileName })}
+                    />
+                  ) : (
+                    `${doc.fileName} / ${doc.pageCount} pages`
+                  )}
+                </TableCell>
+              );
+            })}
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function InlineInput({
+  value,
+  ariaLabel,
+  onChange,
+}: {
+  value: string;
+  ariaLabel: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <input
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="w-full border-0 bg-transparent p-0 text-sm text-ink outline-none transition-colors duration-fast focus:text-accent"
+      aria-label={ariaLabel}
+    />
+  );
+}
+
+function SubscriberTable({
+  rows,
+  onToggleStatus,
+  onDelete,
+}: {
+  rows: SubscriberRow[];
+  onToggleStatus: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [sorting, setSorting] = useState<SortingState>([{ id: "company", desc: false }]);
+
+  const columns = useMemo(
+    () => [
+      subscriberColumnHelper.accessor("statusRank", {
+        header: "",
+        cell: () => null,
+      }),
+      subscriberColumnHelper.accessor("company", { header: "Société" }),
+      subscriberColumnHelper.accessor("email", { header: "Email" }),
+      subscriberColumnHelper.accessor("subscribedSince", {
+        header: "Depuis",
+        cell: (info) => formatDate(info.getValue()),
+      }),
+      subscriberColumnHelper.display({
+        id: "actions",
+        header: "",
+        enableSorting: false,
+        cell: (info) => {
+          const row = info.row.original;
+          const isPaused = row.status === "paused";
+          return (
+            <div className="flex items-center justify-end gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onToggleStatus(row.id);
+                }}
+                aria-label={isPaused ? "Reprendre l'abonnement" : "Mettre en pause l'abonnement"}
+              >
+                {isPaused ? (
+                  <Play className="size-4" aria-hidden="true" />
+                ) : (
+                  <Pause className="size-4" aria-hidden="true" />
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="text-destructive hover:text-destructive"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDelete(row.id);
+                }}
+                aria-label="Supprimer l'abonné"
+              >
+                <Trash2 className="size-4" aria-hidden="true" />
+              </Button>
+            </div>
+          );
+        },
+      }),
+    ],
+    [onDelete, onToggleStatus],
+  );
+
+  // Pin active subscribers above paused ones; within each group, honor the
+  // visible column sort the user picked.
+  const effectiveSorting = useMemo<SortingState>(() => {
+    const visibleSort = sorting.filter((s) => s.id !== "statusRank");
+    return [{ id: "statusRank", desc: false }, ...visibleSort];
+  }, [sorting]);
+
+  const table = useReactTable({
+    data: rows,
+    columns,
+    state: { sorting: effectiveSorting },
+    onSortingChange: setSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getRowId: (row) => row.id,
+  });
+
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-sm border border-rule bg-paper px-4 py-8 text-center text-sm text-muted">
+        Aucun abonné.
+      </div>
+    );
+  }
+
+  return (
+    <Table>
+      <TableHeader>
+        {table.getHeaderGroups().map((headerGroup) => (
+          <TableRow key={headerGroup.id}>
+            {headerGroup.headers.map((header) => {
+              if (header.column.id === "statusRank") {
+                return <TableHead key={header.id} className="hidden" />;
+              }
+              const alignRight = header.column.id === "actions";
+              return (
+                <SortableTableHead
+                  key={header.id}
+                  column={header.column}
+                  align={alignRight ? "right" : "left"}
+                >
+                  {flexRender(header.column.columnDef.header, header.getContext())}
+                </SortableTableHead>
+              );
+            })}
+          </TableRow>
+        ))}
+      </TableHeader>
+      <TableBody>
+        {table.getRowModel().rows.map((row) => {
+          const isPaused = row.original.status === "paused";
+          return (
+            <TableRow key={row.id} className={cn(isPaused && "opacity-60")}>
+              {row.getVisibleCells().map((cell) => {
+                if (cell.column.id === "statusRank") return null;
+                if (cell.column.id === "company") {
+                  return (
+                    <TableCell key={cell.id}>
+                      <div className="font-medium text-ink">{row.original.company}</div>
+                    </TableCell>
+                  );
+                }
+                if (cell.column.id === "email") {
+                  return (
+                    <TableCell key={cell.id} className="font-mono text-[11px] text-muted">
+                      {row.original.email}
+                    </TableCell>
+                  );
+                }
+                if (cell.column.id === "subscribedSince") {
+                  return (
+                    <TableCell key={cell.id} className="font-mono text-[11px] text-faint">
+                      {formatDate(row.original.subscribedSince)}
+                    </TableCell>
+                  );
+                }
+                return (
+                  <TableCell key={cell.id} className="text-right">
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </TableCell>
+                );
+              })}
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
+function buildSubscriberRows(
+  source: DemoSubscriptionSource,
+  state: SubscriberSessionState,
+): SubscriberRow[] {
+  const baseDate = new Date(source.subscribedSince).getTime();
+  return demoSubscriberProfiles
+    .slice(0, Math.max(1, source.subscriberCount))
+    .map((profile, index) => {
+      const status: SubscriberStatus =
+        state.statuses[profile.id] === "paused" ? "paused" : "active";
+      return {
+        id: profile.id,
+        company: profile.company,
+        email: profile.email,
+        subscribedSince: new Date(baseDate - index * 86_400_000 * 12).toISOString(),
+        status,
+        statusRank: status === "active" ? 0 : 1,
+      };
+    })
+    .filter((row) => !state.deletedIds.includes(row.id));
 }
 
 function ArchiveIssue({ issue }: { issue: DemoIssue }) {
@@ -916,15 +1423,6 @@ function ChatBubble({ message }: { message: DemoChatMessage }) {
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-xs text-faint">{label}</div>
-      <div className="font-semibold text-ink">{value}</div>
-    </div>
-  );
-}
-
 // --- Utilities ---
 
 function formatDate(value: string) {
@@ -940,6 +1438,112 @@ function formatShortDate(value: string) {
     day: "numeric",
     month: "short",
   }).format(new Date(value));
+}
+
+function toDatetimeLocalValue(value: string) {
+  const date = new Date(value);
+  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return offsetDate.toISOString().slice(0, 16);
+}
+
+function isEditableIssue(issue: DemoIssue) {
+  return issue.status === "scheduled" && new Date(issue.publicationDate).getTime() > Date.now();
+}
+
+function buildIssuesBySourceId(issues: readonly DemoIssue[]) {
+  const map = new Map<string, DemoIssue[]>();
+  for (const issue of [...issues].sort((a, b) =>
+    b.publicationDate.localeCompare(a.publicationDate),
+  )) {
+    const sourceIssues = map.get(issue.sourceId) ?? [];
+    sourceIssues.push(issue);
+    map.set(issue.sourceId, sourceIssues);
+  }
+  return map;
+}
+
+function cloneIssue(issue: DemoIssue): DemoIssue {
+  return {
+    ...issue,
+    documents: issue.documents.map((document) => ({
+      ...document,
+      metrics: { ...document.metrics },
+    })),
+    metrics: { ...issue.metrics },
+  };
+}
+
+function createDraftIssue(sourceId: string): DemoIssue {
+  const id = `issue_demo_${Date.now()}`;
+  const publicationDate = new Date(Date.now() + 86_400_000 * 7).toISOString();
+  return {
+    id,
+    sourceId,
+    title: "Nouvelle publication",
+    publicationDate,
+    status: "scheduled",
+    summary: "Résumé éditable de la publication planifiée.",
+    documents: [createDraftDocument(id, 1)],
+    metrics: {
+      opens: 0,
+      downloads: 0,
+      aiContextPulls: 0,
+    },
+  };
+}
+
+function createDraftDocument(issueId: string, index: number): DemoIssue["documents"][number] {
+  const id = `doc_demo_${Date.now()}_${index}`;
+  return {
+    id,
+    issueId,
+    title: `Document ${index}`,
+    fileName: `document-demo-${index}.pdf`,
+    pageCount: 1,
+    language: "fr",
+    indexingStatus: "indexed",
+    storagePath: `demo/local/${issueId}/${id}.pdf`,
+    extractedTextPreview: "Description éditable du document.",
+    metrics: {
+      opens: 0,
+      downloads: 0,
+      aiContextPulls: 0,
+    },
+  };
+}
+
+// --- Browser-persisted state (demo only) ---
+// Keeps demo interactions (pause/resume/delete) in this browser without
+// persisting anything to a backend.
+function useSessionState<T>(
+  key: string,
+  initialValue: T | (() => T),
+): [T, (next: T | ((prev: T) => T)) => void] {
+  const [value, setValue] = useState<T>(() => {
+    const fallback =
+      typeof initialValue === "function" ? (initialValue as () => T)() : initialValue;
+    if (typeof window === "undefined") return fallback;
+    try {
+      const stored = window.localStorage.getItem(key);
+      return stored ? (JSON.parse(stored) as T) : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+
+  function update(next: T | ((prev: T) => T)) {
+    setValue((prev) => {
+      const resolved = typeof next === "function" ? (next as (prev: T) => T)(prev) : next;
+      try {
+        window.localStorage.setItem(key, JSON.stringify(resolved));
+      } catch {
+        // Ignore storage failures; demo state stays in memory.
+      }
+      return resolved;
+    });
+  }
+
+  return [value, update];
 }
 function buildMarkdownArtifactHtml(markdown: string) {
   const lines = markdown

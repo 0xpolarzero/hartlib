@@ -57,7 +57,7 @@ export type DemoIssue = {
   sourceId: string;
   title: string;
   publicationDate: string;
-  status: "published";
+  status: "published" | "scheduled";
   summary: string;
   documents: readonly DemoDocument[];
   metrics: DemoIssueMetrics;
