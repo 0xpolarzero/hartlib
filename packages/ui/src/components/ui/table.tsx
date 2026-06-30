@@ -71,7 +71,10 @@ export function TableHead({
   return (
     <th
       data-slot="table-head"
-      className={cn("h-8 px-3 py-2 text-left align-middle font-normal first:pl-0 last:pr-0", className)}
+      className={cn(
+        "h-6 px-3 py-1 text-left align-middle font-normal first:pl-0 last:pr-0",
+        className,
+      )}
       {...props}
     />
   );

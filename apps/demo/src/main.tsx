@@ -218,7 +218,7 @@ function SortableTableHead<TData>({
         type="button"
         onClick={column.getToggleSortingHandler()}
         className={cn(
-          "group flex h-8 w-full items-center text-faint",
+          "group flex h-6 w-full items-center text-faint",
           align === "right" ? "justify-end text-right" : "justify-start text-left",
         )}
       >
