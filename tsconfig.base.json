@@ -14,7 +14,9 @@
     "baseUrl": ".",
     "paths": {
       "@brief/config": ["packages/config/src/index.ts"],
-      "@brief/shared": ["packages/shared/src/index.ts"]
+      "@brief/demo-data": ["packages/demo-data/src/index.ts"],
+      "@brief/shared": ["packages/shared/src/index.ts"],
+      "@brief/ui": ["packages/ui/src/index.ts"]
     }
   }
 }

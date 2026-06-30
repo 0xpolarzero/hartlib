@@ -2,8 +2,11 @@
   "files": [],
   "references": [
     { "path": "./packages/config" },
+    { "path": "./packages/demo-data" },
     { "path": "./packages/shared" },
+    { "path": "./packages/ui" },
     { "path": "./apps/api" },
+    { "path": "./apps/demo" },
     { "path": "./apps/worker" },
     { "path": "./apps/web" }
   ]

@@ -1,6 +1,5 @@
 import type * as React from "react";
-
-import { cn } from "@/lib/utils";
+import { cn } from "@brief/ui";
 
 type AppShellProps = {
   children: React.ReactNode;
@@ -8,13 +7,13 @@ type AppShellProps = {
 
 export function AppShell({ children }: AppShellProps) {
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b bg-background">
+    <div className="min-h-screen bg-canvas">
+      <header className="border-b border-rule bg-canvas">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-          <a href="/" className="text-sm font-semibold">
-            Brief
+          <a href="/" className="font-display text-xl font-medium">
+            brief<span className="text-accent">.</span>
           </a>
-          <nav className="flex items-center gap-1 text-sm text-muted-foreground">
+          <nav className="flex items-center gap-1 text-sm text-muted">
             <NavLink href="/">Home</NavLink>
             <NavLink href="/chat/demo">Chat</NavLink>
           </nav>
@@ -31,7 +30,7 @@ function NavLink({ className, ...props }: NavLinkProps) {
   return (
     <a
       {...props}
-      className={cn("rounded-md px-3 py-2 hover:bg-muted hover:text-foreground", className)}
+      className={cn("rounded-sm px-3 py-2 hover:bg-surface hover:text-ink", className)}
     />
   );
 }

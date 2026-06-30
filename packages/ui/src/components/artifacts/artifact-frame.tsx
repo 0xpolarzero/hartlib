@@ -1,5 +1,4 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
+import { cn } from "../../lib/utils";
 
 type ArtifactFrameProps = {
   title: string;
@@ -9,19 +8,25 @@ type ArtifactFrameProps = {
 
 export function ArtifactFrame({ title, html, className }: ArtifactFrameProps) {
   return (
-    <Card className={cn("flex flex-col overflow-hidden", className)}>
-      <CardHeader className="border-b">
-        <CardTitle>{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="min-h-0 flex-1 p-0">
+    <div
+      className={cn(
+        "relative bg-paper border border-rule overflow-hidden flex flex-col rounded-sm",
+        className,
+      )}
+    >
+      <div className="absolute top-0 right-0 w-3 h-3 pointer-events-none border-t border-r border-rule" />
+      <div className="border-b border-rule px-4 py-2.5 flex-shrink-0">
+        <span className="text-xs font-medium text-muted uppercase tracking-wider">{title}</span>
+      </div>
+      <div className="min-h-0 flex-1">
         <iframe
           title={title}
-          className="h-full min-h-[24rem] w-full bg-white"
+          className="h-full min-h-[24rem] w-full"
           sandbox="allow-scripts"
           srcDoc={buildArtifactDocument(html)}
         />
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 

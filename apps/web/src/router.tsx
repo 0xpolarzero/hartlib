@@ -5,10 +5,9 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
+import { ArtifactFrame, Button } from "@brief/ui";
 
-import { ArtifactFrame } from "@/components/artifacts/artifact-frame";
 import { AppShell } from "@/components/layout/app-shell";
-import { Button } from "@/components/ui/button";
 import { queryClient } from "@/lib/query-client";
 
 type RouterContext = {
@@ -58,11 +57,11 @@ function HomeRoute() {
   return (
     <section className="mx-auto flex w-full max-w-3xl flex-col gap-6 py-10">
       <div className="space-y-3">
-        <p className="text-sm font-medium text-muted-foreground">Brief</p>
-        <h1 className="text-3xl font-semibold tracking-normal text-foreground">
+        <p className="text-sm font-medium text-muted">Brief</p>
+        <h1 className="text-3xl font-semibold tracking-normal text-ink">
           Publisher issues, client archive search, and AI chat.
         </h1>
-        <p className="text-base leading-7 text-muted-foreground">
+        <p className="text-base leading-7 text-muted">
           This frontend shell is ready for authenticated app routes, TanStack state wiring, and
           sandboxed AI artifacts.
         </p>
@@ -80,11 +79,11 @@ function HomeRoute() {
 function ChatRoute() {
   return (
     <section className="grid min-h-[calc(100vh-8rem)] gap-4 py-6 lg:grid-cols-[minmax(0,1fr)_420px]">
-      <div className="flex min-h-[32rem] flex-col rounded-lg border bg-card">
-        <div className="border-b px-4 py-3">
+      <div className="flex min-h-[32rem] flex-col rounded-sm border border-rule bg-paper">
+        <div className="border-b border-rule px-4 py-3">
           <h1 className="text-sm font-medium">Chat</h1>
         </div>
-        <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
+        <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted">
           Chat messages and source panels will render here.
         </div>
       </div>
@@ -95,7 +94,7 @@ function ChatRoute() {
 }
 
 const sampleArtifactHtml = `
-  <main style="font-family: Inter, ui-sans-serif, system-ui; padding: 24px;">
+  <main style="font-family: 'IBM Plex Sans', ui-sans-serif, system-ui; padding: 24px;">
     <p style="font-size: 12px; color: #64748b; margin: 0 0 8px;">Artifact</p>
     <h1 style="font-size: 24px; margin: 0 0 12px;">Issue timeline placeholder</h1>
     <p style="line-height: 1.6; color: #334155;">

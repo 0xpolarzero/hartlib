@@ -73,10 +73,106 @@ The MVP uses a React SPA and a separate backend service.
 Repository layout:
 
 - `apps/web` for the React frontend
+- `apps/demo` for the separate read-only demo frontend
 - `apps/api` for the backend API and AI streaming endpoints
 - `apps/worker` for background jobs
 - `packages/shared` for shared schemas and types
 - `packages/config` for shared configuration and environment parsing
+- `packages/ui` for reusable product UI components
+- fixture packages for reusable seeded demo data and representative content
+
+App directories contain app wiring, routing, and app-specific behavior.
+
+Reusable UI, product logic, schemas, API clients, fixtures, and backend domain services belong in packages, not inside `apps/web` or `apps/demo`.
+
+## Demo Architecture
+
+Build the demo before the MVP.
+
+The demo is a seeded product environment, not a mocked prototype.
+
+The demo lives in `apps/demo`, separate from `apps/web`.
+
+Use shared MVP components, schemas, API client code, backend domain services, and database access from packages wherever possible.
+
+Use demo-only code only for:
+
+- seed data
+- fake accounts
+- account switching
+- fixture issue files and extracted text
+- representative pre-populated chats
+- read-only guardrails
+
+The demo uses a real Postgres database.
+
+The demo database is a test database.
+
+The demo runs migrations.
+
+The demo seeds:
+
+- one publisher company
+- one publisher user
+- one client company
+- one client user
+- one active client AI plan
+- one or more subscriptions
+- published issues
+- delivered client archives
+- representative AI chat messages
+- representative source metadata
+- representative artifact output when useful
+
+The demo lets the viewer switch between publisher and client accounts.
+
+Account switching is demo-only.
+
+Production authentication still uses Clerk.
+
+The demo UI is read-only.
+
+Read-only means:
+
+- publisher controls are visible only when useful for understanding the product
+- publisher create, upload, edit, publish, invite, billing, and destructive actions are disabled or hidden
+- client admin controls are visible only when useful for understanding the product
+- chat send is disabled
+- pre-populated chat content is shown through the real chat UI
+
+The demo can use OpenRouter and cheap models for seeded or replayed AI examples.
+
+The demo should avoid live AI calls unless the demo scenario explicitly needs them.
+
+The demo must not use real publisher content or real client data.
+
+The demo should mock as little as possible.
+
+Mock external services only when using the real service creates cost, compliance, instability, or setup friction.
+
+For the demo, mock or bypass:
+
+- real Clerk login
+- real Stripe payment collection
+- real email delivery
+- real publisher uploads
+- real user invitations
+
+For the demo, keep real:
+
+- routing
+- shared UI components
+- authorization checks where practical
+- database schema
+- database queries
+- archive search over seeded content
+- chat rendering
+- source metadata rendering
+- artifact rendering
+
+Demo code must be isolated from production behavior by the separate `apps/demo` app and demo-only modules.
+
+Do not make production authorization depend on demo account switching.
 
 Frontend:
 

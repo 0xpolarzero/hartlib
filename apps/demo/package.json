@@ -1,5 +1,5 @@
 {
-  "name": "@brief/web",
+  "name": "@brief/demo",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,20 +10,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@brief/shared": "workspace:*",
+    "@brief/demo-data": "workspace:*",
     "@brief/ui": "workspace:*",
-    "@clerk/clerk-react": "5.61.3",
-    "@sentry/react": "10.62.0",
-    "@tanstack/db": "0.6.12",
-    "@tanstack/query-core": "5.101.2",
-    "@tanstack/query-db-collection": "1.0.44",
-    "@tanstack/react-db": "0.1.90",
-    "@tanstack/react-form": "1.33.0",
-    "@tanstack/react-query": "5.101.2",
-    "@tanstack/react-router": "1.170.16",
-    "@tanstack/react-table": "8.21.3",
-    "@tanstack/react-virtual": "3.14.4",
-    "echarts": "6.1.0",
     "lucide-react": "1.22.0",
     "react": "19.2.7",
     "react-dom": "19.2.7"

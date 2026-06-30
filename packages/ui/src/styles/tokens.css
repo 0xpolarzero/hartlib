@@ -1,0 +1,51 @@
+@theme inline {
+  /* ── shadcn semantic tokens (mapped to Pressroom values) ── */
+  --color-background: oklch(0.975 0.005 220);
+  --color-foreground: oklch(0.22 0.02 60);
+  --color-card: oklch(0.985 0.004 220);
+  --color-card-foreground: oklch(0.22 0.02 60);
+  --color-popover: oklch(0.985 0.004 220);
+  --color-popover-foreground: oklch(0.22 0.02 60);
+  --color-primary: oklch(0.22 0.02 60);
+  --color-primary-foreground: oklch(0.985 0.004 220);
+  --color-secondary: oklch(0.96 0.006 220);
+  --color-secondary-foreground: oklch(0.22 0.02 60);
+  --color-muted-foreground: oklch(0.45 0.02 60);
+  --color-destructive: oklch(0.45 0.14 28);
+  --color-destructive-foreground: oklch(0.985 0.004 220);
+  --color-border: oklch(0.87 0.01 220);
+  --color-input: oklch(0.87 0.01 220);
+  --color-ring: oklch(0.6 0.06 28);
+
+  /* ── Pressroom tokens ── */
+  /* NOTE: --color-muted is intentionally NOT overridden by a shadcn value.
+     It is kept as the Pressroom text-gray token (used as text-muted throughout apps).
+     shadcn bg-muted/hover:bg-accent patterns are replaced with bg-surface in components. */
+  --color-paper: oklch(0.985 0.004 220);
+  --color-canvas: oklch(0.975 0.005 220);
+  --color-surface: oklch(0.96 0.006 220);
+  --color-ink: oklch(0.22 0.02 60);
+  --color-muted: oklch(0.45 0.02 60);
+  --color-faint: oklch(0.6 0.015 55);
+  --color-rule: oklch(0.87 0.01 220);
+  --color-accent: oklch(0.52 0.14 28);
+  --color-accent-soft: oklch(0.8 0.04 28);
+  --color-success: oklch(0.5 0.12 160);
+  --color-warning: oklch(0.65 0.12 80);
+  --color-danger: oklch(0.45 0.14 28);
+
+  --font-display: "Fraunces", ui-serif, serif;
+  --font-serif: "Newsreader", ui-serif, georgia, serif;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  --ease-snappy: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 100ms;
+  --duration-normal: 200ms;
+}

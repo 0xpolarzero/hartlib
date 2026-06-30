@@ -30,13 +30,34 @@ The MVP uses real accounts, real publisher content, and the real compliance post
 
 ## Demo
 
-The demo is separate from the MVP.
+The demo is a separate app under `apps/demo`.
 
 The demo can use OpenRouter and cheap models.
 
-The demo uses fixtures and fake accounts.
+The demo uses fixtures, fake accounts, and a real test database.
 
 The demo does not use real publisher content or real client data.
+
+The demo has two seeded accounts:
+
+- one publisher account
+- one client account
+
+The demo lets the user switch between the publisher and client views.
+
+The demo uses shared product components and shared backend logic where possible.
+
+Reusable demo and MVP UI or product logic belongs in packages, not inside `apps/web` or `apps/demo`.
+
+The demo uses fixture data only where real customer data would otherwise be needed.
+
+The demo is read-only.
+
+The demo chat is pre-populated with representative messages.
+
+The demo does not send new chat messages.
+
+The demo client already has an active AI plan.
 
 ## Product Promise
 

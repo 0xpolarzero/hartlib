@@ -12,8 +12,9 @@
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
+      "@brief/ui": ["../../packages/ui/src/index.ts"],
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src", "../../packages/ui/src"]
 }
