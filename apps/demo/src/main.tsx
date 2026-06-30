@@ -66,6 +66,8 @@ import "./styles.css";
 const sourceById = new Map(demoDataset.sources.map((s) => [s.id, s]));
 const primaryChat = demoDataset.chats[0];
 const primaryArtifact = demoDataset.artifacts[0];
+const editableFieldChromeClass =
+  "rounded-sm border border-transparent bg-transparent outline-none transition-colors duration-fast hover:border-rule hover:bg-surface/60 focus:border-ring focus:bg-paper focus:ring-2 focus:ring-ring/20";
 const demoSubscriberProfiles = [
   {
     id: demoDataset.companies.client.id,
@@ -181,7 +183,7 @@ function App() {
                       <RotateCcw className="size-4" aria-hidden="true" />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent side="bottom" align="end" sideOffset={8} className="z-[100]">
+                  <TooltipContent side="bottom" align="end" sideOffset={8}>
                     Efface les changements de cette demo.
                   </TooltipContent>
                 </Tooltip>
@@ -580,7 +582,10 @@ function PublisherPublicationDetail({
               <input
                 value={issue.title}
                 onChange={(event) => updateIssue({ title: event.target.value })}
-                className="w-full border-0 bg-transparent p-0 font-display text-2xl font-medium text-ink outline-none transition-colors duration-fast focus:text-accent"
+                className={cn(
+                  editableFieldChromeClass,
+                  "w-full px-1 py-0.5 font-display text-2xl font-medium text-ink focus:text-accent",
+                )}
                 aria-label="Titre de la publication"
               />
             ) : (
@@ -597,27 +602,42 @@ function PublisherPublicationDetail({
         </div>
         <div className="mt-2 font-mono text-[11px] uppercase tracking-wider text-faint">
           {source?.name} /{" "}
-          {editable ? (
-            <input
-              type="datetime-local"
-              value={toDatetimeLocalValue(issue.publicationDate)}
-              onChange={(event) => {
-                if (!event.target.value) return;
-                updateIssue({ publicationDate: new Date(event.target.value).toISOString() });
-              }}
-              className="border-0 bg-transparent p-0 font-mono text-[11px] uppercase tracking-wider text-faint outline-none focus:text-accent"
-              aria-label="Date de publication"
-            />
-          ) : (
-            formatDate(issue.publicationDate)
-          )}
-          {issue.status === "scheduled" ? <ScheduledPublicationIcon className="ml-2" /> : null}
+          <span className="inline-flex items-center gap-2 align-middle">
+            {editable ? (
+              <input
+                type="datetime-local"
+                value={toDatetimeLocalValue(issue.publicationDate)}
+                onChange={(event) => {
+                  if (!event.target.value) return;
+                  updateIssue({ publicationDate: new Date(event.target.value).toISOString() });
+                }}
+                className={cn(
+                  editableFieldChromeClass,
+                  "px-1 py-0.5 font-mono text-[11px] uppercase tracking-wider text-faint focus:text-accent",
+                )}
+                aria-label="Date de publication"
+              />
+            ) : (
+              <span>{formatDate(issue.publicationDate)}</span>
+            )}
+            {issue.status === "scheduled" ? (
+              <>
+                <ScheduledPublicationIcon />
+                <span className="font-sans text-xs normal-case tracking-normal text-muted">
+                  {formatRelativeSchedule(issue.publicationDate)}
+                </span>
+              </>
+            ) : null}
+          </span>
         </div>
         {editable ? (
           <textarea
             value={issue.summary}
             onChange={(event) => updateIssue({ summary: event.target.value })}
-            className="mt-4 min-h-20 w-full max-w-3xl resize-y border-0 bg-transparent p-0 font-serif text-sm leading-6 text-muted outline-none transition-colors duration-fast focus:text-ink"
+            className={cn(
+              editableFieldChromeClass,
+              "mt-4 min-h-20 w-full max-w-3xl resize-y px-2 py-1 font-serif text-sm leading-6 text-muted focus:min-h-28 focus:text-ink",
+            )}
             aria-label="Résumé de la publication"
           />
         ) : (
@@ -1200,6 +1220,7 @@ function DocumentsTable({
                 <InlineInput
                   value={doc.extractedTextPreview}
                   ariaLabel="Description du document"
+                  multiline
                   onChange={(extractedTextPreview) =>
                     onUpdateDocument(doc.id, { extractedTextPreview })
                   }
@@ -1231,17 +1252,22 @@ function DocumentsTable({
 function InlineInput({
   value,
   ariaLabel,
+  multiline,
   onChange,
 }: {
   value: string;
   ariaLabel: string;
+  multiline?: boolean;
   onChange: (value: string) => void;
 }) {
   const [draft, setDraft] = useState(value);
+  const [focused, setFocused] = useState(false);
 
   useEffect(() => {
-    setDraft(value);
-  }, [value]);
+    if (!focused) {
+      setDraft(value);
+    }
+  }, [focused, value]);
 
   useEffect(() => {
     if (draft === value) return;
@@ -1253,17 +1279,52 @@ function InlineInput({
     if (draft !== value) onChange(draft);
   }
 
+  if (multiline) {
+    return (
+      <textarea
+        value={draft}
+        rows={focused ? 4 : 1}
+        onBlur={() => {
+          setFocused(false);
+          commit();
+        }}
+        onChange={(event) => setDraft(event.target.value)}
+        onFocus={() => setFocused(true)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setDraft(value);
+            event.currentTarget.blur();
+          }
+        }}
+        className={cn(
+          editableFieldChromeClass,
+          "w-full resize-none px-2 py-1 text-sm leading-5 text-ink",
+          focused ? "min-h-24" : "min-h-7 truncate",
+        )}
+        aria-label={ariaLabel}
+      />
+    );
+  }
+
   return (
     <input
       value={draft}
-      onBlur={commit}
+      onBlur={() => {
+        setFocused(false);
+        commit();
+      }}
       onChange={(event) => setDraft(event.target.value)}
+      onFocus={() => setFocused(true)}
       onKeyDown={(event) => {
         if (event.key === "Enter") {
           event.currentTarget.blur();
         }
+        if (event.key === "Escape") {
+          setDraft(value);
+          event.currentTarget.blur();
+        }
       }}
-      className="w-full border-0 bg-transparent p-0 text-sm text-ink outline-none transition-colors duration-fast focus:text-accent"
+      className={cn(editableFieldChromeClass, "w-full px-1 py-0.5 text-sm text-ink")}
       aria-label={ariaLabel}
     />
   );
@@ -1327,7 +1388,7 @@ function ConfirmingDeleteButton({
         className={cn(
           "size-7",
           !confirming &&
-            "text-faint/70 hover:bg-danger/5 hover:text-destructive focus-visible:text-destructive",
+            "text-faint/70 hover:bg-surface hover:text-destructive focus-visible:text-destructive",
         )}
         onClick={(event) => {
           event.stopPropagation();
@@ -1385,7 +1446,7 @@ function SubscriberTable({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7 text-faint/70 hover:text-muted focus-visible:text-muted"
+                className="size-7 text-faint/70 hover:bg-surface hover:text-muted focus-visible:text-muted"
                 onClick={(event) => {
                   event.stopPropagation();
                   onToggleStatus(row.id);
@@ -1609,6 +1670,31 @@ function formatShortDate(value: string) {
     day: "numeric",
     month: "short",
   }).format(new Date(value));
+}
+
+function formatRelativeSchedule(value: string) {
+  const diffMs = new Date(value).getTime() - Date.now();
+  const absMs = Math.abs(diffMs);
+  const minute = 60_000;
+  const hour = minute * 60;
+  const day = hour * 24;
+  const week = day * 7;
+  const month = day * 30;
+  const formatter = new Intl.RelativeTimeFormat("fr-FR", { numeric: "auto" });
+
+  if (absMs < hour) {
+    return formatter.format(Math.round(diffMs / minute), "minute");
+  }
+  if (absMs < day) {
+    return formatter.format(Math.round(diffMs / hour), "hour");
+  }
+  if (absMs < week) {
+    return formatter.format(Math.round(diffMs / day), "day");
+  }
+  if (absMs < month) {
+    return formatter.format(Math.round(diffMs / week), "week");
+  }
+  return formatter.format(Math.round(diffMs / month), "month");
 }
 
 function toDatetimeLocalValue(value: string) {

@@ -57,6 +57,12 @@ Demo interactions can create, edit, and delete fixture-shaped records when neede
 
 Demo local edits are persisted in `localStorage` only and are not sent to a backend.
 
+Demo editable fields use inline editing.
+
+Inline editable fields are visually quiet at rest, show a subtle surface and rule on hover, and show a clear focused editing state.
+
+Long editable document fields expand when focused so the edit surface is obvious.
+
 The demo chat is pre-populated with representative messages.
 
 The demo does not send new chat messages.

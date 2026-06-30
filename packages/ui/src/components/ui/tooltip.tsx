@@ -20,7 +20,7 @@ export function TooltipContent({
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         className={cn(
-          "z-50 overflow-hidden rounded-sm bg-primary px-3 py-1.5 text-xs text-primary-foreground shadow-md",
+          "z-[1000] overflow-hidden rounded-sm border border-rule bg-paper px-3 py-2 text-xs text-ink shadow-[0_8px_24px_rgb(34_29_24_/_0.14)]",
           "animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
           "data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1",
           "data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1",
