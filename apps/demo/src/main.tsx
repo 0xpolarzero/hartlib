@@ -3,7 +3,8 @@ import {
   BookOpen,
   Bot,
   ChevronRight,
-    Lock,
+  Info,
+  Lock,
   MessageSquare,
   Search,
   Send,
@@ -31,6 +32,10 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
   cn,
 } from "@brief/ui";
 
@@ -57,17 +62,6 @@ const demoClients = [
   },
 ];
 
-function sourceTotals(issues: readonly DemoIssue[]) {
-  return issues.reduce(
-    (acc, issue) => ({
-      opens: acc.opens + issue.metrics.opens,
-      downloads: acc.downloads + issue.metrics.downloads,
-      contextPulls: acc.contextPulls + issue.metrics.aiContextPulls,
-    }),
-    { opens: 0, downloads: 0, contextPulls: 0 },
-  );
-}
-
 // --- App ---
 
 function App() {
@@ -85,7 +79,8 @@ function App() {
   const selectedSource = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
 
   return (
-    <Tabs value={role} onValueChange={(v) => handleRoleChange(v as DemoRole)}>
+    <TooltipProvider>
+      <Tabs value={role} onValueChange={(v) => handleRoleChange(v as DemoRole)}>
       <main className="min-h-screen bg-canvas text-ink">
         <header className="border-b border-rule bg-paper/80 backdrop-blur">
           <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
@@ -142,6 +137,7 @@ function App() {
         </div>
       </main>
     </Tabs>
+    </TooltipProvider>
   );
 }
 
@@ -225,27 +221,12 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
 
 function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
   const issues = issuesBySourceId.get(source.id) ?? [];
-  const totals = sourceTotals(issues);
 
   return (
     <div className="space-y-8">
       <p className="font-serif text-sm leading-6 text-muted">{source.description}</p>
 
-      <div className="animate-in stagger-1">
-        <StatsGrid>
-          <StatBlock label="Issues" value={String(issues.length)} detail="Publiees" />
-          <StatBlock label="Ouvertures" value={String(totals.opens)} detail="Cumul" />
-          <StatBlock label="Downloads" value={String(totals.downloads)} detail="Cumul" />
-          <StatBlock
-            label="Context pulls"
-            value={String(totals.contextPulls)}
-            detail="Usage archive IA"
-            accent
-          />
-        </StatsGrid>
-      </div>
-
-      <div className="animate-in stagger-2 grid gap-8 xl:grid-cols-[1.3fr_0.7fr]">
+      <div className="animate-in stagger-1 grid gap-8 xl:grid-cols-[1.3fr_0.7fr]">
         <section>
           <SectionTitle title="Issues publiees" />
           <div className="mt-4">
@@ -539,7 +520,19 @@ function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact
           ) : null}
           <TableHead className="text-right">Opens</TableHead>
           <TableHead className="text-right">Downloads</TableHead>
-          <TableHead className="text-right">Context</TableHead>
+          <TableHead className="text-right">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex cursor-help items-center gap-1">
+                  Context
+                  <Info className="size-3 text-faint" aria-hidden="true" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" align="center">
+                Nombre de fois ou l'archive a ete lue par l'IA pour repondre.
+              </TooltipContent>
+            </Tooltip>
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
