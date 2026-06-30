@@ -201,12 +201,12 @@ type FilRow = {
 
 const filColumnHelper = createColumnHelper<FilRow>();
 
-function SortableTableHead({
+function SortableTableHead<TData>({
   column,
   align = "left",
   children,
 }: {
-  column: Column<FilRow, unknown>;
+  column: Column<TData, unknown>;
   align?: "left" | "right";
   children: React.ReactNode;
 }) {
@@ -351,14 +351,14 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
 
       <div className="animate-in stagger-1 grid gap-8 xl:grid-cols-[1.3fr_0.7fr]">
         <section>
-          <h3 className="text-sm font-medium text-muted">Publications</h3>
+          <h3 className="text-xs font-normal uppercase tracking-[0.16em] text-faint">Publications</h3>
           <div className="mt-4">
             <IssueTable issues={issues} compact />
           </div>
         </section>
 
         <section>
-          <SectionTitle title="Clients actuellement abonnés" />
+          <h3 className="text-xs font-normal uppercase tracking-[0.16em] text-faint">Abonnés</h3>
           <div className="mt-4 space-y-3">
             {demoClients.map((client) => (
               <div key={client.id} className="rounded-sm border border-rule bg-paper p-3">
@@ -624,55 +624,126 @@ function SourceRow({
   );
 }
 
+type PublicationRow = {
+  id: string;
+  issue: DemoIssue;
+  title: string;
+  sourceName: string;
+  publicationDate: string;
+  opens: number;
+  downloads: number;
+  contextPulls: number;
+};
+
+const publicationColumnHelper = createColumnHelper<PublicationRow>();
+
 function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact?: boolean }) {
+  const [sorting, setSorting] = useState<SortingState>([
+    { id: "publicationDate", desc: true },
+  ]);
+
+  const rows = useMemo<PublicationRow[]>(
+    () =>
+      issues.map((issue) => ({
+        id: issue.id,
+        issue,
+        title: issue.title,
+        sourceName: sourceById.get(issue.sourceId)?.name ?? "",
+        publicationDate: issue.publicationDate,
+        opens: issue.metrics.opens,
+        downloads: issue.metrics.downloads,
+        contextPulls: issue.metrics.aiContextPulls,
+      })),
+    [issues],
+  );
+
+  const columns = useMemo(
+    () => [
+      publicationColumnHelper.accessor("title", { header: "Publication" }),
+      ...(compact
+        ? []
+        : [
+            publicationColumnHelper.accessor("sourceName", {
+              header: "Fil",
+            }),
+          ]),
+      publicationColumnHelper.accessor("opens", { header: "Ouvertures" }),
+      publicationColumnHelper.accessor("downloads", { header: "Téléchargements" }),
+      publicationColumnHelper.accessor("contextPulls", {
+        header: () => (
+          <span className="inline-flex items-center gap-1">
+            Contexte
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Info className="size-3 text-faint" aria-hidden="true" />
+              </TooltipTrigger>
+              <TooltipContent side="top" align="center">
+                Nombre de fois où l'archive a été lue par l'IA pour répondre.
+              </TooltipContent>
+            </Tooltip>
+          </span>
+        ),
+      }),
+      publicationColumnHelper.accessor("publicationDate", {
+        header: "Date",
+      }),
+    ],
+    [compact],
+  );
+
+  const table = useReactTable({
+    data: rows,
+    columns,
+    state: { sorting },
+    onSortingChange: setSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+  });
+
   return (
     <Table>
       <TableHeader>
-        <TableRow>
-          <TableHead>Publication</TableHead>
-          {!compact ? (
-            <TableHead className="hidden md:table-cell">Fil</TableHead>
-          ) : null}
-          <TableHead className="text-right">Ouvertures</TableHead>
-          <TableHead className="text-right">Téléchargements</TableHead>
-         <TableHead className="text-right">
-            <span className="inline-flex items-center gap-1">
-              Contexte
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Info className="size-3 text-faint" aria-hidden="true" />
-                </TooltipTrigger>
-                <TooltipContent side="top" align="center">
-                  Nombre de fois où l'archive a été lue par l'IA pour répondre.
-                </TooltipContent>
-              </Tooltip>
-            </span>
-         </TableHead>
-        </TableRow>
+        {table.getHeaderGroups().map((headerGroup) => (
+          <TableRow key={headerGroup.id}>
+            {headerGroup.headers.map((header) => {
+              if (header.column.id === "publicationDate") return null;
+              return (
+                <SortableTableHead key={header.id} column={header.column}>
+                  {flexRender(header.column.columnDef.header, header.getContext())}
+                </SortableTableHead>
+              );
+            })}
+          </TableRow>
+        ))}
       </TableHeader>
       <TableBody>
-        {issues.map((issue) => (
-          <TableRow key={issue.id}>
-            <TableCell>
-              <div className="font-medium text-ink">{issue.title}</div>
-              <div className="font-mono text-[11px] text-faint">
-                {formatDate(issue.publicationDate)}
-              </div>
-            </TableCell>
-            {!compact ? (
-              <TableCell className="hidden md:table-cell text-muted">
-                {sourceById.get(issue.sourceId)?.name}
-              </TableCell>
-            ) : null}
-            <TableCell className="text-right tabular-nums text-ink">
-              {issue.metrics.opens}
-            </TableCell>
-            <TableCell className="text-right tabular-nums text-ink">
-              {issue.metrics.downloads}
-            </TableCell>
-            <TableCell className="text-right tabular-nums font-medium text-accent">
-              {issue.metrics.aiContextPulls}
-            </TableCell>
+        {table.getRowModel().rows.map((row) => (
+          <TableRow key={row.id}>
+            {row.getVisibleCells().map((cell) => {
+              if (cell.column.id === "publicationDate") return null;
+              if (cell.column.id === "title") {
+                return (
+                  <TableCell key={cell.id}>
+                    <div className="font-medium text-ink">{row.original.title}</div>
+                    <div className="font-mono text-[11px] text-faint">
+                      {formatDate(row.original.publicationDate)}
+                    </div>
+                  </TableCell>
+                );
+              }
+              if (cell.column.id === "contextPulls") {
+                return (
+                  <TableCell key={cell.id} className="tabular-nums font-medium text-accent">
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </TableCell>
+                );
+              }
+              return (
+                <TableCell key={cell.id} className="tabular-nums text-ink">
+                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                </TableCell>
+              );
+            })}
           </TableRow>
         ))}
       </TableBody>
