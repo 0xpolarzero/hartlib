@@ -184,8 +184,8 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
       <TableHeader>
         <TableRow>
           <TableHead>Source</TableHead>
-          <TableHead className="text-right">Issues</TableHead>
-          <TableHead className="text-right">Derniere issue</TableHead>
+          <TableHead className="text-right">Publications</TableHead>
+          <TableHead className="text-right">Derniere publication</TableHead>
           <TableHead className="text-right">Abonnes</TableHead>
         </TableRow>
       </TableHeader>
@@ -228,7 +228,7 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
 
       <div className="animate-in stagger-1 grid gap-8 xl:grid-cols-[1.3fr_0.7fr]">
         <section>
-          <SectionTitle title="Issues publiees" />
+          <SectionTitle title="Publications livrees" />
           <div className="mt-4">
             <IssueTable issues={issues} compact />
           </div>
@@ -255,7 +255,7 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
         <div className="mt-4 divide-y divide-rule">
           <Guardrail text="Aucune creation, invitation, publication ou suppression disponible." />
           <Guardrail text="Les donnees d'usage sont agregees; aucun plan IA client n'est visible cote editeur." />
-          <Guardrail text="Les issues publiees restent visibles et non modifiables." />
+          <Guardrail text="Les publications livrees restent visibles et non modifiables." />
         </div>
       </section>
     </div>
@@ -292,7 +292,7 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
             detail="Abonnements livres"
           />
           <StatBlock
-            label="Issues archivees"
+            label="Publications archivees"
             value={String(demoDataset.issues.length)}
             detail="Consultables"
           />
@@ -329,7 +329,7 @@ function ClientSourcesList({ onSelect }: { onSelect: (id: string) => void }) {
             <div className="mt-4">
               <div className="flex items-center gap-2 rounded-sm border border-rule bg-surface px-3 py-2 text-muted">
                 <Search className="size-4 shrink-0" aria-hidden="true" />
-                <span className="truncate text-sm">Rechercher dans les issues livrees...</span>
+                <span className="truncate text-sm">Rechercher dans les publications livrees...</span>
                 <Lock className="ml-auto size-4 shrink-0" aria-hidden="true" />
               </div>
               <div className="mt-3 flex flex-wrap gap-3">
@@ -499,7 +499,7 @@ function SourceRow({
           <div className="mt-0.5 text-xs text-muted">
             {perspective === "client" ? source.branding.publisherName : source.description}
           </div>
-          <div className="mt-1 text-sm text-ink">{latestIssue?.title ?? "Aucune issue livree"}</div>
+          <div className="mt-1 text-sm text-ink">{latestIssue?.title ?? "Aucune publication livree"}</div>
         </div>
         {onSelect ? (
           <ChevronRight className="mt-1 size-4 shrink-0 text-faint" aria-hidden="true" />
@@ -514,7 +514,7 @@ function IssueTable({ issues, compact }: { issues: readonly DemoIssue[]; compact
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Livraison</TableHead>
+          <TableHead>Publication</TableHead>
           {!compact ? (
             <TableHead className="hidden md:table-cell">Source</TableHead>
           ) : null}
