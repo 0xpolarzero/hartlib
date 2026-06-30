@@ -1,8 +1,11 @@
 import { createRoot } from "react-dom/client";
 import {
+  ArrowDown,
+  ArrowUp,
   BookOpen,
   Bot,
   ChevronRight,
+  ChevronsUpDown,
   Info,
   Lock,
   MessageSquare,
@@ -45,6 +48,7 @@ import {
   getCoreRowModel,
   getSortedRowModel,
   useReactTable,
+  type Column,
   type SortingState,
 } from "@tanstack/react-table";
 
@@ -197,22 +201,51 @@ type FilRow = {
 
 const filColumnHelper = createColumnHelper<FilRow>();
 
-type FilSortId = "lastPublishedAt" | "name" | "issueCount" | "subscriberCount";
+function SortableTableHead({
+  column,
+  align = "left",
+  children,
+}: {
+  column: Column<FilRow, unknown>;
+  align?: "left" | "right";
+  children: React.ReactNode;
+}) {
+  const sorted = column.getIsSorted();
 
-const filSortLabels: Record<FilSortId, string> = {
-  lastPublishedAt: "Dernière publication",
-  name: "Fil",
-  issueCount: "Publications",
-  subscriberCount: "Abonnés",
-};
+  return (
+    <TableHead className={cn(align === "right" && "text-right")}>
+      <button
+        type="button"
+        onClick={column.getToggleSortingHandler()}
+        className={cn(
+          "group flex h-8 w-full items-center text-faint",
+          align === "right" ? "justify-end text-right" : "justify-start text-left",
+        )}
+      >
+        <span className="inline-flex max-w-full items-center gap-1">
+          <span className="min-w-0 truncate">{children}</span>
+          <span className="flex size-3 shrink-0 items-center justify-center">
+            {sorted === "desc" ? (
+              <ArrowDown className="size-3 text-ink" aria-hidden="true" />
+            ) : sorted === "asc" ? (
+              <ArrowUp className="size-3 text-ink" aria-hidden="true" />
+            ) : (
+              <ChevronsUpDown
+                className="size-3 opacity-0 transition-opacity duration-fast group-hover:opacity-100"
+                aria-hidden="true"
+              />
+            )}
+          </span>
+        </span>
+      </button>
+    </TableHead>
+  );
+}
 
 function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
   const [sorting, setSorting] = useState<SortingState>([
     { id: "lastPublishedAt", desc: true },
   ]);
-
-  const currentSort = sorting[0] ?? { id: "lastPublishedAt", desc: true };
-  const currentSortId = currentSort.id as FilSortId;
 
   const rows = useMemo<FilRow[]>(
     () =>
@@ -259,44 +292,19 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
     getSortedRowModel: getSortedRowModel(),
   });
 
-  function setSort(id: FilSortId) {
-    setSorting([{ id, desc: id === currentSortId ? !currentSort.desc : id !== "name" }]);
-  }
-
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-end gap-1 font-mono text-[11px] uppercase tracking-wider text-faint">
-        {(Object.keys(filSortLabels) as FilSortId[]).map((id) => {
-          const active = currentSortId === id;
-          return (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setSort(id)}
-              className={cn(
-                "rounded-xs px-1.5 py-0.5 transition-colors duration-fast hover:bg-surface hover:text-muted",
-                active && "bg-surface text-ink",
-              )}
-            >
-              {filSortLabels[id]}
-              {active ? (currentSort.desc ? " ↓" : " ↑") : null}
-            </button>
-          );
-        })}
-      </div>
-
+    <div>
       <Table>
         <TableHeader>
           {table.getHeaderGroups().map((headerGroup) => (
             <TableRow key={headerGroup.id}>
-              {headerGroup.headers.map((header) => (
-                <TableHead
-                  key={header.id}
-                  className={cn(header.id !== "name" && "text-right")}
-                >
-                  {flexRender(header.column.columnDef.header, header.getContext())}
-                </TableHead>
-              ))}
+              {headerGroup.headers.map((header) => {
+                return (
+                  <SortableTableHead key={header.id} column={header.column}>
+                    {flexRender(header.column.columnDef.header, header.getContext())}
+                  </SortableTableHead>
+                );
+              })}
             </TableRow>
           ))}
         </TableHeader>
@@ -347,7 +355,7 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
 
       <div className="animate-in stagger-1 grid gap-8 xl:grid-cols-[1.3fr_0.7fr]">
         <section>
-          <SectionTitle title="Publications livrées" />
+          <h3 className="text-sm font-medium text-muted">Publications</h3>
           <div className="mt-4">
             <IssueTable issues={issues} compact />
           </div>
@@ -369,14 +377,6 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
         </section>
       </div>
 
-      <section className="animate-in stagger-3">
-        <SectionTitle title="Garde-fous demo" />
-        <div className="mt-4 divide-y divide-rule">
-          <Guardrail text="Aucune création, invitation, publication ou suppression disponible." />
-          <Guardrail text="Les données d'usage sont agrégées; aucun plan IA client n'est visible côté éditeur." />
-          <Guardrail text="Les publications livrées restent visibles et non modifiables." />
-        </div>
-      </section>
     </div>
   );
 }
@@ -760,15 +760,6 @@ function Metric({ label, value }: { label: string; value: string }) {
     <div>
       <div className="text-xs text-faint">{label}</div>
       <div className="font-semibold text-ink">{value}</div>
-    </div>
-  );
-}
-
-function Guardrail({ text }: { text: string }) {
-  return (
-    <div className="flex gap-3 py-3 first:pt-0 last:pb-0">
-      <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
-      <span className="text-sm text-muted">{text}</span>
     </div>
   );
 }
