@@ -1,9 +1,11 @@
 import { createRoot } from "react-dom/client";
 import {
-  Bot,
   CalendarClock,
   Check,
   ChevronsUpDown,
+  ExternalLink,
+  Eye,
+  EyeOff,
   Info,
   Pause,
   Play,
@@ -11,14 +13,12 @@ import {
   Send,
   Trash2,
   Upload,
-  Users,
   RotateCcw,
 } from "lucide-react";
 import { Fragment, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   demoDataset,
-  type DemoChatMessage,
   type DemoIssue,
   type DemoRole,
   type DemoSubscriptionSource,
@@ -40,6 +40,7 @@ import {
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
+  VirtualizedChatTranscript,
   cn,
 } from "@brief/ui";
 
@@ -79,60 +80,159 @@ const demoSubscriberProfiles = [
 ];
 // --- App ---
 
-function getDemoRolePath(role: DemoRole) {
-  return role === "client" ? "/client" : "/publisher";
+type DemoRoute = {
+  role: DemoRole;
+  sourceId: string | null;
+  issueId: string | null;
+};
+
+function getDemoRouteFromPath(
+  pathname = typeof window === "undefined" ? "" : window.location.pathname,
+): DemoRoute {
+  const [scope, segment, sourceId, nestedSegment, issueId] = pathname
+    .split("/")
+    .filter(Boolean)
+    .map(decodeURIComponent);
+
+  if (scope === "client") {
+    return {
+      role: "client",
+      sourceId: null,
+      issueId: segment === "publications" ? (sourceId ?? null) : null,
+    };
+  }
+
+  if (scope === "publisher" && segment === "sources") {
+    return {
+      role: "publisher",
+      sourceId: sourceId ?? null,
+      issueId: nestedSegment === "publications" ? (issueId ?? null) : null,
+    };
+  }
+
+  return {
+    role: "publisher",
+    sourceId: null,
+    issueId: null,
+  };
 }
 
-function getDemoRoleFromPath(): DemoRole {
-  if (typeof window === "undefined") return "publisher";
-  return window.location.pathname.startsWith("/client") ? "client" : "publisher";
+function buildDemoPath(route: DemoRoute) {
+  if (route.role === "client") {
+    return route.issueId ? `/client/publications/${encodeURIComponent(route.issueId)}` : "/client";
+  }
+
+  if (!route.sourceId) return "/publisher";
+
+  const sourcePath = `/publisher/sources/${encodeURIComponent(route.sourceId)}`;
+  return route.issueId
+    ? `${sourcePath}/publications/${encodeURIComponent(route.issueId)}`
+    : sourcePath;
+}
+
+function resolveDemoRoute(route: DemoRoute, issues: readonly DemoIssue[]): DemoRoute {
+  if (route.role === "client") {
+    if (!route.issueId) {
+      return { role: "client", sourceId: null, issueId: null };
+    }
+
+    const issue = issues.find(
+      (candidate) => candidate.id === route.issueId && candidate.status === "published",
+    );
+    if (!issue) return { role: "client", sourceId: null, issueId: null };
+
+    return {
+      role: "client",
+      sourceId: issue.sourceId,
+      issueId: issue.id,
+    };
+  }
+
+  if (!route.sourceId || !sourceById.has(route.sourceId)) {
+    return { role: "publisher", sourceId: null, issueId: null };
+  }
+
+  if (!route.issueId) {
+    return { role: "publisher", sourceId: route.sourceId, issueId: null };
+  }
+
+  const issue = issues.find(
+    (candidate) => candidate.id === route.issueId && candidate.sourceId === route.sourceId,
+  );
+  if (!issue) {
+    return { role: "publisher", sourceId: route.sourceId, issueId: null };
+  }
+
+  return {
+    role: "publisher",
+    sourceId: route.sourceId,
+    issueId: issue.id,
+  };
+}
+
+function readInitialDemoIssues() {
+  const fallback = demoDataset.issues.map(cloneIssue);
+  if (typeof window === "undefined") return fallback;
+  try {
+    const stored = window.localStorage.getItem("brief:demo:issues:v1");
+    return stored ? (JSON.parse(stored) as DemoIssue[]) : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function App() {
-  const [role, setRole] = useState<DemoRole>(() => getDemoRoleFromPath());
+  const initialIssues = useMemo(readInitialDemoIssues, []);
+  const initialRoute = useMemo(() => resolveDemoRoute(getDemoRouteFromPath(), initialIssues), []);
+  const [role, setRole] = useState<DemoRole>(() => initialRoute.role);
   const [issues, setIssues, resetIssues] = useSessionState<DemoIssue[]>(
     "brief:demo:issues:v1",
-    () => demoDataset.issues.map(cloneIssue),
+    initialIssues,
   );
-  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
-    role === "publisher" ? (demoDataset.sources[0]?.id ?? null) : null,
-  );
-  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(initialRoute.sourceId);
+  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(initialRoute.issueId);
   const [resetVersion, setResetVersion] = useState(0);
   const issuesBySourceId = useMemo(() => buildIssuesBySourceId(issues), [issues]);
 
+  function applyDemoRoute(
+    route: DemoRoute,
+    historyMode: "push" | "replace" = "push",
+    routeIssues: readonly DemoIssue[] = issues,
+  ) {
+    const nextRoute = resolveDemoRoute(route, routeIssues);
+    setRole(nextRoute.role);
+    setSelectedSourceId(nextRoute.sourceId);
+    setSelectedIssueId(nextRoute.issueId);
+
+    if (typeof window === "undefined") return;
+    const nextPath = buildDemoPath(nextRoute);
+    if (window.location.pathname === nextPath) return;
+    if (historyMode === "replace") {
+      window.history.replaceState(null, "", nextPath);
+      return;
+    }
+    window.history.pushState(null, "", nextPath);
+  }
+
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const expectedPath = getDemoRolePath(role);
-    if (window.location.pathname !== expectedPath) {
-      window.history.replaceState(null, "", expectedPath);
-    }
+    applyDemoRoute(getDemoRouteFromPath(), "replace");
 
     function handlePopState() {
-      const next = getDemoRoleFromPath();
-      setRole(next);
-      setSelectedSourceId(next === "publisher" ? (demoDataset.sources[0]?.id ?? null) : null);
-      setSelectedIssueId(null);
+      applyDemoRoute(getDemoRouteFromPath(), "replace");
     }
 
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [role]);
+  }, [issues]);
 
   function handleRoleChange(next: DemoRole) {
     if (next === role) return;
-    setRole(next);
-    if (typeof window !== "undefined") {
-      window.history.pushState(null, "", getDemoRolePath(next));
-    }
-    // Publisher lands directly on its first source; client lands on the sources list.
-    setSelectedSourceId(next === "publisher" ? (demoDataset.sources[0]?.id ?? null) : null);
-    setSelectedIssueId(null);
+    applyDemoRoute({ role: next, sourceId: null, issueId: null });
   }
 
   function handleSelectSource(id: string | null) {
-    setSelectedSourceId(id);
-    setSelectedIssueId(null);
+    applyDemoRoute({ role: "publisher", sourceId: id, issueId: null });
   }
 
   const selectedSource = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
@@ -146,7 +246,7 @@ function App() {
   function handleCreateIssue(sourceId: string) {
     const issue = createDraftIssue(sourceId);
     setIssues((current) => [issue, ...current]);
-    setSelectedIssueId(issue.id);
+    applyDemoRoute({ role: "publisher", sourceId, issueId: issue.id }, "push", [issue, ...issues]);
   }
 
   function handleUpdateIssue(nextIssue: DemoIssue) {
@@ -155,14 +255,15 @@ function App() {
 
   function handleDeleteIssue(issueId: string) {
     setIssues((current) => current.filter((issue) => issue.id !== issueId));
-    setSelectedIssueId((current) => (current === issueId ? null : current));
+    if (selectedIssueId === issueId) {
+      applyDemoRoute({ role, sourceId: selectedSourceId, issueId: null }, "replace");
+    }
   }
 
   function handleResetDemoStorage() {
     resetDemoStorage();
     resetIssues(demoDataset.issues.map(cloneIssue));
-    setSelectedSourceId(role === "publisher" ? (demoDataset.sources[0]?.id ?? null) : null);
-    setSelectedIssueId(null);
+    applyDemoRoute({ role, sourceId: null, issueId: null }, "replace");
     setResetVersion((version) => version + 1);
   }
 
@@ -223,22 +324,47 @@ function App() {
                       ? [
                           {
                             label: "Chat",
-                            onClick: () => {
-                              setSelectedSourceId(null);
-                              setSelectedIssueId(null);
-                            },
+                            href: buildDemoPath({
+                              role: "client",
+                              sourceId: null,
+                              issueId: null,
+                            }),
+                            onClick: () =>
+                              applyDemoRoute({
+                                role: "client",
+                                sourceId: null,
+                                issueId: null,
+                              }),
                           },
                           { label: selectedIssue.title },
                         ]
                       : [{ label: "Chat" }]
                     : selectedSource
                       ? [
-                          { label: "Fils", onClick: () => handleSelectSource(null) },
+                          {
+                            label: "Fils",
+                            href: buildDemoPath({
+                              role: "publisher",
+                              sourceId: null,
+                              issueId: null,
+                            }),
+                            onClick: () => handleSelectSource(null),
+                          },
                           ...(selectedIssue
                             ? [
                                 {
                                   label: selectedSource.name,
-                                  onClick: () => setSelectedIssueId(null),
+                                  href: buildDemoPath({
+                                    role: "publisher",
+                                    sourceId: selectedSource.id,
+                                    issueId: null,
+                                  }),
+                                  onClick: () =>
+                                    applyDemoRoute({
+                                      role: "publisher",
+                                      sourceId: selectedSource.id,
+                                      issueId: null,
+                                    }),
                                 },
                                 { label: selectedIssue.title },
                               ]
@@ -262,7 +388,13 @@ function App() {
                   issues={issuesBySourceId.get(selectedSource.id) ?? []}
                   onCreateIssue={handleCreateIssue}
                   onDeleteIssue={handleDeleteIssue}
-                  onSelectIssue={setSelectedIssueId}
+                  onSelectIssue={(issueId) =>
+                    applyDemoRoute({
+                      role: "publisher",
+                      sourceId: selectedSource.id,
+                      issueId,
+                    })
+                  }
                 />
               ) : (
                 <PublisherSourcesList
@@ -277,10 +409,13 @@ function App() {
               ) : (
                 <ClientSourcesList
                   issues={issues}
-                  onSelectIssue={(issue) => {
-                    setSelectedSourceId(issue.sourceId);
-                    setSelectedIssueId(issue.id);
-                  }}
+                  onSelectIssue={(issue) =>
+                    applyDemoRoute({
+                      role: "client",
+                      sourceId: issue.sourceId,
+                      issueId: issue.id,
+                    })
+                  }
                 />
               )}
             </TabsContent>
@@ -293,7 +428,7 @@ function App() {
 
 // --- Crumbs ---
 
-type Crumb = { label: string; onClick?: () => void };
+type Crumb = { label: string; href?: string; onClick?: () => void };
 
 function Crumbs({ items }: { items: readonly Crumb[] }) {
   return (
@@ -301,16 +436,24 @@ function Crumbs({ items }: { items: readonly Crumb[] }) {
       {items.map((item, index) => (
         <Fragment key={index}>
           {index > 0 ? <span className="text-faint">/</span> : null}
-          {item.onClick ? (
-            <button
-              type="button"
-              onClick={item.onClick}
+          {item.href && item.onClick ? (
+            <a
+              href={item.href}
+              onClick={(event) => {
+                event.preventDefault();
+                item.onClick?.();
+              }}
               className="font-mono uppercase tracking-wider text-muted transition-colors duration-fast hover:text-ink"
             >
               {item.label}
-            </button>
+            </a>
           ) : (
-            <span className="text-ink">{item.label}</span>
+            <span
+              aria-current={index === items.length - 1 ? "page" : undefined}
+              className="text-ink"
+            >
+              {item.label}
+            </span>
           )}
         </Fragment>
       ))}
@@ -709,11 +852,7 @@ function ClientSourcesList({
   return (
     <div className="space-y-7">
       <section className="animate-in stagger-1 max-w-4xl">
-        <div className="space-y-3">
-          {primaryChat?.messages.map((message) => (
-            <ChatBubble key={message.id} message={message} />
-          )) ?? null}
-        </div>
+        <VirtualizedChatTranscript messages={primaryChat?.messages ?? []} />
 
         <div className="mt-4 flex items-center gap-2 rounded-sm border border-dashed border-rule bg-surface px-3 py-2 text-muted">
           <span className="min-w-0 flex-1 truncate text-sm">
@@ -766,39 +905,38 @@ function ClientPublicationsTable({
         title: issue.title,
         publicationDate: issue.publicationDate,
         includedInContext: !excludedIssueIds.has(issue.id),
+        contextRank: excludedIssueIds.has(issue.id) ? 1 : 0,
       })),
     [excludedIssueIds, issues],
   );
 
   const columns = useMemo(
     () => [
+      clientPublicationColumnHelper.accessor("contextRank", {
+        header: "",
+        cell: () => null,
+      }),
       clientPublicationColumnHelper.accessor("sourceName", { header: "Fil" }),
       clientPublicationColumnHelper.accessor("title", { header: "Publication" }),
       clientPublicationColumnHelper.accessor("publicationDate", { header: "Date" }),
-      clientPublicationColumnHelper.accessor("includedInContext", {
-        header: () => (
-          <span className="inline-flex items-center gap-1">
-            Contexte
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Info className="size-3 text-faint" aria-hidden="true" />
-              </TooltipTrigger>
-              <TooltipContent side="top" align="center">
-                Décochez une publication pour l'exclure du contexte de ce chat.
-              </TooltipContent>
-            </Tooltip>
-          </span>
-        ),
+      clientPublicationColumnHelper.display({
+        id: "actions",
+        header: "",
         enableSorting: false,
       }),
     ],
     [],
   );
 
+  const effectiveSorting = useMemo<SortingState>(() => {
+    const visibleSort = sorting.filter((s) => s.id !== "contextRank");
+    return [{ id: "contextRank", desc: false }, ...visibleSort];
+  }, [sorting]);
+
   const table = useReactTable({
     data: rows,
     columns,
-    state: { sorting },
+    state: { sorting: effectiveSorting },
     onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -808,7 +946,9 @@ function ClientPublicationsTable({
     <DataTable<ClientPublicationRow>
       table={table}
       renderContent={renderTableContent}
-      getHeaderAlign={(header) => (header.column.id === "includedInContext" ? "right" : "left")}
+      hiddenColumnIds={["contextRank"]}
+      getHeaderAlign={(header) => (header.column.id === "actions" ? "right" : "left")}
+      getRowClassName={(row) => (!row.original.includedInContext ? "opacity-60" : undefined)}
       onRowClick={(row) => onSelectIssue(row.original.issue)}
       renderCell={(cell, row) => {
         if (cell.column.id === "sourceName") {
@@ -834,17 +974,41 @@ function ClientPublicationsTable({
             </TableCell>
           );
         }
-        if (cell.column.id === "includedInContext") {
+        if (cell.column.id === "actions") {
+          const isShown = row.original.includedInContext;
+
           return (
             <TableCell key={cell.id} className="text-right">
-              <input
-                type="checkbox"
-                checked={row.original.includedInContext}
-                onClick={(event) => event.stopPropagation()}
-                onChange={() => onToggleContext(row.original.id)}
-                aria-label={`Inclure ${row.original.title} dans le contexte`}
-                className="size-3.5 rounded-sm accent-accent"
-              />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onToggleContext(row.original.id);
+                    }}
+                    aria-label={
+                      isShown
+                        ? `Masquer ${row.original.title} pour l'assistant`
+                        : `Afficher ${row.original.title} pour l'assistant`
+                    }
+                    className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-muted focus-visible:text-muted"
+                  >
+                    {isShown ? (
+                      <Eye className="size-3.5" aria-hidden="true" />
+                    ) : (
+                      <EyeOff className="size-3.5" aria-hidden="true" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" align="end">
+                  {isShown
+                    ? "Visible par l'assistant."
+                    : "Masquée: l'assistant ne connaît pas cette publication."}
+                </TooltipContent>
+              </Tooltip>
             </TableCell>
           );
         }
@@ -919,6 +1083,7 @@ type ClientPublicationRow = {
   title: string;
   publicationDate: string;
   includedInContext: boolean;
+  contextRank: number;
 };
 
 type DocumentRow = DemoIssue["documents"][number];
@@ -1181,14 +1346,13 @@ function DocumentsTable({
               )}
             </TableCell>
             <TableCell className="max-w-44 align-top font-mono text-[11px] text-faint">
-              {editable ? (
+              {editable && !doc.fileName ? (
                 <PdfUploadControl
                   documentId={doc.id}
-                  value={doc.fileName}
                   onUpload={(file) => onUploadDocumentPdf(doc.id, file)}
                 />
               ) : (
-                <span>{doc.fileName ? `${doc.fileName} / ${doc.pageCount} pages` : "-"}</span>
+                <PdfName document={doc} />
               )}
             </TableCell>
             {editable ? (
@@ -1207,13 +1371,80 @@ function DocumentsTable({
   );
 }
 
+function PdfName({ document }: { document: DocumentRow }) {
+  const [error, setError] = useState<string | null>(null);
+  const label = document.fileName ? `${document.fileName} / ${document.pageCount} pages` : "-";
+  const publicUrl = getPublicPdfUrl(document);
+
+  if (!document.fileName) {
+    return <span className="block max-w-44 truncate">-</span>;
+  }
+
+  async function handleUploadedPdfOpen() {
+    setError(null);
+    try {
+      const blob = await loadDemoPdf(document.id);
+      if (!blob) {
+        setError("PDF introuvable.");
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const opened = window.open(url, "_blank", "noopener,noreferrer");
+      if (!opened) {
+        URL.revokeObjectURL(url);
+        setError("Impossible d'ouvrir ce PDF.");
+        return;
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch {
+      setError("Impossible d'ouvrir ce PDF.");
+    }
+  }
+
+  const content = publicUrl ? (
+    <a
+      href={publicUrl}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex max-w-44 items-center gap-1.5 text-faint outline-none transition-colors duration-fast hover:text-ink focus-visible:text-ink"
+    >
+      <span className="min-w-0 truncate">{label}</span>
+      <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
+    </a>
+  ) : (
+    <button
+      type="button"
+      className="inline-flex max-w-44 items-center gap-1.5 text-left text-faint outline-none transition-colors duration-fast hover:text-ink focus-visible:text-ink"
+      onClick={() => void handleUploadedPdfOpen()}
+    >
+      <span className="min-w-0 truncate">{label}</span>
+      <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
+    </button>
+  );
+
+  return (
+    <div className="space-y-1">
+      <Tooltip>
+        <TooltipTrigger asChild>{content}</TooltipTrigger>
+        <TooltipContent side="top" align="start">
+          {label}
+        </TooltipContent>
+      </Tooltip>
+      {error ? <div className="max-w-44 font-sans text-[11px] text-accent">{error}</div> : null}
+    </div>
+  );
+}
+
+function getPublicPdfUrl(document: DocumentRow) {
+  if (!document.storagePath || document.storagePath.startsWith("indexeddb://")) return null;
+  return document.storagePath.startsWith("/") ? document.storagePath : `/${document.storagePath}`;
+}
+
 function PdfUploadControl({
   documentId,
-  value,
   onUpload,
 }: {
   documentId: string;
-  value: string;
   onUpload: (file: File) => void;
 }) {
   const inputId = `pdf-upload-${documentId}`;
@@ -1224,21 +1455,6 @@ function PdfUploadControl({
     if (!file) return;
     if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) return;
     onUpload(file);
-  }
-
-  if (value) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span tabIndex={0} className="block max-w-44 truncate text-faint outline-none">
-            {value}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="top" align="start">
-          {value}
-        </TooltipContent>
-      </Tooltip>
-    );
   }
 
   return (
@@ -1969,40 +2185,6 @@ function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function ChatBubble({ message }: { message: DemoChatMessage }) {
-  const isAssistant = message.author === "assistant";
-
-  return (
-    <div className={`flex ${isAssistant ? "justify-start" : "justify-end"}`}>
-      <div
-        className={`max-w-[85%] rounded-sm px-4 py-3 text-sm leading-6 ${
-          isAssistant ? "border border-rule bg-paper text-ink" : "bg-ink text-paper"
-        }`}
-      >
-        <div className="mb-1 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-faint">
-          {isAssistant ? <Bot className="size-3" /> : <Users className="size-3" />}
-          {isAssistant ? "Assistant" : "Client"}
-        </div>
-        <div className={isAssistant ? "font-serif" : ""}>{message.content}</div>
-        {message.citations && message.citations.length > 0 && (
-          <div className="mt-3 space-y-1">
-            {message.citations.map((citation) => (
-              <a
-                key={citation.id}
-                href="#"
-                onClick={(e) => e.preventDefault()}
-                className="block font-mono text-xs text-accent underline decoration-accent/30 hover:decoration-accent/60 transition-all duration-fast"
-              >
-                {citation.label}, p. {citation.page}
-              </a>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // --- Utilities ---
 
 function formatDate(value: string) {
@@ -2143,6 +2325,22 @@ function openDemoPdfDatabase(): Promise<IDBDatabase> {
 function storeDemoPdf(documentId: string, file: File): Promise<void> {
   return runDemoPdfTransaction("readwrite", (store) => {
     store.put(file, documentId);
+  });
+}
+
+async function loadDemoPdf(documentId: string): Promise<Blob | null> {
+  if (typeof window === "undefined" || !window.indexedDB) return null;
+
+  const db = await openDemoPdfDatabase();
+  return await new Promise<Blob | null>((resolve, reject) => {
+    const transaction = db.transaction(demoPdfStoreName, "readonly");
+    const request = transaction.objectStore(demoPdfStoreName).get(documentId);
+    request.onsuccess = () => resolve(request.result instanceof Blob ? request.result : null);
+    request.onerror = () => reject(request.error ?? new Error("Failed to read demo PDF."));
+    transaction.onerror = () => reject(transaction.error ?? new Error("Demo PDF storage failed."));
+    transaction.onabort = () => reject(transaction.error ?? new Error("Demo PDF storage aborted."));
+  }).finally(() => {
+    db.close();
   });
 }
 

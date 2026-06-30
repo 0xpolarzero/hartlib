@@ -1,4 +1,10 @@
 export { ArtifactFrame } from "./components/artifacts/artifact-frame";
+export {
+  ChatBubble,
+  VirtualizedChatTranscript,
+  type ChatTranscriptCitation,
+  type ChatTranscriptMessage,
+} from "./components/chat/virtualized-chat-transcript";
 export { Badge, type BadgeProps } from "./components/ui/badge";
 export { Button, type ButtonProps } from "./components/ui/button";
 export {

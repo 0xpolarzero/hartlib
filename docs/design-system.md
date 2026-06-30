@@ -156,6 +156,14 @@ Renders HTML content on a paper surface inside a sandboxed iframe. Used for read
 - Sandboxed iframe with CSP: `default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'`
 - Props: `title: string`, `html: string` (raw HTML), `className?: string`
 
+### Chat
+
+Reusable chat transcript primitives for client AI conversations.
+
+- `ChatBubble` — renders user and assistant message bubbles with citations
+- `VirtualizedChatTranscript` — renders long chat histories with TanStack Virtual, variable-height measurement, overscan, and optional scroll-to-latest behavior
+- Message data stays owned by the consuming app; the UI package accepts a minimal `{ id, author, content, citations }` shape
+
 ## Usage Rules
 
 1. **One accent** — oxblood (`--color-accent`) is the only signal color. Do not introduce a second accent. Use it sparingly: citations, AI source marks, the wordmark period, active state dots, selected highlights.

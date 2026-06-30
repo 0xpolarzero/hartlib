@@ -13,6 +13,7 @@
     "@brief/demo-data": "workspace:*",
     "@brief/ui": "workspace:*",
     "@tanstack/react-table": "8.21.3",
+    "@tanstack/react-virtual": "3.14.4",
     "lucide-react": "1.21.0",
     "react": "19.2.7",
     "react-dom": "19.2.7"

@@ -293,10 +293,10 @@ export const demoIssues: readonly DemoIssue[] = [
         issueId: "issue_regfin_2026_06_24",
         title: "Note de synthese",
         fileName: "atlas-regfin-2026-06-24-note.pdf",
-        pageCount: 12,
+        pageCount: 1,
         language: "fr",
         indexingStatus: "indexed",
-        storagePath: "demo/atlas/regfin/2026-06-24/note.pdf",
+        storagePath: "/demo/pdfs/atlas-regfin-2026-06-24-note.pdf",
         extractedTextPreview:
           "L'ACPR confirme que les contrôles 2026 porteront sur la gouvernance des distributeurs, la traçabilité du conseil et les indicateurs de traitement des réclamations.",
         metrics: {
@@ -310,10 +310,10 @@ export const demoIssues: readonly DemoIssue[] = [
         issueId: "issue_regfin_2026_06_24",
         title: "Annexes de suivi",
         fileName: "atlas-regfin-2026-06-24-annexes.pdf",
-        pageCount: 8,
+        pageCount: 1,
         language: "fr",
         indexingStatus: "indexed",
-        storagePath: "demo/atlas/regfin/2026-06-24/annexes.pdf",
+        storagePath: "/demo/pdfs/atlas-regfin-2026-06-24-annexes.pdf",
         extractedTextPreview:
           "Calendrier indicatif: consultations ESMA jusqu'au 12 juillet, remise des plans DORA internes avant le 30 septembre, revue des conventions distributeurs au T4.",
         metrics: {
@@ -343,10 +343,10 @@ export const demoIssues: readonly DemoIssue[] = [
         issueId: "issue_regfin_2026_06_17",
         title: "Brief hebdomadaire",
         fileName: "atlas-regfin-2026-06-17.pdf",
-        pageCount: 10,
+        pageCount: 1,
         language: "fr",
         indexingStatus: "indexed",
-        storagePath: "demo/atlas/regfin/2026-06-17/brief.pdf",
+        storagePath: "/demo/pdfs/atlas-regfin-2026-06-17.pdf",
         extractedTextPreview:
           "Les superviseurs attendent des preuves de revue périodique des profils investisseurs, avec un accent sur les clients professionnels reclassifiés.",
         metrics: {
@@ -376,10 +376,10 @@ export const demoIssues: readonly DemoIssue[] = [
         issueId: "issue_energy_2026_05_30",
         title: "Marché et politiques publiques",
         fileName: "atlas-energy-2026-05-market.pdf",
-        pageCount: 16,
+        pageCount: 1,
         language: "fr",
         indexingStatus: "indexed",
-        storagePath: "demo/atlas/energy/2026-05/market.pdf",
+        storagePath: "/demo/pdfs/atlas-energy-2026-05-market.pdf",
         extractedTextPreview:
           "Les appels d'offres capacitaires favorisent les actifs flexibles capables de répondre sous quinze minutes, avec des bonus pour l'effacement industriel certifié.",
         metrics: {
@@ -431,83 +431,297 @@ export const demoArchiveSnippets: readonly DemoArchiveSnippet[] = [
   },
 ] as const;
 
+const primaryDemoChatId = "chat_montclair_regfin_priorites";
+
+const citeRegfinDora: DemoCitation = {
+  id: "cite_regfin_dora",
+  sourceId: "source_regulation_financiere",
+  issueId: "issue_regfin_2026_06_24",
+  documentId: "doc_regfin_2026_06_24_annexes",
+  label: "Réglementation financière, 24 juin 2026 - Annexes",
+  page: 3,
+  quote: "plans DORA internes avant le 30 septembre",
+};
+
+const citeRegfinAcpr: DemoCitation = {
+  id: "cite_regfin_acpr",
+  sourceId: "source_regulation_financiere",
+  issueId: "issue_regfin_2026_06_24",
+  documentId: "doc_regfin_2026_06_24_note",
+  label: "Réglementation financière, 24 juin 2026 - Note de synthèse",
+  page: 5,
+  quote: "traçabilité du conseil et indicateurs de traitement des réclamations",
+};
+
+const citeRegfinProfiles: DemoCitation = {
+  id: "cite_regfin_profiles",
+  sourceId: "source_regulation_financiere",
+  issueId: "issue_regfin_2026_06_17",
+  documentId: "doc_regfin_2026_06_17_note",
+  label: "Réglementation financière, 17 juin 2026 - Brief hebdomadaire",
+  page: 4,
+  quote: "preuves de revue périodique des profils investisseurs",
+};
+
+const citeEnergyFlex: DemoCitation = {
+  id: "cite_energy_flex",
+  sourceId: "source_energie_industrie",
+  issueId: "issue_energy_2026_05_30",
+  documentId: "doc_energy_2026_05_market",
+  label: "Energie & Industrie Europe, mai 2026 - Marché",
+  page: 9,
+  quote: "actifs flexibles capables de répondre sous quinze minutes",
+};
+
+const demoChatMessages: readonly DemoChatMessage[] = [
+  {
+    id: "msg_regfin_priorites_user_1",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T08:42:00.000Z",
+    content:
+      "Quelles priorités ACPR devons-nous traiter avant la rentrée, et quels documents de l'archive les justifient ?",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_1",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T08:45:30.000Z",
+    content:
+      "Trois chantiers ressortent : renforcer la traçabilité du conseil, formaliser la gouvernance distributeurs, et finaliser le plan DORA interne avant fin septembre. La priorité la plus proche est DORA, car l'annexe place la consolidation des plans avant le 30 septembre. En parallèle, la note du 24 juin signale que l'ACPR regardera les réclamations et la preuve de conseil dans ses contrôles 2026.",
+    citations: [citeRegfinDora, citeRegfinAcpr],
+    sourceReads: [
+      {
+        sourceId: "source_regulation_financiere",
+        issueId: "issue_regfin_2026_06_24",
+        documentId: "doc_regfin_2026_06_24_annexes",
+        chunksRead: 4,
+        enteredModelContext: true,
+      },
+      {
+        sourceId: "source_regulation_financiere",
+        issueId: "issue_regfin_2026_06_24",
+        documentId: "doc_regfin_2026_06_24_note",
+        chunksRead: 6,
+        enteredModelContext: true,
+      },
+      {
+        sourceId: "source_energie_industrie",
+        issueId: "issue_energy_2026_05_30",
+        documentId: "doc_energy_2026_05_market",
+        chunksRead: 2,
+        enteredModelContext: false,
+      },
+    ],
+    usage: {
+      monthlyCredits: 18,
+      extraCredits: 0,
+      inputTokens: 6420,
+      outputTokens: 418,
+    },
+  },
+  {
+    id: "msg_regfin_priorites_user_2",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T08:47:00.000Z",
+    content:
+      "Transforme ça en plan d'action pour le comité conformité de lundi. Je veux les décisions attendues, pas seulement une liste de sujets.",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_2",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T08:47:35.000Z",
+    content:
+      "Pour lundi, je proposerais trois décisions. 1. Nommer un responsable DORA pour consolider le plan interne et verrouiller le calendrier de septembre. 2. Mandater la conformité distribution pour revoir les conventions et la preuve de conseil sur les réseaux les plus exposés. 3. Demander au service réclamations un tableau hebdomadaire avec volumes, délais et motifs, afin de montrer que l'indicateur est piloté et pas seulement archivé.",
+    citations: [citeRegfinDora, citeRegfinAcpr],
+  },
+  {
+    id: "msg_regfin_priorites_user_3",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T08:48:10.000Z",
+    content: "Ajoute les risques si on ne fait rien avant septembre.",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_3",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T08:48:55.000Z",
+    content:
+      "Le risque principal est de se retrouver avec des preuves dispersées au moment d'un contrôle : profils investisseurs non revus, conventions distributeurs non alignées, et plan DORA trop déclaratif. Le risque opérationnel est aussi réel : si les équipes attendent septembre, elles devront produire la cartographie, les arbitrages et les justificatifs en même temps que la rentrée commerciale.",
+    citations: [citeRegfinProfiles, citeRegfinDora],
+  },
+  {
+    id: "msg_regfin_priorites_user_4",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T08:50:00.000Z",
+    content:
+      "Est-ce que le sujet énergie a un impact direct sur cette note, ou c'est hors périmètre ?",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_4",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T08:50:42.000Z",
+    content:
+      "Impact direct limité. L'archive énergie parle surtout d'actifs flexibles, d'appels d'offres capacitaires et de bonus pour l'effacement industriel. Je ne l'utiliserais pas pour justifier les priorités ACPR. En revanche, elle peut servir dans une annexe si le comité veut relier DORA aux dépendances opérationnelles des sites industriels ou aux contrats long terme.",
+    citations: [citeEnergyFlex],
+  },
+  {
+    id: "msg_regfin_priorites_user_5",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T08:52:00.000Z",
+    content:
+      "Fais-moi une version courte que je peux coller dans l'ordre du jour du comité. Trois lignes maximum.",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_5",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T08:52:30.000Z",
+    content:
+      "Priorités conformité avant rentrée : valider le responsable et le calendrier DORA, lancer la revue des conventions distributeurs, et cadrer les indicateurs de réclamations et de preuve de conseil. Décisions attendues lundi : sponsor, propriétaires, livrables et jalons. Références : annexes du 24 juin et note de synthèse ACPR.",
+    citations: [citeRegfinDora, citeRegfinAcpr],
+  },
+  {
+    id: "msg_regfin_priorites_user_6",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T08:54:00.000Z",
+    content:
+      "Classe maintenant par effort : ce qui peut être fait en une semaine, en un mois, et au trimestre.",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_6",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T08:54:56.000Z",
+    content:
+      "Une semaine : désigner les responsables, extraire les réclamations récentes, et lister les conventions distributeurs à risque. Un mois : revoir les profils investisseurs prioritaires, échantillonner les preuves de conseil, et rédiger le canevas DORA. Trimestre : rapprocher les conventions distributeurs, tester le dispositif DORA et présenter un tableau de bord stabilisé au comité des risques.",
+    citations: [citeRegfinProfiles, citeRegfinDora],
+  },
+  {
+    id: "msg_regfin_priorites_user_7",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T08:56:00.000Z",
+    content:
+      "Je veux une formulation plus prudente : distingue ce que l'archive dit vraiment de ton interprétation.",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_7",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T08:56:48.000Z",
+    content:
+      "Ce que l'archive dit explicitement : les plans DORA internes sont attendus avant le 30 septembre ; l'ACPR cible la traçabilité du conseil, les réclamations et la gouvernance distributeurs ; les superviseurs attendent des preuves de revue périodique des profils investisseurs. Mon interprétation : ces éléments doivent être regroupés en programme de rentrée, avec un sponsor unique et des jalons courts, parce qu'ils mobilisent les mêmes équipes conformité, distribution et risques.",
+    citations: [citeRegfinDora, citeRegfinAcpr, citeRegfinProfiles],
+  },
+  {
+    id: "msg_regfin_priorites_user_8",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T08:58:00.000Z",
+    content: "Peux-tu extraire les questions à poser aux métiers ?",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_8",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T08:58:40.000Z",
+    content:
+      "Questions pour les métiers : quels distributeurs génèrent le plus de réclamations ? Où la preuve de conseil est-elle conservée et pendant combien de temps ? Quels profils investisseurs n'ont pas été revus depuis plus de douze mois ? Quels prestataires entrent dans le périmètre DORA critique ? Quel arbitrage faut-il au comité pour tenir l'échéance du 30 septembre ?",
+    citations: [citeRegfinAcpr, citeRegfinProfiles, citeRegfinDora],
+  },
+  {
+    id: "msg_regfin_priorites_user_9",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T09:00:00.000Z",
+    content:
+      "Prépare aussi une réponse si le directeur commercial dit que la revue distributeurs peut attendre T4.",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_9",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T09:00:52.000Z",
+    content:
+      "Réponse proposée : la revue complète peut être cadencée au T4, mais l'identification des distributeurs à risque ne devrait pas attendre. L'archive du 24 juin relie la gouvernance distributeurs à la traçabilité du conseil et aux réclamations ; attendre T4 sans tri préalable revient à traiter tous les réseaux au même niveau, alors que le comité peut déjà décider d'un échantillon prioritaire.",
+    citations: [citeRegfinAcpr],
+  },
+  {
+    id: "msg_regfin_priorites_user_10",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T09:02:00.000Z",
+    content: "Fais une version orientée risque opérationnel, pas conformité pure.",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_10",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T09:02:50.000Z",
+    content:
+      "Lecture risque opérationnel : le point DORA porte sur la capacité à maintenir les services critiques et à documenter les dépendances avant l'échéance de septembre. La revue distributeurs réduit le risque de rupture de preuve en cas de contrôle ou de litige client. Les réclamations donnent un signal faible sur les processus qui cassent réellement : délais de traitement, défaut de documentation, incompréhension du conseil ou transfert incomplet entre équipes.",
+    citations: [citeRegfinDora, citeRegfinAcpr],
+  },
+  {
+    id: "msg_regfin_priorites_user_11",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T09:04:00.000Z",
+    content:
+      "Ajoute un paragraphe pour expliquer pourquoi on ne cite pas la publication énergie dans la note principale.",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_11",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T09:04:44.000Z",
+    content:
+      "Je n'inclurais pas la publication énergie dans la note principale car elle ne fonde pas les priorités ACPR identifiées. Elle traite d'appels d'offres, d'actifs flexibles et d'effacement industriel ; ces éléments peuvent éclairer certains scénarios de dépendance opérationnelle, mais ils ne justifient pas directement les décisions conformité demandées au comité.",
+    citations: [citeEnergyFlex],
+  },
+  {
+    id: "msg_regfin_priorites_user_12",
+    chatId: primaryDemoChatId,
+    author: "user",
+    createdAt: "2026-06-26T09:06:00.000Z",
+    content: "Termine par une synthèse exécutable en cinq puces.",
+  },
+  {
+    id: "msg_regfin_priorites_assistant_12",
+    chatId: primaryDemoChatId,
+    author: "assistant",
+    createdAt: "2026-06-26T09:06:58.000Z",
+    content:
+      "Synthèse exécutable : 1. nommer un sponsor DORA et confirmer le jalon du 30 septembre ; 2. sortir la liste des distributeurs et dossiers clients à risque ; 3. vérifier les preuves de conseil et les revues de profils investisseurs sur un échantillon prioritaire ; 4. produire un tableau hebdomadaire des réclamations ; 5. revenir au comité avec les blocages nécessitant arbitrage avant la pause d'août.",
+    citations: [citeRegfinDora, citeRegfinAcpr, citeRegfinProfiles],
+    usage: {
+      monthlyCredits: 22,
+      extraCredits: 0,
+      inputTokens: 8120,
+      outputTokens: 312,
+    },
+  },
+];
+
 export const demoChats: readonly DemoChat[] = [
   {
-    id: "chat_montclair_regfin_priorites",
+    id: primaryDemoChatId,
     clientCompanyId: demoClientCompany.id,
     userId: demoClientUser.id,
     title: "Priorités de contrôle ACPR",
     visibility: "company",
     selectedSourceIds: ["source_regulation_financiere", "source_energie_industrie"],
     createdAt: "2026-06-26T08:42:00.000Z",
-    updatedAt: "2026-06-26T08:45:30.000Z",
-    messages: [
-      {
-        id: "msg_regfin_priorites_user_1",
-        chatId: "chat_montclair_regfin_priorites",
-        author: "user",
-        createdAt: "2026-06-26T08:42:00.000Z",
-        content:
-          "Quelles priorités ACPR devons-nous traiter avant la rentrée, et quels documents de l'archive les justifient ?",
-      },
-      {
-        id: "msg_regfin_priorites_assistant_1",
-        chatId: "chat_montclair_regfin_priorites",
-        author: "assistant",
-        createdAt: "2026-06-26T08:45:30.000Z",
-        content:
-          "Trois chantiers ressortent : renforcer la traçabilité du conseil, formaliser la gouvernance distributeurs, et finaliser le plan DORA interne avant fin septembre. La priorité la plus proche est DORA, car l'annexe place la consolidation des plans avant le 30 septembre. En parallèle, la note du 24 juin signale que l'ACPR regardera les réclamations et la preuve de conseil dans ses contrôles 2026.",
-        citations: [
-          {
-            id: "cite_regfin_dora",
-            sourceId: "source_regulation_financiere",
-            issueId: "issue_regfin_2026_06_24",
-            documentId: "doc_regfin_2026_06_24_annexes",
-            label: "Réglementation financière, 24 juin 2026 - Annexes",
-            page: 3,
-            quote: "plans DORA internes avant le 30 septembre",
-          },
-          {
-            id: "cite_regfin_acpr",
-            sourceId: "source_regulation_financiere",
-            issueId: "issue_regfin_2026_06_24",
-            documentId: "doc_regfin_2026_06_24_note",
-            label: "Réglementation financière, 24 juin 2026 - Note de synthèse",
-            page: 5,
-            quote: "traçabilité du conseil et indicateurs de traitement des réclamations",
-          },
-        ],
-        sourceReads: [
-          {
-            sourceId: "source_regulation_financiere",
-            issueId: "issue_regfin_2026_06_24",
-            documentId: "doc_regfin_2026_06_24_annexes",
-            chunksRead: 4,
-            enteredModelContext: true,
-          },
-          {
-            sourceId: "source_regulation_financiere",
-            issueId: "issue_regfin_2026_06_24",
-            documentId: "doc_regfin_2026_06_24_note",
-            chunksRead: 6,
-            enteredModelContext: true,
-          },
-          {
-            sourceId: "source_energie_industrie",
-            issueId: "issue_energy_2026_05_30",
-            documentId: "doc_energy_2026_05_market",
-            chunksRead: 2,
-            enteredModelContext: false,
-          },
-        ],
-        usage: {
-          monthlyCredits: 18,
-          extraCredits: 0,
-          inputTokens: 6420,
-          outputTokens: 418,
-        },
-      },
-    ],
+    updatedAt: "2026-06-26T09:06:58.000Z",
+    messages: demoChatMessages,
   },
 ] as const;
 

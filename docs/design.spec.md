@@ -45,7 +45,13 @@ The demo has two seeded accounts:
 
 The demo lets the user switch between the publisher and client views.
 
-The demo exposes the publisher and client views as routable pages at `/publisher` and `/client`.
+The demo exposes publisher and client views as routable pages. Publisher paths include `/publisher`, `/publisher/sources/:sourceId`, and `/publisher/sources/:sourceId/publications/:issueId`. Client paths include `/client` and `/client/publications/:issueId`.
+
+Demo breadcrumbs use those real paths as navigation links.
+
+Client publication routes resolve only to delivered published issues.
+
+Document PDF filenames open the PDF itself in a new browser tab. Seeded demo documents use real static PDF assets. Uploaded demo PDFs are read from browser storage and opened from browser object URLs. If an uploaded PDF is missing from browser storage, the document table shows an error instead of a fallback document.
 
 The demo uses shared product components and shared backend logic where possible.
 
@@ -65,11 +71,11 @@ Inline editable fields are visually quiet at rest, show a subtle surface and rul
 
 Long editable document fields expand when focused so the edit surface is obvious.
 
-The demo chat is pre-populated with representative messages.
+The demo chat is pre-populated with a long representative message history that exercises virtualized chat scrolling.
 
 The demo does not send new chat messages.
 
-The client demo root centers on one chat and a compact table of delivered publications that can be included in or removed from the chat context.
+The client demo root centers on one chat and a compact table of delivered publications with an unlabeled row action for showing or hiding each publication from the assistant. Hidden publications are greyed, sorted below visible publications, and excluded from the chat context, so the assistant does not know them.
 
 The demo client already has an active AI plan.
 

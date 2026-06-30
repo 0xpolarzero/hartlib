@@ -55,3 +55,111 @@
 [data-slot="table-body"] > [data-slot="table-row"]:hover {
   background-color: oklch(0.96 0.006 220 / 0.6);
 }
+
+.brief-chat-transcript {
+  overflow-y: auto;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  background: oklch(0.96 0.006 220 / 0.4);
+  padding: 12px;
+}
+
+.brief-chat-virtual-canvas {
+  position: relative;
+}
+
+.brief-chat-virtual-item {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  padding-bottom: 12px;
+}
+
+.brief-chat-row {
+  display: flex;
+  width: 100%;
+}
+
+.brief-chat-row[data-author="assistant"] {
+  justify-content: flex-start;
+}
+
+.brief-chat-row[data-author="user"] {
+  justify-content: flex-end;
+}
+
+.brief-chat-bubble {
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  font-size: 0.875rem;
+  line-height: 1.5rem;
+}
+
+.brief-chat-bubble[data-author="assistant"] {
+  max-width: min(85%, 44rem);
+  border: 1px solid var(--color-rule);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-serif);
+}
+
+.brief-chat-bubble[data-author="user"] {
+  max-width: min(72%, 34rem);
+  background: var(--color-ink);
+  color: var(--color-paper);
+  font-family: var(--font-sans);
+}
+
+.brief-chat-meta {
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.brief-chat-bubble[data-author="assistant"] .brief-chat-meta {
+  color: var(--color-faint);
+}
+
+.brief-chat-bubble[data-author="user"] .brief-chat-meta {
+  color: oklch(0.985 0.004 220 / 0.62);
+}
+
+.brief-chat-meta-icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.brief-chat-content {
+  overflow-wrap: anywhere;
+}
+
+.brief-chat-citations {
+  margin-top: 12px;
+}
+
+.brief-chat-citation {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: var(--color-accent);
+  text-decoration-line: underline;
+  text-decoration-color: oklch(0.52 0.14 28 / 0.3);
+  transition: text-decoration-color var(--duration-fast) var(--ease-snappy);
+}
+
+.brief-chat-citation + .brief-chat-citation {
+  margin-top: 4px;
+}
+
+.brief-chat-citation:hover {
+  text-decoration-color: oklch(0.52 0.14 28 / 0.6);
+}
