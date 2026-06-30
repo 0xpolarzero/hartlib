@@ -240,8 +240,8 @@ export const demoSources: readonly DemoSubscriptionSource[] = [
     id: "source_regulation_financiere",
     publisherCompanyId: demoPublisherCompany.id,
     clientCompanyId: demoClientCompany.id,
-    name: "Veille Regulation Financiere",
-    description: "Brief hebdomadaire sur l'AMF, l'ACPR, l'ESMA et les obligations de conformite.",
+    name: "Veille Réglementation Financière",
+    description: "Brief hebdomadaire sur l'AMF, l'ACPR, l'ESMA et les obligations de conformité.",
     subscribedSince: "2025-11-03T09:00:00.000Z",
     subscriberCount: 3,
     latestIssueId: "issue_regfin_2026_06_24",
@@ -259,7 +259,7 @@ export const demoSources: readonly DemoSubscriptionSource[] = [
     clientCompanyId: demoClientCompany.id,
     name: "Energie & Industrie Europe",
     description:
-      "Analyse mensuelle des politiques energetiques, prix, capacites et appels d'offres.",
+      "Analyse mensuelle des politiques énergétiques, prix, capacités et appels d'offres.",
     subscribedSince: "2025-08-18T09:00:00.000Z",
     subscriberCount: 1,
     latestIssueId: "issue_energy_2026_05_30",
@@ -277,11 +277,11 @@ export const demoIssues: readonly DemoIssue[] = [
   {
     id: "issue_regfin_2026_06_24",
     sourceId: "source_regulation_financiere",
-    title: "Reglementation financiere - Semaine du 24 juin 2026",
+    title: "Réglementation financière - Semaine du 24 juin 2026",
     publicationDate: "2026-06-24T07:30:00.000Z",
     status: "published",
     summary:
-      "Focus sur les controles de commercialisation, la resilience operationnelle et les priorites ESMA.",
+      "Focus sur les contrôles de commercialisation, la résilience opérationnelle et les priorités ESMA.",
     metrics: {
       opens: 42,
       downloads: 18,
@@ -298,7 +298,7 @@ export const demoIssues: readonly DemoIssue[] = [
         indexingStatus: "indexed",
         storagePath: "demo/atlas/regfin/2026-06-24/note.pdf",
         extractedTextPreview:
-          "L'ACPR confirme que les controles 2026 porteront sur la gouvernance des distributeurs, la tracabilite du conseil et les indicateurs de traitement des reclamations.",
+          "L'ACPR confirme que les contrôles 2026 porteront sur la gouvernance des distributeurs, la traçabilité du conseil et les indicateurs de traitement des réclamations.",
         metrics: {
           opens: 35,
           downloads: 14,
@@ -327,11 +327,11 @@ export const demoIssues: readonly DemoIssue[] = [
   {
     id: "issue_regfin_2026_06_17",
     sourceId: "source_regulation_financiere",
-    title: "Reglementation financiere - Semaine du 17 juin 2026",
+    title: "Réglementation financière - Semaine du 17 juin 2026",
     publicationDate: "2026-06-17T07:30:00.000Z",
     status: "published",
     summary:
-      "Synthese des orientations de controle sur la documentation client et les stress tests liquidite.",
+      "Synthèse des orientations de contrôle sur la documentation client et les stress tests liquidité.",
     metrics: {
       opens: 31,
       downloads: 12,
@@ -348,7 +348,7 @@ export const demoIssues: readonly DemoIssue[] = [
         indexingStatus: "indexed",
         storagePath: "demo/atlas/regfin/2026-06-17/brief.pdf",
         extractedTextPreview:
-          "Les superviseurs attendent des preuves de revue periodique des profils investisseurs, avec un accent sur les clients professionnels reclassifies.",
+          "Les superviseurs attendent des preuves de revue périodique des profils investisseurs, avec un accent sur les clients professionnels reclassifiés.",
         metrics: {
           opens: 31,
           downloads: 12,
@@ -364,7 +364,7 @@ export const demoIssues: readonly DemoIssue[] = [
     publicationDate: "2026-05-30T08:00:00.000Z",
     status: "published",
     summary:
-      "Point mensuel sur appels d'offres hydrogene, flexibilite reseau et contrats long terme.",
+      "Point mensuel sur appels d'offres hydrogène, flexibilité réseau et contrats long terme.",
     metrics: {
       opens: 27,
       downloads: 11,
@@ -374,14 +374,14 @@ export const demoIssues: readonly DemoIssue[] = [
       {
         id: "doc_energy_2026_05_market",
         issueId: "issue_energy_2026_05_30",
-        title: "Marche et politiques publiques",
+        title: "Marché et politiques publiques",
         fileName: "atlas-energy-2026-05-market.pdf",
         pageCount: 16,
         language: "fr",
         indexingStatus: "indexed",
         storagePath: "demo/atlas/energy/2026-05/market.pdf",
         extractedTextPreview:
-          "Les appels d'offres capacitaires favorisent les actifs flexibles capables de repondre sous quinze minutes, avec des bonus pour l'effacement industriel certifie.",
+          "Les appels d'offres capacitaires favorisent les actifs flexibles capables de répondre sous quinze minutes, avec des bonus pour l'effacement industriel certifié.",
         metrics: {
           opens: 27,
           downloads: 11,
@@ -398,9 +398,9 @@ export const demoArchiveSnippets: readonly DemoArchiveSnippet[] = [
     sourceId: "source_regulation_financiere",
     issueId: "issue_regfin_2026_06_24",
     documentId: "doc_regfin_2026_06_24_annexes",
-    title: "Echeances DORA et conventions distributeurs",
+    title: "Échéances DORA et conventions distributeurs",
     excerpt:
-      "Les plans DORA internes doivent etre consolides avant le 30 septembre, puis rapproches des conventions distributeurs au quatrieme trimestre.",
+      "Les plans DORA internes doivent être consolidés avant le 30 septembre, puis rapprochés des conventions distributeurs au quatrième trimestre.",
     highlights: ["DORA", "30 septembre", "conventions distributeurs"],
     publishedAt: "2026-06-24T07:30:00.000Z",
     rank: 0.94,
@@ -412,8 +412,8 @@ export const demoArchiveSnippets: readonly DemoArchiveSnippet[] = [
     documentId: "doc_regfin_2026_06_24_note",
     title: "Controle de commercialisation",
     excerpt:
-      "L'ACPR cible la tracabilite du conseil, les indicateurs de reclamations et la gouvernance des distributeurs.",
-    highlights: ["ACPR", "tracabilite du conseil", "reclamations"],
+      "L'ACPR cible la traçabilité du conseil, les indicateurs de réclamations et la gouvernance des distributeurs.",
+    highlights: ["ACPR", "traçabilité du conseil", "réclamations"],
     publishedAt: "2026-06-24T07:30:00.000Z",
     rank: 0.89,
   },
@@ -422,9 +422,9 @@ export const demoArchiveSnippets: readonly DemoArchiveSnippet[] = [
     sourceId: "source_energie_industrie",
     issueId: "issue_energy_2026_05_30",
     documentId: "doc_energy_2026_05_market",
-    title: "Flexibilite reseau",
+    title: "Flexibilité réseau",
     excerpt:
-      "Les actifs flexibles capables de repondre sous quinze minutes recoivent un bonus dans les appels d'offres capacitaires.",
+      "Les actifs flexibles capables de répondre sous quinze minutes reçoivent un bonus dans les appels d'offres capacitaires.",
     highlights: ["actifs flexibles", "quinze minutes", "bonus"],
     publishedAt: "2026-05-30T08:00:00.000Z",
     rank: 0.78,
@@ -436,7 +436,7 @@ export const demoChats: readonly DemoChat[] = [
     id: "chat_montclair_regfin_priorites",
     clientCompanyId: demoClientCompany.id,
     userId: demoClientUser.id,
-    title: "Priorites de controle ACPR",
+    title: "Priorités de contrôle ACPR",
     visibility: "company",
     selectedSourceIds: ["source_regulation_financiere", "source_energie_industrie"],
     createdAt: "2026-06-26T08:42:00.000Z",
@@ -448,7 +448,7 @@ export const demoChats: readonly DemoChat[] = [
         author: "user",
         createdAt: "2026-06-26T08:42:00.000Z",
         content:
-          "Quelles priorites ACPR devons-nous traiter avant la rentree, et quels documents de l'archive les justifient ?",
+          "Quelles priorités ACPR devons-nous traiter avant la rentrée, et quels documents de l'archive les justifient ?",
       },
       {
         id: "msg_regfin_priorites_assistant_1",
@@ -456,14 +456,14 @@ export const demoChats: readonly DemoChat[] = [
         author: "assistant",
         createdAt: "2026-06-26T08:45:30.000Z",
         content:
-          "Trois chantiers ressortent: renforcer la tracabilite du conseil, formaliser la gouvernance distributeurs, et finaliser le plan DORA interne avant fin septembre. La priorite la plus proche est DORA, car l'annexe place la consolidation des plans avant le 30 septembre. En parallele, la note du 24 juin signale que l'ACPR regardera les reclamations et la preuve de conseil dans ses controles 2026.",
+          "Trois chantiers ressortent : renforcer la traçabilité du conseil, formaliser la gouvernance distributeurs, et finaliser le plan DORA interne avant fin septembre. La priorité la plus proche est DORA, car l'annexe place la consolidation des plans avant le 30 septembre. En parallèle, la note du 24 juin signale que l'ACPR regardera les réclamations et la preuve de conseil dans ses contrôles 2026.",
         citations: [
           {
             id: "cite_regfin_dora",
             sourceId: "source_regulation_financiere",
             issueId: "issue_regfin_2026_06_24",
             documentId: "doc_regfin_2026_06_24_annexes",
-            label: "Reglementation financiere, 24 juin 2026 - Annexes",
+            label: "Réglementation financière, 24 juin 2026 - Annexes",
             page: 3,
             quote: "plans DORA internes avant le 30 septembre",
           },
@@ -472,9 +472,9 @@ export const demoChats: readonly DemoChat[] = [
             sourceId: "source_regulation_financiere",
             issueId: "issue_regfin_2026_06_24",
             documentId: "doc_regfin_2026_06_24_note",
-            label: "Reglementation financiere, 24 juin 2026 - Note de synthese",
+            label: "Réglementation financière, 24 juin 2026 - Note de synthèse",
             page: 5,
-            quote: "tracabilite du conseil et indicateurs de traitement des reclamations",
+            quote: "traçabilité du conseil et indicateurs de traitement des réclamations",
           },
         ],
         sourceReads: [
@@ -515,7 +515,7 @@ export const demoArtifacts: readonly DemoArtifact[] = [
   {
     id: "artifact_regfin_action_table",
     chatId: "chat_montclair_regfin_priorites",
-    title: "Tableau des priorites conformite",
+    title: "Tableau des priorités conformité",
     kind: "briefing-table",
     createdAt: "2026-06-26T08:46:10.000Z",
     files: [
@@ -523,7 +523,7 @@ export const demoArtifacts: readonly DemoArtifact[] = [
         path: "priorites-conformite.md",
         contentType: "text/markdown",
         content:
-          "| Priorite | Echeance | Source |\n| --- | --- | --- |\n| Plan DORA interne | 30 septembre 2026 | Annexes du 24 juin, p. 3 |\n| Tracabilite du conseil | T3 2026 | Note du 24 juin, p. 5 |\n| Revue conventions distributeurs | T4 2026 | Annexes du 24 juin, p. 4 |\n",
+          "| Priorité | Échéance | Source |\n| --- | --- | --- |\n| Plan DORA interne | 30 septembre 2026 | Annexes du 24 juin, p. 3 |\n| Traçabilité du conseil | T3 2026 | Note du 24 juin, p. 5 |\n| Revue conventions distributeurs | T4 2026 | Annexes du 24 juin, p. 4 |\n",
       },
     ],
   },

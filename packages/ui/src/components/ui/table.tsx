@@ -32,7 +32,7 @@ export function TableHeader({
 }
 
 export function TableBody({ className, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) {
-  return <tbody data-slot="table-body" className={cn("divide-y divide-rule", className)} {...props} />;
+  return <tbody data-slot="table-body" className={className} {...props} />;
 }
 
 export function TableFooter({
@@ -84,7 +84,10 @@ export function TableCell({
   return (
     <td
       data-slot="table-cell"
-      className={cn("h-11 px-3 py-2 align-middle text-sm text-ink first:pl-0 last:pr-0", className)}
+      className={cn(
+        "h-11 border-b border-rule px-3 py-2 align-middle text-sm text-ink first:pl-0 last:pr-0",
+        className,
+      )}
       {...props}
     />
   );

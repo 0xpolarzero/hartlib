@@ -217,12 +217,12 @@ function SortableHead({
         type="button"
         onClick={column.getToggleSortingHandler()}
         className={cn(
-          "inline-flex h-5 items-center gap-1 align-middle transition-colors duration-fast",
-          align === "right" && "justify-end",
+          "flex h-5 w-full items-center gap-1 align-middle transition-colors duration-fast",
+          align === "right" ? "justify-end text-right" : "justify-start text-left",
           sorted ? "text-ink" : "text-faint hover:text-muted",
         )}
       >
-        <span>{children}</span>
+        <span className="min-w-0 truncate">{children}</span>
         <span className="flex size-3 shrink-0 items-center justify-center">
           {sorted === "desc" ? (
             <ArrowDown className="size-3" aria-hidden="true" />
