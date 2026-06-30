@@ -316,12 +316,8 @@ function SourcesTable({ onSelect }: { onSelect: (id: string) => void }) {
               onClick={() => onSelect(row.original.id)}
             >
               {row.getVisibleCells().map((cell) => {
-                const align = cell.column.id === "name" ? "left" : "right";
                 return (
-                  <TableCell
-                    key={cell.id}
-                    className={cn(align === "right" && "text-right tabular-nums text-ink")}
-                  >
+                  <TableCell key={cell.id} className="tabular-nums text-ink">
                     {cell.column.id === "lastPublishedAt" ? (
                       row.original.lastPublishedAt ? (
                         formatDate(row.original.lastPublishedAt)
