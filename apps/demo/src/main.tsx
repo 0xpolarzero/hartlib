@@ -1153,9 +1153,6 @@ function IssueTable({
                   <TableCell
                     key={cell.id}
                     className="whitespace-nowrap font-mono text-[11px] text-faint"
-                    title={
-                      row.original.status === "scheduled" ? "Publication programmée" : undefined
-                    }
                   >
                     <span className="inline-flex items-center gap-2">
                       <span>{formatDate(row.original.publicationDate)}</span>
@@ -1431,16 +1428,23 @@ function InlineInput({
 
 function ScheduledPublicationIcon({ className }: { className?: string }) {
   return (
-    <span
-      className={cn(
-        "inline-flex size-4 items-center justify-center rounded-sm border border-accent/30 bg-accent/10 align-middle text-accent",
-        className,
-      )}
-      title="Publication programmée"
-      aria-label="Publication programmée"
-    >
-      <CalendarClock className="size-3" aria-hidden="true" />
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          tabIndex={0}
+          className={cn(
+            "inline-flex size-4 items-center justify-center rounded-sm border border-accent/30 bg-accent/10 align-middle text-accent outline-none",
+            className,
+          )}
+          aria-label="Publication programmée"
+        >
+          <CalendarClock className="size-3" aria-hidden="true" />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="center">
+        Publication programmée
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
