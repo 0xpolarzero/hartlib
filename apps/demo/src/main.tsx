@@ -351,7 +351,10 @@ function PublisherSourceDetail({ source }: { source: DemoSubscriptionSource }) {
 
       <div className="animate-in stagger-1 grid gap-8 xl:grid-cols-[1.3fr_0.7fr]">
         <section>
-          <h3 className="text-xs font-normal uppercase tracking-[0.16em] text-faint">Publications</h3>
+          <h3 className="flex items-center gap-2 text-xs font-normal uppercase tracking-[0.16em] text-faint">
+            <span>Publications</span>
+            <span className="font-mono tracking-normal text-faint">{issues.length}</span>
+          </h3>
           <div className="mt-4">
             <IssueTable issues={issues} compact />
           </div>
