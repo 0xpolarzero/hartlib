@@ -52,7 +52,10 @@ export function TableRow({ className, ...props }: React.HTMLAttributes<HTMLTable
   return (
     <tr
       data-slot="table-row"
-      className={cn("transition-colors duration-fast data-[state=selected]:bg-surface", className)}
+      className={cn(
+        "transition-colors duration-fast ease-snappy data-[state=selected]:bg-surface",
+        className,
+      )}
       {...props}
     />
   );
@@ -82,7 +85,7 @@ export function TableCell({
     <td
       data-slot="table-cell"
       className={cn(
-        "h-11 border-b border-rule px-3 py-2 align-middle text-sm text-ink first:pl-0 last:pr-0",
+        "h-9 border-b border-rule px-3 py-1.5 align-middle text-sm text-ink first:pl-0 last:pr-0",
         className,
       )}
       {...props}

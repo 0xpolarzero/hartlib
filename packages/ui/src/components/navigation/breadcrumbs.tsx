@@ -42,7 +42,7 @@ export function Breadcrumbs({
                   event.preventDefault();
                   item.onClick?.();
                 }}
-                className="font-mono uppercase tracking-wider text-muted transition-colors duration-fast hover:text-ink"
+                className="font-mono uppercase tracking-wider text-muted transition-colors duration-fast ease-snappy hover:text-ink"
               >
                 {item.label}
               </a>
@@ -50,7 +50,7 @@ export function Breadcrumbs({
               <a
                 href={item.href}
                 aria-current={isCurrent ? "page" : undefined}
-                className="font-mono uppercase tracking-wider text-muted transition-colors duration-fast hover:text-ink"
+                className="font-mono uppercase tracking-wider text-muted transition-colors duration-fast ease-snappy hover:text-ink"
               >
                 {item.label}
               </a>

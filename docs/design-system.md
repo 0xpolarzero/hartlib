@@ -44,12 +44,13 @@ All values in OKLCH. Neutrals tinted slightly cool (hue ~220 or ~60) for cohesio
 
 ## Motion Tokens
 
-| Token               | Value                              | Usage                          |
-| ------------------- | ---------------------------------- | ------------------------------ |
-| `--ease-snappy`     | `cubic-bezier(0.25, 0.1, 0.25, 1)` | Hover/active state transitions |
-| `--ease-out`        | `cubic-bezier(0.16, 1, 0.3, 1)`    | Entrance/exit animations       |
-| `--duration-fast`   | `100ms`                            | Hover states, color shifts     |
-| `--duration-normal` | `200ms`                            | Moderate transitions           |
+| Token               | Value                             | Usage                          |
+| ------------------- | --------------------------------- | ------------------------------ |
+| `--ease-snappy`     | `cubic-bezier(0.23, 1, 0.32, 1)`  | Hover/active state transitions |
+| `--ease-out`        | `cubic-bezier(0.23, 1, 0.32, 1)`  | Entrance/exit animations       |
+| `--ease-in-out`     | `cubic-bezier(0.77, 0, 0.175, 1)` | On-screen movement             |
+| `--duration-fast`   | `100ms`                           | Hover states, color shifts     |
+| `--duration-normal` | `200ms`                           | Moderate transitions           |
 
 ## Typography
 
@@ -100,7 +101,7 @@ Flat button, `rounded-sm` backed by `--radius` (`0.5px`). No drop shadows.
 - **Variants**: `default` (ink fill, paper text), `secondary` (1px ink/15 border, no fill, light hover fill), `ghost` (muted text, underline-on-hover)
 - **Sizes**: `default` (h-9, 14px), `sm` (h-7, 12px)
 - **Props**: `variant`, `size`, `asChild` (Radix Slot), standard button HTML attributes
-- **Behaviors**: 100ms transition on color/background; 2px focus ring (`--color-ring`), offset 2px; `:active` state darkens by one step
+- **Behaviors**: 100ms transition on color/background/transform; 2px focus ring (`--color-ring`), offset 2px; `:active` state darkens by one step and scales to `0.97`
 
 ### Card
 
@@ -134,7 +135,7 @@ Dense, hairline-ruled data table with optional sticky header.
 | `TableBody`   | `<tbody>` | Data rows, divided by hairline rules        |
 | `TableRow`    | `<tr>`    | Row with hover highlight                    |
 | `TableHead`   | `<th>`    | Cell, small-caps uppercase 11px, left-align |
-| `TableCell`   | `<td>`    | Data cell, 14px ink text                    |
+| `TableCell`   | `<td>`    | Data cell, 14px ink text, 36px base height  |
 
 Prop `stickyHeader={true}` on `TableHeader` enables sticky positioning with `z-10` and `bg-paper`. The table must be inside a scroll container with defined height for sticky to function.
 
@@ -142,7 +143,7 @@ Prop `stickyHeader={true}` on `TableHeader` enables sticky positioning with `z-1
 
 TanStack Table renderer for dense product tables that share Pressroom header, sorting, and row chrome.
 
-- `DataTable` — renders TanStack header groups, sortable headers, body rows, optional leading rows, row click behavior, hidden columns, and custom cell rendering
+- `DataTable` — renders TanStack header groups, sortable headers, body rows, optional leading rows, row click behavior, hidden columns, responsive column/table classes, and custom cell rendering
 - `SortableTableHead` — standalone sortable header cell used by `DataTable`
 - Low-level sorting state, column definitions, row models, and domain cell content may be owned by reusable product components inside `@brief/ui`; consuming apps should prefer package-level product tables when they exist.
 

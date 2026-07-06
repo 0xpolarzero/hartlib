@@ -9,7 +9,7 @@ export function Textarea({ className, ...props }: TextareaProps) {
     <textarea
       data-slot="textarea"
       className={cn(
-        "flex min-h-[60px] w-full rounded-sm border border-border bg-paper px-3 py-2 text-sm text-ink shadow-sm transition-colors duration-fast",
+        "flex min-h-[60px] w-full rounded-sm border border-border bg-paper px-3 py-2 text-sm text-ink transition-colors duration-fast ease-snappy",
         "placeholder:text-muted",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
         "disabled:cursor-not-allowed disabled:opacity-50",

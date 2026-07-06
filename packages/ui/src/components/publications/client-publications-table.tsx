@@ -82,31 +82,42 @@ export function ClientPublicationsTable({
   return (
     <DataTable<InternalClientPublicationRow>
       table={table}
+      tableClassName="table-fixed"
       renderContent={renderTableContent}
       hiddenColumnIds={["contextRank"]}
+      getColumnClassName={(columnId) =>
+        columnId === "sourceName" || columnId === "publicationDate"
+          ? "hidden sm:table-cell"
+          : columnId === "actions"
+            ? "w-8"
+            : columnId === "title"
+              ? "w-full"
+              : ""
+      }
       getHeaderAlign={(header) => (header.column.id === "actions" ? "right" : "left")}
       getRowClassName={(row) => (!row.original.includedInContext ? "opacity-60" : undefined)}
       onRowClick={(row) => onSelectPublication(row.original.id)}
       renderCell={(cell, row) => {
         if (cell.column.id === "sourceName") {
           return (
-            <TableCell key={cell.id} className="max-w-[12rem] text-muted">
+            <TableCell key={cell.id} className="hidden max-w-[12rem] text-muted sm:table-cell">
               <div className="truncate">{row.original.sourceName}</div>
             </TableCell>
           );
         }
         if (cell.column.id === "title") {
           return (
-            <TableCell key={cell.id}>
-              <div className="max-w-[28rem] truncate font-medium text-ink">
-                {row.original.title}
-              </div>
+            <TableCell key={cell.id} className="min-w-0">
+              <div className="truncate font-medium text-ink">{row.original.title}</div>
             </TableCell>
           );
         }
         if (cell.column.id === "publicationDate") {
           return (
-            <TableCell key={cell.id} className="whitespace-nowrap font-mono text-[11px] text-faint">
+            <TableCell
+              key={cell.id}
+              className="hidden whitespace-nowrap font-mono text-[11px] text-faint sm:table-cell"
+            >
               {formatPublicationDate(row.original.publicationDate)}
             </TableCell>
           );
@@ -114,7 +125,7 @@ export function ClientPublicationsTable({
         if (cell.column.id === "actions") {
           const isShown = row.original.includedInContext;
           return (
-            <TableCell key={cell.id} className="text-right">
+            <TableCell key={cell.id} className="w-8 text-right">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button

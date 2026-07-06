@@ -48,16 +48,18 @@ export type DataTableInstance<TData> = {
 export function SortableTableHead<TData>({
   column,
   align = "left",
+  className,
   children,
 }: {
   column: DataTableColumn<TData>;
   align?: "left" | "right";
+  className?: string | undefined;
   children: React.ReactNode;
 }) {
   const sorted = column.getIsSorted();
 
   return (
-    <TableHead className={cn(align === "right" && "text-right")}>
+    <TableHead className={cn(align === "right" && "text-right", className)}>
       {!column.getCanSort() ? (
         <span
           className={cn(
@@ -96,7 +98,9 @@ export function SortableTableHead<TData>({
 
 export function DataTable<TData>({
   table,
+  tableClassName,
   hiddenColumnIds,
+  getColumnClassName,
   getHeaderAlign,
   getRowClassName,
   onRowClick,
@@ -105,7 +109,9 @@ export function DataTable<TData>({
   renderCell,
 }: {
   table: DataTableInstance<TData>;
+  tableClassName?: string | undefined;
   hiddenColumnIds?: readonly string[];
+  getColumnClassName?: (columnId: string) => string | undefined;
   getHeaderAlign?: (header: DataTableHeader<TData>) => "left" | "right";
   getRowClassName?: (row: DataTableRow<TData>) => string | undefined;
   onRowClick?: (row: DataTableRow<TData>) => void;
@@ -116,7 +122,7 @@ export function DataTable<TData>({
   const hiddenColumns = new Set(hiddenColumnIds ?? []);
 
   return (
-    <Table>
+    <Table className={tableClassName}>
       <TableHeader>
         {table.getHeaderGroups().map((headerGroup) => (
           <TableRow key={headerGroup.id}>
@@ -128,6 +134,7 @@ export function DataTable<TData>({
                   key={header.id}
                   column={header.column}
                   align={getHeaderAlign?.(header) ?? "left"}
+                  className={getColumnClassName?.(header.column.id)}
                 >
                   {renderContent(header.column.columnDef.header, header.getContext())}
                 </SortableTableHead>
@@ -148,7 +155,7 @@ export function DataTable<TData>({
               if (hiddenColumns.has(cell.column.id)) return null;
               return (
                 renderCell?.(cell, row) ?? (
-                  <TableCell key={cell.id}>
+                  <TableCell key={cell.id} className={getColumnClassName?.(cell.column.id)}>
                     {renderContent(cell.column.columnDef.cell, cell.getContext())}
                   </TableCell>
                 )

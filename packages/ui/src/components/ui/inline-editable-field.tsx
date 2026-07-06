@@ -3,7 +3,7 @@ import { useEffect, useState, type ComponentPropsWithoutRef, type KeyboardEvent 
 import { cn } from "../../lib/utils";
 
 export const editableFieldChromeClass =
-  "rounded-sm border border-rule/70 bg-paper/35 outline-none transition-colors duration-fast hover:border-rule hover:bg-paper/70 focus:border-ring focus:bg-paper focus:ring-2 focus:ring-ring/20";
+  "rounded-sm border border-rule/70 bg-paper/35 outline-none transition-colors duration-fast ease-snappy hover:border-rule hover:bg-paper/70 focus:border-ring focus:bg-paper focus:ring-2 focus:ring-ring/20 focus:ring-offset-1 focus:ring-offset-background";
 
 type InlineEditableFieldBaseProps = {
   value: string;

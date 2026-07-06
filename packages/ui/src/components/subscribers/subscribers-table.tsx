@@ -398,7 +398,7 @@ function DraftCompanyCombobox({
         <div
           id={listboxId}
           role="listbox"
-          className="absolute left-0 right-0 top-[calc(100%+4px)] z-20 overflow-hidden rounded-sm border border-rule bg-paper shadow-sm"
+          className="absolute left-0 right-0 top-[calc(100%+4px)] z-20 overflow-hidden rounded-sm border border-rule bg-paper"
         >
           {comboboxOptions.map((option, index) =>
             option.kind === "existing" ? (
@@ -409,7 +409,7 @@ function DraftCompanyCombobox({
                 role="option"
                 aria-selected={index === activeIndex}
                 className={cn(
-                  "flex w-full items-center justify-between px-2 py-1.5 text-left text-xs text-muted hover:bg-rule/45 hover:text-ink",
+                  "flex w-full items-center justify-between px-2 py-1.5 text-left text-xs text-muted transition-[background-color,color,transform] duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 hover:bg-rule/45 hover:text-ink",
                   index === activeIndex && "bg-rule/45 text-ink",
                 )}
                 onMouseDown={(event) => event.preventDefault()}
@@ -429,7 +429,7 @@ function DraftCompanyCombobox({
                 role="option"
                 aria-selected={index === activeIndex}
                 className={cn(
-                  "flex w-full items-center gap-1.5 border-t border-rule px-2 py-1.5 text-left text-xs text-muted hover:bg-rule/45 hover:text-ink",
+                  "flex w-full items-center gap-1.5 border-t border-rule px-2 py-1.5 text-left text-xs text-muted transition-[background-color,color,transform] duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 hover:bg-rule/45 hover:text-ink",
                   index === activeIndex && "bg-rule/45 text-ink",
                 )}
                 onMouseDown={(event) => event.preventDefault()}

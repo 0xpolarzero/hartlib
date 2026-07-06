@@ -20,10 +20,10 @@ export function TooltipContent({
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         className={cn(
-          "z-[1000] overflow-hidden rounded-sm border border-rule bg-paper px-3 py-2 text-xs text-ink shadow-[0_8px_24px_rgb(34_29_24_/_0.14)]",
-          "animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
-          "data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1",
-          "data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1",
+          "z-[1000] overflow-hidden rounded-sm border border-rule bg-paper px-3 py-2 text-xs text-ink",
+          "origin-[var(--radix-tooltip-content-transform-origin)] transition-[opacity,transform] duration-fast ease-out will-change-[opacity,transform]",
+          "data-[state=closed]:scale-[0.97] data-[state=closed]:opacity-0 data-[state=delayed-open]:scale-100 data-[state=delayed-open]:opacity-100 data-[state=instant-open]:scale-100 data-[state=instant-open]:opacity-100",
+          "motion-reduce:transition-none motion-reduce:data-[state=closed]:scale-100",
           className,
         )}
         {...props}

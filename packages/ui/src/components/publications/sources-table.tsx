@@ -7,8 +7,9 @@ import {
 } from "@tanstack/react-table";
 import { useMemo, useState } from "react";
 
-import { TableCell } from "../ui/table";
+import { cn } from "../../lib/utils";
 import { DataTable } from "../ui/data-table";
+import { TableCell } from "../ui/table";
 import { formatPublicationDate, renderTableContent } from "./table-utils";
 
 export type SourceTableRow = {
@@ -66,8 +67,17 @@ export function SourcesTable({
       table={table}
       renderContent={renderTableContent}
       onRowClick={(row) => onSelectSource(row.original.id)}
+      getColumnClassName={(columnId) =>
+        columnId === "lastPublishedAt" ? "hidden sm:table-cell" : ""
+      }
       renderCell={(cell, row) => (
-        <TableCell key={cell.id} className="tabular-nums text-ink">
+        <TableCell
+          key={cell.id}
+          className={cn(
+            "tabular-nums text-ink",
+            cell.column.id === "lastPublishedAt" && "hidden sm:table-cell",
+          )}
+        >
           {cell.column.id === "lastPublishedAt" ? (
             row.original.lastPublishedAt ? (
               formatPublicationDate(row.original.lastPublishedAt)

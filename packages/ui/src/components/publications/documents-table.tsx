@@ -136,7 +136,7 @@ function PdfName({
       href={publicUrl}
       target="_blank"
       rel="noopener noreferrer"
-      className="inline-flex max-w-44 items-center gap-1.5 text-left text-faint outline-none transition-colors duration-fast hover:text-ink focus-visible:text-ink"
+      className="inline-flex max-w-44 items-center gap-1.5 text-left text-faint outline-none transition-colors duration-fast ease-snappy hover:text-ink focus-visible:text-ink"
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => {
         event.stopPropagation();
@@ -150,7 +150,7 @@ function PdfName({
   ) : (
     <button
       type="button"
-      className="inline-flex max-w-44 items-center gap-1.5 text-left text-faint outline-none transition-colors duration-fast hover:text-ink focus-visible:text-ink"
+      className="inline-flex max-w-44 items-center gap-1.5 text-left text-faint outline-none transition-[color,transform] duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 hover:text-ink focus-visible:text-ink"
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => {
         event.preventDefault();
@@ -210,7 +210,7 @@ function PdfUploadControl({
       <label
         htmlFor={inputId}
         className={cn(
-          "inline-flex h-7 cursor-pointer items-center justify-center gap-1.5 rounded-sm px-2 text-[11px] font-medium transition-colors duration-fast",
+          "inline-flex h-7 cursor-pointer items-center justify-center gap-1.5 rounded-sm px-2 text-[11px] font-medium transition-[background-color,border-color,color,transform] duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100",
           "border border-rule/70 bg-paper/35 text-muted hover:border-rule hover:bg-rule/45 hover:text-ink",
           "focus-within:ring-2 focus-within:ring-ring/20",
         )}

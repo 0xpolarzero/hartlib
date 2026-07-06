@@ -42,17 +42,23 @@ button {
 }
 
 .animate-in {
-  animation: fade-up 0.4s var(--ease-out) both;
+  animation: fade-up 220ms var(--ease-out) both;
 }
 
 .stagger-1 {
-  animation-delay: 60ms;
+  animation-delay: 50ms;
 }
 
 .stagger-2 {
-  animation-delay: 120ms;
+  animation-delay: 100ms;
 }
 
 .stagger-3 {
-  animation-delay: 180ms;
+  animation-delay: 150ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-in {
+    animation-name: none;
+  }
 }
