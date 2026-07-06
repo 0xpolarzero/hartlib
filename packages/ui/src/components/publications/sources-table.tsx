@@ -29,6 +29,7 @@ export function SourcesTable({
   onSelectSource: (id: string) => void;
 }) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "lastPublishedAt", desc: true }]);
+  const tableRows = useMemo(() => [...rows], [rows]);
 
   const columns = useMemo(
     () => [
@@ -52,7 +53,7 @@ export function SourcesTable({
   );
 
   const table = useReactTable({
-    data: [...rows],
+    data: tableRows,
     columns,
     state: { sorting },
     onSortingChange: setSorting,

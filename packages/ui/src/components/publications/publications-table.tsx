@@ -40,6 +40,7 @@ export function PublicationsTable({
   onSelectIssue?: ((id: string) => void) | undefined;
 }) {
   const [sorting, setSorting] = useState<SortingState>([{ id: "publicationDate", desc: true }]);
+  const tableIssues = useMemo(() => [...issues], [issues]);
 
   const columns = useMemo(
     () => [
@@ -86,7 +87,7 @@ export function PublicationsTable({
   );
 
   const table = useReactTable({
-    data: [...issues],
+    data: tableIssues,
     columns,
     state: { sorting },
     onSortingChange: setSorting,

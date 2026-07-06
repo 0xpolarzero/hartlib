@@ -1,3 +1,4 @@
+import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
 import type * as React from "react";
 
 import { cn } from "../../lib/utils";
@@ -13,7 +14,7 @@ export type DataTableColumn<_TData> = {
   };
   getCanSort: () => boolean;
   getIsSorted: () => TableSortState;
-  getToggleSortingHandler: () => React.MouseEventHandler<HTMLButtonElement> | undefined;
+  toggleSorting: (desc?: boolean, isMulti?: boolean) => void;
 };
 
 export type DataTableHeader<TData> = {
@@ -69,24 +70,21 @@ export function SortableTableHead<TData>({
       ) : (
         <button
           type="button"
-          onClick={column.getToggleSortingHandler()}
+          onClick={(event) => column.toggleSorting(undefined, event.shiftKey)}
           className={cn(
-            "group flex h-6 w-full items-center text-faint",
+            "brief-sortable-head",
             align === "right" ? "justify-end text-right" : "justify-start text-left",
           )}
         >
           <span className="inline-flex max-w-full items-center gap-1">
             <span className="min-w-0 truncate">{children}</span>
-            <span className="flex size-3 shrink-0 items-center justify-center">
+            <span className="brief-sortable-head-icon">
               {sorted === "desc" ? (
-                <span className="block h-0 w-0 border-x-[3px] border-t-[5px] border-x-transparent border-t-ink" />
+                <ArrowDown className="size-3 text-ink" aria-hidden="true" />
               ) : sorted === "asc" ? (
-                <span className="block h-0 w-0 border-x-[3px] border-b-[5px] border-x-transparent border-b-ink" />
+                <ArrowUp className="size-3 text-ink" aria-hidden="true" />
               ) : (
-                <span className="flex flex-col gap-px opacity-0 transition-opacity duration-fast group-hover:opacity-100">
-                  <span className="block h-0 w-0 border-x-[3px] border-b-[4px] border-x-transparent border-b-faint" />
-                  <span className="block h-0 w-0 border-x-[3px] border-t-[4px] border-x-transparent border-t-faint" />
-                </span>
+                <ChevronsUpDown className="brief-sortable-head-idle-icon" aria-hidden="true" />
               )}
             </span>
           </span>

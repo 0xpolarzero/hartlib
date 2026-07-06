@@ -56,6 +56,43 @@
   background-color: oklch(0.96 0.006 220 / 0.6);
 }
 
+.brief-sortable-head {
+  display: flex;
+  height: 1.5rem;
+  width: 100%;
+  align-items: center;
+  color: var(--color-faint);
+  text-align: left;
+  transition: color var(--duration-fast) var(--ease-snappy);
+}
+
+.brief-sortable-head:hover,
+.brief-sortable-head:focus-visible {
+  color: var(--color-muted);
+}
+
+.brief-sortable-head-icon {
+  display: flex;
+  width: 0.75rem;
+  height: 0.75rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.brief-sortable-head-idle-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+  color: color-mix(in oklch, var(--color-faint) 60%, transparent);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-snappy);
+}
+
+.brief-sortable-head:hover .brief-sortable-head-idle-icon,
+.brief-sortable-head:focus-visible .brief-sortable-head-idle-icon {
+  opacity: 1;
+}
+
 .publication-date-input {
   appearance: textfield;
 }
