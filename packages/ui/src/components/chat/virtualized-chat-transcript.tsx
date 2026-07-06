@@ -95,7 +95,10 @@ export function VirtualizedChatTranscript({
       style={{ height, overflowY: "auto" }}
       data-testid="chat-transcript"
     >
-      <div className="brief-chat-virtual-canvas" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+      <div
+        className="brief-chat-virtual-canvas"
+        style={{ height: `${virtualizer.getTotalSize()}px` }}
+      >
         {virtualizer.getVirtualItems().map((virtualItem) => {
           const message = messages[virtualItem.index];
           if (!message) return null;

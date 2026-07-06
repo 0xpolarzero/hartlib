@@ -1,21 +1,6 @@
 import { createRoot } from "react-dom/client";
-import {
-  CalendarClock,
-  Check,
-  ChevronsUpDown,
-  ExternalLink,
-  Eye,
-  EyeOff,
-  Info,
-  Pause,
-  Play,
-  Plus,
-  Send,
-  Trash2,
-  Upload,
-  RotateCcw,
-} from "lucide-react";
-import { Fragment, type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { RotateCcw, Send } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   demoDataset,
@@ -24,14 +9,14 @@ import {
   type DemoSubscriptionSource,
 } from "@brief/demo-data";
 import {
+  Breadcrumbs,
   Button,
-  DataTable,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
+  ClientPublicationsTable,
+  PublicationDetail,
+  PublicationsTable,
+  SectionHeader,
+  SourcesTable,
+  SubscribersTable,
   Tabs,
   TabsContent,
   TabsList,
@@ -41,26 +26,23 @@ import {
   TooltipProvider,
   TooltipTrigger,
   VirtualizedChatTranscript,
-  cn,
+  type BreadcrumbItem,
+  type ClientPublicationTableRow,
+  type DraftSubscriber,
+  type DraftSubscriberErrors,
+  type OpenStoredPdfResult,
+  type PublicationDetailIssue,
+  type PublicationDocument,
+  type PublicationTableIssue,
+  type SourceTableRow,
+  type SubscriberStatus,
+  type SubscriberTableRow,
 } from "@brief/ui";
-
-import {
-  createColumnHelper,
-  flexRender,
-  getCoreRowModel,
-  getSortedRowModel,
-  useReactTable,
-  type SortingState,
-} from "@tanstack/react-table";
 
 import "./styles.css";
 
-// --- Data helpers ---
-
 const sourceById = new Map(demoDataset.sources.map((s) => [s.id, s]));
 const primaryChat = demoDataset.chats[0];
-const editableFieldChromeClass =
-  "rounded-sm border border-rule/70 bg-paper/35 outline-none transition-colors duration-fast hover:border-rule hover:bg-paper/70 focus:border-ring focus:bg-paper focus:ring-2 focus:ring-ring/20";
 const demoSubscriberProfiles = [
   {
     id: demoDataset.companies.client.id,
@@ -78,7 +60,6 @@ const demoSubscriberProfiles = [
     email: "veille@lutetia-risk.example",
   },
 ];
-// --- App ---
 
 function isDemoPdfPath(pathname: string) {
   return pathname.startsWith("/demo/pdfs/") && pathname.endsWith(".pdf");
@@ -239,14 +220,6 @@ function App() {
     applyDemoRoute({ role: "publisher", sourceId: id, issueId: null });
   }
 
-  const selectedSource = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
-  const selectedIssue =
-    selectedSource && selectedIssueId
-      ? ((issuesBySourceId.get(selectedSource.id) ?? []).find(
-          (issue) => issue.id === selectedIssueId,
-        ) ?? null)
-      : null;
-
   function handleCreateIssue(sourceId: string) {
     const issue = createDraftIssue(sourceId);
     setIssues((current) => [issue, ...current]);
@@ -270,6 +243,14 @@ function App() {
     applyDemoRoute({ role, sourceId: null, issueId: null }, "replace");
     setResetVersion((version) => version + 1);
   }
+
+  const selectedSource = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
+  const selectedIssue =
+    selectedSource && selectedIssueId
+      ? ((issuesBySourceId.get(selectedSource.id) ?? []).find(
+          (issue) => issue.id === selectedIssueId,
+        ) ?? null)
+      : null;
 
   return (
     <TooltipProvider>
@@ -321,61 +302,14 @@ function App() {
 
           <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
             <div className="mb-6">
-              <Crumbs
-                items={
-                  role === "client"
-                    ? selectedIssue
-                      ? [
-                          {
-                            label: "Chat",
-                            href: buildDemoPath({
-                              role: "client",
-                              sourceId: null,
-                              issueId: null,
-                            }),
-                            onClick: () =>
-                              applyDemoRoute({
-                                role: "client",
-                                sourceId: null,
-                                issueId: null,
-                              }),
-                          },
-                          { label: selectedIssue.title },
-                        ]
-                      : [{ label: "Chat" }]
-                    : selectedSource
-                      ? [
-                          {
-                            label: "Fils",
-                            href: buildDemoPath({
-                              role: "publisher",
-                              sourceId: null,
-                              issueId: null,
-                            }),
-                            onClick: () => handleSelectSource(null),
-                          },
-                          ...(selectedIssue
-                            ? [
-                                {
-                                  label: selectedSource.name,
-                                  href: buildDemoPath({
-                                    role: "publisher",
-                                    sourceId: selectedSource.id,
-                                    issueId: null,
-                                  }),
-                                  onClick: () =>
-                                    applyDemoRoute({
-                                      role: "publisher",
-                                      sourceId: selectedSource.id,
-                                      issueId: null,
-                                    }),
-                                },
-                                { label: selectedIssue.title },
-                              ]
-                            : [{ label: selectedSource.name }]),
-                        ]
-                      : [{ label: "Fils" }]
-                }
+              <Breadcrumbs
+                items={buildBreadcrumbs({
+                  role,
+                  selectedIssue,
+                  selectedSource,
+                  applyDemoRoute,
+                  handleSelectSource,
+                })}
               />
             </div>
             <TabsContent value="publisher" className="mt-0">
@@ -430,43 +364,6 @@ function App() {
   );
 }
 
-// --- Crumbs ---
-
-type Crumb = { label: string; href?: string; onClick?: () => void };
-
-function Crumbs({ items }: { items: readonly Crumb[] }) {
-  return (
-    <nav className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider">
-      {items.map((item, index) => (
-        <Fragment key={index}>
-          {index > 0 ? <span className="text-faint">/</span> : null}
-          {item.href && item.onClick ? (
-            <a
-              href={item.href}
-              onClick={(event) => {
-                event.preventDefault();
-                item.onClick?.();
-              }}
-              className="font-mono uppercase tracking-wider text-muted transition-colors duration-fast hover:text-ink"
-            >
-              {item.label}
-            </a>
-          ) : (
-            <span
-              aria-current={index === items.length - 1 ? "page" : undefined}
-              className="text-ink"
-            >
-              {item.label}
-            </span>
-          )}
-        </Fragment>
-      ))}
-    </nav>
-  );
-}
-
-// --- Publisher View ---
-
 function PublisherSourcesList({
   issuesBySourceId,
   onSelect,
@@ -474,33 +371,7 @@ function PublisherSourcesList({
   issuesBySourceId: ReadonlyMap<string, readonly DemoIssue[]>;
   onSelect: (id: string) => void;
 }) {
-  return (
-    <section className="animate-in stagger-1">
-      <SourcesTable issuesBySourceId={issuesBySourceId} onSelect={onSelect} />
-    </section>
-  );
-}
-
-type FilRow = {
-  id: string;
-  name: string;
-  issueCount: number;
-  lastPublishedAt: string | null;
-  subscriberCount: number;
-};
-
-const filColumnHelper = createColumnHelper<FilRow>();
-
-function SourcesTable({
-  issuesBySourceId,
-  onSelect,
-}: {
-  issuesBySourceId: ReadonlyMap<string, readonly DemoIssue[]>;
-  onSelect: (id: string) => void;
-}) {
-  const [sorting, setSorting] = useState<SortingState>([{ id: "lastPublishedAt", desc: true }]);
-
-  const rows = useMemo<FilRow[]>(
+  const rows = useMemo<SourceTableRow[]>(
     () =>
       demoDataset.sources.map((source) => {
         const issues = issuesBySourceId.get(source.id) ?? [];
@@ -517,59 +388,10 @@ function SourcesTable({
     [issuesBySourceId],
   );
 
-  const columns = useMemo(
-    () => [
-      filColumnHelper.accessor("name", { header: "Fil" }),
-      filColumnHelper.accessor("subscriberCount", { header: "Abonnés" }),
-      filColumnHelper.accessor("issueCount", { header: "Publications" }),
-      filColumnHelper.accessor((row) => row.lastPublishedAt ?? "", {
-        id: "lastPublishedAt",
-        header: "Dernière publication",
-        sortingFn: (a, b) => {
-          const av = a.original.lastPublishedAt;
-          const bv = b.original.lastPublishedAt;
-          if (!av && !bv) return 0;
-          if (!av) return 1;
-          if (!bv) return -1;
-          return av < bv ? -1 : av > bv ? 1 : 0;
-        },
-      }),
-    ],
-    [],
-  );
-
-  const table = useReactTable({
-    data: rows,
-    columns,
-    state: { sorting },
-    onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-  });
-
   return (
-    <DataTable<FilRow>
-      table={table}
-      renderContent={renderTableContent}
-      onRowClick={(row) => onSelect(row.original.id)}
-      renderCell={(cell, row) => (
-        <TableCell key={cell.id} className="tabular-nums text-ink">
-          {cell.column.id === "lastPublishedAt" ? (
-            row.original.lastPublishedAt ? (
-              formatDate(row.original.lastPublishedAt)
-            ) : (
-              "—"
-            )
-          ) : cell.column.id === "name" ? (
-            <span className="font-medium text-ink">
-              {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
-            </span>
-          ) : (
-            renderTableContent(cell.column.columnDef.cell, cell.getContext())
-          )}
-        </TableCell>
-      )}
-    />
+    <section className="animate-in stagger-1">
+      <SourcesTable rows={rows} onSelectSource={onSelect} />
+    </section>
   );
 }
 
@@ -591,6 +413,7 @@ function PublisherSourceDetail({
     { statuses: {}, deletedIds: [] },
   );
   const [draftSubscriber, setDraftSubscriber] = useState<DraftSubscriber | null>(null);
+  const [draftErrors, setDraftErrors] = useState<DraftSubscriberErrors>({});
   const subscribers = useMemo(
     () => buildSubscriberRows(source, subscriberState),
     [source, subscriberState],
@@ -625,15 +448,17 @@ function PublisherSourceDetail({
     }));
   }
 
-  function handleAddSubscriber() {
-    setDraftSubscriber((current) => current ?? { company: "", email: "" });
-  }
+  function handleCreateSubscriber() {
+    if (!draftSubscriber) return;
 
-  function handleCreateSubscriber(draft: DraftSubscriber) {
+    const errors = validateDraftSubscriber(draftSubscriber, subscribers);
+    setDraftErrors(errors);
+    if (Object.keys(errors).length > 0) return;
+
     const subscriber: CreatedSubscriberRow = {
       id: `subscriber_demo_${Date.now()}`,
-      company: draft.company.trim(),
-      email: draft.email.trim(),
+      company: draftSubscriber.company.trim(),
+      email: draftSubscriber.email.trim(),
       subscribedSince: new Date().toISOString(),
       status: "active",
     };
@@ -642,6 +467,12 @@ function PublisherSourceDetail({
       ...current,
       created: [...(current.created ?? []), subscriber],
     }));
+    setDraftSubscriber(null);
+    setDraftErrors({});
+  }
+
+  function handleCancelSubscriberDraft() {
+    setDraftErrors({});
     setDraftSubscriber(null);
   }
 
@@ -658,10 +489,10 @@ function PublisherSourceDetail({
             onAdd={() => onCreateIssue(source.id)}
           />
           <div className="mt-4">
-            <IssueTable
-              issues={issues}
+            <PublicationsTable
+              issues={toPublicationTableIssues(issues)}
               compact
-              onDeleteIssue={onDeleteIssue}
+              onDeleteScheduledIssue={onDeleteIssue}
               onSelectIssue={onSelectIssue}
             />
           </div>
@@ -672,18 +503,24 @@ function PublisherSourceDetail({
             title="Abonnés"
             count={subscribers.length}
             actionLabel="Ajouter un abonné"
-            onAdd={handleAddSubscriber}
+            onAdd={() => setDraftSubscriber((current) => current ?? { company: "", email: "" })}
           />
           <div className="mt-4">
-            <SubscriberTable
+            <SubscribersTable
               rows={subscribers}
               draft={draftSubscriber}
+              draftErrors={draftErrors}
               companyOptions={subscriberCompanies}
-              onCancelDraft={() => setDraftSubscriber(null)}
-              onCreateDraft={handleCreateSubscriber}
-              onUpdateDraft={setDraftSubscriber}
-              onToggleStatus={handleToggleSubscriberStatus}
+              onCancelDraft={handleCancelSubscriberDraft}
+              onConfirmDraft={handleCreateSubscriber}
               onDelete={handleDeleteSubscriber}
+              onToggleStatus={handleToggleSubscriberStatus}
+              onUpdateDraft={(nextDraft) => {
+                setDraftErrors((current) =>
+                  clearResolvedDraftErrors(current, nextDraft, subscribers),
+                );
+                setDraftSubscriber(nextDraft);
+              }}
             />
           </div>
         </section>
@@ -701,14 +538,18 @@ function PublisherPublicationDetail({
   onDeleteIssue?: (id: string) => void;
   onUpdateIssue?: (issue: DemoIssue) => void;
 }) {
-  const source = sourceById.get(issue.sourceId);
   const editable = Boolean(onUpdateIssue) && isEditableIssue(issue);
 
-  function updateIssue(patch: Partial<DemoIssue>) {
-    onUpdateIssue?.({ ...issue, ...patch });
+  function updateIssue(patch: Partial<PublicationDetailIssue>) {
+    onUpdateIssue?.({
+      ...issue,
+      ...(patch.title !== undefined ? { title: patch.title } : {}),
+      ...(patch.publicationDate !== undefined ? { publicationDate: patch.publicationDate } : {}),
+      ...(patch.summary !== undefined ? { summary: patch.summary } : {}),
+    });
   }
 
-  function updateDocument(documentId: string, patch: Partial<DemoIssue["documents"][number]>) {
+  function updateDocument(documentId: string, patch: Partial<PublicationDocument>) {
     onUpdateIssue?.({
       ...issue,
       documents: issue.documents.map((doc) => (doc.id === documentId ? { ...doc, ...patch } : doc)),
@@ -739,99 +580,20 @@ function PublisherPublicationDetail({
   }
 
   return (
-    <div className="space-y-8">
-      <section>
-        <div className="flex items-center gap-3">
-          <div className="min-w-0 flex-1">
-            {editable ? (
-              <input
-                value={issue.title}
-                onChange={(event) => updateIssue({ title: event.target.value })}
-                className={cn(
-                  editableFieldChromeClass,
-                  "w-full px-1 py-0.5 font-display text-2xl font-medium text-ink focus:text-accent",
-                )}
-                aria-label="Titre de la publication"
-              />
-            ) : (
-              <h2 className="font-display text-2xl font-medium text-ink">{issue.title}</h2>
-            )}
-          </div>
-          {editable && onDeleteIssue ? (
-            <ConfirmingDeleteButton
-              confirmLabel="Confirmer"
-              idleLabel="Supprimer la publication programmée"
-              onConfirm={() => onDeleteIssue(issue.id)}
-            />
-          ) : null}
-        </div>
-        <div className="mt-2 font-mono text-[11px] uppercase tracking-wider text-faint">
-          {source?.name} /{" "}
-          <span className="inline-flex items-center gap-2 align-middle">
-            {editable ? (
-              <input
-                type="datetime-local"
-                value={toDatetimeLocalValue(issue.publicationDate)}
-                onChange={(event) => {
-                  if (!event.target.value) return;
-                  updateIssue({ publicationDate: new Date(event.target.value).toISOString() });
-                }}
-                className={cn(
-                  editableFieldChromeClass,
-                  "publication-date-input px-1 py-0.5 font-mono text-[11px] uppercase tracking-wider text-faint focus:text-accent",
-                )}
-                aria-label="Date de publication"
-              />
-            ) : (
-              <span>{formatDate(issue.publicationDate)}</span>
-            )}
-            {issue.status === "scheduled" ? (
-              <>
-                <ScheduledPublicationIcon />
-                <span className="font-sans text-xs normal-case tracking-normal text-muted">
-                  {formatRelativeSchedule(issue.publicationDate)}
-                </span>
-              </>
-            ) : null}
-          </span>
-        </div>
-        {editable ? (
-          <textarea
-            value={issue.summary}
-            onChange={(event) => updateIssue({ summary: event.target.value })}
-            className={cn(
-              editableFieldChromeClass,
-              "mt-4 min-h-20 w-full max-w-3xl resize-y px-2 py-1 font-serif text-sm leading-6 text-muted focus:min-h-28 focus:text-ink",
-            )}
-            aria-label="Résumé de la publication"
-          />
-        ) : (
-          <p className="mt-4 max-w-3xl font-serif text-sm leading-6 text-muted">{issue.summary}</p>
-        )}
-      </section>
-
-      <section>
-        <SectionHeader
-          title="Documents"
-          count={issue.documents.length}
-          actionLabel="Ajouter un document"
-          onAdd={editable ? handleAddDocument : undefined}
-        />
-        <div className="mt-4">
-          <DocumentsTable
-            documents={issue.documents}
-            editable={editable}
-            onDeleteDocument={deleteDocument}
-            onUpdateDocument={updateDocument}
-            onUploadDocumentPdf={handleUploadDocumentPdf}
-          />
-        </div>
-      </section>
-    </div>
+    <PublicationDetail
+      issue={toPublicationDetailIssue(issue)}
+      editable={editable}
+      getPdfHref={getPublicPdfUrl}
+      onAddDocument={handleAddDocument}
+      onDeleteDocument={deleteDocument}
+      onDeleteIssue={onDeleteIssue}
+      onOpenStoredPdf={openStoredDemoPdf}
+      onUpdateDocument={updateDocument}
+      onUpdateIssue={updateIssue}
+      onUploadDocumentPdf={handleUploadDocumentPdf}
+    />
   );
 }
-
-// --- Client Views ---
 
 function ClientSourcesList({
   issues,
@@ -846,6 +608,10 @@ function ClientSourcesList({
     [],
   );
   const excludedIssueIdSet = useMemo(() => new Set(excludedIssueIds), [excludedIssueIds]);
+  const publicationById = useMemo(
+    () => new Map(publishedIssues.map((issue) => [issue.id, issue])),
+    [publishedIssues],
+  );
 
   function handleToggleContext(issueId: string) {
     setExcludedIssueIds((current) =>
@@ -873,9 +639,11 @@ function ClientSourcesList({
         <SectionHeader title="Publications" count={publishedIssues.length} />
         <div className="mt-3">
           <ClientPublicationsTable
-            issues={publishedIssues}
-            excludedIssueIds={excludedIssueIdSet}
-            onSelectIssue={onSelectIssue}
+            publications={toClientPublicationRows(publishedIssues, excludedIssueIdSet)}
+            onSelectPublication={(issueId) => {
+              const issue = publicationById.get(issueId);
+              if (issue) onSelectIssue(issue);
+            }}
             onToggleContext={handleToggleContext}
           />
         </div>
@@ -888,211 +656,101 @@ function ClientPublicationDetail({ issue }: { issue: DemoIssue }) {
   return <PublisherPublicationDetail issue={issue} />;
 }
 
-function ClientPublicationsTable({
-  issues,
-  excludedIssueIds,
-  onSelectIssue,
-  onToggleContext,
+function buildBreadcrumbs({
+  role,
+  selectedIssue,
+  selectedSource,
+  applyDemoRoute,
+  handleSelectSource,
 }: {
-  issues: readonly DemoIssue[];
-  excludedIssueIds: ReadonlySet<string>;
-  onSelectIssue: (issue: DemoIssue) => void;
-  onToggleContext: (issueId: string) => void;
-}) {
-  const [sorting, setSorting] = useState<SortingState>([{ id: "publicationDate", desc: true }]);
-  const rows = useMemo<ClientPublicationRow[]>(
-    () =>
-      issues.map((issue) => ({
-        id: issue.id,
-        issue,
-        sourceName: sourceById.get(issue.sourceId)?.name ?? "",
-        title: issue.title,
-        publicationDate: issue.publicationDate,
-        includedInContext: !excludedIssueIds.has(issue.id),
-        contextRank: excludedIssueIds.has(issue.id) ? 1 : 0,
-      })),
-    [excludedIssueIds, issues],
-  );
+  role: DemoRole;
+  selectedIssue: DemoIssue | null;
+  selectedSource: DemoSubscriptionSource | null;
+  applyDemoRoute: (route: DemoRoute) => void;
+  handleSelectSource: (id: string | null) => void;
+}): readonly BreadcrumbItem[] {
+  if (role === "client") {
+    return selectedIssue
+      ? [
+          {
+            label: "Chat",
+            href: buildDemoPath({ role: "client", sourceId: null, issueId: null }),
+            onClick: () => applyDemoRoute({ role: "client", sourceId: null, issueId: null }),
+          },
+          { label: selectedIssue.title },
+        ]
+      : [{ label: "Chat" }];
+  }
 
-  const columns = useMemo(
-    () => [
-      clientPublicationColumnHelper.accessor("contextRank", {
-        header: "",
-        cell: () => null,
-      }),
-      clientPublicationColumnHelper.accessor("sourceName", { header: "Fil" }),
-      clientPublicationColumnHelper.accessor("title", { header: "Publication" }),
-      clientPublicationColumnHelper.accessor("publicationDate", { header: "Date" }),
-      clientPublicationColumnHelper.display({
-        id: "actions",
-        header: "",
-        enableSorting: false,
-      }),
-    ],
-    [],
-  );
+  if (!selectedSource) return [{ label: "Fils" }];
 
-  const effectiveSorting = useMemo<SortingState>(() => {
-    const visibleSort = sorting.filter((s) => s.id !== "contextRank");
-    return [{ id: "contextRank", desc: false }, ...visibleSort];
-  }, [sorting]);
+  const sourceCrumb = selectedIssue
+    ? [
+        {
+          label: selectedSource.name,
+          href: buildDemoPath({
+            role: "publisher",
+            sourceId: selectedSource.id,
+            issueId: null,
+          }),
+          onClick: () =>
+            applyDemoRoute({
+              role: "publisher",
+              sourceId: selectedSource.id,
+              issueId: null,
+            }),
+        },
+        { label: selectedIssue.title },
+      ]
+    : [{ label: selectedSource.name }];
 
-  const table = useReactTable({
-    data: rows,
-    columns,
-    state: { sorting: effectiveSorting },
-    onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-  });
-
-  return (
-    <DataTable<ClientPublicationRow>
-      table={table}
-      renderContent={renderTableContent}
-      hiddenColumnIds={["contextRank"]}
-      getHeaderAlign={(header) => (header.column.id === "actions" ? "right" : "left")}
-      getRowClassName={(row) => (!row.original.includedInContext ? "opacity-60" : undefined)}
-      onRowClick={(row) => onSelectIssue(row.original.issue)}
-      renderCell={(cell, row) => {
-        if (cell.column.id === "sourceName") {
-          return (
-            <TableCell key={cell.id} className="max-w-[12rem] text-muted">
-              <div className="truncate">{row.original.sourceName}</div>
-            </TableCell>
-          );
-        }
-        if (cell.column.id === "title") {
-          return (
-            <TableCell key={cell.id}>
-              <div className="max-w-[28rem] truncate font-medium text-ink">
-                {row.original.title}
-              </div>
-            </TableCell>
-          );
-        }
-        if (cell.column.id === "publicationDate") {
-          return (
-            <TableCell key={cell.id} className="whitespace-nowrap font-mono text-[11px] text-faint">
-              {formatDate(row.original.publicationDate)}
-            </TableCell>
-          );
-        }
-        if (cell.column.id === "actions") {
-          const isShown = row.original.includedInContext;
-
-          return (
-            <TableCell key={cell.id} className="text-right">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onToggleContext(row.original.id);
-                    }}
-                    aria-label={
-                      isShown
-                        ? `Masquer ${row.original.title} pour l'assistant`
-                        : `Afficher ${row.original.title} pour l'assistant`
-                    }
-                    className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-muted focus-visible:text-muted"
-                  >
-                    {isShown ? (
-                      <Eye className="size-3.5" aria-hidden="true" />
-                    ) : (
-                      <EyeOff className="size-3.5" aria-hidden="true" />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top" align="end">
-                  {isShown
-                    ? "Visible par l'assistant."
-                    : "Masquée: l'assistant ne connaît pas cette publication."}
-                </TooltipContent>
-              </Tooltip>
-            </TableCell>
-          );
-        }
-        return (
-          <TableCell key={cell.id}>
-            {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
-          </TableCell>
-        );
-      }}
-    />
-  );
+  return [
+    {
+      label: "Fils",
+      href: buildDemoPath({ role: "publisher", sourceId: null, issueId: null }),
+      onClick: () => handleSelectSource(null),
+    },
+    ...sourceCrumb,
+  ];
 }
 
-// --- Sub-components ---
-
-function SectionTitle({ title }: { title: string }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="size-1.5 rounded-full bg-accent/70" aria-hidden="true" />
-      <h3 className="text-sm font-semibold text-ink">{title}</h3>
-    </div>
-  );
+function toPublicationTableIssues(issues: readonly DemoIssue[]): PublicationTableIssue[] {
+  return issues.map((issue) => ({
+    id: issue.id,
+    title: issue.title,
+    sourceName: sourceById.get(issue.sourceId)?.name ?? "",
+    publicationDate: issue.publicationDate,
+    opens: issue.metrics.opens,
+    downloads: issue.metrics.downloads,
+    contextPulls: issue.metrics.aiContextPulls,
+    status: issue.status,
+  }));
 }
 
-function SectionHeader({
-  title,
-  count,
-  actionLabel,
-  onAdd,
-}: {
-  title: string;
-  count: number;
-  actionLabel?: string;
-  onAdd?: (() => void) | undefined;
-}) {
-  return (
-    <h3 className="flex items-center gap-3 text-xs font-normal uppercase tracking-[0.16em] text-faint">
-      <span>{title}</span>
-      <span className="font-mono tracking-normal text-faint/60">{count}</span>
-      {onAdd ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="ml-auto size-7 text-faint hover:text-accent"
-          onClick={onAdd}
-          aria-label={actionLabel ?? `Ajouter ${title.toLowerCase()}`}
-        >
-          <Plus className="size-4" aria-hidden="true" />
-        </Button>
-      ) : null}
-    </h3>
-  );
+function toClientPublicationRows(
+  issues: readonly DemoIssue[],
+  excludedIssueIds: ReadonlySet<string>,
+): ClientPublicationTableRow[] {
+  return issues.map((issue) => ({
+    id: issue.id,
+    sourceName: sourceById.get(issue.sourceId)?.name ?? "",
+    title: issue.title,
+    publicationDate: issue.publicationDate,
+    includedInContext: !excludedIssueIds.has(issue.id),
+  }));
 }
 
-type PublicationRow = {
-  id: string;
-  issue: DemoIssue;
-  title: string;
-  sourceName: string;
-  publicationDate: string;
-  opens: number;
-  downloads: number;
-  contextPulls: number;
-  status: DemoIssue["status"];
-};
-
-type ClientPublicationRow = {
-  id: string;
-  issue: DemoIssue;
-  sourceName: string;
-  title: string;
-  publicationDate: string;
-  includedInContext: boolean;
-  contextRank: number;
-};
-
-type DocumentRow = DemoIssue["documents"][number];
-
-type SubscriberStatus = "active" | "paused";
+function toPublicationDetailIssue(issue: DemoIssue): PublicationDetailIssue {
+  return {
+    id: issue.id,
+    title: issue.title,
+    sourceName: sourceById.get(issue.sourceId)?.name ?? "",
+    publicationDate: issue.publicationDate,
+    status: issue.status,
+    summary: issue.summary,
+    documents: issue.documents,
+  };
+}
 
 type SubscriberSessionState = {
   statuses: Record<string, SubscriberStatus>;
@@ -1100,1039 +758,12 @@ type SubscriberSessionState = {
   created?: readonly CreatedSubscriberRow[];
 };
 
-type SubscriberRow = {
-  id: string;
-  company: string;
-  email: string;
-  subscribedSince: string;
-  status: SubscriberStatus;
-  statusRank: number;
-};
-
-type CreatedSubscriberRow = {
-  id: string;
-  company: string;
-  email: string;
-  subscribedSince: string;
-  status: SubscriberStatus;
-};
-
-type DraftSubscriber = {
-  company: string;
-  email: string;
-};
-
-type DraftSubscriberErrors = Partial<Record<keyof DraftSubscriber, string>>;
-
-const publicationColumnHelper = createColumnHelper<PublicationRow>();
-const clientPublicationColumnHelper = createColumnHelper<ClientPublicationRow>();
-const subscriberColumnHelper = createColumnHelper<SubscriberRow>();
-
-function renderTableContent(renderer: unknown, context: unknown) {
-  return flexRender(
-    renderer as Parameters<typeof flexRender>[0],
-    context as Parameters<typeof flexRender>[1],
-  );
-}
-
-function IssueTable({
-  issues,
-  compact,
-  onDeleteIssue,
-  onSelectIssue,
-}: {
-  issues: readonly DemoIssue[];
-  compact?: boolean;
-  onDeleteIssue?: (id: string) => void;
-  onSelectIssue?: (id: string) => void;
-}) {
-  const [sorting, setSorting] = useState<SortingState>([{ id: "publicationDate", desc: true }]);
-
-  const rows = useMemo<PublicationRow[]>(
-    () =>
-      issues.map((issue) => ({
-        id: issue.id,
-        issue,
-        title: issue.title,
-        sourceName: sourceById.get(issue.sourceId)?.name ?? "",
-        publicationDate: issue.publicationDate,
-        opens: issue.metrics.opens,
-        downloads: issue.metrics.downloads,
-        contextPulls: issue.metrics.aiContextPulls,
-        status: issue.status,
-      })),
-    [issues],
-  );
-
-  const columns = useMemo(
-    () => [
-      publicationColumnHelper.accessor("title", { header: "Publication" }),
-      ...(compact
-        ? []
-        : [
-            publicationColumnHelper.accessor("sourceName", {
-              header: "Fil",
-            }),
-          ]),
-      publicationColumnHelper.accessor("opens", { header: "Ouvertures" }),
-      publicationColumnHelper.accessor("downloads", { header: "Téléchargements" }),
-      publicationColumnHelper.accessor("contextPulls", {
-        header: () => (
-          <span className="inline-flex items-center gap-1">
-            Contexte
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Info className="size-3 text-faint" aria-hidden="true" />
-              </TooltipTrigger>
-              <TooltipContent side="top" align="center">
-                Nombre de fois où l'archive a été lue par l'IA pour répondre.
-              </TooltipContent>
-            </Tooltip>
-          </span>
-        ),
-      }),
-      publicationColumnHelper.accessor("publicationDate", {
-        header: "Date",
-      }),
-      ...(onDeleteIssue
-        ? [
-            publicationColumnHelper.display({
-              id: "actions",
-              header: "",
-              enableSorting: false,
-              cell: () => null,
-            }),
-          ]
-        : []),
-    ],
-    [compact, onDeleteIssue],
-  );
-
-  const table = useReactTable({
-    data: rows,
-    columns,
-    state: { sorting },
-    onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-  });
-
-  return (
-    <DataTable<PublicationRow>
-      table={table}
-      renderContent={renderTableContent}
-      getHeaderAlign={(header) => (header.column.id === "actions" ? "right" : "left")}
-      {...(onSelectIssue ? { onRowClick: (row) => onSelectIssue(row.original.id) } : {})}
-      renderCell={(cell, row) => {
-        if (cell.column.id === "title") {
-          return (
-            <TableCell key={cell.id}>
-              <div className="max-w-[24rem] truncate font-medium text-ink">
-                {row.original.title}
-              </div>
-            </TableCell>
-          );
-        }
-        if (cell.column.id === "actions") {
-          return (
-            <TableCell key={cell.id} className="text-right">
-              {row.original.status === "scheduled" && onDeleteIssue ? (
-                <ConfirmingDeleteButton
-                  confirmLabel="Confirmer"
-                  idleLabel="Supprimer la publication programmée"
-                  onConfirm={() => onDeleteIssue(row.original.id)}
-                />
-              ) : null}
-            </TableCell>
-          );
-        }
-        if (cell.column.id === "publicationDate") {
-          return (
-            <TableCell key={cell.id} className="whitespace-nowrap font-mono text-[11px] text-faint">
-              <span className="inline-flex items-center gap-2">
-                <span>{formatDate(row.original.publicationDate)}</span>
-                {row.original.status === "scheduled" ? <ScheduledPublicationIcon /> : null}
-              </span>
-            </TableCell>
-          );
-        }
-        if (
-          row.original.status === "scheduled" &&
-          (cell.column.id === "opens" ||
-            cell.column.id === "downloads" ||
-            cell.column.id === "contextPulls")
-        ) {
-          return (
-            <TableCell key={cell.id} className="whitespace-nowrap font-mono text-[11px] text-faint">
-              -
-            </TableCell>
-          );
-        }
-        if (cell.column.id === "contextPulls") {
-          return (
-            <TableCell
-              key={cell.id}
-              className="whitespace-nowrap tabular-nums font-medium text-accent"
-            >
-              {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
-            </TableCell>
-          );
-        }
-        return (
-          <TableCell key={cell.id} className="whitespace-nowrap tabular-nums text-ink">
-            {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
-          </TableCell>
-        );
-      }}
-    />
-  );
-}
-
-function DocumentsTable({
-  documents,
-  editable,
-  onDeleteDocument,
-  onUpdateDocument,
-  onUploadDocumentPdf,
-}: {
-  documents: readonly DocumentRow[];
-  editable: boolean;
-  onDeleteDocument: (documentId: string) => void;
-  onUpdateDocument: (documentId: string, patch: Partial<DocumentRow>) => void;
-  onUploadDocumentPdf: (documentId: string, file: File) => void;
-}) {
-  if (documents.length === 0) {
-    return (
-      <div className="rounded-sm border border-rule bg-paper px-4 py-8 text-center text-sm text-muted">
-        Aucun document.
-      </div>
-    );
-  }
-
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Titre</TableHead>
-          <TableHead>Description</TableHead>
-          <TableHead>PDF</TableHead>
-          {editable ? <TableHead className="text-right" /> : null}
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {documents.map((doc) => (
-          <TableRow key={doc.id}>
-            <TableCell className="align-top">
-              {editable ? (
-                <InlineInput
-                  value={doc.title}
-                  ariaLabel="Titre du document"
-                  onChange={(title) => onUpdateDocument(doc.id, { title })}
-                />
-              ) : (
-                <span className="font-medium text-ink">{doc.title}</span>
-              )}
-            </TableCell>
-            <TableCell className="max-w-md align-top">
-              {editable ? (
-                <InlineInput
-                  value={doc.extractedTextPreview}
-                  ariaLabel="Description du document"
-                  multiline
-                  onChange={(extractedTextPreview) =>
-                    onUpdateDocument(doc.id, { extractedTextPreview })
-                  }
-                />
-              ) : (
-                <span className="font-serif text-sm leading-6 text-muted">
-                  {doc.extractedTextPreview}
-                </span>
-              )}
-            </TableCell>
-            <TableCell className="max-w-44 align-top font-mono text-[11px] text-faint">
-              {editable && !doc.fileName ? (
-                <PdfUploadControl
-                  documentId={doc.id}
-                  onUpload={(file) => onUploadDocumentPdf(doc.id, file)}
-                />
-              ) : (
-                <PdfName document={doc} />
-              )}
-            </TableCell>
-            {editable ? (
-              <TableCell className="pt-2.5 align-top text-right">
-                <ConfirmingDeleteButton
-                  confirmLabel="Confirmer"
-                  idleLabel="Supprimer le document"
-                  onConfirm={() => onDeleteDocument(doc.id)}
-                />
-              </TableCell>
-            ) : null}
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
-}
-
-function PdfName({ document }: { document: DocumentRow }) {
-  const [error, setError] = useState<string | null>(null);
-  const label = document.fileName ? `${document.fileName} / ${document.pageCount} pages` : "-";
-  const publicUrl = getPublicPdfUrl(document);
-
-  if (!document.fileName) {
-    return <span className="block max-w-44 truncate">-</span>;
-  }
-
-  async function handleUploadedPdfOpen() {
-    setError(null);
-    try {
-      const blob = await loadDemoPdf(document.id);
-      if (!blob) {
-        setError("PDF introuvable.");
-        return;
-      }
-      const url = URL.createObjectURL(blob);
-      const opened = window.open(url, "_blank", "noopener,noreferrer");
-      if (!opened) {
-        URL.revokeObjectURL(url);
-        setError("Impossible d'ouvrir ce PDF.");
-        return;
-      }
-      window.setTimeout(() => URL.revokeObjectURL(url), 300_000);
-    } catch {
-      setError("Impossible d'ouvrir ce PDF.");
-    }
-  }
-
-  const content = publicUrl ? (
-    <a
-      href={publicUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-flex max-w-44 items-center gap-1.5 text-left text-faint outline-none transition-colors duration-fast hover:text-ink focus-visible:text-ink"
-      onPointerDown={(event) => event.stopPropagation()}
-      onClick={(event) => {
-        event.stopPropagation();
-        setError(null);
-      }}
-      onAuxClick={(event) => event.stopPropagation()}
-    >
-      <span className="min-w-0 truncate">{label}</span>
-      <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
-    </a>
-  ) : (
-    <button
-      type="button"
-      className="inline-flex max-w-44 items-center gap-1.5 text-left text-faint outline-none transition-colors duration-fast hover:text-ink focus-visible:text-ink"
-      onPointerDown={(event) => event.stopPropagation()}
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        void handleUploadedPdfOpen();
-      }}
-      onAuxClick={(event) => event.stopPropagation()}
-      aria-label={`Ouvrir ${document.fileName} dans un nouvel onglet`}
-    >
-      <span className="min-w-0 truncate">{label}</span>
-      <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
-    </button>
-  );
-
-  return (
-    <div className="space-y-1">
-      <Tooltip>
-        <TooltipTrigger asChild>{content}</TooltipTrigger>
-        <TooltipContent side="top" align="start">
-          {label}
-        </TooltipContent>
-      </Tooltip>
-      {error ? <div className="max-w-44 font-sans text-[11px] text-accent">{error}</div> : null}
-    </div>
-  );
-}
-
-function getPublicPdfUrl(document: DocumentRow) {
-  if (!document.storagePath || document.storagePath.startsWith("indexeddb://")) return null;
-  const path = document.storagePath.startsWith("/")
-    ? document.storagePath
-    : `/${document.storagePath}`;
-  return typeof window === "undefined" ? path : new URL(path, window.location.origin).href;
-}
-
-function PdfUploadControl({
-  documentId,
-  onUpload,
-}: {
-  documentId: string;
-  onUpload: (file: File) => void;
-}) {
-  const inputId = `pdf-upload-${documentId}`;
-
-  function handleChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) return;
-    onUpload(file);
-  }
-
-  return (
-    <div className="leading-none">
-      <input
-        id={inputId}
-        type="file"
-        accept="application/pdf,.pdf"
-        className="sr-only"
-        onChange={handleChange}
-      />
-      <label
-        htmlFor={inputId}
-        className={cn(
-          "inline-flex h-7 cursor-pointer items-center justify-center gap-1.5 rounded-sm px-2 text-[11px] font-medium transition-colors duration-fast",
-          "border border-rule/70 bg-paper/35 text-muted hover:border-rule hover:bg-rule/45 hover:text-ink",
-          "focus-within:ring-2 focus-within:ring-ring/20",
-        )}
-      >
-        <Upload className="size-3.5" aria-hidden="true" />
-        Importer
-      </label>
-    </div>
-  );
-}
-
-function InlineInput({
-  value,
-  ariaLabel,
-  multiline,
-  onChange,
-}: {
-  value: string;
-  ariaLabel: string;
-  multiline?: boolean;
-  onChange: (value: string) => void;
-}) {
-  const [draft, setDraft] = useState(value);
-  const [focused, setFocused] = useState(false);
-
-  useEffect(() => {
-    if (!focused) {
-      setDraft(value);
-    }
-  }, [focused, value]);
-
-  useEffect(() => {
-    if (draft === value) return;
-    const timeout = window.setTimeout(() => onChange(draft), 150);
-    return () => window.clearTimeout(timeout);
-  }, [draft, onChange, value]);
-
-  function commit() {
-    if (draft !== value) onChange(draft);
-  }
-
-  if (multiline) {
-    return (
-      <textarea
-        value={draft}
-        rows={focused ? 4 : 1}
-        onBlur={() => {
-          setFocused(false);
-          commit();
-        }}
-        onChange={(event) => setDraft(event.target.value)}
-        onFocus={() => setFocused(true)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            setDraft(value);
-            event.currentTarget.blur();
-          }
-        }}
-        className={cn(
-          editableFieldChromeClass,
-          "w-full resize-none px-2 py-1 text-sm leading-5 text-ink",
-          focused ? "min-h-24" : "min-h-7 truncate",
-        )}
-        aria-label={ariaLabel}
-      />
-    );
-  }
-
-  return (
-    <input
-      value={draft}
-      onBlur={() => {
-        setFocused(false);
-        commit();
-      }}
-      onChange={(event) => setDraft(event.target.value)}
-      onFocus={() => setFocused(true)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.currentTarget.blur();
-        }
-        if (event.key === "Escape") {
-          setDraft(value);
-          event.currentTarget.blur();
-        }
-      }}
-      className={cn(editableFieldChromeClass, "w-full px-1 py-0.5 text-sm text-ink")}
-      aria-label={ariaLabel}
-    />
-  );
-}
-
-function ScheduledPublicationIcon({ className }: { className?: string }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          tabIndex={0}
-          className={cn(
-            "inline-flex size-4 items-center justify-center rounded-sm border border-accent/30 bg-accent/10 align-middle text-accent outline-none",
-            className,
-          )}
-          aria-label="Publication programmée"
-        >
-          <CalendarClock className="size-3" aria-hidden="true" />
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="top" align="center">
-        Publication programmée
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-function ConfirmingDeleteButton({
-  confirmLabel,
-  idleLabel,
-  onConfirm,
-}: {
-  confirmLabel: string;
-  idleLabel: string;
-  onConfirm: () => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!confirming) return;
-
-    function handlePointerDown(event: PointerEvent) {
-      if (rootRef.current?.contains(event.target as Node)) return;
-      setConfirming(false);
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setConfirming(false);
-      }
-    }
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [confirming]);
-
-  return (
-    <div ref={rootRef} className="flex justify-end leading-none">
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className={cn(
-          "!size-5",
-          confirming
-            ? "text-destructive hover:bg-rule/45 hover:text-destructive"
-            : "text-faint/70 hover:bg-rule/45 hover:text-destructive focus-visible:text-destructive",
-        )}
-        onClick={(event) => {
-          event.stopPropagation();
-          if (confirming) {
-            onConfirm();
-            setConfirming(false);
-            return;
-          }
-          setConfirming(true);
-        }}
-        aria-label={confirming ? confirmLabel : idleLabel}
-      >
-        {confirming ? (
-          <Check className="size-3.5" aria-hidden="true" />
-        ) : (
-          <Trash2 className="size-3.5" aria-hidden="true" />
-        )}
-      </Button>
-    </div>
-  );
-}
-
-function SubscriberTable({
-  rows,
-  draft,
-  companyOptions,
-  onCancelDraft,
-  onCreateDraft,
-  onUpdateDraft,
-  onToggleStatus,
-  onDelete,
-}: {
-  rows: SubscriberRow[];
-  draft: DraftSubscriber | null;
-  companyOptions: readonly string[];
-  onCancelDraft: () => void;
-  onCreateDraft: (draft: DraftSubscriber) => void;
-  onUpdateDraft: (draft: DraftSubscriber) => void;
-  onToggleStatus: (id: string) => void;
-  onDelete: (id: string) => void;
-}) {
-  const [sorting, setSorting] = useState<SortingState>([{ id: "company", desc: false }]);
-  const [draftErrors, setDraftErrors] = useState<DraftSubscriberErrors>({});
-
-  const columns = useMemo(
-    () => [
-      subscriberColumnHelper.accessor("statusRank", {
-        header: "",
-        cell: () => null,
-      }),
-      subscriberColumnHelper.accessor("company", { header: "Société" }),
-      subscriberColumnHelper.accessor("email", { header: "Email" }),
-      subscriberColumnHelper.accessor("subscribedSince", {
-        header: "Depuis",
-        cell: (info) => formatDate(info.getValue()),
-      }),
-      subscriberColumnHelper.display({
-        id: "actions",
-        header: "",
-        enableSorting: false,
-        cell: (info) => {
-          const row = info.row.original;
-          const isPaused = row.status === "paused";
-          return (
-            <div className="flex items-center justify-end gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-muted focus-visible:text-muted"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onToggleStatus(row.id);
-                }}
-                aria-label={isPaused ? "Reprendre l'abonnement" : "Mettre en pause l'abonnement"}
-              >
-                {isPaused ? (
-                  <Play className="size-3.5" aria-hidden="true" />
-                ) : (
-                  <Pause className="size-3.5" aria-hidden="true" />
-                )}
-              </Button>
-              <ConfirmingDeleteButton
-                confirmLabel="Confirmer"
-                idleLabel="Supprimer l'abonné"
-                onConfirm={() => onDelete(row.id)}
-              />
-            </div>
-          );
-        },
-      }),
-    ],
-    [onDelete, onToggleStatus],
-  );
-
-  // Pin active subscribers above paused ones; within each group, honor the
-  // visible column sort the user picked.
-  const effectiveSorting = useMemo<SortingState>(() => {
-    const visibleSort = sorting.filter((s) => s.id !== "statusRank");
-    return [{ id: "statusRank", desc: false }, ...visibleSort];
-  }, [sorting]);
-
-  const table = useReactTable({
-    data: rows,
-    columns,
-    state: { sorting: effectiveSorting },
-    onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getRowId: (row) => row.id,
-  });
-
-  function handleConfirmDraft() {
-    if (!draft) return;
-
-    const errors = validateDraftSubscriber(draft, rows);
-    setDraftErrors(errors);
-    if (Object.keys(errors).length > 0) return;
-
-    onCreateDraft({
-      company: draft.company.trim(),
-      email: draft.email.trim(),
-    });
-    setDraftErrors({});
-  }
-
-  function handleCancelDraft() {
-    setDraftErrors({});
-    onCancelDraft();
-  }
-
-  if (rows.length === 0 && !draft) {
-    return (
-      <div className="rounded-sm border border-rule bg-paper px-4 py-8 text-center text-sm text-muted">
-        Aucun abonné.
-      </div>
-    );
-  }
-
-  return (
-    <DataTable<SubscriberRow>
-      table={table}
-      renderContent={renderTableContent}
-      hiddenColumnIds={["statusRank"]}
-      getHeaderAlign={(header) => (header.column.id === "actions" ? "right" : "left")}
-      getRowClassName={(row) => (row.original.status === "paused" ? "opacity-60" : undefined)}
-      renderBeforeRows={() =>
-        draft ? (
-          <DraftSubscriberTableRow
-            draft={draft}
-            errors={draftErrors}
-            companyOptions={companyOptions}
-            onCancel={handleCancelDraft}
-            onConfirm={handleConfirmDraft}
-            onUpdate={(nextDraft) => {
-              setDraftErrors((current) => clearResolvedDraftErrors(current, nextDraft, rows));
-              onUpdateDraft(nextDraft);
-            }}
-          />
-        ) : null
-      }
-      renderCell={(cell, row) => {
-        if (cell.column.id === "company") {
-          return (
-            <TableCell key={cell.id}>
-              <div className="max-w-[12rem] truncate font-medium text-ink">
-                {row.original.company}
-              </div>
-            </TableCell>
-          );
-        }
-        if (cell.column.id === "email") {
-          return (
-            <TableCell key={cell.id} className="font-mono text-[11px] text-muted">
-              <div className="max-w-[14rem] truncate">{row.original.email}</div>
-            </TableCell>
-          );
-        }
-        if (cell.column.id === "subscribedSince") {
-          return (
-            <TableCell key={cell.id} className="whitespace-nowrap font-mono text-[11px] text-faint">
-              {formatDate(row.original.subscribedSince)}
-            </TableCell>
-          );
-        }
-        return (
-          <TableCell key={cell.id} className="text-right">
-            {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
-          </TableCell>
-        );
-      }}
-    />
-  );
-}
-
-function DraftSubscriberTableRow({
-  draft,
-  errors,
-  companyOptions,
-  onCancel,
-  onConfirm,
-  onUpdate,
-}: {
-  draft: DraftSubscriber;
-  errors: DraftSubscriberErrors;
-  companyOptions: readonly string[];
-  onCancel: () => void;
-  onConfirm: () => void;
-  onUpdate: (draft: DraftSubscriber) => void;
-}) {
-  return (
-    <TableRow className="bg-paper/45">
-      <TableCell className="align-top">
-        <DraftCompanyCombobox
-          value={draft.company}
-          options={companyOptions}
-          error={errors.company}
-          autoFocus
-          onChange={(company) => onUpdate({ ...draft, company })}
-          onConfirm={onConfirm}
-        />
-      </TableCell>
-      <TableCell className="align-top">
-        <DraftEmailInput
-          value={draft.email}
-          error={errors.email}
-          onChange={(email) => onUpdate({ ...draft, email })}
-          onConfirm={onConfirm}
-        />
-      </TableCell>
-      <TableCell className="whitespace-nowrap align-top font-mono text-[11px] text-faint">
-        -
-      </TableCell>
-      <TableCell className="pt-2.5 align-top text-right">
-        <div className="flex items-center justify-end gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-accent focus-visible:text-accent"
-            onClick={(event) => {
-              event.stopPropagation();
-              onConfirm();
-            }}
-            aria-label="Créer l'abonné"
-          >
-            <Check className="size-3.5" aria-hidden="true" />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-destructive focus-visible:text-destructive"
-            onClick={(event) => {
-              event.stopPropagation();
-              onCancel();
-            }}
-            aria-label="Annuler la création de l'abonné"
-          >
-            <Trash2 className="size-3.5" aria-hidden="true" />
-          </Button>
-        </div>
-      </TableCell>
-    </TableRow>
-  );
-}
-
-function DraftCompanyCombobox({
-  value,
-  options,
-  error,
-  autoFocus,
-  onChange,
-  onConfirm,
-}: {
-  value: string;
-  options: readonly string[];
-  error: string | undefined;
-  autoFocus?: boolean;
-  onChange: (value: string) => void;
-  onConfirm: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const listboxId = "draft-subscriber-company-options";
-  const normalizedValue = value.trim().toLocaleLowerCase("fr-FR");
-  const filteredOptions = options
-    .filter((option) => option.toLocaleLowerCase("fr-FR").includes(normalizedValue))
-    .slice(0, 5);
-  const exactMatch = options.some(
-    (option) => option.toLocaleLowerCase("fr-FR") === normalizedValue,
-  );
-  const canCreate = value.trim().length > 0 && !exactMatch;
-  const comboboxOptions = [
-    ...filteredOptions.map((option) => ({
-      id: option,
-      label: option,
-      value: option,
-      kind: "existing" as const,
-    })),
-    ...(canCreate
-      ? [
-          {
-            id: `create-${value.trim()}`,
-            label: `Créer "${value.trim()}"`,
-            value: value.trim(),
-            kind: "create" as const,
-          },
-        ]
-      : []),
-  ];
-  const activeOption = comboboxOptions[activeIndex];
-
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [value]);
-
-  useEffect(() => {
-    if (!autoFocus) return;
-    inputRef.current?.focus();
-  }, [autoFocus]);
-
-  function selectOption(option: (typeof comboboxOptions)[number]) {
-    onChange(option.value);
-    setOpen(false);
-    setActiveIndex(0);
-  }
-
-  return (
-    <div className="relative">
-      <div className="relative">
-        <input
-          ref={inputRef}
-          value={value}
-          onFocus={() => setOpen(true)}
-          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
-          onChange={(event) => {
-            onChange(event.target.value);
-            setOpen(true);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "ArrowDown") {
-              event.preventDefault();
-              setOpen(true);
-              setActiveIndex((index) =>
-                comboboxOptions.length === 0 ? 0 : (index + 1) % comboboxOptions.length,
-              );
-              return;
-            }
-            if (event.key === "ArrowUp") {
-              event.preventDefault();
-              setOpen(true);
-              setActiveIndex((index) =>
-                comboboxOptions.length === 0
-                  ? 0
-                  : (index - 1 + comboboxOptions.length) % comboboxOptions.length,
-              );
-              return;
-            }
-            if (event.key === "Escape") {
-              event.preventDefault();
-              setOpen(false);
-              return;
-            }
-            if (event.key === "Enter") {
-              event.preventDefault();
-              if (open && activeOption) {
-                selectOption(activeOption);
-                return;
-              }
-              onConfirm();
-            }
-          }}
-          aria-label="Société"
-          role="combobox"
-          aria-autocomplete="list"
-          aria-expanded={open}
-          aria-controls={listboxId}
-          aria-activedescendant={open && activeOption ? `${listboxId}-${activeIndex}` : undefined}
-          aria-invalid={Boolean(error)}
-          className={cn(
-            editableFieldChromeClass,
-            "w-full px-1 py-0.5 pr-6 text-sm font-medium text-ink",
-            error && "border-destructive/60 focus:border-destructive focus:ring-destructive/20",
-          )}
-        />
-        <ChevronsUpDown
-          className="pointer-events-none absolute right-1.5 top-1/2 size-3 -translate-y-1/2 text-faint"
-          aria-hidden="true"
-        />
-      </div>
-      {error ? <p className="mt-1 text-[11px] leading-4 text-destructive">{error}</p> : null}
-      {open && comboboxOptions.length > 0 ? (
-        <div
-          id={listboxId}
-          role="listbox"
-          className="absolute left-0 right-0 top-[calc(100%+4px)] z-20 overflow-hidden rounded-sm border border-rule bg-paper shadow-sm"
-        >
-          {comboboxOptions.map((option, index) =>
-            option.kind === "existing" ? (
-              <button
-                key={option.id}
-                id={`${listboxId}-${index}`}
-                type="button"
-                role="option"
-                aria-selected={index === activeIndex}
-                className={cn(
-                  "flex w-full items-center justify-between px-2 py-1.5 text-left text-xs text-muted hover:bg-rule/45 hover:text-ink",
-                  index === activeIndex && "bg-rule/45 text-ink",
-                )}
-                onMouseDown={(event) => event.preventDefault()}
-                onMouseEnter={() => setActiveIndex(index)}
-                onClick={() => selectOption(option)}
-              >
-                <span className="truncate">{option.label}</span>
-                {option.value.toLocaleLowerCase("fr-FR") === normalizedValue ? (
-                  <Check className="size-3 text-accent" aria-hidden="true" />
-                ) : null}
-              </button>
-            ) : (
-              <button
-                key={option.id}
-                id={`${listboxId}-${index}`}
-                type="button"
-                role="option"
-                aria-selected={index === activeIndex}
-                className={cn(
-                  "flex w-full items-center gap-1.5 border-t border-rule px-2 py-1.5 text-left text-xs text-muted hover:bg-rule/45 hover:text-ink",
-                  index === activeIndex && "bg-rule/45 text-ink",
-                )}
-                onMouseDown={(event) => event.preventDefault()}
-                onMouseEnter={() => setActiveIndex(index)}
-                onClick={() => selectOption(option)}
-              >
-                <Plus className="size-3 text-accent" aria-hidden="true" />
-                <span className="min-w-0 truncate">{option.label}</span>
-              </button>
-            ),
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function DraftEmailInput({
-  value,
-  error,
-  onChange,
-  onConfirm,
-}: {
-  value: string;
-  error: string | undefined;
-  onChange: (value: string) => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div>
-      <input
-        value={value}
-        type="email"
-        inputMode="email"
-        autoComplete="email"
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") onConfirm();
-        }}
-        aria-label="Email"
-        aria-invalid={Boolean(error)}
-        className={cn(
-          editableFieldChromeClass,
-          "w-full px-1 py-0.5 font-mono text-[11px] text-muted",
-          error && "border-destructive/60 focus:border-destructive focus:ring-destructive/20",
-        )}
-      />
-      {error ? <p className="mt-1 text-[11px] leading-4 text-destructive">{error}</p> : null}
-    </div>
-  );
-}
+type CreatedSubscriberRow = SubscriberTableRow;
 
 function buildSubscriberRows(
   source: DemoSubscriptionSource,
   state: SubscriberSessionState,
-): SubscriberRow[] {
+): SubscriberTableRow[] {
   const baseDate = new Date(source.subscribedSince).getTime();
   const seededRows = demoSubscriberProfiles
     .slice(0, Math.max(1, source.subscriberCount))
@@ -2145,28 +776,23 @@ function buildSubscriberRows(
         email: profile.email,
         subscribedSince: new Date(baseDate - index * 86_400_000 * 12).toISOString(),
         status,
-        statusRank: status === "active" ? 0 : 1,
       };
     })
     .filter((row) => !state.deletedIds.includes(row.id));
 
   const createdRows = (state.created ?? [])
     .filter((row) => !state.deletedIds.includes(row.id))
-    .map((row) => {
-      const status = state.statuses[row.id] === "paused" ? "paused" : row.status;
-      return {
-        ...row,
-        status,
-        statusRank: status === "active" ? 0 : 1,
-      };
-    });
+    .map((row) => ({
+      ...row,
+      status: state.statuses[row.id] === "paused" ? "paused" : row.status,
+    }));
 
   return [...seededRows, ...createdRows];
 }
 
 function validateDraftSubscriber(
   draft: DraftSubscriber,
-  rows: readonly SubscriberRow[],
+  rows: readonly SubscriberTableRow[],
 ): DraftSubscriberErrors {
   const errors: DraftSubscriberErrors = {};
   const company = draft.company.trim();
@@ -2192,7 +818,7 @@ function validateDraftSubscriber(
 function clearResolvedDraftErrors(
   errors: DraftSubscriberErrors,
   draft: DraftSubscriber,
-  rows: readonly SubscriberRow[],
+  rows: readonly SubscriberTableRow[],
 ): DraftSubscriberErrors {
   if (Object.keys(errors).length === 0) return errors;
   const nextErrors = validateDraftSubscriber(draft, rows);
@@ -2203,47 +829,6 @@ function clearResolvedDraftErrors(
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-// --- Utilities ---
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("fr-FR", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  }).format(new Date(value));
-}
-
-function formatRelativeSchedule(value: string) {
-  const diffMs = new Date(value).getTime() - Date.now();
-  const absMs = Math.abs(diffMs);
-  const minute = 60_000;
-  const hour = minute * 60;
-  const day = hour * 24;
-  const week = day * 7;
-  const month = day * 30;
-  const formatter = new Intl.RelativeTimeFormat("fr-FR", { numeric: "auto" });
-
-  if (absMs < hour) {
-    return formatter.format(Math.round(diffMs / minute), "minute");
-  }
-  if (absMs < day) {
-    return formatter.format(Math.round(diffMs / hour), "hour");
-  }
-  if (absMs < week) {
-    return formatter.format(Math.round(diffMs / day), "day");
-  }
-  if (absMs < month) {
-    return formatter.format(Math.round(diffMs / week), "week");
-  }
-  return formatter.format(Math.round(diffMs / month), "month");
-}
-
-function toDatetimeLocalValue(value: string) {
-  const date = new Date(value);
-  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
-  return offsetDate.toISOString().slice(0, 16);
 }
 
 function isEditableIssue(issue: DemoIssue) {
@@ -2310,6 +895,31 @@ function createDraftDocument(issueId: string, index: number): DemoIssue["documen
       aiContextPulls: 0,
     },
   };
+}
+
+function getPublicPdfUrl(document: PublicationDocument) {
+  if (!document.storagePath || document.storagePath.startsWith("indexeddb://")) return null;
+  const path = document.storagePath.startsWith("/")
+    ? document.storagePath
+    : `/${document.storagePath}`;
+  return typeof window === "undefined" ? path : new URL(path, window.location.origin).href;
+}
+
+async function openStoredDemoPdf(document: PublicationDocument): Promise<OpenStoredPdfResult> {
+  try {
+    const blob = await loadDemoPdf(document.id);
+    if (!blob) return { ok: false, message: "PDF introuvable." };
+    const url = URL.createObjectURL(blob);
+    const opened = window.open(url, "_blank", "noopener,noreferrer");
+    if (!opened) {
+      URL.revokeObjectURL(url);
+      return { ok: false, message: "Impossible d'ouvrir ce PDF." };
+    }
+    window.setTimeout(() => URL.revokeObjectURL(url), 300_000);
+    return { ok: true };
+  } catch {
+    return { ok: false, message: "Impossible d'ouvrir ce PDF." };
+  }
 }
 
 function resetDemoStorage() {
@@ -2394,9 +1004,6 @@ async function runDemoPdfTransaction(
   });
 }
 
-// --- Browser-persisted state (demo only) ---
-// Keeps demo interactions (pause/resume/delete) in this browser without
-// persisting anything to a backend.
 function useSessionState<T>(
   key: string,
   initialValue: T | (() => T),
@@ -2431,7 +1038,6 @@ function useSessionState<T>(
 
   return [value, update, reset];
 }
-// --- Mount ---
 
 if (!isDemoPdfPath(window.location.pathname)) {
   createRoot(document.getElementById("root")!).render(<App />);

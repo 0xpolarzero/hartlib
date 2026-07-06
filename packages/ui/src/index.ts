@@ -1,5 +1,39 @@
 export { ArtifactFrame } from "./components/artifacts/artifact-frame";
 export {
+  Breadcrumbs,
+  type BreadcrumbItem,
+  type BreadcrumbsProps,
+} from "./components/navigation/breadcrumbs";
+export {
+  ScheduledPublicationIcon,
+  type ScheduledPublicationIconProps,
+} from "./components/publications/scheduled-publication-icon";
+export {
+  ClientPublicationsTable,
+  type ClientPublicationTableRow,
+} from "./components/publications/client-publications-table";
+export {
+  DocumentsTable,
+  type OpenStoredPdfResult,
+  type PublicationDocument,
+} from "./components/publications/documents-table";
+export {
+  PublicationDetail,
+  type PublicationDetailIssue,
+} from "./components/publications/publication-detail";
+export {
+  PublicationsTable,
+  type PublicationTableIssue,
+} from "./components/publications/publications-table";
+export { SourcesTable, type SourceTableRow } from "./components/publications/sources-table";
+export {
+  SubscribersTable,
+  type DraftSubscriber,
+  type DraftSubscriberErrors,
+  type SubscriberStatus,
+  type SubscriberTableRow,
+} from "./components/subscribers/subscribers-table";
+export {
   ChatBubble,
   VirtualizedChatTranscript,
   type ChatTranscriptCitation,
@@ -16,9 +50,19 @@ export {
   CardHeader,
   CardTitle,
 } from "./components/ui/card";
+export {
+  ConfirmingDeleteButton,
+  type ConfirmingDeleteButtonProps,
+} from "./components/ui/confirming-delete-button";
+export {
+  editableFieldChromeClass,
+  InlineEditableField,
+  type InlineEditableFieldProps,
+} from "./components/ui/inline-editable-field";
 export { Input, type InputProps } from "./components/ui/input";
 export { Label } from "./components/ui/label";
 export { Rule, Separator } from "./components/ui/separator";
+export { SectionHeader, type SectionHeaderProps } from "./components/ui/section-header";
 export { DataTable, SortableTableHead } from "./components/ui/data-table";
 export {
   Table,

@@ -140,11 +140,23 @@ Prop `stickyHeader={true}` on `TableHeader` enables sticky positioning with `z-1
 
 ### DataTable
 
-TanStack Table renderer for dense product tables that share Pressroom header, sorting, and row chrome while keeping domain-specific cells in the consuming app.
+TanStack Table renderer for dense product tables that share Pressroom header, sorting, and row chrome.
 
 - `DataTable` — renders TanStack header groups, sortable headers, body rows, optional leading rows, row click behavior, hidden columns, and custom cell rendering
 - `SortableTableHead` — standalone sortable header cell used by `DataTable`
-- Sorting state, column definitions, row models, and domain cell content remain owned by the feature
+- Low-level sorting state, column definitions, row models, and domain cell content may be owned by reusable product components inside `@brief/ui`; consuming apps should prefer package-level product tables when they exist.
+
+### Product Tables And Detail Components
+
+Reusable product UI for the demo and MVP lives in `@brief/ui`, while apps keep routing, account switching, local demo persistence, and fixture-to-view-model mapping.
+
+- `SourcesTable` — publisher source rows with subscriber counts, issue counts, and latest publication date
+- `PublicationsTable` — publisher publication rows with metrics, scheduled-state treatment, and optional scheduled deletion
+- `ClientPublicationsTable` — delivered publication rows with assistant-context visibility toggles
+- `PublicationDetail` — publication title, metadata, summary, scheduled-state treatment, document list, and editable scheduled-publication fields
+- `DocumentsTable` — document title/description/PDF rows with optional inline editing and upload affordance; storage and PDF opening behavior stay in the consuming app through callbacks
+- `SubscribersTable` — subscriber list, pause/resume/delete controls, and draft subscriber row with company combobox and email validation display
+- `Breadcrumbs`, `SectionHeader`, `InlineEditableField`, `ConfirmingDeleteButton`, and `ScheduledPublicationIcon` are reusable support components used by these product surfaces
 
 ### ArtifactFrame
 

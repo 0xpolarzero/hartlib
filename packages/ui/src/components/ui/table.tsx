@@ -42,10 +42,7 @@ export function TableFooter({
   return (
     <tfoot
       data-slot="table-footer"
-      className={cn(
-        "border-t border-rule font-medium text-ink last:border-b-0",
-        className,
-      )}
+      className={cn("border-t border-rule font-medium text-ink last:border-b-0", className)}
       {...props}
     />
   );
@@ -55,10 +52,7 @@ export function TableRow({ className, ...props }: React.HTMLAttributes<HTMLTable
   return (
     <tr
       data-slot="table-row"
-      className={cn(
-        "transition-colors duration-fast data-[state=selected]:bg-surface",
-        className,
-      )}
+      className={cn("transition-colors duration-fast data-[state=selected]:bg-surface", className)}
       {...props}
     />
   );
