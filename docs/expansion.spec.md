@@ -20,6 +20,10 @@ This belongs after the MVP.
 
 The MVP ingestion model is PDF upload with optional EPUB upload.
 
+Public recurring sources may later appear as opt-in marketplace sources for client search and AI context.
+
+Initial public-source marketplace research lives in `docs/public-source-marketplace.research.md`.
+
 ## Future Access Discovery
 
 Later, publishers may expose a controlled request-access form or channel directory.
