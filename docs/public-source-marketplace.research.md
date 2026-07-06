@@ -121,17 +121,35 @@ If an existing URL changes materially, store a new document version rather than 
 
 Canonical document IDs should include the source, canonical URL, and content hash version signal so changed text at the same URL can coexist with earlier extracted text.
 
+The authoritative MVP persistence tables are:
+
+- `public_sources` for source catalog state and health.
+- `public_source_discovery_requests` for per-discovery URL validators and body hashes.
+- `public_source_items` for source item state, item validators, retry state, and latest version pointers.
+- `public_source_raw_artifacts` for raw fetched bodies and raw body hashes.
+- `public_source_documents` for immutable canonical document versions.
+- `public_source_ingestion_runs` for durable worker run status and counts.
+
 ## Fetching Model
 
 Discovery should be frequent and cheap.
 
 Content fetch should happen immediately when discovery finds a new item.
 
+The worker runs global public-source ingestion independently of client source toggles. On worker startup, it enqueues Postgres-backed ingestion jobs to backfill missing public-source items discovered or published in the previous 7 days, then continues enqueueing poll jobs for reliable marketplace sources. The startup window is configurable with `PUBLIC_SOURCE_STARTUP_BACKFILL_DAYS`.
+
+Worker startup migrations default to enabled outside production for local development. Production deployments should run migrations as a release or CI step and may opt in explicitly with `WORKER_RUN_MIGRATIONS_ON_STARTUP=true` only for environments where startup-applied schema changes are acceptable.
+
 Recommended baseline:
 
 - RSS/Atom discovery: every 5 minutes.
 - Item page fetch: immediately after new URL discovery.
 - Re-fetch existing items: only when feed metadata, ETag, Last-Modified, or content hash changes.
+- Worker public-source poll cadence: configurable with `PUBLIC_SOURCE_POLL_INTERVAL_MS`, defaulting to 5 minutes.
+- Public-source ingestion work is claimed from the shared Postgres `jobs` table with retry state. Multiple worker processes may enqueue the same source job, but mode-specific source `unique_key` values dedupe duplicate poll or duplicate backfill jobs independently. The advisory-serialized claim path, row locking, source-level running-job exclusion, and lock-owner checks on completion/failure prevent duplicate concurrent execution for the same source while allowing a startup backfill to remain queued behind active poll work. Completed or failed source jobs can be re-enqueued with a fresh retry budget.
+- Running jobs use a durable Postgres lock lease. Live workers renew the lease while a job runs, and lock-owner checks still gate completion, failure, and heartbeat writes. If a worker exits before completion or failure, a later claim pass moves expired running jobs back to retrying, or failed when attempts are exhausted. The lock lease is configurable with `WORKER_JOB_LOCK_TIMEOUT_MS`, defaulting to 15 minutes.
+- Public-source poll scheduling treats enqueue failures as per-tick failures: it logs the error and continues the next scheduled poll instead of terminating the worker scheduler.
+- Backfill jobs must query stored recent item state in addition to the current discovery response. A `304 Not Modified` discovery response does not skip recent items that are missing a raw artifact/document, lack a current content hash, or have previous fetch failures.
 
 The worker should use conditional requests where possible:
 

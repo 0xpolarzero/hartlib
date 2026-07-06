@@ -2,8 +2,11 @@ import { BunRuntime } from "@effect/platform-bun";
 import { Effect } from "effect";
 import { loadWorkerConfig } from "./config";
 import { JsonLoggerLayer, serviceLogFields } from "./logging";
-import { JobRepositoryLive } from "./jobs/repository";
+import { JobRepositoryPgLayer } from "./jobs/repository";
 import { runWorker } from "./jobs/runner";
+import { DatabaseMigrationLayer, runMigrations } from "./db/migrate";
+import { PublicSourceIngestionRepositoryPgLayer } from "./source-ingestion/pg-repository";
+import { runPublicSourcePolling, runPublicSourceStartupBackfill } from "./source-ingestion/watcher";
 
 const program = Effect.gen(function* () {
   const config = yield* loadWorkerConfig;
@@ -11,17 +14,38 @@ const program = Effect.gen(function* () {
   yield* Effect.logInfo("starting worker").pipe(
     Effect.annotateLogs({
       ...serviceLogFields,
-      pollIntervalMs: config.pollIntervalMs,
+      jobPollIntervalMs: config.jobPollIntervalMs,
+      runMigrationsOnStartup: config.runMigrationsOnStartup,
+      publicSourceIngestionEnabled: config.publicSourceIngestionEnabled,
+      publicSourcePollIntervalMs: config.publicSourcePollIntervalMs,
+      publicSourceStartupBackfillDays: config.publicSourceStartupBackfillDays,
       nodeEnv: config.nodeEnv,
     }),
   );
 
-  yield* runWorker(config.pollIntervalMs);
+  if (config.runMigrationsOnStartup) {
+    yield* runMigrations;
+  }
+
+  const publicSourceWatcherConfig = {
+    enabled: config.publicSourceIngestionEnabled,
+    pollIntervalMs: config.publicSourcePollIntervalMs,
+    startupBackfillDays: config.publicSourceStartupBackfillDays,
+  };
+
+  yield* runPublicSourceStartupBackfill(publicSourceWatcherConfig);
+
+  yield* Effect.all(
+    [runWorker(config.jobPollIntervalMs), runPublicSourcePolling(publicSourceWatcherConfig)],
+    { concurrency: "unbounded" },
+  );
 });
 
 BunRuntime.runMain(
   program.pipe(
-    Effect.provide(JobRepositoryLive),
+    Effect.provide(JobRepositoryPgLayer),
+    Effect.provide(PublicSourceIngestionRepositoryPgLayer),
+    Effect.provide(DatabaseMigrationLayer),
     Effect.provide(JsonLoggerLayer),
     Effect.annotateLogs(serviceLogFields),
   ),

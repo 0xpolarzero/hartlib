@@ -1,4 +1,5 @@
 export type JobKind =
+  | "public_source_ingestion"
   | "publish_scheduled_issue"
   | "extract_pdf_text"
   | "chunk_issue_text"
@@ -20,6 +21,16 @@ export interface JobRecord {
   readonly kind: JobKind;
   readonly payload: unknown;
   readonly attempts: number;
+  readonly lockedBy?: string;
+}
+
+export interface EnqueueJobInput {
+  readonly kind: JobKind;
+  readonly payload: unknown;
+  readonly uniqueKey?: string;
+  readonly availableAt?: Date;
+  readonly priority?: number;
+  readonly maxAttempts?: number;
 }
 
 export interface JobResult {

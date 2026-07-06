@@ -1,46 +1,270 @@
-import { Context, Effect, Layer } from "effect";
+import { PgClient } from "@effect/sql-pg";
+import { Config, Context, Effect, Layer, Redacted } from "effect";
+import type { SqlError } from "effect/unstable/sql/SqlError";
 import { jobSql } from "./sql";
-import type { JobRecord } from "./types";
+import type { EnqueueJobInput, JobRecord } from "./types";
 
-export class JobRepository extends Context.Service<
-  JobRepository,
-  {
-    readonly claimNext: Effect.Effect<JobRecord | undefined>;
-    readonly markCompleted: (job: JobRecord) => Effect.Effect<void>;
-    readonly markFailed: (job: JobRecord, error: unknown) => Effect.Effect<void>;
-  }
->()("brief/worker/JobRepository") {
-  static readonly layer = Layer.succeed(
-    JobRepository,
-    JobRepository.of({
-      claimNext: Effect.gen(function* () {
-        yield* Effect.logDebug("claiming next postgres job placeholder").pipe(
-          Effect.annotateLogs({
-            sqlName: "claimNext",
-            sqlPrepared: jobSql.claimNext.length > 0,
-          }),
-        );
-        return undefined;
-      }),
-
-      markCompleted: (job: JobRecord) =>
-        Effect.logInfo("job completed").pipe(
-          Effect.annotateLogs({
-            jobId: job.id,
-            jobKind: job.kind,
-          }),
-        ),
-
-      markFailed: (job: JobRecord, error: unknown) =>
-        Effect.logError("job failed").pipe(
-          Effect.annotateLogs({
-            jobId: job.id,
-            jobKind: job.kind,
-            error: String(error),
-          }),
-        ),
-    }),
-  );
+export interface JobRepositoryShape {
+  readonly claimNext: Effect.Effect<JobRecord | undefined, unknown>;
+  readonly enqueue: (input: EnqueueJobInput) => Effect.Effect<JobRecord, unknown>;
+  readonly heartbeat: (job: JobRecord) => Effect.Effect<void, unknown>;
+  readonly lockRenewalIntervalMs: number;
+  readonly markCompleted: (job: JobRecord) => Effect.Effect<void, unknown>;
+  readonly markFailed: (job: JobRecord, error: unknown) => Effect.Effect<void, unknown>;
 }
 
-export const JobRepositoryLive: Layer.Layer<JobRepository> = JobRepository.layer;
+export class JobRepository extends Context.Service<JobRepository, JobRepositoryShape>()(
+  "brief/worker/JobRepository",
+) {}
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const retryDelayMs = (attempts: number): number =>
+  Math.min(60_000, 1_000 * 2 ** Math.max(0, attempts - 1));
+
+const defaultJobLockTimeoutMs = 15 * 60 * 1000;
+
+const lockRenewalIntervalMs = (jobLockTimeoutMs: number): number =>
+  Math.max(1_000, Math.floor(jobLockTimeoutMs / 3));
+
+type UpdatedJobRow = {
+  readonly id: string;
+};
+
+const requireOwnedJobUpdate = (
+  action: "complete" | "fail" | "heartbeat",
+  job: JobRecord,
+  rows: readonly UpdatedJobRow[],
+): Effect.Effect<void, Error> =>
+  rows.length > 0
+    ? Effect.void
+    : Effect.fail(
+        new Error(
+          `Cannot ${action} job ${job.id}: job is no longer running or lock ownership was lost`,
+        ),
+      );
+
+export const makePgJobRepository = (
+  jobLockTimeoutMs = defaultJobLockTimeoutMs,
+): Effect.Effect<JobRepositoryShape, never, PgClient.PgClient> =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const workerId = `brief-worker:${crypto.randomUUID()}`;
+
+    return JobRepository.of({
+      lockRenewalIntervalMs: lockRenewalIntervalMs(jobLockTimeoutMs),
+
+      enqueue: (input) =>
+        Effect.gen(function* () {
+          const rows = yield* sql<JobRecord>`
+              insert into jobs (kind, payload, unique_key, available_at, priority, max_attempts)
+              values (
+                ${input.kind},
+                ${sql.json(input.payload)},
+                ${input.uniqueKey ?? null},
+                ${input.availableAt ?? new Date()},
+                ${input.priority ?? 0},
+                ${input.maxAttempts ?? 5}
+              )
+              on conflict (unique_key) where unique_key is not null do update set
+                payload = case
+                  when jobs.status in ('completed', 'failed') then excluded.payload
+                  else jobs.payload
+                end,
+                available_at = case
+                  when jobs.status in ('completed', 'failed') then excluded.available_at
+                  when jobs.status = 'queued' then least(jobs.available_at, excluded.available_at)
+                  else jobs.available_at
+                end,
+                priority = greatest(jobs.priority, excluded.priority),
+                attempts = case
+                  when jobs.status in ('completed', 'failed') then 0
+                  else jobs.attempts
+                end,
+                max_attempts = excluded.max_attempts,
+                status = case
+                  when jobs.status in ('completed', 'failed') then 'queued'
+                  else jobs.status
+                end,
+                locked_at = case
+                  when jobs.status in ('completed', 'failed') then null
+                  else jobs.locked_at
+                end,
+                locked_by = case
+                  when jobs.status in ('completed', 'failed') then null
+                  else jobs.locked_by
+                end,
+                completed_at = case
+                  when jobs.status in ('completed', 'failed') then null
+                  else jobs.completed_at
+                end,
+                last_error = case
+                  when jobs.status in ('completed', 'failed') then null
+                  else jobs.last_error
+                end,
+                updated_at = now()
+            returning id, kind, payload, attempts, locked_by as "lockedBy"
+            `;
+          return rows[0]!;
+        }).pipe(
+          Effect.annotateLogs({
+            sqlName: "enqueue",
+            sqlPrepared: jobSql.enqueue.length > 0,
+          }),
+        ),
+
+      claimNext: Effect.gen(function* () {
+        const rows = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`select pg_advisory_xact_lock(hashtext('brief:jobs:claim'))`;
+            yield* sql`
+                update jobs
+                set status = case
+                      when attempts < max_attempts then 'retrying'
+                      else 'failed'
+                    end,
+                    available_at = case
+                      when attempts < max_attempts then now()
+                      else available_at
+                    end,
+                    locked_at = null,
+                    locked_by = null,
+                    last_error = 'Job lock expired before completion',
+                    updated_at = now()
+                where status = 'running'
+                  and locked_at < now() - (${jobLockTimeoutMs} * interval '1 millisecond')
+              `;
+            return yield* sql<JobRecord>`
+                update jobs
+                set status = 'running',
+                    attempts = attempts + 1,
+                    locked_at = now(),
+                    locked_by = ${workerId},
+                    updated_at = now()
+                where id = (
+                  select pending.id
+                  from jobs pending
+                  where pending.status in ('queued', 'retrying')
+                    and pending.available_at <= now()
+                    and not exists (
+                      select 1
+                      from jobs running
+                      where running.status = 'running'
+                        and running.kind = pending.kind
+                        and running.kind = 'public_source_ingestion'
+                        and running.payload->>'sourceId' = pending.payload->>'sourceId'
+                    )
+                  order by pending.priority desc, pending.available_at asc, pending.created_at asc
+                  for update skip locked
+                  limit 1
+                )
+                returning id, kind, payload, attempts, locked_by as "lockedBy"
+              `;
+          }),
+        );
+        return rows[0];
+      }).pipe(
+        Effect.annotateLogs({
+          sqlName: "claimNext",
+          sqlPrepared: jobSql.claimNext.length > 0,
+        }),
+      ),
+
+      heartbeat: (job) =>
+        sql<UpdatedJobRow>`
+            update jobs
+            set locked_at = now(),
+                updated_at = now()
+            where id = ${job.id}
+              and status = 'running'
+              and locked_by = ${job.lockedBy ?? workerId}
+            returning id
+          `.pipe(
+          Effect.flatMap((rows) => requireOwnedJobUpdate("heartbeat", job, rows)),
+          Effect.annotateLogs({
+            sqlName: "heartbeat",
+            sqlPrepared: jobSql.heartbeat.length > 0,
+          }),
+        ),
+
+      markCompleted: (job) =>
+        sql<UpdatedJobRow>`
+            update jobs
+            set status = 'completed',
+                completed_at = now(),
+                locked_at = null,
+                locked_by = null,
+                last_error = null,
+                updated_at = now()
+            where id = ${job.id}
+              and status = 'running'
+              and locked_by = ${job.lockedBy ?? workerId}
+            returning id
+          `.pipe(
+          Effect.flatMap((rows) => requireOwnedJobUpdate("complete", job, rows)),
+          Effect.tap(() =>
+            Effect.logInfo("job completed").pipe(
+              Effect.annotateLogs({
+                jobId: job.id,
+                jobKind: job.kind,
+              }),
+            ),
+          ),
+        ),
+
+      markFailed: (job, error) =>
+        sql<UpdatedJobRow>`
+            update jobs
+            set status = case
+                  when attempts < max_attempts then 'retrying'
+                  else 'failed'
+                end,
+                available_at = case
+                  when attempts < max_attempts then now() + (${retryDelayMs(job.attempts)} * interval '1 millisecond')
+                  else available_at
+                end,
+                locked_at = null,
+                locked_by = null,
+                last_error = ${errorMessage(error)},
+                updated_at = now()
+            where id = ${job.id}
+              and status = 'running'
+              and locked_by = ${job.lockedBy ?? workerId}
+            returning id
+          `.pipe(
+          Effect.flatMap((rows) => requireOwnedJobUpdate("fail", job, rows)),
+          Effect.tap(() =>
+            Effect.logError("job failed").pipe(
+              Effect.annotateLogs({
+                jobId: job.id,
+                jobKind: job.kind,
+                error: errorMessage(error),
+              }),
+            ),
+          ),
+        ),
+    });
+  }).pipe(
+    Effect.catch((error: SqlError) =>
+      Effect.die(new Error(`Postgres job repository failed: ${error.message}`)),
+    ),
+  );
+
+export const JobRepositoryPgLayer = Layer.effect(
+  JobRepository,
+  Config.number("WORKER_JOB_LOCK_TIMEOUT_MS").pipe(
+    Config.withDefault(defaultJobLockTimeoutMs),
+    Effect.flatMap((jobLockTimeoutMs) => makePgJobRepository(jobLockTimeoutMs)),
+  ),
+).pipe(
+  Layer.provide(
+    PgClient.layerConfig({
+      url: Config.string("DATABASE_URL").pipe(
+        Config.withDefault("postgres://brief:brief@localhost:5432/brief"),
+        Config.map(Redacted.make),
+      ),
+      applicationName: Config.succeed("brief-worker"),
+    }),
+  ),
+);

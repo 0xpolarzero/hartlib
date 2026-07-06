@@ -3,15 +3,17 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "db:migrate": "bun src/db/migrate.ts",
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "build": "tsc -b --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --root ../.. apps/worker/src"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1075.0",
     "@brief/config": "workspace:*",
     "@brief/shared": "workspace:*",
+    "@brief/source-ingestion": "workspace:*",
     "@effect/platform-bun": "4.0.0-beta.92",
     "@effect/sql-pg": "4.0.0-beta.92",
     "@sentry/bun": "10.62.0",

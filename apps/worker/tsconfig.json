@@ -4,5 +4,5 @@
     "composite": true,
     "types": ["bun"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "../../packages/source-ingestion/src/**/*.ts"]
 }

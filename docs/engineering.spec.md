@@ -492,9 +492,12 @@ Use real Postgres integration tests for:
 - search and retrieval
 - AI source metadata
 - artifact storage and checks
+- durable job locking, retries, and public-source ingestion state
 - credits
 - Stripe webhook state changes
 - support access logging
+
+Postgres integration tests that can mutate or truncate tables must use an explicit test database URL, not a developer's normal application database. Worker job repository integration tests read `WORKER_POSTGRES_TEST_DATABASE_URL` and are skipped when it is unset.
 
 Use pure unit tests for:
 
