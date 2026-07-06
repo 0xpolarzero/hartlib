@@ -48,13 +48,16 @@
   --ease-snappy: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
   --duration-fast: 100ms;
   --duration-normal: 200ms;
 }
 
-/* Table body rows hover only (not header) */
-[data-slot="table-body"] > [data-slot="table-row"]:hover {
-  background-color: oklch(0.96 0.006 220 / 0.6);
+@media (hover: hover) and (pointer: fine) {
+  /* Table body rows hover only (not header) */
+  [data-slot="table-body"] > [data-slot="table-row"]:hover {
+    background-color: oklch(0.96 0.006 220 / 0.6);
+  }
 }
 
 .brief-sortable-head {
@@ -64,14 +67,17 @@
   align-items: center;
   color: var(--color-faint);
   text-align: left;
-  transition:
-    color var(--duration-fast) var(--ease-snappy),
-    transform var(--duration-fast) var(--ease-snappy);
+  transition: transform var(--duration-fast) var(--ease-snappy);
 }
 
-.brief-sortable-head:hover,
 .brief-sortable-head:focus-visible {
   color: var(--color-muted);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .brief-sortable-head:hover {
+    color: var(--color-muted);
+  }
 }
 
 .brief-sortable-head:active {
@@ -95,9 +101,14 @@
   transition: opacity var(--duration-fast) var(--ease-snappy);
 }
 
-.brief-sortable-head:hover .brief-sortable-head-idle-icon,
 .brief-sortable-head:focus-visible .brief-sortable-head-idle-icon {
   opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .brief-sortable-head:hover .brief-sortable-head-idle-icon {
+    opacity: 1;
+  }
 }
 
 .publication-date-input {
@@ -206,15 +217,16 @@
   color: var(--color-accent);
   text-decoration-line: underline;
   text-decoration-color: oklch(0.52 0.14 28 / 0.3);
-  transition: text-decoration-color var(--duration-fast) var(--ease-snappy);
 }
 
 .brief-chat-citation + .brief-chat-citation {
   margin-top: 4px;
 }
 
-.brief-chat-citation:hover {
-  text-decoration-color: oklch(0.52 0.14 28 / 0.6);
+@media (hover: hover) and (pointer: fine) {
+  .brief-chat-citation:hover {
+    text-decoration-color: oklch(0.52 0.14 28 / 0.6);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

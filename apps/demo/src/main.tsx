@@ -256,25 +256,27 @@ function App() {
     <TooltipProvider>
       <Tabs value={role} onValueChange={(v) => handleRoleChange(v as DemoRole)}>
         <main className="min-h-screen bg-canvas text-ink">
-          <header className="border-b border-rule bg-paper/80 backdrop-blur">
-            <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
-              <div className="flex items-baseline gap-1.5">
-                <h1 className="font-display text-xl font-medium text-ink">
+          <header className="border-b border-rule bg-paper/90">
+            <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 sm:px-6 lg:px-8">
+              <div className="flex min-w-0 items-baseline gap-1.5">
+                <h1 className="shrink-0 font-display text-xl font-medium text-ink">
                   brief<span className="text-accent">.</span>
                 </h1>
-                <span className="font-mono text-[11px] font-medium text-faint">(demo)</span>
+                <span className="truncate font-mono text-[11px] font-medium text-faint">
+                  (démo)
+                </span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <TabsList className="h-6 rounded-sm bg-canvas p-px">
+              <div className="flex shrink-0 items-center gap-1.5">
+                <TabsList className="h-7 rounded-sm bg-canvas p-px">
                   <TabsTrigger
                     value="publisher"
-                    className="h-5 rounded-sm px-2 !text-[12px] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
+                    className="h-6 rounded-sm px-2 !text-[12px] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
                   >
-                    Publisher
+                    Éditeur
                   </TabsTrigger>
                   <TabsTrigger
                     value="client"
-                    className="h-5 rounded-sm px-2 !text-[12px] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
+                    className="h-6 rounded-sm px-2 !text-[12px] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
                   >
                     Client
                   </TabsTrigger>
@@ -285,7 +287,7 @@ function App() {
                       type="button"
                       variant="ghost"
                       size="icon"
-                      className="size-5 text-faint/70 hover:bg-rule/45 hover:text-muted"
+                      className="size-7 text-faint/70 hover:bg-rule/45 hover:text-muted"
                       onClick={handleResetDemoStorage}
                       aria-label="Réinitialiser les données locales de la démo"
                     >
@@ -293,14 +295,14 @@ function App() {
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" align="end" sideOffset={8}>
-                    Efface les changements de cette demo.
+                    Efface les changements de cette démo.
                   </TooltipContent>
                 </Tooltip>
               </div>
             </div>
           </header>
 
-          <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+          <div className="mx-auto max-w-7xl px-4 py-5 sm:px-6 sm:py-6 lg:px-8">
             <div className="mb-6">
               <Breadcrumbs
                 items={buildBreadcrumbs({
@@ -620,13 +622,13 @@ function ClientSourcesList({
   }
 
   return (
-    <div className="space-y-7">
-      <section className="animate-in stagger-1 max-w-4xl">
+    <div className="mx-auto max-w-5xl space-y-7">
+      <section className="animate-in stagger-1">
         <VirtualizedChatTranscript messages={primaryChat?.messages ?? []} />
 
-        <div className="mt-4 flex items-center gap-2 rounded-sm border border-dashed border-rule bg-surface px-3 py-2 text-muted">
+        <div className="mt-4 flex min-h-10 items-center gap-2 rounded-sm border border-dashed border-rule bg-surface px-3 py-2 text-muted">
           <span className="min-w-0 flex-1 truncate text-sm">
-            Le chat demo ne peut pas envoyer de nouveau message.
+            Le chat démo ne peut pas envoyer de nouveau message.
           </span>
           <Button disabled>
             <Send className="size-4" aria-hidden="true" />

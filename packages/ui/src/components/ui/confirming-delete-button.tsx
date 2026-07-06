@@ -51,8 +51,8 @@ export function ConfirmingDeleteButton({
         className={cn(
           "!size-5",
           confirming
-            ? "text-destructive hover:bg-rule/45 hover:text-destructive"
-            : "text-faint/70 hover:bg-rule/45 hover:text-destructive focus-visible:text-destructive",
+            ? "text-destructive [@media(hover:hover)_and_(pointer:fine)]:hover:bg-rule/45 [@media(hover:hover)_and_(pointer:fine)]:hover:text-destructive"
+            : "text-faint/70 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-rule/45 [@media(hover:hover)_and_(pointer:fine)]:hover:text-destructive focus-visible:text-destructive",
         )}
         onClick={(event) => {
           event.stopPropagation();

@@ -94,7 +94,7 @@ export function SubscribersTable({
               <Button
                 variant="ghost"
                 size="icon"
-                className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-muted focus-visible:text-muted"
+                className="!size-5 text-faint/70 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-rule/45 [@media(hover:hover)_and_(pointer:fine)]:hover:text-muted focus-visible:text-muted"
                 onClick={(event) => {
                   event.stopPropagation();
                   onToggleStatus(row.id);
@@ -240,7 +240,7 @@ function DraftSubscriberTableRow({
             type="button"
             variant="ghost"
             size="icon"
-            className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-accent focus-visible:text-accent"
+            className="!size-5 text-faint/70 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-rule/45 [@media(hover:hover)_and_(pointer:fine)]:hover:text-accent focus-visible:text-accent"
             onClick={(event) => {
               event.stopPropagation();
               onConfirm();
@@ -253,7 +253,7 @@ function DraftSubscriberTableRow({
             type="button"
             variant="ghost"
             size="icon"
-            className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-destructive focus-visible:text-destructive"
+            className="!size-5 text-faint/70 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-rule/45 [@media(hover:hover)_and_(pointer:fine)]:hover:text-destructive focus-visible:text-destructive"
             onClick={(event) => {
               event.stopPropagation();
               onCancel();
@@ -409,7 +409,7 @@ function DraftCompanyCombobox({
                 role="option"
                 aria-selected={index === activeIndex}
                 className={cn(
-                  "flex w-full items-center justify-between px-2 py-1.5 text-left text-xs text-muted transition-[background-color,color,transform] duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 hover:bg-rule/45 hover:text-ink",
+                  "flex w-full items-center justify-between px-2 py-1.5 text-left text-xs text-muted transition-transform duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-rule/45 [@media(hover:hover)_and_(pointer:fine)]:hover:text-ink",
                   index === activeIndex && "bg-rule/45 text-ink",
                 )}
                 onMouseDown={(event) => event.preventDefault()}
@@ -429,7 +429,7 @@ function DraftCompanyCombobox({
                 role="option"
                 aria-selected={index === activeIndex}
                 className={cn(
-                  "flex w-full items-center gap-1.5 border-t border-rule px-2 py-1.5 text-left text-xs text-muted transition-[background-color,color,transform] duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 hover:bg-rule/45 hover:text-ink",
+                  "flex w-full items-center gap-1.5 border-t border-rule px-2 py-1.5 text-left text-xs text-muted transition-transform duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-rule/45 [@media(hover:hover)_and_(pointer:fine)]:hover:text-ink",
                   index === activeIndex && "bg-rule/45 text-ink",
                 )}
                 onMouseDown={(event) => event.preventDefault()}

@@ -10,13 +10,15 @@ export function ArtifactFrame({ title, html, className }: ArtifactFrameProps) {
   return (
     <div
       className={cn(
-        "relative bg-paper border border-rule overflow-hidden flex flex-col rounded-sm",
+        "relative flex flex-col overflow-hidden rounded-sm border border-rule bg-paper",
         className,
       )}
     >
-      <div className="absolute top-0 right-0 w-3 h-3 pointer-events-none border-t border-r border-rule" />
-      <div className="border-b border-rule px-4 py-2.5 flex-shrink-0">
-        <span className="text-xs font-medium text-muted uppercase tracking-wider">{title}</span>
+      <div className="pointer-events-none absolute right-0 top-0 h-3 w-3 border-r border-t border-rule" />
+      <div className="flex-shrink-0 border-b border-rule px-3 py-2">
+        <span className="font-mono text-[11px] font-medium uppercase tracking-wider text-muted">
+          {title}
+        </span>
       </div>
       <div className="min-h-0 flex-1">
         <iframe

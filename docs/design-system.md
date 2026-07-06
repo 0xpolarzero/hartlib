@@ -49,6 +49,7 @@ All values in OKLCH. Neutrals tinted slightly cool (hue ~220 or ~60) for cohesio
 | `--ease-snappy`     | `cubic-bezier(0.23, 1, 0.32, 1)`  | Hover/active state transitions |
 | `--ease-out`        | `cubic-bezier(0.23, 1, 0.32, 1)`  | Entrance/exit animations       |
 | `--ease-in-out`     | `cubic-bezier(0.77, 0, 0.175, 1)` | On-screen movement             |
+| `--ease-drawer`     | `cubic-bezier(0.32, 0.72, 0, 1)`  | Drawer-like sheet movement     |
 | `--duration-fast`   | `100ms`                           | Hover states, color shifts     |
 | `--duration-normal` | `200ms`                           | Moderate transitions           |
 

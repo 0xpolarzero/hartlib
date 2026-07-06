@@ -82,17 +82,14 @@ export function ClientPublicationsTable({
   return (
     <DataTable<InternalClientPublicationRow>
       table={table}
-      tableClassName="table-fixed"
       renderContent={renderTableContent}
       hiddenColumnIds={["contextRank"]}
       getColumnClassName={(columnId) =>
         columnId === "sourceName" || columnId === "publicationDate"
           ? "hidden sm:table-cell"
           : columnId === "actions"
-            ? "w-8"
-            : columnId === "title"
-              ? "w-full"
-              : ""
+            ? "w-10"
+            : ""
       }
       getHeaderAlign={(header) => (header.column.id === "actions" ? "right" : "left")}
       getRowClassName={(row) => (!row.original.includedInContext ? "opacity-60" : undefined)}
@@ -100,15 +97,17 @@ export function ClientPublicationsTable({
       renderCell={(cell, row) => {
         if (cell.column.id === "sourceName") {
           return (
-            <TableCell key={cell.id} className="hidden max-w-[12rem] text-muted sm:table-cell">
+            <TableCell key={cell.id} className="hidden text-muted sm:table-cell">
               <div className="truncate">{row.original.sourceName}</div>
             </TableCell>
           );
         }
         if (cell.column.id === "title") {
           return (
-            <TableCell key={cell.id} className="min-w-0">
-              <div className="truncate font-medium text-ink">{row.original.title}</div>
+            <TableCell key={cell.id}>
+              <div className="max-w-[32rem] truncate font-medium text-ink">
+                {row.original.title}
+              </div>
             </TableCell>
           );
         }
@@ -125,7 +124,7 @@ export function ClientPublicationsTable({
         if (cell.column.id === "actions") {
           const isShown = row.original.includedInContext;
           return (
-            <TableCell key={cell.id} className="w-8 text-right">
+            <TableCell key={cell.id} className="w-10 text-right">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -141,7 +140,7 @@ export function ClientPublicationsTable({
                         ? `Masquer ${row.original.title} pour l'assistant`
                         : `Afficher ${row.original.title} pour l'assistant`
                     }
-                    className="!size-5 text-faint/70 hover:bg-rule/45 hover:text-muted focus-visible:text-muted"
+                    className="!size-5 text-faint/70 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-rule/45 [@media(hover:hover)_and_(pointer:fine)]:hover:text-muted focus-visible:text-muted"
                   >
                     {isShown ? (
                       <Eye className="size-3.5" aria-hidden="true" />

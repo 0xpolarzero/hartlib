@@ -26,7 +26,7 @@ export function SectionHeader({ title, count, actionLabel, onAdd, className }: S
           type="button"
           variant="ghost"
           size="icon"
-          className="ml-auto size-7 text-faint hover:text-accent"
+          className="ml-auto size-7 text-faint [@media(hover:hover)_and_(pointer:fine)]:hover:text-accent"
           onClick={onAdd}
           aria-label={actionLabel ?? `Ajouter ${title.toLowerCase()}`}
         >

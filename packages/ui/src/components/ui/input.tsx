@@ -10,7 +10,7 @@ export function Input({ className, type, ...props }: InputProps) {
       type={type}
       data-slot="input"
       className={cn(
-        "flex h-9 w-full rounded-sm border border-border bg-paper px-3 py-1 text-sm text-ink transition-colors duration-fast ease-snappy",
+        "flex h-9 w-full rounded-sm border border-border bg-paper px-3 py-1 text-sm text-ink",
         "file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-ink",
         "placeholder:text-muted",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",

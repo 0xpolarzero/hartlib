@@ -21,6 +21,9 @@ export function Breadcrumbs({
   separator = "/",
   "aria-label": ariaLabel = "Breadcrumb",
 }: BreadcrumbsProps) {
+  const linkClassName =
+    "font-mono uppercase tracking-wider text-muted transition-transform duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 [@media(hover:hover)_and_(pointer:fine)]:hover:text-ink";
+
   return (
     <nav
       aria-label={ariaLabel}
@@ -42,7 +45,7 @@ export function Breadcrumbs({
                   event.preventDefault();
                   item.onClick?.();
                 }}
-                className="font-mono uppercase tracking-wider text-muted transition-colors duration-fast ease-snappy hover:text-ink"
+                className={linkClassName}
               >
                 {item.label}
               </a>
@@ -50,7 +53,7 @@ export function Breadcrumbs({
               <a
                 href={item.href}
                 aria-current={isCurrent ? "page" : undefined}
-                className="font-mono uppercase tracking-wider text-muted transition-colors duration-fast ease-snappy hover:text-ink"
+                className={linkClassName}
               >
                 {item.label}
               </a>
