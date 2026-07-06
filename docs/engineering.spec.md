@@ -79,11 +79,12 @@ Repository layout:
 - `packages/shared` for shared schemas and types
 - `packages/config` for shared configuration and environment parsing
 - `packages/ui` for reusable product UI components
+- `packages/source-ingestion` for public-source adapter interfaces, feed/dataset connectors, source normalization, and ingestion helpers
 - fixture packages for reusable seeded demo data and representative content
 
 App directories contain app wiring, routing, and app-specific behavior.
 
-Reusable UI, product logic, schemas, API clients, fixtures, and backend domain services belong in packages, not inside `apps/web` or `apps/demo`.
+Reusable UI, product logic, schemas, API clients, fixtures, source ingestion connectors, and backend domain services belong in packages, not inside `apps/web` or `apps/demo`.
 
 ## Demo Architecture
 

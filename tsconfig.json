@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/config" },
     { "path": "./packages/demo-data" },
+    { "path": "./packages/source-ingestion" },
     { "path": "./packages/shared" },
     { "path": "./packages/ui" },
     { "path": "./apps/api" },

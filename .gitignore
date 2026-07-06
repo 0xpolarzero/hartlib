@@ -7,3 +7,7 @@ coverage
 playwright-report
 test-results
 *.tsbuildinfo
+.smithers/
+smithers.db
+smithers.db-shm
+smithers.db-wal
