@@ -19,7 +19,7 @@ export type PublicationTableIssue = {
   id: string;
   title: string;
   sourceName?: string | undefined;
-  publicationDate: string;
+  publicationDate: string | null;
   opens: number;
   downloads: number;
   contextPulls: number;

@@ -15,6 +15,7 @@ export interface PublicSourceIngestionOptions {
   readonly mode: PublicSourceIngestionMode;
   readonly since?: Date;
   readonly now?: () => Date;
+  readonly operationTimeoutMs?: number;
 }
 
 export interface PublicSourceIngestionStats {
@@ -43,6 +44,7 @@ export interface PublicSourceItemState {
   readonly lastFetchedAt: Date | undefined;
   readonly lastSuccessfulFetchAt: Date | undefined;
   readonly consecutiveFailures: number;
+  readonly stored: boolean;
 }
 
 export interface PublicSourceIngestionRun {

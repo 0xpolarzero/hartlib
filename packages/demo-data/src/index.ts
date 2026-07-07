@@ -1,3 +1,5 @@
+import type { ContentDocument, ContentPublication, ContentSource } from "@brief/shared";
+
 export type DemoRole = "publisher" | "client";
 
 export type DemoCompany = {
@@ -34,59 +36,11 @@ export type DemoAiPlan = {
   webDomainAllowlist: readonly string[];
 };
 
-export type DemoSubscriptionSource = {
-  id: string;
-  publisherCompanyId: string;
-  clientCompanyId: string;
-  name: string;
-  description: string;
-  subscribedSince: string;
-  subscriberCount: number;
-  latestIssueId: string;
-  aiEnabled: boolean;
-  branding: {
-    publisherName: string;
-    logoUrl: string;
-    accentColor: string;
-    contactEmail: string;
-  };
-};
+export type BriefSource = ContentSource;
 
-export type DemoIssue = {
-  id: string;
-  sourceId: string;
-  title: string;
-  publicationDate: string;
-  status: "published" | "scheduled";
-  summary: string;
-  documents: readonly DemoDocument[];
-  metrics: DemoIssueMetrics;
-};
+export type BriefPublication = ContentPublication;
 
-export type DemoDocument = {
-  id: string;
-  issueId: string;
-  title: string;
-  fileName: string;
-  pageCount: number;
-  language: "fr";
-  indexingStatus: "indexed";
-  storagePath: string;
-  extractedTextPreview: string;
-  metrics: DemoDocumentMetrics;
-};
-
-export type DemoIssueMetrics = {
-  opens: number;
-  downloads: number;
-  aiContextPulls: number;
-};
-
-export type DemoDocumentMetrics = {
-  opens: number;
-  downloads: number;
-  aiContextPulls: number;
-};
+export type BriefDocument = ContentDocument;
 
 export type DemoArchiveSnippet = {
   id: string;
@@ -174,8 +128,8 @@ export type DemoDataset = {
     client: DemoUser;
   };
   aiPlan: DemoAiPlan;
-  sources: readonly DemoSubscriptionSource[];
-  issues: readonly DemoIssue[];
+  sources: readonly BriefSource[];
+  issues: readonly BriefPublication[];
   archiveSnippets: readonly DemoArchiveSnippet[];
   chats: readonly DemoChat[];
   artifacts: readonly DemoArtifact[];
@@ -235,53 +189,51 @@ export const demoAiPlan: DemoAiPlan = {
   webDomainAllowlist: [],
 };
 
-export const demoSources: readonly DemoSubscriptionSource[] = [
+export const demoSources: readonly BriefSource[] = [
   {
     id: "source_regulation_financiere",
+    kind: "publisher",
     publisherCompanyId: demoPublisherCompany.id,
     clientCompanyId: demoClientCompany.id,
     name: "Veille Réglementation Financière",
+    publisherName: demoPublisherCompany.name,
     description: "Brief hebdomadaire sur l'AMF, l'ACPR, l'ESMA et les obligations de conformité.",
+    subscribed: true,
     subscribedSince: "2025-11-03T09:00:00.000Z",
     subscriberCount: 3,
-    latestIssueId: "issue_regfin_2026_06_24",
-    aiEnabled: true,
-    branding: {
-      publisherName: demoPublisherCompany.name,
-      logoUrl: demoPublisherCompany.logoUrl,
-      accentColor: demoPublisherCompany.accentColor,
-      contactEmail: demoPublisherCompany.supportEmail,
-    },
+    latestPublicationId: "issue_regfin_2026_06_24",
+    latestPublicationDate: "2026-06-24T07:30:00.000Z",
+    metrics: { opens: 73, downloads: 30, aiContextPulls: 50 },
   },
   {
     id: "source_energie_industrie",
+    kind: "publisher",
     publisherCompanyId: demoPublisherCompany.id,
     clientCompanyId: demoClientCompany.id,
     name: "Energie & Industrie Europe",
+    publisherName: demoPublisherCompany.name,
     description:
       "Analyse mensuelle des politiques énergétiques, prix, capacités et appels d'offres.",
+    subscribed: true,
     subscribedSince: "2025-08-18T09:00:00.000Z",
     subscriberCount: 1,
-    latestIssueId: "issue_energy_2026_05_30",
-    aiEnabled: true,
-    branding: {
-      publisherName: demoPublisherCompany.name,
-      logoUrl: demoPublisherCompany.logoUrl,
-      accentColor: "#7c3aed",
-      contactEmail: demoPublisherCompany.supportEmail,
-    },
+    latestPublicationId: "issue_energy_2026_05_30",
+    latestPublicationDate: "2026-05-30T08:00:00.000Z",
+    metrics: { opens: 27, downloads: 11, aiContextPulls: 13 },
   },
 ] as const;
 
-export const demoIssues: readonly DemoIssue[] = [
+export const demoIssues: readonly BriefPublication[] = [
   {
     id: "issue_regfin_2026_06_24",
     sourceId: "source_regulation_financiere",
+    sourceKind: "publisher",
     title: "Réglementation financière - Semaine du 24 juin 2026",
     publicationDate: "2026-06-24T07:30:00.000Z",
     status: "published",
     summary:
       "Focus sur les contrôles de commercialisation, la résilience opérationnelle et les priorités ESMA.",
+    canonicalUrl: null,
     metrics: {
       opens: 42,
       downloads: 18,
@@ -290,14 +242,17 @@ export const demoIssues: readonly DemoIssue[] = [
     documents: [
       {
         id: "doc_regfin_2026_06_24_note",
-        issueId: "issue_regfin_2026_06_24",
+        publicationId: "issue_regfin_2026_06_24",
+        sourceId: "source_regulation_financiere",
         title: "Note de synthese",
         fileName: "atlas-regfin-2026-06-24-note.pdf",
         pageCount: 1,
         language: "fr",
-        indexingStatus: "indexed",
+        documentType: "pdf",
         storagePath: "/demo/pdfs/atlas-regfin-2026-06-24-note.pdf",
-        extractedTextPreview:
+        canonicalUrl: null,
+        hostedContentUrl: null,
+        textPreview:
           "L'ACPR confirme que les contrôles 2026 porteront sur la gouvernance des distributeurs, la traçabilité du conseil et les indicateurs de traitement des réclamations.",
         metrics: {
           opens: 35,
@@ -307,14 +262,17 @@ export const demoIssues: readonly DemoIssue[] = [
       },
       {
         id: "doc_regfin_2026_06_24_annexes",
-        issueId: "issue_regfin_2026_06_24",
+        publicationId: "issue_regfin_2026_06_24",
+        sourceId: "source_regulation_financiere",
         title: "Annexes de suivi",
         fileName: "atlas-regfin-2026-06-24-annexes.pdf",
         pageCount: 1,
         language: "fr",
-        indexingStatus: "indexed",
+        documentType: "pdf",
         storagePath: "/demo/pdfs/atlas-regfin-2026-06-24-annexes.pdf",
-        extractedTextPreview:
+        canonicalUrl: null,
+        hostedContentUrl: null,
+        textPreview:
           "Calendrier indicatif: consultations ESMA jusqu'au 12 juillet, remise des plans DORA internes avant le 30 septembre, revue des conventions distributeurs au T4.",
         metrics: {
           opens: 19,
@@ -327,11 +285,13 @@ export const demoIssues: readonly DemoIssue[] = [
   {
     id: "issue_regfin_2026_06_17",
     sourceId: "source_regulation_financiere",
+    sourceKind: "publisher",
     title: "Réglementation financière - Semaine du 17 juin 2026",
     publicationDate: "2026-06-17T07:30:00.000Z",
     status: "published",
     summary:
       "Synthèse des orientations de contrôle sur la documentation client et les stress tests liquidité.",
+    canonicalUrl: null,
     metrics: {
       opens: 31,
       downloads: 12,
@@ -340,14 +300,17 @@ export const demoIssues: readonly DemoIssue[] = [
     documents: [
       {
         id: "doc_regfin_2026_06_17_note",
-        issueId: "issue_regfin_2026_06_17",
+        publicationId: "issue_regfin_2026_06_17",
+        sourceId: "source_regulation_financiere",
         title: "Brief hebdomadaire",
         fileName: "atlas-regfin-2026-06-17.pdf",
         pageCount: 1,
         language: "fr",
-        indexingStatus: "indexed",
+        documentType: "pdf",
         storagePath: "/demo/pdfs/atlas-regfin-2026-06-17.pdf",
-        extractedTextPreview:
+        canonicalUrl: null,
+        hostedContentUrl: null,
+        textPreview:
           "Les superviseurs attendent des preuves de revue périodique des profils investisseurs, avec un accent sur les clients professionnels reclassifiés.",
         metrics: {
           opens: 31,
@@ -360,11 +323,13 @@ export const demoIssues: readonly DemoIssue[] = [
   {
     id: "issue_energy_2026_05_30",
     sourceId: "source_energie_industrie",
+    sourceKind: "publisher",
     title: "Energie & Industrie Europe - Mai 2026",
     publicationDate: "2026-05-30T08:00:00.000Z",
     status: "published",
     summary:
       "Point mensuel sur appels d'offres hydrogène, flexibilité réseau et contrats long terme.",
+    canonicalUrl: null,
     metrics: {
       opens: 27,
       downloads: 11,
@@ -373,14 +338,17 @@ export const demoIssues: readonly DemoIssue[] = [
     documents: [
       {
         id: "doc_energy_2026_05_market",
-        issueId: "issue_energy_2026_05_30",
+        publicationId: "issue_energy_2026_05_30",
+        sourceId: "source_energie_industrie",
         title: "Marché et politiques publiques",
         fileName: "atlas-energy-2026-05-market.pdf",
         pageCount: 1,
         language: "fr",
-        indexingStatus: "indexed",
+        documentType: "pdf",
         storagePath: "/demo/pdfs/atlas-energy-2026-05-market.pdf",
-        extractedTextPreview:
+        canonicalUrl: null,
+        hostedContentUrl: null,
+        textPreview:
           "Les appels d'offres capacitaires favorisent les actifs flexibles capables de répondre sous quinze minutes, avec des bonus pour l'effacement industriel certifié.",
         metrics: {
           opens: 27,
@@ -761,35 +729,18 @@ export const demoDataset: DemoDataset = {
   artifacts: demoArtifacts,
 };
 
-import {
-  buildDemoFils,
-  publicSourceDemoIssues,
-  type DemoFil,
-  type DemoFilSourceType,
-} from "./demo-fils";
-
-export { buildDemoFils, publicSourceDemoIssues, type DemoFil, type DemoFilSourceType };
-
-export const demoFils: readonly DemoFil[] = buildDemoFils(demoSources, demoIssues);
-
-export function getDemoFilById(filId: string): DemoFil | undefined {
-  return demoFils.find((fil) => fil.id === filId);
+export function getPublicationsBySourceId(
+  sourceId: string,
+  publications: readonly BriefPublication[] = demoIssues,
+): readonly BriefPublication[] {
+  return publications
+    .filter((publication) => publication.sourceId === sourceId)
+    .sort((a, b) => (b.publicationDate ?? "").localeCompare(a.publicationDate ?? ""));
 }
 
-export function getDemoIssuesByFilId(filId: string): readonly DemoIssue[] {
-  const publisherIssues = demoIssues.filter((issue) => issue.sourceId === filId);
-  const publicIssues = publicSourceDemoIssues.filter((issue) => issue.sourceId === filId);
-  return [...publisherIssues, ...publicIssues].sort((a, b) =>
-    b.publicationDate.localeCompare(a.publicationDate),
-  );
-}
-
-export function getAllDemoIssues(): readonly DemoIssue[] {
-  return [...demoIssues, ...publicSourceDemoIssues];
-}
-
-export function findDemoIssueById(issueId: string): DemoIssue | undefined {
-  const publisherIssue = demoIssues.find((issue) => issue.id === issueId);
-  if (publisherIssue) return publisherIssue;
-  return publicSourceDemoIssues.find((issue) => issue.id === issueId);
+export function findPublicationById(
+  publicationId: string,
+  publications: readonly BriefPublication[] = demoIssues,
+): BriefPublication | undefined {
+  return publications.find((publication) => publication.id === publicationId);
 }

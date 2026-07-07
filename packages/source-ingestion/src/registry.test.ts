@@ -9,24 +9,25 @@ describe("public source registry", () => {
     expect(adapters.map((adapter) => adapter.definition.id)).toEqual(
       publicSourceDefinitions.map((definition) => definition.id),
     );
-    expect(adapters).toHaveLength(7);
+    expect(adapters).toHaveLength(3);
   });
 
   it("uses a dataset-backed adapter for BOFiP", () => {
     const adapter = makePublicSourceAdapter("bofip_impots");
 
-    expect(adapter.definition.ingestionMethod).toBe("opendata_dataset");
-    expect(adapter.definition.discoveryUrl).toContain("bofip.impots.gouv.fr");
+    expect(adapter.definition.ingestionMethod).toBe("json_dataset");
+    expect(adapter.definition.discoveryUrl).toContain("data.economie.gouv.fr");
     expect(adapter.definition.contentUrl).toContain("data.economie.gouv.fr");
   });
 
-  it("registers both documented Service-Public RSS feeds", () => {
-    const adapter = makePublicSourceAdapter("service_public_rss");
+  it("registers both documented Service-Public XML open-data feeds", () => {
+    const adapter = makePublicSourceAdapter("service_public");
 
     expect(adapter.definition.discoveryUrls).toEqual([
-      "https://www.service-public.fr/abonnements/rss/actu-actualites-particuliers.rss",
-      "https://www.service-public.fr/abonnements/rss/actu-actu-pro.rss",
+      "https://lecomarquage.service-public.gouv.fr/actu/3.5/part/",
+      "https://lecomarquage.service-public.gouv.fr/actu/3.5/pro/",
     ]);
+    expect(adapter.definition.discoveryUrls?.every((url) => !url.endsWith(".xml"))).toBe(true);
   });
 
   it("uses the official working Assemblee nationale document feed", () => {
@@ -37,12 +38,19 @@ describe("public source registry", () => {
     );
   });
 
-  it("only registers reliable RSS, Atom, or official dataset sources", () => {
+  it("only registers sources with official structured or document content", () => {
     expect(
       publicSourceDefinitions.every((definition) =>
-        ["rss", "atom", "opendata_dataset"].includes(definition.ingestionMethod),
+        ["atom_feed", "json_dataset", "xml_dataset", "official_document"].includes(
+          definition.ingestionMethod,
+        ),
       ),
     ).toBe(true);
+    expect(publicSourceDefinitions.map((definition) => definition.id)).not.toContain("info_gouv");
+    expect(publicSourceDefinitions.map((definition) => definition.id)).not.toContain("senat_press");
+    expect(publicSourceDefinitions.map((definition) => definition.id)).not.toContain(
+      "conseil_etat_actualites",
+    );
     expect(publicSourceDefinitions.map((definition) => definition.id)).not.toContain(
       "education_gouv",
     );
@@ -58,5 +66,6 @@ describe("public source registry", () => {
     expect(publicSourceDefinitions.map((definition) => definition.id)).not.toContain(
       "travail_emploi",
     );
+    expect(publicSourceDefinitions.map((definition) => definition.id)).not.toContain("tresor");
   });
 });

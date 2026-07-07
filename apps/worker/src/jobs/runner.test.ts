@@ -82,7 +82,7 @@ describe("worker runner", () => {
           claimNext: Effect.succeed({
             id: "job-2",
             kind: "public_source_ingestion",
-            payload: { sourceId: "info_gouv", mode: "poll" },
+            payload: { sourceId: "tresor", mode: "poll" },
             attempts: 1,
             lockedBy: "worker-a",
           }),

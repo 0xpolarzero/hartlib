@@ -1,10 +1,61 @@
 import { describe, expect, it } from "vitest";
 
-import { demoDataset } from "@brief/demo-data";
+import { demoDataset, type BriefPublication, type BriefSource } from "@brief/demo-data";
 
 import { buildDemoPath, getDemoRouteFromPath, resolveDemoRoute, type DemoRoute } from "./routing";
 
 const publisherIssues = demoDataset.issues;
+const publicPublicationId =
+  "public:service_public:https%3A%2F%2Fwww.service-public.fr%2Fparticuliers%2Factualites%2FA00001";
+const publicSources: readonly BriefSource[] = [
+  ...demoDataset.sources,
+  {
+    id: "service_public",
+    kind: "public",
+    publisherCompanyId: null,
+    clientCompanyId: "public",
+    name: "Service-Public.fr",
+    publisherName: "Direction de l'information légale et administrative",
+    description: "Actualités administratives publiques.",
+    subscribed: true,
+    subscribedSince: "2026-06-28T06:00:00.000Z",
+    subscriberCount: 0,
+    latestPublicationId: publicPublicationId,
+    latestPublicationDate: "2026-06-28T06:00:00.000Z",
+    metrics: { opens: 0, downloads: 0, aiContextPulls: 0 },
+  },
+];
+const publicPublications: readonly BriefPublication[] = [
+  ...publisherIssues,
+  {
+    id: publicPublicationId,
+    sourceId: "service_public",
+    sourceKind: "public",
+    title: "Actualité Service-Public.fr",
+    publicationDate: "2026-06-28T06:00:00.000Z",
+    status: "published",
+    summary: "",
+    canonicalUrl: "https://www.service-public.fr/particuliers/actualites/A00001",
+    documents: [
+      {
+        id: "document-service-public-a00001",
+        publicationId: publicPublicationId,
+        sourceId: "service_public",
+        title: "Actualité Service-Public.fr",
+        language: "fr",
+        documentType: "article",
+        textPreview: "Actualité administrative lisible.",
+        canonicalUrl: "https://www.service-public.fr/particuliers/actualites/A00001",
+        hostedContentUrl: "/public-source-documents/document-service-public-a00001/content",
+        fileName: null,
+        pageCount: null,
+        storagePath: null,
+        metrics: { opens: 0, downloads: 0, aiContextPulls: 0 },
+      },
+    ],
+    metrics: { opens: 0, downloads: 0, aiContextPulls: 0 },
+  },
+];
 
 describe("getDemoRouteFromPath", () => {
   it("parses /client as client root", () => {
@@ -16,9 +67,9 @@ describe("getDemoRouteFromPath", () => {
   });
 
   it("parses /client/sources/:sourceId as client fil detail", () => {
-    expect(getDemoRouteFromPath("/client/sources/service_public_rss")).toEqual({
+    expect(getDemoRouteFromPath("/client/sources/service_public")).toEqual({
       role: "client",
-      sourceId: "service_public_rss",
+      sourceId: "service_public",
       issueId: null,
     });
   });
@@ -26,12 +77,12 @@ describe("getDemoRouteFromPath", () => {
   it("parses /client/sources/:sourceId/publications/:issueId as client publication detail", () => {
     expect(
       getDemoRouteFromPath(
-        "/client/sources/service_public_rss/publications/public_issue_service_public_2026_06_28",
+        `/client/sources/service_public/publications/${encodeURIComponent(publicPublicationId)}`,
       ),
     ).toEqual({
       role: "client",
-      sourceId: "service_public_rss",
-      issueId: "public_issue_service_public_2026_06_28",
+      sourceId: "service_public",
+      issueId: publicPublicationId,
     });
   });
 
@@ -70,8 +121,8 @@ describe("buildDemoPath", () => {
   });
 
   it("builds /client/sources/:sourceId for client fil detail", () => {
-    expect(buildDemoPath({ role: "client", sourceId: "service_public_rss", issueId: null })).toBe(
-      "/client/sources/service_public_rss",
+    expect(buildDemoPath({ role: "client", sourceId: "service_public", issueId: null })).toBe(
+      "/client/sources/service_public",
     );
   });
 
@@ -79,18 +130,18 @@ describe("buildDemoPath", () => {
     expect(
       buildDemoPath({
         role: "client",
-        sourceId: "service_public_rss",
-        issueId: "public_issue_service_public_2026_06_28",
+        sourceId: "service_public",
+        issueId: publicPublicationId,
       }),
     ).toBe(
-      "/client/sources/service_public_rss/publications/public_issue_service_public_2026_06_28",
+      `/client/sources/service_public/publications/${encodeURIComponent(publicPublicationId)}`,
     );
   });
 
   it("round-trips client fil and publication routes", () => {
     const filRoute: DemoRoute = {
       role: "client",
-      sourceId: "bofip_impots",
+      sourceId: "service_public",
       issueId: null,
     };
     const path = buildDemoPath(filRoute);
@@ -98,8 +149,8 @@ describe("buildDemoPath", () => {
 
     const pubRoute: DemoRoute = {
       role: "client",
-      sourceId: "bofip_impots",
-      issueId: "public_issue_bofip_2026_06_26",
+      sourceId: "service_public",
+      issueId: publicPublicationId,
     };
     const pubPath = buildDemoPath(pubRoute);
     expect(getDemoRouteFromPath(pubPath)).toEqual(pubRoute);
@@ -109,16 +160,16 @@ describe("buildDemoPath", () => {
 describe("resolveDemoRoute", () => {
   it("resolves client root", () => {
     const route: DemoRoute = { role: "client", sourceId: null, issueId: null };
-    expect(resolveDemoRoute(route, publisherIssues)).toEqual(route);
+    expect(resolveDemoRoute(route, publicPublications, publicSources)).toEqual(route);
   });
 
   it("resolves client public fil detail", () => {
     const route: DemoRoute = {
       role: "client",
-      sourceId: "service_public_rss",
+      sourceId: "service_public",
       issueId: null,
     };
-    expect(resolveDemoRoute(route, publisherIssues)).toEqual(route);
+    expect(resolveDemoRoute(route, publicPublications, publicSources)).toEqual(route);
   });
 
   it("resolves client publisher fil detail", () => {
@@ -133,10 +184,36 @@ describe("resolveDemoRoute", () => {
   it("resolves client publication within a public fil", () => {
     const route: DemoRoute = {
       role: "client",
-      sourceId: "senat_press",
-      issueId: "public_issue_senat_2026_06_26",
+      sourceId: "service_public",
+      issueId: publicPublicationId,
     };
-    expect(resolveDemoRoute(route, publisherIssues)).toEqual(route);
+    expect(resolveDemoRoute(route, publicPublications, publicSources)).toEqual(route);
+  });
+
+  it("rejects documentless public publications as invalid routes", () => {
+    const route: DemoRoute = {
+      role: "client",
+      sourceId: "service_public",
+      issueId: publicPublicationId,
+    };
+    const [publicPublication] = publicPublications.filter(
+      (publication) => publication.id === publicPublicationId,
+    );
+    expect(
+      resolveDemoRoute(
+        route,
+        publicPublications.map((publication) =>
+          publication.id === publicPublicationId
+            ? { ...publicPublication!, documents: [] }
+            : publication,
+        ),
+        publicSources,
+      ),
+    ).toEqual({
+      role: "client",
+      sourceId: "service_public",
+      issueId: null,
+    });
   });
 
   it("resolves client publication within a publisher fil", () => {
@@ -175,12 +252,12 @@ describe("resolveDemoRoute", () => {
   it("falls back to fil detail when issueId does not belong to the fil", () => {
     const route: DemoRoute = {
       role: "client",
-      sourceId: "service_public_rss",
+      sourceId: "service_public",
       issueId: "issue_regfin_2026_06_24",
     };
-    expect(resolveDemoRoute(route, publisherIssues)).toEqual({
+    expect(resolveDemoRoute(route, publicPublications, publicSources)).toEqual({
       role: "client",
-      sourceId: "service_public_rss",
+      sourceId: "service_public",
       issueId: null,
     });
   });

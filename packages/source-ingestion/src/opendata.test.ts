@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
-import { makeBofipDatasetAdapter, parseBofipDataset, parseBofipUpdateFeed } from "./opendata";
+import { makeBofipDatasetAdapter, parseBofipDataset } from "./opendata";
 import type { FetchResponse, PublicSourceDefinition } from "./types";
 
 const source = {
@@ -8,25 +8,14 @@ const source = {
   displayName: "BOFiP / impots.gouv.fr",
   publisherName: "Direction generale des Finances publiques",
   description: "French tax doctrine updates and official tax guidance news.",
-  ingestionMethod: "opendata_dataset",
-  discoveryUrl: "https://bofip.impots.gouv.fr/bofip/ext/rss.xml?actualites=1&maxR=10&maxJ=14",
+  ingestionMethod: "json_dataset",
+  discoveryUrl:
+    "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/bofip-vigueur/records",
   contentUrl:
     "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/bofip-vigueur/records",
-  expectedCadence: "several_per_week",
+  contentFormats: ["html", "text"],
   averageCharsPerItem: 1859,
 } as const satisfies PublicSourceDefinition;
-
-const updateFeedBody = `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <item>
-      <title>TVA - Règles de TVA</title>
-      <link>https://bofip.impots.gouv.fr/bofip/15005-PGP.html/ACTU-2026-00057</link>
-      <description>TVA - Règles de TVA (identifiant juridique ACTU-2026-00057; publié le 01/07/2026)</description>
-      <category>Actualité</category>
-    </item>
-  </channel>
-</rss>`;
 
 const datasetBody = JSON.stringify({
   results: [
@@ -63,22 +52,6 @@ const notModifiedResponse = (url: string): FetchResponse => ({
 });
 
 describe("BOFiP open data adapter", () => {
-  it("parses BOFiP RSS update discovery items", () => {
-    const items = parseBofipUpdateFeed(source, updateFeedBody);
-
-    expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({
-      sourceId: "bofip_impots",
-      externalId: "ACTU-2026-00057",
-      canonicalUrl: "https://bofip.impots.gouv.fr/bofip/15005-PGP.html/ACTU-2026-00057",
-      title: "TVA - Règles de TVA",
-      metadata: {
-        discoveryMethod: "bofip_rss",
-      },
-    });
-    expect(items[0]?.publishedAt?.toISOString()).toBe("2026-07-01T00:00:00.000Z");
-  });
-
   it("parses BOFiP records into discovered items", () => {
     const items = parseBofipDataset(source, datasetBody);
 
@@ -101,7 +74,7 @@ describe("BOFiP open data adapter", () => {
     const requestedUrls: string[] = [];
     const fetcher = async (url: string): Promise<FetchResponse> => {
       requestedUrls.push(url);
-      return url.includes("rss.xml") ? response(url, updateFeedBody) : response(url, datasetBody);
+      return response(url, datasetBody);
     };
 
     const adapter = makeBofipDatasetAdapter(source, { fetcher });
@@ -119,18 +92,28 @@ describe("BOFiP open data adapter", () => {
     const raw = result.raw;
     const document = await Effect.runPromise(adapter.normalize(raw, item));
 
-    expect(requestedUrls[0]).toBe(source.discoveryUrl);
-    expect(requestedUrls[1]).toContain("where=identifiant_juridique%3D%22ACTU-2026-00057%22");
+    expect(requestedUrls[0]).toContain(source.discoveryUrl);
+    expect(requestedUrls[0]).toContain("order_by=debut_de_validite+desc");
+    expect(requestedUrls[1]).toContain("where=identifiant_juridique%3D%22BOI-TVA-BASE-10%22");
+    expect(raw).toMatchObject({
+      mediaType: "text/html",
+      body: "<section><h1>TVA</h1><p>Doctrine fiscale.</p></section>",
+      metadata: {
+        externalId: "BOI-TVA-BASE-10",
+        officialJsonMediaType: "application/json",
+      },
+    });
     expect(document).toMatchObject({
       sourceId: "bofip_impots",
-      externalId: "ACTU-2026-00057",
-      canonicalUrl: "https://bofip.impots.gouv.fr/bofip/15005-PGP.html/ACTU-2026-00057",
-      title: "TVA - Règles de TVA",
+      externalId: "BOI-TVA-BASE-10",
+      canonicalUrl: "https://bofip.impots.gouv.fr/bofip/123",
+      title: "TVA - Mise a jour",
       documentType: "doctrine_update",
       text: "TVA Doctrine fiscale.",
       textCharCount: 21,
       sourceMetadata: {
-        ingestionMethod: "opendata_dataset",
+        ingestionMethod: "json_dataset",
+        externalId: "BOI-TVA-BASE-10",
         type: "Actualite",
         serie: "TVA",
         division: "BASE",
@@ -141,30 +124,39 @@ describe("BOFiP open data adapter", () => {
   });
 
   it("passes conditional validators to dataset discovery", async () => {
+    const discoveryUrl = `${source.discoveryUrl}?order_by=debut_de_validite+desc&limit=50`;
     const fetcher = async (_url: string, init?: RequestInit): Promise<FetchResponse> => {
+      expect(_url).toBe(discoveryUrl);
       const headers = new Headers(init?.headers);
-      expect(headers.get("if-none-match")).toBe('"bofip-rss-cache"');
-      return response(_url, updateFeedBody);
+      expect(headers.get("if-none-match")).toBe('"bofip-dataset-cache"');
+      return response(_url, datasetBody);
     };
 
     const adapter = makeBofipDatasetAdapter(source, { fetcher });
     const discovery = await Effect.runPromise(
-      adapter.discover({ validators: { etag: '"bofip-rss-cache"' } }),
+      adapter.discover({
+        requests: [{ url: discoveryUrl, validators: { etag: '"bofip-dataset-cache"' } }],
+      }),
     );
 
     expect(discovery.status).toBe("fetched");
+    expect(discovery.metadata[0]?.url).toBe(discoveryUrl);
   });
 
   it("returns not_modified when dataset discovery gets a conditional cache hit", async () => {
+    const discoveryUrl = `${source.discoveryUrl}?order_by=debut_de_validite+desc&limit=50`;
     const fetcher = async (_url: string, init?: RequestInit): Promise<FetchResponse> => {
+      expect(_url).toBe(discoveryUrl);
       const headers = new Headers(init?.headers);
-      expect(headers.get("if-none-match")).toBe('"bofip-rss-cache"');
+      expect(headers.get("if-none-match")).toBe('"bofip-dataset-cache"');
       return notModifiedResponse(_url);
     };
 
     const adapter = makeBofipDatasetAdapter(source, { fetcher });
     const discovery = await Effect.runPromise(
-      adapter.discover({ validators: { etag: '"bofip-rss-cache"' } }),
+      adapter.discover({
+        requests: [{ url: discoveryUrl, validators: { etag: '"bofip-dataset-cache"' } }],
+      }),
     );
 
     expect(discovery).toMatchObject({
@@ -174,6 +166,7 @@ describe("BOFiP open data adapter", () => {
         {
           status: 304,
           etag: '"dataset-cache"',
+          url: discoveryUrl,
         },
       ],
     });
@@ -235,5 +228,53 @@ describe("BOFiP open data adapter", () => {
         ),
       ),
     ).rejects.toThrow("record not found");
+  });
+
+  it("fails normalization when the fetched BOFiP record does not match the requested item", async () => {
+    const adapter = makeBofipDatasetAdapter(source);
+
+    await expect(
+      Effect.runPromise(
+        adapter.normalize(
+          {
+            sourceId: "bofip_impots",
+            canonicalUrl: "https://bofip.impots.gouv.fr/bofip/123",
+            fetchedAt: new Date("2026-07-06T10:00:00Z"),
+            mediaType: "application/json",
+            body: JSON.stringify({
+              results: [
+                {
+                  identifiant_juridique: "BOI-AUTRE-10",
+                  titre: "Wrong record",
+                  contenu_html: "<p>Wrong doctrine.</p>",
+                },
+              ],
+            }),
+          },
+          {
+            sourceId: "bofip_impots",
+            externalId: "BOI-TVA-BASE-10",
+            canonicalUrl: "https://bofip.impots.gouv.fr/bofip/123",
+            title: "TVA - Mise a jour",
+            publishedAt: null,
+          },
+        ),
+      ),
+    ).rejects.toThrow("does not match requested item");
+  });
+
+  it("uses BOFiP record validity date when normalizing without a discovered item", async () => {
+    const adapter = makeBofipDatasetAdapter(source);
+    const document = await Effect.runPromise(
+      adapter.normalize({
+        sourceId: "bofip_impots",
+        canonicalUrl: "https://bofip.impots.gouv.fr/bofip/123",
+        fetchedAt: new Date("2026-07-06T10:00:00Z"),
+        mediaType: "application/json",
+        body: datasetBody,
+      }),
+    );
+
+    expect(document.publishedAt?.toISOString()).toBe("2026-07-01T00:00:00.000Z");
   });
 });

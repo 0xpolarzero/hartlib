@@ -16,7 +16,7 @@ export type PublicationDetailIssue = {
   id: string;
   title: string;
   sourceName?: string | undefined;
-  publicationDate: string;
+  publicationDate: string | null;
   status: "published" | "scheduled";
   summary: string;
   documents: readonly PublicationDocument[];

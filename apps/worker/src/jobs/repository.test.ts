@@ -84,8 +84,8 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
 
         yield* repository.enqueue({
           kind: "public_source_ingestion",
-          payload: { sourceId: "info_gouv", mode: "poll" },
-          uniqueKey: "public_source_ingestion:info_gouv",
+          payload: { sourceId: "tresor", mode: "poll" },
+          uniqueKey: "public_source_ingestion:tresor",
         });
 
         const claimed = yield* repository.claimNext;
@@ -178,15 +178,15 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
 
         yield* repository.enqueue({
           kind: "public_source_ingestion",
-          payload: { sourceId: "info_gouv", mode: "poll" },
-          uniqueKey: "public_source_ingestion:info_gouv:poll",
+          payload: { sourceId: "tresor", mode: "poll" },
+          uniqueKey: "public_source_ingestion:tresor:poll",
         });
         const runningPoll = yield* repository.claimNext;
 
         yield* repository.enqueue({
           kind: "public_source_ingestion",
-          payload: { sourceId: "info_gouv", mode: "backfill", since: "2026-06-29T00:00:00.000Z" },
-          uniqueKey: "public_source_ingestion:info_gouv:backfill",
+          payload: { sourceId: "tresor", mode: "backfill", since: "2026-06-29T00:00:00.000Z" },
+          uniqueKey: "public_source_ingestion:tresor:backfill",
           priority: 10,
         });
 
@@ -197,7 +197,7 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
         const claimedBackfill = yield* repository.claimNext;
         expect(claimedBackfill).toMatchObject({
           payload: {
-            sourceId: "info_gouv",
+            sourceId: "tresor",
             mode: "backfill",
             since: "2026-06-29T00:00:00.000Z",
           },
@@ -292,8 +292,8 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
 
         yield* repository.enqueue({
           kind: "public_source_ingestion",
-          payload: { sourceId: "info_gouv", mode: "poll" },
-          uniqueKey: "public_source_ingestion:info_gouv:poll",
+          payload: { sourceId: "tresor", mode: "poll" },
+          uniqueKey: "public_source_ingestion:tresor:poll",
         });
 
         const claimed = yield* repository.claimNext;

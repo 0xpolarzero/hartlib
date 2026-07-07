@@ -17,6 +17,7 @@
       "@brief/demo-data": ["packages/demo-data/src/index.ts"],
       "@brief/source-ingestion": ["packages/source-ingestion/src/index.ts"],
       "@brief/shared": ["packages/shared/src/index.ts"],
+      "@brief/shared/*": ["packages/shared/src/*"],
       "@brief/ui": ["packages/ui/src/index.ts"]
     }
   }

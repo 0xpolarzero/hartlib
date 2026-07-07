@@ -4,21 +4,22 @@ import { makeFeedAdapter, parseFeed } from "./feed";
 import type { FetchResponse, PublicSourceDefinition } from "./types";
 
 const rssSource = {
-  id: "info_gouv",
-  displayName: "Info.gouv.fr",
-  publisherName: "Gouvernement francais",
-  description: "Official Government news and explanations.",
-  ingestionMethod: "rss",
+  id: "assemblee_nationale",
+  displayName: "Assemblee nationale",
+  publisherName: "Assemblee nationale",
+  description: "Official parliamentary documents.",
+  ingestionMethod: "official_document",
   discoveryUrl: "https://example.test/rss.xml",
-  expectedCadence: "daily",
+  contentFormats: ["html", "text"],
   averageCharsPerItem: 1000,
 } as const satisfies PublicSourceDefinition;
 
 const atomSource = {
   ...rssSource,
   id: "tresor",
-  ingestionMethod: "atom",
+  ingestionMethod: "atom_feed",
   discoveryUrl: "https://example.test/atom.xml",
+  contentFormats: ["html", "text"],
 } as const satisfies PublicSourceDefinition;
 
 const response = (url: string, body: string, contentType = "text/xml"): FetchResponse => ({
@@ -58,7 +59,7 @@ describe("feed adapters", () => {
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
-      sourceId: "info_gouv",
+      sourceId: "assemblee_nationale",
       externalId: "article-1",
       canonicalUrl: "https://example.test/articles/1",
       title: "Government update",
@@ -174,6 +175,44 @@ describe("feed adapters", () => {
     expect(items[0]?.canonicalUrl).toBe("https://example.test/notes/1");
   });
 
+  it("uses embedded Trésor Atom HTML content instead of fetching the linked page", async () => {
+    const feedBody = `<?xml version="1.0"?>
+      <feed xmlns="http://www.w3.org/2005/Atom">
+        <entry>
+          <title>Tresor note</title>
+          <id>tag:example.test,2026:note-1</id>
+          <updated>2026-07-05T09:30:00Z</updated>
+          <link rel="alternate" href="https://example.test/notes/1" />
+          <content type="html"><![CDATA[<article><h1>Tresor note</h1><p>Official feed body.</p></article>]]></content>
+        </entry>
+      </feed>`;
+    const requestedUrls: string[] = [];
+    const fetcher = async (url: string): Promise<FetchResponse> => {
+      requestedUrls.push(url);
+      return response(url, feedBody);
+    };
+
+    const adapter = makeFeedAdapter(atomSource, { kind: "atom", fetcher });
+    const discovery = await Effect.runPromise(adapter.discover());
+    expect(discovery.status).toBe("fetched");
+    if (discovery.status !== "fetched") {
+      throw new Error("expected fetched discovery");
+    }
+    const [item] = discovery.items;
+    const result = await Effect.runPromise(adapter.fetch(item!));
+    expect(result.status).toBe("fetched");
+    if (result.status !== "fetched") {
+      throw new Error("expected fetched result");
+    }
+    const document = await Effect.runPromise(adapter.normalize(result.raw, item));
+
+    expect(requestedUrls).toEqual(["https://example.test/atom.xml"]);
+    expect(document.text).toBe("Tresor note Official feed body.");
+    expect(document.sourceMetadata).toMatchObject({
+      embeddedFeedContent: true,
+    });
+  });
+
   it("discovers, fetches, and normalizes a feed-backed document", async () => {
     const feedBody = `<?xml version="1.0"?>
       <rss><channel>
@@ -184,10 +223,14 @@ describe("feed adapters", () => {
           <pubDate>Mon, 06 Jul 2026 10:00:00 GMT</pubDate>
         </item>
       </channel></rss>`;
-    const articleBody =
-      "<html><main><h1>Government update</h1><p>Useful public text.</p></main></html>";
-    const fetcher = async (url: string): Promise<FetchResponse> =>
-      url.endsWith("rss.xml") ? response(url, feedBody) : response(url, articleBody, "text/html");
+    const articleBody = `<html><main><h1>Government update</h1><p>Useful public text with enough official document detail to prove this is the fetched parliamentary document body and not a short landing page shell.</p></main></html>`;
+    const articleShell =
+      '<html><main><a href="/dyn/opendata/articles-1.html" title="Version opendata HTML du document"></a></main></html>';
+    const fetcher = async (url: string): Promise<FetchResponse> => {
+      if (url.endsWith("rss.xml")) return response(url, feedBody);
+      if (url.endsWith("/articles/1")) return response(url, articleShell, "text/html");
+      return response(url, articleBody, "text/html");
+    };
 
     const adapter = makeFeedAdapter(rssSource, { kind: "rss", fetcher });
     const discovery = await Effect.runPromise(adapter.discover());
@@ -212,16 +255,208 @@ describe("feed adapters", () => {
     const document = await Effect.runPromise(adapter.normalize(raw, item));
 
     expect(document).toMatchObject({
-      sourceId: "info_gouv",
+      sourceId: "assemblee_nationale",
       externalId: "article-1",
       canonicalUrl: "https://example.test/articles/1",
       title: "Government update",
-      documentType: "article",
-      text: "Government update Useful public text.",
-      textCharCount: 37,
+      documentType: "publication",
+      text: "Government update Useful public text with enough official document detail to prove this is the fetched parliamentary document body and not a short landing page shell.",
+      textCharCount: 166,
     });
     expect(document.contentHash).toMatch(/^[a-f0-9]{64}$/);
     expect(document.id).toContain(document.contentHash.slice(0, 16));
+  });
+
+  it("stores the Assemblee nationale official document HTML instead of the document page shell", async () => {
+    const feedBody = `<?xml version="1.0"?>
+      <rss><channel>
+        <item>
+          <title>Proposition de loi, n° 3044</title>
+          <link>https://www.assemblee-nationale.fr/dyn/old/17/propositions/pion3044.asp</link>
+          <guid>pion3044</guid>
+        </item>
+      </channel></rss>`;
+    const landingPage = `<html>
+      <main>
+        <h1>Proposition de loi, n° 3044</h1>
+        <p>Document page shell.</p>
+        <iframe id="documentIframeContent" src="/dyn/docs/PIONANR5L17B3044.raw"></iframe>
+        <a href="/dyn/opendata/PIONANR5L17B3044.html" title="Version opendata HTML du document"></a>
+      </main>
+    </html>`;
+    const documentHtml = `<html><main><h1>N° 3044</h1><p>Actual official document body with enough parliamentary text to prove the official HTML artifact was fetched and stored instead of the surrounding metadata page shell.</p></main></html>`;
+    const requestedUrls: string[] = [];
+    const fetcher = async (url: string): Promise<FetchResponse> => {
+      requestedUrls.push(url);
+      if (url === "https://example.test/rss.xml") return response(url, feedBody);
+      if (url === "https://www.assemblee-nationale.fr/dyn/old/17/propositions/pion3044.asp") {
+        return response(
+          "https://www.assemblee-nationale.fr/dyn/17/textes/l17b3044_proposition-loi",
+          landingPage,
+          "text/html",
+        );
+      }
+      return response(url, documentHtml, "text/html");
+    };
+
+    const adapter = makeFeedAdapter(rssSource, { kind: "rss", fetcher });
+    const discovery = await Effect.runPromise(adapter.discover());
+    expect(discovery.status).toBe("fetched");
+    if (discovery.status !== "fetched") {
+      throw new Error("expected fetched discovery");
+    }
+
+    const [item] = discovery.items;
+    const result = await Effect.runPromise(adapter.fetch(item!));
+    expect(result.status).toBe("fetched");
+    if (result.status !== "fetched") {
+      throw new Error("expected fetched result");
+    }
+    const document = await Effect.runPromise(adapter.normalize(result.raw, item));
+
+    expect(requestedUrls).toEqual([
+      "https://example.test/rss.xml",
+      "https://www.assemblee-nationale.fr/dyn/old/17/propositions/pion3044.asp",
+      "https://www.assemblee-nationale.fr/dyn/opendata/PIONANR5L17B3044.html",
+    ]);
+    expect(result.raw.canonicalUrl).toBe(
+      "https://www.assemblee-nationale.fr/dyn/old/17/propositions/pion3044.asp",
+    );
+    expect(result.raw.body).toBe(documentHtml);
+    expect(document.text).toBe(
+      "N° 3044 Actual official document body with enough parliamentary text to prove the official HTML artifact was fetched and stored instead of the surrounding metadata page shell.",
+    );
+    expect(document.text).not.toContain("Document page shell");
+    expect(document.sourceMetadata).toMatchObject({
+      landingPageUrl: "https://www.assemblee-nationale.fr/dyn/17/textes/l17b3044_proposition-loi",
+      fetchedContentUrl: "https://www.assemblee-nationale.fr/dyn/opendata/PIONANR5L17B3044.html",
+    });
+  });
+
+  it("fetches deterministic Assemblee nationale opendata HTML without reading the landing page", async () => {
+    const documentHtml = `<html><main><h1>N° 3035</h1><p>Direct official opendata document body with enough parliamentary text to prove the deterministic Assemblée URL is used without scraping the landing page first.</p></main></html>`;
+    const requestedUrls: string[] = [];
+    const fetcher = async (url: string): Promise<FetchResponse> => {
+      requestedUrls.push(url);
+      if (url === "https://www.assemblee-nationale.fr/17/propositions/pion3035.asp") {
+        throw new Error("landing page should not be fetched");
+      }
+      return response(url, documentHtml, "text/html");
+    };
+
+    const adapter = makeFeedAdapter(rssSource, { kind: "rss", fetcher });
+    const result = await Effect.runPromise(
+      adapter.fetch({
+        sourceId: "assemblee_nationale",
+        externalId: "pion3035",
+        canonicalUrl: "https://www.assemblee-nationale.fr/17/propositions/pion3035.asp",
+        title: "Proposition de loi, n° 3035",
+        publishedAt: new Date("2026-07-07T00:00:00.000Z"),
+      }),
+    );
+
+    expect(result.status).toBe("fetched");
+    if (result.status !== "fetched") {
+      throw new Error("expected fetched result");
+    }
+
+    expect(requestedUrls).toEqual([
+      "https://www.assemblee-nationale.fr/dyn/opendata/PIONANR5L17B3035.html",
+    ]);
+    expect(result.raw.metadata).toMatchObject({
+      landingPageUrl: "https://www.assemblee-nationale.fr/17/propositions/pion3035.asp",
+      fetchedContentUrl: "https://www.assemblee-nationale.fr/dyn/opendata/PIONANR5L17B3035.html",
+    });
+  });
+
+  it("uses the Assemblee nationale iframe raw document when no opendata HTML link exists", async () => {
+    const fetcher = async (url: string): Promise<FetchResponse> => {
+      if (url === "https://example.test/articles/1") {
+        return response(
+          url,
+          '<main><iframe id="documentIframeContent" src="/dyn/docs/PIONANR5L17B3044.raw"></iframe></main>',
+          "text/html",
+        );
+      }
+      return response(
+        url,
+        "<main><h1>Raw document</h1><p>Official raw document body with enough readable text to pass the content guard and serve as agent-readable HTML.</p></main>",
+        "text/html",
+      );
+    };
+
+    const adapter = makeFeedAdapter(rssSource, { kind: "rss", fetcher });
+    const result = await Effect.runPromise(
+      adapter.fetch({
+        sourceId: "assemblee_nationale",
+        externalId: "article-1",
+        canonicalUrl: "https://example.test/articles/1",
+        title: "Government update",
+        publishedAt: null,
+      }),
+    );
+
+    expect(result.status).toBe("fetched");
+    if (result.status !== "fetched") {
+      throw new Error("expected fetched result");
+    }
+    expect(result.raw.metadata).toMatchObject({
+      fetchedContentUrl: "https://example.test/dyn/docs/PIONANR5L17B3044.raw",
+    });
+    expect(result.raw.body).toContain("Official raw document body");
+  });
+
+  it("rejects Assemblee nationale official content responses that are still page shells", async () => {
+    const fetcher = async (url: string): Promise<FetchResponse> => {
+      if (url === "https://example.test/articles/1") {
+        return response(
+          url,
+          '<main><a href="/dyn/opendata/articles-1.html" title="Version opendata HTML du document"></a></main>',
+          "text/html",
+        );
+      }
+      return response(
+        url,
+        '<html><main><iframe id="documentIframeContent" src="/dyn/docs/articles-1.raw"></iframe><p>Document page shell.</p></main></html>',
+        "text/html",
+      );
+    };
+
+    const adapter = makeFeedAdapter(rssSource, { kind: "rss", fetcher });
+    await expect(
+      Effect.runPromise(
+        adapter.fetch({
+          sourceId: "assemblee_nationale",
+          externalId: "article-1",
+          canonicalUrl: "https://example.test/articles/1",
+          title: "Government update",
+          publishedAt: null,
+        }),
+      ),
+    ).rejects.toThrow("landing page shell");
+  });
+
+  it("rejects Assemblee nationale document pages without official content links", async () => {
+    const fetcher = async (): Promise<FetchResponse> =>
+      response(
+        "https://www.assemblee-nationale.fr/dyn/17/textes/l17b3044_proposition-loi",
+        "<html><main><p>Only a metadata shell.</p></main></html>",
+        "text/html",
+      );
+
+    const adapter = makeFeedAdapter(rssSource, { kind: "rss", fetcher });
+
+    await expect(
+      Effect.runPromise(
+        adapter.fetch({
+          sourceId: "assemblee_nationale",
+          externalId: "pion3044",
+          canonicalUrl: "https://www.assemblee-nationale.fr/dyn/old/17/propositions/pion3044.asp",
+          title: "Proposition de loi, n° 3044",
+          publishedAt: null,
+        }),
+      ),
+    ).rejects.toThrow("official HTML document URL");
   });
 
   it("passes conditional validators to feed discovery", async () => {
@@ -258,7 +493,7 @@ describe("feed adapters", () => {
 
     expect(discovery).toMatchObject({
       status: "not_modified",
-      sourceId: "info_gouv",
+      sourceId: "assemblee_nationale",
       metadata: [
         {
           url: "https://example.test/rss.xml",
@@ -272,17 +507,28 @@ describe("feed adapters", () => {
 
   it("passes conditional validators to item fetches", async () => {
     const requestHeaders: string[] = [];
-    const fetcher = async (_url: string, init?: RequestInit): Promise<FetchResponse> => {
+    const fetcher = async (url: string, init?: RequestInit): Promise<FetchResponse> => {
       const headers = new Headers(init?.headers);
-      requestHeaders.push(headers.get("if-none-match") ?? "");
-      return response("https://example.test/articles/1", "<main>Body</main>", "text/html");
+      if (url === "https://example.test/articles/1") {
+        requestHeaders.push(headers.get("if-none-match") ?? "");
+        return response(
+          url,
+          '<main><a href="/dyn/opendata/articles-1.html" title="Version opendata HTML du document"></a></main>',
+          "text/html",
+        );
+      }
+      return response(
+        url,
+        "<main>Official document body with enough text to pass the content guard while testing conditional request headers for item fetches.</main>",
+        "text/html",
+      );
     };
 
     const adapter = makeFeedAdapter(rssSource, { kind: "rss", fetcher });
     await Effect.runPromise(
       adapter.fetch(
         {
-          sourceId: "info_gouv",
+          sourceId: "assemblee_nationale",
           externalId: "article-1",
           canonicalUrl: "https://example.test/articles/1",
           title: "Government update",
@@ -306,7 +552,7 @@ describe("feed adapters", () => {
     const result = await Effect.runPromise(
       adapter.fetch(
         {
-          sourceId: "info_gouv",
+          sourceId: "assemblee_nationale",
           externalId: "article-1",
           canonicalUrl: "https://example.test/articles/1",
           title: "Government update",
@@ -318,7 +564,7 @@ describe("feed adapters", () => {
 
     expect(result).toMatchObject({
       status: "not_modified",
-      sourceId: "info_gouv",
+      sourceId: "assemblee_nationale",
       canonicalUrl: "https://example.test/articles/1",
       metadata: {
         externalId: "article-1",
@@ -328,12 +574,35 @@ describe("feed adapters", () => {
     });
   });
 
+  it("rejects Trésor Atom items without embedded official HTML instead of fetching linked pages", async () => {
+    const requestedUrls: string[] = [];
+    const fetcher = async (url: string): Promise<FetchResponse> => {
+      requestedUrls.push(url);
+      return response(url, "<html><main>Linked article page should not be fetched.</main></html>");
+    };
+
+    const adapter = makeFeedAdapter(atomSource, { kind: "atom", fetcher });
+
+    await expect(
+      Effect.runPromise(
+        adapter.fetch({
+          sourceId: "tresor",
+          externalId: "tag:example.test,2026:note-1",
+          canonicalUrl: "https://example.test/notes/1",
+          title: "Tresor note",
+          publishedAt: null,
+        }),
+      ),
+    ).rejects.toThrow("embedded official HTML content");
+    expect(requestedUrls).toEqual([]);
+  });
+
   it("extracts source content instead of whole-page boilerplate", async () => {
     const adapter = makeFeedAdapter(rssSource);
     const document = await Effect.runPromise(
       adapter.normalize(
         {
-          sourceId: "info_gouv",
+          sourceId: "assemblee_nationale",
           canonicalUrl: "https://example.test/articles/1",
           fetchedAt: new Date("2026-07-06T10:00:00Z"),
           mediaType: "text/html",
@@ -347,7 +616,7 @@ describe("feed adapters", () => {
           </html>`,
         },
         {
-          sourceId: "info_gouv",
+          sourceId: "assemblee_nationale",
           externalId: "article-1",
           canonicalUrl: "https://example.test/articles/1",
           title: "Government update",
@@ -387,6 +656,39 @@ describe("feed adapters", () => {
     expect(document.text).not.toContain("&#233;");
   });
 
+  it("recovers missing publication dates and page titles from fetched HTML metadata", async () => {
+    const adapter = makeFeedAdapter(rssSource);
+    const document = await Effect.runPromise(
+      adapter.normalize(
+        {
+          sourceId: "assemblee_nationale",
+          canonicalUrl: "https://example.test/articles/1",
+          fetchedAt: new Date("2026-07-07T10:00:00Z"),
+          mediaType: "text/html",
+          body: `<html>
+            <head>
+              <title>Clean page title | Publisher</title>
+              <script type="application/ld+json">
+                {"@type":"NewsArticle","datePublished":"2026-06-30T00:00:00+02:00"}
+              </script>
+            </head>
+            <main>Useful public text.</main>
+          </html>`,
+        },
+        {
+          sourceId: "assemblee_nationale",
+          externalId: "article-1",
+          canonicalUrl: "https://example.test/articles/1",
+          title: "Broken feed title",
+          publishedAt: null,
+        },
+      ),
+    );
+
+    expect(document.title).toBe("Clean page title");
+    expect(document.publishedAt?.toISOString()).toBe("2026-06-29T22:00:00.000Z");
+  });
+
   it("rejects JavaScript or security challenge pages instead of normalizing them", async () => {
     const adapter = makeFeedAdapter(rssSource);
 
@@ -394,14 +696,14 @@ describe("feed adapters", () => {
       Effect.runPromise(
         adapter.normalize(
           {
-            sourceId: "info_gouv",
+            sourceId: "assemblee_nationale",
             canonicalUrl: "https://example.test/articles/1",
             fetchedAt: new Date("2026-07-06T10:00:00Z"),
             mediaType: "text/html",
             body: "<html><body>This website requires JS enabled and cookies</body></html>",
           },
           {
-            sourceId: "info_gouv",
+            sourceId: "assemblee_nationale",
             externalId: "article-1",
             canonicalUrl: "https://example.test/articles/1",
             title: "Government update",
@@ -415,7 +717,7 @@ describe("feed adapters", () => {
   it("creates a new document id when fetched content changes", async () => {
     const adapter = makeFeedAdapter(rssSource);
     const item = {
-      sourceId: "info_gouv",
+      sourceId: "assemblee_nationale",
       externalId: "article-1",
       canonicalUrl: "https://example.test/articles/1",
       title: "Government update",
@@ -425,7 +727,7 @@ describe("feed adapters", () => {
     const first = await Effect.runPromise(
       adapter.normalize(
         {
-          sourceId: "info_gouv",
+          sourceId: "assemblee_nationale",
           canonicalUrl: "https://example.test/articles/1",
           fetchedAt: new Date("2026-07-06T10:00:00Z"),
           mediaType: "text/html",
@@ -437,7 +739,7 @@ describe("feed adapters", () => {
     const second = await Effect.runPromise(
       adapter.normalize(
         {
-          sourceId: "info_gouv",
+          sourceId: "assemblee_nationale",
           canonicalUrl: "https://example.test/articles/1",
           fetchedAt: new Date("2026-07-06T10:05:00Z"),
           mediaType: "text/html",

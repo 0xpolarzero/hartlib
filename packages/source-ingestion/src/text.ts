@@ -27,6 +27,70 @@ export const stripHtml = (html: string): string =>
     .replace(/\s+([.,;:!?])/g, "$1")
     .trim();
 
+const htmlAttribute = (tag: string, attribute: string): string | undefined => {
+  const match = new RegExp(`\\s${attribute}\\s*=\\s*(["'])(.*?)\\1`, "iu").exec(tag);
+  return match?.[2] ? decodeHtmlEntities(match[2]).trim() : undefined;
+};
+
+export const extractHtmlTitle = (html: string): string | undefined => {
+  const metaTitle = Array.from(html.matchAll(/<meta\b[^>]*>/giu))
+    .map((match) => match[0])
+    .find((tag) => {
+      const property = htmlAttribute(tag, "property")?.toLowerCase();
+      const name = htmlAttribute(tag, "name")?.toLowerCase();
+      return property === "og:title" || name === "title";
+    });
+  const metaContent = metaTitle ? htmlAttribute(metaTitle, "content") : undefined;
+  if (metaContent) {
+    return metaContent;
+  }
+
+  const title = /<title\b[^>]*>([\s\S]*?)<\/title>/iu.exec(html)?.[1];
+  const stripped = title
+    ? stripHtml(title)
+        .replace(/\s+\|\s+[^|]+$/u, "")
+        .trim()
+    : "";
+  return stripped.length > 0 ? stripped : undefined;
+};
+
+const parseDateValue = (value: string | undefined): Date | null => {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+export const extractHtmlPublishedAt = (html: string): Date | null => {
+  for (const tag of Array.from(html.matchAll(/<meta\b[^>]*>/giu), (match) => match[0])) {
+    const property = htmlAttribute(tag, "property")?.toLowerCase();
+    const name = htmlAttribute(tag, "name")?.toLowerCase();
+    if (
+      property === "article:published_time" ||
+      name === "date" ||
+      name === "dcterms.date" ||
+      name === "publicationdate"
+    ) {
+      const date = parseDateValue(htmlAttribute(tag, "content"));
+      if (date) {
+        return date;
+      }
+    }
+  }
+
+  for (const match of html.matchAll(
+    /"datePublished"\s*:\s*"([^"]+)"|"datePublished"\s*:\s*'([^']+)'/giu,
+  )) {
+    const date = parseDateValue(match[1] ?? match[2]);
+    if (date) {
+      return date;
+    }
+  }
+
+  return null;
+};
+
 export const stableDocumentId = (
   sourceId: string,
   canonicalUrl: string,
@@ -42,12 +106,9 @@ type HtmlSelector =
   | `[${string}="${string}"]`;
 
 const contentSelectors = {
-  service_public_rss: ["main", "article", '[class*="contenu"]', '[class*="content"]'],
-  info_gouv: ["main", "article", '[class*="article"]', '[class*="content"]'],
+  service_public: ["main", "article", '[class*="contenu"]', '[class*="content"]'],
   tresor: ["main", "article", '[class*="article"]', '[class*="content"]'],
   assemblee_nationale: ["main", "article", '[class*="contenu"]', '[class*="content"]'],
-  senat_press: ["main", "article", '[class*="presse"]', '[class*="content"]'],
-  conseil_etat_actualites: ["main", "article", '[class*="actualite"]', '[class*="content"]'],
   bofip_impots: ["main", "article", "section", '[class*="content"]'],
 } as const satisfies Record<PublicSourceId, readonly HtmlSelector[]>;
 

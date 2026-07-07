@@ -35,7 +35,6 @@ create table if not exists public_sources (
   discovery_url text not null,
   discovery_urls jsonb not null default '[]'::jsonb,
   content_url text,
-  expected_cadence text not null,
   average_chars_per_item integer not null,
   health_status text not null default 'unknown',
   latest_successful_fetch_at timestamptz,

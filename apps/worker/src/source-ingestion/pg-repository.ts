@@ -21,6 +21,7 @@ type DiscoveryRow = {
 };
 
 type ItemRow = {
+  readonly stored: boolean;
   readonly external_id: string | null;
   readonly title: string;
   readonly published_at: Date | null;
@@ -72,6 +73,13 @@ const validators = (
 const metadataValue = (metadata: Record<string, unknown> | undefined, key: string): string | null =>
   typeof metadata?.[key] === "string" ? metadata[key] : null;
 
+const persistedItemMetadata = (
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> => {
+  const { contentHtml: _contentHtml, xmlBody: _xmlBody, ...persisted } = metadata ?? {};
+  return persisted;
+};
+
 export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
   PublicSourceIngestionRepositoryShape,
   never,
@@ -91,7 +99,6 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
             discovery_url,
             discovery_urls,
             content_url,
-            expected_cadence,
             average_chars_per_item,
             updated_at
           )
@@ -104,7 +111,6 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
             ${source.discoveryUrl},
             ${JSON.stringify(source.discoveryUrls ?? [source.discoveryUrl])}::jsonb,
             ${source.contentUrl ?? null},
-            ${source.expectedCadence},
             ${source.averageCharsPerItem},
             now()
           )
@@ -116,7 +122,6 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
             discovery_url = excluded.discovery_url,
             discovery_urls = excluded.discovery_urls,
             content_url = excluded.content_url,
-            expected_cadence = excluded.expected_cadence,
             average_chars_per_item = excluded.average_chars_per_item,
             updated_at = now()
         `.pipe(Effect.asVoid);
@@ -238,6 +243,7 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
         Effect.gen(function* () {
           const rows = yield* sql<ItemRow>`
               select
+                true as stored,
                 external_id,
                 title,
                 published_at,
@@ -254,6 +260,33 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
                 consecutive_failures
               from public_source_items
               where source_id = ${sourceId} and canonical_url = ${canonicalUrl}
+              union all
+              select
+                false as stored,
+                external_id,
+                title,
+                published_at,
+                source_updated_at,
+                summary,
+                metadata,
+                etag,
+                last_modified,
+                null as current_content_hash,
+                null as latest_document_id,
+                null as latest_raw_artifact_id,
+                last_fetched_at,
+                last_successful_fetch_at,
+                consecutive_failures
+              from public_source_candidates
+              where source_id = ${sourceId}
+                and canonical_url = ${canonicalUrl}
+                and not exists (
+                  select 1
+                  from public_source_items i
+                  where i.source_id = ${sourceId}
+                    and i.canonical_url = ${canonicalUrl}
+                )
+              limit 1
             `;
           const row = rows[0];
           if (!row) {
@@ -276,6 +309,7 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
             lastFetchedAt: row.last_fetched_at ?? undefined,
             lastSuccessfulFetchAt: row.last_successful_fetch_at ?? undefined,
             consecutiveFailures: row.consecutive_failures,
+            stored: row.stored,
           };
         }),
       getRecentIncompleteItems: (source, since) =>
@@ -296,19 +330,45 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
               where source_id = ${source.id}
                 and (
                   published_at >= ${since}
-                  or discovered_at >= ${since}
-                  or (published_at is null and discovered_at is null)
+                  or (
+                    published_at is null
+                    and (discovered_at >= ${since} or discovered_at is null)
+                  )
                 )
                 and (
                   latest_document_id is null
                   or latest_raw_artifact_id is null
                   or current_content_hash is null
+                  or title like '%�%'
                   or consecutive_failures > 0
                 )
               order by greatest(coalesce(published_at, discovered_at), discovered_at) desc
             `;
 
-          return rows.map((row) => ({
+          const candidateRows = yield* sql<DiscoveredItemRow>`
+              select
+                source_id,
+                canonical_url,
+                external_id,
+                title,
+                published_at,
+                discovered_at,
+                source_updated_at,
+                summary,
+                metadata
+              from public_source_candidates
+              where source_id = ${source.id}
+                and (
+                  published_at >= ${since}
+                  or (
+                    published_at is null
+                    and (discovered_at >= ${since} or discovered_at is null)
+                  )
+                )
+              order by greatest(coalesce(published_at, discovered_at), discovered_at) desc
+            `;
+
+          return [...rows, ...candidateRows].map((row) => ({
             sourceId: row.source_id,
             externalId: row.external_id,
             canonicalUrl: row.canonical_url,
@@ -322,7 +382,7 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
         }),
       recordDiscoveredItem: (item) =>
         sql`
-            insert into public_source_items (
+            insert into public_source_candidates (
               source_id,
               canonical_url,
               external_id,
@@ -343,26 +403,42 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
               ${item.discoveredAt ?? new Date()},
               ${item.updatedAt ?? null},
               ${item.summary ?? null},
-              ${sql.json(item.metadata ?? {})},
+              ${sql.json(persistedItemMetadata(item.metadata))},
               now()
             )
             on conflict (source_id, canonical_url) do update set
-              external_id = coalesce(excluded.external_id, public_source_items.external_id),
+              external_id = coalesce(excluded.external_id, public_source_candidates.external_id),
               title = excluded.title,
-              published_at = coalesce(excluded.published_at, public_source_items.published_at),
-              discovered_at = least(public_source_items.discovered_at, excluded.discovered_at),
+              published_at = coalesce(excluded.published_at, public_source_candidates.published_at),
+              discovered_at = least(public_source_candidates.discovered_at, excluded.discovered_at),
               source_updated_at = coalesce(
                 excluded.source_updated_at,
-                public_source_items.source_updated_at
+                public_source_candidates.source_updated_at
               ),
-              summary = coalesce(excluded.summary, public_source_items.summary),
-              metadata = public_source_items.metadata || excluded.metadata,
+              summary = coalesce(excluded.summary, public_source_candidates.summary),
+              metadata = public_source_candidates.metadata || excluded.metadata,
               updated_at = now()
           `.pipe(Effect.asVoid),
       storeIngestedItem: (result) =>
         Effect.gen(function* () {
-          const bodyHash = yield* Effect.promise(() => sha256Hex(result.raw.body));
-          const rawRows = yield* sql<RawArtifactRow>`
+          const rawMediaType = result.raw.mediaType.toLowerCase();
+          if (!rawMediaType.includes("html") && !rawMediaType.includes("pdf")) {
+            return yield* Effect.fail(
+              new Error(`public source artifact is not readable HTML/PDF: ${result.raw.mediaType}`),
+            );
+          }
+          if (result.document.textCharCount < 100) {
+            return yield* Effect.fail(
+              new Error(
+                `public source document is too short to be considered readable: ${result.document.textCharCount}`,
+              ),
+            );
+          }
+
+          return yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const bodyHash = yield* Effect.promise(() => sha256Hex(result.raw.body));
+              const rawRows = yield* sql<RawArtifactRow>`
               insert into public_source_raw_artifacts (
                 source_id,
                 canonical_url,
@@ -388,8 +464,8 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
                 metadata = public_source_raw_artifacts.metadata || excluded.metadata
               returning id
             `;
-          const rawArtifactId = rawRows[0]!.id;
-          const documentRows = yield* sql<{ readonly document_id: string }>`
+              const rawArtifactId = rawRows[0]!.id;
+              const documentRows = yield* sql<{ readonly document_id: string }>`
               insert into public_source_documents (
                 document_id,
                 source_id,
@@ -424,31 +500,113 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
                 ${rawArtifactId},
                 ${sql.json(result.document.sourceMetadata)}
               )
-              on conflict (document_id) do nothing
+              on conflict (document_id) do update set
+                title = excluded.title,
+                published_at = coalesce(excluded.published_at, public_source_documents.published_at),
+                discovered_at = least(public_source_documents.discovered_at, excluded.discovered_at),
+                fetched_at = excluded.fetched_at,
+                language = excluded.language,
+                document_type = excluded.document_type,
+                text = excluded.text,
+                text_char_count = excluded.text_char_count,
+                content_hash = excluded.content_hash,
+                raw_artifact_id = excluded.raw_artifact_id,
+                source_metadata = public_source_documents.source_metadata || excluded.source_metadata
               returning document_id
             `;
-          yield* sql`
-              update public_source_items set
-                etag = coalesce(${metadataValue(result.raw.metadata, "etag")}, etag),
-                last_modified = coalesce(
-                  ${metadataValue(result.raw.metadata, "lastModified")},
-                  last_modified
+              yield* sql`
+              insert into public_source_items (
+                source_id,
+                canonical_url,
+                external_id,
+                title,
+                published_at,
+                discovered_at,
+                source_updated_at,
+                summary,
+                metadata,
+                etag,
+                last_modified,
+                current_content_hash,
+                latest_document_id,
+                latest_raw_artifact_id,
+                last_fetched_at,
+                last_successful_fetch_at,
+                consecutive_failures,
+                last_error,
+                updated_at
+              )
+              values (
+                ${result.item.sourceId},
+                ${result.item.canonicalUrl},
+                ${result.item.externalId ?? null},
+                ${result.document.title},
+                ${result.document.publishedAt ?? result.item.publishedAt ?? null},
+                ${result.item.discoveredAt ?? result.document.discoveredAt},
+                ${result.item.updatedAt ?? null},
+                ${result.item.summary ?? null},
+                ${sql.json(persistedItemMetadata(result.item.metadata))},
+                ${metadataValue(result.raw.metadata, "etag")},
+                ${metadataValue(result.raw.metadata, "lastModified")},
+                ${result.document.contentHash},
+                ${result.document.id},
+                ${rawArtifactId},
+                ${result.raw.fetchedAt},
+                ${result.raw.fetchedAt},
+                0,
+                null,
+                now()
+              )
+              on conflict (source_id, canonical_url) do update set
+                external_id = coalesce(excluded.external_id, public_source_items.external_id),
+                title = excluded.title,
+                published_at = coalesce(excluded.published_at, public_source_items.published_at),
+                discovered_at = least(public_source_items.discovered_at, excluded.discovered_at),
+                source_updated_at = coalesce(
+                  excluded.source_updated_at,
+                  public_source_items.source_updated_at
                 ),
-                current_content_hash = ${result.document.contentHash},
-                latest_document_id = ${result.document.id},
-                latest_raw_artifact_id = ${rawArtifactId},
-                last_fetched_at = ${result.raw.fetchedAt},
-                last_successful_fetch_at = ${result.raw.fetchedAt},
+                summary = coalesce(excluded.summary, public_source_items.summary),
+                metadata = public_source_items.metadata || excluded.metadata,
+                etag = coalesce(excluded.etag, public_source_items.etag),
+                last_modified = coalesce(excluded.last_modified, public_source_items.last_modified),
+                current_content_hash = excluded.current_content_hash,
+                latest_document_id = excluded.latest_document_id,
+                latest_raw_artifact_id = excluded.latest_raw_artifact_id,
+                last_fetched_at = excluded.last_fetched_at,
+                last_successful_fetch_at = excluded.last_successful_fetch_at,
                 consecutive_failures = 0,
                 last_error = null,
                 updated_at = now()
+            `;
+              yield* sql`
+              delete from public_source_candidates
               where source_id = ${result.item.sourceId}
                 and canonical_url = ${result.item.canonicalUrl}
             `;
-          return { storedDocument: documentRows.length > 0 };
+              return { storedDocument: documentRows.length > 0 };
+            }),
+          );
         }),
       recordUnchangedItem: (result) =>
-        sql`
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+            update public_source_candidates set
+              etag = coalesce(${metadataValue(result.result.metadata, "etag")}, etag),
+              last_modified = coalesce(
+                ${metadataValue(result.result.metadata, "lastModified")},
+                last_modified
+              ),
+              last_fetched_at = ${result.result.fetchedAt},
+              last_not_modified_at = ${result.result.fetchedAt},
+              consecutive_failures = 0,
+              last_error = null,
+              updated_at = now()
+            where source_id = ${result.item.sourceId}
+              and canonical_url = ${result.item.canonicalUrl}
+          `;
+            yield* sql`
             update public_source_items set
               etag = coalesce(${metadataValue(result.result.metadata, "etag")}, etag),
               last_modified = coalesce(
@@ -462,16 +620,30 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
               updated_at = now()
             where source_id = ${result.item.sourceId}
               and canonical_url = ${result.item.canonicalUrl}
-          `.pipe(Effect.asVoid),
+          `;
+          }).pipe(Effect.asVoid),
+        ),
       recordItemFailure: (result) =>
-        sql`
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+            update public_source_candidates set
+              consecutive_failures = consecutive_failures + 1,
+              last_error = ${errorMessage(result.error)},
+              updated_at = now()
+            where source_id = ${result.item.sourceId}
+              and canonical_url = ${result.item.canonicalUrl}
+          `;
+            yield* sql`
             update public_source_items set
               consecutive_failures = consecutive_failures + 1,
               last_error = ${errorMessage(result.error)},
               updated_at = now()
             where source_id = ${result.item.sourceId}
               and canonical_url = ${result.item.canonicalUrl}
-          `.pipe(Effect.asVoid),
+          `;
+          }).pipe(Effect.asVoid),
+        ),
     };
 
     return repository;

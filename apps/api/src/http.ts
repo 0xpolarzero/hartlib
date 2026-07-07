@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 
-export type RouteHandler = (request: Request, url: URL) => Effect.Effect<Response>;
+export type RouteHandler = (request: Request, url: URL) => Effect.Effect<Response, unknown>;
 
 export interface Route {
   readonly method: string;
@@ -11,6 +11,7 @@ export interface Route {
 export const json = (body: unknown, init?: ResponseInit): Response => {
   const headers = new Headers(init?.headers);
   headers.set("content-type", "application/json; charset=utf-8");
+  headers.set("access-control-allow-origin", "*");
 
   return new Response(JSON.stringify(body), {
     ...init,

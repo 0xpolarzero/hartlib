@@ -1,8 +1,7 @@
 import {
   demoDataset,
-  demoFils,
-  findDemoIssueById,
-  type DemoIssue,
+  type BriefPublication,
+  type BriefSource,
   type DemoRole,
 } from "@brief/demo-data";
 
@@ -11,9 +10,6 @@ export type DemoRoute = {
   sourceId: string | null;
   issueId: string | null;
 };
-
-const sourceById = new Map(demoDataset.sources.map((s) => [s.id, s]));
-const filById = new Map(demoFils.map((fil) => [fil.id, fil]));
 
 export function getDemoRouteFromPath(pathname: string): DemoRoute {
   const [scope, segment, sourceId, nestedSegment, issueId] = pathname
@@ -71,21 +67,33 @@ export function buildDemoPath(route: DemoRoute): string {
     : sourcePath;
 }
 
-export function resolveDemoRoute(route: DemoRoute, issues: readonly DemoIssue[]): DemoRoute {
+const routePublicationIsVisible = (publication: BriefPublication): boolean =>
+  publication.status === "published" &&
+  (publication.sourceKind !== "public" || publication.documents.length > 0);
+
+export function resolveDemoRoute(
+  route: DemoRoute,
+  publications: readonly BriefPublication[],
+  sources: readonly BriefSource[] = demoDataset.sources,
+): DemoRoute {
+  const sourceById = new Map(sources.map((source) => [source.id, source]));
+
   if (route.role === "client") {
     if (!route.sourceId && !route.issueId) {
       return { role: "client", sourceId: null, issueId: null };
     }
 
     if (!route.sourceId && route.issueId) {
-      const issue = findDemoIssueById(route.issueId);
-      if (!issue || issue.status !== "published") {
+      const publication = publications.find(
+        (candidate) => candidate.id === route.issueId && routePublicationIsVisible(candidate),
+      );
+      if (!publication) {
         return { role: "client", sourceId: null, issueId: null };
       }
-      return { role: "client", sourceId: issue.sourceId, issueId: issue.id };
+      return { role: "client", sourceId: publication.sourceId, issueId: publication.id };
     }
 
-    if (route.sourceId && !filById.has(route.sourceId)) {
+    if (route.sourceId && !sourceById.has(route.sourceId)) {
       return { role: "client", sourceId: null, issueId: null };
     }
 
@@ -93,15 +101,21 @@ export function resolveDemoRoute(route: DemoRoute, issues: readonly DemoIssue[])
       return { role: "client", sourceId: route.sourceId, issueId: null };
     }
 
-    const issue = findDemoIssueById(route.issueId);
-    if (!issue || issue.sourceId !== route.sourceId || issue.status !== "published") {
+    const publication = publications.find(
+      (candidate) =>
+        candidate.id === route.issueId &&
+        candidate.sourceId === route.sourceId &&
+        routePublicationIsVisible(candidate),
+    );
+    if (!publication) {
       return { role: "client", sourceId: route.sourceId, issueId: null };
     }
 
-    return { role: "client", sourceId: route.sourceId, issueId: issue.id };
+    return { role: "client", sourceId: route.sourceId, issueId: publication.id };
   }
 
-  if (!route.sourceId || !sourceById.has(route.sourceId)) {
+  const source = route.sourceId ? sourceById.get(route.sourceId) : undefined;
+  if (!source || source.kind !== "publisher") {
     return { role: "publisher", sourceId: null, issueId: null };
   }
 
@@ -109,7 +123,7 @@ export function resolveDemoRoute(route: DemoRoute, issues: readonly DemoIssue[])
     return { role: "publisher", sourceId: route.sourceId, issueId: null };
   }
 
-  const issue = issues.find(
+  const issue = publications.find(
     (candidate) => candidate.id === route.issueId && candidate.sourceId === route.sourceId,
   );
   if (!issue) {

@@ -122,7 +122,7 @@ The demo seeds:
 - published issues
 - delivered client archives
 - representative AI chat messages
-- representative source metadata
+- seeded publisher source metadata
 - representative artifact output when useful
 
 The demo lets the viewer switch between publisher and client accounts.
@@ -172,8 +172,13 @@ For the demo, keep real:
 - chat rendering
 - source metadata rendering
 - artifact rendering
+- public-source data from the worker/API path
 
 Demo code must be isolated from production behavior by the separate `apps/demo` app and demo-only modules.
+
+Public sources in the demo are not demo fixtures. They are real public-source records ingested by the worker and read through the API. If no worker-ingested public data exists locally, the demo shows an honest empty state.
+
+Public-source publication documents expose the official original URL separately from any platform-hosted stored artifact. `canonicalUrl` is the official source URL. `hostedContentUrl` is present only when the API can serve a stored raw artifact in a displayable format, such as official HTML captured during ingestion. The UI must not label normalized full text as a description; it should use source summaries for descriptions and document metadata/links for document rows.
 
 Do not make production authorization depend on demo account switching.
 

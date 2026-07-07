@@ -158,7 +158,7 @@ Reusable product UI for the demo and MVP lives in `@brief/ui`, while apps keep r
 - `PublicationDetail` — publication title, metadata, summary, scheduled-state treatment, document list, and editable scheduled-publication fields
 - `DocumentsTable` — document title/description/PDF rows with optional inline editing and upload affordance; storage and PDF opening behavior stay in the consuming app through callbacks
 - `SubscribersTable` — subscriber list, pause/resume/delete controls, and draft subscriber row with company combobox and email validation display
-- `Breadcrumbs`, `SectionHeader`, `InlineEditableField`, `ConfirmingDeleteButton`, and `ScheduledPublicationIcon` are reusable support components used by these product surfaces
+- `Breadcrumbs`, `SectionHeader`, `InlineEditableField`, `ConfirmingDeleteButton`, and `ScheduledPublicationIcon` are reusable support components used by these product surfaces. Breadcrumb publication titles truncate responsively with the full title available through the element title.
 
 ### ArtifactFrame
 

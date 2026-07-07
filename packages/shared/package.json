@@ -6,6 +6,7 @@
     ".": "./src/index.ts",
     "./api": "./src/api.ts",
     "./artifacts": "./src/artifacts.ts",
+    "./content": "./src/content.ts",
     "./directives": "./src/directives.ts"
   },
   "scripts": {

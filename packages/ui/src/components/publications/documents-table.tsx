@@ -10,10 +10,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 export type PublicationDocument = {
   id: string;
   title: string;
-  fileName: string;
-  pageCount: number;
-  storagePath: string;
-  extractedTextPreview: string;
+  documentType: string;
+  canonicalUrl: string | null;
+  hostedContentUrl: string | null;
+  fileName: string | null;
+  pageCount: number | null;
+  storagePath: string | null;
+  textPreview: string;
 };
 
 export type OpenStoredPdfResult =
@@ -53,8 +56,8 @@ export function DocumentsTable({
       <TableHeader>
         <TableRow>
           <TableHead>Titre</TableHead>
-          <TableHead>Description</TableHead>
-          <TableHead>PDF</TableHead>
+          <TableHead>{editable ? "Description" : "Type"}</TableHead>
+          <TableHead>Liens</TableHead>
           {editable ? <TableHead className="text-right" /> : null}
         </TableRow>
       </TableHeader>
@@ -75,17 +78,13 @@ export function DocumentsTable({
             <TableCell className="max-w-md align-top">
               {editable ? (
                 <InlineEditableField
-                  value={doc.extractedTextPreview}
+                  value={doc.textPreview}
                   ariaLabel="Description du document"
                   multiline
-                  onChange={(extractedTextPreview) =>
-                    onUpdateDocument(doc.id, { extractedTextPreview })
-                  }
+                  onChange={(textPreview) => onUpdateDocument(doc.id, { textPreview })}
                 />
               ) : (
-                <span className="font-serif text-sm leading-6 text-muted">
-                  {doc.extractedTextPreview}
-                </span>
+                <span className="text-sm text-muted">{formatDocumentType(doc.documentType)}</span>
               )}
             </TableCell>
             <TableCell className="max-w-44 align-top font-mono text-[11px] text-faint">
@@ -95,7 +94,11 @@ export function DocumentsTable({
                   onUpload={(file) => onUploadDocumentPdf(doc.id, file)}
                 />
               ) : (
-                <PdfName document={doc} getPdfHref={getPdfHref} onOpenStoredPdf={onOpenStoredPdf} />
+                <DocumentLinks
+                  document={doc}
+                  getPdfHref={getPdfHref}
+                  onOpenStoredPdf={onOpenStoredPdf}
+                />
               )}
             </TableCell>
             {editable ? (
@@ -114,7 +117,7 @@ export function DocumentsTable({
   );
 }
 
-function PdfName({
+function DocumentLinks({
   document,
   getPdfHref,
   onOpenStoredPdf,
@@ -124,14 +127,16 @@ function PdfName({
   onOpenStoredPdf: (document: PublicationDocument) => Promise<OpenStoredPdfResult>;
 }) {
   const [error, setError] = useState<string | null>(null);
-  const label = document.fileName ? `${document.fileName} / ${document.pageCount} pages` : "-";
+  const label = document.fileName
+    ? `${document.fileName}${document.pageCount === null ? "" : ` / ${document.pageCount} pages`}`
+    : formatDocumentType(document.documentType);
   const publicUrl = getPdfHref(document);
 
-  if (!document.fileName) {
+  if (!document.fileName && !publicUrl && !document.hostedContentUrl) {
     return <span className="block max-w-44 truncate">-</span>;
   }
 
-  const content = publicUrl ? (
+  const originalLink = publicUrl ? (
     <a
       href={publicUrl}
       target="_blank"
@@ -144,41 +149,101 @@ function PdfName({
       }}
       onAuxClick={(event) => event.stopPropagation()}
     >
-      <span className="min-w-0 truncate">{label}</span>
+      <span className="min-w-0 truncate">{document.fileName ? label : "Original"}</span>
       <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
     </a>
-  ) : (
-    <button
-      type="button"
+  ) : null;
+
+  const storedFileButton =
+    !publicUrl && document.fileName ? (
+      <button
+        type="button"
+        className="inline-flex max-w-44 items-center gap-1.5 text-left text-faint outline-none transition-transform duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 [@media(hover:hover)_and_(pointer:fine)]:hover:text-ink focus-visible:text-ink"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setError(null);
+          void onOpenStoredPdf(document).then((result) => {
+            if (!result.ok) setError(result.message);
+          });
+        }}
+        onAuxClick={(event) => event.stopPropagation()}
+        aria-label={`Ouvrir ${label} dans un nouvel onglet`}
+      >
+        <span className="min-w-0 truncate">{label}</span>
+        <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
+      </button>
+    ) : null;
+
+  const hostedContentLink = document.hostedContentUrl ? (
+    <a
+      href={document.hostedContentUrl}
+      target="_blank"
+      rel="noopener noreferrer"
       className="inline-flex max-w-44 items-center gap-1.5 text-left text-faint outline-none transition-transform duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 [@media(hover:hover)_and_(pointer:fine)]:hover:text-ink focus-visible:text-ink"
       onPointerDown={(event) => event.stopPropagation()}
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        setError(null);
-        void onOpenStoredPdf(document).then((result) => {
-          if (!result.ok) setError(result.message);
-        });
-      }}
+      onClick={(event) => event.stopPropagation()}
       onAuxClick={(event) => event.stopPropagation()}
-      aria-label={`Ouvrir ${document.fileName} dans un nouvel onglet`}
     >
-      <span className="min-w-0 truncate">{label}</span>
+      <span className="min-w-0 truncate">Document</span>
       <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
-    </button>
-  );
+    </a>
+  ) : null;
 
   return (
     <div className="space-y-1">
-      <Tooltip>
-        <TooltipTrigger asChild>{content}</TooltipTrigger>
-        <TooltipContent side="top" align="start">
-          {label}
-        </TooltipContent>
-      </Tooltip>
+      <div className="flex max-w-44 flex-wrap gap-x-3 gap-y-1">
+        {hostedContentLink ? (
+          <Tooltip>
+            <TooltipTrigger asChild>{hostedContentLink}</TooltipTrigger>
+            <TooltipContent side="top" align="start">
+              Document stocké
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+        {originalLink ? (
+          <Tooltip>
+            <TooltipTrigger asChild>{originalLink}</TooltipTrigger>
+            <TooltipContent side="top" align="start">
+              Source officielle originale
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+        {storedFileButton ? (
+          <Tooltip>
+            <TooltipTrigger asChild>{storedFileButton}</TooltipTrigger>
+            <TooltipContent side="top" align="start">
+              {label}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
       {error ? <div className="max-w-44 font-sans text-[11px] text-accent">{error}</div> : null}
     </div>
   );
+}
+
+function formatDocumentType(documentType: string) {
+  switch (documentType.toLowerCase()) {
+    case "html":
+    case "article":
+      return "HTML";
+    case "pdf":
+      return "PDF";
+    case "docx":
+      return "DOCX";
+    case "xml":
+      return "XML";
+    case "json":
+      return "JSON";
+    case "doctrine_update":
+      return "Texte officiel";
+    case "publication":
+      return "Document officiel";
+    default:
+      return documentType || "Source";
+  }
 }
 
 function PdfUploadControl({

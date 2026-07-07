@@ -15,6 +15,7 @@ type PublicSourceIngestionJobPayload = {
   readonly sourceId: PublicSourceId;
   readonly mode: PublicSourceIngestionOptions["mode"];
   readonly since?: string;
+  readonly operationTimeoutMs?: number;
 };
 
 const parsePublicSourceIngestionPayload = (payload: unknown): PublicSourceIngestionJobPayload => {
@@ -34,11 +35,22 @@ const parsePublicSourceIngestionPayload = (payload: unknown): PublicSourceIngest
   if ("since" in candidate && typeof candidate.since !== "string") {
     throw new Error("public_source_ingestion payload has an invalid since value");
   }
+  if (
+    "operationTimeoutMs" in candidate &&
+    (typeof candidate.operationTimeoutMs !== "number" ||
+      !Number.isFinite(candidate.operationTimeoutMs) ||
+      candidate.operationTimeoutMs <= 0)
+  ) {
+    throw new Error("public_source_ingestion payload has an invalid operationTimeoutMs value");
+  }
 
   return {
     sourceId: candidate.sourceId as PublicSourceId,
     mode: candidate.mode,
     ...(typeof candidate.since === "string" ? { since: candidate.since } : {}),
+    ...(typeof candidate.operationTimeoutMs === "number"
+      ? { operationTimeoutMs: candidate.operationTimeoutMs }
+      : {}),
   };
 };
 
@@ -60,6 +72,7 @@ const handlePublicSourceIngestionJob = (
     const stats = yield* runPublicSourceIngestion(makePublicSourceAdapter(payload.sourceId), {
       mode: payload.mode,
       ...(since ? { since } : {}),
+      ...(payload.operationTimeoutMs ? { operationTimeoutMs: payload.operationTimeoutMs } : {}),
     });
 
     if (stats.failedCount > 0) {

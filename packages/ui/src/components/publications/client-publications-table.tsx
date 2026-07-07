@@ -14,7 +14,7 @@ import { formatPublicationDate, renderTableContent } from "./table-utils";
 export type ClientPublicationTableRow = {
   id: string;
   title: string;
-  publicationDate: string;
+  publicationDate: string | null;
 };
 
 const clientPublicationColumnHelper = createColumnHelper<ClientPublicationTableRow>();

@@ -1,15 +1,14 @@
 import type { Effect } from "effect";
 
-export type PublicSourceId =
-  | "service_public_rss"
-  | "info_gouv"
-  | "bofip_impots"
-  | "tresor"
-  | "assemblee_nationale"
-  | "senat_press"
-  | "conseil_etat_actualites";
+export type PublicSourceId = "service_public" | "bofip_impots" | "tresor" | "assemblee_nationale";
 
-export type SourceIngestionMethod = "rss" | "atom" | "opendata_dataset";
+export type SourceIngestionMethod =
+  | "atom_feed"
+  | "json_dataset"
+  | "xml_dataset"
+  | "official_document";
+
+export type SourceContentFormat = "text" | "html" | "pdf" | "docx" | "xml" | "json";
 
 export type PublicSourceDefinition = {
   readonly id: PublicSourceId;
@@ -20,7 +19,7 @@ export type PublicSourceDefinition = {
   readonly discoveryUrl: string;
   readonly discoveryUrls?: readonly string[];
   readonly contentUrl?: string;
-  readonly expectedCadence: "daily" | "several_per_week" | "weekly" | "irregular";
+  readonly contentFormats: readonly SourceContentFormat[];
   readonly averageCharsPerItem: number;
 };
 

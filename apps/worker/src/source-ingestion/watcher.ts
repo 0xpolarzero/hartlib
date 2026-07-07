@@ -7,11 +7,12 @@ export interface PublicSourceWatcherConfig {
   readonly enabled: boolean;
   readonly pollIntervalMs: number;
   readonly startupBackfillDays: number;
+  readonly operationTimeoutMs: number;
 }
 
 const enqueuePublicSourceIngestionJobs = (
   mode: PublicSourceIngestionMode,
-  options: { readonly since?: Date } = {},
+  options: { readonly since?: Date; readonly operationTimeoutMs: number },
 ) =>
   Effect.gen(function* () {
     const jobs = yield* JobRepository;
@@ -22,6 +23,7 @@ const enqueuePublicSourceIngestionJobs = (
           payload: {
             sourceId: source.id,
             mode,
+            operationTimeoutMs: options.operationTimeoutMs,
             ...(options.since ? { since: options.since.toISOString() } : {}),
           },
           uniqueKey: `public_source_ingestion:${source.id}:${mode}`,
@@ -34,8 +36,16 @@ const enqueuePublicSourceIngestionJobs = (
     return enqueued.length;
   });
 
-const runPublicSourcePollTick: Effect.Effect<void, unknown, JobRepository> =
-  enqueuePublicSourceIngestionJobs("poll").pipe(
+const recentWindowStart = (config: PublicSourceWatcherConfig): Date =>
+  new Date(Date.now() - config.startupBackfillDays * 24 * 60 * 60 * 1000);
+
+const runPublicSourcePollTick = (
+  config: PublicSourceWatcherConfig,
+): Effect.Effect<void, unknown, JobRepository> =>
+  enqueuePublicSourceIngestionJobs("poll", {
+    since: recentWindowStart(config),
+    operationTimeoutMs: config.operationTimeoutMs,
+  }).pipe(
     Effect.flatMap((enqueuedCount) =>
       Effect.logInfo("public source poll jobs enqueued").pipe(
         Effect.annotateLogs({
@@ -45,8 +55,10 @@ const runPublicSourcePollTick: Effect.Effect<void, unknown, JobRepository> =
     ),
   );
 
-export const runPublicSourceSafePollTick: Effect.Effect<void, never, JobRepository> =
-  runPublicSourcePollTick.pipe(
+export const runPublicSourceSafePollTick = (
+  config: PublicSourceWatcherConfig,
+): Effect.Effect<void, never, JobRepository> =>
+  runPublicSourcePollTick(config).pipe(
     Effect.catch((error) =>
       Effect.logError("public source poll enqueue failed").pipe(
         Effect.annotateLogs({
@@ -61,8 +73,11 @@ export const runPublicSourceStartupBackfill = (
 ): Effect.Effect<void, unknown, JobRepository> =>
   config.enabled
     ? Effect.gen(function* () {
-        const since = new Date(Date.now() - config.startupBackfillDays * 24 * 60 * 60 * 1000);
-        const enqueuedCount = yield* enqueuePublicSourceIngestionJobs("backfill", { since });
+        const since = recentWindowStart(config);
+        const enqueuedCount = yield* enqueuePublicSourceIngestionJobs("backfill", {
+          since,
+          operationTimeoutMs: config.operationTimeoutMs,
+        });
         yield* Effect.logInfo("public source startup backfill completed").pipe(
           Effect.annotateLogs({
             sourceCount: enqueuedCount,
@@ -77,7 +92,7 @@ export const runPublicSourcePolling = (
 ): Effect.Effect<void, unknown, JobRepository> =>
   config.enabled
     ? Effect.gen(function* () {
-        yield* runPublicSourceSafePollTick.pipe(
+        yield* runPublicSourceSafePollTick(config).pipe(
           Effect.repeat(Schedule.spaced(Duration.millis(config.pollIntervalMs))),
         );
       })

@@ -10,6 +10,7 @@
     "test": "vitest run --root ../.."
   },
   "dependencies": {
+    "@brief/shared": "workspace:*",
     "@brief/source-ingestion": "workspace:*"
   },
   "devDependencies": {

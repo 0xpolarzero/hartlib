@@ -1,9 +1,10 @@
 import { makeFeedAdapter } from "./feed";
 import { makeBofipDatasetAdapter } from "./opendata";
+import { makeServicePublicXmlAdapter } from "./service-public";
 import { publicSourceDefinitions } from "./source-catalog";
-import type { Fetcher, PublicSourceId, SourceAdapter } from "./types";
+import type { Fetcher, PublicSourceDefinition, PublicSourceId, SourceAdapter } from "./types";
 
-const definitionById = new Map(
+const definitionById: ReadonlyMap<PublicSourceId, PublicSourceDefinition> = new Map(
   publicSourceDefinitions.map((definition) => [definition.id, definition]),
 );
 
@@ -16,12 +17,16 @@ export const makePublicSourceAdapter = (
     throw new Error(`Unknown public source: ${sourceId}`);
   }
 
-  if (definition.ingestionMethod === "opendata_dataset") {
+  if (definition.ingestionMethod === "xml_dataset") {
+    return makeServicePublicXmlAdapter(definition, options);
+  }
+
+  if (definition.ingestionMethod === "json_dataset") {
     return makeBofipDatasetAdapter(definition, options);
   }
 
   return makeFeedAdapter(definition, {
-    kind: definition.ingestionMethod === "atom" ? "atom" : "rss",
+    kind: String(definition.ingestionMethod) === "atom_feed" ? "atom" : "rss",
     ...(options.fetcher ? { fetcher: options.fetcher } : {}),
   });
 };

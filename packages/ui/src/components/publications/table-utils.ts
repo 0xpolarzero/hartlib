@@ -7,7 +7,8 @@ export function renderTableContent(renderer: unknown, context: unknown) {
   );
 }
 
-export function formatPublicationDate(value: string) {
+export function formatPublicationDate(value: string | null) {
+  if (!value) return "-";
   return new Intl.DateTimeFormat("fr-FR", {
     day: "numeric",
     month: "long",
@@ -15,7 +16,8 @@ export function formatPublicationDate(value: string) {
   }).format(new Date(value));
 }
 
-export function formatRelativeSchedule(value: string) {
+export function formatRelativeSchedule(value: string | null) {
+  if (!value) return "";
   const diffMs = new Date(value).getTime() - Date.now();
   const absMs = Math.abs(diffMs);
   const minute = 60_000;
@@ -32,7 +34,8 @@ export function formatRelativeSchedule(value: string) {
   return formatter.format(Math.round(diffMs / month), "month");
 }
 
-export function toDatetimeLocalValue(value: string) {
+export function toDatetimeLocalValue(value: string | null) {
+  if (!value) return "";
   const date = new Date(value);
   const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
   return offsetDate.toISOString().slice(0, 16);

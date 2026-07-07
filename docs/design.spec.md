@@ -34,9 +34,17 @@ The demo is a separate app under `apps/demo`.
 
 The demo can use OpenRouter and cheap models.
 
-The demo uses fixtures, fake accounts, and a real test database.
+The demo uses fake accounts, seeded publisher content, and a real test database.
 
 The demo does not use real publisher content or real client data.
+
+Public source content in the demo is not fixture data.
+
+Public sources, public publications, and public documents shown in the demo must come from worker-ingested Postgres rows.
+
+If the worker has not ingested public data, the demo shows an honest empty or unavailable state.
+
+The demo must not synthesize public-source rows, publications, documents, summaries, dates, metrics, or previews.
 
 The demo has two seeded accounts:
 
@@ -57,7 +65,7 @@ The demo uses shared product components and shared backend logic where possible.
 
 Reusable demo and MVP UI or product logic belongs in packages, not inside `apps/web` or `apps/demo`.
 
-The demo uses fixture data only where real customer data would otherwise be needed.
+The demo uses seeded data only for publisher-side content and fake accounts.
 
 The demo uses local browser storage for lightweight interaction state.
 
@@ -75,7 +83,11 @@ The demo chat is pre-populated with a long representative message history that e
 
 The demo does not send new chat messages.
 
-The client demo root centers on one chat and a compact table of fils. Fils include both publisher invitation sources and public marketplace sources, unified as a single source kind. Each fil row shows the source name, a source-type distinction (invitation vs public), the latest publication date, and a subscribed checkbox. The per-publication AI hide/show action has been removed from the client publications list.
+The client demo root centers on one chat and a compact table of fils. Fils include both seeded publisher invitation sources and real public sources ingested by the worker, unified as one source model. Each fil row shows the source name, a source-type distinction (invitation vs public), the latest publication date when present, and a subscribed checkbox. The per-publication AI hide/show action has been removed from the client publications list.
+
+The API serves real public source data from Postgres through a read route consumed by the demo client.
+
+Local development requires Postgres migrations and at least one worker public-source backfill before public rows appear in the demo.
 
 The demo client already has an active AI plan.
 
@@ -176,13 +188,10 @@ Brief document fields:
 
 Publishers can lightly brand subscriptions.
 
-MVP branding fields:
+MVP source identity fields:
 
-- subscription name
+- subscription or source name
 - publisher name
-- publisher logo
-- accent color
-- contact email or support URL
 
 The MVP does not include custom domains, full white-labeling, or custom CSS.
 

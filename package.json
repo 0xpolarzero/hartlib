@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "bun run db:up && (bun run dev:api & bun run dev:worker & bun run dev:web & wait)",
     "dev:web": "bun --filter @brief/web dev",
-    "dev:demo": "bun --filter @brief/demo dev",
+    "dev:demo": "bun run db:up && (bun run dev:api & bun run dev:worker & bun --filter @brief/demo dev & wait)",
     "dev:api": "bun --filter @brief/api dev",
     "dev:worker": "bun --filter @brief/worker dev",
     "build": "bun run --filter '*' build",

@@ -7,9 +7,12 @@ import {
 import { listIssuesToolRoute, readIssueToolRoute, searchIssuesToolRoute } from "./ai-tools";
 import { chatStreamRoute } from "./chat";
 import { healthRoute } from "./health";
+import { publicSourceDocumentContentRoute, publicSourcesRoute } from "./public-sources";
 
 export const routes = [
   healthRoute,
+  publicSourcesRoute,
+  publicSourceDocumentContentRoute,
   chatStreamRoute,
   listIssuesToolRoute,
   searchIssuesToolRoute,

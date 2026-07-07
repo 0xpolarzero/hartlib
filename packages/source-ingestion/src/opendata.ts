@@ -1,5 +1,4 @@
 import { Effect } from "effect";
-import { parseFeed } from "./feed";
 import { sha256Hex } from "./hash";
 import { stableDocumentId, stripHtml } from "./text";
 import type {
@@ -46,23 +45,31 @@ const recordUrl = (record: BofipRecord): string | undefined =>
 const recordTitle = (record: BofipRecord): string | undefined =>
   record.titre ?? record.identifiant_juridique;
 
-const bofipIdFromUrl = (url: string): string | undefined => {
-  const match = /\/(ACTU-\d{4}-\d+)(?:[/?#]|$)/iu.exec(url);
-  return match?.[1]?.toUpperCase();
+const recordMatchesExternalId = (record: BofipRecord, externalId: string | undefined): boolean =>
+  !externalId || record.identifiant_juridique === externalId;
+
+const escapeHtml = (value: string): string =>
+  value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+const recordContent = (record: BofipRecord): string | undefined =>
+  record.contenu_html ?? (record.contenu ? `<pre>${escapeHtml(record.contenu)}</pre>` : undefined);
+
+const firstRecord = (body: string, definition: PublicSourceDefinition): BofipRecord => {
+  const [record] = readJson(body).results ?? [];
+  if (!record) {
+    throw new SourceIngestionError("Dataset record normalization skipped: record not found", {
+      sourceId: definition.id,
+    });
+  }
+  return record;
 };
 
-const bofipPublishedAtFromSummary = (summary: string | undefined): Date | null => {
-  if (!summary) {
-    return null;
-  }
-
-  const match = /publi[ée]\s+le\s+(\d{2})\/(\d{2})\/(\d{4})/iu.exec(summary);
-  if (!match?.[1] || !match[2] || !match[3]) {
-    return null;
-  }
-
-  const date = new Date(`${match[3]}-${match[2]}-${match[1]}T00:00:00.000Z`);
-  return Number.isNaN(date.getTime()) ? null : date;
+const stringMetadata = (
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined => {
+  const value = metadata?.[key];
+  return typeof value === "string" ? value : undefined;
 };
 
 const conditionalRequestInit = (options?: SourceFetchOptions): RequestInit | undefined => {
@@ -136,35 +143,11 @@ export const parseBofipDataset = (
   });
 };
 
-export const parseBofipUpdateFeed = (
-  source: PublicSourceDefinition,
-  body: string,
-): readonly DiscoveredItem[] =>
-  parseFeed(source, body, "rss").flatMap((item): DiscoveredItem[] => {
-    const externalId = bofipIdFromUrl(item.canonicalUrl);
-    if (!externalId) {
-      return [];
-    }
-
-    return [
-      {
-        ...item,
-        externalId,
-        publishedAt: item.publishedAt ?? bofipPublishedAtFromSummary(item.summary),
-        metadata: {
-          ...item.metadata,
-          discoveryMethod: "bofip_rss",
-        },
-      },
-    ];
-  });
-
 export const makeBofipDatasetAdapter = (
   definition: PublicSourceDefinition,
   options: { readonly fetcher?: Fetcher } = {},
 ): SourceAdapter => {
   const fetcher = options.fetcher ?? fetch;
-  const updateFeedUrl = definition.discoveryUrl;
   const datasetUrl = definition.contentUrl ?? definition.discoveryUrl;
 
   return {
@@ -172,16 +155,21 @@ export const makeBofipDatasetAdapter = (
     discover: (discoverOptions) =>
       Effect.tryPromise({
         try: async () => {
+          const params = new URLSearchParams({
+            order_by: "debut_de_validite desc",
+            limit: "50",
+          });
+          const discoveryUrl = `${datasetUrl}?${params.toString()}`;
           const response = await fetcher(
-            updateFeedUrl,
-            discoveryRequestInit(updateFeedUrl, discoverOptions),
+            discoveryUrl,
+            discoveryRequestInit(discoveryUrl, discoverOptions),
           );
           if (response.status === 304) {
             return {
               status: "not_modified",
               sourceId: definition.id,
               discoveredAt: new Date(),
-              metadata: [await responseMetadata(updateFeedUrl, response)],
+              metadata: [await responseMetadata(discoveryUrl, response)],
             } satisfies SourceDiscoveryResult;
           }
 
@@ -196,9 +184,9 @@ export const makeBofipDatasetAdapter = (
           const body = await response.text();
           return {
             status: "fetched",
-            items: parseBofipUpdateFeed(definition, body),
+            items: parseBofipDataset(definition, body),
             discoveredAt: new Date(),
-            metadata: [await responseMetadata(updateFeedUrl, response, body)],
+            metadata: [await responseMetadata(discoveryUrl, response, body)],
           } satisfies SourceDiscoveryResult;
         },
         catch: (cause) =>
@@ -244,16 +232,37 @@ export const makeBofipDatasetAdapter = (
             );
           }
           const body = await response.text();
+          const record = firstRecord(body, definition);
+          if (!recordMatchesExternalId(record, item.externalId)) {
+            throw new SourceIngestionError(
+              "Dataset record fetch skipped: fetched record does not match requested item",
+              {
+                sourceId: definition.id,
+              },
+            );
+          }
+          const content = recordContent(record);
+          if (!content) {
+            throw new SourceIngestionError("Dataset record fetch skipped: record has no content", {
+              sourceId: definition.id,
+            });
+          }
           return {
             status: "fetched",
             raw: {
               sourceId: definition.id,
               canonicalUrl: item.canonicalUrl,
               fetchedAt: new Date(),
-              mediaType: response.headers.get("content-type") ?? "application/json",
-              body,
+              mediaType: "text/html",
+              body: content,
               metadata: {
                 externalId: item.externalId,
+                title: record.titre,
+                publishedAt: record.debut_de_validite,
+                type: record.type,
+                serie: record.serie,
+                division: record.division,
+                officialJsonMediaType: response.headers.get("content-type") ?? "application/json",
                 etag: response.headers.get("etag") ?? undefined,
                 lastModified: response.headers.get("last-modified") ?? undefined,
               },
@@ -271,17 +280,15 @@ export const makeBofipDatasetAdapter = (
     normalize: (raw, item) =>
       Effect.tryPromise({
         try: async () => {
-          const [record] = readJson(raw.body).results ?? [];
-          if (!record) {
+          const mediaType = raw.mediaType.toLowerCase();
+          const record = mediaType.includes("json") ? firstRecord(raw.body, definition) : undefined;
+          if (record && !recordMatchesExternalId(record, item?.externalId)) {
             throw new SourceIngestionError(
-              "Dataset record normalization skipped: record not found",
-              {
-                sourceId: definition.id,
-              },
+              "Dataset record normalization skipped: fetched record does not match requested item",
+              { sourceId: definition.id },
             );
           }
-
-          const content = record.contenu_html ?? record.contenu;
+          const content = record ? recordContent(record) : raw.body;
           if (!content) {
             throw new SourceIngestionError(
               "Dataset record normalization skipped: record has no content",
@@ -293,14 +300,24 @@ export const makeBofipDatasetAdapter = (
 
           const text = stripHtml(content);
           const contentHash = await sha256Hex(text);
-          const externalId = item?.externalId ?? record.identifiant_juridique;
+          const externalId =
+            item?.externalId ??
+            record?.identifiant_juridique ??
+            stringMetadata(raw.metadata, "externalId");
+          const publishedAtValue =
+            record?.debut_de_validite ?? stringMetadata(raw.metadata, "publishedAt");
           return {
             id: stableDocumentId(definition.id, raw.canonicalUrl, contentHash),
             sourceId: definition.id,
             ...(externalId ? { externalId } : {}),
             canonicalUrl: raw.canonicalUrl,
-            title: item?.title ?? record.titre ?? raw.canonicalUrl,
-            publishedAt: item?.publishedAt ?? null,
+            title:
+              item?.title ??
+              record?.titre ??
+              stringMetadata(raw.metadata, "title") ??
+              raw.canonicalUrl,
+            publishedAt:
+              item?.publishedAt ?? (publishedAtValue ? new Date(publishedAtValue) : null),
             discoveredAt: item?.discoveredAt ?? raw.fetchedAt,
             fetchedAt: raw.fetchedAt,
             language: "fr",
@@ -311,9 +328,11 @@ export const makeBofipDatasetAdapter = (
             rawArtifactKey: `${definition.id}/${contentHash}`,
             sourceMetadata: {
               ingestionMethod: definition.ingestionMethod,
-              type: record.type,
-              serie: record.serie,
-              division: record.division,
+              contentFormats: definition.contentFormats,
+              ...(externalId ? { externalId } : {}),
+              type: record?.type ?? raw.metadata?.type,
+              serie: record?.serie ?? raw.metadata?.serie,
+              division: record?.division ?? raw.metadata?.division,
               mediaType: raw.mediaType,
             },
           } satisfies CanonicalDocument;

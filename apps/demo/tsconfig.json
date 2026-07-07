@@ -6,6 +6,8 @@
     "baseUrl": ".",
     "paths": {
       "@brief/demo-data": ["../../packages/demo-data/src/index.ts"],
+      "@brief/shared": ["../../packages/shared/src/index.ts"],
+      "@brief/shared/*": ["../../packages/shared/src/*"],
       "@brief/source-ingestion": ["../../packages/source-ingestion/src/index.ts"],
       "@brief/ui": ["../../packages/ui/src/index.ts"],
       "@/*": ["./src/*"]
@@ -14,6 +16,7 @@
   "include": [
     "src",
     "../../packages/demo-data/src",
+    "../../packages/shared/src",
     "../../packages/source-ingestion/src",
     "../../packages/ui/src"
   ]

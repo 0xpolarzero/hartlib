@@ -29,6 +29,25 @@ const optionalValidators = (
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const readableArtifactMediaType = (mediaType: string): boolean => {
+  const lower = mediaType.toLowerCase();
+  return lower.includes("html") || lower.includes("pdf");
+};
+
+const assertReadableStoredItem = (
+  raw: { readonly mediaType: string },
+  document: { readonly textCharCount: number },
+) => {
+  if (!readableArtifactMediaType(raw.mediaType)) {
+    throw new Error(`public source artifact is not readable HTML/PDF: ${raw.mediaType}`);
+  }
+  if (document.textCharCount < 100) {
+    throw new Error(
+      `public source document is too short to be considered readable: ${document.textCharCount}`,
+    );
+  }
+};
+
 export class PublicSourceIngestionRepository extends Context.Service<
   PublicSourceIngestionRepository,
   PublicSourceIngestionRepositoryShape
@@ -64,6 +83,7 @@ type MemoryItemState = {
 
 export interface InMemoryPublicSourceIngestionState {
   readonly sources: Map<PublicSourceId, MemorySourceState>;
+  readonly candidates: Map<string, MemoryItemState>;
   readonly items: Map<string, MemoryItemState>;
   readonly rawArtifacts: Map<string, unknown>;
   readonly documents: Map<string, unknown>;
@@ -81,13 +101,14 @@ const itemKey = (sourceId: PublicSourceId, canonicalUrl: string): string =>
   `${sourceId}\n${canonicalUrl}`;
 
 const itemStateIsRecent = (state: MemoryItemState, since: Date): boolean =>
-  (state.item.publishedAt !== null && state.item.publishedAt >= since) ||
-  (state.item.discoveredAt !== undefined && state.item.discoveredAt >= since) ||
-  (state.item.publishedAt === null && state.item.discoveredAt === undefined);
+  state.item.publishedAt !== null
+    ? state.item.publishedAt >= since
+    : state.item.discoveredAt === undefined || state.item.discoveredAt >= since;
 
 export const makeInMemoryPublicSourceIngestionRepository = (
   state: InMemoryPublicSourceIngestionState = {
     sources: new Map(),
+    candidates: new Map(),
     items: new Map(),
     rawArtifacts: new Map(),
     documents: new Map(),
@@ -196,47 +217,45 @@ export const makeInMemoryPublicSourceIngestionRepository = (
     getItemState: (sourceId, canonicalUrl) =>
       Effect.sync(() => {
         const existing = state.items.get(itemKey(sourceId, canonicalUrl));
-        if (!existing) {
+        const candidate = state.candidates.get(itemKey(sourceId, canonicalUrl));
+        if (!existing && !candidate) {
           return undefined;
         }
+        const row = existing ?? candidate!;
 
         return {
           sourceId,
           canonicalUrl,
-          externalId: existing.item.externalId,
-          title: existing.item.title,
-          publishedAt: existing.item.publishedAt,
-          updatedAt: existing.item.updatedAt,
-          summary: existing.item.summary,
-          metadata: existing.item.metadata ?? {},
-          validators: optionalValidators(existing.etag, existing.lastModified),
-          currentContentHash: existing.currentContentHash,
-          latestDocumentId: existing.latestDocumentId,
-          latestRawArtifactId: existing.latestRawArtifactId,
-          lastFetchedAt: existing.lastFetchedAt,
-          lastSuccessfulFetchAt: existing.lastSuccessfulFetchAt,
-          consecutiveFailures: existing.failures.length,
+          externalId: row.item.externalId,
+          title: row.item.title,
+          publishedAt: row.item.publishedAt,
+          updatedAt: row.item.updatedAt,
+          summary: row.item.summary,
+          metadata: row.item.metadata ?? {},
+          validators: optionalValidators(row.etag, row.lastModified),
+          currentContentHash: row.currentContentHash,
+          latestDocumentId: row.latestDocumentId,
+          latestRawArtifactId: row.latestRawArtifactId,
+          lastFetchedAt: row.lastFetchedAt,
+          lastSuccessfulFetchAt: row.lastSuccessfulFetchAt,
+          consecutiveFailures: row.failures.length,
+          stored: existing !== undefined,
         };
       }),
     getRecentIncompleteItems: (source, since) =>
       Effect.sync(() =>
-        [...state.items.values()]
+        [...state.candidates.values()]
           .filter(
             (existing) =>
-              existing.item.sourceId === source.id &&
-              itemStateIsRecent(existing, since) &&
-              (!existing.latestDocumentId ||
-                !existing.latestRawArtifactId ||
-                !existing.currentContentHash ||
-                existing.failures.length > 0),
+              existing.item.sourceId === source.id && itemStateIsRecent(existing, since),
           )
           .map((existing) => existing.item),
       ),
     recordDiscoveredItem: (item) =>
       Effect.sync(() => {
         const key = itemKey(item.sourceId, item.canonicalUrl);
-        const existing = state.items.get(key);
-        state.items.set(key, {
+        const existing = state.candidates.get(key) ?? state.items.get(key);
+        state.candidates.set(key, {
           item: {
             ...item,
             discoveredAt: item.discoveredAt ?? existing?.item.discoveredAt ?? new Date(),
@@ -254,6 +273,7 @@ export const makeInMemoryPublicSourceIngestionRepository = (
       }),
     storeIngestedItem: (result) =>
       Effect.gen(function* () {
+        assertReadableStoredItem(result.raw, result.document);
         const rawBodyHash = yield* Effect.promise(() => sha256Hex(result.raw.body));
         const rawKey = itemKey(result.raw.sourceId, `${result.raw.canonicalUrl}\n${rawBodyHash}`);
         state.rawArtifacts.set(rawKey, result.raw);
@@ -262,7 +282,7 @@ export const makeInMemoryPublicSourceIngestionRepository = (
         state.documents.set(result.document.id, result.document);
 
         const key = itemKey(result.item.sourceId, result.item.canonicalUrl);
-        const existing = state.items.get(key);
+        const existing = state.items.get(key) ?? state.candidates.get(key);
         const etag =
           typeof result.raw.metadata?.etag === "string" ? result.raw.metadata.etag : existing?.etag;
         const lastModified =
@@ -281,13 +301,14 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           lastNotModifiedAt: existing?.lastNotModifiedAt,
           failures: [],
         });
+        state.candidates.delete(key);
 
         return { storedDocument };
       }),
     recordUnchangedItem: (result) =>
       Effect.sync(() => {
         const key = itemKey(result.item.sourceId, result.item.canonicalUrl);
-        const existing = state.items.get(key);
+        const existing = state.items.get(key) ?? state.candidates.get(key);
         const etag =
           typeof result.result.metadata?.etag === "string"
             ? result.result.metadata.etag
@@ -296,7 +317,7 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           typeof result.result.metadata?.lastModified === "string"
             ? result.result.metadata.lastModified
             : existing?.lastModified;
-        state.items.set(key, {
+        const next = {
           item: result.item,
           etag,
           lastModified,
@@ -307,13 +328,18 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           lastSuccessfulFetchAt: existing?.lastSuccessfulFetchAt,
           lastNotModifiedAt: result.result.fetchedAt,
           failures: [],
-        });
+        };
+        if (state.items.has(key)) {
+          state.items.set(key, next);
+        } else {
+          state.candidates.set(key, next);
+        }
       }),
     recordItemFailure: (result) =>
       Effect.sync(() => {
         const key = itemKey(result.item.sourceId, result.item.canonicalUrl);
-        const existing = state.items.get(key);
-        state.items.set(key, {
+        const existing = state.items.get(key) ?? state.candidates.get(key);
+        const next = {
           item: result.item,
           etag: existing?.etag,
           lastModified: existing?.lastModified,
@@ -324,7 +350,12 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           lastSuccessfulFetchAt: existing?.lastSuccessfulFetchAt,
           lastNotModifiedAt: existing?.lastNotModifiedAt,
           failures: [...(existing?.failures ?? []), errorMessage(result.error)],
-        });
+        };
+        if (state.items.has(key)) {
+          state.items.set(key, next);
+        } else {
+          state.candidates.set(key, next);
+        }
       }),
   };
 };

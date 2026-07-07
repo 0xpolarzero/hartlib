@@ -19,6 +19,7 @@ const program = Effect.gen(function* () {
       publicSourceIngestionEnabled: config.publicSourceIngestionEnabled,
       publicSourcePollIntervalMs: config.publicSourcePollIntervalMs,
       publicSourceStartupBackfillDays: config.publicSourceStartupBackfillDays,
+      publicSourceOperationTimeoutMs: config.publicSourceOperationTimeoutMs,
       nodeEnv: config.nodeEnv,
     }),
   );
@@ -31,6 +32,7 @@ const program = Effect.gen(function* () {
     enabled: config.publicSourceIngestionEnabled,
     pollIntervalMs: config.publicSourcePollIntervalMs,
     startupBackfillDays: config.publicSourceStartupBackfillDays,
+    operationTimeoutMs: config.publicSourceOperationTimeoutMs,
   };
 
   yield* runPublicSourceStartupBackfill(publicSourceWatcherConfig);

@@ -4,13 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   demoDataset,
-  demoFils,
-  publicSourceDemoIssues,
-  type DemoFil,
-  type DemoIssue,
+  type BriefPublication,
+  type BriefSource,
   type DemoRole,
-  type DemoSubscriptionSource,
 } from "@brief/demo-data";
+import type { PublicSourcesResponse } from "@brief/shared";
 import { type DemoRoute, buildDemoPath, getDemoRouteFromPath, resolveDemoRoute } from "./routing";
 import {
   Breadcrumbs,
@@ -46,9 +44,9 @@ import {
 
 import "./styles.css";
 
-const sourceById = new Map(demoDataset.sources.map((s) => [s.id, s]));
-const filById = new Map(demoFils.map((fil) => [fil.id, fil]));
 const primaryChat = demoDataset.chats[0];
+const emptyPublicContent: PublicSourcesResponse = { sources: [], publications: [] };
+const publicApiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
 const demoSubscriberProfiles = [
   {
     id: demoDataset.companies.client.id,
@@ -71,39 +69,64 @@ function isDemoPdfPath(pathname: string) {
   return pathname.startsWith("/demo/pdfs/") && pathname.endsWith(".pdf");
 }
 
-function readInitialDemoIssues() {
-  const fallback = demoDataset.issues.map(cloneIssue);
+async function fetchPublicContent(): Promise<PublicSourcesResponse> {
+  const response = await fetch(new URL("/public-sources", publicApiBaseUrl));
+  if (!response.ok) {
+    throw new Error(`Failed to fetch public sources: ${response.status}`);
+  }
+  return normalizePublicContentUrls((await response.json()) as PublicSourcesResponse);
+}
+
+function readInitialPublications() {
+  const fallback = demoDataset.issues.map(clonePublication);
   if (typeof window === "undefined") return fallback;
   try {
     const stored = window.localStorage.getItem("brief:demo:issues:v1");
-    return stored ? (JSON.parse(stored) as DemoIssue[]) : fallback;
+    return stored ? (JSON.parse(stored) as BriefPublication[]) : fallback;
   } catch {
     return fallback;
   }
 }
 
 function App() {
-  const initialIssues = useMemo(readInitialDemoIssues, []);
+  const initialPublications = useMemo(readInitialPublications, []);
   const initialRoute = useMemo(
-    () => resolveDemoRoute(getDemoRouteFromPath(window.location.pathname), initialIssues),
+    () => resolveDemoRoute(getDemoRouteFromPath(window.location.pathname), initialPublications),
     [],
   );
   const [role, setRole] = useState<DemoRole>(() => initialRoute.role);
-  const [issues, setIssues, resetIssues] = useSessionState<DemoIssue[]>(
+  const [issues, setIssues, resetIssues] = useSessionState<BriefPublication[]>(
     "brief:demo:issues:v1",
-    initialIssues,
+    initialPublications,
   );
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(initialRoute.sourceId);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(initialRoute.issueId);
   const [resetVersion, setResetVersion] = useState(0);
-  const issuesBySourceId = useMemo(() => buildIssuesBySourceId(issues), [issues]);
+  const [publicContent, setPublicContent] = useState<PublicSourcesResponse>(emptyPublicContent);
+  const [publicContentStatus, setPublicContentStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
+  const publicationsBySourceId = useMemo(() => buildPublicationsBySourceId(issues), [issues]);
+  const sources = useMemo(
+    () => [...demoDataset.sources, ...publicContent.sources],
+    [publicContent.sources],
+  );
+  const publications = useMemo(
+    () => [...issues, ...publicContent.publications],
+    [issues, publicContent.publications],
+  );
+  const sourceById = useMemo(
+    () => new Map(sources.map((source) => [source.id, source])),
+    [sources],
+  );
 
   function applyDemoRoute(
     route: DemoRoute,
     historyMode: "push" | "replace" = "push",
-    routeIssues: readonly DemoIssue[] = issues,
+    routePublications: readonly BriefPublication[] = publications,
+    routeSources: readonly BriefSource[] = sources,
   ) {
-    const nextRoute = resolveDemoRoute(route, routeIssues);
+    const nextRoute = resolveDemoRoute(route, routePublications, routeSources);
     setRole(nextRoute.role);
     setSelectedSourceId(nextRoute.sourceId);
     setSelectedIssueId(nextRoute.issueId);
@@ -128,7 +151,27 @@ function App() {
 
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [issues]);
+  }, [publications, sources]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPublicContentStatus("loading");
+    void fetchPublicContent()
+      .then((content) => {
+        if (cancelled) return;
+        setPublicContent(content);
+        setPublicContentStatus("ready");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPublicContent(emptyPublicContent);
+        setPublicContentStatus("error");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function handleRoleChange(next: DemoRole) {
     if (next === role) return;
@@ -140,12 +183,15 @@ function App() {
   }
 
   function handleCreateIssue(sourceId: string) {
-    const issue = createDraftIssue(sourceId);
+    const issue = createDraftPublication(sourceId);
     setIssues((current) => [issue, ...current]);
-    applyDemoRoute({ role: "publisher", sourceId, issueId: issue.id }, "push", [issue, ...issues]);
+    applyDemoRoute({ role: "publisher", sourceId, issueId: issue.id }, "push", [
+      issue,
+      ...publications,
+    ]);
   }
 
-  function handleUpdateIssue(nextIssue: DemoIssue) {
+  function handleUpdateIssue(nextIssue: BriefPublication) {
     setIssues((current) => current.map((issue) => (issue.id === nextIssue.id ? nextIssue : issue)));
   }
 
@@ -158,23 +204,26 @@ function App() {
 
   function handleResetDemoStorage() {
     resetDemoStorage();
-    resetIssues(demoDataset.issues.map(cloneIssue));
+    resetIssues(demoDataset.issues.map(clonePublication));
     applyDemoRoute({ role, sourceId: null, issueId: null }, "replace");
     setResetVersion((version) => version + 1);
   }
 
   const selectedSource = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
   const selectedIssue =
-    selectedSource && selectedIssueId
-      ? ((issuesBySourceId.get(selectedSource.id) ?? []).find(
+    selectedSource?.kind === "publisher" && selectedIssueId
+      ? ((publicationsBySourceId.get(selectedSource.id) ?? []).find(
           (issue) => issue.id === selectedIssueId,
         ) ?? null)
       : null;
-  const selectedFil = selectedSourceId ? (filById.get(selectedSourceId) ?? null) : null;
+  const selectedFil = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
   const selectedClientIssue =
     selectedSourceId && selectedIssueId
-      ? ([...issues.filter((i) => i.status === "published"), ...publicSourceDemoIssues].find(
-          (issue) => issue.id === selectedIssueId,
+      ? (publications.find(
+          (issue) =>
+            issue.id === selectedIssueId &&
+            issue.sourceId === selectedSourceId &&
+            issue.status === "published",
         ) ?? null)
       : null;
 
@@ -246,6 +295,7 @@ function App() {
               {selectedSource && selectedIssue ? (
                 <PublisherPublicationDetail
                   issue={selectedIssue}
+                  sourceById={sourceById}
                   onDeleteIssue={handleDeleteIssue}
                   onUpdateIssue={handleUpdateIssue}
                 />
@@ -253,7 +303,7 @@ function App() {
                 <PublisherSourceDetail
                   key={`${selectedSource.id}:${resetVersion}`}
                   source={selectedSource}
-                  issues={issuesBySourceId.get(selectedSource.id) ?? []}
+                  issues={publicationsBySourceId.get(selectedSource.id) ?? []}
                   onCreateIssue={handleCreateIssue}
                   onDeleteIssue={handleDeleteIssue}
                   onSelectIssue={(issueId) =>
@@ -266,18 +316,18 @@ function App() {
                 />
               ) : (
                 <PublisherSourcesList
-                  issuesBySourceId={issuesBySourceId}
+                  publicationsBySourceId={publicationsBySourceId}
                   onSelect={handleSelectSource}
                 />
               )}
             </TabsContent>
             <TabsContent value="client" className="mt-0">
               {selectedFil && selectedClientIssue ? (
-                <ClientPublicationDetail issue={selectedClientIssue} />
+                <ClientPublicationDetail issue={selectedClientIssue} sourceById={sourceById} />
               ) : selectedFil ? (
                 <ClientFilDetail
                   fil={selectedFil}
-                  issues={issues}
+                  publications={publications}
                   onSelectIssue={(issueId) =>
                     applyDemoRoute({
                       role: "client",
@@ -288,7 +338,9 @@ function App() {
                 />
               ) : (
                 <ClientFilsList
-                  issues={issues}
+                  sources={sources}
+                  publications={publications}
+                  publicContentStatus={publicContentStatus}
                   onSelectFil={(filId) =>
                     applyDemoRoute({ role: "client", sourceId: filId, issueId: null })
                   }
@@ -303,16 +355,16 @@ function App() {
 }
 
 function PublisherSourcesList({
-  issuesBySourceId,
+  publicationsBySourceId,
   onSelect,
 }: {
-  issuesBySourceId: ReadonlyMap<string, readonly DemoIssue[]>;
+  publicationsBySourceId: ReadonlyMap<string, readonly BriefPublication[]>;
   onSelect: (id: string) => void;
 }) {
   const rows = useMemo<SourceTableRow[]>(
     () =>
       demoDataset.sources.map((source) => {
-        const issues = issuesBySourceId.get(source.id) ?? [];
+        const issues = publicationsBySourceId.get(source.id) ?? [];
         const latestPublishedIssue =
           issues.find((issue) => issue.status === "published") ?? issues[0];
         return {
@@ -323,7 +375,7 @@ function PublisherSourcesList({
           subscriberCount: source.subscriberCount,
         };
       }),
-    [issuesBySourceId],
+    [publicationsBySourceId],
   );
 
   return (
@@ -340,8 +392,8 @@ function PublisherSourceDetail({
   onDeleteIssue,
   onSelectIssue,
 }: {
-  source: DemoSubscriptionSource;
-  issues: readonly DemoIssue[];
+  source: BriefSource;
+  issues: readonly BriefPublication[];
   onCreateIssue: (sourceId: string) => void;
   onDeleteIssue: (id: string) => void;
   onSelectIssue: (id: string) => void;
@@ -469,12 +521,14 @@ function PublisherSourceDetail({
 
 function PublisherPublicationDetail({
   issue,
+  sourceById,
   onDeleteIssue,
   onUpdateIssue,
 }: {
-  issue: DemoIssue;
+  issue: BriefPublication;
+  sourceById: ReadonlyMap<string, BriefSource>;
   onDeleteIssue?: (id: string) => void;
-  onUpdateIssue?: (issue: DemoIssue) => void;
+  onUpdateIssue?: (issue: BriefPublication) => void;
 }) {
   const editable = Boolean(onUpdateIssue) && isEditableIssue(issue);
 
@@ -505,7 +559,10 @@ function PublisherPublicationDetail({
   function handleAddDocument() {
     onUpdateIssue?.({
       ...issue,
-      documents: [...issue.documents, createDraftDocument(issue.id, issue.documents.length + 1)],
+      documents: [
+        ...issue.documents,
+        createDraftDocument(issue.id, issue.sourceId, issue.documents.length + 1),
+      ],
     });
   }
 
@@ -519,7 +576,7 @@ function PublisherPublicationDetail({
 
   return (
     <PublicationDetail
-      issue={toPublicationDetailIssue(issue)}
+      issue={toPublicationDetailIssue(issue, sourceById)}
       editable={editable}
       getPdfHref={getPublicPdfUrl}
       onAddDocument={handleAddDocument}
@@ -534,16 +591,20 @@ function PublisherPublicationDetail({
 }
 
 function ClientFilsList({
-  issues,
+  sources,
+  publications,
+  publicContentStatus,
   onSelectFil,
 }: {
-  issues: readonly DemoIssue[];
+  sources: readonly BriefSource[];
+  publications: readonly BriefPublication[];
+  publicContentStatus: "loading" | "ready" | "error";
   onSelectFil: (filId: string) => void;
 }) {
-  const publishedIssues = issues.filter((issue) => issue.status === "published");
+  const publishedIssues = publications.filter((issue) => issue.status === "published");
   const defaultSubscriptions = useMemo(
-    () => Object.fromEntries(demoFils.map((fil) => [fil.id, fil.subscribed])),
-    [],
+    () => Object.fromEntries(sources.map((source) => [source.id, source.subscribed])),
+    [sources],
   );
   const [filSubscriptions, setFilSubscriptions] = useSessionState<Record<string, boolean>>(
     "brief:demo:client-fil-subscriptions:v1",
@@ -552,16 +613,16 @@ function ClientFilsList({
 
   const rows = useMemo<ClientFilTableRow[]>(() => {
     const publisherIssueSourceIds = new Set(publishedIssues.map((i) => i.sourceId));
-    return demoFils.map((fil) => ({
-      id: fil.id,
-      name: fil.name,
-      description: fil.description,
-      sourceType: fil.sourceType,
-      subscribed: filSubscriptions[fil.id] ?? fil.subscribed,
-      lastPublicationDate: computeFilLastDate(fil, publisherIssueSourceIds, publishedIssues),
-      publisherName: fil.publisherName,
+    return sources.map((source) => ({
+      id: source.id,
+      name: source.name,
+      description: source.description,
+      sourceType: source.kind === "publisher" ? "publisher_invite" : "public",
+      subscribed: filSubscriptions[source.id] ?? source.subscribed,
+      lastPublicationDate: computeSourceLastDate(source, publisherIssueSourceIds, publishedIssues),
+      publisherName: source.publisherName,
     }));
-  }, [filSubscriptions, publishedIssues]);
+  }, [filSubscriptions, publishedIssues, sources]);
 
   function handleToggleSubscribed(filId: string) {
     setFilSubscriptions((current) => ({
@@ -587,7 +648,16 @@ function ClientFilsList({
       </section>
 
       <section className="animate-in stagger-2">
-        <SectionHeader title="Fils" count={demoFils.length} />
+        <SectionHeader title="Fils" count={sources.length} />
+        {publicContentStatus === "loading" ? (
+          <p className="mt-2 text-sm text-muted">Chargement des sources publiques...</p>
+        ) : null}
+        {publicContentStatus === "error" ? (
+          <p className="mt-2 text-sm text-muted">
+            Sources publiques indisponibles. Démarrez l'API et le worker avec Postgres pour voir les
+            publications publiques ingérées.
+          </p>
+        ) : null}
         <div className="mt-3">
           <ClientFilsTable
             rows={rows}
@@ -602,22 +672,18 @@ function ClientFilsList({
 
 function ClientFilDetail({
   fil,
-  issues,
+  publications,
   onSelectIssue,
 }: {
-  fil: DemoFil;
-  issues: readonly DemoIssue[];
+  fil: BriefSource;
+  publications: readonly BriefPublication[];
   onSelectIssue: (issueId: string) => void;
 }) {
   const filIssues = useMemo(() => {
-    const publisherIssues = issues.filter(
-      (issue) => issue.sourceId === fil.id && issue.status === "published",
-    );
-    const publicIssues = publicSourceDemoIssues.filter((issue) => issue.sourceId === fil.id);
-    return [...publisherIssues, ...publicIssues].sort((a, b) =>
-      b.publicationDate.localeCompare(a.publicationDate),
-    );
-  }, [fil.id, issues]);
+    return publications
+      .filter((issue) => issue.sourceId === fil.id && issue.status === "published")
+      .sort((a, b) => (b.publicationDate ?? "").localeCompare(a.publicationDate ?? ""));
+  }, [fil.id, publications]);
 
   const publicationRows = useMemo(
     () =>
@@ -636,18 +702,30 @@ function ClientFilDetail({
       <section className="animate-in stagger-1">
         <SectionHeader title="Publications" count={filIssues.length} />
         <div className="mt-4">
-          <ClientPublicationsTable
-            publications={publicationRows}
-            onSelectPublication={onSelectIssue}
-          />
+          {publicationRows.length === 0 ? (
+            <div className="rounded-sm border border-rule bg-paper px-4 py-8 text-center text-sm text-muted">
+              Aucune publication publique ingérée pour cette source.
+            </div>
+          ) : (
+            <ClientPublicationsTable
+              publications={publicationRows}
+              onSelectPublication={onSelectIssue}
+            />
+          )}
         </div>
       </section>
     </div>
   );
 }
 
-function ClientPublicationDetail({ issue }: { issue: DemoIssue }) {
-  return <PublisherPublicationDetail issue={issue} />;
+function ClientPublicationDetail({
+  issue,
+  sourceById,
+}: {
+  issue: BriefPublication;
+  sourceById: ReadonlyMap<string, BriefSource>;
+}) {
+  return <PublisherPublicationDetail issue={issue} sourceById={sourceById} />;
 }
 
 function buildBreadcrumbs({
@@ -660,10 +738,10 @@ function buildBreadcrumbs({
   handleSelectSource,
 }: {
   role: DemoRole;
-  selectedIssue: DemoIssue | null;
-  selectedSource: DemoSubscriptionSource | null;
-  selectedFil: DemoFil | null;
-  selectedClientIssue: DemoIssue | null;
+  selectedIssue: BriefPublication | null;
+  selectedSource: BriefSource | null;
+  selectedFil: BriefSource | null;
+  selectedClientIssue: BriefPublication | null;
   applyDemoRoute: (route: DemoRoute) => void;
   handleSelectSource: (id: string | null) => void;
 }): readonly BreadcrumbItem[] {
@@ -685,7 +763,7 @@ function buildBreadcrumbs({
           onClick: () =>
             applyDemoRoute({ role: "client", sourceId: selectedFil.id, issueId: null }),
         },
-        { label: selectedClientIssue.title },
+        { label: selectedClientIssue.title, truncate: true },
       ];
     }
 
@@ -721,7 +799,7 @@ function buildBreadcrumbs({
               issueId: null,
             }),
         },
-        { label: selectedIssue.title },
+        { label: selectedIssue.title, truncate: true },
       ]
     : [{ label: selectedSource.name }];
 
@@ -735,11 +813,14 @@ function buildBreadcrumbs({
   ];
 }
 
-function toPublicationTableIssues(issues: readonly DemoIssue[]): PublicationTableIssue[] {
+function toPublicationTableIssues(
+  issues: readonly BriefPublication[],
+  sourceById?: ReadonlyMap<string, BriefSource>,
+): PublicationTableIssue[] {
   return issues.map((issue) => ({
     id: issue.id,
     title: issue.title,
-    sourceName: sourceById.get(issue.sourceId)?.name ?? "",
+    sourceName: sourceById?.get(issue.sourceId)?.name ?? "",
     publicationDate: issue.publicationDate,
     opens: issue.metrics.opens,
     downloads: issue.metrics.downloads,
@@ -748,26 +829,33 @@ function toPublicationTableIssues(issues: readonly DemoIssue[]): PublicationTabl
   }));
 }
 
-function computeFilLastDate(
-  fil: DemoFil,
+function computeSourceLastDate(
+  source: BriefSource,
   publisherSourceIds: ReadonlySet<string>,
-  publisherIssues: readonly DemoIssue[],
+  publisherIssues: readonly BriefPublication[],
 ): string | null {
-  if (!publisherSourceIds.has(fil.id)) return fil.lastPublicationDate;
-  let latest: string | null = fil.lastPublicationDate;
+  if (!publisherSourceIds.has(source.id)) return source.latestPublicationDate;
+  let latest: string | null = source.latestPublicationDate;
   for (const issue of publisherIssues) {
-    if (issue.sourceId === fil.id && (latest === null || issue.publicationDate > latest)) {
+    if (
+      issue.sourceId === source.id &&
+      issue.publicationDate &&
+      (latest === null || issue.publicationDate > latest)
+    ) {
       latest = issue.publicationDate;
     }
   }
   return latest;
 }
 
-function toPublicationDetailIssue(issue: DemoIssue): PublicationDetailIssue {
+function toPublicationDetailIssue(
+  issue: BriefPublication,
+  sourceById: ReadonlyMap<string, BriefSource>,
+): PublicationDetailIssue {
   return {
     id: issue.id,
     title: issue.title,
-    sourceName: sourceById.get(issue.sourceId)?.name ?? filById.get(issue.sourceId)?.name ?? "",
+    sourceName: sourceById.get(issue.sourceId)?.name ?? "",
     publicationDate: issue.publicationDate,
     status: issue.status,
     summary: issue.summary,
@@ -784,7 +872,7 @@ type SubscriberSessionState = {
 type CreatedSubscriberRow = SubscriberTableRow;
 
 function buildSubscriberRows(
-  source: DemoSubscriptionSource,
+  source: BriefSource,
   state: SubscriberSessionState,
 ): SubscriberTableRow[] {
   const baseDate = new Date(source.subscribedSince).getTime();
@@ -854,14 +942,18 @@ function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function isEditableIssue(issue: DemoIssue) {
-  return issue.status === "scheduled" && new Date(issue.publicationDate).getTime() > Date.now();
+function isEditableIssue(issue: BriefPublication) {
+  return (
+    issue.status === "scheduled" &&
+    issue.publicationDate !== null &&
+    new Date(issue.publicationDate).getTime() > Date.now()
+  );
 }
 
-function buildIssuesBySourceId(issues: readonly DemoIssue[]) {
-  const map = new Map<string, DemoIssue[]>();
+function buildPublicationsBySourceId(issues: readonly BriefPublication[]) {
+  const map = new Map<string, BriefPublication[]>();
   for (const issue of [...issues].sort((a, b) =>
-    b.publicationDate.localeCompare(a.publicationDate),
+    (b.publicationDate ?? "").localeCompare(a.publicationDate ?? ""),
   )) {
     const sourceIssues = map.get(issue.sourceId) ?? [];
     sourceIssues.push(issue);
@@ -870,7 +962,7 @@ function buildIssuesBySourceId(issues: readonly DemoIssue[]) {
   return map;
 }
 
-function cloneIssue(issue: DemoIssue): DemoIssue {
+function clonePublication(issue: BriefPublication): BriefPublication {
   return {
     ...issue,
     documents: issue.documents.map((document) => ({
@@ -881,17 +973,19 @@ function cloneIssue(issue: DemoIssue): DemoIssue {
   };
 }
 
-function createDraftIssue(sourceId: string): DemoIssue {
-  const id = `issue_demo_${Date.now()}`;
+function createDraftPublication(sourceId: string): BriefPublication {
+  const id = `publication_local_${Date.now()}`;
   const publicationDate = new Date(Date.now() + 86_400_000 * 7).toISOString();
   return {
     id,
     sourceId,
+    sourceKind: "publisher",
     title: "Nouvelle publication",
     publicationDate,
     status: "scheduled",
     summary: "Résumé éditable de la publication planifiée.",
-    documents: [createDraftDocument(id, 1)],
+    canonicalUrl: null,
+    documents: [createDraftDocument(id, sourceId, 1)],
     metrics: {
       opens: 0,
       downloads: 0,
@@ -900,18 +994,25 @@ function createDraftIssue(sourceId: string): DemoIssue {
   };
 }
 
-function createDraftDocument(issueId: string, index: number): DemoIssue["documents"][number] {
-  const id = `doc_demo_${Date.now()}_${index}`;
+function createDraftDocument(
+  issueId: string,
+  sourceId: string,
+  index: number,
+): BriefPublication["documents"][number] {
+  const id = `document_local_${Date.now()}_${index}`;
   return {
     id,
-    issueId,
+    publicationId: issueId,
+    sourceId,
     title: `Document ${index}`,
-    fileName: "",
+    fileName: null,
     pageCount: 1,
     language: "fr",
-    indexingStatus: "indexed",
-    storagePath: "",
-    extractedTextPreview: "Description éditable du document.",
+    documentType: "pdf",
+    storagePath: null,
+    canonicalUrl: null,
+    hostedContentUrl: null,
+    textPreview: "Description éditable du document.",
     metrics: {
       opens: 0,
       downloads: 0,
@@ -921,11 +1022,31 @@ function createDraftDocument(issueId: string, index: number): DemoIssue["documen
 }
 
 function getPublicPdfUrl(document: PublicationDocument) {
+  if (document.canonicalUrl) return document.canonicalUrl;
   if (!document.storagePath || document.storagePath.startsWith("indexeddb://")) return null;
   const path = document.storagePath.startsWith("/")
     ? document.storagePath
     : `/${document.storagePath}`;
   return typeof window === "undefined" ? path : new URL(path, window.location.origin).href;
+}
+
+function resolveHostedContentUrl(url: string | null) {
+  if (!url) return null;
+  if (/^https?:\/\//i.test(url)) return url;
+  return new URL(url, publicApiBaseUrl).href;
+}
+
+function normalizePublicContentUrls(content: PublicSourcesResponse): PublicSourcesResponse {
+  return {
+    ...content,
+    publications: content.publications.map((publication) => ({
+      ...publication,
+      documents: publication.documents.map((document) => ({
+        ...document,
+        hostedContentUrl: resolveHostedContentUrl(document.hostedContentUrl),
+      })),
+    })),
+  };
 }
 
 async function openStoredDemoPdf(document: PublicationDocument): Promise<OpenStoredPdfResult> {
