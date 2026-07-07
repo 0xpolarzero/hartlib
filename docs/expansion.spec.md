@@ -22,6 +22,8 @@ The MVP ingestion model is PDF upload with optional EPUB upload.
 
 Public recurring sources may later appear as opt-in marketplace sources for client search and AI context.
 
+The demo already previews this marketplace: public sources from `packages/source-ingestion` appear alongside publisher invitation sources as unified fils in the client UI, with a subscribed checkbox and a source-type distinction. The MVP access model remains publisher invite only.
+
 Initial public-source marketplace research lives in `docs/public-source-marketplace.research.md`.
 
 ## Future Access Discovery

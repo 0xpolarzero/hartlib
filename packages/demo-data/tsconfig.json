@@ -3,5 +3,5 @@
   "compilerOptions": {
     "composite": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "../source-ingestion/src/**/*.ts"]
 }

@@ -6,9 +6,15 @@
     "baseUrl": ".",
     "paths": {
       "@brief/demo-data": ["../../packages/demo-data/src/index.ts"],
+      "@brief/source-ingestion": ["../../packages/source-ingestion/src/index.ts"],
       "@brief/ui": ["../../packages/ui/src/index.ts"],
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "../../packages/demo-data/src", "../../packages/ui/src"]
+  "include": [
+    "src",
+    "../../packages/demo-data/src",
+    "../../packages/source-ingestion/src",
+    "../../packages/ui/src"
+  ]
 }

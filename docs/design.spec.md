@@ -45,7 +45,7 @@ The demo has two seeded accounts:
 
 The demo lets the user switch between the publisher and client views.
 
-The demo exposes publisher and client views as routable pages. Publisher paths include `/publisher`, `/publisher/sources/:sourceId`, and `/publisher/sources/:sourceId/publications/:issueId`. Client paths include `/client` and `/client/publications/:issueId`.
+The demo exposes publisher and client views as routable pages. Publisher paths include `/publisher`, `/publisher/sources/:sourceId`, and `/publisher/sources/:sourceId/publications/:issueId`. Client paths include `/client`, `/client/sources/:sourceId`, and `/client/sources/:sourceId/publications/:issueId`.
 
 Demo breadcrumbs use those real paths as navigation links.
 
@@ -75,7 +75,7 @@ The demo chat is pre-populated with a long representative message history that e
 
 The demo does not send new chat messages.
 
-The client demo root centers on one chat and a compact table of delivered publications with an unlabeled row action for showing or hiding each publication from the assistant. Hidden publications are greyed, sorted below visible publications, and excluded from the chat context, so the assistant does not know them.
+The client demo root centers on one chat and a compact table of fils. Fils include both publisher invitation sources and public marketplace sources, unified as a single source kind. Each fil row shows the source name, a source-type distinction (invitation vs public), the latest publication date, and a subscribed checkbox. The per-publication AI hide/show action has been removed from the client publications list.
 
 The demo client already has an active AI plan.
 

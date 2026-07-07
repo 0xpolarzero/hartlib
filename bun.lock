@@ -41,6 +41,7 @@
       "name": "@brief/demo",
       "dependencies": {
         "@brief/demo-data": "workspace:*",
+        "@brief/source-ingestion": "workspace:*",
         "@brief/ui": "workspace:*",
         "lucide-react": "1.21.0",
         "react": "19.2.7",
@@ -120,6 +121,9 @@
     },
     "packages/demo-data": {
       "name": "@brief/demo-data",
+      "dependencies": {
+        "@brief/source-ingestion": "workspace:*",
+      },
       "devDependencies": {
         "typescript": "6.0.3",
         "vitest": "4.1.9",

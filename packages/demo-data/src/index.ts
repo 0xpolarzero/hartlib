@@ -760,3 +760,36 @@ export const demoDataset: DemoDataset = {
   chats: demoChats,
   artifacts: demoArtifacts,
 };
+
+import {
+  buildDemoFils,
+  publicSourceDemoIssues,
+  type DemoFil,
+  type DemoFilSourceType,
+} from "./demo-fils";
+
+export { buildDemoFils, publicSourceDemoIssues, type DemoFil, type DemoFilSourceType };
+
+export const demoFils: readonly DemoFil[] = buildDemoFils(demoSources, demoIssues);
+
+export function getDemoFilById(filId: string): DemoFil | undefined {
+  return demoFils.find((fil) => fil.id === filId);
+}
+
+export function getDemoIssuesByFilId(filId: string): readonly DemoIssue[] {
+  const publisherIssues = demoIssues.filter((issue) => issue.sourceId === filId);
+  const publicIssues = publicSourceDemoIssues.filter((issue) => issue.sourceId === filId);
+  return [...publisherIssues, ...publicIssues].sort((a, b) =>
+    b.publicationDate.localeCompare(a.publicationDate),
+  );
+}
+
+export function getAllDemoIssues(): readonly DemoIssue[] {
+  return [...demoIssues, ...publicSourceDemoIssues];
+}
+
+export function findDemoIssueById(issueId: string): DemoIssue | undefined {
+  const publisherIssue = demoIssues.find((issue) => issue.id === issueId);
+  if (publisherIssue) return publisherIssue;
+  return publicSourceDemoIssues.find((issue) => issue.id === issueId);
+}

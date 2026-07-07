@@ -231,6 +231,8 @@ These sources fit a marketplace because they are recurring, French-first, useful
 
 They should appear as public-source cards, not as publisher subscriptions.
 
+In the demo, public sources already appear alongside publisher invitation sources as unified fils in the client UI. Both source types share the same fil → publications → detail navigation. The source-type distinction (invitation vs public) is a small visible badge, not a separate product surface. This reflects the product model where both publisher and public sources converge toward one source/document interface for users and agents.
+
 Each card should make clear:
 
 - the source is public

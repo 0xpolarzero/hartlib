@@ -4,13 +4,18 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   demoDataset,
+  demoFils,
+  publicSourceDemoIssues,
+  type DemoFil,
   type DemoIssue,
   type DemoRole,
   type DemoSubscriptionSource,
 } from "@brief/demo-data";
+import { type DemoRoute, buildDemoPath, getDemoRouteFromPath, resolveDemoRoute } from "./routing";
 import {
   Breadcrumbs,
   Button,
+  ClientFilsTable,
   ClientPublicationsTable,
   PublicationDetail,
   PublicationsTable,
@@ -27,7 +32,7 @@ import {
   TooltipTrigger,
   VirtualizedChatTranscript,
   type BreadcrumbItem,
-  type ClientPublicationTableRow,
+  type ClientFilTableRow,
   type DraftSubscriber,
   type DraftSubscriberErrors,
   type OpenStoredPdfResult,
@@ -42,6 +47,7 @@ import {
 import "./styles.css";
 
 const sourceById = new Map(demoDataset.sources.map((s) => [s.id, s]));
+const filById = new Map(demoFils.map((fil) => [fil.id, fil]));
 const primaryChat = demoDataset.chats[0];
 const demoSubscriberProfiles = [
   {
@@ -65,96 +71,6 @@ function isDemoPdfPath(pathname: string) {
   return pathname.startsWith("/demo/pdfs/") && pathname.endsWith(".pdf");
 }
 
-type DemoRoute = {
-  role: DemoRole;
-  sourceId: string | null;
-  issueId: string | null;
-};
-
-function getDemoRouteFromPath(
-  pathname = typeof window === "undefined" ? "" : window.location.pathname,
-): DemoRoute {
-  const [scope, segment, sourceId, nestedSegment, issueId] = pathname
-    .split("/")
-    .filter(Boolean)
-    .map(decodeURIComponent);
-
-  if (scope === "client") {
-    return {
-      role: "client",
-      sourceId: null,
-      issueId: segment === "publications" ? (sourceId ?? null) : null,
-    };
-  }
-
-  if (scope === "publisher" && segment === "sources") {
-    return {
-      role: "publisher",
-      sourceId: sourceId ?? null,
-      issueId: nestedSegment === "publications" ? (issueId ?? null) : null,
-    };
-  }
-
-  return {
-    role: "publisher",
-    sourceId: null,
-    issueId: null,
-  };
-}
-
-function buildDemoPath(route: DemoRoute) {
-  if (route.role === "client") {
-    return route.issueId ? `/client/publications/${encodeURIComponent(route.issueId)}` : "/client";
-  }
-
-  if (!route.sourceId) return "/publisher";
-
-  const sourcePath = `/publisher/sources/${encodeURIComponent(route.sourceId)}`;
-  return route.issueId
-    ? `${sourcePath}/publications/${encodeURIComponent(route.issueId)}`
-    : sourcePath;
-}
-
-function resolveDemoRoute(route: DemoRoute, issues: readonly DemoIssue[]): DemoRoute {
-  if (route.role === "client") {
-    if (!route.issueId) {
-      return { role: "client", sourceId: null, issueId: null };
-    }
-
-    const issue = issues.find(
-      (candidate) => candidate.id === route.issueId && candidate.status === "published",
-    );
-    if (!issue) return { role: "client", sourceId: null, issueId: null };
-
-    return {
-      role: "client",
-      sourceId: issue.sourceId,
-      issueId: issue.id,
-    };
-  }
-
-  if (!route.sourceId || !sourceById.has(route.sourceId)) {
-    return { role: "publisher", sourceId: null, issueId: null };
-  }
-
-  if (!route.issueId) {
-    return { role: "publisher", sourceId: route.sourceId, issueId: null };
-  }
-
-  const issue = issues.find(
-    (candidate) => candidate.id === route.issueId && candidate.sourceId === route.sourceId,
-  );
-  if (!issue) {
-    return { role: "publisher", sourceId: route.sourceId, issueId: null };
-  }
-
-  return {
-    role: "publisher",
-    sourceId: route.sourceId,
-    issueId: issue.id,
-  };
-}
-
 function readInitialDemoIssues() {
   const fallback = demoDataset.issues.map(cloneIssue);
   if (typeof window === "undefined") return fallback;
@@ -168,7 +84,10 @@ function readInitialDemoIssues() {
 
 function App() {
   const initialIssues = useMemo(readInitialDemoIssues, []);
-  const initialRoute = useMemo(() => resolveDemoRoute(getDemoRouteFromPath(), initialIssues), []);
+  const initialRoute = useMemo(
+    () => resolveDemoRoute(getDemoRouteFromPath(window.location.pathname), initialIssues),
+    [],
+  );
   const [role, setRole] = useState<DemoRole>(() => initialRoute.role);
   const [issues, setIssues, resetIssues] = useSessionState<DemoIssue[]>(
     "brief:demo:issues:v1",
@@ -201,10 +120,10 @@ function App() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    applyDemoRoute(getDemoRouteFromPath(), "replace");
+    applyDemoRoute(getDemoRouteFromPath(window.location.pathname), "replace");
 
     function handlePopState() {
-      applyDemoRoute(getDemoRouteFromPath(), "replace");
+      applyDemoRoute(getDemoRouteFromPath(window.location.pathname), "replace");
     }
 
     window.addEventListener("popstate", handlePopState);
@@ -248,6 +167,13 @@ function App() {
   const selectedIssue =
     selectedSource && selectedIssueId
       ? ((issuesBySourceId.get(selectedSource.id) ?? []).find(
+          (issue) => issue.id === selectedIssueId,
+        ) ?? null)
+      : null;
+  const selectedFil = selectedSourceId ? (filById.get(selectedSourceId) ?? null) : null;
+  const selectedClientIssue =
+    selectedSourceId && selectedIssueId
+      ? ([...issues.filter((i) => i.status === "published"), ...publicSourceDemoIssues].find(
           (issue) => issue.id === selectedIssueId,
         ) ?? null)
       : null;
@@ -309,6 +235,8 @@ function App() {
                   role,
                   selectedIssue,
                   selectedSource,
+                  selectedFil,
+                  selectedClientIssue,
                   applyDemoRoute,
                   handleSelectSource,
                 })}
@@ -344,17 +272,25 @@ function App() {
               )}
             </TabsContent>
             <TabsContent value="client" className="mt-0">
-              {selectedIssue ? (
-                <ClientPublicationDetail issue={selectedIssue} />
-              ) : (
-                <ClientSourcesList
+              {selectedFil && selectedClientIssue ? (
+                <ClientPublicationDetail issue={selectedClientIssue} />
+              ) : selectedFil ? (
+                <ClientFilDetail
+                  fil={selectedFil}
                   issues={issues}
-                  onSelectIssue={(issue) =>
+                  onSelectIssue={(issueId) =>
                     applyDemoRoute({
                       role: "client",
-                      sourceId: issue.sourceId,
-                      issueId: issue.id,
+                      sourceId: selectedFil.id,
+                      issueId,
                     })
+                  }
+                />
+              ) : (
+                <ClientFilsList
+                  issues={issues}
+                  onSelectFil={(filId) =>
+                    applyDemoRoute({ role: "client", sourceId: filId, issueId: null })
                   }
                 />
               )}
@@ -597,28 +533,41 @@ function PublisherPublicationDetail({
   );
 }
 
-function ClientSourcesList({
+function ClientFilsList({
   issues,
-  onSelectIssue,
+  onSelectFil,
 }: {
   issues: readonly DemoIssue[];
-  onSelectIssue: (issue: DemoIssue) => void;
+  onSelectFil: (filId: string) => void;
 }) {
   const publishedIssues = issues.filter((issue) => issue.status === "published");
-  const [excludedIssueIds, setExcludedIssueIds] = useSessionState<readonly string[]>(
-    "brief:demo:client-context-exclusions:v1",
+  const defaultSubscriptions = useMemo(
+    () => Object.fromEntries(demoFils.map((fil) => [fil.id, fil.subscribed])),
     [],
   );
-  const excludedIssueIdSet = useMemo(() => new Set(excludedIssueIds), [excludedIssueIds]);
-  const publicationById = useMemo(
-    () => new Map(publishedIssues.map((issue) => [issue.id, issue])),
-    [publishedIssues],
+  const [filSubscriptions, setFilSubscriptions] = useSessionState<Record<string, boolean>>(
+    "brief:demo:client-fil-subscriptions:v1",
+    defaultSubscriptions,
   );
 
-  function handleToggleContext(issueId: string) {
-    setExcludedIssueIds((current) =>
-      current.includes(issueId) ? current.filter((id) => id !== issueId) : [...current, issueId],
-    );
+  const rows = useMemo<ClientFilTableRow[]>(() => {
+    const publisherIssueSourceIds = new Set(publishedIssues.map((i) => i.sourceId));
+    return demoFils.map((fil) => ({
+      id: fil.id,
+      name: fil.name,
+      description: fil.description,
+      sourceType: fil.sourceType,
+      subscribed: filSubscriptions[fil.id] ?? fil.subscribed,
+      lastPublicationDate: computeFilLastDate(fil, publisherIssueSourceIds, publishedIssues),
+      publisherName: fil.publisherName,
+    }));
+  }, [filSubscriptions, publishedIssues]);
+
+  function handleToggleSubscribed(filId: string) {
+    setFilSubscriptions((current) => ({
+      ...current,
+      [filId]: !(current[filId] ?? true),
+    }));
   }
 
   return (
@@ -638,15 +587,58 @@ function ClientSourcesList({
       </section>
 
       <section className="animate-in stagger-2">
-        <SectionHeader title="Publications" count={publishedIssues.length} />
+        <SectionHeader title="Fils" count={demoFils.length} />
         <div className="mt-3">
+          <ClientFilsTable
+            rows={rows}
+            onSelectFil={onSelectFil}
+            onToggleSubscribed={handleToggleSubscribed}
+          />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ClientFilDetail({
+  fil,
+  issues,
+  onSelectIssue,
+}: {
+  fil: DemoFil;
+  issues: readonly DemoIssue[];
+  onSelectIssue: (issueId: string) => void;
+}) {
+  const filIssues = useMemo(() => {
+    const publisherIssues = issues.filter(
+      (issue) => issue.sourceId === fil.id && issue.status === "published",
+    );
+    const publicIssues = publicSourceDemoIssues.filter((issue) => issue.sourceId === fil.id);
+    return [...publisherIssues, ...publicIssues].sort((a, b) =>
+      b.publicationDate.localeCompare(a.publicationDate),
+    );
+  }, [fil.id, issues]);
+
+  const publicationRows = useMemo(
+    () =>
+      filIssues.map((issue) => ({
+        id: issue.id,
+        title: issue.title,
+        publicationDate: issue.publicationDate,
+      })),
+    [filIssues],
+  );
+
+  return (
+    <div className="space-y-8">
+      <p className="font-serif text-sm leading-6 text-muted">{fil.description}</p>
+
+      <section className="animate-in stagger-1">
+        <SectionHeader title="Publications" count={filIssues.length} />
+        <div className="mt-4">
           <ClientPublicationsTable
-            publications={toClientPublicationRows(publishedIssues, excludedIssueIdSet)}
-            onSelectPublication={(issueId) => {
-              const issue = publicationById.get(issueId);
-              if (issue) onSelectIssue(issue);
-            }}
-            onToggleContext={handleToggleContext}
+            publications={publicationRows}
+            onSelectPublication={onSelectIssue}
           />
         </div>
       </section>
@@ -662,26 +654,53 @@ function buildBreadcrumbs({
   role,
   selectedIssue,
   selectedSource,
+  selectedFil,
+  selectedClientIssue,
   applyDemoRoute,
   handleSelectSource,
 }: {
   role: DemoRole;
   selectedIssue: DemoIssue | null;
   selectedSource: DemoSubscriptionSource | null;
+  selectedFil: DemoFil | null;
+  selectedClientIssue: DemoIssue | null;
   applyDemoRoute: (route: DemoRoute) => void;
   handleSelectSource: (id: string | null) => void;
 }): readonly BreadcrumbItem[] {
   if (role === "client") {
-    return selectedIssue
-      ? [
-          {
-            label: "Chat",
-            href: buildDemoPath({ role: "client", sourceId: null, issueId: null }),
-            onClick: () => applyDemoRoute({ role: "client", sourceId: null, issueId: null }),
-          },
-          { label: selectedIssue.title },
-        ]
-      : [{ label: "Chat" }];
+    if (selectedFil && selectedClientIssue) {
+      return [
+        {
+          label: "Chat",
+          href: buildDemoPath({ role: "client", sourceId: null, issueId: null }),
+          onClick: () => applyDemoRoute({ role: "client", sourceId: null, issueId: null }),
+        },
+        {
+          label: selectedFil.name,
+          href: buildDemoPath({
+            role: "client",
+            sourceId: selectedFil.id,
+            issueId: null,
+          }),
+          onClick: () =>
+            applyDemoRoute({ role: "client", sourceId: selectedFil.id, issueId: null }),
+        },
+        { label: selectedClientIssue.title },
+      ];
+    }
+
+    if (selectedFil) {
+      return [
+        {
+          label: "Chat",
+          href: buildDemoPath({ role: "client", sourceId: null, issueId: null }),
+          onClick: () => applyDemoRoute({ role: "client", sourceId: null, issueId: null }),
+        },
+        { label: selectedFil.name },
+      ];
+    }
+
+    return [{ label: "Chat" }];
   }
 
   if (!selectedSource) return [{ label: "Fils" }];
@@ -729,24 +748,26 @@ function toPublicationTableIssues(issues: readonly DemoIssue[]): PublicationTabl
   }));
 }
 
-function toClientPublicationRows(
-  issues: readonly DemoIssue[],
-  excludedIssueIds: ReadonlySet<string>,
-): ClientPublicationTableRow[] {
-  return issues.map((issue) => ({
-    id: issue.id,
-    sourceName: sourceById.get(issue.sourceId)?.name ?? "",
-    title: issue.title,
-    publicationDate: issue.publicationDate,
-    includedInContext: !excludedIssueIds.has(issue.id),
-  }));
+function computeFilLastDate(
+  fil: DemoFil,
+  publisherSourceIds: ReadonlySet<string>,
+  publisherIssues: readonly DemoIssue[],
+): string | null {
+  if (!publisherSourceIds.has(fil.id)) return fil.lastPublicationDate;
+  let latest: string | null = fil.lastPublicationDate;
+  for (const issue of publisherIssues) {
+    if (issue.sourceId === fil.id && (latest === null || issue.publicationDate > latest)) {
+      latest = issue.publicationDate;
+    }
+  }
+  return latest;
 }
 
 function toPublicationDetailIssue(issue: DemoIssue): PublicationDetailIssue {
   return {
     id: issue.id,
     title: issue.title,
-    sourceName: sourceById.get(issue.sourceId)?.name ?? "",
+    sourceName: sourceById.get(issue.sourceId)?.name ?? filById.get(issue.sourceId)?.name ?? "",
     publicationDate: issue.publicationDate,
     status: issue.status,
     summary: issue.summary,

@@ -9,6 +9,11 @@ export {
   type ScheduledPublicationIconProps,
 } from "./components/publications/scheduled-publication-icon";
 export {
+  ClientFilsTable,
+  type ClientFilTableRow,
+  type ClientFilSourceType,
+} from "./components/publications/client-fils-table";
+export {
   ClientPublicationsTable,
   type ClientPublicationTableRow,
 } from "./components/publications/client-publications-table";

@@ -7,7 +7,10 @@
   },
   "scripts": {
     "build": "tsc -b --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --root ../.."
+  },
+  "dependencies": {
+    "@brief/source-ingestion": "workspace:*"
   },
   "devDependencies": {
     "typescript": "6.0.3",
