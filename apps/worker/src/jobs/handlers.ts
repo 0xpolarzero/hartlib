@@ -63,10 +63,13 @@ const handlePublicSourceIngestionJob = (
     });
 
     if (stats.failedCount > 0) {
-      return yield* Effect.fail(
-        new Error(
-          `public source ingestion had ${stats.failedCount} failed item(s): ${stats.storedDocumentCount} stored`,
-        ),
+      yield* Effect.logWarning("public source ingestion completed with item failures").pipe(
+        Effect.annotateLogs({
+          sourceId: stats.sourceId,
+          mode: stats.mode,
+          failedCount: stats.failedCount,
+          storedDocumentCount: stats.storedDocumentCount,
+        }),
       );
     }
 

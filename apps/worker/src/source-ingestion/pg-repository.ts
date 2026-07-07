@@ -102,7 +102,7 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
             ${source.description},
             ${source.ingestionMethod},
             ${source.discoveryUrl},
-            ${sql.json(source.discoveryUrls ?? [source.discoveryUrl])},
+            ${JSON.stringify(source.discoveryUrls ?? [source.discoveryUrl])}::jsonb,
             ${source.contentUrl ?? null},
             ${source.expectedCadence},
             ${source.averageCharsPerItem},
