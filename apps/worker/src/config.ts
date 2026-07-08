@@ -7,6 +7,8 @@ export interface WorkerConfig {
   readonly publicSourcePollIntervalMs: number;
   readonly publicSourceStartupBackfillDays: number;
   readonly publicSourceOperationTimeoutMs: number;
+  readonly aiSearchMaxLimit: number;
+  readonly aiSearchRecencyHalfLifeDays: number;
   readonly nodeEnv: string;
 }
 
@@ -26,6 +28,10 @@ export const loadWorkerConfig = Effect.gen(function* () {
   const publicSourceOperationTimeoutMs = yield* Config.number(
     "PUBLIC_SOURCE_OPERATION_TIMEOUT_MS",
   ).pipe(Config.withDefault(60_000));
+  const aiSearchMaxLimit = yield* Config.number("AI_SEARCH_MAX_LIMIT").pipe(Config.withDefault(20));
+  const aiSearchRecencyHalfLifeDays = yield* Config.number("AI_SEARCH_RECENCY_HALF_LIFE_DAYS").pipe(
+    Config.withDefault(14),
+  );
   const nodeEnv = yield* Config.string("NODE_ENV").pipe(Config.withDefault("development"));
   const runMigrationsOnStartup = yield* Config.boolean("WORKER_RUN_MIGRATIONS_ON_STARTUP").pipe(
     Config.withDefault(nodeEnv !== "production"),
@@ -38,6 +44,8 @@ export const loadWorkerConfig = Effect.gen(function* () {
     publicSourcePollIntervalMs,
     publicSourceStartupBackfillDays,
     publicSourceOperationTimeoutMs,
+    aiSearchMaxLimit,
+    aiSearchRecencyHalfLifeDays,
     nodeEnv,
   } satisfies WorkerConfig;
 });
