@@ -9,6 +9,10 @@ export interface WorkerConfig {
   readonly publicSourceOperationTimeoutMs: number;
   readonly aiSearchMaxLimit: number;
   readonly aiSearchRecencyHalfLifeDays: number;
+  readonly aiContextBlockBudget: number;
+  readonly aiContextBlockHardCap: number;
+  readonly aiFullDocMaxChars: number;
+  readonly aiHistoryMaxMessages: number;
   readonly nodeEnv: string;
 }
 
@@ -32,6 +36,18 @@ export const loadWorkerConfig = Effect.gen(function* () {
   const aiSearchRecencyHalfLifeDays = yield* Config.number("AI_SEARCH_RECENCY_HALF_LIFE_DAYS").pipe(
     Config.withDefault(14),
   );
+  const aiContextBlockBudget = yield* Config.number("AI_CONTEXT_BLOCK_BUDGET").pipe(
+    Config.withDefault(60_000),
+  );
+  const aiContextBlockHardCap = yield* Config.number("AI_CONTEXT_BLOCK_HARD_CAP").pipe(
+    Config.withDefault(100_000),
+  );
+  const aiFullDocMaxChars = yield* Config.number("AI_FULL_DOC_MAX_CHARS").pipe(
+    Config.withDefault(12_000),
+  );
+  const aiHistoryMaxMessages = yield* Config.number("AI_HISTORY_MAX_MESSAGES").pipe(
+    Config.withDefault(30),
+  );
   const nodeEnv = yield* Config.string("NODE_ENV").pipe(Config.withDefault("development"));
   const runMigrationsOnStartup = yield* Config.boolean("WORKER_RUN_MIGRATIONS_ON_STARTUP").pipe(
     Config.withDefault(nodeEnv !== "production"),
@@ -46,6 +62,10 @@ export const loadWorkerConfig = Effect.gen(function* () {
     publicSourceOperationTimeoutMs,
     aiSearchMaxLimit,
     aiSearchRecencyHalfLifeDays,
+    aiContextBlockBudget,
+    aiContextBlockHardCap,
+    aiFullDocMaxChars,
+    aiHistoryMaxMessages,
     nodeEnv,
   } satisfies WorkerConfig;
 });
