@@ -198,6 +198,8 @@ export const demoSources: readonly BriefSource[] = [
     name: "Veille Réglementation Financière",
     publisherName: demoPublisherCompany.name,
     description: "Brief hebdomadaire sur l'AMF, l'ACPR, l'ESMA et les obligations de conformité.",
+    country: "FR",
+    language: "fr-FR",
     subscribed: true,
     subscribedSince: "2025-11-03T09:00:00.000Z",
     subscriberCount: 3,
@@ -214,6 +216,8 @@ export const demoSources: readonly BriefSource[] = [
     publisherName: demoPublisherCompany.name,
     description:
       "Analyse mensuelle des politiques énergétiques, prix, capacités et appels d'offres.",
+    country: "FR",
+    language: "fr-FR",
     subscribed: true,
     subscribedSince: "2025-08-18T09:00:00.000Z",
     subscriberCount: 1,

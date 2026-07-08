@@ -6,6 +6,8 @@ const source = {
   display_name: "Assemblee nationale",
   publisher_name: "Assemblee nationale",
   description: "Parliamentary documents.",
+  country: "FR",
+  language: "fr-FR",
   created_at: new Date("2026-07-07T10:00:00.000Z"),
 };
 
@@ -134,5 +136,23 @@ describe("publicSourcesResponseFromRows", () => {
 
     expect(response.sources[0]?.latestPublicationDate).toBe("2026-07-07T16:30:00.000Z");
     expect(response.publications[0]?.publicationDate).toBe("2026-07-07T16:30:00.000Z");
+  });
+
+  it("excludes publications whose source is not in the (market-filtered) sources set", () => {
+    // Simulate a `?market=US` response: the sources array is scoped to a US
+    // source, but the items/documents queries return a readable FR publication.
+    // The FR publication must NOT leak into the response.
+    const usSource = {
+      ...source,
+      source_id: "us_source",
+      display_name: "US Source",
+      country: "US",
+    };
+
+    const response = publicSourcesResponseFromRows([usSource], [item], [document]);
+
+    expect(response.sources).toHaveLength(1);
+    expect(response.sources[0]?.id).toBe("us_source");
+    expect(response.publications).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import type { Effect } from "effect";
+import type { Locale, Market } from "@brief/shared";
 
 export type PublicSourceId = "service_public" | "bofip_impots" | "tresor" | "assemblee_nationale";
 
@@ -15,6 +16,8 @@ export type PublicSourceDefinition = {
   readonly displayName: string;
   readonly publisherName: string;
   readonly description: string;
+  readonly country: Market;
+  readonly language: Locale;
   readonly ingestionMethod: SourceIngestionMethod;
   readonly discoveryUrl: string;
   readonly discoveryUrls?: readonly string[];

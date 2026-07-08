@@ -1,6 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
 import { Config, Effect, Redacted } from "effect";
-import type { PublicSourcesResponse } from "@brief/shared";
+import {
+  DEFAULT_LOCALE,
+  DEFAULT_MARKET,
+  isLocale,
+  isMarket,
+  type PublicSourcesResponse,
+} from "@brief/shared";
 import { json, type Route } from "../http";
 
 type SourceRow = {
@@ -8,6 +14,8 @@ type SourceRow = {
   readonly display_name: string;
   readonly publisher_name: string;
   readonly description: string;
+  readonly country: string;
+  readonly language: string;
   readonly created_at: Date;
 };
 
@@ -77,7 +85,11 @@ export const publicSourcesResponseFromRows = (
   documents: readonly DocumentRow[],
 ): PublicSourcesResponse => {
   const documentsById = new Map(documents.map((document) => [document.document_id, document]));
+  // Publications must belong to a source in the (possibly market-filtered) sources set,
+  // otherwise a `?market=` filter would leak publications from excluded sources.
+  const sourceIds = new Set(sources.map((source) => source.source_id));
   const visibleItems = items.filter((item) => {
+    if (!sourceIds.has(item.source_id)) return false;
     if (!item.current_content_hash || !item.latest_document_id || !item.latest_raw_artifact_id) {
       return false;
     }
@@ -112,6 +124,8 @@ export const publicSourcesResponseFromRows = (
         name: source.display_name,
         publisherName: source.publisher_name,
         description: source.description,
+        country: isMarket(source.country) ? source.country : DEFAULT_MARKET,
+        language: isLocale(source.language) ? source.language : DEFAULT_LOCALE,
         subscribed: true,
         subscribedSince: source.created_at.toISOString(),
         subscriberCount: 0,
@@ -161,15 +175,25 @@ export const publicSourcesResponseFromRows = (
   } satisfies PublicSourcesResponse;
 };
 
-const listPublicSources = (): Effect.Effect<PublicSourcesResponse, never, PgClient.PgClient> =>
+const listPublicSources = (
+  market?: string,
+): Effect.Effect<PublicSourcesResponse, never, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
 
-    const sources = yield* sql<SourceRow>`
-      select source_id, display_name, publisher_name, description, created_at
-      from public_sources
-      order by display_name asc
-    `;
+    const sources =
+      market !== undefined
+        ? yield* sql<SourceRow>`
+            select source_id, display_name, publisher_name, description, country, language, created_at
+            from public_sources
+            where country = ${market}
+            order by display_name asc
+          `
+        : yield* sql<SourceRow>`
+            select source_id, display_name, publisher_name, description, country, language, created_at
+            from public_sources
+            order by display_name asc
+          `;
 
     const items = yield* sql<ItemRow>`
       select
@@ -236,7 +260,13 @@ const PgLayer = PgClient.layerConfig({
 export const publicSourcesRoute: Route = {
   method: "GET",
   pattern: /^\/public-sources\/?$/,
-  handle: () => listPublicSources().pipe(Effect.provide(PgLayer), Effect.map(json)),
+  handle: (_request, url) => {
+    const market = url.searchParams.get("market");
+    // Lenient: an absent or unrecognized market returns the unfiltered list rather
+    // than erroring. Only a syntactically valid market (FR|US) scopes the response.
+    const scopedMarket = market !== null && isMarket(market) ? market : undefined;
+    return listPublicSources(scopedMarket).pipe(Effect.provide(PgLayer), Effect.map(json));
+  },
 };
 
 const readPublicSourceDocumentContent = (

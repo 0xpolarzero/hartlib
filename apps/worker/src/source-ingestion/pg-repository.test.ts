@@ -13,6 +13,8 @@ const source = {
   displayName: "Direction generale du Tresor",
   publisherName: "Direction generale du Tresor",
   description: "Treasury publications.",
+  country: "FR",
+  language: "fr-FR",
   ingestionMethod: "atom_feed",
   discoveryUrl: "https://example.test/feed",
   contentFormats: ["html", "text"],

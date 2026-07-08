@@ -8,6 +8,8 @@ const source = {
   displayName: "BOFiP / impots.gouv.fr",
   publisherName: "Direction generale des Finances publiques",
   description: "French tax doctrine updates and official tax guidance news.",
+  country: "FR",
+  language: "fr-FR",
   ingestionMethod: "json_dataset",
   discoveryUrl:
     "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/bofip-vigueur/records",

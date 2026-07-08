@@ -8,6 +8,8 @@ const rssSource = {
   displayName: "Assemblee nationale",
   publisherName: "Assemblee nationale",
   description: "Official parliamentary documents.",
+  country: "FR",
+  language: "fr-FR",
   ingestionMethod: "official_document",
   discoveryUrl: "https://example.test/rss.xml",
   contentFormats: ["html", "text"],

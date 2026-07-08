@@ -9,6 +9,8 @@ const adapter = {
     displayName: "Direction generale du Tresor",
     publisherName: "Direction generale du Tresor",
     description: "Official Government news and explanations.",
+    country: "FR",
+    language: "fr-FR",
     ingestionMethod: "atom_feed",
     discoveryUrl: "https://example.test/atom.xml",
     contentFormats: ["html", "text"],

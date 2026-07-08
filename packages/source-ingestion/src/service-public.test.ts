@@ -14,6 +14,8 @@ const source = {
   displayName: "Service-Public",
   publisherName: "Direction de l'information legale et administrative",
   description: "Official DILA XML open data.",
+  country: "FR",
+  language: "fr-FR",
   ingestionMethod: "xml_dataset",
   discoveryUrl: "https://lecomarquage.service-public.gouv.fr/actu/3.5/part/",
   contentFormats: ["html", "text"],
