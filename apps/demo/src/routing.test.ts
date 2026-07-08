@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { demoDataset, type BriefPublication, type BriefSource } from "@brief/demo-data";
 
-import { buildDemoPath, getDemoRouteFromPath, resolveDemoRoute, type DemoRoute } from "./routing";
+import {
+  buildDemoPath,
+  buildLocalePath,
+  getDemoRouteFromPath,
+  resolveDemoRoute,
+  type DemoRoute,
+} from "./routing";
 
 const publisherIssues = demoDataset.issues;
 const publicPublicationId =
@@ -17,6 +23,8 @@ const publicSources: readonly BriefSource[] = [
     name: "Service-Public.fr",
     publisherName: "Direction de l'information légale et administrative",
     description: "Actualités administratives publiques.",
+    country: "FR",
+    language: "fr-FR",
     subscribed: true,
     subscribedSince: "2026-06-28T06:00:00.000Z",
     subscriberCount: 0,
@@ -58,16 +66,54 @@ const publicPublications: readonly BriefPublication[] = [
 ];
 
 describe("getDemoRouteFromPath", () => {
-  it("parses /client as client root", () => {
+  it("parses /client as client root with no locale", () => {
     expect(getDemoRouteFromPath("/client")).toEqual({
+      locale: null,
       role: "client",
       sourceId: null,
       issueId: null,
     });
   });
 
-  it("parses /client/sources/:sourceId as client fil detail", () => {
+  it("parses /fr-FR/client as client root with a locale prefix", () => {
+    expect(getDemoRouteFromPath("/fr-FR/client")).toEqual({
+      locale: "fr-FR",
+      role: "client",
+      sourceId: null,
+      issueId: null,
+    });
+  });
+
+  it("parses the /fr pretty alias as the fr-FR locale", () => {
+    expect(getDemoRouteFromPath("/fr/client")).toEqual({
+      locale: "fr-FR",
+      role: "client",
+      sourceId: null,
+      issueId: null,
+    });
+  });
+
+  it("parses the /us pretty alias as a publisher route with en-US locale", () => {
+    expect(getDemoRouteFromPath("/us/publisher")).toEqual({
+      locale: "en-US",
+      role: "publisher",
+      sourceId: null,
+      issueId: null,
+    });
+  });
+
+  it("parses /client/sources/:sourceId as client feed detail", () => {
     expect(getDemoRouteFromPath("/client/sources/service_public")).toEqual({
+      locale: null,
+      role: "client",
+      sourceId: "service_public",
+      issueId: null,
+    });
+  });
+
+  it("parses /fr-FR/client/sources/:sourceId as a locale-prefixed feed detail", () => {
+    expect(getDemoRouteFromPath("/fr-FR/client/sources/service_public")).toEqual({
+      locale: "fr-FR",
       role: "client",
       sourceId: "service_public",
       issueId: null,
@@ -80,6 +126,7 @@ describe("getDemoRouteFromPath", () => {
         `/client/sources/service_public/publications/${encodeURIComponent(publicPublicationId)}`,
       ),
     ).toEqual({
+      locale: null,
       role: "client",
       sourceId: "service_public",
       issueId: publicPublicationId,
@@ -88,6 +135,7 @@ describe("getDemoRouteFromPath", () => {
 
   it("parses legacy /client/publications/:issueId path", () => {
     expect(getDemoRouteFromPath("/client/publications/issue_regfin_2026_06_24")).toEqual({
+      locale: null,
       role: "client",
       sourceId: null,
       issueId: "issue_regfin_2026_06_24",
@@ -96,6 +144,7 @@ describe("getDemoRouteFromPath", () => {
 
   it("parses /publisher as publisher root", () => {
     expect(getDemoRouteFromPath("/publisher")).toEqual({
+      locale: null,
       role: "publisher",
       sourceId: null,
       issueId: null,
@@ -108,6 +157,7 @@ describe("getDemoRouteFromPath", () => {
         "/publisher/sources/source_regulation_financiere/publications/issue_regfin_2026_06_24",
       ),
     ).toEqual({
+      locale: null,
       role: "publisher",
       sourceId: "source_regulation_financiere",
       issueId: "issue_regfin_2026_06_24",
@@ -116,19 +166,28 @@ describe("getDemoRouteFromPath", () => {
 });
 
 describe("buildDemoPath", () => {
-  it("builds /client for client root", () => {
-    expect(buildDemoPath({ role: "client", sourceId: null, issueId: null })).toBe("/client");
+  it("builds /client for client root without a locale", () => {
+    expect(buildDemoPath({ locale: null, role: "client", sourceId: null, issueId: null })).toBe(
+      "/client",
+    );
   });
 
-  it("builds /client/sources/:sourceId for client fil detail", () => {
-    expect(buildDemoPath({ role: "client", sourceId: "service_public", issueId: null })).toBe(
-      "/client/sources/service_public",
+  it("builds a locale-prefixed path when a locale is set", () => {
+    expect(buildDemoPath({ locale: "fr-FR", role: "client", sourceId: null, issueId: null })).toBe(
+      "/fr-FR/client",
     );
+  });
+
+  it("builds /client/sources/:sourceId for client feed detail", () => {
+    expect(
+      buildDemoPath({ locale: null, role: "client", sourceId: "service_public", issueId: null }),
+    ).toBe("/client/sources/service_public");
   });
 
   it("builds /client/sources/:sourceId/publications/:issueId for client publication detail", () => {
     expect(
       buildDemoPath({
+        locale: null,
         role: "client",
         sourceId: "service_public",
         issueId: publicPublicationId,
@@ -138,16 +197,18 @@ describe("buildDemoPath", () => {
     );
   });
 
-  it("round-trips client fil and publication routes", () => {
-    const filRoute: DemoRoute = {
+  it("round-trips client feed and publication routes with a locale prefix", () => {
+    const feedRoute: DemoRoute = {
+      locale: "fr-FR",
       role: "client",
       sourceId: "service_public",
       issueId: null,
     };
-    const path = buildDemoPath(filRoute);
-    expect(getDemoRouteFromPath(path)).toEqual(filRoute);
+    const path = buildDemoPath(feedRoute);
+    expect(getDemoRouteFromPath(path)).toEqual(feedRoute);
 
     const pubRoute: DemoRoute = {
+      locale: "fr-FR",
       role: "client",
       sourceId: "service_public",
       issueId: publicPublicationId,
@@ -157,14 +218,28 @@ describe("buildDemoPath", () => {
   });
 });
 
+describe("buildLocalePath", () => {
+  it("prefixes a locale-less route with the given locale", () => {
+    expect(buildLocalePath("en-US", { role: "publisher", sourceId: null, issueId: null })).toBe(
+      "/en-US/publisher",
+    );
+  });
+});
+
 describe("resolveDemoRoute", () => {
   it("resolves client root", () => {
-    const route: DemoRoute = { role: "client", sourceId: null, issueId: null };
+    const route: DemoRoute = { locale: null, role: "client", sourceId: null, issueId: null };
     expect(resolveDemoRoute(route, publicPublications, publicSources)).toEqual(route);
   });
 
-  it("resolves client public fil detail", () => {
+  it("preserves the locale through resolution", () => {
+    const route: DemoRoute = { locale: "en-US", role: "client", sourceId: null, issueId: null };
+    expect(resolveDemoRoute(route, publicPublications, publicSources)).toEqual(route);
+  });
+
+  it("resolves client public feed detail", () => {
     const route: DemoRoute = {
+      locale: null,
       role: "client",
       sourceId: "service_public",
       issueId: null,
@@ -172,8 +247,9 @@ describe("resolveDemoRoute", () => {
     expect(resolveDemoRoute(route, publicPublications, publicSources)).toEqual(route);
   });
 
-  it("resolves client publisher fil detail", () => {
+  it("resolves client publisher feed detail", () => {
     const route: DemoRoute = {
+      locale: null,
       role: "client",
       sourceId: "source_regulation_financiere",
       issueId: null,
@@ -181,8 +257,9 @@ describe("resolveDemoRoute", () => {
     expect(resolveDemoRoute(route, publisherIssues)).toEqual(route);
   });
 
-  it("resolves client publication within a public fil", () => {
+  it("resolves client publication within a public feed", () => {
     const route: DemoRoute = {
+      locale: null,
       role: "client",
       sourceId: "service_public",
       issueId: publicPublicationId,
@@ -192,6 +269,7 @@ describe("resolveDemoRoute", () => {
 
   it("rejects documentless public publications as invalid routes", () => {
     const route: DemoRoute = {
+      locale: null,
       role: "client",
       sourceId: "service_public",
       issueId: publicPublicationId,
@@ -210,14 +288,16 @@ describe("resolveDemoRoute", () => {
         publicSources,
       ),
     ).toEqual({
+      locale: null,
       role: "client",
       sourceId: "service_public",
       issueId: null,
     });
   });
 
-  it("resolves client publication within a publisher fil", () => {
+  it("resolves client publication within a publisher feed", () => {
     const route: DemoRoute = {
+      locale: null,
       role: "client",
       sourceId: "source_regulation_financiere",
       issueId: "issue_regfin_2026_06_24",
@@ -225,8 +305,9 @@ describe("resolveDemoRoute", () => {
     expect(resolveDemoRoute(route, publisherIssues)).toEqual(route);
   });
 
-  it("redirects legacy /client/publications/:issueId to fil route", () => {
+  it("redirects legacy /client/publications/:issueId to feed route", () => {
     const legacyRoute: DemoRoute = {
+      locale: null,
       role: "client",
       sourceId: null,
       issueId: "issue_regfin_2026_06_24",
@@ -238,24 +319,28 @@ describe("resolveDemoRoute", () => {
 
   it("falls back to client root for unknown sourceId", () => {
     const route: DemoRoute = {
+      locale: null,
       role: "client",
       sourceId: "nonexistent_source",
       issueId: null,
     };
     expect(resolveDemoRoute(route, publisherIssues)).toEqual({
+      locale: null,
       role: "client",
       sourceId: null,
       issueId: null,
     });
   });
 
-  it("falls back to fil detail when issueId does not belong to the fil", () => {
+  it("falls back to feed detail when issueId does not belong to the feed", () => {
     const route: DemoRoute = {
+      locale: null,
       role: "client",
       sourceId: "service_public",
       issueId: "issue_regfin_2026_06_24",
     };
     expect(resolveDemoRoute(route, publicPublications, publicSources)).toEqual({
+      locale: null,
       role: "client",
       sourceId: "service_public",
       issueId: null,
@@ -264,11 +349,13 @@ describe("resolveDemoRoute", () => {
 
   it("falls back to client root for invalid legacy issueId", () => {
     const route: DemoRoute = {
+      locale: null,
       role: "client",
       sourceId: null,
       issueId: "nonexistent_issue",
     };
     expect(resolveDemoRoute(route, publisherIssues)).toEqual({
+      locale: null,
       role: "client",
       sourceId: null,
       issueId: null,
@@ -277,6 +364,7 @@ describe("resolveDemoRoute", () => {
 
   it("publisher routes remain unchanged", () => {
     const rootRoute: DemoRoute = {
+      locale: null,
       role: "publisher",
       sourceId: null,
       issueId: null,
@@ -284,6 +372,7 @@ describe("resolveDemoRoute", () => {
     expect(resolveDemoRoute(rootRoute, publisherIssues)).toEqual(rootRoute);
 
     const sourceRoute: DemoRoute = {
+      locale: null,
       role: "publisher",
       sourceId: "source_regulation_financiere",
       issueId: null,

@@ -4,22 +4,47 @@ import {
   type BriefSource,
   type DemoRole,
 } from "@brief/demo-data";
+import { LOCALE_MARKET_ALIASES, isLocale, type Locale } from "@brief/i18n";
 
 export type DemoRoute = {
+  locale: Locale | null;
   role: DemoRole;
   sourceId: string | null;
   issueId: string | null;
 };
 
+/**
+ * Try to consume the first path segment as a locale (canonical `fr-FR`/`en-US`
+ * or a pretty alias `fr`/`us`). Returns the resolved locale and the remaining
+ * segments, or `null` when the segment is a role/unknown.
+ */
+function consumeLocale(segment: string | undefined): Locale | null {
+  if (segment === undefined) return null;
+  if (isLocale(segment)) return segment;
+  const alias = LOCALE_MARKET_ALIASES[segment];
+  if (alias) return alias.locale;
+  return null;
+}
+
 export function getDemoRouteFromPath(pathname: string): DemoRoute {
-  const [scope, segment, sourceId, nestedSegment, issueId] = pathname
-    .split("/")
-    .filter(Boolean)
-    .map(decodeURIComponent);
+  const segments = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+
+  let locale: Locale | null = null;
+  let rest = segments;
+
+  const first = segments[0];
+  const resolvedLocale = consumeLocale(first);
+  if (resolvedLocale) {
+    locale = resolvedLocale;
+    rest = segments.slice(1);
+  }
+
+  const [scope, segment, sourceId, nestedSegment, issueId] = rest;
 
   if (scope === "client") {
     if (segment === "sources") {
       return {
+        locale,
         role: "client",
         sourceId: sourceId ?? null,
         issueId: nestedSegment === "publications" ? (issueId ?? null) : null,
@@ -27,16 +52,18 @@ export function getDemoRouteFromPath(pathname: string): DemoRoute {
     }
     if (segment === "publications") {
       return {
+        locale,
         role: "client",
         sourceId: null,
         issueId: sourceId ?? null,
       };
     }
-    return { role: "client", sourceId: null, issueId: null };
+    return { locale, role: "client", sourceId: null, issueId: null };
   }
 
   if (scope === "publisher" && segment === "sources") {
     return {
+      locale,
       role: "publisher",
       sourceId: sourceId ?? null,
       issueId: nestedSegment === "publications" ? (issueId ?? null) : null,
@@ -44,13 +71,17 @@ export function getDemoRouteFromPath(pathname: string): DemoRoute {
   }
 
   return {
+    locale,
     role: "publisher",
     sourceId: null,
     issueId: null,
   };
 }
 
-export function buildDemoPath(route: DemoRoute): string {
+/**
+ * Build the role-scoped path WITHOUT any locale prefix.
+ */
+function buildRolePath(route: Omit<DemoRoute, "locale">): string {
   if (route.role === "client") {
     if (!route.sourceId) return "/client";
     const sourcePath = `/client/sources/${encodeURIComponent(route.sourceId)}`;
@@ -67,6 +98,21 @@ export function buildDemoPath(route: DemoRoute): string {
     : sourcePath;
 }
 
+export function buildDemoPath(route: DemoRoute): string {
+  const rolePath = buildRolePath(route);
+  if (route.locale) {
+    return `/${route.locale}${rolePath}`;
+  }
+  return rolePath;
+}
+
+/**
+ * Build a path with an explicit locale prefix from a locale-less route.
+ */
+export function buildLocalePath(locale: Locale, route: Omit<DemoRoute, "locale">): string {
+  return `/${locale}${buildRolePath(route)}`;
+}
+
 const routePublicationIsVisible = (publication: BriefPublication): boolean =>
   publication.status === "published" &&
   (publication.sourceKind !== "public" || publication.documents.length > 0);
@@ -80,7 +126,7 @@ export function resolveDemoRoute(
 
   if (route.role === "client") {
     if (!route.sourceId && !route.issueId) {
-      return { role: "client", sourceId: null, issueId: null };
+      return { locale: route.locale, role: "client", sourceId: null, issueId: null };
     }
 
     if (!route.sourceId && route.issueId) {
@@ -88,17 +134,22 @@ export function resolveDemoRoute(
         (candidate) => candidate.id === route.issueId && routePublicationIsVisible(candidate),
       );
       if (!publication) {
-        return { role: "client", sourceId: null, issueId: null };
+        return { locale: route.locale, role: "client", sourceId: null, issueId: null };
       }
-      return { role: "client", sourceId: publication.sourceId, issueId: publication.id };
+      return {
+        locale: route.locale,
+        role: "client",
+        sourceId: publication.sourceId,
+        issueId: publication.id,
+      };
     }
 
     if (route.sourceId && !sourceById.has(route.sourceId)) {
-      return { role: "client", sourceId: null, issueId: null };
+      return { locale: route.locale, role: "client", sourceId: null, issueId: null };
     }
 
     if (!route.issueId) {
-      return { role: "client", sourceId: route.sourceId, issueId: null };
+      return { locale: route.locale, role: "client", sourceId: route.sourceId, issueId: null };
     }
 
     const publication = publications.find(
@@ -108,29 +159,35 @@ export function resolveDemoRoute(
         routePublicationIsVisible(candidate),
     );
     if (!publication) {
-      return { role: "client", sourceId: route.sourceId, issueId: null };
+      return { locale: route.locale, role: "client", sourceId: route.sourceId, issueId: null };
     }
 
-    return { role: "client", sourceId: route.sourceId, issueId: publication.id };
+    return {
+      locale: route.locale,
+      role: "client",
+      sourceId: route.sourceId,
+      issueId: publication.id,
+    };
   }
 
   const source = route.sourceId ? sourceById.get(route.sourceId) : undefined;
   if (!source || source.kind !== "publisher") {
-    return { role: "publisher", sourceId: null, issueId: null };
+    return { locale: route.locale, role: "publisher", sourceId: null, issueId: null };
   }
 
   if (!route.issueId) {
-    return { role: "publisher", sourceId: route.sourceId, issueId: null };
+    return { locale: route.locale, role: "publisher", sourceId: route.sourceId, issueId: null };
   }
 
   const issue = publications.find(
     (candidate) => candidate.id === route.issueId && candidate.sourceId === route.sourceId,
   );
   if (!issue) {
-    return { role: "publisher", sourceId: route.sourceId, issueId: null };
+    return { locale: route.locale, role: "publisher", sourceId: route.sourceId, issueId: null };
   }
 
   return {
+    locale: route.locale,
     role: "publisher",
     sourceId: route.sourceId,
     issueId: issue.id,

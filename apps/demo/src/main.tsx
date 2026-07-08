@@ -8,12 +8,40 @@ import {
   type BriefSource,
   type DemoRole,
 } from "@brief/demo-data";
+import {
+  DEFAULT_MARKET_FOR_LOCALE,
+  I18nProvider,
+  LOCALES,
+  type Locale,
+  type LocaleMarketPair,
+  type Market,
+  FormattedMessage,
+  htmlLang,
+  isLocale,
+  useIntl,
+  useLocale,
+  useMarket,
+  useSetLocaleMarket,
+} from "@brief/i18n";
 import type { PublicSourcesResponse } from "@brief/shared";
-import { type DemoRoute, buildDemoPath, getDemoRouteFromPath, resolveDemoRoute } from "./routing";
+import {
+  type DemoRoute,
+  buildLocalePath,
+  buildDemoPath,
+  getDemoRouteFromPath,
+  resolveDemoRoute,
+} from "./routing";
+import {
+  detectLocale,
+  getManualSourceSelection,
+  setManualSourceSelection,
+  setStoredLocale,
+  setStoredMarket,
+} from "./locale-bootstrap";
 import {
   Breadcrumbs,
   Button,
-  ClientFilsTable,
+  ClientFeedsTable,
   ClientPublicationsTable,
   PublicationDetail,
   PublicationsTable,
@@ -30,7 +58,7 @@ import {
   TooltipTrigger,
   VirtualizedChatTranscript,
   type BreadcrumbItem,
-  type ClientFilTableRow,
+  type ClientFeedTableRow,
   type DraftSubscriber,
   type DraftSubscriberErrors,
   type OpenStoredPdfResult,
@@ -69,6 +97,28 @@ function isDemoPdfPath(pathname: string) {
   return pathname.startsWith("/demo/pdfs/") && pathname.endsWith(".pdf");
 }
 
+const clientFeedSubscriptionsKey = "brief:demo:client-feed-subscriptions:v1";
+const legacyClientFilSubscriptionsKey = "brief:demo:client-fil-subscriptions:v1";
+
+/**
+ * One-time migration: copy the legacy `client-fil-subscriptions` localStorage
+ * value into the renamed `client-feed-subscriptions` key when the new key is
+ * absent, so existing demo users keep their feed subscriptions.
+ */
+function migrateClientFeedSubscriptions(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const hasNew = window.localStorage.getItem(clientFeedSubscriptionsKey);
+    if (hasNew !== null) return;
+    const legacy = window.localStorage.getItem(legacyClientFilSubscriptionsKey);
+    if (legacy !== null) {
+      window.localStorage.setItem(clientFeedSubscriptionsKey, legacy);
+    }
+  } catch {
+    // Ignore storage failures; demo state stays in memory.
+  }
+}
+
 async function fetchPublicContent(): Promise<PublicSourcesResponse> {
   const response = await fetch(new URL("/public-sources", publicApiBaseUrl));
   if (!response.ok) {
@@ -89,10 +139,13 @@ function readInitialPublications() {
 }
 
 function App() {
+  const intl = useIntl();
+  const locale = useLocale();
+  const market = useMarket();
   const initialPublications = useMemo(readInitialPublications, []);
   const initialRoute = useMemo(
     () => resolveDemoRoute(getDemoRouteFromPath(window.location.pathname), initialPublications),
-    [],
+    [initialPublications],
   );
   const [role, setRole] = useState<DemoRole>(() => initialRoute.role);
   const [issues, setIssues, resetIssues] = useSessionState<BriefPublication[]>(
@@ -132,7 +185,11 @@ function App() {
     setSelectedIssueId(nextRoute.issueId);
 
     if (typeof window === "undefined") return;
-    const nextPath = buildDemoPath(nextRoute);
+    const localePrefixed: DemoRoute = {
+      ...nextRoute,
+      locale: nextRoute.locale ?? locale,
+    };
+    const nextPath = buildDemoPath(localePrefixed);
     if (window.location.pathname === nextPath) return;
     if (historyMode === "replace") {
       window.history.replaceState(null, "", nextPath);
@@ -151,7 +208,8 @@ function App() {
 
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [publications, sources]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publications, sources, locale]);
 
   useEffect(() => {
     let cancelled = false;
@@ -175,17 +233,17 @@ function App() {
 
   function handleRoleChange(next: DemoRole) {
     if (next === role) return;
-    applyDemoRoute({ role: next, sourceId: null, issueId: null });
+    applyDemoRoute({ locale, role: next, sourceId: null, issueId: null });
   }
 
   function handleSelectSource(id: string | null) {
-    applyDemoRoute({ role: "publisher", sourceId: id, issueId: null });
+    applyDemoRoute({ locale, role: "publisher", sourceId: id, issueId: null });
   }
 
   function handleCreateIssue(sourceId: string) {
     const issue = createDraftPublication(sourceId);
     setIssues((current) => [issue, ...current]);
-    applyDemoRoute({ role: "publisher", sourceId, issueId: issue.id }, "push", [
+    applyDemoRoute({ locale, role: "publisher", sourceId, issueId: issue.id }, "push", [
       issue,
       ...publications,
     ]);
@@ -198,14 +256,14 @@ function App() {
   function handleDeleteIssue(issueId: string) {
     setIssues((current) => current.filter((issue) => issue.id !== issueId));
     if (selectedIssueId === issueId) {
-      applyDemoRoute({ role, sourceId: selectedSourceId, issueId: null }, "replace");
+      applyDemoRoute({ locale, role, sourceId: selectedSourceId, issueId: null }, "replace");
     }
   }
 
   function handleResetDemoStorage() {
     resetDemoStorage();
     resetIssues(demoDataset.issues.map(clonePublication));
-    applyDemoRoute({ role, sourceId: null, issueId: null }, "replace");
+    applyDemoRoute({ locale, role, sourceId: null, issueId: null }, "replace");
     setResetVersion((version) => version + 1);
   }
 
@@ -216,7 +274,7 @@ function App() {
           (issue) => issue.id === selectedIssueId,
         ) ?? null)
       : null;
-  const selectedFil = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
+  const selectedFeed = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
   const selectedClientIssue =
     selectedSourceId && selectedIssueId
       ? (publications.find(
@@ -238,7 +296,7 @@ function App() {
                   brief<span className="text-accent">.</span>
                 </h1>
                 <span className="truncate font-mono text-[11px] font-medium text-faint">
-                  (démo)
+                  <FormattedMessage id="demo.badge" />
                 </span>
               </div>
               <div className="flex shrink-0 items-center gap-1.5">
@@ -247,15 +305,16 @@ function App() {
                     value="publisher"
                     className="h-6 rounded-sm px-2 !text-[12px] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
                   >
-                    Éditeur
+                    <FormattedMessage id="role.publisher" />
                   </TabsTrigger>
                   <TabsTrigger
                     value="client"
                     className="h-6 rounded-sm px-2 !text-[12px] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
                   >
-                    Client
+                    <FormattedMessage id="role.client" />
                   </TabsTrigger>
                 </TabsList>
+                <LocaleMarketSwitcher />
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
@@ -264,13 +323,13 @@ function App() {
                       size="icon"
                       className="size-7 text-faint/70 hover:bg-rule/45 hover:text-muted"
                       onClick={handleResetDemoStorage}
-                      aria-label="Réinitialiser les données locales de la démo"
+                      aria-label={intl.formatMessage({ id: "action.reset" })}
                     >
                       <RotateCcw className="size-3" aria-hidden="true" />
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" align="end" sideOffset={8}>
-                    Efface les changements de cette démo.
+                    <FormattedMessage id="action.reset.tooltip" />
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -284,8 +343,10 @@ function App() {
                   role,
                   selectedIssue,
                   selectedSource,
-                  selectedFil,
+                  selectedFeed,
                   selectedClientIssue,
+                  locale,
+                  intl,
                   applyDemoRoute,
                   handleSelectSource,
                 })}
@@ -308,6 +369,7 @@ function App() {
                   onDeleteIssue={handleDeleteIssue}
                   onSelectIssue={(issueId) =>
                     applyDemoRoute({
+                      locale,
                       role: "publisher",
                       sourceId: selectedSource.id,
                       issueId,
@@ -322,27 +384,29 @@ function App() {
               )}
             </TabsContent>
             <TabsContent value="client" className="mt-0">
-              {selectedFil && selectedClientIssue ? (
+              {selectedFeed && selectedClientIssue ? (
                 <ClientPublicationDetail issue={selectedClientIssue} sourceById={sourceById} />
-              ) : selectedFil ? (
-                <ClientFilDetail
-                  fil={selectedFil}
+              ) : selectedFeed ? (
+                <ClientFeedDetail
+                  feed={selectedFeed}
                   publications={publications}
                   onSelectIssue={(issueId) =>
                     applyDemoRoute({
+                      locale,
                       role: "client",
-                      sourceId: selectedFil.id,
+                      sourceId: selectedFeed.id,
                       issueId,
                     })
                   }
                 />
               ) : (
-                <ClientFilsList
+                <ClientFeedsList
+                  market={market}
                   sources={sources}
                   publications={publications}
                   publicContentStatus={publicContentStatus}
-                  onSelectFil={(filId) =>
-                    applyDemoRoute({ role: "client", sourceId: filId, issueId: null })
+                  onSelectFeed={(feedId) =>
+                    applyDemoRoute({ locale, role: "client", sourceId: feedId, issueId: null })
                   }
                 />
               )}
@@ -398,6 +462,7 @@ function PublisherSourceDetail({
   onDeleteIssue: (id: string) => void;
   onSelectIssue: (id: string) => void;
 }) {
+  const intl = useIntl();
   const [subscriberState, setSubscriberState] = useSessionState<SubscriberSessionState>(
     `brief:demo:publisher-subscribers:${source.id}`,
     { statuses: {}, deletedIds: [] },
@@ -441,7 +506,7 @@ function PublisherSourceDetail({
   function handleCreateSubscriber() {
     if (!draftSubscriber) return;
 
-    const errors = validateDraftSubscriber(draftSubscriber, subscribers);
+    const errors = validateDraftSubscriber(draftSubscriber, subscribers, intl);
     setDraftErrors(errors);
     if (Object.keys(errors).length > 0) return;
 
@@ -473,9 +538,9 @@ function PublisherSourceDetail({
       <div className="animate-in stagger-1 grid gap-8 xl:grid-cols-[1.3fr_0.7fr]">
         <section>
           <SectionHeader
-            title="Publications"
+            title={intl.formatMessage({ id: "section.publications" })}
             count={issues.length}
-            actionLabel="Créer une publication"
+            actionLabel={intl.formatMessage({ id: "action.createPublication" })}
             onAdd={() => onCreateIssue(source.id)}
           />
           <div className="mt-4">
@@ -490,9 +555,9 @@ function PublisherSourceDetail({
 
         <section>
           <SectionHeader
-            title="Abonnés"
+            title={intl.formatMessage({ id: "section.subscribers" })}
             count={subscribers.length}
-            actionLabel="Ajouter un abonné"
+            actionLabel={intl.formatMessage({ id: "action.addSubscriber" })}
             onAdd={() => setDraftSubscriber((current) => current ?? { company: "", email: "" })}
           />
           <div className="mt-4">
@@ -507,7 +572,7 @@ function PublisherSourceDetail({
               onToggleStatus={handleToggleSubscriberStatus}
               onUpdateDraft={(nextDraft) => {
                 setDraftErrors((current) =>
-                  clearResolvedDraftErrors(current, nextDraft, subscribers),
+                  clearResolvedDraftErrors(current, nextDraft, subscribers, intl),
                 );
                 setDraftSubscriber(nextDraft);
               }}
@@ -530,7 +595,15 @@ function PublisherPublicationDetail({
   onDeleteIssue?: (id: string) => void;
   onUpdateIssue?: (issue: BriefPublication) => void;
 }) {
+  const intl = useIntl();
   const editable = Boolean(onUpdateIssue) && isEditableIssue(issue);
+
+  function handleOpenStoredPdf(document: PublicationDocument): Promise<OpenStoredPdfResult> {
+    return openStoredDemoPdf(document, {
+      pdfNotFound: intl.formatMessage({ id: "error.pdfNotFound" }),
+      pdfOpenFailed: intl.formatMessage({ id: "error.pdfOpenFailed" }),
+    });
+  }
 
   function updateIssue(patch: Partial<PublicationDetailIssue>) {
     onUpdateIssue?.({
@@ -582,7 +655,7 @@ function PublisherPublicationDetail({
       onAddDocument={handleAddDocument}
       onDeleteDocument={deleteDocument}
       onDeleteIssue={onDeleteIssue}
-      onOpenStoredPdf={openStoredDemoPdf}
+      onOpenStoredPdf={handleOpenStoredPdf}
       onUpdateDocument={updateDocument}
       onUpdateIssue={updateIssue}
       onUploadDocumentPdf={handleUploadDocumentPdf}
@@ -590,44 +663,58 @@ function PublisherPublicationDetail({
   );
 }
 
-function ClientFilsList({
+function ClientFeedsList({
+  market,
   sources,
   publications,
   publicContentStatus,
-  onSelectFil,
+  onSelectFeed,
 }: {
+  market: Market;
   sources: readonly BriefSource[];
   publications: readonly BriefPublication[];
   publicContentStatus: "loading" | "ready" | "error";
-  onSelectFil: (filId: string) => void;
+  onSelectFeed: (feedId: string) => void;
 }) {
+  const intl = useIntl();
   const publishedIssues = publications.filter((issue) => issue.status === "published");
-  const defaultSubscriptions = useMemo(
-    () => Object.fromEntries(sources.map((source) => [source.id, source.subscribed])),
-    [sources],
-  );
-  const [filSubscriptions, setFilSubscriptions] = useSessionState<Record<string, boolean>>(
-    "brief:demo:client-fil-subscriptions:v1",
-    defaultSubscriptions,
+  const manualSources = useMemo(getManualSourceSelection, []);
+
+  // `feedSubscriptions` stores only the user's *manual overrides*. The default
+  // subscription state is derived reactively from the active market so that
+  // switching locale/market re-defaults public sources (subscribed when their
+  // country matches the market). Once the user toggles a source manually, the
+  // `manualSources` flag is set and their persisted overrides always win.
+  const [feedSubscriptions, setFeedSubscriptions] = useSessionState<Record<string, boolean>>(
+    clientFeedSubscriptionsKey,
+    {},
   );
 
-  const rows = useMemo<ClientFilTableRow[]>(() => {
+  function isSourceSubscribed(source: BriefSource): boolean {
+    const override = feedSubscriptions[source.id];
+    if (override !== undefined) return override;
+    if (manualSources) return source.subscribed;
+    return source.kind === "publisher" ? source.subscribed : source.country === market;
+  }
+
+  const rows = useMemo<ClientFeedTableRow[]>(() => {
     const publisherIssueSourceIds = new Set(publishedIssues.map((i) => i.sourceId));
     return sources.map((source) => ({
       id: source.id,
       name: source.name,
       description: source.description,
       sourceType: source.kind === "publisher" ? "publisher_invite" : "public",
-      subscribed: filSubscriptions[source.id] ?? source.subscribed,
+      subscribed: isSourceSubscribed(source),
       lastPublicationDate: computeSourceLastDate(source, publisherIssueSourceIds, publishedIssues),
       publisherName: source.publisherName,
     }));
-  }, [filSubscriptions, publishedIssues, sources]);
+  }, [feedSubscriptions, manualSources, market, publishedIssues, sources]);
 
-  function handleToggleSubscribed(filId: string) {
-    setFilSubscriptions((current) => ({
+  function handleToggleSubscribed(feedId: string) {
+    setManualSourceSelection(true);
+    setFeedSubscriptions((current) => ({
       ...current,
-      [filId]: !(current[filId] ?? true),
+      [feedId]: !(current[feedId] ?? true),
     }));
   }
 
@@ -638,30 +725,31 @@ function ClientFilsList({
 
         <div className="mt-4 flex min-h-10 items-center gap-2 rounded-sm border border-dashed border-rule bg-surface px-3 py-2 text-muted">
           <span className="min-w-0 flex-1 truncate text-sm">
-            Le chat démo ne peut pas envoyer de nouveau message.
+            <FormattedMessage id="chat.demoReadOnly" />
           </span>
           <Button disabled>
             <Send className="size-4" aria-hidden="true" />
-            Envoyer
+            <FormattedMessage id="action.send" />
           </Button>
         </div>
       </section>
 
       <section className="animate-in stagger-2">
-        <SectionHeader title="Fils" count={sources.length} />
+        <SectionHeader title={intl.formatMessage({ id: "section.feeds" })} count={sources.length} />
         {publicContentStatus === "loading" ? (
-          <p className="mt-2 text-sm text-muted">Chargement des sources publiques...</p>
+          <p className="mt-2 text-sm text-muted">
+            <FormattedMessage id="state.loadingPublicSources" />
+          </p>
         ) : null}
         {publicContentStatus === "error" ? (
           <p className="mt-2 text-sm text-muted">
-            Sources publiques indisponibles. Démarrez l'API et le worker avec Postgres pour voir les
-            publications publiques ingérées.
+            <FormattedMessage id="state.publicSourcesUnavailable" />
           </p>
         ) : null}
         <div className="mt-3">
-          <ClientFilsTable
+          <ClientFeedsTable
             rows={rows}
-            onSelectFil={onSelectFil}
+            onSelectFeed={onSelectFeed}
             onToggleSubscribed={handleToggleSubscribed}
           />
         </div>
@@ -670,41 +758,45 @@ function ClientFilsList({
   );
 }
 
-function ClientFilDetail({
-  fil,
+function ClientFeedDetail({
+  feed,
   publications,
   onSelectIssue,
 }: {
-  fil: BriefSource;
+  feed: BriefSource;
   publications: readonly BriefPublication[];
   onSelectIssue: (issueId: string) => void;
 }) {
-  const filIssues = useMemo(() => {
+  const intl = useIntl();
+  const feedIssues = useMemo(() => {
     return publications
-      .filter((issue) => issue.sourceId === fil.id && issue.status === "published")
+      .filter((issue) => issue.sourceId === feed.id && issue.status === "published")
       .sort((a, b) => (b.publicationDate ?? "").localeCompare(a.publicationDate ?? ""));
-  }, [fil.id, publications]);
+  }, [feed.id, publications]);
 
   const publicationRows = useMemo(
     () =>
-      filIssues.map((issue) => ({
+      feedIssues.map((issue) => ({
         id: issue.id,
         title: issue.title,
         publicationDate: issue.publicationDate,
       })),
-    [filIssues],
+    [feedIssues],
   );
 
   return (
     <div className="space-y-8">
-      <p className="font-serif text-sm leading-6 text-muted">{fil.description}</p>
+      <p className="font-serif text-sm leading-6 text-muted">{feed.description}</p>
 
       <section className="animate-in stagger-1">
-        <SectionHeader title="Publications" count={filIssues.length} />
+        <SectionHeader
+          title={intl.formatMessage({ id: "section.publications" })}
+          count={feedIssues.length}
+        />
         <div className="mt-4">
           {publicationRows.length === 0 ? (
             <div className="rounded-sm border border-rule bg-paper px-4 py-8 text-center text-sm text-muted">
-              Aucune publication publique ingérée pour cette source.
+              <FormattedMessage id="empty.publicationIssues" />
             </div>
           ) : (
             <ClientPublicationsTable
@@ -732,68 +824,78 @@ function buildBreadcrumbs({
   role,
   selectedIssue,
   selectedSource,
-  selectedFil,
+  selectedFeed,
   selectedClientIssue,
+  locale,
+  intl,
   applyDemoRoute,
   handleSelectSource,
 }: {
   role: DemoRole;
   selectedIssue: BriefPublication | null;
   selectedSource: BriefSource | null;
-  selectedFil: BriefSource | null;
+  selectedFeed: BriefSource | null;
   selectedClientIssue: BriefPublication | null;
+  locale: Locale;
+  intl: ReturnType<typeof useIntl>;
   applyDemoRoute: (route: DemoRoute) => void;
   handleSelectSource: (id: string | null) => void;
 }): readonly BreadcrumbItem[] {
+  const chatLabel = intl.formatMessage({ id: "section.chat" });
+  const feedsLabel = intl.formatMessage({ id: "section.feeds" });
+
   if (role === "client") {
-    if (selectedFil && selectedClientIssue) {
+    if (selectedFeed && selectedClientIssue) {
       return [
         {
-          label: "Chat",
-          href: buildDemoPath({ role: "client", sourceId: null, issueId: null }),
-          onClick: () => applyDemoRoute({ role: "client", sourceId: null, issueId: null }),
+          label: chatLabel,
+          href: buildDemoPath({ locale, role: "client", sourceId: null, issueId: null }),
+          onClick: () => applyDemoRoute({ locale, role: "client", sourceId: null, issueId: null }),
         },
         {
-          label: selectedFil.name,
+          label: selectedFeed.name,
           href: buildDemoPath({
+            locale,
             role: "client",
-            sourceId: selectedFil.id,
+            sourceId: selectedFeed.id,
             issueId: null,
           }),
           onClick: () =>
-            applyDemoRoute({ role: "client", sourceId: selectedFil.id, issueId: null }),
+            applyDemoRoute({ locale, role: "client", sourceId: selectedFeed.id, issueId: null }),
         },
         { label: selectedClientIssue.title, truncate: true },
       ];
     }
 
-    if (selectedFil) {
+    if (selectedFeed) {
       return [
         {
-          label: "Chat",
-          href: buildDemoPath({ role: "client", sourceId: null, issueId: null }),
-          onClick: () => applyDemoRoute({ role: "client", sourceId: null, issueId: null }),
+          label: chatLabel,
+          href: buildDemoPath({ locale, role: "client", sourceId: null, issueId: null }),
+          onClick: () => applyDemoRoute({ locale, role: "client", sourceId: null, issueId: null }),
         },
-        { label: selectedFil.name },
+        { label: selectedFeed.name },
       ];
     }
 
-    return [{ label: "Chat" }];
+    return [{ label: chatLabel }];
   }
 
-  if (!selectedSource) return [{ label: "Fils" }];
+  if (!selectedSource) return [{ label: feedsLabel }];
 
   const sourceCrumb = selectedIssue
     ? [
         {
           label: selectedSource.name,
           href: buildDemoPath({
+            locale,
             role: "publisher",
             sourceId: selectedSource.id,
             issueId: null,
           }),
           onClick: () =>
             applyDemoRoute({
+              locale,
               role: "publisher",
               sourceId: selectedSource.id,
               issueId: null,
@@ -805,8 +907,8 @@ function buildBreadcrumbs({
 
   return [
     {
-      label: "Fils",
-      href: buildDemoPath({ role: "publisher", sourceId: null, issueId: null }),
+      label: feedsLabel,
+      href: buildDemoPath({ locale, role: "publisher", sourceId: null, issueId: null }),
       onClick: () => handleSelectSource(null),
     },
     ...sourceCrumb,
@@ -904,23 +1006,26 @@ function buildSubscriberRows(
 function validateDraftSubscriber(
   draft: DraftSubscriber,
   rows: readonly SubscriberTableRow[],
+  intl: ReturnType<typeof useIntl>,
 ): DraftSubscriberErrors {
   const errors: DraftSubscriberErrors = {};
   const company = draft.company.trim();
   const email = draft.email.trim();
 
   if (!company) {
-    errors.company = "La société est requise.";
+    errors.company = intl.formatMessage({ id: "error.companyRequired" });
   }
 
   if (!email) {
-    errors.email = "L'email est requis.";
+    errors.email = intl.formatMessage({ id: "error.emailRequired" });
   } else if (!isValidEmail(email)) {
-    errors.email = "Entrez un email valide.";
+    errors.email = intl.formatMessage({ id: "error.emailInvalid" });
   } else if (
-    rows.some((row) => row.email.toLocaleLowerCase("fr-FR") === email.toLocaleLowerCase("fr-FR"))
+    rows.some(
+      (row) => row.email.toLocaleLowerCase(intl.locale) === email.toLocaleLowerCase(intl.locale),
+    )
   ) {
-    errors.email = "Cet email est déjà abonné.";
+    errors.email = intl.formatMessage({ id: "error.emailDuplicate" });
   }
 
   return errors;
@@ -930,9 +1035,10 @@ function clearResolvedDraftErrors(
   errors: DraftSubscriberErrors,
   draft: DraftSubscriber,
   rows: readonly SubscriberTableRow[],
+  intl: ReturnType<typeof useIntl>,
 ): DraftSubscriberErrors {
   if (Object.keys(errors).length === 0) return errors;
-  const nextErrors = validateDraftSubscriber(draft, rows);
+  const nextErrors = validateDraftSubscriber(draft, rows, intl);
   return Object.fromEntries(
     Object.entries(errors).filter(([field]) => nextErrors[field as keyof DraftSubscriber]),
   );
@@ -1049,20 +1155,23 @@ function normalizePublicContentUrls(content: PublicSourcesResponse): PublicSourc
   };
 }
 
-async function openStoredDemoPdf(document: PublicationDocument): Promise<OpenStoredPdfResult> {
+async function openStoredDemoPdf(
+  document: PublicationDocument,
+  messages: { pdfNotFound: string; pdfOpenFailed: string },
+): Promise<OpenStoredPdfResult> {
   try {
     const blob = await loadDemoPdf(document.id);
-    if (!blob) return { ok: false, message: "PDF introuvable." };
+    if (!blob) return { ok: false, message: messages.pdfNotFound };
     const url = URL.createObjectURL(blob);
     const opened = window.open(url, "_blank", "noopener,noreferrer");
     if (!opened) {
       URL.revokeObjectURL(url);
-      return { ok: false, message: "Impossible d'ouvrir ce PDF." };
+      return { ok: false, message: messages.pdfOpenFailed };
     }
     window.setTimeout(() => URL.revokeObjectURL(url), 300_000);
     return { ok: true };
   } catch {
-    return { ok: false, message: "Impossible d'ouvrir ce PDF." };
+    return { ok: false, message: messages.pdfOpenFailed };
   }
 }
 
@@ -1183,6 +1292,96 @@ function useSessionState<T>(
   return [value, update, reset];
 }
 
+function LocaleMarketSwitcher() {
+  const intl = useIntl();
+  const setLocaleMarket = useSetLocaleMarket();
+  const locale = useLocale();
+
+  return (
+    <select
+      value={locale}
+      aria-label={intl.formatMessage({ id: "localeSwitcher.label" })}
+      className="h-7 rounded-sm border border-rule bg-canvas px-1 !text-[12px] font-medium leading-none text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      onChange={(event) => {
+        const next = event.target.value;
+        if (!isLocale(next)) return;
+        setLocaleMarket({ locale: next, market: DEFAULT_MARKET_FOR_LOCALE[next] });
+      }}
+    >
+      {LOCALES.map((optionLocale) => (
+        <option key={optionLocale} value={optionLocale}>
+          {intl.formatMessage({
+            id: optionLocale === "fr-FR" ? "localeSwitcher.frFR" : "localeSwitcher.enUS",
+          })}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/**
+ * Root shell that owns the (locale, market) pair, wires it into the i18n
+ * provider, persists user choices, syncs `<html lang>`, and rewrites the URL
+ * to the new locale prefix when the user switches.
+ */
+function DemoShell() {
+  const initial = useMemo<DemoRoute & { resolved: LocaleMarketPair }>(() => {
+    migrateClientFeedSubscriptions();
+    const parsed = getDemoRouteFromPath(window.location.pathname);
+    const resolved = parsed.locale
+      ? {
+          locale: parsed.locale,
+          market: DEFAULT_MARKET_FOR_LOCALE[parsed.locale],
+        }
+      : detectLocale();
+    return { ...parsed, resolved };
+  }, []);
+
+  const [locale, setLocale] = useState<Locale>(initial.resolved.locale);
+  const [market, setMarket] = useState<Market>(initial.resolved.market);
+
+  useEffect(() => {
+    document.documentElement.lang = htmlLang(locale);
+  }, [locale]);
+
+  // If the entry URL had no locale, redirect to the resolved locale prefix.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const parsed = getDemoRouteFromPath(window.location.pathname);
+    if (parsed.locale) return;
+    const target = buildLocalePath(initial.resolved.locale, {
+      role: parsed.role,
+      sourceId: parsed.sourceId,
+      issueId: parsed.issueId,
+    });
+    window.history.replaceState(null, "", target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function handleChangeLocaleMarket(next: LocaleMarketPair) {
+    setLocale(next.locale);
+    setMarket(next.market);
+    setStoredLocale(next.locale);
+    setStoredMarket(next.market);
+
+    if (typeof window === "undefined") return;
+    const parsed = getDemoRouteFromPath(window.location.pathname);
+    const target = buildLocalePath(next.locale, {
+      role: parsed.role,
+      sourceId: parsed.sourceId,
+      issueId: parsed.issueId,
+    });
+    if (window.location.pathname === target) return;
+    window.history.pushState(null, "", target);
+  }
+
+  return (
+    <I18nProvider locale={locale} market={market} onChangeLocaleMarket={handleChangeLocaleMarket}>
+      <App />
+    </I18nProvider>
+  );
+}
+
 if (!isDemoPdfPath(window.location.pathname)) {
-  createRoot(document.getElementById("root")!).render(<App />);
+  createRoot(document.getElementById("root")!).render(<DemoShell />);
 }

@@ -11,12 +11,14 @@
   },
   "dependencies": {
     "@brief/demo-data": "workspace:*",
+    "@brief/i18n": "workspace:*",
     "@brief/shared": "workspace:*",
     "@brief/source-ingestion": "workspace:*",
     "@brief/ui": "workspace:*",
     "lucide-react": "1.21.0",
     "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "react-dom": "19.2.7",
+    "react-intl": "10.1.14"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.1",
