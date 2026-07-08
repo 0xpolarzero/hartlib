@@ -105,6 +105,26 @@ interface NormalizedCandidate {
   readonly meta: DocumentMeta;
 }
 
+interface StandingDuplicateRecord {
+  readonly kind: "standing";
+  readonly manifestIndex: number;
+  readonly duplicate: DuplicateManifestEntry;
+}
+
+interface IntraManifestDuplicateRecord {
+  readonly kind: "intra_manifest";
+  readonly manifestIndex: number;
+  readonly candidate: NormalizedCandidate;
+  readonly coveringCandidate: NormalizedCandidate;
+  readonly duplicate: DuplicateManifestEntry;
+}
+
+type DuplicateRecord = StandingDuplicateRecord | IntraManifestDuplicateRecord;
+
+const isIntraManifestDuplicateRecord = (
+  record: DuplicateRecord,
+): record is IntraManifestDuplicateRecord => record.kind === "intra_manifest";
+
 export const remainingBlockBudget = (activeTokens: number, blockBudget: number): number =>
   Math.max(blockBudget - activeTokens, 0);
 
@@ -269,11 +289,12 @@ export const planWindow = (input: PlanWindowInput): WindowPlan => {
             },
           };
 
-  const duplicates: DuplicateManifestEntry[] = [];
+  let duplicateRecords: DuplicateRecord[] = [];
   const dropped: DroppedManifestEntry[] = [];
   const acceptedCandidates: NormalizedCandidate[] = [];
+  const protectedBlockIds = new Set<string>();
 
-  for (const entry of input.manifest) {
+  for (const [manifestIndex, entry] of input.manifest.entries()) {
     const meta = input.documents.get(entry.documentId);
 
     if (meta === undefined) {
@@ -293,25 +314,36 @@ export const planWindow = (input: PlanWindowInput): WindowPlan => {
     );
 
     if (coveringActiveBlock !== undefined) {
-      duplicates.push({
-        documentId: candidate.documentId,
-        charStart: candidate.charStart,
-        charEnd: candidate.charEnd,
-        coveredByBlockId: coveringActiveBlock.blockId,
+      protectedBlockIds.add(coveringActiveBlock.blockId);
+      duplicateRecords.push({
+        kind: "standing",
+        manifestIndex,
+        duplicate: {
+          documentId: candidate.documentId,
+          charStart: candidate.charStart,
+          charEnd: candidate.charEnd,
+          coveredByBlockId: coveringActiveBlock.blockId,
+        },
       });
       continue;
     }
 
-    const coveredByAcceptedCandidate = acceptedCandidates.some((accepted) =>
+    const coveringAcceptedCandidate = acceptedCandidates.find((accepted) =>
       acceptedCandidateCoversCandidate(accepted, candidate),
     );
 
-    if (coveredByAcceptedCandidate) {
-      duplicates.push({
-        documentId: candidate.documentId,
-        charStart: candidate.charStart,
-        charEnd: candidate.charEnd,
-        coveredByBlockId: null,
+    if (coveringAcceptedCandidate !== undefined) {
+      duplicateRecords.push({
+        kind: "intra_manifest",
+        manifestIndex,
+        candidate,
+        coveringCandidate: coveringAcceptedCandidate,
+        duplicate: {
+          documentId: candidate.documentId,
+          charStart: candidate.charStart,
+          charEnd: candidate.charEnd,
+          coveredByBlockId: null,
+        },
       });
       continue;
     }
@@ -319,6 +351,18 @@ export const planWindow = (input: PlanWindowInput): WindowPlan => {
     acceptedCandidates.push(candidate);
   }
 
+  const evictionPool = input.activeBlocks
+    .map((block, index) => ({ block, index }))
+    .filter(
+      ({ block }) =>
+        block.kind === "document" && !block.pinned && !protectedBlockIds.has(block.blockId),
+    )
+    .sort((left, right) => {
+      const order =
+        blockNumberForOrdering(left.block.blockId) - blockNumberForOrdering(right.block.blockId);
+
+      return order === 0 ? left.index - right.index : order;
+    });
   const retiredBlockId = retiredMemoryBlockId(memory);
   const baseTokens =
     input.activeBlocks.reduce(
@@ -329,8 +373,10 @@ export const planWindow = (input: PlanWindowInput): WindowPlan => {
     (sum, candidate) => sum + candidate.tokenEstimate,
     0,
   );
+  const evictableTokens = evictionPool.reduce((sum, { block }) => sum + block.tokenEstimate, 0);
+  const floorBase = baseTokens - evictableTokens;
 
-  while (baseTokens + acceptedTokenTotal > input.budget.hardCap && acceptedCandidates.length > 0) {
+  while (floorBase + acceptedTokenTotal > input.budget.hardCap) {
     const candidate = acceptedCandidates.pop();
 
     if (candidate === undefined) {
@@ -345,6 +391,28 @@ export const planWindow = (input: PlanWindowInput): WindowPlan => {
       tokenEstimate: candidate.tokenEstimate,
       reason: "hard_cap",
     });
+
+    const orphanedRecords = duplicateRecords
+      .filter(isIntraManifestDuplicateRecord)
+      .filter((record) => record.coveringCandidate === candidate)
+      .sort((left, right) => left.manifestIndex - right.manifestIndex);
+
+    for (const record of orphanedRecords) {
+      const coveringCandidate = acceptedCandidates.find((accepted) =>
+        acceptedCandidateCoversCandidate(accepted, record.candidate),
+      );
+
+      if (coveringCandidate !== undefined) {
+        duplicateRecords = duplicateRecords.map((currentRecord) =>
+          currentRecord === record ? { ...record, coveringCandidate } : currentRecord,
+        );
+        continue;
+      }
+
+      duplicateRecords = duplicateRecords.filter((currentRecord) => currentRecord !== record);
+      acceptedCandidates.push(record.candidate);
+      acceptedTokenTotal += record.candidate.tokenEstimate;
+    }
   }
 
   const additions: PlannedDocumentBlock[] = acceptedCandidates.map((candidate) => ({
@@ -360,20 +428,11 @@ export const planWindow = (input: PlanWindowInput): WindowPlan => {
   const totalActiveTokensBeforeEviction = baseTokens + acceptedTokenTotal;
   const evictions: Eviction[] = [];
   let totalActiveTokensAfterEviction = totalActiveTokensBeforeEviction;
+  const evictionTarget = Math.min(input.budget.blockBudget, input.budget.hardCap);
 
-  if (totalActiveTokensBeforeEviction > input.budget.blockBudget) {
-    const evictionPool = input.activeBlocks
-      .map((block, index) => ({ block, index }))
-      .filter(({ block }) => block.kind === "document" && !block.pinned)
-      .sort((left, right) => {
-        const order =
-          blockNumberForOrdering(left.block.blockId) - blockNumberForOrdering(right.block.blockId);
-
-        return order === 0 ? left.index - right.index : order;
-      });
-
+  if (totalActiveTokensBeforeEviction > evictionTarget) {
     for (const { block } of evictionPool) {
-      if (totalActiveTokensAfterEviction <= input.budget.blockBudget) {
+      if (totalActiveTokensAfterEviction <= evictionTarget) {
         break;
       }
 
@@ -381,6 +440,10 @@ export const planWindow = (input: PlanWindowInput): WindowPlan => {
       evictions.push({ blockId: block.blockId, reason: "over_budget" });
     }
   }
+
+  const duplicates = duplicateRecords
+    .sort((left, right) => left.manifestIndex - right.manifestIndex)
+    .map((record) => record.duplicate);
 
   return {
     memory,

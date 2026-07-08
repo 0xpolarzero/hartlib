@@ -599,6 +599,87 @@ describe.skipIf(!isBun || !databaseUrl)("context window hydration over postgres"
     },
   );
 
+  it(
+    "a covering standing block survives over-budget eviction and keeps its duplicate consistent",
+    { timeout: 60_000 },
+    async () => {
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const { chatId, runId: run1 } = yield* newChatRun();
+          yield* hydrateWindow([{ documentId: "win-doc-short" }], [], budget, ctx(chatId, run1));
+          yield* finishRun(run1);
+          const standing = yield* loadActiveContextBlocks(chatId);
+          const { runId: run2 } = yield* nextRun(chatId);
+          const result = yield* hydrateWindow(
+            [{ documentId: "win-doc-short" }, { documentId: "win-doc-short-b" }],
+            standing,
+            budget,
+            ctx(chatId, run2),
+          );
+          const evicted = yield* fetchObservations(run2, "context_block_evicted");
+          const active = yield* loadActiveContextBlocks(chatId);
+
+          expect(result.duplicates).toEqual([
+            {
+              documentId: "win-doc-short",
+              charStart: null,
+              charEnd: null,
+              coveredByBlockId: "b1",
+            },
+          ]);
+          expect(result.addedBlockIds).toEqual(["b2"]);
+          expect(result.evictedBlockIds).toEqual([]);
+          expect(evicted).toEqual([]);
+          expect(active.map((block) => block.blockId)).toEqual(["b1", "b2"]);
+          expect(result.totalActiveTokens).toBe(200);
+        }),
+      );
+    },
+  );
+
+  it(
+    "budget overshoot residue does not hard-cap-drop the next turn's evidence",
+    { timeout: 60_000 },
+    async () => {
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const { chatId, runId: run1 } = yield* newChatRun();
+          yield* hydrateWindow(
+            [{ documentId: "win-doc-short" }, { documentId: "win-doc-short-b" }],
+            [],
+            budget,
+            ctx(chatId, run1),
+          );
+          yield* finishRun(run1);
+          const standing = yield* loadActiveContextBlocks(chatId);
+          const { runId: run2 } = yield* nextRun(chatId);
+          const result = yield* hydrateWindow(
+            [{ documentId: "win-doc-long" }],
+            standing,
+            budget,
+            ctx(chatId, run2),
+          );
+          const dropped = yield* fetchObservations(run2, "context_block_dropped");
+          const evicted = yield* fetchObservations(run2, "context_block_evicted");
+          const active = yield* loadActiveContextBlocks(chatId);
+
+          expect(result.dropped).toEqual([]);
+          expect(dropped).toEqual([]);
+          expect(result.addedBlockIds).toEqual(["b3"]);
+          expect(result.evictedBlockIds).toEqual(["b1", "b2"]);
+          expect(evicted).toEqual([
+            { blockId: "b1", reason: "over_budget" },
+            { blockId: "b2", reason: "over_budget" },
+          ]);
+          expect(result.totalActiveTokens).toBe(125);
+          expect(active.map((block) => block.blockId)).toEqual(["b3"]);
+        }),
+      );
+    },
+  );
+
   it("evicts the oldest unpinned block when over budget", { timeout: 60_000 }, async () => {
     await runDb(
       isolatedDatabaseUrl(),

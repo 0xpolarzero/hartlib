@@ -399,12 +399,95 @@ describe("planWindow budget and tail-drop", () => {
     const result = plan({
       manifest: [entry("docA"), entry("docB")],
       documents: documentsMap(docMeta("docA", 40), docMeta("docB", 40)),
-      activeBlocks: [activeBlock({ tokenEstimate: 50 })],
+      activeBlocks: [activeBlock({ tokenEstimate: 50, pinned: true })],
       budget: { ...budget, hardCap: 40 },
     });
 
     expect(result.additions).toHaveLength(0);
     expect(result.dropped.map((drop) => drop.documentId)).toEqual(["docB", "docA"]);
+    expect(result.evictions).toHaveLength(0);
+  });
+
+  it("prefers evicting standing blocks over hard-cap dropping new entries", () => {
+    const result = plan({
+      manifest: [entry("docZ")],
+      documents: documentsMap(docMeta("docZ", 80)),
+      activeBlocks: [
+        activeBlock({ blockId: "b1", documentId: "docX", tokenEstimate: 45 }),
+        activeBlock({ blockId: "b2", documentId: "docY", tokenEstimate: 45 }),
+      ],
+      budget: { ...budget, blockBudget: 60, hardCap: 100 },
+    });
+
+    expect(result.dropped).toHaveLength(0);
+    expect(only(result.additions)).toMatchObject({ documentId: "docZ", tokenEstimate: 20 });
+    expect(result.evictions).toEqual([
+      { blockId: "b1", reason: "over_budget" },
+      { blockId: "b2", reason: "over_budget" },
+    ]);
+    expect(result.totalActiveTokensBeforeEviction).toBe(110);
+    expect(result.totalActiveTokensAfterEviction).toBe(20);
+  });
+
+  it("re-admits a contained sub-range when its covering candidate is hard-cap dropped", () => {
+    const result = plan({
+      manifest: [entry("docBig", 0, 2000), entry("docBig", 100, 200)],
+      documents: documentsMap(docMeta("docBig", 2000)),
+      budget: { ...budget, hardCap: 100 },
+    });
+
+    expect(result.dropped).toEqual([
+      {
+        documentId: "docBig",
+        charStart: 0,
+        charEnd: 2000,
+        tokenEstimate: 500,
+        reason: "hard_cap",
+      },
+    ]);
+    expect(result.duplicates).toHaveLength(0);
+    expect(only(result.additions)).toMatchObject({
+      blockId: "b1",
+      documentId: "docBig",
+      charStart: 100,
+      charEnd: 200,
+      tokenEstimate: 25,
+    });
+    expect(result.evictions).toHaveLength(0);
+    expect(result.totalActiveTokensAfterEviction).toBe(25);
+  });
+
+  it("cascades re-admission through nested covered ranges", () => {
+    const result = plan({
+      manifest: [entry("docBig", 0, 1200), entry("docBig", 0, 600), entry("docBig", 100, 200)],
+      documents: documentsMap(docMeta("docBig", 2000)),
+      budget: { ...budget, hardCap: 100 },
+    });
+
+    expect(result.dropped).toEqual([
+      {
+        documentId: "docBig",
+        charStart: 0,
+        charEnd: 1200,
+        tokenEstimate: 300,
+        reason: "hard_cap",
+      },
+      {
+        documentId: "docBig",
+        charStart: 0,
+        charEnd: 600,
+        tokenEstimate: 150,
+        reason: "hard_cap",
+      },
+    ]);
+    expect(result.duplicates).toHaveLength(0);
+    expect(only(result.additions)).toMatchObject({
+      blockId: "b1",
+      charStart: 100,
+      charEnd: 200,
+      tokenEstimate: 25,
+    });
+    expect(result.totalActiveTokensAfterEviction).toBe(25);
   });
 });
 
@@ -499,6 +582,45 @@ describe("planWindow eviction", () => {
 
     expect(result.evictions).toHaveLength(0);
     expect(result.totalActiveTokensAfterEviction).toBe(20);
+  });
+
+  it("keeps a standing block that covers a current manifest entry out of the eviction pool", () => {
+    const result = plan({
+      manifest: [entry("docA"), entry("docC")],
+      documents: documentsMap(docMeta("docA", 80), docMeta("docC", 60)),
+      activeBlocks: [
+        activeBlock({ blockId: "b1", documentId: "docA", tokenEstimate: 20 }),
+        activeBlock({ blockId: "b2", documentId: "docB", tokenEstimate: 30, pinned: true }),
+      ],
+      budget: { ...budget, blockBudget: 60 },
+    });
+
+    expect(result.duplicates).toEqual([
+      { documentId: "docA", charStart: null, charEnd: null, coveredByBlockId: "b1" },
+    ]);
+    expect(only(result.additions)).toMatchObject({ documentId: "docC", tokenEstimate: 15 });
+    expect(result.evictions).toHaveLength(0);
+    expect(result.dropped).toHaveLength(0);
+    expect(result.totalActiveTokensAfterEviction).toBe(65);
+  });
+
+  it("evicts an unprotected standing block instead of one covering a manifest duplicate", () => {
+    const result = plan({
+      manifest: [entry("docA"), entry("docC", 0, 240)],
+      documents: documentsMap(docMeta("docA", 200), docMeta("docC", 240)),
+      activeBlocks: [
+        activeBlock({ blockId: "b1", documentId: "docA", tokenEstimate: 50 }),
+        activeBlock({ blockId: "b2", documentId: "docB", tokenEstimate: 40 }),
+      ],
+    });
+
+    expect(result.duplicates).toEqual([
+      { documentId: "docA", charStart: 0, charEnd: 100, coveredByBlockId: "b1" },
+    ]);
+    expect(only(result.additions)).toMatchObject({ documentId: "docC", tokenEstimate: 60 });
+    expect(result.dropped).toHaveLength(0);
+    expect(result.evictions).toEqual([{ blockId: "b2", reason: "over_budget" }]);
+    expect(result.totalActiveTokensAfterEviction).toBe(110);
   });
 });
 
