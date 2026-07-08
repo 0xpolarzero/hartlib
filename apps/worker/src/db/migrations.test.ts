@@ -48,6 +48,14 @@ type DocumentRow = {
   document_id: string;
 };
 
+type ConstraintRow = {
+  confdeltype: string;
+};
+
+type RevisionRow = {
+  run_id: string | null;
+};
+
 function sourceDatabaseUrl(): string {
   if (!databaseUrl) {
     throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL is required");
@@ -239,6 +247,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       expect(result.migrationsBefore).toEqual(expectedMigrations);
       expect(result.migrationsBefore).toContain("0008_ai_chat_runtime.sql");
       expect(result.migrationsBefore).toContain("0009_document_search.sql");
+      expect(result.migrationsBefore).toContain("0010_user_memory_revision_run_set_null.sql");
       expect(result.migrationsAfter).toEqual(expectedMigrations);
     },
   );
@@ -748,6 +757,74 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       expect(errorText(result.rangeFailure)).toContain(
         "chat_context_blocks_active_document_range_key",
       );
+    },
+  );
+
+  it(
+    "deleting a chat preserves memory revisions and nulls their run id",
+    { timeout: 60_000 },
+    async () => {
+      const testUrl = isolatedDatabaseUrl();
+      const result = await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+
+          yield* sql`
+          insert into chats (id, user_id)
+          values ('dddddddd-0000-0000-0000-000000000001', 'demo-user')
+          on conflict (id) do nothing
+        `;
+          yield* sql`
+          insert into chat_messages (id, chat_id, author, content)
+          values ('dddddddd-0000-0000-0000-000000000002', 'dddddddd-0000-0000-0000-000000000001', 'user', 'Memory revision cascade test')
+          on conflict (id) do nothing
+        `;
+          yield* sql`
+          insert into ai_runs (id, chat_id, user_message_id, locale, market, finished_at)
+          values ('dddddddd-0000-0000-0000-000000000003', 'dddddddd-0000-0000-0000-000000000001', 'dddddddd-0000-0000-0000-000000000002', 'fr-FR', 'FR', now())
+          on conflict (id) do nothing
+        `;
+          yield* sql`
+          insert into user_memories (id, user_id, kind, content, evidence_quote, source_message_id)
+          values ('dddddddd-0000-0000-0000-000000000004', 'demo-user', 'fact', 'Prefers concise briefs', 'Prefers concise briefs', 'dddddddd-0000-0000-0000-000000000002')
+          on conflict (id) do nothing
+        `;
+          yield* sql`
+          insert into user_memory_revisions (memory_id, action, content_after, run_id)
+          values ('dddddddd-0000-0000-0000-000000000004', 'created', 'Prefers concise briefs', 'dddddddd-0000-0000-0000-000000000003')
+        `;
+          const [constraint] = yield* sql<ConstraintRow>`
+          select confdeltype::text as confdeltype
+          from pg_constraint
+          where conname = 'user_memory_revisions_run_id_fkey'
+        `;
+          yield* sql`
+          delete from chats
+          where id = 'dddddddd-0000-0000-0000-000000000001'
+        `;
+          const revisions = yield* sql<RevisionRow>`
+          select run_id
+          from user_memory_revisions
+          where memory_id = 'dddddddd-0000-0000-0000-000000000004'
+        `;
+          const [memories] = yield* sql<CountRow>`
+          select count(*)::int as count
+          from user_memories
+          where id = 'dddddddd-0000-0000-0000-000000000004'
+        `;
+
+          return {
+            confdeltype: constraint?.confdeltype,
+            revisionRunIds: revisions.map((revision) => revision.run_id),
+            memoryCount: memories?.count,
+          };
+        }),
+      );
+
+      expect(result.confdeltype).toBe("n");
+      expect(result.revisionRunIds).toEqual([null]);
+      expect(result.memoryCount).toBe(1);
     },
   );
 });
