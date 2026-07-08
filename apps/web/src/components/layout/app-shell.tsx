@@ -1,21 +1,35 @@
 import type * as React from "react";
+import { FormattedMessage, useIntl, useLocale } from "@brief/i18n";
 import { cn } from "@brief/ui";
+
+import { LocaleSwitcher } from "@/components/layout/locale-switcher";
 
 type AppShellProps = {
   children: React.ReactNode;
 };
 
 export function AppShell({ children }: AppShellProps) {
+  const intl = useIntl();
+  const locale = useLocale();
+  const homeHref = `/${locale}/`;
+  const chatHref = `/${locale}/chat/demo`;
+  const wordmark = intl.formatMessage({ id: "app.wordmark" });
+
   return (
     <div className="min-h-screen bg-canvas">
       <header className="border-b border-rule bg-canvas">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-          <a href="/" className="font-display text-xl font-medium">
-            brief<span className="text-accent">.</span>
+          <a href={homeHref} className="font-display text-xl font-medium">
+            {wordmark}
           </a>
           <nav className="flex items-center gap-1 text-sm text-muted">
-            <NavLink href="/">Home</NavLink>
-            <NavLink href="/chat/demo">Chat</NavLink>
+            <NavLink href={homeHref}>
+              <FormattedMessage id="nav.home" />
+            </NavLink>
+            <NavLink href={chatHref}>
+              <FormattedMessage id="nav.chat" />
+            </NavLink>
+            <LocaleSwitcher />
           </nav>
         </div>
       </header>

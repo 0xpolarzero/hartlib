@@ -12,9 +12,16 @@
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
+      "@brief/i18n": ["../../packages/i18n/src/index.ts"],
+      "@brief/shared": ["../../packages/shared/src/index.ts"],
       "@brief/ui": ["../../packages/ui/src/index.ts"],
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "../../packages/ui/src"]
+  "include": [
+    "src",
+    "../../packages/i18n/src",
+    "../../packages/shared/src",
+    "../../packages/ui/src"
+  ]
 }
