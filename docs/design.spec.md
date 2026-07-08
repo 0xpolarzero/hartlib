@@ -83,7 +83,9 @@ The demo chat is pre-populated with a long representative message history that e
 
 The demo does not send new chat messages.
 
-The client demo root centers on one chat and a compact table of fils. Fils include both seeded publisher invitation sources and real public sources ingested by the worker, unified as one source model. Each fil row shows the source name, a source-type distinction (invitation vs public), the latest publication date when present, and a subscribed checkbox. The per-publication AI hide/show action has been removed from the client publications list.
+The client demo root centers on one chat and a compact table of flux. Flux include both seeded publisher invitation sources and real public sources ingested by the worker, unified as one source model. Each flux row shows the source name, a source-type distinction (invitation vs public), the latest publication date when present, and a subscribed checkbox. The per-publication AI hide/show action has been removed from the client publications list.
+
+The demo supports `fr-FR` and `en-US` locales via localized URL prefixes and defaults to `fr-FR` + `FR`. See `localization.spec.md`.
 
 The API serves real public source data from Postgres through a read route consumed by the demo client.
 

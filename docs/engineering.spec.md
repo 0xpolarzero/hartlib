@@ -35,6 +35,7 @@ Frontend library direction:
 
 - Prefer TanStack libraries where they fit cleanly.
 - Use TanStack libraries as headless infrastructure, not as a visual design system.
+- The frontend uses `@brief/i18n` (react-intl / FormatJS) with message catalogs in `packages/i18n/src/locales/`, localized URL prefixes, and a UI locale that is separate from market. See `localization.spec.md`.
 
 ## TanStack Position
 
