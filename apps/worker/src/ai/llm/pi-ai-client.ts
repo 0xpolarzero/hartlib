@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { Type, validateToolArguments } from "@earendil-works/pi-ai";
 import type {
   Api,
   AssistantMessage,
@@ -6,6 +6,8 @@ import type {
   Message,
   Model,
   Static,
+  Tool,
+  ToolCall,
   Usage,
 } from "@earendil-works/pi-ai";
 import { complete, streamSimple } from "@earendil-works/pi-ai/compat";
@@ -68,6 +70,12 @@ const EmitManifestSchema = Type.Object({
   entries: Type.Array(ManifestEntrySchema),
 });
 
+const EmitManifestTool = {
+  name: "emit_manifest",
+  description: "Emit the final ordered document manifest and end preflight.",
+  parameters: EmitManifestSchema,
+} satisfies Tool<typeof EmitManifestSchema>;
+
 const MemoryKindSchema = Type.Union([
   Type.Literal("profile"),
   Type.Literal("preference"),
@@ -86,6 +94,12 @@ const RecordMemoriesSchema = Type.Object({
     }),
   ),
 });
+
+const RecordMemoriesTool = {
+  name: "record_memories",
+  description: "Record memory proposals with verbatim evidence quotes.",
+  parameters: RecordMemoriesSchema,
+} satisfies Tool<typeof RecordMemoriesSchema>;
 
 type SearchDocumentsArgs = Static<typeof SearchDocumentsSchema>;
 type PeekDocumentArgs = Static<typeof PeekDocumentSchema>;
@@ -170,12 +184,52 @@ const normalizeManifest = (entries: readonly ManifestEntry[]): readonly Manifest
     ...(entry.charEnd === undefined ? {} : { charEnd: entry.charEnd }),
   }));
 
-const extractUsage = (messages: readonly AgentMessage[]): Usage =>
-  [...messages]
-    .reverse()
-    .find(
-      (message): message is AssistantMessage => message.role === "assistant" && "usage" in message,
-    )?.usage ?? zeroUsage();
+const addUsage = (left: Usage, right: Usage): Usage => ({
+  input: left.input + right.input,
+  output: left.output + right.output,
+  cacheRead: left.cacheRead + right.cacheRead,
+  cacheWrite: left.cacheWrite + right.cacheWrite,
+  ...(left.cacheWrite1h !== undefined || right.cacheWrite1h !== undefined
+    ? { cacheWrite1h: (left.cacheWrite1h ?? 0) + (right.cacheWrite1h ?? 0) }
+    : {}),
+  ...(left.reasoning !== undefined || right.reasoning !== undefined
+    ? { reasoning: (left.reasoning ?? 0) + (right.reasoning ?? 0) }
+    : {}),
+  totalTokens: left.totalTokens + right.totalTokens,
+  cost: {
+    input: left.cost.input + right.cost.input,
+    output: left.cost.output + right.cost.output,
+    cacheRead: left.cost.cacheRead + right.cost.cacheRead,
+    cacheWrite: left.cost.cacheWrite + right.cost.cacheWrite,
+    total: left.cost.total + right.cost.total,
+  },
+});
+
+const aggregateUsage = (messages: readonly AgentMessage[]): Usage =>
+  messages.reduce(
+    (total, message) =>
+      message.role === "assistant" && "usage" in message ? addUsage(total, message.usage) : total,
+    zeroUsage(),
+  );
+
+const withUsage = <A>(result: AiCallResult<A>, usage: Usage): AiCallResult<A> =>
+  result.kind === "ok" ? result : { ...result, usage };
+
+const validateEmitManifestArgs = (toolCall: ToolCall): EmitManifestArgs | null => {
+  try {
+    return validateToolArguments(EmitManifestTool, toolCall) as EmitManifestArgs;
+  } catch {
+    return null;
+  }
+};
+
+const validateRecordMemoriesArgs = (toolCall: ToolCall): RecordMemoriesArgs | null => {
+  try {
+    return validateToolArguments(RecordMemoriesTool, toolCall) as RecordMemoriesArgs;
+  } catch {
+    return null;
+  }
+};
 
 const lastAssistantMessage = (messages: readonly AgentMessage[]): AssistantMessage | null =>
   [...messages]
@@ -293,11 +347,12 @@ export class PiAiClient implements AiClient {
       description: "Search the public-source corpus and return previews only.",
       parameters: SearchDocumentsSchema,
       execute: async (_toolCallId: string, args: SearchDocumentsArgs) => {
-        const results = await this.retrieval.searchDocuments(args, toolContext);
+        const spec: QuerySpec = args;
+        const results = await this.retrieval.searchDocuments(spec, toolContext);
 
         toolEvents.push({
           type: "search",
-          terms: args.terms,
+          spec,
           resultCount: results.length,
         });
 
@@ -444,7 +499,7 @@ export class PiAiClient implements AiClient {
         kind: "ok",
         value: {
           manifest,
-          usage: extractUsage(messages),
+          usage: aggregateUsage(messages),
           toolEvents,
         },
       };
@@ -459,14 +514,19 @@ export class PiAiClient implements AiClient {
       }
     }
 
+    const preflightUsage = aggregateUsage(messages);
     const forced = await this.forceManifest(inputs, toolEvents);
 
     if (forced !== null) {
+      if (forced.kind !== "ok") {
+        return withUsage(forced, addUsage(preflightUsage, forced.usage));
+      }
+
       return {
         kind: "ok",
         value: {
-          manifest: forced.manifest,
-          usage: forced.usage,
+          manifest: forced.value.manifest,
+          usage: addUsage(preflightUsage, forced.value.usage),
           toolEvents,
         },
       };
@@ -480,7 +540,7 @@ export class PiAiClient implements AiClient {
       kind: "ok",
       value: {
         manifest: [],
-        usage: zeroUsage(),
+        usage: preflightUsage,
         toolEvents,
       },
     };
@@ -489,63 +549,75 @@ export class PiAiClient implements AiClient {
   private async forceManifest(
     inputs: PreflightInputs,
     toolEvents: PreflightToolEvent[],
-  ): Promise<{ readonly manifest: readonly ManifestEntry[]; readonly usage: Usage } | null> {
+  ): Promise<AiCallResult<{
+    readonly manifest: readonly ManifestEntry[];
+    readonly usage: Usage;
+  }> | null> {
     toolEvents.push({ type: "degraded", reason: "forced_manifest" });
-    let message: AssistantMessage;
 
-    try {
-      message = await this.runComplete(
-        this.fastModel,
-        {
-          systemPrompt: inputs.systemPrompt,
-          messages: [
-            ...historyMessages(inputs),
-            {
-              role: "user",
-              content: buildPreflightUserPrompt(inputs),
-              timestamp: Date.now(),
-            },
-          ],
-          tools: [
-            {
-              name: "emit_manifest",
-              description: "Emit the final ordered document manifest and end preflight.",
-              parameters: EmitManifestSchema,
-            },
-          ],
-        },
-        {
-          apiKey: this.options.apiKey,
-          maxRetries: 0,
-          timeoutMs: this.options.preflightTimeoutMs,
-          reasoningEffort: "medium",
-          toolChoice: { type: "function", function: { name: "emit_manifest" } },
-        },
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let message: AssistantMessage;
+
+      try {
+        message = await this.runComplete(
+          this.fastModel,
+          {
+            systemPrompt: inputs.systemPrompt,
+            messages: [
+              ...historyMessages(inputs),
+              {
+                role: "user",
+                content: buildPreflightUserPrompt(inputs),
+                timestamp: Date.now(),
+              },
+            ],
+            tools: [EmitManifestTool],
+          },
+          {
+            apiKey: this.options.apiKey,
+            maxRetries: 0,
+            timeoutMs: this.options.preflightTimeoutMs,
+            reasoningEffort: "medium",
+            toolChoice: { type: "function", function: { name: "emit_manifest" } },
+          },
+        );
+      } catch {
+        toolEvents.push({ type: "degraded", reason: "empty_delta" });
+        return null;
+      }
+
+      const classified = classifyAssistantMessage(message, this.fastModel, {
+        manifest: [],
+        usage: message.usage,
+      });
+
+      if (classified.kind !== "ok") {
+        return classified;
+      }
+
+      const toolCall = message.content.find(
+        (content) => content.type === "toolCall" && content.name === "emit_manifest",
       );
-    } catch {
-      toolEvents.push({ type: "degraded", reason: "empty_delta" });
-      return null;
-    }
-    const toolCall = message.content.find(
-      (content) => content.type === "toolCall" && content.name === "emit_manifest",
-    );
 
-    if (toolCall?.type !== "toolCall") {
-      toolEvents.push({ type: "degraded", reason: "empty_delta" });
-      return null;
-    }
+      if (toolCall?.type !== "toolCall") {
+        toolEvents.push({ type: "degraded", reason: "empty_delta" });
+        return null;
+      }
 
-    const args = toolCall.arguments as Partial<EmitManifestArgs>;
+      const args = validateEmitManifestArgs(toolCall);
 
-    if (!Array.isArray(args.entries)) {
-      toolEvents.push({ type: "degraded", reason: "empty_delta" });
-      return null;
+      if (args === null) {
+        continue;
+      }
+
+      const manifest = normalizeManifest(args.entries);
+      toolEvents.push({ type: "manifest", entries: manifest });
+
+      return { kind: "ok", value: { manifest, usage: message.usage } };
     }
 
-    const manifest = normalizeManifest(args.entries);
-    toolEvents.push({ type: "manifest", entries: manifest });
-
-    return { manifest, usage: message.usage };
+    toolEvents.push({ type: "degraded", reason: "empty_delta" });
+    return null;
   }
 
   streamAnswer(input: StreamAnswerInput): AsyncIterable<AnswerStreamEvent> {
@@ -608,13 +680,7 @@ export class PiAiClient implements AiClient {
           timestamp: Date.now(),
         },
       ],
-      tools: [
-        {
-          name: "record_memories",
-          description: "Record memory proposals with verbatim evidence quotes.",
-          parameters: RecordMemoriesSchema,
-        },
-      ],
+      tools: [RecordMemoriesTool],
     };
     const message = await this.runComplete(this.fastModel, context, {
       apiKey: this.options.apiKey,
@@ -644,15 +710,25 @@ export class PiAiClient implements AiClient {
       };
     }
 
-    const args = toolCall.arguments as Partial<RecordMemoriesArgs>;
-    const proposals: ProposedMemory[] = Array.isArray(args.memories)
-      ? args.memories.map((memory) => ({
-          kind: toMemoryKind(memory.kind),
-          content: memory.content,
-          evidenceQuote: memory.evidenceQuote,
-          ...(memory.targetMemoryId === undefined ? {} : { targetMemoryId: memory.targetMemoryId }),
-        }))
-      : [];
+    const args = validateRecordMemoriesArgs(toolCall);
+
+    if (args === null) {
+      return {
+        kind: "ok",
+        value: {
+          proposals: [],
+          discarded: [],
+          usage: message.usage,
+        },
+      };
+    }
+
+    const proposals: ProposedMemory[] = args.memories.map((memory) => ({
+      kind: toMemoryKind(memory.kind),
+      content: memory.content,
+      evidenceQuote: memory.evidenceQuote,
+      ...(memory.targetMemoryId === undefined ? {} : { targetMemoryId: memory.targetMemoryId }),
+    }));
     const verified = verifyMemoryProposals(
       proposals,
       input.userText,

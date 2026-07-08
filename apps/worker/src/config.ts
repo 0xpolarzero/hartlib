@@ -1,5 +1,7 @@
 import { Config, Effect } from "effect";
 
+import { ZAI_CODING_PLAN_BASE_URL } from "./ai/llm/models";
+
 export interface WorkerConfig {
   readonly jobPollIntervalMs: number;
   readonly runMigrationsOnStartup: boolean;
@@ -47,7 +49,10 @@ export const loadWorkerConfig = Effect.gen(function* () {
     "PUBLIC_SOURCE_OPERATION_TIMEOUT_MS",
   ).pipe(Config.withDefault(60_000));
   const zaiApiKey = yield* Config.string("ZAI_API_KEY").pipe(Config.withDefault(""));
-  const aiBaseUrl = yield* Config.string("AI_BASE_URL").pipe(Config.withDefault(""));
+  const rawAiBaseUrl = yield* Config.string("AI_BASE_URL").pipe(
+    Config.withDefault(ZAI_CODING_PLAN_BASE_URL),
+  );
+  const aiBaseUrl = rawAiBaseUrl.trim() === "" ? ZAI_CODING_PLAN_BASE_URL : rawAiBaseUrl;
   const aiMainModel = yield* Config.string("AI_MAIN_MODEL").pipe(Config.withDefault("glm-5.2"));
   const aiFastModel = yield* Config.string("AI_FAST_MODEL").pipe(Config.withDefault("glm-5-turbo"));
   const aiSearchMaxLimit = yield* Config.number("AI_SEARCH_MAX_LIMIT").pipe(Config.withDefault(20));

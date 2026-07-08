@@ -7,18 +7,33 @@ import { PiAiClient, type RetrievalExecutor } from "./pi-ai-client";
 import type { PreflightOutput } from "./types";
 import { zeroUsage } from "./types";
 
-const usage: Usage = zeroUsage();
+const usageFor = (input: number, output = 0): Usage => ({
+  ...zeroUsage(),
+  input,
+  output,
+  totalTokens: input + output,
+  cost: {
+    input,
+    output,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: input + output,
+  },
+});
+
+const usage: Usage = usageFor(0);
 
 const assistantMessage = (
   content: AssistantMessage["content"],
   stopReason: AssistantMessage["stopReason"] = "toolUse",
+  messageUsage: Usage = usage,
 ): AssistantMessage => ({
   role: "assistant",
   content,
   api: "openai-completions",
   provider: "zai",
   model: "glm-5-turbo",
-  usage,
+  usage: messageUsage,
   stopReason,
   timestamp: Date.now(),
 });
@@ -152,7 +167,7 @@ describe("PiAiClient preflight", () => {
 
   it("respects the turn cap and degrades through a forced manifest", async () => {
     const script = scriptedStreamFn([
-      assistantMessage([toolCall("search_documents", { terms: "alpha" })]),
+      assistantMessage([toolCall("search_documents", { terms: "alpha" })], "toolUse", usageFor(3)),
       assistantMessage([toolCall("emit_manifest", { entries: [{ documentId: "too-late" }] })]),
     ]);
     const output = ok(
@@ -161,12 +176,17 @@ describe("PiAiClient preflight", () => {
         boundary: {
           preflightStreamFn: script.streamFn,
           complete: async () =>
-            assistantMessage([toolCall("emit_manifest", { entries: [{ documentId: "forced" }] })]),
+            assistantMessage(
+              [toolCall("emit_manifest", { entries: [{ documentId: "forced" }] })],
+              "toolUse",
+              usageFor(5),
+            ),
         },
       }).runPreflight(preflightInputs, toolContext),
     );
 
     expect(output.manifest).toEqual([{ documentId: "forced" }]);
+    expect(output.usage.input).toBe(8);
     expect(output.toolEvents).toEqual(
       expect.arrayContaining([{ type: "degraded", reason: "forced_manifest" }]),
     );
@@ -196,8 +216,49 @@ describe("PiAiClient preflight", () => {
     expect(output.toolEvents.filter((event) => event.type === "tool_rejected")).toHaveLength(2);
   });
 
+  it("records the full QuerySpec in search observations", async () => {
+    const spec = {
+      terms: "solar",
+      sourceIds: ["source-1"],
+      countries: ["FR"],
+      languages: ["fr-FR"],
+      documentTypes: ["briefing"],
+      publishedAfter: "2026-01-01",
+      publishedBefore: "2026-07-01",
+      orderBy: "recency",
+      limit: 3,
+    } as const;
+    const script = scriptedStreamFn([
+      assistantMessage([toolCall("search_documents", spec)]),
+      assistantMessage([toolCall("emit_manifest", { entries: [{ documentId: "done" }] })]),
+    ]);
+    const output = ok(await client(script.streamFn).runPreflight(preflightInputs, toolContext));
+
+    expect(output.toolEvents).toContainEqual({
+      type: "search",
+      spec,
+      resultCount: 1,
+    });
+  });
+
+  it("aggregates usage across all preflight assistant messages", async () => {
+    const script = scriptedStreamFn([
+      assistantMessage([toolCall("search_documents", { terms: "one" })], "toolUse", usageFor(2, 1)),
+      assistantMessage(
+        [toolCall("emit_manifest", { entries: [{ documentId: "done" }] })],
+        "toolUse",
+        usageFor(5, 3),
+      ),
+    ]);
+    const output = ok(await client(script.streamFn).runPreflight(preflightInputs, toolContext));
+
+    expect(output.usage.input).toBe(7);
+    expect(output.usage.output).toBe(4);
+    expect(output.usage.totalTokens).toBe(11);
+  });
+
   it("falls back to an empty delta when forced manifest also fails", async () => {
-    const script = scriptedStreamFn([assistantMessage([], "stop")]);
+    const script = scriptedStreamFn([assistantMessage([], "stop", usageFor(4))]);
     const output = ok(
       await client(script.streamFn, {
         preflightMaxTurns: 1,
@@ -209,11 +270,74 @@ describe("PiAiClient preflight", () => {
     );
 
     expect(output.manifest).toEqual([]);
+    expect(output.usage.input).toBe(4);
     expect(output.toolEvents).toEqual(
       expect.arrayContaining([
         { type: "degraded", reason: "forced_manifest" },
         { type: "degraded", reason: "empty_delta" },
       ]),
+    );
+  });
+
+  it("propagates forced manifest assistant errors before reading tool calls", async () => {
+    const script = scriptedStreamFn([assistantMessage([], "stop", usageFor(4))]);
+    const result = await client(script.streamFn, {
+      preflightMaxTurns: 1,
+      boundary: {
+        preflightStreamFn: script.streamFn,
+        complete: async () => ({
+          ...assistantMessage([toolCall("emit_manifest", { entries: [] })], "error", usageFor(6)),
+          errorMessage: "invalid api key",
+        }),
+      },
+    }).runPreflight(preflightInputs, toolContext);
+
+    expect(result.kind).toBe("fatal");
+    if (result.kind !== "fatal") {
+      throw new Error("expected fatal");
+    }
+    expect(result.usage.input).toBe(10);
+  });
+
+  it("retries forced manifest once after schema validation failure", async () => {
+    const script = scriptedStreamFn([assistantMessage([], "stop")]);
+    const forced = [
+      assistantMessage([toolCall("emit_manifest", { entries: [{ charStart: 1 }] })]),
+      assistantMessage([toolCall("emit_manifest", { entries: [{ documentId: "forced" }] })]),
+    ];
+    const output = ok(
+      await client(script.streamFn, {
+        preflightMaxTurns: 1,
+        boundary: {
+          preflightStreamFn: script.streamFn,
+          complete: async () => forced.shift() ?? assistantMessage([], "stop"),
+        },
+      }).runPreflight(preflightInputs, toolContext),
+    );
+
+    expect(output.manifest).toEqual([{ documentId: "forced" }]);
+  });
+
+  it("degrades after the forced manifest schema retry is exhausted", async () => {
+    const script = scriptedStreamFn([assistantMessage([], "stop")]);
+    let forcedCalls = 0;
+    const output = ok(
+      await client(script.streamFn, {
+        preflightMaxTurns: 1,
+        boundary: {
+          preflightStreamFn: script.streamFn,
+          complete: async () => {
+            forcedCalls += 1;
+            return assistantMessage([toolCall("emit_manifest", { entries: [{ charStart: 1 }] })]);
+          },
+        },
+      }).runPreflight(preflightInputs, toolContext),
+    );
+
+    expect(forcedCalls).toBe(2);
+    expect(output.manifest).toEqual([]);
+    expect(output.toolEvents).toEqual(
+      expect.arrayContaining([{ type: "degraded", reason: "empty_delta" }]),
     );
   });
 

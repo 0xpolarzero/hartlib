@@ -12,6 +12,8 @@ const zaiBuiltinModelIds = [
 
 type ZaiBuiltinModelId = (typeof zaiBuiltinModelIds)[number];
 
+export const ZAI_CODING_PLAN_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
+
 export interface ResolveZaiModelOptions {
   readonly modelId: string;
   readonly baseUrl?: string | undefined;

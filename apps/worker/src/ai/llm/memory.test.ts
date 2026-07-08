@@ -6,7 +6,7 @@ import { PiAiClient } from "./pi-ai-client";
 import type { ProposedMemory } from "./types";
 import { zeroUsage } from "./types";
 
-const recordMemoriesMessage = (memories: readonly ProposedMemory[]): AssistantMessage => ({
+const recordMemoriesMessage = (memories: unknown): AssistantMessage => ({
   role: "assistant",
   content: [
     {
@@ -95,5 +95,37 @@ describe("memory proposal verification", () => {
       },
     ]);
     expect(result.value.discarded).toMatchObject([{ reason: "invalid_quote" }]);
+  });
+
+  it("extractMemories discards a malformed record_memories output without failing the run", async () => {
+    const client = new PiAiClient({
+      apiKey: "test-key",
+      mainModelId: "glm-5.2",
+      fastModelId: "glm-5-turbo",
+      preflightMaxTurns: 4,
+      preflightMaxSearches: 8,
+      preflightMaxPeeks: 4,
+      preflightTimeoutMs: 30_000,
+      answerTimeoutMs: 120_000,
+      memoryMaxWritesPerTurn: 5,
+      boundary: {
+        complete: async () =>
+          recordMemoriesMessage([
+            { kind: "profile", content: "Based in Lyon", evidenceQuote: "based in Lyon" },
+            { kind: "instruction", evidenceQuote: "examples in TypeScript" },
+          ]),
+      },
+    });
+    const result = await client.extractMemories({
+      userText: "I am based in Lyon. Please keep examples in TypeScript.",
+      existingMemories: [],
+    });
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") {
+      throw new Error("expected ok");
+    }
+    expect(result.value.proposals).toEqual([]);
+    expect(result.value.discarded).toEqual([]);
   });
 });

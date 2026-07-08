@@ -1,6 +1,6 @@
 import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 
-import type { SourceAccess } from "../retrieval/query-spec";
+import type { QuerySpec, SourceAccess } from "../retrieval/query-spec";
 import type { ChatHistoryMessage } from "../window/assemble-prompt";
 import type { ManifestEntry, MemoryItem, MemoryKind } from "../window/blocks";
 
@@ -19,6 +19,18 @@ export const zeroUsage = (): Usage => ({
   },
 });
 
+export interface AiRunUsage {
+  readonly preflight: Usage;
+  readonly answer: Usage;
+  readonly memory: Usage;
+}
+
+export const zeroAiRunUsage = (): AiRunUsage => ({
+  preflight: zeroUsage(),
+  answer: zeroUsage(),
+  memory: zeroUsage(),
+});
+
 export type AiCallResult<A> =
   | { readonly kind: "ok"; readonly value: A }
   | {
@@ -35,6 +47,12 @@ export type AiCallResult<A> =
     }
   | {
       readonly kind: "fatal";
+      readonly message: AssistantMessage;
+      readonly usage: Usage;
+      readonly errorMessage: string;
+    }
+  | {
+      readonly kind: "truncated";
       readonly message: AssistantMessage;
       readonly usage: Usage;
       readonly errorMessage: string;
@@ -78,7 +96,7 @@ export interface PreflightToolContext {
 export type PreflightToolEvent =
   | {
       readonly type: "search";
-      readonly terms: string;
+      readonly spec: QuerySpec;
       readonly resultCount: number;
     }
   | {

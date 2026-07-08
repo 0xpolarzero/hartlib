@@ -23,6 +23,17 @@ const errorMessage = (error: string, inputTokens = 10): AssistantMessage => ({
   timestamp: Date.now(),
 });
 
+const lengthMessage = (): AssistantMessage => ({
+  role: "assistant",
+  content: [{ type: "text", text: "partial" }],
+  api: "openai-completions",
+  provider: "zai",
+  model: "glm-5.2",
+  usage: usage(10),
+  stopReason: "length",
+  timestamp: Date.now(),
+});
+
 describe("LLM stopReason mapping", () => {
   it("classifies context overflow before retryable provider errors", () => {
     const model = { ...resolveZaiModel({ modelId: "glm-5.2" }), contextWindow: 100 };
@@ -40,5 +51,12 @@ describe("LLM stopReason mapping", () => {
     const result = classifyAssistantMessage(errorMessage("invalid api key"), model, "value");
 
     expect(result.kind).toBe("fatal");
+  });
+
+  it("classifies length stops as truncated instead of ok", () => {
+    const model = resolveZaiModel({ modelId: "glm-5.2" });
+    const result = classifyAssistantMessage(lengthMessage(), model, "value");
+
+    expect(result.kind).toBe("truncated");
   });
 });

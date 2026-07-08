@@ -44,5 +44,14 @@ export const classifyAssistantMessage = <A>(
     };
   }
 
+  if (message.stopReason === "length") {
+    return {
+      kind: "truncated",
+      message,
+      usage: message.usage,
+      errorMessage,
+    };
+  }
+
   return { kind: "ok", value };
 };
