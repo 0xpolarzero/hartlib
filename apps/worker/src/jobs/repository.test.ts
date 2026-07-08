@@ -5,7 +5,7 @@ import { makePgJobRepository } from "./repository";
 import type { JobRecord } from "./types";
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const migrationsUrl = new URL("../../../../../db/migrations/", import.meta.url);
+const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
 
 const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> => {
   if (!databaseUrl) {

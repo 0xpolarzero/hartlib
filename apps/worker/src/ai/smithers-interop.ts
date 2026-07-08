@@ -17,7 +17,7 @@ export async function createSmithersStorage<Schemas extends Record<string, z.Zod
 
 export function runSmithersWorkflow(
   workflow: unknown,
-  options: Pick<RunOptions, "runId" | "input" | "logDir">,
+  options: Pick<RunOptions, "runId" | "input" | "logDir" | "resume" | "signal">,
 ): Promise<RunResult> {
   return Effect.runPromise(runWorkflow(workflow, options));
 }

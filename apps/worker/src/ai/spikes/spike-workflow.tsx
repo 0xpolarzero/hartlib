@@ -44,3 +44,39 @@ export function buildSpikeWorkflow(api: CreateSmithersApi<SpikeSchemas>): SpikeW
     </Workflow>
   ));
 }
+
+export interface HandoffSpikeHooks {
+  stepOne: () =>
+    | z.infer<SpikeSchemas["spikeStepOne"]>
+    | Promise<z.infer<SpikeSchemas["spikeStepOne"]>>;
+  stepTwo: (
+    stepOne: z.infer<SpikeSchemas["spikeStepOne"]>,
+  ) => z.infer<SpikeSchemas["spikeStepTwo"]> | Promise<z.infer<SpikeSchemas["spikeStepTwo"]>>;
+}
+
+export function buildHandoffSpikeWorkflow(
+  api: CreateSmithersApi<SpikeSchemas>,
+  hooks: HandoffSpikeHooks,
+): SpikeWorkflow {
+  const { Workflow, Task, Sequence, smithers, outputs } = api;
+
+  return smithers(() => (
+    <Workflow name="ai-spike-handoff">
+      <Sequence>
+        <Task id="spikeStepOne" output={outputs.spikeStepOne} retries={0}>
+          {() => hooks.stepOne()}
+        </Task>
+        <Task
+          id="spikeStepTwo"
+          output={outputs.spikeStepTwo}
+          retries={0}
+          deps={{ spikeStepOne: outputs.spikeStepOne }}
+        >
+          {({ spikeStepOne }: { spikeStepOne: z.infer<SpikeSchemas["spikeStepOne"]> }) =>
+            hooks.stepTwo(spikeStepOne) as z.infer<SpikeSchemas["spikeStepTwo"]>
+          }
+        </Task>
+      </Sequence>
+    </Workflow>
+  ));
+}
