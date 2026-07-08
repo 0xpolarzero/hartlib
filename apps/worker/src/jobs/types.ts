@@ -14,7 +14,9 @@ export type JobKind =
   | "generate_export"
   | "purge_deleted_chats"
   | "purge_deleted_files"
-  | "check_artifact";
+  | "check_artifact"
+  | "ai_chat_run"
+  | "purge_ai_runtime";
 
 export interface JobRecord {
   readonly id: string;
