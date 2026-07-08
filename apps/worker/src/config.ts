@@ -7,12 +7,26 @@ export interface WorkerConfig {
   readonly publicSourcePollIntervalMs: number;
   readonly publicSourceStartupBackfillDays: number;
   readonly publicSourceOperationTimeoutMs: number;
+  readonly zaiApiKey: string;
+  readonly aiBaseUrl: string;
+  readonly aiMainModel: string;
+  readonly aiFastModel: string;
   readonly aiSearchMaxLimit: number;
   readonly aiSearchRecencyHalfLifeDays: number;
   readonly aiContextBlockBudget: number;
   readonly aiContextBlockHardCap: number;
   readonly aiFullDocMaxChars: number;
   readonly aiHistoryMaxMessages: number;
+  readonly aiPreflightHistoryMessages: number;
+  readonly aiPreflightMaxTurns: number;
+  readonly aiPreflightMaxSearches: number;
+  readonly aiPreflightMaxPeeks: number;
+  readonly aiPreflightTimeoutMs: number;
+  readonly aiAnswerTimeoutMs: number;
+  readonly aiStreamPollMs: number;
+  readonly aiMemoryMaxWritesPerTurn: number;
+  readonly aiPlannerBaseline: boolean;
+  readonly aiFake: boolean;
   readonly nodeEnv: string;
 }
 
@@ -32,6 +46,10 @@ export const loadWorkerConfig = Effect.gen(function* () {
   const publicSourceOperationTimeoutMs = yield* Config.number(
     "PUBLIC_SOURCE_OPERATION_TIMEOUT_MS",
   ).pipe(Config.withDefault(60_000));
+  const zaiApiKey = yield* Config.string("ZAI_API_KEY").pipe(Config.withDefault(""));
+  const aiBaseUrl = yield* Config.string("AI_BASE_URL").pipe(Config.withDefault(""));
+  const aiMainModel = yield* Config.string("AI_MAIN_MODEL").pipe(Config.withDefault("glm-5.2"));
+  const aiFastModel = yield* Config.string("AI_FAST_MODEL").pipe(Config.withDefault("glm-5-turbo"));
   const aiSearchMaxLimit = yield* Config.number("AI_SEARCH_MAX_LIMIT").pipe(Config.withDefault(20));
   const aiSearchRecencyHalfLifeDays = yield* Config.number("AI_SEARCH_RECENCY_HALF_LIFE_DAYS").pipe(
     Config.withDefault(14),
@@ -48,6 +66,32 @@ export const loadWorkerConfig = Effect.gen(function* () {
   const aiHistoryMaxMessages = yield* Config.number("AI_HISTORY_MAX_MESSAGES").pipe(
     Config.withDefault(30),
   );
+  const aiPreflightHistoryMessages = yield* Config.number("AI_PREFLIGHT_HISTORY_MESSAGES").pipe(
+    Config.withDefault(6),
+  );
+  const aiPreflightMaxTurns = yield* Config.number("AI_PREFLIGHT_MAX_TURNS").pipe(
+    Config.withDefault(4),
+  );
+  const aiPreflightMaxSearches = yield* Config.number("AI_PREFLIGHT_MAX_SEARCHES").pipe(
+    Config.withDefault(8),
+  );
+  const aiPreflightMaxPeeks = yield* Config.number("AI_PREFLIGHT_MAX_PEEKS").pipe(
+    Config.withDefault(4),
+  );
+  const aiPreflightTimeoutMs = yield* Config.number("AI_PREFLIGHT_TIMEOUT_MS").pipe(
+    Config.withDefault(30_000),
+  );
+  const aiAnswerTimeoutMs = yield* Config.number("AI_ANSWER_TIMEOUT_MS").pipe(
+    Config.withDefault(120_000),
+  );
+  const aiStreamPollMs = yield* Config.number("AI_STREAM_POLL_MS").pipe(Config.withDefault(300));
+  const aiMemoryMaxWritesPerTurn = yield* Config.number("AI_MEMORY_MAX_WRITES_PER_TURN").pipe(
+    Config.withDefault(5),
+  );
+  const aiPlannerBaseline = yield* Config.boolean("AI_PLANNER_BASELINE").pipe(
+    Config.withDefault(false),
+  );
+  const aiFake = yield* Config.boolean("AI_FAKE").pipe(Config.withDefault(false));
   const nodeEnv = yield* Config.string("NODE_ENV").pipe(Config.withDefault("development"));
   const runMigrationsOnStartup = yield* Config.boolean("WORKER_RUN_MIGRATIONS_ON_STARTUP").pipe(
     Config.withDefault(nodeEnv !== "production"),
@@ -60,12 +104,26 @@ export const loadWorkerConfig = Effect.gen(function* () {
     publicSourcePollIntervalMs,
     publicSourceStartupBackfillDays,
     publicSourceOperationTimeoutMs,
+    zaiApiKey,
+    aiBaseUrl,
+    aiMainModel,
+    aiFastModel,
     aiSearchMaxLimit,
     aiSearchRecencyHalfLifeDays,
     aiContextBlockBudget,
     aiContextBlockHardCap,
     aiFullDocMaxChars,
     aiHistoryMaxMessages,
+    aiPreflightHistoryMessages,
+    aiPreflightMaxTurns,
+    aiPreflightMaxSearches,
+    aiPreflightMaxPeeks,
+    aiPreflightTimeoutMs,
+    aiAnswerTimeoutMs,
+    aiStreamPollMs,
+    aiMemoryMaxWritesPerTurn,
+    aiPlannerBaseline,
+    aiFake,
     nodeEnv,
   } satisfies WorkerConfig;
 });
