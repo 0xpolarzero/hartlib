@@ -1,3 +1,21 @@
+export const LOCALES = ["fr-FR", "en-US"] as const;
+export type Locale = (typeof LOCALES)[number];
+export const DEFAULT_LOCALE: Locale = "fr-FR";
+
+export const MARKETS = ["FR", "US"] as const;
+export type Market = (typeof MARKETS)[number];
+export const DEFAULT_MARKET: Market = "FR";
+
+export const DEFAULT_LOCALE_FOR_MARKET: Record<Market, Locale> = { FR: "fr-FR", US: "en-US" };
+export const DEFAULT_MARKET_FOR_LOCALE: Record<Locale, Market> = { "fr-FR": "FR", "en-US": "US" };
+
+export function isLocale(value: string): value is Locale {
+  return (LOCALES as readonly string[]).includes(value);
+}
+export function isMarket(value: string): value is Market {
+  return (MARKETS as readonly string[]).includes(value);
+}
+
 export type SourceKind = "publisher" | "public";
 
 export type ContentMetrics = {
@@ -43,6 +61,8 @@ export type ContentSource = {
   name: string;
   publisherName: string;
   description: string;
+  country: Market;
+  language: Locale;
   subscribed: boolean;
   subscribedSince: string;
   subscriberCount: number;

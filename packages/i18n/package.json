@@ -1,0 +1,24 @@
+{
+  "name": "@brief/i18n",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -b --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@brief/shared": "workspace:*",
+    "react-intl": "10.1.14"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.17",
+    "typescript": "6.0.3",
+    "vitest": "4.1.9"
+  },
+  "peerDependencies": {
+    "react": "19.2.7"
+  }
+}

@@ -41,11 +41,14 @@
       "name": "@brief/demo",
       "dependencies": {
         "@brief/demo-data": "workspace:*",
+        "@brief/i18n": "workspace:*",
+        "@brief/shared": "workspace:*",
         "@brief/source-ingestion": "workspace:*",
         "@brief/ui": "workspace:*",
         "lucide-react": "1.21.0",
         "react": "19.2.7",
         "react-dom": "19.2.7",
+        "react-intl": "10.1.14",
       },
       "devDependencies": {
         "@tailwindcss/vite": "4.3.1",
@@ -61,6 +64,7 @@
     "apps/web": {
       "name": "@brief/web",
       "dependencies": {
+        "@brief/i18n": "workspace:*",
         "@brief/shared": "workspace:*",
         "@brief/ui": "workspace:*",
         "@clerk/clerk-react": "5.61.3",
@@ -122,11 +126,27 @@
     "packages/demo-data": {
       "name": "@brief/demo-data",
       "dependencies": {
+        "@brief/shared": "workspace:*",
         "@brief/source-ingestion": "workspace:*",
       },
       "devDependencies": {
         "typescript": "6.0.3",
         "vitest": "4.1.9",
+      },
+    },
+    "packages/i18n": {
+      "name": "@brief/i18n",
+      "dependencies": {
+        "@brief/shared": "workspace:*",
+        "react-intl": "10.1.14",
+      },
+      "devDependencies": {
+        "@types/react": "19.2.17",
+        "typescript": "6.0.3",
+        "vitest": "4.1.9",
+      },
+      "peerDependencies": {
+        "react": "19.2.7",
       },
     },
     "packages/shared": {
@@ -142,6 +162,7 @@
     "packages/source-ingestion": {
       "name": "@brief/source-ingestion",
       "dependencies": {
+        "@brief/shared": "workspace:*",
         "effect": "4.0.0-beta.92",
       },
       "devDependencies": {
@@ -153,6 +174,8 @@
     "packages/ui": {
       "name": "@brief/ui",
       "dependencies": {
+        "@brief/i18n": "workspace:*",
+        "@brief/shared": "workspace:*",
         "@radix-ui/react-label": "2.1.10",
         "@radix-ui/react-separator": "1.1.10",
         "@radix-ui/react-slot": "1.3.0",
@@ -246,6 +269,8 @@
 
     "@brief/demo-data": ["@brief/demo-data@workspace:packages/demo-data"],
 
+    "@brief/i18n": ["@brief/i18n@workspace:packages/i18n"],
+
     "@brief/shared": ["@brief/shared@workspace:packages/shared"],
 
     "@brief/source-ingestion": ["@brief/source-ingestion@workspace:packages/source-ingestion"],
@@ -329,6 +354,14 @@
     "@floating-ui/react-dom": ["@floating-ui/react-dom@2.1.8", "", { "dependencies": { "@floating-ui/dom": "^1.7.6" }, "peerDependencies": { "react": ">=16.8.0", "react-dom": ">=16.8.0" } }, "sha512-cC52bHwM/n/CxS87FH0yWdngEZrjdtLW/qVruo68qg+prK7ZQ4YGdut2GyDVpoGeAYe/h899rVeOVm6Oi40k2A=="],
 
     "@floating-ui/utils": ["@floating-ui/utils@0.2.11", "", {}, "sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg=="],
+
+    "@formatjs/fast-memoize": ["@formatjs/fast-memoize@3.1.6", "", {}, "sha512-H5aexk1Le7T9TPmscacZ+1pR6CTa2n1wq+HDVGXhH8TzUlQQpeXzZs91dRtmFHrbeNbjPFPfQujUqm7MHgVoXQ=="],
+
+    "@formatjs/icu-messageformat-parser": ["@formatjs/icu-messageformat-parser@3.5.12", "", { "dependencies": { "@formatjs/icu-skeleton-parser": "2.1.10" } }, "sha512-YyzzxVgYJ8DELmmkhn0Yr0rUj0dTJFf9Jp628K3S0ysInBWxLVDOS8i3RP91cCp4DMK4WYb4cVMhWA9i4knSJg=="],
+
+    "@formatjs/icu-skeleton-parser": ["@formatjs/icu-skeleton-parser@2.1.10", "", {}, "sha512-XuSva+8ZGawk8VnD5VD6UeH8KarQ/Z022zgjHDoHmlNiAewstXuuzXc0Hk5pGFSdG+nNw5bfJKXqj1ZXHn9yUA=="],
+
+    "@formatjs/intl": ["@formatjs/intl@4.1.14", "", { "dependencies": { "@formatjs/fast-memoize": "3.1.6", "@formatjs/icu-messageformat-parser": "3.5.12", "intl-messageformat": "11.2.9" } }, "sha512-hl8dgvbV2Te/KPnCud+nuBc+z8qW8fGreiun7ul5LopIHkbP0izylvnhIFDL2dQMeMPdrKCAXhJkYDeoxVuDRw=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 
@@ -776,6 +809,8 @@
 
     "ini": ["ini@7.0.0", "", {}, "sha512-ifK0CgjALofS5bkrcTy4RaQ9Vx2Knf/eLeIO+NaswQEpH1UblrtTSCIvN71qQDMq0PeQ/SSPojvEJp9vvvfr+w=="],
 
+    "intl-messageformat": ["intl-messageformat@11.2.9", "", { "dependencies": { "@formatjs/fast-memoize": "3.1.6", "@formatjs/icu-messageformat-parser": "3.5.12" } }, "sha512-cGzymZerpDhVXRKjKLgXKda9gI29TU2o88L7gwNMHp3WZVxA/0c5tX52udXbW9JklDApolvMXZG6Dhhdz5eirA=="],
+
     "isbot": ["isbot@5.1.44", "", {}, "sha512-PGEHtwMnKbZpeSEXW2Utx+/JWed7dp6DiH0WWg33vGSDA7RUvpUeJSVlLrVkQ1RCpvDOUc/eH9ql7VsdbBZ8pA=="],
 
     "jiti": ["jiti@1.21.7", "", { "bin": { "jiti": "bin/jiti.js" } }, "sha512-/imKNG4EbWNrVjoNC/1H5/9GFy+tqjGBHCaSsN+P2RnPqjsLmv6UD3Ej+Kj8nBWaRAwyk7kK5ZUc+OEatnTR3A=="],
@@ -889,6 +924,8 @@
     "react": ["react@19.2.7", "", {}, "sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ=="],
 
     "react-dom": ["react-dom@19.2.7", "", { "dependencies": { "scheduler": "^0.27.0" }, "peerDependencies": { "react": "^19.2.7" } }, "sha512-t0BRVXvbiE/o20Hfw669rLbMCDWtYZLvmJigy2f0MxsXF+71pxhR3xOkspmsO8h3ZlNzyibAmtCa3l4lYKk6gQ=="],
+
+    "react-intl": ["react-intl@10.1.14", "", { "dependencies": { "@formatjs/icu-messageformat-parser": "3.5.12", "@formatjs/intl": "4.1.14", "intl-messageformat": "11.2.9" }, "peerDependencies": { "@types/react": ">=18.0.0", "react": ">=18.0.0" } }, "sha512-DuL7vAViDCjxyiPNccMkt1PBv22mh+1OBhA8ta4r0fbjnJYhLVFc+3pR71qADZRHytRnKm9JcVDP9jYJW+qO6g=="],
 
     "require-in-the-middle": ["require-in-the-middle@8.0.1", "", { "dependencies": { "debug": "^4.3.5", "module-details-from-path": "^1.0.3" } }, "sha512-QT7FVMXfWOYFbeRBF6nu+I6tr2Tf3u0q8RIEjNob/heKY/nh7drD/k7eeMFmSQgnTtCzLDcCu/XEnpW2wk4xCQ=="],
 

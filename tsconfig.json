@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/i18n" },
     { "path": "./packages/config" },
     { "path": "./packages/demo-data" },
     { "path": "./packages/source-ingestion" },

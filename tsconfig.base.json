@@ -16,6 +16,7 @@
       "@brief/config": ["packages/config/src/index.ts"],
       "@brief/demo-data": ["packages/demo-data/src/index.ts"],
       "@brief/source-ingestion": ["packages/source-ingestion/src/index.ts"],
+      "@brief/i18n": ["packages/i18n/src/index.ts"],
       "@brief/shared": ["packages/shared/src/index.ts"],
       "@brief/shared/*": ["packages/shared/src/*"],
       "@brief/ui": ["packages/ui/src/index.ts"]
