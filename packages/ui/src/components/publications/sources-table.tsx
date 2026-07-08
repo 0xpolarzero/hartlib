@@ -1,3 +1,4 @@
+import { useIntl } from "@brief/i18n";
 import {
   createColumnHelper,
   getCoreRowModel,
@@ -29,17 +30,24 @@ export function SourcesTable({
   rows: readonly SourceTableRow[];
   onSelectSource: (id: string) => void;
 }) {
+  const intl = useIntl();
   const [sorting, setSorting] = useState<SortingState>([{ id: "lastPublishedAt", desc: true }]);
   const tableRows = useMemo(() => [...rows], [rows]);
 
   const columns = useMemo(
     () => [
-      sourceColumnHelper.accessor("name", { header: "Fil" }),
-      sourceColumnHelper.accessor("subscriberCount", { header: "Abonnés" }),
-      sourceColumnHelper.accessor("issueCount", { header: "Publications" }),
+      sourceColumnHelper.accessor("name", {
+        header: intl.formatMessage({ id: "column.feed" }),
+      }),
+      sourceColumnHelper.accessor("subscriberCount", {
+        header: intl.formatMessage({ id: "column.subscribers" }),
+      }),
+      sourceColumnHelper.accessor("issueCount", {
+        header: intl.formatMessage({ id: "section.publications" }),
+      }),
       sourceColumnHelper.accessor((row) => row.lastPublishedAt ?? "", {
         id: "lastPublishedAt",
-        header: "Dernière publication",
+        header: intl.formatMessage({ id: "column.latestPublication" }),
         sortingFn: (a, b) => {
           const av = a.original.lastPublishedAt;
           const bv = b.original.lastPublishedAt;
@@ -50,7 +58,7 @@ export function SourcesTable({
         },
       }),
     ],
-    [],
+    [intl],
   );
 
   const table = useReactTable({
@@ -80,7 +88,7 @@ export function SourcesTable({
         >
           {cell.column.id === "lastPublishedAt" ? (
             row.original.lastPublishedAt ? (
-              formatPublicationDate(row.original.lastPublishedAt)
+              formatPublicationDate(row.original.lastPublishedAt, intl.locale)
             ) : (
               "-"
             )

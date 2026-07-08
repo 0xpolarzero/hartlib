@@ -1,3 +1,4 @@
+import { useIntl } from "@brief/i18n";
 import { Plus } from "lucide-react";
 
 import { cn } from "../../lib/utils";
@@ -12,6 +13,7 @@ export type SectionHeaderProps = {
 };
 
 export function SectionHeader({ title, count, actionLabel, onAdd, className }: SectionHeaderProps) {
+  const intl = useIntl();
   return (
     <h3
       className={cn(
@@ -28,7 +30,7 @@ export function SectionHeader({ title, count, actionLabel, onAdd, className }: S
           size="icon"
           className="ml-auto size-7 text-faint [@media(hover:hover)_and_(pointer:fine)]:hover:text-accent"
           onClick={onAdd}
-          aria-label={actionLabel ?? `Ajouter ${title.toLowerCase()}`}
+          aria-label={actionLabel ?? intl.formatMessage({ id: "label.addSection" }, { title })}
         >
           <Plus className="size-4" aria-hidden="true" />
         </Button>

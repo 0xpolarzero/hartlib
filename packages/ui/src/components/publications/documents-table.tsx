@@ -1,3 +1,4 @@
+import { useIntl } from "@brief/i18n";
 import { ExternalLink, Upload } from "lucide-react";
 import { type ChangeEvent, useState } from "react";
 
@@ -43,10 +44,11 @@ export function DocumentsTable({
   onUpdateDocument: (documentId: string, patch: Partial<PublicationDocument>) => void;
   onUploadDocumentPdf: (documentId: string, file: File) => void;
 }) {
+  const intl = useIntl();
   if (documents.length === 0) {
     return (
       <div className="rounded-sm border border-rule bg-paper px-4 py-8 text-center text-sm text-muted">
-        Aucun document.
+        {intl.formatMessage({ id: "empty.documents" })}
       </div>
     );
   }
@@ -55,9 +57,13 @@ export function DocumentsTable({
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>Titre</TableHead>
-          <TableHead>{editable ? "Description" : "Type"}</TableHead>
-          <TableHead>Liens</TableHead>
+          <TableHead>{intl.formatMessage({ id: "column.title" })}</TableHead>
+          <TableHead>
+            {editable
+              ? intl.formatMessage({ id: "column.description" })
+              : intl.formatMessage({ id: "column.type" })}
+          </TableHead>
+          <TableHead>{intl.formatMessage({ id: "column.links" })}</TableHead>
           {editable ? <TableHead className="text-right" /> : null}
         </TableRow>
       </TableHeader>
@@ -68,7 +74,7 @@ export function DocumentsTable({
               {editable ? (
                 <InlineEditableField
                   value={doc.title}
-                  ariaLabel="Titre du document"
+                  ariaLabel={intl.formatMessage({ id: "label.documentTitle" })}
                   onChange={(title) => onUpdateDocument(doc.id, { title })}
                 />
               ) : (
@@ -79,12 +85,14 @@ export function DocumentsTable({
               {editable ? (
                 <InlineEditableField
                   value={doc.textPreview}
-                  ariaLabel="Description du document"
+                  ariaLabel={intl.formatMessage({ id: "label.documentDescription" })}
                   multiline
                   onChange={(textPreview) => onUpdateDocument(doc.id, { textPreview })}
                 />
               ) : (
-                <span className="text-sm text-muted">{formatDocumentType(doc.documentType)}</span>
+                <span className="text-sm text-muted">
+                  {formatDocumentType(doc.documentType, intl)}
+                </span>
               )}
             </TableCell>
             <TableCell className="max-w-44 align-top font-mono text-[11px] text-faint">
@@ -104,8 +112,8 @@ export function DocumentsTable({
             {editable ? (
               <TableCell className="pt-2.5 align-top text-right">
                 <ConfirmingDeleteButton
-                  confirmLabel="Confirmer"
-                  idleLabel="Supprimer le document"
+                  confirmLabel={intl.formatMessage({ id: "action.confirm" })}
+                  idleLabel={intl.formatMessage({ id: "action.deleteDocument" })}
                   onConfirm={() => onDeleteDocument(doc.id)}
                 />
               </TableCell>
@@ -126,10 +134,11 @@ function DocumentLinks({
   getPdfHref: (document: PublicationDocument) => string | null;
   onOpenStoredPdf: (document: PublicationDocument) => Promise<OpenStoredPdfResult>;
 }) {
+  const intl = useIntl();
   const [error, setError] = useState<string | null>(null);
   const label = document.fileName
     ? `${document.fileName}${document.pageCount === null ? "" : ` / ${document.pageCount} pages`}`
-    : formatDocumentType(document.documentType);
+    : formatDocumentType(document.documentType, intl);
   const publicUrl = getPdfHref(document);
 
   if (!document.fileName && !publicUrl && !document.hostedContentUrl) {
@@ -149,7 +158,9 @@ function DocumentLinks({
       }}
       onAuxClick={(event) => event.stopPropagation()}
     >
-      <span className="min-w-0 truncate">{document.fileName ? label : "Original"}</span>
+      <span className="min-w-0 truncate">
+        {document.fileName ? label : intl.formatMessage({ id: "docLink.original" })}
+      </span>
       <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
     </a>
   ) : null;
@@ -169,7 +180,7 @@ function DocumentLinks({
           });
         }}
         onAuxClick={(event) => event.stopPropagation()}
-        aria-label={`Ouvrir ${label} dans un nouvel onglet`}
+        aria-label={intl.formatMessage({ id: "action.openExternal" }, { label })}
       >
         <span className="min-w-0 truncate">{label}</span>
         <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
@@ -186,7 +197,7 @@ function DocumentLinks({
       onClick={(event) => event.stopPropagation()}
       onAuxClick={(event) => event.stopPropagation()}
     >
-      <span className="min-w-0 truncate">Document</span>
+      <span className="min-w-0 truncate">{intl.formatMessage({ id: "docLink.document" })}</span>
       <ExternalLink className="size-3 shrink-0 opacity-65" aria-hidden="true" />
     </a>
   ) : null;
@@ -198,7 +209,7 @@ function DocumentLinks({
           <Tooltip>
             <TooltipTrigger asChild>{hostedContentLink}</TooltipTrigger>
             <TooltipContent side="top" align="start">
-              Document stocké
+              {intl.formatMessage({ id: "docTooltip.storedDocument" })}
             </TooltipContent>
           </Tooltip>
         ) : null}
@@ -206,7 +217,7 @@ function DocumentLinks({
           <Tooltip>
             <TooltipTrigger asChild>{originalLink}</TooltipTrigger>
             <TooltipContent side="top" align="start">
-              Source officielle originale
+              {intl.formatMessage({ id: "docTooltip.officialSource" })}
             </TooltipContent>
           </Tooltip>
         ) : null}
@@ -224,7 +235,7 @@ function DocumentLinks({
   );
 }
 
-function formatDocumentType(documentType: string) {
+function formatDocumentType(documentType: string, intl: ReturnType<typeof useIntl>) {
   switch (documentType.toLowerCase()) {
     case "html":
     case "article":
@@ -238,11 +249,11 @@ function formatDocumentType(documentType: string) {
     case "json":
       return "JSON";
     case "doctrine_update":
-      return "Texte officiel";
+      return intl.formatMessage({ id: "docType.officialText" });
     case "publication":
-      return "Document officiel";
+      return intl.formatMessage({ id: "docType.officialDocument" });
     default:
-      return documentType || "Source";
+      return documentType || intl.formatMessage({ id: "docType.source" });
   }
 }
 
@@ -253,6 +264,7 @@ function PdfUploadControl({
   documentId: string;
   onUpload: (file: File) => void;
 }) {
+  const intl = useIntl();
   const inputId = `pdf-upload-${documentId}`;
 
   function handleChange(event: ChangeEvent<HTMLInputElement>) {
@@ -281,7 +293,7 @@ function PdfUploadControl({
         )}
       >
         <Upload className="size-3.5" aria-hidden="true" />
-        Importer
+        {intl.formatMessage({ id: "action.import" })}
       </label>
     </div>
   );

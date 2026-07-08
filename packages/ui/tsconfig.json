@@ -3,5 +3,12 @@
   "compilerOptions": {
     "composite": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "../../packages/shared/src/**/*.ts",
+    "../../packages/i18n/src/**/*.ts",
+    "../../packages/i18n/src/**/*.tsx",
+    "../../packages/i18n/src/**/*.json"
+  ]
 }

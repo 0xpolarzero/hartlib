@@ -1,3 +1,4 @@
+import { useIntl, useLocale } from "@brief/i18n";
 import { Check, ChevronsUpDown, Pause, Play, Plus, Trash2 } from "lucide-react";
 import {
   createColumnHelper,
@@ -60,6 +61,7 @@ export function SubscribersTable({
   onToggleStatus: (id: string) => void;
   onUpdateDraft: (draft: DraftSubscriber) => void;
 }) {
+  const intl = useIntl();
   const [sorting, setSorting] = useState<SortingState>([{ id: "company", desc: false }]);
   const tableRows = useMemo<InternalSubscriberTableRow[]>(
     () =>
@@ -76,11 +78,15 @@ export function SubscribersTable({
         header: "",
         cell: () => null,
       }),
-      subscriberColumnHelper.accessor("company", { header: "Société" }),
-      subscriberColumnHelper.accessor("email", { header: "Email" }),
+      subscriberColumnHelper.accessor("company", {
+        header: intl.formatMessage({ id: "column.company" }),
+      }),
+      subscriberColumnHelper.accessor("email", {
+        header: intl.formatMessage({ id: "column.email" }),
+      }),
       subscriberColumnHelper.accessor("subscribedSince", {
-        header: "Depuis",
-        cell: (info) => formatPublicationDate(info.getValue()),
+        header: intl.formatMessage({ id: "column.since" }),
+        cell: (info) => formatPublicationDate(info.getValue(), intl.locale),
       }),
       subscriberColumnHelper.display({
         id: "actions",
@@ -99,7 +105,11 @@ export function SubscribersTable({
                   event.stopPropagation();
                   onToggleStatus(row.id);
                 }}
-                aria-label={isPaused ? "Reprendre l'abonnement" : "Mettre en pause l'abonnement"}
+                aria-label={
+                  isPaused
+                    ? intl.formatMessage({ id: "action.resumeSubscription" })
+                    : intl.formatMessage({ id: "action.pauseSubscription" })
+                }
               >
                 {isPaused ? (
                   <Play className="size-3.5" aria-hidden="true" />
@@ -108,8 +118,8 @@ export function SubscribersTable({
                 )}
               </Button>
               <ConfirmingDeleteButton
-                confirmLabel="Confirmer"
-                idleLabel="Supprimer l'abonné"
+                confirmLabel={intl.formatMessage({ id: "action.confirm" })}
+                idleLabel={intl.formatMessage({ id: "action.deleteSubscriber" })}
                 onConfirm={() => onDelete(row.id)}
               />
             </div>
@@ -117,7 +127,7 @@ export function SubscribersTable({
         },
       }),
     ],
-    [onDelete, onToggleStatus],
+    [intl, onDelete, onToggleStatus],
   );
 
   const effectiveSorting = useMemo<SortingState>(() => {
@@ -138,7 +148,7 @@ export function SubscribersTable({
   if (rows.length === 0 && !draft) {
     return (
       <div className="rounded-sm border border-rule bg-paper px-4 py-8 text-center text-sm text-muted">
-        Aucun abonné.
+        {intl.formatMessage({ id: "empty.subscribers" })}
       </div>
     );
   }
@@ -182,7 +192,7 @@ export function SubscribersTable({
         if (cell.column.id === "subscribedSince") {
           return (
             <TableCell key={cell.id} className="whitespace-nowrap font-mono text-[11px] text-faint">
-              {formatPublicationDate(row.original.subscribedSince)}
+              {formatPublicationDate(row.original.subscribedSince, intl.locale)}
             </TableCell>
           );
         }
@@ -211,6 +221,7 @@ function DraftSubscriberTableRow({
   onConfirm: () => void;
   onUpdate: (draft: DraftSubscriber) => void;
 }) {
+  const intl = useIntl();
   return (
     <TableRow className="bg-paper/45">
       <TableCell className="align-top">
@@ -245,7 +256,7 @@ function DraftSubscriberTableRow({
               event.stopPropagation();
               onConfirm();
             }}
-            aria-label="Créer l'abonné"
+            aria-label={intl.formatMessage({ id: "action.createSubscriber" })}
           >
             <Check className="size-3.5" aria-hidden="true" />
           </Button>
@@ -258,7 +269,7 @@ function DraftSubscriberTableRow({
               event.stopPropagation();
               onCancel();
             }}
-            aria-label="Annuler la création de l'abonné"
+            aria-label={intl.formatMessage({ id: "action.cancelCreateSubscriber" })}
           >
             <Trash2 className="size-3.5" aria-hidden="true" />
           </Button>
@@ -283,17 +294,17 @@ function DraftCompanyCombobox({
   onChange: (value: string) => void;
   onConfirm: () => void;
 }) {
+  const intl = useIntl();
+  const locale = useLocale();
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxId = "draft-subscriber-company-options";
-  const normalizedValue = value.trim().toLocaleLowerCase("fr-FR");
+  const normalizedValue = value.trim().toLocaleLowerCase(locale);
   const filteredOptions = options
-    .filter((option) => option.toLocaleLowerCase("fr-FR").includes(normalizedValue))
+    .filter((option) => option.toLocaleLowerCase(locale).includes(normalizedValue))
     .slice(0, 5);
-  const exactMatch = options.some(
-    (option) => option.toLocaleLowerCase("fr-FR") === normalizedValue,
-  );
+  const exactMatch = options.some((option) => option.toLocaleLowerCase(locale) === normalizedValue);
   const canCreate = value.trim().length > 0 && !exactMatch;
   const comboboxOptions = [
     ...filteredOptions.map((option) => ({
@@ -306,7 +317,7 @@ function DraftCompanyCombobox({
       ? [
           {
             id: `create-${value.trim()}`,
-            label: `Créer "${value.trim()}"`,
+            label: intl.formatMessage({ id: "action.createOption" }, { value: value.trim() }),
             value: value.trim(),
             kind: "create" as const,
           },
@@ -375,7 +386,7 @@ function DraftCompanyCombobox({
               onConfirm();
             }
           }}
-          aria-label="Société"
+          aria-label={intl.formatMessage({ id: "column.company" })}
           role="combobox"
           aria-autocomplete="list"
           aria-expanded={open}
@@ -417,7 +428,7 @@ function DraftCompanyCombobox({
                 onClick={() => selectOption(option)}
               >
                 <span className="truncate">{option.label}</span>
-                {option.value.toLocaleLowerCase("fr-FR") === normalizedValue ? (
+                {option.value.toLocaleLowerCase(locale) === normalizedValue ? (
                   <Check className="size-3 text-accent" aria-hidden="true" />
                 ) : null}
               </button>
@@ -458,6 +469,7 @@ function DraftEmailInput({
   onChange: (value: string) => void;
   onConfirm: () => void;
 }) {
+  const intl = useIntl();
   return (
     <div>
       <input
@@ -469,7 +481,7 @@ function DraftEmailInput({
         onKeyDown={(event) => {
           if (event.key === "Enter") onConfirm();
         }}
-        aria-label="Email"
+        aria-label={intl.formatMessage({ id: "column.email" })}
         aria-invalid={Boolean(error)}
         className={cn(
           editableFieldChromeClass,

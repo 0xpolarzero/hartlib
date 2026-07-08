@@ -1,3 +1,4 @@
+import { useIntl } from "@brief/i18n";
 import { Info } from "lucide-react";
 import {
   createColumnHelper,
@@ -39,38 +40,45 @@ export function PublicationsTable({
   onDeleteScheduledIssue?: ((id: string) => void) | undefined;
   onSelectIssue?: ((id: string) => void) | undefined;
 }) {
+  const intl = useIntl();
   const [sorting, setSorting] = useState<SortingState>([{ id: "publicationDate", desc: true }]);
   const tableIssues = useMemo(() => [...issues], [issues]);
 
   const columns = useMemo(
     () => [
-      publicationColumnHelper.accessor("title", { header: "Publication" }),
+      publicationColumnHelper.accessor("title", {
+        header: intl.formatMessage({ id: "column.publication" }),
+      }),
       ...(compact
         ? []
         : [
             publicationColumnHelper.accessor("sourceName", {
-              header: "Fil",
+              header: intl.formatMessage({ id: "column.feed" }),
             }),
           ]),
-      publicationColumnHelper.accessor("opens", { header: "Ouvertures" }),
-      publicationColumnHelper.accessor("downloads", { header: "Téléchargements" }),
+      publicationColumnHelper.accessor("opens", {
+        header: intl.formatMessage({ id: "column.opens" }),
+      }),
+      publicationColumnHelper.accessor("downloads", {
+        header: intl.formatMessage({ id: "column.downloads" }),
+      }),
       publicationColumnHelper.accessor("contextPulls", {
         header: () => (
           <span className="inline-flex items-center gap-1">
-            Contexte
+            {intl.formatMessage({ id: "column.context" })}
             <Tooltip>
               <TooltipTrigger asChild>
                 <Info className="size-3 text-faint" aria-hidden="true" />
               </TooltipTrigger>
               <TooltipContent side="top" align="center">
-                Nombre de fois où l'archive a été lue par l'IA pour répondre.
+                {intl.formatMessage({ id: "tooltip.contextPulls" })}
               </TooltipContent>
             </Tooltip>
           </span>
         ),
       }),
       publicationColumnHelper.accessor("publicationDate", {
-        header: "Date",
+        header: intl.formatMessage({ id: "column.date" }),
       }),
       ...(onDeleteScheduledIssue
         ? [
@@ -83,7 +91,7 @@ export function PublicationsTable({
           ]
         : []),
     ],
-    [compact, onDeleteScheduledIssue],
+    [compact, intl, onDeleteScheduledIssue],
   );
 
   const table = useReactTable({
@@ -116,8 +124,8 @@ export function PublicationsTable({
             <TableCell key={cell.id} className="text-right">
               {row.original.status === "scheduled" && onDeleteScheduledIssue ? (
                 <ConfirmingDeleteButton
-                  confirmLabel="Confirmer"
-                  idleLabel="Supprimer la publication programmée"
+                  confirmLabel={intl.formatMessage({ id: "action.confirm" })}
+                  idleLabel={intl.formatMessage({ id: "action.deletePublication" })}
                   onConfirm={() => onDeleteScheduledIssue(row.original.id)}
                 />
               ) : null}
@@ -128,7 +136,7 @@ export function PublicationsTable({
           return (
             <TableCell key={cell.id} className="whitespace-nowrap font-mono text-[11px] text-faint">
               <span className="inline-flex items-center gap-2">
-                <span>{formatPublicationDate(row.original.publicationDate)}</span>
+                <span>{formatPublicationDate(row.original.publicationDate, intl.locale)}</span>
                 {row.original.status === "scheduled" ? <ScheduledPublicationIcon /> : null}
               </span>
             </TableCell>

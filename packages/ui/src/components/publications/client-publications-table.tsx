@@ -7,6 +7,8 @@ import {
 } from "@tanstack/react-table";
 import { useMemo, useState } from "react";
 
+import { useIntl } from "@brief/i18n";
+
 import { DataTable } from "../ui/data-table";
 import { TableCell } from "../ui/table";
 import { formatPublicationDate, renderTableContent } from "./table-utils";
@@ -26,15 +28,20 @@ export function ClientPublicationsTable({
   publications: readonly ClientPublicationTableRow[];
   onSelectPublication: (id: string) => void;
 }) {
+  const intl = useIntl();
   const [sorting, setSorting] = useState<SortingState>([{ id: "publicationDate", desc: true }]);
   const tableRows = useMemo(() => [...publications], [publications]);
 
   const columns = useMemo(
     () => [
-      clientPublicationColumnHelper.accessor("title", { header: "Publication" }),
-      clientPublicationColumnHelper.accessor("publicationDate", { header: "Date" }),
+      clientPublicationColumnHelper.accessor("title", {
+        header: intl.formatMessage({ id: "column.publication" }),
+      }),
+      clientPublicationColumnHelper.accessor("publicationDate", {
+        header: intl.formatMessage({ id: "column.date" }),
+      }),
     ],
-    [],
+    [intl],
   );
 
   const table = useReactTable({
@@ -70,7 +77,7 @@ export function ClientPublicationsTable({
               key={cell.id}
               className="hidden whitespace-nowrap font-mono text-[11px] text-faint sm:table-cell"
             >
-              {formatPublicationDate(row.original.publicationDate)}
+              {formatPublicationDate(row.original.publicationDate, intl.locale)}
             </TableCell>
           );
         }

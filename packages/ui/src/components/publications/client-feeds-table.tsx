@@ -1,3 +1,4 @@
+import { useIntl } from "@brief/i18n";
 import {
   createColumnHelper,
   getCoreRowModel,
@@ -12,43 +13,44 @@ import { DataTable } from "../ui/data-table";
 import { TableCell } from "../ui/table";
 import { formatPublicationDate, renderTableContent } from "./table-utils";
 
-export type ClientFilSourceType = "publisher_invite" | "public";
+export type ClientFeedSourceType = "publisher_invite" | "public";
 
-export type ClientFilTableRow = {
+export type ClientFeedTableRow = {
   id: string;
   name: string;
   description: string;
-  sourceType: ClientFilSourceType;
+  sourceType: ClientFeedSourceType;
   subscribed: boolean;
   lastPublicationDate: string | null;
   publisherName: string;
 };
 
-const filColumnHelper = createColumnHelper<ClientFilTableRow>();
+const feedColumnHelper = createColumnHelper<ClientFeedTableRow>();
 
-export function ClientFilsTable({
+export function ClientFeedsTable({
   rows,
-  onSelectFil,
+  onSelectFeed,
   onToggleSubscribed,
 }: {
-  rows: readonly ClientFilTableRow[];
-  onSelectFil: (id: string) => void;
+  rows: readonly ClientFeedTableRow[];
+  onSelectFeed: (id: string) => void;
   onToggleSubscribed: (id: string) => void;
 }) {
+  const intl = useIntl();
   const [sorting, setSorting] = useState<SortingState>([{ id: "lastPublishedAt", desc: true }]);
   const tableRows = useMemo(() => [...rows], [rows]);
 
   const columns = useMemo(
     () => [
-      filColumnHelper.accessor("name", { header: "Fil" }),
-      filColumnHelper.display({
+      feedColumnHelper.accessor("name", { header: intl.formatMessage({ id: "column.feed" }) }),
+      feedColumnHelper.display({
         id: "sourceType",
         header: "",
         enableSorting: false,
       }),
-      filColumnHelper.accessor((row) => row.lastPublicationDate ?? "", {
+      feedColumnHelper.accessor((row) => row.lastPublicationDate ?? "", {
         id: "lastPublishedAt",
-        header: "Dernière publication",
+        header: intl.formatMessage({ id: "column.latestPublication" }),
         sortingFn: (a, b) => {
           const av = a.original.lastPublicationDate;
           const bv = b.original.lastPublicationDate;
@@ -58,13 +60,13 @@ export function ClientFilsTable({
           return av < bv ? -1 : av > bv ? 1 : 0;
         },
       }),
-      filColumnHelper.display({
+      feedColumnHelper.display({
         id: "subscribed",
-        header: "Abonné",
+        header: intl.formatMessage({ id: "column.subscribed" }),
         enableSorting: false,
       }),
     ],
-    [],
+    [intl],
   );
 
   const table = useReactTable({
@@ -77,14 +79,14 @@ export function ClientFilsTable({
   });
 
   return (
-    <DataTable<ClientFilTableRow>
+    <DataTable<ClientFeedTableRow>
       table={table}
       renderContent={renderTableContent}
       hiddenColumnIds={["sourceType"]}
       getColumnClassName={(columnId) =>
         columnId === "lastPublishedAt" ? "hidden sm:table-cell" : ""
       }
-      onRowClick={(row) => onSelectFil(row.original.id)}
+      onRowClick={(row) => onSelectFeed(row.original.id)}
       renderCell={(cell, row) => {
         if (cell.column.id === "name") {
           return (
@@ -99,7 +101,7 @@ export function ClientFilsTable({
                       variant="outline"
                       className="shrink-0 rounded-sm border-accent/30 px-1.5 py-0 text-[10px] text-accent"
                     >
-                      Invited
+                      {intl.formatMessage({ id: "status.invited" })}
                     </Badge>
                   ) : null}
                 </div>
@@ -117,7 +119,7 @@ export function ClientFilsTable({
               className="hidden whitespace-nowrap font-mono text-[11px] text-faint sm:table-cell"
             >
               {row.original.lastPublicationDate
-                ? formatPublicationDate(row.original.lastPublicationDate)
+                ? formatPublicationDate(row.original.lastPublicationDate, intl.locale)
                 : "-"}
             </TableCell>
           );
@@ -130,7 +132,10 @@ export function ClientFilsTable({
                 checked={row.original.subscribed}
                 onClick={(event) => event.stopPropagation()}
                 onChange={() => onToggleSubscribed(row.original.id)}
-                aria-label={`Abonné à ${row.original.name}`}
+                aria-label={intl.formatMessage(
+                  { id: "action.subscribeTo" },
+                  { name: row.original.name },
+                )}
                 className="size-4 cursor-pointer accent-accent"
               />
             </TableCell>

@@ -7,16 +7,16 @@ export function renderTableContent(renderer: unknown, context: unknown) {
   );
 }
 
-export function formatPublicationDate(value: string | null) {
+export function formatPublicationDate(value: string | null, locale: string = "fr-FR") {
   if (!value) return "-";
-  return new Intl.DateTimeFormat("fr-FR", {
+  return new Intl.DateTimeFormat(locale, {
     day: "numeric",
     month: "long",
     year: "numeric",
   }).format(new Date(value));
 }
 
-export function formatRelativeSchedule(value: string | null) {
+export function formatRelativeSchedule(value: string | null, locale: string = "fr-FR") {
   if (!value) return "";
   const diffMs = new Date(value).getTime() - Date.now();
   const absMs = Math.abs(diffMs);
@@ -25,7 +25,7 @@ export function formatRelativeSchedule(value: string | null) {
   const day = hour * 24;
   const week = day * 7;
   const month = day * 30;
-  const formatter = new Intl.RelativeTimeFormat("fr-FR", { numeric: "auto" });
+  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
 
   if (absMs < hour) return formatter.format(Math.round(diffMs / minute), "minute");
   if (absMs < day) return formatter.format(Math.round(diffMs / hour), "hour");

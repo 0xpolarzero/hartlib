@@ -1,3 +1,4 @@
+import { useIntl } from "@brief/i18n";
 import { type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
@@ -45,6 +46,7 @@ export function PublicationDetail({
   onUpdateIssue?: ((patch: Partial<PublicationDetailIssue>) => void) | undefined;
   onUploadDocumentPdf: (documentId: string, file: File) => void;
 }) {
+  const intl = useIntl();
   return (
     <div className="space-y-8">
       <section>
@@ -53,7 +55,7 @@ export function PublicationDetail({
             {editable && onUpdateIssue ? (
               <InlineEditableField
                 value={issue.title}
-                ariaLabel="Titre de la publication"
+                ariaLabel={intl.formatMessage({ id: "label.publicationTitle" })}
                 onChange={(title) => onUpdateIssue({ title })}
                 className="w-full px-1 py-0.5 font-display text-2xl font-medium text-ink focus:text-accent"
               />
@@ -63,8 +65,8 @@ export function PublicationDetail({
           </div>
           {editable && onDeleteIssue ? (
             <ConfirmingDeleteButton
-              confirmLabel="Confirmer"
-              idleLabel="Supprimer la publication programmée"
+              confirmLabel={intl.formatMessage({ id: "action.confirm" })}
+              idleLabel={intl.formatMessage({ id: "action.deletePublication" })}
               onConfirm={() => onDeleteIssue(issue.id)}
             />
           ) : null}
@@ -73,7 +75,7 @@ export function PublicationDetail({
         {editable && onUpdateIssue ? (
           <InlineEditableField
             value={issue.summary}
-            ariaLabel="Résumé de la publication"
+            ariaLabel={intl.formatMessage({ id: "label.publicationSummary" })}
             multiline
             onChange={(summary) => onUpdateIssue({ summary })}
             className="mt-4 min-h-20 w-full max-w-3xl resize-y px-2 py-1 font-serif text-sm leading-6 text-muted focus:min-h-28 focus:text-ink"
@@ -85,9 +87,9 @@ export function PublicationDetail({
 
       <section>
         <SectionHeader
-          title="Documents"
+          title={intl.formatMessage({ id: "section.documents" })}
           count={issue.documents.length}
-          actionLabel="Ajouter un document"
+          actionLabel={intl.formatMessage({ id: "action.addDocument" })}
           onAdd={editable ? onAddDocument : undefined}
         />
         <div className="mt-4">
@@ -115,6 +117,7 @@ function PublicationMetadata({
   issue: PublicationDetailIssue;
   onUpdateIssue?: ((patch: Partial<PublicationDetailIssue>) => void) | undefined;
 }) {
+  const intl = useIntl();
   const dateControl: ReactNode =
     editable && onUpdateIssue ? (
       <input
@@ -128,10 +131,10 @@ function PublicationMetadata({
           editableFieldChromeClass,
           "publication-date-input px-1 py-0.5 font-mono text-[11px] uppercase tracking-wider text-faint focus:text-accent",
         )}
-        aria-label="Date de publication"
+        aria-label={intl.formatMessage({ id: "label.publicationDate" })}
       />
     ) : (
-      <span>{formatPublicationDate(issue.publicationDate)}</span>
+      <span>{formatPublicationDate(issue.publicationDate, intl.locale)}</span>
     );
 
   return (
@@ -143,7 +146,7 @@ function PublicationMetadata({
           <>
             <ScheduledPublicationIcon />
             <span className="font-sans text-xs normal-case tracking-normal text-muted">
-              {formatRelativeSchedule(issue.publicationDate)}
+              {formatRelativeSchedule(issue.publicationDate, intl.locale)}
             </span>
           </>
         ) : null}
