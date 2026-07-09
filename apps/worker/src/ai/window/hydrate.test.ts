@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { estimateTokens, type SourceAccess } from "../retrieval/query-spec";
 import { runMigrations } from "../../db/migrate";
@@ -16,6 +16,7 @@ import type { WindowBudget } from "./plan-window";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
+const isolatedDatabaseName = `brief_window_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 const now = new Date();
 const daysAgo = (days: number) => new Date(now.getTime() - days * 86_400_000);
@@ -32,19 +33,22 @@ const sourceDatabaseUrl = () => {
     throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL is required");
   }
 
-  const url = new URL(databaseUrl);
-  if (url.pathname === "/brief_test") {
-    throw new Error("Refusing to use brief_test as the source database");
-  }
+  return databaseUrl;
+};
 
+const adminDatabaseUrl = () => {
+  const url = new URL(sourceDatabaseUrl());
+  url.pathname = "/postgres";
   return url.toString();
 };
 
 const isolatedDatabaseUrl = () => {
   const url = new URL(sourceDatabaseUrl());
-  url.pathname = "/brief_test";
+  url.pathname = `/${isolatedDatabaseName}`;
   return url.toString();
 };
+
+const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 
 function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
   return Effect.runPromise(
@@ -289,17 +293,17 @@ const sourceAccess = (sourceIds: readonly string[]): SourceAccess => ({
 describe.skipIf(!isBun || !databaseUrl)("context window hydration over postgres", () => {
   beforeAll(async () => {
     await runDb(
-      sourceDatabaseUrl(),
+      adminDatabaseUrl(),
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         const rows = yield* sql<{ readonly exists: boolean }>`
           select exists(
-            select 1 from pg_database where datname = 'brief_test'
+            select 1 from pg_database where datname = ${isolatedDatabaseName}
           ) as exists
         `;
 
         if (rows[0]?.exists !== true) {
-          yield* sql.unsafe("create database brief_test");
+          yield* sql.unsafe(`create database ${quoteIdentifier(isolatedDatabaseName)}`);
         }
       }),
     );
@@ -412,6 +416,22 @@ describe.skipIf(!isBun || !databaseUrl)("context window hydration over postgres"
       }),
     );
   }, 120_000);
+
+  afterAll(async () => {
+    await runDb(
+      adminDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          select pg_terminate_backend(pid)
+          from pg_stat_activity
+          where datname = ${isolatedDatabaseName}
+            and pid <> pg_backend_pid()
+        `;
+        yield* sql.unsafe(`drop database if exists ${quoteIdentifier(isolatedDatabaseName)}`);
+      }),
+    );
+  }, 60_000);
 
   it(
     "hydrates memory and document blocks with provenance and observations",

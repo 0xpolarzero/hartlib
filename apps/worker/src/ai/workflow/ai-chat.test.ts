@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runMigrations } from "../../db/migrate";
 import type { AiCallResult, AiClient, AnswerStreamEvent, MemoryExtractionInput } from "../llm";
@@ -23,6 +23,7 @@ import {
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
+const isolatedDatabaseName = `brief_ai_workflow_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 const sourceDatabaseUrl = () => {
   if (databaseUrl === undefined) {
@@ -32,11 +33,19 @@ const sourceDatabaseUrl = () => {
   return databaseUrl;
 };
 
-const isolatedDatabaseUrl = () => {
+const adminDatabaseUrl = () => {
   const url = new URL(sourceDatabaseUrl());
-  url.pathname = "/brief_ai_workflow_test";
+  url.pathname = "/postgres";
   return url.toString();
 };
+
+const isolatedDatabaseUrl = () => {
+  const url = new URL(sourceDatabaseUrl());
+  url.pathname = `/${isolatedDatabaseName}`;
+  return url.toString();
+};
+
+const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 
 function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
   return Effect.runPromise(
@@ -579,15 +588,15 @@ describe("ai chat Smithers schemas", () => {
 describe.skipIf(!isBun || !databaseUrl)("ai chat Smithers workflow", () => {
   beforeAll(async () => {
     await runDb(
-      sourceDatabaseUrl(),
+      adminDatabaseUrl(),
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         const rows = yield* sql<{ readonly exists: boolean }>`
-          select exists(select 1 from pg_database where datname = 'brief_ai_workflow_test') as exists
+          select exists(select 1 from pg_database where datname = ${isolatedDatabaseName}) as exists
         `;
 
         if (rows[0]?.exists !== true) {
-          yield* sql.unsafe("create database brief_ai_workflow_test");
+          yield* sql.unsafe(`create database ${quoteIdentifier(isolatedDatabaseName)}`);
         }
       }),
     );
@@ -686,6 +695,22 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat Smithers workflow", () => {
       }),
     );
   }, 120_000);
+
+  afterAll(async () => {
+    await runDb(
+      adminDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          select pg_terminate_backend(pid)
+          from pg_stat_activity
+          where datname = ${isolatedDatabaseName}
+            and pid <> pg_backend_pid()
+        `;
+        yield* sql.unsafe(`drop database if exists ${quoteIdentifier(isolatedDatabaseName)}`);
+      }),
+    );
+  }, 60_000);
 
   it("stores a happy turn once with ordered stream events, citations, blocks, and usage", async () => {
     const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());

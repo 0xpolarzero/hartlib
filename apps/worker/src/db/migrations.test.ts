@@ -1,12 +1,13 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runMigrations } from "./migrate";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
+const isolatedDatabaseName = `brief_migrations_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 type RelationRow = {
   chats: string | null;
@@ -64,16 +65,21 @@ function sourceDatabaseUrl(): string {
   return databaseUrl;
 }
 
+function adminDatabaseUrl(): string {
+  const url = new URL(sourceDatabaseUrl());
+  url.pathname = "/postgres";
+  return url.toString();
+}
+
 function isolatedDatabaseUrl(): string {
   const url = new URL(sourceDatabaseUrl());
-
-  if (url.pathname === "/brief_test") {
-    throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL must not point at brief_test");
-  }
-
-  url.pathname = "/brief_test";
+  url.pathname = `/${isolatedDatabaseName}`;
 
   return url.toString();
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
 }
 
 function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
@@ -134,7 +140,7 @@ function errorText(error: unknown): string {
 
 describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
   beforeAll(async () => {
-    const sourceUrl = sourceDatabaseUrl();
+    const sourceUrl = adminDatabaseUrl();
     const testUrl = isolatedDatabaseUrl();
 
     await runDb(
@@ -144,11 +150,11 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         const existing = yield* sql<NamedRow>`
           select datname as name
           from pg_database
-          where datname = 'brief_test'
+          where datname = ${isolatedDatabaseName}
         `;
 
         if (existing.length === 0) {
-          yield* sql.unsafe("create database brief_test");
+          yield* sql.unsafe(`create database ${quoteIdentifier(isolatedDatabaseName)}`);
         }
       }),
     );
@@ -164,6 +170,22 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     );
 
     await runDb(testUrl, runMigrations);
+  }, 60_000);
+
+  afterAll(async () => {
+    await runDb(
+      adminDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          select pg_terminate_backend(pid)
+          from pg_stat_activity
+          where datname = ${isolatedDatabaseName}
+            and pid <> pg_backend_pid()
+        `;
+        yield* sql.unsafe(`drop database if exists ${quoteIdentifier(isolatedDatabaseName)}`);
+      }),
+    );
   }, 60_000);
 
   it(

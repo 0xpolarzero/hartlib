@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runMigrations } from "../../db/migrate";
 import { InvalidQuerySpecError } from "./compile-query-spec";
@@ -8,6 +8,7 @@ import { peekDocument, searchDocuments } from "./retrieval";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
+const isolatedDatabaseName = `brief_retrieval_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 const now = new Date();
 const daysAgo = (days: number) => new Date(now.getTime() - days * 86_400_000);
@@ -31,19 +32,22 @@ const sourceDatabaseUrl = () => {
     throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL is required");
   }
 
-  const url = new URL(databaseUrl);
-  if (url.pathname === "/brief_test") {
-    throw new Error("Refusing to use brief_test as the source database");
-  }
+  return databaseUrl;
+};
 
+const adminDatabaseUrl = () => {
+  const url = new URL(sourceDatabaseUrl());
+  url.pathname = "/postgres";
   return url.toString();
 };
 
 const isolatedDatabaseUrl = () => {
   const url = new URL(sourceDatabaseUrl());
-  url.pathname = "/brief_test";
+  url.pathname = `/${isolatedDatabaseName}`;
   return url.toString();
 };
+
+const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 
 function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
   return Effect.runPromise(
@@ -272,17 +276,17 @@ const artifactBodyHashForIndex = (index: number) => `ret-bh-${String(index).padS
 describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
   beforeAll(async () => {
     await runDb(
-      sourceDatabaseUrl(),
+      adminDatabaseUrl(),
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         const rows = yield* sql<{ readonly exists: boolean }>`
           select exists(
-            select 1 from pg_database where datname = 'brief_test'
+            select 1 from pg_database where datname = ${isolatedDatabaseName}
           ) as exists
         `;
 
         if (rows[0]?.exists !== true) {
-          yield* sql.unsafe("create database brief_test");
+          yield* sql.unsafe(`create database ${quoteIdentifier(isolatedDatabaseName)}`);
         }
       }),
     );
@@ -395,6 +399,22 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
       }),
     );
   }, 120_000);
+
+  afterAll(async () => {
+    await runDb(
+      adminDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          select pg_terminate_backend(pid)
+          from pg_stat_activity
+          where datname = ${isolatedDatabaseName}
+            and pid <> pg_backend_pid()
+        `;
+        yield* sql.unsafe(`drop database if exists ${quoteIdentifier(isolatedDatabaseName)}`);
+      }),
+    );
+  }, 60_000);
 
   it(
     "unions both language configurations when languages is absent",
