@@ -13,6 +13,7 @@ export interface WindowBudget {
   readonly blockBudget: number;
   readonly hardCap: number;
   readonly fullDocMaxChars: number;
+  readonly memoryInjectAllMaxTokens?: number | undefined;
 }
 
 export interface ActiveBlock {
@@ -32,6 +33,7 @@ export interface PlanWindowInput {
   readonly activeBlocks: readonly ActiveBlock[];
   readonly nextBlockNumber: number;
   readonly memories: readonly MemoryItem[];
+  readonly userMessage?: string | undefined;
   readonly budget: WindowBudget;
 }
 
@@ -267,12 +269,84 @@ const appendedMemoryTokenEstimate = (memory: MemoryPlan): number => {
   return memory.block.tokenEstimate;
 };
 
+const alwaysInjectedMemoryKinds = new Set(["profile", "preference", "instruction"]);
+
+const termsForOverlap = (text: string): ReadonlySet<string> =>
+  new Set(
+    text
+      .toLowerCase()
+      .match(/[a-z0-9]+/g)
+      ?.filter((term) => term.length >= 2) ?? [],
+  );
+
+const overlapCount = (memory: MemoryItem, userTerms: ReadonlySet<string>): number => {
+  if (userTerms.size === 0) {
+    return 0;
+  }
+
+  const memoryTerms = termsForOverlap(memory.content);
+  let count = 0;
+  for (const term of memoryTerms) {
+    if (userTerms.has(term)) {
+      count += 1;
+    }
+  }
+  return count;
+};
+
+export const selectMemoriesForInjection = (
+  memories: readonly MemoryItem[],
+  userMessage: string,
+  injectAllMaxTokens: number,
+): readonly MemoryItem[] => {
+  const stableThreshold =
+    Number.isFinite(injectAllMaxTokens) && injectAllMaxTokens > 0
+      ? Math.floor(injectAllMaxTokens)
+      : 0;
+  const retrievable = memories.filter((memory) => !alwaysInjectedMemoryKinds.has(memory.kind));
+  const retrievableTokenEstimate = estimateTokens(renderMemoryBody(retrievable).length);
+
+  if (retrievableTokenEstimate <= stableThreshold) {
+    return memories;
+  }
+
+  const userTerms = termsForOverlap(userMessage);
+  let selectedTokens = 0;
+  const selectedIds = new Set<string>();
+
+  const scored = retrievable
+    .map((memory, index) => ({
+      memory,
+      index,
+      tokenEstimate: estimateTokens(renderMemoryBody([memory]).length),
+      score: overlapCount(memory, userTerms) * 1000 + index,
+    }))
+    .sort((left, right) => right.score - left.score || left.index - right.index);
+
+  for (const item of scored) {
+    if (item.tokenEstimate > stableThreshold - selectedTokens) {
+      continue;
+    }
+    selectedTokens += item.tokenEstimate;
+    selectedIds.add(item.memory.id);
+  }
+
+  return memories.filter(
+    (memory) => alwaysInjectedMemoryKinds.has(memory.kind) || selectedIds.has(memory.id),
+  );
+};
+
 export const planWindow = (input: PlanWindowInput): WindowPlan => {
   let idCounter = input.nextBlockNumber;
   const activeMemory = selectActiveMemory(input.activeBlocks);
-  const newBody = renderMemoryBody(input.memories);
+  const injectedMemories = selectMemoriesForInjection(
+    input.memories,
+    input.userMessage ?? "",
+    input.budget.memoryInjectAllMaxTokens ?? 1500,
+  );
+  const newBody = renderMemoryBody(injectedMemories);
   const memory: MemoryPlan =
-    input.memories.length === 0
+    injectedMemories.length === 0
       ? activeMemory === null
         ? { kind: "none" }
         : { kind: "retire", retiredBlockId: activeMemory.blockId }
@@ -285,7 +359,7 @@ export const planWindow = (input: PlanWindowInput): WindowPlan => {
               blockId: formatBlockId(idCounter++),
               content: newBody,
               tokenEstimate: estimateTokens(newBody.length),
-              memoryIds: input.memories.map((memoryItem) => memoryItem.id),
+              memoryIds: injectedMemories.map((memoryItem) => memoryItem.id),
             },
           };
 

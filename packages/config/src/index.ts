@@ -40,6 +40,7 @@ export const AppEnv = Schema.Struct({
   AI_STREAM_POLL_MS: StringWithDefault("300"),
   AI_STREAM_KEEPALIVE_MS: StringWithDefault("15000"),
   AI_MEMORY_MAX_WRITES_PER_TURN: StringWithDefault("5"),
+  AI_MEMORY_INJECT_ALL_MAX_TOKENS: StringWithDefault("1500"),
   AI_PLANNER_BASELINE: StringWithDefault("false"),
   SENTRY_DSN: Schema.optional(Schema.String),
 });

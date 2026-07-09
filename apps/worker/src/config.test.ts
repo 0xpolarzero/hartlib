@@ -21,6 +21,34 @@ const loadConfigFrom = (env: Record<string, string | undefined>) =>
   );
 
 describe("worker config", () => {
+  it.each([
+    ["aiContextBlockBudget", 60_000],
+    ["aiContextBlockHardCap", 100_000],
+    ["aiFullDocMaxChars", 12_000],
+    ["aiHistoryMaxMessages", 30],
+    ["aiPreflightHistoryMessages", 6],
+    ["aiPreflightMaxTurns", 4],
+    ["aiPreflightMaxSearches", 8],
+    ["aiPreflightMaxPeeks", 4],
+    ["aiPreflightTimeoutMs", 30_000],
+    ["aiAnswerTimeoutMs", 120_000],
+    ["aiSearchMaxLimit", 20],
+    ["aiSearchRecencyHalfLifeDays", 14],
+    ["aiStreamPollMs", 300],
+    ["aiMemoryMaxWritesPerTurn", 5],
+    ["aiMemoryInjectAllMaxTokens", 1500],
+  ] as const)("defaults %s to %s", async (key, expected) => {
+    const config = await loadConfigFrom({});
+
+    expect(config[key]).toBe(expected);
+  });
+
+  it("defaults AI_PLANNER_BASELINE to false", async () => {
+    const config = await loadConfigFrom({});
+
+    expect(config.aiPlannerBaseline).toBe(false);
+  });
+
   it("defaults AI_BASE_URL to the z.ai coding-plan endpoint", async () => {
     const config = await loadConfigFrom({});
 

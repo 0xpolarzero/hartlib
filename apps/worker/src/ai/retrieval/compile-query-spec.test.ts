@@ -96,6 +96,19 @@ describe("compileQuerySpec", () => {
     expect(recencyText).toContain("order by d.content_hash, recency_at desc, d.document_id asc");
   });
 
+  it("runs snippet generation after dedupe and limit", () => {
+    const [text] = compile({ terms: "inflation" });
+    const headlineIndex = text.indexOf("ts_headline");
+    const selectedIndex = text.indexOf(") selected");
+
+    expect(headlineIndex).toBeGreaterThanOrEqual(0);
+    expect(selectedIndex).toBeGreaterThanOrEqual(0);
+    expect(headlineIndex).toBeLessThan(selectedIndex);
+    expect(text).toContain("ts_headline(language_to_regconfig(selected.language), selected.text");
+    expect(text).not.toContain("ts_headline(language_to_regconfig(d.language), d.text");
+    expect(text).toContain("limit $");
+  });
+
   it("compiles filters to parameterized where clauses", () => {
     const [text, params] = compile({
       terms: "x",

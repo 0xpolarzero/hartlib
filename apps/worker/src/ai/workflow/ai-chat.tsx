@@ -16,6 +16,7 @@ import type {
 } from "../llm";
 import { zeroUsage } from "../llm";
 import type { QuerySpec, SourceAccess } from "../retrieval/query-spec";
+import { searchDocuments } from "../retrieval/retrieval";
 import { remainingBlockBudget } from "../window/plan-window";
 import type { ContextBlockRow } from "../window/hydrate";
 import { hydrateWindow, loadActiveContextBlocks, markBlocksCited } from "../window/hydrate";
@@ -322,6 +323,8 @@ export interface AiChatWorkflowRuntime {
     | "aiPreflightHistoryMessages"
     | "aiPreflightTimeoutMs"
     | "aiAnswerTimeoutMs"
+    | "aiMemoryInjectAllMaxTokens"
+    | "aiPlannerBaseline"
   >;
   readonly aiClient: AiClient;
   readonly now?: () => Date;
@@ -385,43 +388,24 @@ const retryAnswerSystemPrompt =
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const truncateDiagnostic = (value: string): string =>
-  value.length > 200 ? `${value.slice(0, 200)}...` : value;
-
-const diagnosticJson = (value: unknown): string => {
-  try {
-    const json = JSON.stringify(value);
-    return truncateDiagnostic(json === undefined ? String(value) : json);
-  } catch {
-    return "[unserializable]";
-  }
-};
-
-const fullDiagnosticJson = (value: unknown): string => {
-  try {
-    const json = JSON.stringify(value);
-    return json === undefined ? String(value) : json;
-  } catch {
-    return "[unserializable]";
-  }
-};
-
-const valueAtPath = (value: unknown, path: readonly (string | number | symbol)[]): unknown => {
-  let current = value;
-
-  for (const segment of path) {
-    if (current === null || current === undefined) {
-      return current;
-    }
-
-    current = (current as Record<string | number | symbol, unknown>)[segment];
-  }
-
-  return current;
-};
-
 const formatIssuePath = (path: readonly (string | number | symbol)[]): string =>
   path.length === 0 ? "<root>" : path.map((segment) => String(segment)).join(".");
+
+const issueExpectedType = (issue: z.ZodIssue): string => {
+  const expected = (issue as unknown as { readonly expected?: unknown }).expected;
+  return typeof expected === "string" ? expected : "unknown";
+};
+
+export const formatTaskOutputValidationIssues = (
+  issues: readonly z.ZodIssue[],
+): readonly string[] =>
+  issues.map((issue) =>
+    [
+      `path=${formatIssuePath(issue.path)}`,
+      `code=${issue.code}`,
+      `expected=${issueExpectedType(issue)}`,
+    ].join(" "),
+  );
 
 class TaskOutputValidationError extends Error {
   constructor(message: string) {
@@ -435,28 +419,13 @@ function validateTaskOutput<Schema extends z.ZodTypeAny>(
   zodSchema: Schema,
   value: unknown,
 ): z.infer<Schema> {
-  if (process.env.AI_CHAT_TEST_DEBUG === "1") {
-    console.error(
-      `[AI_CHAT_TEST_DEBUG] validateTaskOutput ${schemaName} payload ${fullDiagnosticJson(value)}`,
-    );
-  }
-
   const parsed = zodSchema.safeParse(value);
 
   if (parsed.success) {
     return parsed.data;
   }
 
-  const issues = parsed.error.issues.map((issue) => {
-    const leaf = valueAtPath(value, issue.path);
-    return [
-      `path=${formatIssuePath(issue.path)}`,
-      `code=${issue.code}`,
-      `message=${issue.message}`,
-      `typeof=${typeof leaf}`,
-      `value=${diagnosticJson(leaf)}`,
-    ].join(" ");
-  });
+  const issues = formatTaskOutputValidationIssues(parsed.error.issues);
 
   throw new TaskOutputValidationError(
     `${schemaName} task output failed validation:\n${issues.join("\n")}`,
@@ -755,6 +724,71 @@ const recordPreflightToolEvents = (
     }
   });
 
+const manifestWithinBudget = (
+  previews: readonly { readonly documentId: string; readonly estimatedTokens: number }[],
+  remainingBudget: number,
+): readonly ManifestEntry[] => {
+  const manifest: ManifestEntry[] = [];
+  let usedTokens = 0;
+
+  for (const preview of previews) {
+    if (preview.estimatedTokens > remainingBudget - usedTokens) {
+      continue;
+    }
+    usedTokens += preview.estimatedTokens;
+    manifest.push({ documentId: preview.documentId });
+  }
+
+  return manifest;
+};
+
+const runPlannerBaselineTask = (
+  runtime: AiChatWorkflowRuntime,
+  load: LoadTurnOutput,
+  taskId: "preflight" | "preflight-2",
+  remainingBudget: number,
+): Promise<PreflightOutput> => {
+  const spec: QuerySpec = {
+    terms: load.userMessage,
+    countries: [load.market],
+    languages: [load.locale],
+    orderBy: "relevance",
+    limit: runtime.config.aiSearchMaxLimit,
+  };
+
+  return runAiWorkflowDb(
+    runtime.connectionString,
+    Effect.gen(function* () {
+      const previews = yield* searchDocuments(spec, {
+        access: sourceAccess,
+        maxLimit: runtime.config.aiSearchMaxLimit,
+        recencyHalfLifeDays: runtime.config.aiSearchRecencyHalfLifeDays,
+        now: runtime.now?.(),
+      });
+      const manifest = manifestWithinBudget(previews, remainingBudget);
+      const toolEvents: PreflightToolEvent[] = [
+        { type: "search", spec, resultCount: previews.length },
+        { type: "manifest", entries: manifest },
+      ];
+
+      yield* recordPreflightToolEvents(load, taskId, toolEvents);
+      yield* appendAiRunEventForTask(load.aiRunId, taskId, {
+        type: "usage",
+        agent: "preflight",
+        usage: zeroUsage(),
+      });
+
+      return validateTaskOutput("aiChatPreflight", aiChatSchemas.aiChatPreflight, {
+        status: "ok",
+        manifest: manifest.map(toSerializedManifestEntry),
+        usage: zeroUsage(),
+        toolEvents: toolEvents.map(toSerializedPreflightToolEvent),
+        failure: null,
+      });
+    }),
+  );
+};
+
 const runPreflightTask = async (
   runtime: AiChatWorkflowRuntime,
   load: LoadTurnOutput,
@@ -778,6 +812,11 @@ const runPreflightTask = async (
     return summarizeBlocks(standingWindow as LoadTurnOutput["activeBlocks"]);
   })();
   const budget = options.remainingBlockBudget ?? load.remainingBlockBudget;
+
+  if (runtime.config.aiPlannerBaseline) {
+    return runPlannerBaselineTask(runtime, load, options.taskId, budget);
+  }
+
   const result = requireOkOrThrowRetryable(
     "preflight",
     await runtime.aiClient.runPreflight(
@@ -880,12 +919,14 @@ const runHydrateTask = (
           blockBudget: runtime.config.aiContextBlockBudget,
           hardCap: runtime.config.aiContextBlockHardCap,
           fullDocMaxChars: runtime.config.aiFullDocMaxChars,
+          memoryInjectAllMaxTokens: runtime.config.aiMemoryInjectAllMaxTokens,
         },
         {
           chatId: load.chatId,
           aiRunId: load.aiRunId,
           origin,
           memories: load.memories,
+          userMessage: load.userMessage,
           access: sourceAccess,
         },
       );
@@ -901,6 +942,9 @@ const runHydrateTask = (
           blocks: blockSummaries,
         },
       ]);
+      yield* insertAiObservation(load.aiRunId, load.chatId, "context_window", {
+        blockIds: blockSummaries.map((block) => block.blockId),
+      });
 
       return validateTaskOutput("aiChatHydrate", aiChatSchemas.aiChatHydrate, {
         status: "ok" as const,
@@ -1160,6 +1204,9 @@ const citationTokens = (text: string): readonly ParsedCitationToken[] => {
   return tokens;
 };
 
+const truncateCitationDefectToken = (token: string): string =>
+  token.length > 128 ? token.slice(0, 128) : token;
+
 const persistMemoryWrites = (
   load: LoadTurnOutput,
   memory: MemoryOutput,
@@ -1369,9 +1416,7 @@ const finalizeRun = (
           for (const token of citedTokens) {
             if (token.kind === "malformed") {
               yield* insertAiObservation(load.aiRunId, load.chatId, "citation_defect", {
-                token: token.token,
-                messageId: assistantMessageId,
-                reason: "malformed_block_id",
+                token: truncateCitationDefectToken(token.token),
               });
               continue;
             }
@@ -1384,9 +1429,7 @@ const finalizeRun = (
               });
             } else {
               yield* insertAiObservation(load.aiRunId, load.chatId, "citation_defect", {
-                blockId: token.blockId,
-                messageId: assistantMessageId,
-                reason: "unknown_block_id",
+                token: truncateCitationDefectToken(token.blockId),
               });
             }
           }

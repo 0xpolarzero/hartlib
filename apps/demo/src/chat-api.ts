@@ -32,7 +32,6 @@ export type ChatApiMessage = {
 
 export type ChatApiResponse = {
   readonly chat: {
-    readonly id: string;
     readonly createdAt: string;
     readonly updatedAt: string;
   };

@@ -799,6 +799,18 @@ describe.skipIf(!isBun || !databaseUrl)("backend AI chat flow E2E", () => {
     );
     expect(runRows[0]?.usage).toHaveProperty("answer");
     expect(await smithersRowsForRun(runRows[0]!.smithersRunId)).toBe(0);
+    expect((await observations(result.runId)).map((observation) => observation.kind)).toEqual(
+      expect.arrayContaining([
+        "search",
+        "peek",
+        "context_block_added",
+        "context_window",
+        "citation",
+      ]),
+    );
+    expect(await observations(result.runId, "context_window")).toEqual([
+      expect.objectContaining({ payload: { blockIds: ["b1"] } }),
+    ]);
   });
 
   it("reuses the standing window on a follow-up without duplicating document blocks", async () => {

@@ -38,6 +38,7 @@ export interface ContextBlockRow {
 }
 
 export interface ObservationRow {
+  readonly id: string;
   readonly run_id: string;
   readonly kind: string;
   readonly payload: unknown;
@@ -134,23 +135,12 @@ const citationFromBlock = (block: ContextBlockRow): CitationResponse => {
   };
 };
 
-const contextBlockFromObservation = (
-  observation: ObservationRow,
-  blocksById: ReadonlyMap<string, ContextBlockRow>,
-): ContextBlockResponse | null => {
-  const payload = asRecord(observation.payload);
-  const blockId = stringField(payload, "blockId");
-  if (blockId === null) return null;
-  const block = blocksById.get(blockId);
-  if (block === undefined) return null;
-  return {
-    blockId,
-    kind: block.kind,
-    label: block.kind === "memory" ? null : (stringField(payload, "label") ?? blockLabel(block)),
-    tokenEstimate:
-      typeof payload.tokenEstimate === "number" ? payload.tokenEstimate : block.token_estimate,
-  };
-};
+const contextBlockFromRow = (block: ContextBlockRow): ContextBlockResponse => ({
+  blockId: block.block_id,
+  kind: block.kind,
+  label: block.kind === "memory" ? null : blockLabel(block),
+  tokenEstimate: block.token_estimate,
+});
 
 export const chatMessagesResponseFromRows = (
   messages: readonly MessageRow[],
@@ -188,9 +178,17 @@ export const chatMessagesResponseFromRows = (
         .filter((block): block is ContextBlockRow => block !== undefined)
         .map(citationFromBlock);
       const contextBlocksForMessage = runObservations
-        .filter((observation) => observation.kind === "context_block_added")
-        .map((observation) => contextBlockFromObservation(observation, blocksById))
-        .filter((block): block is ContextBlockResponse => block !== null)
+        .filter((observation) => observation.kind === "context_window")
+        .at(-1);
+      const contextWindowPayload = asRecord(contextBlocksForMessage?.payload);
+      const contextWindowBlockIds: readonly unknown[] = Array.isArray(contextWindowPayload.blockIds)
+        ? contextWindowPayload.blockIds
+        : [];
+      const contextBlocksFromWindow = contextWindowBlockIds
+        .filter((blockId): blockId is string => typeof blockId === "string")
+        .map((blockId) => blocksById.get(blockId))
+        .filter((block): block is ContextBlockRow => block !== undefined)
+        .map(contextBlockFromRow)
         .sort((a, b) => compareBlockIds(a.blockId, b.blockId));
 
       return {
@@ -199,7 +197,7 @@ export const chatMessagesResponseFromRows = (
         content: message.content,
         createdAt: message.created_at.toISOString(),
         citations,
-        contextBlocks: contextBlocksForMessage,
+        contextBlocks: contextBlocksFromWindow,
       };
     });
 };
@@ -249,16 +247,15 @@ const readChat = (userId: string) =>
       where chat_id = ${chat.id}
     `;
     const observations = yield* sql<ObservationRow>`
-      select run_id::text, kind, payload, created_at
+      select id::text, run_id::text, kind, payload, created_at
       from ai_observations
       where chat_id = ${chat.id}
-        and kind in ('citation', 'context_block_added')
+        and kind in ('citation', 'context_window')
       order by created_at asc, id asc
     `;
 
     return {
       chat: {
-        id: chat.id,
         createdAt: chat.created_at.toISOString(),
         updatedAt: chat.updated_at.toISOString(),
       },

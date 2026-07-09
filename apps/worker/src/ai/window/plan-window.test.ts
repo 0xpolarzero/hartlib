@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { formatBlockId, renderMemoryBody, type DocumentMeta, type ManifestEntry } from "./blocks";
+import {
+  formatBlockId,
+  renderMemoryBody,
+  type DocumentMeta,
+  type ManifestEntry,
+  type MemoryItem,
+} from "./blocks";
 import {
   planWindow,
   remainingBlockBudget,
+  selectMemoriesForInjection,
   type ActiveBlock,
   type PlanWindowInput,
   type WindowBudget,
@@ -121,6 +128,33 @@ describe("planWindow id monotonicity", () => {
     });
 
     expect(only(result.additions).blockId).toBe(formatBlockId(9));
+  });
+});
+
+describe("selectMemoriesForInjection", () => {
+  const memories: readonly MemoryItem[] = [
+    { id: "profile", kind: "profile", content: "Works on energy policy" },
+    { id: "preference", kind: "preference", content: "Prefers concise answers" },
+    { id: "instruction", kind: "instruction", content: "Answer in English" },
+    { id: "old-fact", kind: "fact", content: "Interested in hydrogen procurement" },
+    { id: "recent-episode", kind: "episode", content: "Asked about grid storage auctions" },
+  ];
+
+  it("injects fact and episode in full at the token threshold boundary", () => {
+    const optional = memories.filter(
+      (memory) => memory.kind === "fact" || memory.kind === "episode",
+    );
+    const threshold = Math.ceil(renderMemoryBody(optional).length / 4);
+
+    expect(
+      selectMemoriesForInjection(memories, "grid storage", threshold).map((memory) => memory.id),
+    ).toEqual(memories.map((memory) => memory.id));
+  });
+
+  it("always injects profile, preference, and instruction and scores fact/episode above threshold", () => {
+    expect(
+      selectMemoriesForInjection(memories, "grid storage", 14).map((memory) => memory.id),
+    ).toEqual(["profile", "preference", "instruction", "recent-episode"]);
   });
 });
 

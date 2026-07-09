@@ -1,5 +1,8 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 
 const isBun = typeof process.versions.bun === "string";
@@ -245,6 +248,32 @@ describe.skipIf(!isBun || !databaseUrl)("smithers postgres backend", () => {
       }
     },
   );
+
+  it("runs the toy workflow from a directory outside any git repository", async () => {
+    const spikeDatabaseUrl = getSpikeDatabaseUrl();
+    const rootDir = await mkdtemp(join(tmpdir(), "brief-smithers-gitless-"));
+    const { createSmithersStorage, runSmithersWorkflow } = await import("../smithers-interop");
+    const { buildSpikeWorkflow, spikeSchemas } = await import("./spike-workflow");
+    const api = await createSmithersStorage(spikeSchemas, {
+      connectionString: spikeDatabaseUrl,
+    });
+
+    try {
+      const workflow = buildSpikeWorkflow(api);
+      const result = await runSmithersWorkflow(workflow, {
+        input: { spike: true },
+        runId: `spike-gitless-${crypto.randomUUID()}`,
+        logDir: null,
+        rootDir,
+        cwd: rootDir,
+      });
+
+      expect(result.status).toBe("finished");
+    } finally {
+      await api.close();
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
 
   it(
     "two storage instances share one postgres and hand off runs",

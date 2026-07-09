@@ -739,6 +739,13 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
         expect(outOfBoundsSlice?.lengthChars).toBe(0);
         expect(outOfBoundsSlice?.offsetChars).toBe(400);
 
+        const hugeOffsetSlice = yield* peekDocument("ret-doc-peek", Number.MAX_SAFE_INTEGER, 50, {
+          access: allPublicAccess,
+        });
+        expect(hugeOffsetSlice?.text).toBe("");
+        expect(hugeOffsetSlice?.lengthChars).toBe(0);
+        expect(hugeOffsetSlice?.offsetChars).toBe(400);
+
         const missingDocument = yield* peekDocument("ret-doc-missing", undefined, undefined, {
           access: allPublicAccess,
         });

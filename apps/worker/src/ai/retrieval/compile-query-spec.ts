@@ -156,7 +156,7 @@ export const compileQuerySpec = (
     buildSourceAccessClause(options.access),
   ]);
   const scoreExpr = frag`ts_rank_cd(d.search_vector, websearch_to_tsquery(language_to_regconfig(d.language), ${terms})) * power(0.5, greatest(extract(epoch from (${now}::timestamptz - coalesce(d.published_at, d.discovered_at))), 0) / (86400.0 * ${halfLifeDays}))`;
-  const snippetExpr = frag`left(ts_headline(language_to_regconfig(d.language), d.text, websearch_to_tsquery(language_to_regconfig(d.language), ${terms}), 'MaxFragments=2, MaxWords=18, MinWords=6, ShortWord=3'), ${Math.floor(snippetMaxChars)})`;
+  const snippetExpr = frag`left(ts_headline(language_to_regconfig(selected.language), selected.text, websearch_to_tsquery(language_to_regconfig(selected.language), ${terms}), 'MaxFragments=2, MaxWords=18, MinWords=6, ShortWord=3'), ${Math.floor(snippetMaxChars)})`;
 
   const isRecency = spec.orderBy === "recency";
   const innerOrder = isRecency ? frag`recency_at desc` : frag`score desc`;
@@ -170,24 +170,29 @@ export const compileQuerySpec = (
   language,
   document_type as "documentType",
   text_char_count as "textCharCount",
-  snippet
+  ${snippetExpr} as snippet
 from (
-  select distinct on (d.content_hash)
-    d.document_id,
-    d.title,
-    s.display_name as source_display_name,
-    d.published_at,
-    d.language,
-    d.document_type,
-    d.text_char_count,
-    ${snippetExpr} as snippet,
-    ${scoreExpr} as score,
-    coalesce(d.published_at, d.discovered_at) as recency_at
-  from public_source_documents d
-  join public_sources s on s.source_id = d.source_id
-  where ${whereFragment}
-  order by d.content_hash, ${innerOrder}, d.document_id asc
-) deduped
+  select *
+  from (
+    select distinct on (d.content_hash)
+      d.document_id,
+      d.title,
+      s.display_name as source_display_name,
+      d.published_at,
+      d.language,
+      d.document_type,
+      d.text_char_count,
+      d.text,
+      ${scoreExpr} as score,
+      coalesce(d.published_at, d.discovered_at) as recency_at
+    from public_source_documents d
+    join public_sources s on s.source_id = d.source_id
+    where ${whereFragment}
+    order by d.content_hash, ${innerOrder}, d.document_id asc
+  ) deduped
+  order by ${outerOrder}, document_id asc
+  limit ${limit}
+) selected
 order by ${outerOrder}, document_id asc
-limit ${limit}`;
+`;
 };

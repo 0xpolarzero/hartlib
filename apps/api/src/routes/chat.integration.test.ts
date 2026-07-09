@@ -435,7 +435,7 @@ describe.skipIf(!isBun || !databaseUrl)("chat runtime API routes", () => {
           insert into ai_observations (run_id, chat_id, kind, payload)
           values
             (${runId}, ${chatId}, 'citation', ${sql.json({ blockId: "b1", messageId: assistantRows[0]!.id })}),
-            (${runId}, ${chatId}, 'context_block_added', ${sql.json({ blockId: "b1", label: "Source One: Document One", tokenEstimate: 42 })})
+            (${runId}, ${chatId}, 'context_window', ${sql.json({ blockIds: ["b1"] })})
         `;
         const activeRows = yield* sql<{ readonly id: string }>`
           insert into chat_messages (chat_id, author, content)

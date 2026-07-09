@@ -40,6 +40,7 @@ export interface HydrateRunContext {
   readonly aiRunId: string;
   readonly origin: "initial" | "retry";
   readonly memories: readonly MemoryItem[];
+  readonly userMessage?: string | undefined;
   readonly access: SourceAccess;
 }
 
@@ -268,6 +269,7 @@ export const hydrateWindow = (
           activeBlocks: standingBlocks.map(toActiveBlock),
           nextBlockNumber,
           memories: context.memories,
+          userMessage: context.userMessage,
           budget,
         });
         const addedBlockIds: string[] = [];

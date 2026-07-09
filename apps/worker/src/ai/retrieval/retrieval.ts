@@ -78,6 +78,8 @@ export interface PeekDocumentOptions {
   readonly maxLengthChars?: number | undefined;
 }
 
+export const MAX_PEEK_OFFSET_CHARS = 2_000_000_000;
+
 export const clampPeekBounds = (
   offsetChars: number | undefined,
   lengthChars: number | undefined,
@@ -87,7 +89,7 @@ export const clampPeekBounds = (
   const offset =
     offsetChars === undefined || !Number.isFinite(offsetChars)
       ? 0
-      : Math.max(Math.floor(offsetChars), 0);
+      : Math.min(Math.max(Math.floor(offsetChars), 0), MAX_PEEK_OFFSET_CHARS);
   const rawLength =
     lengthChars === undefined || !Number.isFinite(lengthChars)
       ? defaultLengthChars
@@ -121,7 +123,7 @@ export const peekDocument = (
     );
     const accessFragment = buildSourceAccessClause(options.access);
     const rows = yield* sql<PeekRow>`select
-        substring(d.text from ${offset + 1}::int for ${length}::int) as slice,
+        substring(d.text from (least(${offset}, d.text_char_count) + 1)::int for ${length}::int) as slice,
   d.text_char_count as "textCharCount"
 from public_source_documents d
 join public_sources s on s.source_id = d.source_id

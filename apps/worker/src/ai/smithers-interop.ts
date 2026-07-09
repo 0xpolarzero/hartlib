@@ -28,9 +28,14 @@ export async function smithersRunExists<Schemas extends Record<string, z.ZodObje
   return row !== undefined;
 }
 
+export type BriefRunOptions = Pick<RunOptions, "input"> &
+  Partial<Pick<RunOptions, "runId" | "logDir" | "resume" | "signal" | "rootDir">> & {
+    readonly cwd?: string | undefined;
+  };
+
 export function runSmithersWorkflow(
   workflow: unknown,
-  options: Pick<RunOptions, "runId" | "input" | "logDir" | "resume" | "signal">,
+  options: BriefRunOptions,
 ): Promise<RunResult> {
-  return Effect.runPromise(runWorkflow(workflow, options));
+  return Effect.runPromise(runWorkflow(workflow, options as RunOptions));
 }

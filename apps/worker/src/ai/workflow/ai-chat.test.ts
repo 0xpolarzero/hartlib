@@ -19,8 +19,13 @@ import {
   type RunResult,
   type RunStatus,
 } from "../smithers-interop";
-import { aiChatSchemas, buildAiChatWorkflow, type AiChatWorkflowRuntime } from "./ai-chat";
-import { replaceAiRunEventsForTask, runAiWorkflowDb } from "./events";
+import {
+  aiChatSchemas,
+  buildAiChatWorkflow,
+  formatTaskOutputValidationIssues,
+  type AiChatWorkflowRuntime,
+} from "./ai-chat";
+import { appendAiRunEvent, replaceAiRunEventsForTask, runAiWorkflowDb } from "./events";
 import {
   AI_CHAT_OUTPUT_TABLES,
   deleteSmithersRowsForRun,
@@ -185,6 +190,8 @@ const config: AiChatWorkflowRuntime["config"] = {
   aiPreflightHistoryMessages: 6,
   aiPreflightTimeoutMs: 30_000,
   aiAnswerTimeoutMs: 120_000,
+  aiMemoryInjectAllMaxTokens: 1500,
+  aiPlannerBaseline: false,
 };
 
 interface ChatRunFixture {
@@ -519,6 +526,7 @@ const runWorkflowFor = async (
   smithersRunId = `ai-chat:${aiRunId}`,
   onResumeDecision?: (resume: boolean) => void,
   expectedStatus: RunStatus = "finished",
+  configOverrides: Partial<AiChatWorkflowRuntime["config"]> = {},
 ) => {
   const connectionString = isolatedDatabaseUrl();
   const api = await createSmithersStorage(aiChatSchemas, {
@@ -528,7 +536,7 @@ const runWorkflowFor = async (
   try {
     const workflow = buildAiChatWorkflow(api, {
       connectionString,
-      config,
+      config: { ...config, ...configOverrides },
       aiClient,
     });
     const resume = await smithersRunExists(api, smithersRunId);
@@ -608,6 +616,34 @@ describe("ai chat Smithers schemas", () => {
       const offenders = Object.keys(shape ?? {}).filter((key) => reserved.has(camelToSnake(key)));
 
       expect(offenders, schemaName).toEqual([]);
+    }
+  });
+
+  it("summarizes validation issues without leaf values", () => {
+    const parsed = aiChatSchemas.aiChatLoadTurn.safeParse({
+      aiRunId: "run",
+      chatId: "chat",
+      userId: "user",
+      userMessageId: "message",
+      userMessage: "restricted user text",
+      locale: "en-US",
+      market: "US",
+      history: [],
+      sourceCatalog: [],
+      memories: [{ id: "memory", kind: "fact", content: 123 }],
+      activeBlocks: [],
+      remainingBlockBudget: 1,
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      const summary = formatTaskOutputValidationIssues(parsed.error.issues).join("\n");
+
+      expect(summary).toContain("path=memories.0.content");
+      expect(summary).toContain("code=invalid_type");
+      expect(summary).toContain("expected=string");
+      expect(summary).not.toContain("123");
+      expect(summary).not.toContain("restricted user text");
     }
   });
 });
@@ -808,6 +844,30 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat Smithers workflow", () => {
     });
   });
 
+  it("uses the planner baseline search without invoking the preflight agent", async () => {
+    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun("Workflow evidence"));
+    const client = new ScriptedAiClient([], [answerOk("Baseline answer [[cite:b1]]")]);
+
+    await runWorkflowFor(
+      fixture.aiRunId,
+      client,
+      `ai-chat:${fixture.aiRunId}:baseline`,
+      undefined,
+      "finished",
+      { aiPlannerBaseline: true },
+    );
+
+    expect(client.preflightInputs).toHaveLength(0);
+    expect(await eventTypes(fixture.aiRunId)).not.toContain("preflight_peek");
+
+    const events = await eventsFor(fixture.aiRunId);
+    expect(events.find((event) => event.type === "preflight_search")).toEqual({
+      type: "preflight_search",
+      terms: "Workflow evidence",
+      resultCount: 2,
+    });
+  });
+
   it("runs one insufficiency retry with distinct second-pass answer events", async () => {
     const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
     const client = new ScriptedAiClient(
@@ -883,6 +943,38 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat Smithers workflow", () => {
     ]);
   });
 
+  it("assigns unique contiguous seq values for concurrent appends to one run", async () => {
+    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
+    const count = 25;
+
+    await Promise.all(
+      Array.from({ length: count }, (_unused, index) =>
+        runAiWorkflowDb(
+          isolatedDatabaseUrl(),
+          appendAiRunEvent(fixture.aiRunId, { type: "error", code: `concurrent_${index}` }),
+        ),
+      ),
+    );
+
+    const seqs = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{ readonly seq: number }>`
+          select seq
+          from ai_run_events
+          where run_id = ${fixture.aiRunId}
+          order by seq
+        `;
+
+        return rows.map((row) => row.seq);
+      }),
+    );
+
+    expect(seqs).toEqual(Array.from({ length: count }, (_unused, index) => index + 1));
+    expect(new Set(seqs).size).toBe(count);
+  });
+
   it("purges Smithers rows and prunes stale run events", async () => {
     const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
     const smithersRunId = `ai-chat:${fixture.aiRunId}:purge`;
@@ -952,7 +1044,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat Smithers workflow", () => {
           from ai_observations
           where run_id = ${fixture.aiRunId}
             and kind in ('citation', 'citation_defect')
-          order by kind, payload->>'reason', payload->>'blockId', payload->>'token', id
+          order by id
         `;
 
         return rows;
@@ -961,13 +1053,13 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat Smithers workflow", () => {
     expect(observations.filter((observation) => observation.kind === "citation")).toHaveLength(2);
     expect(observations.filter((observation) => observation.kind === "citation_defect")).toEqual([
       expect.objectContaining({
-        payload: expect.objectContaining({ token: "", reason: "malformed_block_id" }),
+        payload: { token: "" },
       }),
       expect.objectContaining({
-        payload: expect.objectContaining({ token: "bad-token", reason: "malformed_block_id" }),
+        payload: { token: "bad-token" },
       }),
       expect.objectContaining({
-        payload: expect.objectContaining({ blockId: "b999", reason: "unknown_block_id" }),
+        payload: { token: "b999" },
       }),
     ]);
     expect((await eventTypes(fixture.aiRunId)).at(-1)).toBe("done");

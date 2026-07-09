@@ -74,12 +74,14 @@ describe("chatMessagesResponseFromRows", () => {
       [documentBlock, memoryBlock],
       [
         {
+          id: "obs-1",
           run_id: "run-1",
           kind: "citation",
           payload: { blockId: "b1", messageId: "message-2" },
           created_at: at("2026-07-09T09:00:03.000Z"),
         },
         {
+          id: "obs-2",
           run_id: "run-1",
           kind: "citation",
           payload: { blockId: "b2", messageId: "message-2" },
@@ -118,28 +120,31 @@ describe("chatMessagesResponseFromRows", () => {
       [documentBlock, memoryBlock, laterDocumentBlock],
       [
         {
+          id: "obs-1",
           run_id: "run-1",
-          kind: "context_block_added",
-          payload: { blockId: "b2" },
+          kind: "context_window",
+          payload: { blockIds: ["b2"] },
           created_at: at("2026-07-09T09:00:03.000Z"),
         },
         {
+          id: "obs-2",
           run_id: "run-1",
-          kind: "context_block_added",
-          payload: { blockId: "b10" },
+          kind: "context_window",
+          payload: { blockIds: ["b10"] },
           created_at: at("2026-07-09T09:00:04.000Z"),
         },
         {
+          id: "obs-3",
           run_id: "run-1",
-          kind: "context_block_added",
-          payload: { blockId: "b1", label: "Custom label", tokenEstimate: 99 },
+          kind: "context_window",
+          payload: { blockIds: ["b2", "b10", "b1"] },
           created_at: at("2026-07-09T09:00:05.000Z"),
         },
       ],
     );
 
     expect(response[0]?.contextBlocks).toEqual([
-      { blockId: "b1", kind: "document", label: "Custom label", tokenEstimate: 99 },
+      { blockId: "b1", kind: "document", label: "Source One: Document One", tokenEstimate: 120 },
       { blockId: "b2", kind: "memory", label: null, tokenEstimate: 24 },
       { blockId: "b10", kind: "document", label: "Source One: Document Ten", tokenEstimate: 80 },
     ]);
@@ -156,6 +161,7 @@ describe("chatMessagesResponseFromRows", () => {
       [documentBlock],
       [
         {
+          id: "obs-1",
           run_id: "run-1",
           kind: "citation",
           payload: { blockId: "b999", messageId: "message-2" },

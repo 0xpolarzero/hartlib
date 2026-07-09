@@ -27,6 +27,7 @@ export interface WorkerConfig {
   readonly aiAnswerTimeoutMs: number;
   readonly aiStreamPollMs: number;
   readonly aiMemoryMaxWritesPerTurn: number;
+  readonly aiMemoryInjectAllMaxTokens: number;
   readonly aiPlannerBaseline: boolean;
   readonly aiFake: boolean;
   readonly aiFakeDelayMs: number;
@@ -94,6 +95,9 @@ export const loadWorkerConfig = Effect.gen(function* () {
   const aiMemoryMaxWritesPerTurn = yield* Config.number("AI_MEMORY_MAX_WRITES_PER_TURN").pipe(
     Config.withDefault(5),
   );
+  const aiMemoryInjectAllMaxTokens = yield* Config.number("AI_MEMORY_INJECT_ALL_MAX_TOKENS").pipe(
+    Config.withDefault(1500),
+  );
   const aiPlannerBaseline = yield* Config.boolean("AI_PLANNER_BASELINE").pipe(
     Config.withDefault(false),
   );
@@ -129,6 +133,7 @@ export const loadWorkerConfig = Effect.gen(function* () {
     aiAnswerTimeoutMs,
     aiStreamPollMs,
     aiMemoryMaxWritesPerTurn,
+    aiMemoryInjectAllMaxTokens,
     aiPlannerBaseline,
     aiFake,
     aiFakeDelayMs,

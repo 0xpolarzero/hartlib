@@ -295,6 +295,7 @@ Injection policy:
 - `profile`, `preference`, and `instruction` memories are always injected, rendered together in the single `user_memory` block
 - `fact` and `episode` memories are also injected in full at demo scale
 - past roughly 1.5k tokens of memory, `fact` and `episode` switch to scored retrieval like any other source; the block contract does not change
+- `AI_MEMORY_INJECT_ALL_MAX_TOKENS` sets the exact threshold
 
 Extraction runs postflight on `AI_FAST_MODEL` as one Pi `complete` call with a forced `record_memories` tool call.
 
@@ -383,7 +384,7 @@ An assistant message in `GET /v1/chat` carries:
 
 - `content` with citation tags inline; the client replaces tags with citation markers at render time
 - `citations`: block id, kind, label, source display name, title, canonical URL, published date; memory citations carry `kind: "memory"`, `label: null`, and no URL so the client can localize the saved-memory label
-- `contextBlocks`: block id, kind, label, token estimate — the sources that entered the model context for that message, from `context_block_added` observations, ordered by numeric block id suffix (`b1`, `b2`, `b10`); memory context blocks carry `label: null` so the client can localize the sources-read label
+- `contextBlocks`: block id, kind, label, token estimate — the sources that entered the model context for that message, from the run's `context_window` observation, ordered by numeric block id suffix (`b1`, `b2`, `b10`); memory context blocks carry `label: null` so the client can localize the sources-read label
 
 The demo does not expose public chat ids, a stop or cancel endpoint, or a source picker.
 
@@ -442,13 +443,16 @@ Durable observation kinds:
 - `search`: QuerySpec and result count, no candidates
 - `peek`: document id and range
 - `context_block_added`: block id, document id, range, token estimate, origin (initial or retry)
+- `context_block_dropped`: document id, range, token estimate, reason, origin
 - `context_block_evicted`: block id, reason
+- `context_window`: all rendered block ids for the answer attempt
 - `citation`: block id and message id, one per resolved tag
+- `citation_defect`: malformed citation token, truncated
 - `insufficient_context`: gap description
 - `memory_written`: memory id and action
 - `memory_injected`: memory ids
 
-`ai_run_events` and the free-text observation fields — `search` terms and the `insufficient_context` gap text — are restricted content per `docs/data-access.spec.md`, because they derive from the user's question or the answer. Normal admin tooling shows counts, ids, and timings only.
+`ai_run_events` and the free-text observation fields — `search` terms, the `insufficient_context` gap text, and `citation_defect` tokens — are restricted content per `docs/data-access.spec.md`, because they derive from the user's question or the answer. Normal admin tooling shows counts, ids, and timings only.
 
 All other observation payloads carry ids and metadata, not content copies.
 
@@ -469,6 +473,7 @@ New keys, read through the existing config loaders (`apps/worker/src/config.ts`,
 - `AI_SEARCH_MAX_LIMIT`, default 20; `AI_SEARCH_RECENCY_HALF_LIFE_DAYS`, default 14
 - `AI_STREAM_POLL_MS`, default 300; `AI_STREAM_KEEPALIVE_MS`, default 15000
 - `AI_MEMORY_MAX_WRITES_PER_TURN`, default 5
+- `AI_MEMORY_INJECT_ALL_MAX_TOKENS`, default 1500
 - `AI_PLANNER_BASELINE`, default false — replaces the preflight loop with one search and code-ranked top-k hydration, for evaluation only
 
 Deployments running the chat runtime set `WORKER_JOB_LOCK_TIMEOUT_MS` to 60000 so a crashed worker's chat run requeues within a minute; heartbeat renewal at a third of the timeout supports this.
@@ -487,6 +492,8 @@ Deployments running the chat runtime set `WORKER_JOB_LOCK_TIMEOUT_MS` to 60000 s
 ## Evaluation
 
 The planner-only baseline stays runnable behind `AI_PLANNER_BASELINE`. Architecture changes must beat it.
+
+When `AI_PLANNER_BASELINE` is true, code replaces the preflight loop. It runs one relevance search using the user message as `terms`, plus the run's market and language filters. It hydrates top-k whole-document results under the block budget. It does not invoke the preflight agent.
 
 Golden set: real turns covering single-topic, multi-topic, follow-up, ambiguous, cross-language, and out-of-corpus questions, with gold evidence labeled.
 

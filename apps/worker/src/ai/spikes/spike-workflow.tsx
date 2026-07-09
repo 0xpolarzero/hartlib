@@ -15,9 +15,6 @@ export const spikeSchemas = {
 
 export type SpikeSchemas = typeof spikeSchemas;
 
-// TODO(spike): the spec requires validating the Smithers Postgres backend inside a container
-// without a git or jj repository; this machine has a git repo, so that spike cannot run here.
-// Validate in CI/container before production rollout (docs/ai-chat-runtime.spec.md, Stack).
 export type SpikeWorkflow = ReturnType<CreateSmithersApi<SpikeSchemas>["smithers"]>;
 
 export function buildSpikeWorkflow(api: CreateSmithersApi<SpikeSchemas>): SpikeWorkflow {
