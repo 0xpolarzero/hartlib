@@ -461,6 +461,19 @@ export const hydrateWindow = (
         const documentBlocks = activeRows.filter((row) => row.kind === "document");
         const totalActiveTokens = activeRows.reduce((sum, row) => sum + row.tokenEstimate, 0);
 
+        yield* sql`
+          delete from ai_observations
+          where run_id = ${context.aiRunId}
+            and kind = 'memory_injected'
+        `;
+
+        if (memoryBlock !== null) {
+          const provenance = memoryBlock.provenance as MemoryBlockProvenance;
+          yield* insertObservation(context.aiRunId, context.chatId, "memory_injected", {
+            memoryIds: provenance.memoryIds,
+          });
+        }
+
         return {
           memoryBlock,
           documentBlocks,

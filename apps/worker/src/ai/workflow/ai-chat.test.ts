@@ -4,7 +4,13 @@ import type { SqlError } from "effect/unstable/sql/SqlError";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runMigrations } from "../../db/migrate";
-import type { AiCallResult, AiClient, AnswerStreamEvent, MemoryExtractionInput } from "../llm";
+import type {
+  AiCallResult,
+  AiClient,
+  AnswerStreamEvent,
+  MemoryExtractionInput,
+  PreflightInputs,
+} from "../llm";
 import { zeroUsage, type MemoryExtractionOutput, type PreflightOutput } from "../llm";
 import {
   createSmithersStorage,
@@ -14,7 +20,7 @@ import {
   type RunStatus,
 } from "../smithers-interop";
 import { aiChatSchemas, buildAiChatWorkflow, type AiChatWorkflowRuntime } from "./ai-chat";
-import { runAiWorkflowDb } from "./events";
+import { replaceAiRunEventsForTask, runAiWorkflowDb } from "./events";
 import {
   AI_CHAT_OUTPUT_TABLES,
   deleteSmithersRowsForRun,
@@ -121,6 +127,8 @@ const answerFatal = (): readonly AnswerStreamEvent[] => [
 ];
 
 class ScriptedAiClient implements AiClient {
+  readonly preflightInputs: PreflightInputs[] = [];
+
   constructor(
     private readonly preflights: AiCallResult<PreflightOutput>[],
     private readonly answers: Array<readonly AnswerStreamEvent[]>,
@@ -135,7 +143,9 @@ class ScriptedAiClient implements AiClient {
     },
   ) {}
 
-  async runPreflight() {
+  async runPreflight(inputs: PreflightInputs) {
+    this.preflightInputs.push(inputs);
+
     return (
       this.preflights.shift() ?? {
         kind: "ok",
@@ -564,6 +574,22 @@ const eventTypes = (aiRunId: string) =>
     }),
   );
 
+const eventsFor = (aiRunId: string) =>
+  runDb(
+    isolatedDatabaseUrl(),
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{ readonly event: unknown }>`
+        select event
+        from ai_run_events
+        where run_id = ${aiRunId}
+        order by seq
+      `;
+
+      return rows.map((row) => row.event as Record<string, unknown>);
+    }),
+  );
+
 const countRows = (query: Effect.Effect<number, SqlError, PgClient.PgClient>) =>
   runDb(isolatedDatabaseUrl(), query);
 
@@ -764,22 +790,39 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat Smithers workflow", () => {
       "memory_updated",
       "done",
     ]);
+
+    const events = await eventsFor(fixture.aiRunId);
+    expect(events.find((event) => event.type === "preflight_search")).toEqual({
+      type: "preflight_search",
+      terms: "workflow-doc-1",
+      resultCount: 1,
+    });
+    expect(events.find((event) => event.type === "preflight_peek")).toEqual({
+      type: "preflight_peek",
+      documentId: "workflow-doc-1",
+    });
+    expect(events.find((event) => event.type === "text_delta")).toEqual({
+      type: "text_delta",
+      delta: "Answer [[cite:b1]]",
+    });
   });
 
   it("runs one insufficiency retry with distinct second-pass answer events", async () => {
     const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
-    await runWorkflowFor(
-      fixture.aiRunId,
-      new ScriptedAiClient(
-        [preflightFor("workflow-doc-1"), preflightFor("workflow-doc-2")],
-        [answerInsufficient("need the second source"), answerOk("Retry answer [[cite:b2]]")],
-      ),
+    const client = new ScriptedAiClient(
+      [preflightFor("workflow-doc-1"), preflightFor("workflow-doc-2")],
+      [answerInsufficient("need the second source"), answerOk("Retry answer [[cite:b2]]")],
     );
+    await runWorkflowFor(fixture.aiRunId, client);
 
     const types = await eventTypes(fixture.aiRunId);
     expect(types.filter((type) => type === "answer_started")).toHaveLength(2);
     expect(types).toContain("answer_retry");
     expect(types.at(-1)).toBe("done");
+    expect(client.preflightInputs[1]?.standingWindow.map((block) => block.blockId)).toContain("b1");
+    expect(client.preflightInputs[1]?.remainingBlockBudget).toBeLessThan(
+      client.preflightInputs[0]?.remainingBlockBudget ?? 0,
+    );
   });
 
   it("resumes idempotently without duplicate assistant messages", async () => {
@@ -813,6 +856,30 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat Smithers workflow", () => {
     );
     expect(resumeDecisions).toEqual([false, true]);
     expect(messages).toBe(1);
+  });
+
+  it("replaces a task's prior stream events when emission re-executes", async () => {
+    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
+
+    await runAiWorkflowDb(
+      isolatedDatabaseUrl(),
+      replaceAiRunEventsForTask(fixture.aiRunId, "answer", [
+        { type: "answer_started", attempt: 1 },
+        { type: "text_delta", delta: "first" },
+      ]),
+    );
+    await runAiWorkflowDb(
+      isolatedDatabaseUrl(),
+      replaceAiRunEventsForTask(fixture.aiRunId, "answer", [
+        { type: "answer_started", attempt: 1 },
+        { type: "text_delta", delta: "second" },
+      ]),
+    );
+
+    expect(await eventsFor(fixture.aiRunId)).toEqual([
+      { type: "answer_started", attempt: 1 },
+      { type: "text_delta", delta: "second" },
+    ]);
   });
 
   it("purges Smithers rows and prunes stale run events", async () => {
@@ -862,27 +929,46 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat Smithers workflow", () => {
     expect((await eventTypes(fixture.aiRunId)).at(-1)).toBe("done");
   });
 
-  it("records unknown citation ids as defects and still stores the message", async () => {
+  it("records repeated citations and every malformed or unknown citation token", async () => {
     const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
     await runWorkflowFor(
       fixture.aiRunId,
-      new ScriptedAiClient([preflightFor("workflow-doc-1")], [answerOk("Bad cite [[cite:b999]]")]),
+      new ScriptedAiClient(
+        [preflightFor("workflow-doc-1")],
+        [answerOk("Cites [[cite:b1,,bad-token,b1,b999]]")],
+      ),
     );
 
-    const defects = await countRows(
+    const observations = await runDb(
+      isolatedDatabaseUrl(),
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        const [row] = yield* sql<{ readonly count: number }>`
-          select count(*)::int as count
+        const rows = yield* sql<{
+          readonly kind: string;
+          readonly payload: Record<string, unknown>;
+        }>`
+          select kind, payload
           from ai_observations
           where run_id = ${fixture.aiRunId}
-            and kind = 'citation_defect'
+            and kind in ('citation', 'citation_defect')
+          order by kind, payload->>'reason', payload->>'blockId', payload->>'token', id
         `;
 
-        return row?.count ?? 0;
+        return rows;
       }),
     );
-    expect(defects).toBe(1);
+    expect(observations.filter((observation) => observation.kind === "citation")).toHaveLength(2);
+    expect(observations.filter((observation) => observation.kind === "citation_defect")).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({ token: "", reason: "malformed_block_id" }),
+      }),
+      expect.objectContaining({
+        payload: expect.objectContaining({ token: "bad-token", reason: "malformed_block_id" }),
+      }),
+      expect.objectContaining({
+        payload: expect.objectContaining({ blockId: "b999", reason: "unknown_block_id" }),
+      }),
+    ]);
     expect((await eventTypes(fixture.aiRunId)).at(-1)).toBe("done");
   });
 

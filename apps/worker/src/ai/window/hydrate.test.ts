@@ -801,6 +801,31 @@ describe.skipIf(!isBun || !databaseUrl)("context window hydration over postgres"
     );
   });
 
+  it(
+    "records injected memory ids when a memory block is kept unchanged",
+    { timeout: 60_000 },
+    async () => {
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const { chatId, runId: run1 } = yield* newChatRun();
+          const memories: readonly MemoryItem[] = [
+            { id: "m1", kind: "profile", content: "v1" },
+            { id: "m2", kind: "preference", content: "v2" },
+          ];
+          yield* hydrateWindow([], [], budget, ctx(chatId, run1, { memories }));
+          yield* finishRun(run1);
+          const standing = yield* loadActiveContextBlocks(chatId);
+          const { runId: run2 } = yield* nextRun(chatId);
+          yield* hydrateWindow([], standing, budget, ctx(chatId, run2, { memories }));
+          const observations = yield* fetchObservations(run2, "memory_injected");
+
+          expect(observations).toEqual([{ memoryIds: ["m1", "m2"] }]);
+        }),
+      );
+    },
+  );
+
   it("block ids are never reused after eviction", { timeout: 60_000 }, async () => {
     await runDb(
       isolatedDatabaseUrl(),

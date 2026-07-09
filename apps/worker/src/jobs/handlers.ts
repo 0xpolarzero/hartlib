@@ -26,6 +26,7 @@ import type { JobRecord, JobResult } from "./types";
 
 const publicSourceIds = new Set<string>(publicSourceDefinitions.map((source) => source.id));
 const defaultDatabaseUrl = "postgres://brief:brief@localhost:5432/brief";
+const resumeMetadataMismatchCode = "RESUME_METADATA_MISMATCH";
 
 type PublicSourceIngestionJobPayload = {
   readonly sourceId: PublicSourceId;
@@ -167,8 +168,16 @@ const isResumeMetadataMismatch = (error: unknown): boolean => {
       ? String((error as { readonly code?: unknown }).code)
       : "";
 
-  return code === "RESUME_METADATA_MISMATCH" || message.includes("RESUME_METADATA_MISMATCH");
+  return code === resumeMetadataMismatchCode || message.includes(resumeMetadataMismatchCode);
 };
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const runResultError = (result: unknown): unknown =>
+  typeof result === "object" && result !== null && "error" in result
+    ? (result as { readonly error?: unknown }).error
+    : undefined;
 
 const loadRunTerminalState = (connectionString: string, aiRunId: string) =>
   runAiWorkflowDb(
@@ -210,7 +219,35 @@ const markRunFailedForResumeMismatch = (connectionString: string, aiRunId: strin
     connectionString,
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
-      const code = "resume_metadata_mismatch";
+
+      yield* sql`
+        update ai_runs
+        set failed_at = coalesce(failed_at, now()),
+            error = ${resumeMetadataMismatchCode}
+        where id = ${aiRunId}
+          and finished_at is null
+      `;
+      yield* appendAiRunEvent(aiRunId, {
+        type: "error",
+        code: resumeMetadataMismatchCode,
+        retryable: true,
+      });
+    }),
+  );
+
+const smithersTerminalFailureCode = (status: string): string => `smithers_run_${status}`;
+
+const markRunFailedForSmithersTerminalStatus = (
+  connectionString: string,
+  aiRunId: string,
+  status: "failed" | "cancelled",
+  error: unknown,
+): Promise<void> =>
+  runAiWorkflowDb(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const code = smithersTerminalFailureCode(status);
 
       yield* sql`
         update ai_runs
@@ -219,7 +256,17 @@ const markRunFailedForResumeMismatch = (connectionString: string, aiRunId: strin
         where id = ${aiRunId}
           and finished_at is null
       `;
-      yield* appendAiRunEvent(aiRunId, { type: "error", code });
+      yield* appendAiRunEvent(aiRunId, {
+        type: "error",
+        code,
+      });
+      yield* Effect.logError("ai chat Smithers run ended terminal without finishing").pipe(
+        Effect.annotateLogs({
+          aiRunId,
+          status,
+          error: errorMessage(error),
+        }),
+      );
     }),
   );
 
@@ -301,6 +348,28 @@ const handleAiChatRunJob = (job: JobRecord): Effect.Effect<JobResult, unknown> =
           : Effect.fail(error),
       ),
     );
+
+    const terminalFailureStatus =
+      result.status === "failed" ? "failed" : result.status === "cancelled" ? "cancelled" : null;
+
+    if (terminalFailureStatus !== null) {
+      yield* Effect.tryPromise(() =>
+        markRunFailedForSmithersTerminalStatus(
+          connectionString,
+          payload.aiRunId,
+          terminalFailureStatus,
+          runResultError(result),
+        ),
+      );
+      yield* Effect.tryPromise(() =>
+        runAiWorkflowDb(connectionString, deleteSmithersRowsForRun(smithersRunId)),
+      );
+
+      return {
+        status: "completed",
+        message: `ai chat run failed: ${payload.aiRunId}`,
+      } satisfies JobResult;
+    }
 
     if (result.status !== "finished") {
       return yield* Effect.fail(

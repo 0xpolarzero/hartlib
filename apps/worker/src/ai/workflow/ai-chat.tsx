@@ -12,6 +12,7 @@ import type {
   PreflightToolEvent,
   ProposedMemory,
   SourceCatalogSummaryItem,
+  StandingWindowBlockSummary,
 } from "../llm";
 import { zeroUsage } from "../llm";
 import type { QuerySpec, SourceAccess } from "../retrieval/query-spec";
@@ -28,10 +29,14 @@ import type {
 } from "../window/blocks";
 import type { CreateSmithersApi } from "../smithers-interop";
 import {
-  appendAiRunEvent,
+  appendAiRunEventForTask,
   appendAiRunEventOnce,
+  appendAiRunEventInTransaction,
+  type AiRunEvent,
   insertAiObservation,
+  replaceAiRunEventsForTask,
   runAiWorkflowDb,
+  withAiRunEventTransaction,
 } from "./events";
 
 type SerializedQuerySpec = Omit<
@@ -301,6 +306,8 @@ type Preflight2Output = z.infer<(typeof aiChatSchemas)["aiChatPreflight2"]>;
 type Hydrate2Output = z.infer<(typeof aiChatSchemas)["aiChatHydrate2"]>;
 type Answer2Output = z.infer<(typeof aiChatSchemas)["aiChatAnswer2"]>;
 type MemoryOutput = z.infer<(typeof aiChatSchemas)["aiChatMemory"]>;
+
+const AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS = 30_000;
 
 export interface AiChatWorkflowRuntime {
   readonly connectionString: string;
@@ -705,16 +712,30 @@ const loadTurn = (runtime: AiChatWorkflowRuntime, aiRunId: string): Promise<Load
 
 const recordPreflightToolEvents = (
   load: LoadTurnOutput,
+  taskId: "preflight" | "preflight-2",
   toolEvents: readonly PreflightToolEvent[],
 ) =>
   Effect.gen(function* () {
+    const streamEvents: AiRunEvent[] = [];
+
     for (const event of toolEvents) {
       if (event.type === "search") {
-        yield* appendAiRunEvent(load.aiRunId, {
+        streamEvents.push({
           type: "preflight_search",
-          query: event.spec,
+          terms: event.spec.terms,
           resultCount: event.resultCount,
         });
+      }
+
+      if (event.type === "peek") {
+        streamEvents.push({ type: "preflight_peek", documentId: event.documentId });
+      }
+    }
+
+    yield* replaceAiRunEventsForTask(load.aiRunId, taskId, streamEvents);
+
+    for (const event of toolEvents) {
+      if (event.type === "search") {
         yield* insertAiObservation(load.aiRunId, load.chatId, "search", {
           query: event.spec,
           resultCount: event.resultCount,
@@ -722,13 +743,6 @@ const recordPreflightToolEvents = (
       }
 
       if (event.type === "peek") {
-        yield* appendAiRunEvent(load.aiRunId, {
-          type: "preflight_peek",
-          documentId: event.documentId,
-          offsetChars: event.offsetChars,
-          lengthChars: event.lengthChars,
-          found: event.found,
-        });
         yield* insertAiObservation(load.aiRunId, load.chatId, "peek", {
           documentId: event.documentId,
           offsetChars: event.offsetChars,
@@ -742,8 +756,26 @@ const recordPreflightToolEvents = (
 const runPreflightTask = async (
   runtime: AiChatWorkflowRuntime,
   load: LoadTurnOutput,
-  insufficiencyGap?: string,
+  options: {
+    readonly taskId: "preflight" | "preflight-2";
+    readonly standingWindow?: LoadTurnOutput["activeBlocks"] | HydrateOutput["blockSummaries"];
+    readonly remainingBlockBudget?: number;
+    readonly insufficiencyGap?: string;
+  },
 ): Promise<PreflightOutput> => {
+  const standingWindow = options.standingWindow ?? load.activeBlocks;
+  const standingWindowSummary: readonly StandingWindowBlockSummary[] = (() => {
+    if (standingWindow.length > 0 && "label" in standingWindow[0]!) {
+      return (standingWindow as readonly StandingWindowBlockSummary[]).map((block) => ({
+        blockId: block.blockId,
+        label: block.label,
+        tokenEstimate: block.tokenEstimate,
+      }));
+    }
+
+    return summarizeBlocks(standingWindow as LoadTurnOutput["activeBlocks"]);
+  })();
+  const budget = options.remainingBlockBudget ?? load.remainingBlockBudget;
   const result = requireOkOrThrowRetryable(
     "preflight",
     await runtime.aiClient.runPreflight(
@@ -753,14 +785,16 @@ const runPreflightTask = async (
         today: (runtime.now?.() ?? new Date()).toISOString().slice(0, 10),
         market: load.market,
         locale: load.locale,
-        standingWindow: summarizeBlocks(load.activeBlocks),
+        standingWindow: standingWindowSummary,
         memories: load.memories,
         history: load.history.slice(
           Math.max(load.history.length - runtime.config.aiPreflightHistoryMessages, 0),
         ),
         userMessage: load.userMessage,
-        remainingBlockBudget: load.remainingBlockBudget,
-        ...(insufficiencyGap === undefined ? {} : { insufficiencyGap }),
+        remainingBlockBudget: budget,
+        ...(options.insufficiencyGap === undefined
+          ? {}
+          : { insufficiencyGap: options.insufficiencyGap }),
       },
       {
         access: sourceAccess,
@@ -772,6 +806,11 @@ const runPreflightTask = async (
   );
 
   if (!result.ok) {
+    await runAiWorkflowDb(
+      runtime.connectionString,
+      replaceAiRunEventsForTask(load.aiRunId, options.taskId, []),
+    );
+
     return validateTaskOutput("aiChatPreflight", aiChatSchemas.aiChatPreflight, {
       status: "failed",
       manifest: [],
@@ -784,8 +823,8 @@ const runPreflightTask = async (
   await runAiWorkflowDb(
     runtime.connectionString,
     Effect.gen(function* () {
-      yield* recordPreflightToolEvents(load, result.value.toolEvents);
-      yield* appendAiRunEvent(load.aiRunId, {
+      yield* recordPreflightToolEvents(load, options.taskId, result.value.toolEvents);
+      yield* appendAiRunEventForTask(load.aiRunId, options.taskId, {
         type: "usage",
         agent: "preflight",
         usage: result.value.usage,
@@ -808,8 +847,13 @@ const runHydrateTask = (
   preflight: Pick<PreflightOutput, "status" | "manifest" | "failure">,
   origin: "initial" | "retry",
 ): Promise<HydrateOutput> => {
+  const taskId = origin === "initial" ? "hydrate" : "hydrate-2";
+
   if (preflight.status === "failed") {
-    return Promise.resolve(
+    return runAiWorkflowDb(
+      runtime.connectionString,
+      replaceAiRunEventsForTask(load.aiRunId, taskId, []),
+    ).then(() =>
       validateTaskOutput("aiChatHydrate", aiChatSchemas.aiChatHydrate, {
         status: "failed",
         memoryBlock: null,
@@ -849,10 +893,12 @@ const runHydrateTask = (
       ];
       const blockSummaries = summarizeBlocks(activeBlocks);
 
-      yield* appendAiRunEvent(load.aiRunId, {
-        type: "context_window",
-        blocks: blockSummaries,
-      });
+      yield* replaceAiRunEventsForTask(load.aiRunId, taskId, [
+        {
+          type: "context_window",
+          blocks: blockSummaries,
+        },
+      ]);
 
       return validateTaskOutput("aiChatHydrate", aiChatSchemas.aiChatHydrate, {
         status: "ok" as const,
@@ -875,7 +921,14 @@ const runAnswerTask = async (
   hydrate: HydrateOutput | Hydrate2Output,
   attempt: 1 | 2,
 ): Promise<AnswerOutput> => {
+  const taskId = attempt === 1 ? "answer" : "answer-2";
+
   if (hydrate.status === "failed") {
+    await runAiWorkflowDb(
+      runtime.connectionString,
+      replaceAiRunEventsForTask(load.aiRunId, taskId, []),
+    );
+
     return validateTaskOutput("aiChatAnswer", aiChatSchemas.aiChatAnswer, {
       status: "failed",
       attempt,
@@ -888,7 +941,22 @@ const runAnswerTask = async (
 
   await runAiWorkflowDb(
     runtime.connectionString,
-    appendAiRunEvent(load.aiRunId, { type: "answer_started", attempt }),
+    withAiRunEventTransaction(
+      load.aiRunId,
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          delete from ai_run_events
+          where run_id = ${load.aiRunId}
+            and emitted_by_task = ${taskId}
+        `;
+        yield* appendAiRunEventInTransaction(
+          load.aiRunId,
+          { type: "answer_started", attempt },
+          taskId,
+        );
+      }),
+    ),
   );
 
   const prompt = assembleContextWindow({
@@ -908,9 +976,8 @@ const runAnswerTask = async (
     if (event.type === "text_delta") {
       await runAiWorkflowDb(
         runtime.connectionString,
-        appendAiRunEvent(load.aiRunId, {
+        appendAiRunEventForTask(load.aiRunId, taskId, {
           type: "text_delta",
-          attempt,
           delta: event.delta,
         }),
       );
@@ -951,14 +1018,14 @@ const runAnswerTask = async (
   await runAiWorkflowDb(
     runtime.connectionString,
     Effect.gen(function* () {
-      yield* appendAiRunEvent(load.aiRunId, {
+      yield* appendAiRunEventForTask(load.aiRunId, taskId, {
         type: "usage",
         agent: "answer",
         usage: result.value.usage,
       });
 
       if (attempt === 1 && result.value.insufficiencyGap !== null) {
-        yield* appendAiRunEvent(load.aiRunId, {
+        yield* appendAiRunEventForTask(load.aiRunId, taskId, {
           type: "answer_retry",
           gap: result.value.insufficiencyGap,
         });
@@ -987,6 +1054,11 @@ const runMemoryTask = async (
 ): Promise<MemoryOutput> => {
   const terminalAnswer = answer2.status === "ok" ? answer2 : answer;
   if (terminalAnswer.status !== "ok" || terminalAnswer.failure !== null) {
+    await runAiWorkflowDb(
+      runtime.connectionString,
+      replaceAiRunEventsForTask(load.aiRunId, "memory", []),
+    );
+
     return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
       status: "skipped",
       proposals: [],
@@ -1010,6 +1082,11 @@ const runMemoryTask = async (
     );
 
     if (!result.ok) {
+      await runAiWorkflowDb(
+        runtime.connectionString,
+        replaceAiRunEventsForTask(load.aiRunId, "memory", []),
+      );
+
       return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
         status: "failed",
         proposals: [],
@@ -1021,11 +1098,13 @@ const runMemoryTask = async (
 
     await runAiWorkflowDb(
       runtime.connectionString,
-      appendAiRunEvent(load.aiRunId, {
-        type: "usage",
-        agent: "memory",
-        usage: result.value.usage,
-      }),
+      replaceAiRunEventsForTask(load.aiRunId, "memory", [
+        {
+          type: "usage",
+          agent: "memory",
+          usage: result.value.usage,
+        },
+      ]),
     );
 
     return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
@@ -1040,6 +1119,11 @@ const runMemoryTask = async (
       throw error;
     }
 
+    await runAiWorkflowDb(
+      runtime.connectionString,
+      replaceAiRunEventsForTask(load.aiRunId, "memory", []),
+    );
+
     return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
       status: "failed",
       proposals: [],
@@ -1050,23 +1134,28 @@ const runMemoryTask = async (
   }
 };
 
-const citationBlockIds = (text: string): readonly string[] => {
-  const blockIds = new Set<string>();
+type ParsedCitationToken =
+  | { readonly kind: "block"; readonly blockId: string }
+  | { readonly kind: "malformed"; readonly token: string };
+
+const citationTokens = (text: string): readonly ParsedCitationToken[] => {
+  const tokens: ParsedCitationToken[] = [];
   const tagPattern = /\[\[cite:([^\]\n]+)\]\]/g;
   let match: RegExpExecArray | null;
 
   while ((match = tagPattern.exec(text)) !== null) {
-    const ids = (match[1] ?? "")
-      .split(",")
-      .map((id) => id.trim())
-      .filter((id) => /^b(0|[1-9]\d*)$/.test(id));
+    const ids = (match[1] ?? "").split(",").map((id) => id.trim());
 
     for (const id of ids) {
-      blockIds.add(id);
+      if (/^b(0|[1-9]\d*)$/.test(id)) {
+        tokens.push({ kind: "block", blockId: id });
+      } else {
+        tokens.push({ kind: "malformed", token: id });
+      }
     }
   }
 
-  return [...blockIds];
+  return tokens;
 };
 
 const persistMemoryWrites = (
@@ -1225,7 +1314,9 @@ const finalizeRun = (
               where id = ${load.aiRunId}
                 and finished_at is null
             `;
-            yield* appendAiRunEvent(load.aiRunId, { type: "error", code: failure.code });
+            yield* replaceAiRunEventsForTask(load.aiRunId, "finalize", [
+              { type: "error", code: failure.code },
+            ]);
 
             return validateTaskOutput("aiChatFinalize", aiChatSchemas.aiChatFinalize, {
               status: "failed" as const,
@@ -1270,19 +1361,28 @@ const finalizeRun = (
 
           const activeBlocks = [...allWindowBlocks(hydrate), ...allWindowBlocks(hydrate2)];
           const activeBlockIds = new Set(activeBlocks.map((block) => block.blockId));
-          const citedIds = citationBlockIds(finalAnswer.text);
+          const citedTokens = citationTokens(finalAnswer.text);
           const knownCitedIds: string[] = [];
 
-          for (const blockId of citedIds) {
-            if (activeBlockIds.has(blockId)) {
-              knownCitedIds.push(blockId);
+          for (const token of citedTokens) {
+            if (token.kind === "malformed") {
+              yield* insertAiObservation(load.aiRunId, load.chatId, "citation_defect", {
+                token: token.token,
+                messageId: assistantMessageId,
+                reason: "malformed_block_id",
+              });
+              continue;
+            }
+
+            if (activeBlockIds.has(token.blockId)) {
+              knownCitedIds.push(token.blockId);
               yield* insertAiObservation(load.aiRunId, load.chatId, "citation", {
-                blockId,
+                blockId: token.blockId,
                 messageId: assistantMessageId,
               });
             } else {
               yield* insertAiObservation(load.aiRunId, load.chatId, "citation_defect", {
-                blockId,
+                blockId: token.blockId,
                 messageId: assistantMessageId,
                 reason: "unknown_block_id",
               });
@@ -1291,16 +1391,18 @@ const finalizeRun = (
 
           yield* markBlocksCited(load.chatId, load.aiRunId, knownCitedIds);
           const memoryCounts = yield* persistMemoryWrites(load, memory);
-          yield* appendAiRunEvent(load.aiRunId, {
-            type: "memory_updated",
-            created: memoryCounts.created,
-            updated: memoryCounts.updated,
-            discarded: memory.discardedCount,
-          });
-          yield* appendAiRunEvent(load.aiRunId, {
-            type: "done",
-            assistantMessageId,
-          });
+          yield* replaceAiRunEventsForTask(load.aiRunId, "finalize", [
+            {
+              type: "memory_updated",
+              created: memoryCounts.created,
+              updated: memoryCounts.updated,
+              discarded: memory.discardedCount,
+            },
+            {
+              type: "done",
+              assistantMessageId,
+            },
+          ]);
 
           return validateTaskOutput("aiChatFinalize", aiChatSchemas.aiChatFinalize, {
             status: "done" as const,
@@ -1346,13 +1448,22 @@ const skippedAnswer2 = (): Answer2Output =>
 const runPreflight2Task = async (
   runtime: AiChatWorkflowRuntime,
   load: LoadTurnOutput,
+  hydrate: HydrateOutput,
   answer: AnswerOutput,
 ): Promise<Preflight2Output> => {
   if (answer.status !== "ok" || answer.insufficiencyGap === null) {
     return skippedPreflight2();
   }
 
-  const output = await runPreflightTask(runtime, load, answer.insufficiencyGap);
+  const output = await runPreflightTask(runtime, load, {
+    taskId: "preflight-2",
+    standingWindow: hydrate.blockSummaries,
+    remainingBlockBudget: remainingBlockBudget(
+      hydrate.totalActiveTokens,
+      runtime.config.aiContextBlockBudget,
+    ),
+    insufficiencyGap: answer.insufficiencyGap,
+  });
   return validateTaskOutput("aiChatPreflight2", aiChatSchemas.aiChatPreflight2, {
     ...output,
     status: output.status,
@@ -1423,7 +1534,12 @@ export function buildAiChatWorkflow(
     return (
       <Workflow name="ai-chat">
         <Sequence>
-          <Task id="load-turn" output={outputs.aiChatLoadTurn} retries={2}>
+          <Task
+            id="load-turn"
+            output={outputs.aiChatLoadTurn}
+            retries={2}
+            timeoutMs={AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS}
+          >
             {async () => loadTurn(runtime, parseWorkflowRunId(ctx.input))}
           </Task>
           <Task
@@ -1434,10 +1550,15 @@ export function buildAiChatWorkflow(
           >
             {async () => {
               const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
-              return runPreflightTask(runtime, load);
+              return runPreflightTask(runtime, load, { taskId: "preflight" });
             }}
           </Task>
-          <Task id="hydrate" output={outputs.aiChatHydrate} retries={2}>
+          <Task
+            id="hydrate"
+            output={outputs.aiChatHydrate}
+            retries={2}
+            timeoutMs={AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS}
+          >
             {async () => {
               const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
               const preflight = ctx.output(outputs.aiChatPreflight, { nodeId: "preflight" });
@@ -1468,11 +1589,17 @@ export function buildAiChatWorkflow(
                 >
                   {async () => {
                     const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
+                    const hydrate = ctx.output(outputs.aiChatHydrate, { nodeId: "hydrate" });
                     const answer = ctx.output(outputs.aiChatAnswer, { nodeId: "answer" });
-                    return runPreflight2Task(runtime, load, answer);
+                    return runPreflight2Task(runtime, load, hydrate, answer);
                   }}
                 </Task>
-                <Task id="hydrate-2" output={outputs.aiChatHydrate2} retries={2}>
+                <Task
+                  id="hydrate-2"
+                  output={outputs.aiChatHydrate2}
+                  retries={2}
+                  timeoutMs={AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS}
+                >
                   {async () => {
                     const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
                     const preflight2 = ctx.output(outputs.aiChatPreflight2, {
@@ -1497,19 +1624,40 @@ export function buildAiChatWorkflow(
             }
             else={
               <Sequence>
-                <Task id="preflight-2" output={outputs.aiChatPreflight2} retries={0}>
+                <Task
+                  id="preflight-2"
+                  output={outputs.aiChatPreflight2}
+                  retries={0}
+                  timeoutMs={runtime.config.aiPreflightTimeoutMs}
+                >
                   {async () => skippedPreflight2()}
                 </Task>
-                <Task id="hydrate-2" output={outputs.aiChatHydrate2} retries={0}>
+                <Task
+                  id="hydrate-2"
+                  output={outputs.aiChatHydrate2}
+                  retries={0}
+                  timeoutMs={AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS}
+                >
                   {async () => skippedHydrate2()}
                 </Task>
-                <Task id="answer-2" output={outputs.aiChatAnswer2} retries={0}>
+                <Task
+                  id="answer-2"
+                  output={outputs.aiChatAnswer2}
+                  retries={0}
+                  timeoutMs={runtime.config.aiAnswerTimeoutMs}
+                >
                   {async () => skippedAnswer2()}
                 </Task>
               </Sequence>
             }
           />
-          <Task id="memory" output={outputs.aiChatMemory} retries={1} continueOnFail={true}>
+          <Task
+            id="memory"
+            output={outputs.aiChatMemory}
+            retries={1}
+            continueOnFail={true}
+            timeoutMs={runtime.config.aiPreflightTimeoutMs}
+          >
             {async () => {
               const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
               const answer = ctx.output(outputs.aiChatAnswer, { nodeId: "answer" });
@@ -1517,7 +1665,12 @@ export function buildAiChatWorkflow(
               return runMemoryTask(runtime, load, answer, answer2);
             }}
           </Task>
-          <Task id="finalize" output={outputs.aiChatFinalize} retries={2}>
+          <Task
+            id="finalize"
+            output={outputs.aiChatFinalize}
+            retries={2}
+            timeoutMs={AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS}
+          >
             {async () => {
               const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
               const preflight = ctx.output(outputs.aiChatPreflight, { nodeId: "preflight" });

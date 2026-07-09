@@ -361,7 +361,7 @@ Event vocabulary:
 - `memory_updated`: counts of writes
 - `usage`: token usage per agent
 - `done`: assistant message id
-- `error`: terminal error code
+- `error`: terminal error code, plus `retryable: true` when the user should resend the turn
 
 The stream ends after `done` or `error`. The UI renders citation tags from `context_window` data during streaming and re-fetches the chat for resolved citations after `done`.
 
@@ -411,7 +411,7 @@ All tables follow the existing migration conventions: forward-only lowercase SQL
 
 `ai_runs`: id, chat id, user message id, assistant message id, smithers run id, locale, market, usage jsonb, error, created at, started at, finished at, failed at. No status enum; status derives from timestamps and job state. A partial unique index on chat id where the run is unterminated enforces one active run per chat.
 
-`ai_run_events`: identity id, run id, seq, event jsonb, created at, unique on run id and seq. Transient, restricted content.
+`ai_run_events`: identity id, run id, seq, event jsonb, emitted-by-task discriminator for workflow replay cleanup, created at, unique on run id and seq. Transient, restricted content.
 
 `chat_context_blocks`: chat id, block id, kind, content, token estimate, document id, char start, char end, provenance jsonb, created by run id, created at, last cited run id, evicted at. Primary key on chat id and block id. A unique index prevents duplicate active blocks for the same document and range.
 
