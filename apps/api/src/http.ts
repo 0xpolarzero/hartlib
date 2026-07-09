@@ -39,6 +39,27 @@ export const methodNotAllowed = json(
   { status: 405 },
 );
 
+const routeMatchesPath = (route: Route, path: string): boolean => {
+  route.pattern.lastIndex = 0;
+  return route.pattern.test(path);
+};
+
+const preflight = (request: Request, matchingRoutes: ReadonlyArray<Route>): Response => {
+  const requestedMethod = request.headers.get("access-control-request-method") ?? request.method;
+  const methods =
+    [...new Set(matchingRoutes.map((route) => route.method))].join(", ") || requestedMethod;
+  const headers = new Headers();
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-allow-methods", methods);
+  headers.set("access-control-allow-headers", "content-type, last-event-id");
+  headers.set("access-control-max-age", "86400");
+
+  return new Response(null, {
+    status: 204,
+    headers,
+  });
+};
+
 export const routeRequest = (
   routes: ReadonlyArray<Route>,
   request: Request,
@@ -47,12 +68,17 @@ export const routeRequest = (
     const url = new URL(request.url);
     const path = url.pathname;
 
-    const route = routes.find((candidate) => candidate.pattern.test(path));
-    if (!route) {
+    const matchingRoutes = routes.filter((candidate) => routeMatchesPath(candidate, path));
+    if (matchingRoutes.length === 0) {
       return notFound;
     }
 
-    if (route.method !== request.method) {
+    if (request.method === "OPTIONS") {
+      return preflight(request, matchingRoutes);
+    }
+
+    const route = matchingRoutes.find((candidate) => candidate.method === request.method);
+    if (!route) {
       return methodNotAllowed;
     }
 

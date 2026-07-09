@@ -14,6 +14,7 @@ export interface AiClientRuntimeConfig {
   readonly aiAnswerTimeoutMs: number;
   readonly aiMemoryMaxWritesPerTurn: number;
   readonly aiFake: boolean;
+  readonly aiFakeDelayMs: number;
 }
 
 export const makeAiClient = (
@@ -22,7 +23,7 @@ export const makeAiClient = (
   fakeScenario?: FakeAiClientScenario,
 ): AiClient => {
   if (config.aiFake) {
-    return new FakeAiClient(fakeScenario, retrieval);
+    return new FakeAiClient(fakeScenario, retrieval, config.aiFakeDelayMs);
   }
 
   if (retrieval === undefined) {

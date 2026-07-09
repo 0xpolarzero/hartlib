@@ -29,6 +29,7 @@ export interface WorkerConfig {
   readonly aiMemoryMaxWritesPerTurn: number;
   readonly aiPlannerBaseline: boolean;
   readonly aiFake: boolean;
+  readonly aiFakeDelayMs: number;
   readonly nodeEnv: string;
 }
 
@@ -97,6 +98,7 @@ export const loadWorkerConfig = Effect.gen(function* () {
     Config.withDefault(false),
   );
   const aiFake = yield* Config.boolean("AI_FAKE").pipe(Config.withDefault(false));
+  const aiFakeDelayMs = yield* Config.number("AI_FAKE_DELAY_MS").pipe(Config.withDefault(0));
   const nodeEnv = yield* Config.string("NODE_ENV").pipe(Config.withDefault("development"));
   const runMigrationsOnStartup = yield* Config.boolean("WORKER_RUN_MIGRATIONS_ON_STARTUP").pipe(
     Config.withDefault(nodeEnv !== "production"),
@@ -129,6 +131,7 @@ export const loadWorkerConfig = Effect.gen(function* () {
     aiMemoryMaxWritesPerTurn,
     aiPlannerBaseline,
     aiFake,
+    aiFakeDelayMs,
     nodeEnv,
   } satisfies WorkerConfig;
 });

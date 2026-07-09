@@ -7,6 +7,7 @@
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx",
+    "../../tests/e2e/demo-cited-answer-fixture.ts",
     "../../packages/shared/src/**/*.ts",
     "../../packages/source-ingestion/src/**/*.ts"
   ]

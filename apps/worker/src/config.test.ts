@@ -27,6 +27,12 @@ describe("worker config", () => {
     expect(config.aiBaseUrl).toBe(ZAI_CODING_PLAN_BASE_URL);
   });
 
+  it("defaults AI_FAKE_DELAY_MS to zero", async () => {
+    const config = await loadConfigFrom({});
+
+    expect(config.aiFakeDelayMs).toBe(0);
+  });
+
   it("keeps AI_BASE_URL overridable and treats blank as unset", async () => {
     await expect(loadConfigFrom({ AI_BASE_URL: "https://zai.example/v4" })).resolves.toMatchObject({
       aiBaseUrl: "https://zai.example/v4",

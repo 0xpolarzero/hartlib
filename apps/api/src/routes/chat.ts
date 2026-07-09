@@ -86,6 +86,21 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 const stringField = (record: Record<string, unknown>, field: string): string | null =>
   typeof record[field] === "string" ? record[field] : null;
 
+const blockIdNumber = (blockId: string): number | null => {
+  const match = /^b(\d+)$/.exec(blockId);
+  if (match === null) return null;
+  return Number(match[1]);
+};
+
+const compareBlockIds = (left: string, right: string): number => {
+  const leftNumber = blockIdNumber(left);
+  const rightNumber = blockIdNumber(right);
+  if (leftNumber !== null && rightNumber !== null && leftNumber !== rightNumber) {
+    return leftNumber - rightNumber;
+  }
+  return left.localeCompare(right);
+};
+
 const blockLabel = (block: ContextBlockRow): string => {
   if (block.kind === "memory") return block.block_id;
   const provenance = asRecord(block.provenance);
@@ -175,7 +190,8 @@ export const chatMessagesResponseFromRows = (
       const contextBlocksForMessage = runObservations
         .filter((observation) => observation.kind === "context_block_added")
         .map((observation) => contextBlockFromObservation(observation, blocksById))
-        .filter((block): block is ContextBlockResponse => block !== null);
+        .filter((block): block is ContextBlockResponse => block !== null)
+        .sort((a, b) => compareBlockIds(a.blockId, b.blockId));
 
       return {
         id: message.id,

@@ -35,6 +35,22 @@ const memoryBlock: ContextBlockRow = {
   provenance: { memoryIds: ["memory-1"] },
 };
 
+const laterDocumentBlock: ContextBlockRow = {
+  ...documentBlock,
+  block_id: "b10",
+  token_estimate: 80,
+  provenance: {
+    documentId: "doc-10",
+    sourceId: "source-1",
+    sourceDisplayName: "Source One",
+    canonicalUrl: "https://source.example/doc-10",
+    title: "Document Ten",
+    publishedAt: "2026-07-08T10:00:00.000Z",
+    charStart: null,
+    charEnd: null,
+  },
+};
+
 const userMessage: MessageRow = {
   id: "message-1",
   author: "user",
@@ -99,19 +115,25 @@ describe("chatMessagesResponseFromRows", () => {
   it("maps context block observations for an assistant message run", () => {
     const response = chatMessagesResponseFromRows(
       [assistantMessage],
-      [documentBlock, memoryBlock],
+      [documentBlock, memoryBlock, laterDocumentBlock],
       [
         {
           run_id: "run-1",
           kind: "context_block_added",
-          payload: { blockId: "b1", label: "Custom label", tokenEstimate: 99 },
+          payload: { blockId: "b2" },
           created_at: at("2026-07-09T09:00:03.000Z"),
         },
         {
           run_id: "run-1",
           kind: "context_block_added",
-          payload: { blockId: "b2" },
+          payload: { blockId: "b10" },
           created_at: at("2026-07-09T09:00:04.000Z"),
+        },
+        {
+          run_id: "run-1",
+          kind: "context_block_added",
+          payload: { blockId: "b1", label: "Custom label", tokenEstimate: 99 },
+          created_at: at("2026-07-09T09:00:05.000Z"),
         },
       ],
     );
@@ -119,6 +141,7 @@ describe("chatMessagesResponseFromRows", () => {
     expect(response[0]?.contextBlocks).toEqual([
       { blockId: "b1", kind: "document", label: "Custom label", tokenEstimate: 99 },
       { blockId: "b2", kind: "memory", label: null, tokenEstimate: 24 },
+      { blockId: "b10", kind: "document", label: "Source One: Document Ten", tokenEstimate: 80 },
     ]);
   });
 

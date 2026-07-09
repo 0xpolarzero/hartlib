@@ -69,6 +69,21 @@ const assertNever = (value: never): never => {
   throw new Error(`Unhandled chat stream event: ${JSON.stringify(value)}`);
 };
 
+const blockIdNumber = (blockId: string): number | null => {
+  const match = /^b(\d+)$/.exec(blockId);
+  if (match === null) return null;
+  return Number(match[1]);
+};
+
+const compareBlockIds = (left: string, right: string): number => {
+  const leftNumber = blockIdNumber(left);
+  const rightNumber = blockIdNumber(right);
+  if (leftNumber !== null && rightNumber !== null && leftNumber !== rightNumber) {
+    return leftNumber - rightNumber;
+  }
+  return left.localeCompare(right);
+};
+
 export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput): ChatStreamState {
   if (input.seq <= state.seq) return state;
 
@@ -97,7 +112,9 @@ export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput)
       return {
         ...base,
         phase: base.phase === "idle" ? "preflight" : base.phase,
-        contextBlocks: input.event.blocks,
+        contextBlocks: [...input.event.blocks].sort((a, b) =>
+          compareBlockIds(a.blockId, b.blockId),
+        ),
       };
     case "answer_started": {
       const nextAttempt = input.event.attempt;

@@ -1043,6 +1043,7 @@ function ClientFeedsList({
 
         <form
           className="mt-4 flex items-end gap-2 border-t border-rule pt-3"
+          data-testid="chat-composer"
           onSubmit={(event) => {
             event.preventDefault();
             void sendMessage(draftMessage);
@@ -1055,10 +1056,12 @@ function ClientFeedsList({
             disabled={runActive || sendStatus === "sending"}
             rows={2}
             className="min-h-10 resize-none bg-paper"
+            data-testid="chat-composer-input"
           />
           <Button
             type="submit"
             disabled={runActive || sendStatus === "sending" || draftMessage.trim().length === 0}
+            data-testid="chat-send-button"
           >
             <Send className="size-4" aria-hidden="true" />
             <FormattedMessage id="action.send" />
@@ -1082,7 +1085,10 @@ function ClientFeedsList({
         ) : null}
       </section>
 
-      <section className="animate-in stagger-2 border-y border-rule py-3">
+      <section
+        className="animate-in stagger-2 border-y border-rule py-3"
+        data-testid="memories-panel"
+      >
         <MemoriesPanel
           memories={memories}
           status={memoriesStatus}
@@ -1161,11 +1167,11 @@ function MemoriesPanel({
       ) : null}
 
       {memories.length > 0 ? (
-        <ul className="mt-2 divide-y divide-rule">
+        <ul className="mt-2 divide-y divide-rule" data-testid="memory-list">
           {memories.map((memory) => {
             const expanded = expandedMemoryId === memory.id;
             return (
-              <li key={memory.id} className="py-2">
+              <li key={memory.id} className="py-2" data-testid="memory-item">
                 <div className="grid gap-2 sm:grid-cols-[7rem_1fr_auto] sm:items-start">
                   <div className="font-mono text-[11px] uppercase tracking-wider text-faint">
                     {intl.formatMessage(
@@ -1179,7 +1185,12 @@ function MemoriesPanel({
                     ) : null}
                   </div>
                   <div>
-                    <p className="font-serif text-sm leading-5 text-ink">{memory.content}</p>
+                    <p
+                      className="font-serif text-sm leading-5 text-ink"
+                      data-testid="memory-content"
+                    >
+                      {memory.content}
+                    </p>
                     <p className="mt-1 font-mono text-[11px] text-faint">
                       {memory.updatedAt.slice(0, 10)}
                     </p>
@@ -1188,6 +1199,7 @@ function MemoriesPanel({
                         type="button"
                         className="mt-1 font-mono text-[11px] text-muted underline decoration-rule underline-offset-2 hover:text-accent"
                         onClick={() => setExpandedMemoryId(expanded ? null : memory.id)}
+                        data-testid="memory-revisions-toggle"
                       >
                         <FormattedMessage
                           id={expanded ? "action.hideRevisions" : "action.viewRevisions"}
@@ -1201,12 +1213,16 @@ function MemoriesPanel({
                     size="sm"
                     disabled={revertingMemoryId === memory.id}
                     onClick={() => onRevert(memory.id)}
+                    data-testid="memory-revert-button"
                   >
                     <FormattedMessage id="action.revertMemory" />
                   </Button>
                 </div>
                 {expanded ? (
-                  <ul className="mt-2 space-y-1 border-l border-rule pl-3">
+                  <ul
+                    className="mt-2 space-y-1 border-l border-rule pl-3"
+                    data-testid="memory-revisions"
+                  >
                     {memory.revisions.map((revision) => (
                       <li key={revision.id} className="font-mono text-[11px] text-muted">
                         <FormattedMessage

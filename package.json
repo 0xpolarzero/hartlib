@@ -18,6 +18,7 @@
     "format": "oxfmt AGENTS.md README.md package.json tsconfig.json tsconfig.base.json vitest.config.ts playwright.config.ts apps/*/package.json apps/*/tsconfig*.json apps/*/*.ts apps/*/src packages/*/package.json packages/*/tsconfig*.json packages/*/src docs/*.md",
     "format:check": "oxfmt --check AGENTS.md README.md package.json tsconfig.json tsconfig.base.json vitest.config.ts playwright.config.ts apps/*/package.json apps/*/tsconfig*.json apps/*/*.ts apps/*/src packages/*/package.json packages/*/tsconfig*.json packages/*/src docs/*.md",
     "test": "bun run --filter '*' test",
+    "e2e": "BRIEF_E2E_STACK=1 bunx --bun playwright test --project=brief-ai-chat-runtime",
     "db:up": "docker compose up -d postgres",
     "db:migrate": "bun --filter @brief/worker db:migrate",
     "db:down": "docker compose down"

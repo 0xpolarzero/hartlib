@@ -1,3 +1,6 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+
+import { demoCitedAnswerSearchTerms } from "../../../../../tests/e2e/demo-cited-answer-fixture";
 import type {
   AiClient,
   AiCallResult,
@@ -59,6 +62,108 @@ interface ScenarioState {
 
 const scenarioStates = new WeakMap<FakeAiClientScenario, ScenarioState>();
 let defaultScenario: FakeAiClientScenario | undefined;
+
+const assistantMessage = (text: string): AssistantMessage => ({
+  role: "assistant",
+  content: [{ type: "text", text }],
+  api: "openai-completions",
+  provider: "zai",
+  model: "fake",
+  usage: zeroUsage(),
+  stopReason: "stop",
+  timestamp: Date.now(),
+});
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function* scriptedAnswer(text: string): AsyncIterable<AnswerStreamEvent> {
+  const chunks = text.match(/.{1,48}(\s|$)/g) ?? [text];
+
+  for (const chunk of chunks) {
+    yield { type: "text_delta", delta: chunk };
+  }
+
+  yield {
+    type: "result",
+    result: {
+      kind: "ok",
+      value: {
+        message: assistantMessage(text),
+        text,
+        usage: zeroUsage(),
+        insufficiencyGap: null,
+      },
+    },
+  };
+}
+
+const demoCitedAnswerScenario = (): FakeAiClientScenario => ({
+  preflight: async (_inputs, toolContext, _callIndex, retrieval) => {
+    if (retrieval === undefined) {
+      throw new Error("AI_FAKE_SCENARIO=demo-cited-answer requires retrieval");
+    }
+
+    const spec = {
+      terms: demoCitedAnswerSearchTerms,
+      countries: ["FR"],
+      languages: ["fr-FR"],
+      orderBy: "relevance" as const,
+      limit: 5,
+    };
+    const results = await retrieval.searchDocuments(spec, toolContext);
+    const selected = results.slice(0, 2);
+    const entries = selected.map((result) => ({ documentId: result.documentId }));
+
+    return {
+      kind: "ok",
+      value: {
+        manifest: entries,
+        usage: zeroUsage(),
+        toolEvents: [{ type: "search", spec, resultCount: results.length }],
+      },
+    };
+  },
+  answer: (input, callIndex) => {
+    const latestUserMessage =
+      [...input.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+    const turnLabel = callIndex === 0 ? "Premier point" : "Suite";
+    return scriptedAnswer(
+      `${turnLabel}: les sources signalent une progression solaire et des raccordements plus rapides. ` +
+        `Elles notent aussi que le stockage et le reseau restent suivis par les acteurs publics. ` +
+        `Question recue: ${latestUserMessage.slice(0, 80)}. [[cite:b1]] [[cite:b2]]`,
+    );
+  },
+  memories: (input) => {
+    const existing = input.existingMemories[0];
+    return {
+      kind: "ok",
+      value: {
+        proposals: [
+          {
+            kind: existing?.kind ?? "episode",
+            content: `L'utilisateur a demande: "${input.userText}"`,
+            evidenceQuote: input.userText,
+            ...(existing === undefined ? {} : { targetMemoryId: existing.id }),
+          },
+        ],
+        discarded: [],
+        usage: zeroUsage(),
+      },
+    };
+  },
+});
+
+const namedScenario = (name: string | undefined): FakeAiClientScenario | undefined => {
+  switch (name) {
+    case "demo-cited-answer":
+      return demoCitedAnswerScenario();
+    case undefined:
+    case "":
+      return undefined;
+    default:
+      throw new Error(`Unknown AI_FAKE_SCENARIO: ${name}`);
+  }
+};
 
 const stateFor = (scenario: FakeAiClientScenario): ScenarioState => {
   const existing = scenarioStates.get(scenario);
@@ -123,8 +228,12 @@ const isAnswerEventList = (value: readonly unknown[]): value is readonly AnswerS
 
 export class FakeAiClient implements AiClient {
   constructor(
-    private readonly scenario: FakeAiClientScenario = defaultScenario ?? {},
+    private readonly scenario: FakeAiClientScenario = defaultScenario ??
+      namedScenario(process.env.AI_FAKE_SCENARIO) ??
+      {},
     private readonly retrieval?: RetrievalExecutor,
+    private readonly delayMs = 0,
+    private readonly sleeper: (ms: number) => Promise<void> = sleep,
   ) {}
 
   async runPreflight(inputs: PreflightInputs, toolContext: PreflightToolContext) {
@@ -162,12 +271,18 @@ export class FakeAiClient implements AiClient {
 
     if (Symbol.asyncIterator in events) {
       for await (const event of events) {
+        if (event.type === "text_delta" && this.delayMs > 0) {
+          await this.sleeper(this.delayMs);
+        }
         yield event;
       }
       return;
     }
 
     for (const event of events as readonly AnswerStreamEvent[]) {
+      if (event.type === "text_delta" && this.delayMs > 0) {
+        await this.sleeper(this.delayMs);
+      }
       yield event;
     }
   }

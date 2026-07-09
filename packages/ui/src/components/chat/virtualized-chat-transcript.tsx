@@ -61,11 +61,15 @@ export function ChatBubble({
       ),
     [citationsById, message.content, message.streaming],
   );
+  const content = isAssistant
+    ? parsed.segments
+    : [{ type: "text" as const, text: message.content }];
 
   return (
     <div
       className={cn("brief-chat-row flex", isAssistant ? "justify-start" : "justify-end")}
       data-author={message.author}
+      data-testid={`chat-message-${message.author}`}
     >
       <div
         className={cn(
@@ -87,8 +91,11 @@ export function ChatBubble({
           )}
           {isAssistant ? authorLabels.assistant : authorLabels.client}
         </div>
-        <div className="brief-chat-content whitespace-pre-wrap font-serif text-sm leading-6">
-          {parsed.segments.map((segment, index) => {
+        <div
+          className="brief-chat-content whitespace-pre-wrap font-serif text-sm leading-6"
+          data-testid="chat-message-content"
+        >
+          {content.map((segment, index) => {
             if (segment.type === "text") {
               return <span key={`text:${index}`}>{segment.text}</span>;
             }
@@ -119,7 +126,10 @@ export function ChatBubble({
           ) : null}
         </div>
         {message.citations && message.citations.length > 0 ? (
-          <div className="brief-chat-citations mt-2 flex flex-wrap gap-x-2 gap-y-1">
+          <div
+            className="brief-chat-citations mt-2 flex flex-wrap gap-x-2 gap-y-1"
+            data-testid="chat-citations"
+          >
             {message.citations.map((citation) => (
               <CitationReference key={citation.id} citation={citation} />
             ))}
@@ -153,6 +163,7 @@ function CitationMarker({
         className={className}
         aria-label={ariaLabel}
         title={citation.title ?? citation.label}
+        data-testid="citation-marker"
       >
         {label}
       </a>
@@ -160,7 +171,12 @@ function CitationMarker({
   }
 
   return (
-    <span className={className} aria-label={ariaLabel} title={citation.title ?? citation.label}>
+    <span
+      className={className}
+      aria-label={ariaLabel}
+      title={citation.title ?? citation.label}
+      data-testid="citation-marker"
+    >
       {label}
     </span>
   );
@@ -179,13 +195,23 @@ function CitationReference({ citation }: { citation: ChatTranscriptCitation }) {
 
   if (citation.url) {
     return (
-      <a href={citation.url} target="_blank" rel="noopener" className={className}>
+      <a
+        href={citation.url}
+        target="_blank"
+        rel="noopener"
+        className={className}
+        data-testid="citation-reference"
+      >
         {content}
       </a>
     );
   }
 
-  return <span className={cn(className, "no-underline")}>{content}</span>;
+  return (
+    <span className={cn(className, "no-underline")} data-testid="citation-reference">
+      {content}
+    </span>
+  );
 }
 
 function SourcesRead({ contextBlocks }: { contextBlocks: readonly ChatTranscriptContextBlock[] }) {
@@ -198,6 +224,7 @@ function SourcesRead({ contextBlocks }: { contextBlocks: readonly ChatTranscript
         className="inline-flex items-center gap-1 font-mono text-[11px] font-medium text-muted transition-colors duration-fast hover:text-accent"
         onClick={() => setExpanded((current) => !current)}
         aria-expanded={expanded}
+        data-testid="sources-read-toggle"
       >
         {expanded ? (
           <ChevronDown className="size-3" aria-hidden="true" />
@@ -207,9 +234,13 @@ function SourcesRead({ contextBlocks }: { contextBlocks: readonly ChatTranscript
         <FormattedMessage id="chat.sourcesRead" values={{ count: contextBlocks.length }} />
       </button>
       {expanded ? (
-        <ul className="mt-1.5 space-y-1 border-l border-rule pl-2">
+        <ul className="mt-1.5 space-y-1 border-l border-rule pl-2" data-testid="sources-read-list">
           {contextBlocks.map((block) => (
-            <li key={block.blockId} className="text-xs leading-5 text-muted">
+            <li
+              key={block.blockId}
+              className="text-xs leading-5 text-muted"
+              data-testid="source-read-item"
+            >
               <span className="font-mono text-[11px] text-faint">{block.blockId}</span>{" "}
               <span className="text-ink">{block.label}</span>{" "}
               <span className="font-mono text-[11px] text-faint">

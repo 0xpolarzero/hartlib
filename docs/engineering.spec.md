@@ -278,6 +278,7 @@ Backend API style:
 - keep route handlers thin
 - put behavior in domain services
 - use Server-Sent Events for AI streaming
+- answer CORS preflight in the shared API router for registered routes; unknown paths remain 404
 - avoid WebSockets for MVP
 - avoid a separate REST framework for MVP
 

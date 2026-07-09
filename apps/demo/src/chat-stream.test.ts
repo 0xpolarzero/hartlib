@@ -35,6 +35,24 @@ describe("reduceChatStream", () => {
     expect(state.memoryUpdated).toEqual({ created: 1, updated: 0, discarded: 0 });
   });
 
+  it("orders streamed context blocks by numeric block id", () => {
+    const state = reduceAll([
+      {
+        seq: 1,
+        event: {
+          type: "context_window",
+          blocks: [
+            { blockId: "b2", kind: "document", label: "Second", tokenEstimate: 20 },
+            { blockId: "b10", kind: "document", label: "Tenth", tokenEstimate: 100 },
+            { blockId: "b1", kind: "document", label: "First", tokenEstimate: 10 },
+          ],
+        },
+      },
+    ]);
+
+    expect(state.contextBlocks.map((block) => block.blockId)).toEqual(["b1", "b2", "b10"]);
+  });
+
   it("resets assistant text when a second attempt starts", () => {
     const state = reduceAll([
       { seq: 1, event: { type: "answer_started", attempt: 1 } },

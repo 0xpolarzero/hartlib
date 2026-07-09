@@ -273,7 +273,7 @@ Citation grammar:
 
 - `[[cite:b12]]` or `[[cite:b3,b12]]` written immediately after the supported claim
 - tags reference block ids visible in the window, including the memory block
-- the assistant message is stored with tags inline; the API resolves tags to citation metadata from block provenance
+- the assistant message is stored with tags inline; the API resolves citation observations to citation metadata from block provenance
 - a tag referencing an unknown block id is rendered as plain text and recorded as a defect observation
 
 Insufficiency signal:
@@ -354,7 +354,7 @@ Event vocabulary:
 - `run_started`
 - `preflight_search`: query summary and result count
 - `preflight_peek`: document id
-- `context_window`: active block ids, nullable labels, kinds, token estimates
+- `context_window`: active block ids, nullable labels, kinds, token estimates, ordered by numeric block id suffix (`b1`, `b2`, `b10`)
 - `answer_started`: attempt number; clients reset the in-progress assistant text on it
 - `answer_retry`: insufficiency gap description
 - `text_delta`: streamed answer text with tags inline
@@ -383,7 +383,7 @@ An assistant message in `GET /v1/chat` carries:
 
 - `content` with citation tags inline; the client replaces tags with citation markers at render time
 - `citations`: block id, kind, label, source display name, title, canonical URL, published date; memory citations carry `kind: "memory"`, `label: null`, and no URL so the client can localize the saved-memory label
-- `contextBlocks`: block id, kind, label, token estimate — the sources that entered the model context for that message, from `context_block_added` observations; memory context blocks carry `label: null` so the client can localize the sources-read label
+- `contextBlocks`: block id, kind, label, token estimate — the sources that entered the model context for that message, from `context_block_added` observations, ordered by numeric block id suffix (`b1`, `b2`, `b10`); memory context blocks carry `label: null` so the client can localize the sources-read label
 
 The demo does not expose public chat ids, a stop or cancel endpoint, or a source picker.
 
@@ -400,6 +400,14 @@ A sources-read affordance per assistant message lists the context blocks that en
 A memories panel on the client surface lists saved memories with their revisions and a revert action.
 
 New strings land in both `packages/i18n` catalogs.
+
+## Demo Playwright E2E
+
+The root `e2e` script runs the `brief-ai-chat-runtime` Playwright project against a dedicated `brief_e2e` database. Setup resets that database, applies the worker migrations, seeds a predictable French public-source corpus, verifies that a representative French full-text search returns the seeded citation documents, and starts the API, worker, and demo Vite server on fixed local ports.
+
+The E2E worker runs with `AI_FAKE=true`, `AI_FAKE_SCENARIO=demo-cited-answer`, and `AI_FAKE_DELAY_MS=200`. That named fake scenario must be process-resolvable from environment because the worker is a real subprocess. It searches the seeded corpus through the normal retrieval path using the shared Playwright demo-cited-answer fixture, emits a manifest for the first two matching documents, streams an answer containing citation tags for `b1` and `b2`, and extracts a memory using a verbatim quote of the user's message. Fake streaming delay defaults to `0` outside this E2E configuration.
+
+Specs reset chat, run, job, memory, and Smithers runtime rows directly through Postgres before each test while preserving the seeded corpus. They cover send and stream behavior, resolved citation links, sources-read rows, memory update and revert, follow-up turns, double-send guarding, and reload during an active stream.
 
 ## Storage
 
