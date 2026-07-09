@@ -21,6 +21,7 @@
     "e2e": "BRIEF_E2E_STACK=1 bunx --bun playwright test --project=brief-ai-chat-runtime",
     "db:up": "docker compose up -d postgres",
     "db:migrate": "bun --filter @brief/worker db:migrate",
+    "db:reset": "bun --filter @brief/worker db:reset",
     "db:down": "docker compose down"
   },
   "devDependencies": {

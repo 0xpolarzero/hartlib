@@ -573,6 +573,8 @@ Migrations:
 - commit explicit SQL migrations in the repo
 - run migrations through the Effect SQL migrator
 - run migrations from CI or release jobs before app deploy
+- local development can reset the configured database with `bun run db:reset`; this drops and recreates the `public` schema, then reapplies all committed migrations
+- database reset commands must refuse `NODE_ENV=production` unless an explicit override is set
 
 Avoid for MVP:
 
