@@ -9,6 +9,7 @@ import { resolveDemoUserId } from "../demo-user";
 import { corsHeaders, json, type Route } from "../http";
 
 const maxMessageTextLength = 12_000;
+export const maxSendMessageBodyBytes = 64 * 1024;
 const memoryCitationLabel = "saved-memory";
 
 type PgLayer = Layer.Layer<PgClient.PgClient | SqlClient, Config.ConfigError | SqlError, never>;
@@ -57,8 +58,9 @@ export interface ChatMessageResponse {
 export interface CitationResponse {
   readonly blockId: string;
   readonly label: string;
+  readonly sourceDisplayName: string | null;
   readonly title: string | null;
-  readonly url: string | null;
+  readonly canonicalUrl: string | null;
   readonly publishedAt: string | null;
 }
 
@@ -98,8 +100,9 @@ const citationFromBlock = (block: ContextBlockRow): CitationResponse => {
     return {
       blockId: block.block_id,
       label: memoryCitationLabel,
+      sourceDisplayName: null,
       title: "Saved memory",
-      url: null,
+      canonicalUrl: null,
       publishedAt: null,
     };
   }
@@ -108,8 +111,9 @@ const citationFromBlock = (block: ContextBlockRow): CitationResponse => {
   return {
     blockId: block.block_id,
     label: stringField(provenance, "sourceDisplayName") ?? block.block_id,
+    sourceDisplayName: stringField(provenance, "sourceDisplayName"),
     title: stringField(provenance, "title"),
-    url: stringField(provenance, "canonicalUrl"),
+    canonicalUrl: stringField(provenance, "canonicalUrl"),
     publishedAt: stringField(provenance, "publishedAt"),
   };
 };
@@ -186,22 +190,21 @@ export const chatMessagesResponseFromRows = (
 const ensureDemoChat = (userId: string) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
+    const inserted = yield* sql<ChatRow>`
+      insert into chats (user_id)
+      values (${userId})
+      on conflict (user_id) do nothing
+      returning id::text, created_at, updated_at
+    `;
+    if (inserted[0] !== undefined) return inserted[0];
+
     const existing = yield* sql<ChatRow>`
       select id::text, created_at, updated_at
       from chats
       where user_id = ${userId}
-      order by created_at asc, id asc
       limit 1
     `;
-
-    if (existing[0] !== undefined) return existing[0];
-
-    const inserted = yield* sql<ChatRow>`
-      insert into chats (user_id)
-      values (${userId})
-      returning id::text, created_at, updated_at
-    `;
-    return inserted[0]!;
+    return existing[0]!;
   });
 
 const readChat = (userId: string) =>
@@ -247,11 +250,28 @@ const readChat = (userId: string) =>
     };
   });
 
-const parseSendMessageBody = (body: unknown) => {
-  const record = asRecord(body);
-  const text = typeof record.text === "string" ? record.text.trim() : "";
-  const locale = typeof record.locale === "string" ? record.locale : "";
-  const market = typeof record.market === "string" ? record.market : "";
+export const parseSendMessageBody = (body: unknown) => {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false as const, error: "invalid_body" };
+  }
+
+  const record = body as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.length !== 3 ||
+    keys[0] !== "locale" ||
+    keys[1] !== "market" ||
+    keys[2] !== "text" ||
+    typeof record.text !== "string" ||
+    typeof record.locale !== "string" ||
+    typeof record.market !== "string"
+  ) {
+    return { ok: false as const, error: "invalid_body" };
+  }
+
+  const text = record.text.trim();
+  const locale = record.locale;
+  const market = record.market;
 
   if (text.length === 0 || text.length > maxMessageTextLength) {
     return { ok: false as const, error: "invalid_body" };
@@ -264,10 +284,55 @@ const parseSendMessageBody = (body: unknown) => {
   return { ok: true as const, text, locale, market };
 };
 
-const requestJson = (request: Request) =>
+class RequestBodyTooLarge extends Error {
+  constructor() {
+    super("request_body_too_large");
+  }
+}
+
+const contentLengthExceedsLimit = (request: Request, maxBytes: number): boolean => {
+  const value = request.headers.get("content-length");
+  if (value === null) return false;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > maxBytes;
+};
+
+export const requestJsonWithLimit = (request: Request, maxBytes = maxSendMessageBodyBytes) =>
   Effect.tryPromise({
-    try: () => request.json(),
-    catch: () => new Error("invalid_json"),
+    try: async () => {
+      if (contentLengthExceedsLimit(request, maxBytes)) {
+        throw new RequestBodyTooLarge();
+      }
+
+      if (request.body === null) {
+        return JSON.parse("");
+      }
+
+      const reader = request.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          void reader.cancel().catch(() => undefined);
+          throw new RequestBodyTooLarge();
+        }
+        chunks.push(value);
+      }
+
+      const body = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+
+      return JSON.parse(new TextDecoder().decode(body));
+    },
+    catch: (error) => error,
   });
 
 const isUniqueViolation = (error: unknown): boolean => {
@@ -366,10 +431,16 @@ const sendMessage = (
     }),
   );
 
-type AiRunEventRow = {
+export type AiRunEventRow = {
   readonly seq: number;
   readonly event: Record<string, unknown>;
 };
+
+export type AiRunEventPoller = (
+  runId: string,
+  afterSeq: number,
+  pgLayer: PgLayer,
+) => Promise<readonly AiRunEventRow[]>;
 
 const eventType = (event: Record<string, unknown>): string =>
   typeof event.type === "string" ? event.type : "message";
@@ -413,14 +484,25 @@ const incrementalSse = (args: {
   readonly pollMs: number;
   readonly keepAliveMs: number;
   readonly pgLayer: PgLayer;
+  readonly readAiRunEventsAfter: AiRunEventPoller;
 }) => {
   const encoder = new TextEncoder();
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
-
-  const clear = () => {
+  let closeStream: (mode?: "close" | "error" | "silent", error?: unknown) => void = () => {
     closed = true;
-    if (timeout !== undefined) clearTimeout(timeout);
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+      timeout = undefined;
+    }
+  };
+
+  const markClosed = () => {
+    closed = true;
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+      timeout = undefined;
+    }
   };
 
   return new Response(
@@ -428,6 +510,25 @@ const incrementalSse = (args: {
       start(controller) {
         let afterSeq = args.afterSeq;
         let lastWrite = Date.now();
+
+        const onAbort = () => closeStream("close");
+        closeStream = (mode = "close", error?: unknown) => {
+          if (closed) return;
+          markClosed();
+          args.request.signal.removeEventListener("abort", onAbort);
+
+          if (mode === "silent") return;
+
+          try {
+            if (mode === "error") {
+              controller.error(error);
+            } else {
+              controller.close();
+            }
+          } catch {
+            // Closing can race with reader cancellation; cleanup must stay idempotent.
+          }
+        };
 
         const write = (text: string) => {
           if (closed) return;
@@ -437,48 +538,61 @@ const incrementalSse = (args: {
 
         const tick = async () => {
           if (closed || args.request.signal.aborted) {
-            clear();
-            controller.close();
+            closeStream("close");
             return;
           }
 
           try {
-            const rows = await readAiRunEventsAfter(args.runId, afterSeq, args.pgLayer);
+            const rows = await args.readAiRunEventsAfter(args.runId, afterSeq, args.pgLayer);
+            if (closed || args.request.signal.aborted) {
+              closeStream("close");
+              return;
+            }
+
             for (const row of rows) {
+              if (closed || args.request.signal.aborted) {
+                closeStream("close");
+                return;
+              }
               write(encodeSseEvent(row));
               afterSeq = row.seq;
               const type = eventType(row.event);
               if (type === "done" || type === "error") {
-                clear();
-                controller.close();
+                closeStream("close");
                 return;
               }
+            }
+
+            if (closed || args.request.signal.aborted) {
+              closeStream("close");
+              return;
             }
 
             if (Date.now() - lastWrite >= args.keepAliveMs) {
               write(": keep-alive\n\n");
             }
 
+            if (closed || args.request.signal.aborted) {
+              closeStream("close");
+              return;
+            }
+
             timeout = setTimeout(tick, args.pollMs);
           } catch (error) {
-            controller.error(error);
-            clear();
+            if (closed || args.request.signal.aborted) {
+              closeStream("close");
+              return;
+            }
+            closeStream("error", error);
           }
         };
 
-        args.request.signal.addEventListener(
-          "abort",
-          () => {
-            clear();
-            controller.close();
-          },
-          { once: true },
-        );
+        args.request.signal.addEventListener("abort", onAbort, { once: true });
 
         void tick();
       },
       cancel() {
-        clear();
+        closeStream("silent");
       },
     }),
     { headers: sseHeaders() },
@@ -503,7 +617,12 @@ const runBelongsToUser = (runId: string, userId: string) =>
 const readRunId = (url: URL): string =>
   decodeURIComponent(/^\/v1\/ai-runs\/([^/]+)\/stream\/?$/.exec(url.pathname)?.[1] ?? "");
 
-export const makeChatRoutes = (pgLayer: PgLayer = PgLayer): readonly Route[] => [
+export const makeChatRoutes = (
+  pgLayer: PgLayer = PgLayer,
+  options?: {
+    readonly readAiRunEventsAfter?: AiRunEventPoller;
+  },
+): readonly Route[] => [
   {
     method: "GET",
     pattern: /^\/v1\/chat\/?$/,
@@ -518,10 +637,21 @@ export const makeChatRoutes = (pgLayer: PgLayer = PgLayer): readonly Route[] => 
     pattern: /^\/v1\/chat\/messages\/?$/,
     handle: (request) =>
       Effect.gen(function* () {
-        const body = yield* requestJson(request).pipe(
-          Effect.catch(() => Effect.succeed(undefined)),
+        const bodyResult = yield* requestJsonWithLimit(request).pipe(
+          Effect.map((body) => ({ ok: true as const, body })),
+          Effect.catch((error: unknown) =>
+            Effect.succeed(
+              error instanceof RequestBodyTooLarge
+                ? ({ ok: false as const, status: 413, error: "request_too_large" } as const)
+                : ({ ok: false as const, status: 400, error: "invalid_json" } as const),
+            ),
+          ),
         );
-        const parsed = parseSendMessageBody(body);
+        if (!bodyResult.ok) {
+          return json({ error: bodyResult.error }, { status: bodyResult.status });
+        }
+
+        const parsed = parseSendMessageBody(bodyResult.body);
         if (!parsed.ok) return json({ error: parsed.error }, { status: 400 });
 
         return yield* sendMessage(request, parsed).pipe(Effect.provide(pgLayer));
@@ -547,6 +677,7 @@ export const makeChatRoutes = (pgLayer: PgLayer = PgLayer): readonly Route[] => 
           pollMs: config.aiStreamPollMs,
           keepAliveMs: config.aiStreamKeepAliveMs,
           pgLayer,
+          readAiRunEventsAfter: options?.readAiRunEventsAfter ?? readAiRunEventsAfter,
         });
       }),
   },

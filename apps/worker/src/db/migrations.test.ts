@@ -57,6 +57,18 @@ type RevisionRow = {
   run_id: string | null;
 };
 
+type ChatRow = {
+  id: string;
+};
+
+type DuplicateRepairRow = {
+  remaining_chats: number;
+  remaining_duplicate_children: number;
+  memory_source_message_id: string | null;
+  revision_run_id: string | null;
+  index_count: number;
+};
+
 function sourceDatabaseUrl(): string {
   if (!databaseUrl) {
     throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL is required");
@@ -72,8 +84,12 @@ function adminDatabaseUrl(): string {
 }
 
 function isolatedDatabaseUrl(): string {
+  return databaseUrlForName(isolatedDatabaseName);
+}
+
+function databaseUrlForName(databaseName: string): string {
   const url = new URL(sourceDatabaseUrl());
-  url.pathname = `/${isolatedDatabaseName}`;
+  url.pathname = `/${databaseName}`;
 
   return url.toString();
 }
@@ -93,6 +109,37 @@ function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
       ),
     ),
   );
+}
+
+function applyMigrationsThrough(lastMigration: string) {
+  return Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const files = [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })]
+      .sort()
+      .filter((file) => file <= lastMigration);
+
+    yield* sql`
+      create table if not exists schema_migrations (
+        name text primary key,
+        applied_at timestamptz not null default now()
+      )
+    `;
+
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`select pg_advisory_xact_lock(hashtext('brief:schema_migrations'))`;
+
+        for (const file of files) {
+          const body = yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text());
+          yield* sql.unsafe(body).raw;
+          yield* sql`
+            insert into schema_migrations (name)
+            values (${file})
+          `;
+        }
+      }),
+    );
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -271,6 +318,220 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       expect(result.migrationsBefore).toContain("0009_document_search.sql");
       expect(result.migrationsBefore).toContain("0010_user_memory_revision_run_set_null.sql");
       expect(result.migrationsAfter).toEqual(expectedMigrations);
+    },
+  );
+
+  it(
+    "repairs duplicate chats before enforcing one chat per user",
+    { timeout: 60_000 },
+    async () => {
+      const duplicateDatabaseName = `${isolatedDatabaseName}_dupe_${crypto
+        .randomUUID()
+        .replaceAll("-", "")
+        .slice(0, 8)}`;
+      const duplicateUrl = databaseUrlForName(duplicateDatabaseName);
+
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(`create database ${quoteIdentifier(duplicateDatabaseName)}`);
+        }),
+      );
+
+      try {
+        await runDb(duplicateUrl, applyMigrationsThrough("0012_ai_run_events_emitted_by_task.sql"));
+
+        const result = await runDb(
+          duplicateUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+
+            yield* sql`
+            insert into chats (id, user_id, created_at, updated_at)
+            values
+              (
+                'eeeeeeee-0000-0000-0000-000000000001',
+                'demo-user',
+                '2026-01-01 00:00:00+00',
+                '2026-01-01 00:00:00+00'
+              ),
+              (
+                'eeeeeeee-0000-0000-0000-000000000002',
+                'demo-user',
+                '2026-01-02 00:00:00+00',
+                '2026-01-02 00:00:00+00'
+              )
+          `;
+            yield* sql`
+            insert into chat_messages (id, chat_id, author, content)
+            values
+              (
+                'eeeeeeee-0000-0000-0000-000000000003',
+                'eeeeeeee-0000-0000-0000-000000000001',
+                'user',
+                'kept chat message'
+              ),
+              (
+                'eeeeeeee-0000-0000-0000-000000000004',
+                'eeeeeeee-0000-0000-0000-000000000002',
+                'user',
+                'duplicate chat message'
+              )
+          `;
+            yield* sql`
+            insert into ai_runs (id, chat_id, user_message_id, locale, market, finished_at)
+            values (
+              'eeeeeeee-0000-0000-0000-000000000005',
+              'eeeeeeee-0000-0000-0000-000000000002',
+              'eeeeeeee-0000-0000-0000-000000000004',
+              'fr-FR',
+              'FR',
+              now()
+            )
+          `;
+            yield* sql`
+            insert into chat_messages (id, chat_id, author, content, ai_run_id)
+            values (
+              'eeeeeeee-0000-0000-0000-000000000006',
+              'eeeeeeee-0000-0000-0000-000000000002',
+              'assistant',
+              'duplicate assistant message',
+              'eeeeeeee-0000-0000-0000-000000000005'
+            )
+          `;
+            yield* sql`
+            update ai_runs
+            set assistant_message_id = 'eeeeeeee-0000-0000-0000-000000000006'
+            where id = 'eeeeeeee-0000-0000-0000-000000000005'
+          `;
+            yield* sql`
+            insert into ai_run_events (run_id, seq, event, emitted_by_task)
+            values ('eeeeeeee-0000-0000-0000-000000000005', 1, '{}'::jsonb, 'test-task')
+          `;
+            yield* sql`
+            insert into chat_context_blocks (
+              chat_id,
+              block_id,
+              kind,
+              content,
+              token_estimate,
+              created_by_run_id,
+              last_cited_run_id
+            )
+            values (
+              'eeeeeeee-0000-0000-0000-000000000002',
+              'b1',
+              'document',
+              'duplicate context',
+              1,
+              'eeeeeeee-0000-0000-0000-000000000005',
+              'eeeeeeee-0000-0000-0000-000000000005'
+            )
+          `;
+            yield* sql`
+            insert into ai_observations (id, run_id, chat_id, kind, payload)
+            values (
+              'eeeeeeee-0000-0000-0000-000000000007',
+              'eeeeeeee-0000-0000-0000-000000000005',
+              'eeeeeeee-0000-0000-0000-000000000002',
+              'citation',
+              '{}'::jsonb
+            )
+          `;
+            yield* sql`
+            insert into user_memories (
+              id,
+              user_id,
+              kind,
+              content,
+              evidence_quote,
+              source_message_id
+            )
+            values (
+              'eeeeeeee-0000-0000-0000-000000000008',
+              'demo-user',
+              'fact',
+              'duplicate chat memory',
+              'duplicate chat memory',
+              'eeeeeeee-0000-0000-0000-000000000004'
+            )
+          `;
+            yield* sql`
+            insert into user_memory_revisions (memory_id, action, content_after, run_id)
+            values (
+              'eeeeeeee-0000-0000-0000-000000000008',
+              'created',
+              'duplicate chat memory',
+              'eeeeeeee-0000-0000-0000-000000000005'
+            )
+          `;
+
+            yield* runMigrations;
+
+            const chats = yield* sql<ChatRow>`
+            select id
+            from chats
+            where user_id = 'demo-user'
+            order by created_at, id
+          `;
+            const [repair] = yield* sql<DuplicateRepairRow>`
+            select
+              (select count(*)::int from chats where user_id = 'demo-user') as remaining_chats,
+              (
+                (select count(*)::int from chat_messages where chat_id = 'eeeeeeee-0000-0000-0000-000000000002') +
+                (select count(*)::int from ai_runs where chat_id = 'eeeeeeee-0000-0000-0000-000000000002') +
+                (select count(*)::int from ai_run_events where run_id = 'eeeeeeee-0000-0000-0000-000000000005') +
+                (select count(*)::int from chat_context_blocks where chat_id = 'eeeeeeee-0000-0000-0000-000000000002') +
+                (select count(*)::int from ai_observations where chat_id = 'eeeeeeee-0000-0000-0000-000000000002')
+              )::int as remaining_duplicate_children,
+              (
+                select source_message_id::text
+                from user_memories
+                where id = 'eeeeeeee-0000-0000-0000-000000000008'
+              ) as memory_source_message_id,
+              (
+                select run_id::text
+                from user_memory_revisions
+                where memory_id = 'eeeeeeee-0000-0000-0000-000000000008'
+              ) as revision_run_id,
+              (
+                select count(*)::int
+                from pg_indexes
+                where schemaname = 'public'
+                  and tablename = 'chats'
+                  and indexname = 'chats_user_key'
+              ) as index_count
+          `;
+
+            return {
+              keptChatIds: chats.map((chat) => chat.id),
+              repair,
+            };
+          }),
+        );
+
+        expect(result.keptChatIds).toEqual(["eeeeeeee-0000-0000-0000-000000000001"]);
+        expect(result.repair?.remaining_chats).toBe(1);
+        expect(result.repair?.remaining_duplicate_children).toBe(0);
+        expect(result.repair?.memory_source_message_id).toBeNull();
+        expect(result.repair?.revision_run_id).toBeNull();
+        expect(result.repair?.index_count).toBe(1);
+      } finally {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+            select pg_terminate_backend(pid)
+            from pg_stat_activity
+            where datname = ${duplicateDatabaseName}
+              and pid <> pg_backend_pid()
+          `;
+            yield* sql.unsafe(`drop database if exists ${quoteIdentifier(duplicateDatabaseName)}`);
+          }),
+        );
+      }
     },
   );
 
@@ -531,7 +792,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
 
         yield* sql`
             insert into chats (id, user_id)
-            values ('bbbbbbbb-0000-0000-0000-000000000001', 'demo-user')
+            values ('bbbbbbbb-0000-0000-0000-000000000001', 'migration-active-run-user')
             on conflict (id) do nothing
           `;
         yield* sql`
@@ -612,7 +873,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
 
           yield* sql`
             insert into chats (id, user_id)
-            values ('cccccccc-0000-0000-0000-000000000001', 'demo-user')
+            values ('cccccccc-0000-0000-0000-000000000001', 'migration-context-block-user')
             on conflict (id) do nothing
           `;
           yield* sql`
@@ -794,7 +1055,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
 
           yield* sql`
           insert into chats (id, user_id)
-          values ('dddddddd-0000-0000-0000-000000000001', 'demo-user')
+          values ('dddddddd-0000-0000-0000-000000000001', 'migration-memory-delete-user')
           on conflict (id) do nothing
         `;
           yield* sql`
@@ -809,7 +1070,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         `;
           yield* sql`
           insert into user_memories (id, user_id, kind, content, evidence_quote, source_message_id)
-          values ('dddddddd-0000-0000-0000-000000000004', 'demo-user', 'fact', 'Prefers concise briefs', 'Prefers concise briefs', 'dddddddd-0000-0000-0000-000000000002')
+          values ('dddddddd-0000-0000-0000-000000000004', 'migration-memory-delete-user', 'fact', 'Prefers concise briefs', 'Prefers concise briefs', 'dddddddd-0000-0000-0000-000000000002')
           on conflict (id) do nothing
         `;
           yield* sql`

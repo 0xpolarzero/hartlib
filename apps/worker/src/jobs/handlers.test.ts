@@ -61,9 +61,10 @@ function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
 
 const createAiRun = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
+  const userId = `handler-user-${crypto.randomUUID()}`;
   const chatRows = yield* sql<{ readonly id: string }>`
     insert into chats (user_id)
-    values ('handler-user')
+    values (${userId})
     returning id::text
   `;
   const chatId = chatRows[0]!.id;

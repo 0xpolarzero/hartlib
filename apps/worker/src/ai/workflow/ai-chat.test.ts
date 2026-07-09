@@ -196,9 +196,10 @@ interface ChatRunFixture {
 const createChatRun = (content = "What matters?") =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
+    const userId = `workflow-user-${crypto.randomUUID()}`;
     const chatRows = yield* sql<{ readonly id: string }>`
       insert into chats (user_id)
-      values ('workflow-user')
+      values (${userId})
       returning id::text
     `;
     const chatId = chatRows[0]!.id;

@@ -369,12 +369,12 @@ The stream ends after `done` or `error`. The UI renders citation tags from `cont
 
 ## Demo API
 
-The demo has one chat for the current user.
+The demo has one chat for the current user. Storage enforces this with a unique `chats(user_id)` index; first-time chat creation uses conflict-tolerant insert and reselect semantics so concurrent first reads and sends converge on the same chat row.
 
 The public browser API is:
 
 - `GET /v1/chat` — the chat, its messages, and the active run id if any
-- `POST /v1/chat/messages` — body is the user text plus the browser's locale and market (a supported pair per `docs/localization.spec.md`), persisted on the run; returns message id and run id; responds 409 while a run is active
+- `POST /v1/chat/messages` — body is a strict JSON object with exactly `text`, `locale`, and `market` fields; `locale` and `market` must be a supported pair per `docs/localization.spec.md`; the raw request body is capped at 64 KiB before JSON parsing; values are persisted on the run; returns message id and run id; responds 409 while a run is active
 - `GET /v1/ai-runs/:runId/stream` — SSE as above
 - `GET /v1/memories` — the user's memories with revision history
 - `POST /v1/memories/:memoryId/revert` — compensating revision

@@ -1,6 +1,14 @@
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { chatMessagesResponseFromRows, type ContextBlockRow, type MessageRow } from "./chat";
+import {
+  chatMessagesResponseFromRows,
+  maxSendMessageBodyBytes,
+  parseSendMessageBody,
+  requestJsonWithLimit,
+  type ContextBlockRow,
+  type MessageRow,
+} from "./chat";
 
 const at = (iso: string) => new Date(iso);
 
@@ -70,15 +78,17 @@ describe("chatMessagesResponseFromRows", () => {
       {
         blockId: "b1",
         label: "Source One",
+        sourceDisplayName: "Source One",
         title: "Document One",
-        url: "https://source.example/doc-1",
+        canonicalUrl: "https://source.example/doc-1",
         publishedAt: "2026-07-08T10:00:00.000Z",
       },
       {
         blockId: "b2",
         label: "saved-memory",
+        sourceDisplayName: null,
         title: "Saved memory",
-        url: null,
+        canonicalUrl: null,
         publishedAt: null,
       },
     ]);
@@ -131,5 +141,59 @@ describe("chatMessagesResponseFromRows", () => {
 
     expect(response[0]?.content).toBe("Unknown support [[cite:b999]]");
     expect(response[0]?.citations).toEqual([]);
+  });
+});
+
+describe("parseSendMessageBody", () => {
+  it("accepts only a strict text, locale, and market object", () => {
+    expect(parseSendMessageBody({ text: " Explain this ", locale: "en-US", market: "US" })).toEqual(
+      {
+        ok: true,
+        text: "Explain this",
+        locale: "en-US",
+        market: "US",
+      },
+    );
+
+    expect(
+      parseSendMessageBody({ text: "Explain this", locale: "en-US", market: "US", extra: true }),
+    ).toEqual({ ok: false, error: "invalid_body" });
+    expect(parseSendMessageBody({ text: "Explain this", locale: "en-US" })).toEqual({
+      ok: false,
+      error: "invalid_body",
+    });
+    expect(parseSendMessageBody({ text: "Explain this", locale: "en-US", market: 1 })).toEqual({
+      ok: false,
+      error: "invalid_body",
+    });
+  });
+});
+
+describe("requestJsonWithLimit", () => {
+  it("rejects oversized Content-Length before parsing JSON", async () => {
+    const request = new Request("http://brief.test/v1/chat/messages", {
+      method: "POST",
+      headers: { "content-length": String(maxSendMessageBodyBytes + 1) },
+      body: "{",
+    });
+
+    await expect(Effect.runPromise(requestJsonWithLimit(request))).rejects.toThrow(
+      "request_body_too_large",
+    );
+  });
+
+  it("rejects bodies that exceed the bounded reader limit without Content-Length", async () => {
+    const request = new Request("http://brief.test/v1/chat/messages", {
+      method: "POST",
+      body: JSON.stringify({
+        text: "x".repeat(maxSendMessageBodyBytes),
+        locale: "en-US",
+        market: "US",
+      }),
+    });
+
+    await expect(Effect.runPromise(requestJsonWithLimit(request))).rejects.toThrow(
+      "request_body_too_large",
+    );
   });
 });

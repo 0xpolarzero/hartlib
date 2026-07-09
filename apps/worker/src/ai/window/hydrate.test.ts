@@ -180,9 +180,10 @@ const artifactBodyHashForIndex = (index: number) => `win-bh-${String(index).padS
 const newChatRun = (): Effect.Effect<ChatRun, SqlError, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
+    const userId = `win-user-${crypto.randomUUID()}`;
     const chatRows = yield* sql<IdRow>`
       insert into chats (user_id)
-      values (${"win-user"})
+      values (${userId})
       returning id
     `;
     const chatId = chatRows[0]!.id;

@@ -94,16 +94,16 @@ const configLayer = ConfigProvider.layer(
   }),
 );
 
-const testRoutes = (): readonly Route[] => [
-  ...makeChatRoutes(pgLayer()),
+const testRoutes = (chatOptions?: Parameters<typeof makeChatRoutes>[1]): readonly Route[] => [
+  ...makeChatRoutes(pgLayer(), chatOptions),
   ...makeMemoryRoutes(pgLayer()),
 ];
 
 const request = (method: string, path: string, init?: RequestInit) =>
   new Request(`http://brief.test${path}`, { ...init, method });
 
-const route = (request: Request) =>
-  Effect.runPromise(routeRequest(testRoutes(), request).pipe(Effect.provide(configLayer)));
+const route = (request: Request, routes = testRoutes()) =>
+  Effect.runPromise(routeRequest(routes, request).pipe(Effect.provide(configLayer)));
 
 const jsonBody = async <A>(response: Response): Promise<A> => response.json() as Promise<A>;
 
@@ -185,6 +185,8 @@ const readUntil = async (
     }
   }
 };
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe.skipIf(!isBun || !databaseUrl)("chat runtime API routes", () => {
   beforeAll(async () => {
@@ -287,6 +289,76 @@ describe.skipIf(!isBun || !databaseUrl)("chat runtime API routes", () => {
     expect(await jsonBody(responses.find((response) => response.status === 409)!)).toEqual({
       error: "run_active",
     });
+
+    const counts = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{
+          readonly chats: number;
+          readonly messages: number;
+          readonly runs: number;
+          readonly jobs: number;
+        }>`
+          select
+            (select count(*)::int from chats where user_id = 'demo-user') as chats,
+            (
+              select count(*)::int
+              from chat_messages m
+              join chats c on c.id = m.chat_id
+              where c.user_id = 'demo-user'
+                and m.author = 'user'
+            ) as messages,
+            (
+              select count(*)::int
+              from ai_runs r
+              join chats c on c.id = r.chat_id
+              where c.user_id = 'demo-user'
+            ) as runs,
+            (
+              select count(*)::int
+              from jobs j
+              join ai_runs r on j.payload->>'aiRunId' = r.id::text
+              join chats c on c.id = r.chat_id
+              where c.user_id = 'demo-user'
+                and j.kind = 'ai_chat_run'
+            ) as jobs
+        `;
+        return rows[0]!;
+      }),
+    );
+
+    expect(counts).toEqual({ chats: 1, messages: 1, runs: 1, jobs: 1 });
+  });
+
+  it("rejects oversized chat message bodies before JSON parsing", async () => {
+    const response = await route(
+      request("POST", "/v1/chat/messages", {
+        headers: { "content-length": "65537" },
+        body: "{",
+      }),
+    );
+
+    expect(response.status).toBe(413);
+    expect(await jsonBody(response)).toEqual({ error: "request_too_large" });
+  });
+
+  it("rejects non-strict chat message body shapes", async () => {
+    const withExtraField = await route(
+      request("POST", "/v1/chat/messages", {
+        body: JSON.stringify({ text: "Explain", locale: "en-US", market: "US", extra: true }),
+      }),
+    );
+    expect(withExtraField.status).toBe(400);
+    expect(await jsonBody(withExtraField)).toEqual({ error: "invalid_body" });
+
+    const missingTypedField = await route(
+      request("POST", "/v1/chat/messages", {
+        body: JSON.stringify({ text: "Explain", locale: "en-US" }),
+      }),
+    );
+    expect(missingTypedField.status).toBe(400);
+    expect(await jsonBody(missingTypedField)).toEqual({ error: "invalid_body" });
   });
 
   it("rejects unsupported locale and market pairs", async () => {
@@ -386,7 +458,14 @@ describe.skipIf(!isBun || !databaseUrl)("chat runtime API routes", () => {
       readonly activeRunId: string | null;
       readonly messages: readonly {
         readonly author: string;
-        readonly citations?: readonly { readonly blockId: string; readonly label: string }[];
+        readonly citations?: readonly {
+          readonly blockId: string;
+          readonly label: string;
+          readonly sourceDisplayName: string | null;
+          readonly title: string | null;
+          readonly canonicalUrl: string | null;
+          readonly publishedAt: string | null;
+        }[];
         readonly contextBlocks?: readonly {
           readonly blockId: string;
           readonly tokenEstimate: number;
@@ -397,7 +476,14 @@ describe.skipIf(!isBun || !databaseUrl)("chat runtime API routes", () => {
     expect(body.activeRunId).toBe(state.activeRunId);
     const assistant = body.messages.find((message) => message.author === "assistant");
     expect(assistant?.citations).toEqual([
-      expect.objectContaining({ blockId: "b1", label: "Source One" }),
+      {
+        blockId: "b1",
+        label: "Source One",
+        sourceDisplayName: "Source One",
+        title: "Document One",
+        canonicalUrl: "https://source.example/doc-1",
+        publishedAt: "2026-07-08T10:00:00.000Z",
+      },
     ]);
     expect(assistant?.contextBlocks).toEqual([
       expect.objectContaining({ blockId: "b1", tokenEstimate: 42 }),
@@ -438,6 +524,48 @@ describe.skipIf(!isBun || !databaseUrl)("chat runtime API routes", () => {
     const text = await readUntil(response, (value) => value.includes(": keep-alive"), controller);
 
     expect(text).toContain(": keep-alive");
+  });
+
+  it("stops polling silently when the stream aborts mid-poll", async () => {
+    const fixture = await createRun();
+    const controller = new AbortController();
+    let pollCalls = 0;
+    let resolveFirstPoll!: () => void;
+    let resolvePoll!: (
+      rows: readonly { readonly seq: number; readonly event: Record<string, unknown> }[],
+    ) => void;
+    const firstPoll = new Promise<void>((resolve) => {
+      resolveFirstPoll = resolve;
+    });
+    const pollResult = new Promise<
+      readonly { readonly seq: number; readonly event: Record<string, unknown> }[]
+    >((resolve) => {
+      resolvePoll = resolve;
+    });
+    const routes = testRoutes({
+      readAiRunEventsAfter: async () => {
+        pollCalls += 1;
+        resolveFirstPoll();
+        return pollResult;
+      },
+    });
+
+    const response = await route(
+      request("GET", `/v1/ai-runs/${fixture.runId}/stream`, {
+        signal: controller.signal,
+      }),
+      routes,
+    );
+    expect(response.status).toBe(200);
+
+    await firstPoll;
+    controller.abort();
+    resolvePoll([{ seq: 1, event: { type: "text_delta", delta: "late" } }]);
+
+    const reader = response.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: true });
+    await delay(30);
+    expect(pollCalls).toBe(1);
   });
 
   it("404s a foreign run stream", async () => {
