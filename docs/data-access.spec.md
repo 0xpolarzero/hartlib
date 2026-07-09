@@ -180,7 +180,7 @@ Client company admins do not see private employee chats.
 
 ## AI Provider Access
 
-The demo can use OpenRouter, cheap models, fixtures, and fake accounts.
+The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`. Fixtures and fake accounts remain acceptable for non-chat demo data.
 
 The MVP uses Mistral.
 

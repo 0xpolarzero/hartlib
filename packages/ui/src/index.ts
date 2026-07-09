@@ -41,9 +41,17 @@ export {
 export {
   ChatBubble,
   VirtualizedChatTranscript,
+  type ChatTranscriptContextBlock,
   type ChatTranscriptCitation,
   type ChatTranscriptMessage,
 } from "./components/chat/virtualized-chat-transcript";
+export {
+  parseCitationTags,
+  type CitationMarkerSegment,
+  type CitationTagSegment,
+  type CitationTextSegment,
+  type ParsedCitationTags,
+} from "./components/chat/citation-tags";
 export { Badge, type BadgeProps } from "./components/ui/badge";
 export { Button, type ButtonProps } from "./components/ui/button";
 export {

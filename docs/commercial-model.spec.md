@@ -202,7 +202,7 @@ Client company AI plans can still be used over already delivered issues.
 
 ## AI Positioning
 
-The demo can use OpenRouter, cheap models, fixtures, and fake accounts.
+The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`. Fixtures and fake accounts remain acceptable for non-chat demo data.
 
 The MVP uses Mistral only.
 

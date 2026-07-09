@@ -74,7 +74,7 @@ The MVP uses a React SPA and a separate backend service.
 Repository layout:
 
 - `apps/web` for the React frontend
-- `apps/demo` for the separate read-only demo frontend
+- `apps/demo` for the separate interactive demo frontend
 - `apps/api` for the backend API and AI streaming endpoints
 - `apps/worker` for background jobs
 - `packages/shared` for shared schemas and types
@@ -103,8 +103,7 @@ Use demo-only code only for:
 - fake accounts
 - account switching
 - fixture issue files and extracted text
-- representative pre-populated chats
-- read-only guardrails
+- local-only demo interaction state
 
 The demo uses a real Postgres database.
 
@@ -122,7 +121,6 @@ The demo seeds:
 - one or more subscriptions
 - published issues
 - delivered client archives
-- representative AI chat messages
 - seeded publisher source metadata
 - representative artifact output when useful
 
@@ -141,12 +139,12 @@ Read-only or guarded areas mean:
 - publisher controls are visible only when useful for understanding the product
 - publisher create, upload, edit, publish, invite, billing, and destructive actions are disabled, hidden, or local-only depending on the scenario
 - client admin controls are visible only when useful for understanding the product
-- chat send is disabled
-- pre-populated chat content is shown through the real chat UI
+- client chat sends through the Brief API and streams active AI runs over SSE
+- memories are visible on the client surface with revision and revert controls
 
-The demo can use OpenRouter and cheap models for seeded or replayed AI examples.
+The demo chat runtime uses the provider and runtime boundary specified in `docs/ai-chat-runtime.spec.md`.
 
-The demo should avoid live AI calls unless the demo scenario explicitly needs them.
+Seeded or replayed non-chat AI examples can still use fixtures or cheap providers when live calls would add cost, compliance, instability, or setup friction.
 
 The demo must not use real publisher content or real client data.
 
@@ -285,19 +283,11 @@ Backend API style:
 
 ## AI Integration
 
-Use Effect AI for model calls where it fits.
+The AI chat runtime is specified in `docs/ai-chat-runtime.spec.md`.
 
-Start from:
+For chat runtime work, Pi makes model calls inside Smithers workflow tasks. The demo provider is z.ai behind the Brief backend. OpenRouter remains a later production provider path, and Mistral remains the EU/French positioning story.
 
-- `effect/unstable/ai`
-- `@effect/ai-openai-compat`
-- `@effect/ai-openrouter`
-
-The MVP uses OpenRouter.
-
-Mistral belongs to the later EU/French positioning story.
-
-If Mistral-specific behavior is needed later, wrap Mistral's API behind our own Effect service.
+Effect AI may still fit future non-chat model calls, but it is not the chat agent runtime.
 
 The backend exposes AI chat streaming endpoints to the frontend.
 

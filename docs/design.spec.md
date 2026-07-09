@@ -20,7 +20,7 @@ The first product is a subscriber portal plus AI archive for their paid publicat
 
 The MVP is in French.
 
-The demo can use OpenRouter, cheap models, fixtures, and fake accounts.
+The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`. Fixtures and fake accounts remain acceptable for non-chat demo data.
 
 The MVP uses platform-hosted AI with Mistral.
 
@@ -79,9 +79,9 @@ Inline editable fields are visually quiet at rest, show a subtle surface and rul
 
 Long editable document fields expand when focused so the edit surface is obvious.
 
-The demo chat is pre-populated with a long representative message history that exercises virtualized chat scrolling.
+The demo client chat is live. It reads chat history from the Brief API, sends messages through the Brief API, streams active AI runs over SSE, renders citations from inline citation tags, and shows the sources read for each assistant answer.
 
-The demo does not send new chat messages.
+The demo client surface includes a compact memories panel where users can inspect saved memories, view revisions, and revert a memory.
 
 The client demo root centers on one chat and a compact table of flux. Flux include both seeded publisher invitation sources and real public sources ingested by the worker, unified as one source model. Each flux row shows the source name, a source-type distinction (invitation vs public), the latest publication date when present, and a subscribed checkbox. The per-publication AI hide/show action has been removed from the client publications list.
 

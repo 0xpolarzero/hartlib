@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { RotateCcw, Send } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   demoDataset,
@@ -56,8 +56,12 @@ import {
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
+  Textarea,
   VirtualizedChatTranscript,
   type BreadcrumbItem,
+  type ChatTranscriptCitation,
+  type ChatTranscriptContextBlock,
+  type ChatTranscriptMessage,
   type ClientFeedTableRow,
   type DraftSubscriber,
   type DraftSubscriberErrors,
@@ -70,11 +74,36 @@ import {
   type SubscriberTableRow,
 } from "@brief/ui";
 
+import {
+  mapApiMessagesToTranscript,
+  type ChatApiResponse,
+  type MemoriesApiResponse,
+  type MemoryResponse,
+  type SendMessageResponse,
+} from "./chat-api";
+import {
+  initialChatStreamState,
+  reduceChatStream,
+  type ChatStreamEvent,
+  type ChatStreamPhase,
+} from "./chat-stream";
 import "./styles.css";
 
-const primaryChat = demoDataset.chats[0];
 const emptyPublicContent: PublicSourcesResponse = { sources: [], publications: [] };
 const publicApiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+const streamEventTypes: readonly ChatStreamEvent["type"][] = [
+  "run_started",
+  "preflight_search",
+  "preflight_peek",
+  "context_window",
+  "answer_started",
+  "answer_retry",
+  "text_delta",
+  "memory_updated",
+  "usage",
+  "done",
+  "error",
+];
 const demoSubscriberProfiles = [
   {
     id: demoDataset.companies.client.id,
@@ -125,6 +154,47 @@ async function fetchPublicContent(): Promise<PublicSourcesResponse> {
     throw new Error(`Failed to fetch public sources: ${response.status}`);
   }
   return normalizePublicContentUrls((await response.json()) as PublicSourcesResponse);
+}
+
+function apiUrl(path: string): URL {
+  return new URL(path, publicApiBaseUrl);
+}
+
+async function fetchDemoChat(): Promise<ChatApiResponse> {
+  const response = await fetch(apiUrl("/v1/chat"));
+  if (!response.ok) {
+    throw new Error(`Failed to fetch chat: ${response.status}`);
+  }
+  return (await response.json()) as ChatApiResponse;
+}
+
+async function postDemoChatMessage(input: {
+  readonly text: string;
+  readonly locale: Locale;
+  readonly market: Market;
+}): Promise<Response> {
+  return fetch(apiUrl("/v1/chat/messages"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+async function fetchDemoMemories(): Promise<MemoriesApiResponse> {
+  const response = await fetch(apiUrl("/v1/memories"));
+  if (!response.ok) {
+    throw new Error(`Failed to fetch memories: ${response.status}`);
+  }
+  return (await response.json()) as MemoriesApiResponse;
+}
+
+async function postRevertMemory(memoryId: string): Promise<void> {
+  const response = await fetch(apiUrl(`/v1/memories/${encodeURIComponent(memoryId)}/revert`), {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to revert memory: ${response.status}`);
+  }
 }
 
 function readInitialPublications() {
@@ -677,8 +747,23 @@ function ClientFeedsList({
   onSelectFeed: (feedId: string) => void;
 }) {
   const intl = useIntl();
+  const locale = useLocale();
   const publishedIssues = publications.filter((issue) => issue.status === "published");
   const manualSources = useMemo(getManualSourceSelection, []);
+  const [chatMessages, setChatMessages] = useState<readonly ChatTranscriptMessage[]>([]);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [chatStatus, setChatStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [draftMessage, setDraftMessage] = useState("");
+  const [sendStatus, setSendStatus] = useState<"idle" | "sending">("idle");
+  const [chatNotice, setChatNotice] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [failedMessage, setFailedMessage] = useState<string | null>(null);
+  const [streamState, setStreamState] = useState(initialChatStreamState);
+  const streamSeqRef = useRef(0);
+  const [memories, setMemories] = useState<readonly MemoryResponse[]>([]);
+  const [memoriesStatus, setMemoriesStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [revertingMemoryId, setRevertingMemoryId] = useState<string | null>(null);
 
   // `feedSubscriptions` stores only the user's *manual overrides*. The default
   // subscription state is derived reactively from the active market so that
@@ -689,6 +774,183 @@ function ClientFeedsList({
     clientFeedSubscriptionsKey,
     {},
   );
+
+  const refreshChat = useCallback(async () => {
+    const chat = await fetchDemoChat();
+    setChatMessages(mapApiMessagesToTranscript(chat.messages));
+    setActiveRunId(chat.activeRunId);
+    setChatStatus("ready");
+    return chat;
+  }, []);
+
+  const refreshMemories = useCallback(async () => {
+    const result = await fetchDemoMemories();
+    setMemories(result.memories);
+    setMemoriesStatus("ready");
+    setMemoryError(null);
+    return result;
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setChatStatus("loading");
+    void fetchDemoChat()
+      .then((chat) => {
+        if (cancelled) return;
+        setChatMessages(mapApiMessagesToTranscript(chat.messages));
+        setActiveRunId(chat.activeRunId);
+        setChatStatus("ready");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setChatStatus("error");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMemoriesStatus("loading");
+    void fetchDemoMemories()
+      .then((result) => {
+        if (cancelled) return;
+        setMemories(result.memories);
+        setMemoriesStatus("ready");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMemoriesStatus("error");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeRunId === null) {
+      streamSeqRef.current = 0;
+      setStreamState(initialChatStreamState);
+      return;
+    }
+
+    let closed = false;
+    let eventSource: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    streamSeqRef.current = 0;
+    setStreamState(initialChatStreamState);
+
+    const closeCurrent = () => {
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      eventSource?.close();
+      eventSource = null;
+    };
+
+    const handleStreamMessage = (message: MessageEvent<string>) => {
+      const seq = Number.parseInt(message.lastEventId, 10);
+      if (!Number.isFinite(seq) || seq <= 0) return;
+
+      const event = JSON.parse(message.data) as ChatStreamEvent;
+      setStreamState((current) => {
+        const next = reduceChatStream(current, { seq, event });
+        streamSeqRef.current = next.seq;
+        return next;
+      });
+
+      if (event.type === "done" || event.type === "error") {
+        closed = true;
+        closeCurrent();
+        void refreshChat().catch(() => setChatStatus("error"));
+        void refreshMemories().catch(() => setMemoriesStatus("error"));
+      }
+    };
+
+    const connect = () => {
+      if (closed) return;
+      const url = apiUrl(`/v1/ai-runs/${encodeURIComponent(activeRunId)}/stream`);
+      if (streamSeqRef.current > 0) {
+        url.searchParams.set("afterSeq", String(streamSeqRef.current));
+      }
+
+      const source = new EventSource(url.toString());
+      eventSource = source;
+      for (const type of streamEventTypes) {
+        source.addEventListener(type, (event) =>
+          handleStreamMessage(event as MessageEvent<string>),
+        );
+      }
+      source.onerror = () => {
+        if (closed) return;
+        source.close();
+        reconnectTimer = setTimeout(connect, 1000);
+      };
+    };
+
+    connect();
+
+    return () => {
+      closed = true;
+      closeCurrent();
+    };
+  }, [activeRunId, refreshChat, refreshMemories]);
+
+  const sendMessage = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (trimmed.length === 0 || sendStatus === "sending" || activeRunId !== null) return;
+
+      setSendStatus("sending");
+      setChatNotice(null);
+      setChatError(null);
+      setFailedMessage(null);
+
+      try {
+        const response = await postDemoChatMessage({ text: trimmed, locale, market });
+        if (response.status === 409) {
+          setChatNotice(intl.formatMessage({ id: "chat.runActive" }));
+          await refreshChat();
+          return;
+        }
+
+        if (!response.ok) {
+          setFailedMessage(trimmed);
+          setChatError(intl.formatMessage({ id: "chat.sendFailed" }));
+          return;
+        }
+
+        const body = (await response.json()) as SendMessageResponse;
+        setDraftMessage("");
+        setActiveRunId(body.runId);
+        await refreshChat();
+      } catch {
+        setFailedMessage(trimmed);
+        setChatError(intl.formatMessage({ id: "chat.sendFailed" }));
+      } finally {
+        setSendStatus("idle");
+      }
+    },
+    [activeRunId, intl, locale, market, refreshChat, sendStatus],
+  );
+
+  async function handleRevertMemory(memoryId: string) {
+    setRevertingMemoryId(memoryId);
+    setMemoryError(null);
+    try {
+      await postRevertMemory(memoryId);
+      await refreshMemories();
+      await refreshChat();
+    } catch {
+      setMemoryError(intl.formatMessage({ id: "chat.memoryRevertFailed" }));
+    } finally {
+      setRevertingMemoryId(null);
+    }
+  }
 
   function isSourceSubscribed(source: BriefSource): boolean {
     const override = feedSubscriptions[source.id];
@@ -718,23 +980,104 @@ function ClientFeedsList({
     }));
   }
 
+  const runActive = activeRunId !== null;
+  const transcriptMessages = useMemo(
+    () => buildTranscriptMessages(chatMessages, activeRunId, streamState.phase, streamState),
+    [activeRunId, chatMessages, streamState],
+  );
+  const showProgress =
+    runActive &&
+    (streamState.phase === "idle" ||
+      streamState.phase === "preflight" ||
+      streamState.phase === "retrying");
+
   return (
     <div className="mx-auto max-w-5xl space-y-7">
       <section className="animate-in stagger-1">
-        <VirtualizedChatTranscript messages={primaryChat?.messages ?? []} />
+        <VirtualizedChatTranscript messages={transcriptMessages} />
 
-        <div className="mt-4 flex min-h-10 items-center gap-2 rounded-sm border border-dashed border-rule bg-surface px-3 py-2 text-muted">
-          <span className="min-w-0 flex-1 truncate text-sm">
-            <FormattedMessage id="chat.demoReadOnly" />
-          </span>
-          <Button disabled>
+        {chatStatus === "loading" ? (
+          <p className="mt-2 font-mono text-[11px] text-faint">
+            <FormattedMessage id="chat.loading" />
+          </p>
+        ) : null}
+        {chatStatus === "error" ? (
+          <p className="mt-2 font-mono text-[11px] text-accent">
+            <FormattedMessage id="chat.unavailable" />
+          </p>
+        ) : null}
+        {showProgress ? (
+          <p className="mt-2 font-mono text-[11px] text-muted">
+            <FormattedMessage
+              id="chat.searchingSources"
+              values={{
+                searches: streamState.searchCount,
+                results: streamState.latestResultCount,
+              }}
+            />
+          </p>
+        ) : null}
+        {streamState.phase === "error" && streamState.error ? (
+          <p className="mt-2 font-mono text-[11px] text-accent">
+            <FormattedMessage
+              id={streamState.error.retryable ? "chat.streamRetryable" : "chat.streamFailed"}
+              values={{ code: streamState.error.code }}
+            />
+          </p>
+        ) : null}
+
+        <form
+          className="mt-4 flex items-end gap-2 border-t border-rule pt-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void sendMessage(draftMessage);
+          }}
+        >
+          <Textarea
+            value={draftMessage}
+            onChange={(event) => setDraftMessage(event.currentTarget.value)}
+            placeholder={intl.formatMessage({ id: "chat.placeholder" })}
+            disabled={runActive || sendStatus === "sending"}
+            rows={2}
+            className="min-h-10 resize-none bg-paper"
+          />
+          <Button
+            type="submit"
+            disabled={runActive || sendStatus === "sending" || draftMessage.trim().length === 0}
+          >
             <Send className="size-4" aria-hidden="true" />
             <FormattedMessage id="action.send" />
           </Button>
-        </div>
+        </form>
+        {chatNotice ? <p className="mt-2 text-sm text-muted">{chatNotice}</p> : null}
+        {chatError ? (
+          <div className="mt-2 flex items-center gap-2 text-sm text-accent">
+            <span>{chatError}</span>
+            {failedMessage ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => void sendMessage(failedMessage)}
+              >
+                <FormattedMessage id="action.retry" />
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
-      <section className="animate-in stagger-2">
+      <section className="animate-in stagger-2 border-y border-rule py-3">
+        <MemoriesPanel
+          memories={memories}
+          status={memoriesStatus}
+          error={memoryError}
+          revertingMemoryId={revertingMemoryId}
+          onRevert={handleRevertMemory}
+        />
+      </section>
+
+      <section className="animate-in stagger-3">
         <SectionHeader title={intl.formatMessage({ id: "section.feeds" })} count={sources.length} />
         {publicContentStatus === "loading" ? (
           <p className="mt-2 text-sm text-muted">
@@ -756,6 +1099,193 @@ function ClientFeedsList({
       </section>
     </div>
   );
+}
+
+function isStreamingPhase(phase: ChatStreamPhase): boolean {
+  return phase === "answering" || phase === "retrying";
+}
+
+function citationFromContextBlock(block: ChatTranscriptContextBlock): ChatTranscriptCitation {
+  return {
+    id: block.blockId,
+    label: block.label,
+    url: null,
+    publishedAt: null,
+    title: block.label,
+    sourceDisplayName: null,
+  };
+}
+
+function buildTranscriptMessages(
+  messages: readonly ChatTranscriptMessage[],
+  activeRunId: string | null,
+  phase: ChatStreamPhase,
+  stream: {
+    readonly assistantText: string;
+    readonly contextBlocks: readonly ChatTranscriptContextBlock[];
+  },
+): readonly ChatTranscriptMessage[] {
+  if (activeRunId === null || !isStreamingPhase(phase)) return messages;
+
+  return [
+    ...messages,
+    {
+      id: `streaming:${activeRunId}`,
+      author: "assistant",
+      content: stream.assistantText,
+      citations: stream.contextBlocks.map(citationFromContextBlock),
+      contextBlocks: stream.contextBlocks,
+      streaming: true,
+    },
+  ];
+}
+
+function MemoriesPanel({
+  memories,
+  status,
+  error,
+  revertingMemoryId,
+  onRevert,
+}: {
+  memories: readonly MemoryResponse[];
+  status: "loading" | "ready" | "error";
+  error: string | null;
+  revertingMemoryId: string | null;
+  onRevert: (memoryId: string) => void;
+}) {
+  const intl = useIntl();
+  const [expandedMemoryId, setExpandedMemoryId] = useState<string | null>(null);
+
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="font-mono text-[11px] font-medium uppercase tracking-wider text-faint">
+          <FormattedMessage id="section.memories" />
+        </h2>
+        <span className="font-mono text-[11px] text-faint">
+          <FormattedMessage id="chat.memoriesCount" values={{ count: memories.length }} />
+        </span>
+      </div>
+
+      {status === "loading" ? (
+        <p className="mt-2 text-sm text-muted">
+          <FormattedMessage id="state.loadingMemories" />
+        </p>
+      ) : null}
+      {status === "error" ? (
+        <p className="mt-2 text-sm text-accent">
+          <FormattedMessage id="state.memoriesUnavailable" />
+        </p>
+      ) : null}
+      {error ? <p className="mt-2 text-sm text-accent">{error}</p> : null}
+      {status === "ready" && memories.length === 0 ? (
+        <p className="mt-2 text-sm text-muted">
+          <FormattedMessage id="state.noMemories" />
+        </p>
+      ) : null}
+
+      {memories.length > 0 ? (
+        <ul className="mt-2 divide-y divide-rule">
+          {memories.map((memory) => {
+            const expanded = expandedMemoryId === memory.id;
+            return (
+              <li key={memory.id} className="py-2">
+                <div className="grid gap-2 sm:grid-cols-[7rem_1fr_auto] sm:items-start">
+                  <div className="font-mono text-[11px] uppercase tracking-wider text-faint">
+                    {intl.formatMessage(
+                      { id: memoryKindMessageId(memory.kind) },
+                      { kind: memory.kind },
+                    )}
+                    {memory.deleted ? (
+                      <span className="mt-1 block text-accent">
+                        <FormattedMessage id="memory.deleted" />
+                      </span>
+                    ) : null}
+                  </div>
+                  <div>
+                    <p className="font-serif text-sm leading-5 text-ink">{memory.content}</p>
+                    <p className="mt-1 font-mono text-[11px] text-faint">
+                      {memory.updatedAt.slice(0, 10)}
+                    </p>
+                    {memory.revisions.length > 0 ? (
+                      <button
+                        type="button"
+                        className="mt-1 font-mono text-[11px] text-muted underline decoration-rule underline-offset-2 hover:text-accent"
+                        onClick={() => setExpandedMemoryId(expanded ? null : memory.id)}
+                      >
+                        <FormattedMessage
+                          id={expanded ? "action.hideRevisions" : "action.viewRevisions"}
+                        />
+                      </button>
+                    ) : null}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={revertingMemoryId === memory.id}
+                    onClick={() => onRevert(memory.id)}
+                  >
+                    <FormattedMessage id="action.revertMemory" />
+                  </Button>
+                </div>
+                {expanded ? (
+                  <ul className="mt-2 space-y-1 border-l border-rule pl-3">
+                    {memory.revisions.map((revision) => (
+                      <li key={revision.id} className="font-mono text-[11px] text-muted">
+                        <FormattedMessage
+                          id="memory.revisionLine"
+                          values={{
+                            action: intl.formatMessage(
+                              { id: memoryRevisionActionMessageId(revision.action) },
+                              { action: revision.action },
+                            ),
+                            date: revision.createdAt.slice(0, 10),
+                          }}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function memoryKindMessageId(kind: string): string {
+  switch (kind) {
+    case "profile":
+      return "memory.kind.profile";
+    case "preference":
+      return "memory.kind.preference";
+    case "instruction":
+      return "memory.kind.instruction";
+    case "fact":
+      return "memory.kind.fact";
+    case "episode":
+      return "memory.kind.episode";
+    default:
+      return "memory.kind.unknown";
+  }
+}
+
+function memoryRevisionActionMessageId(action: string): string {
+  switch (action) {
+    case "created":
+      return "memory.revisionAction.created";
+    case "updated":
+      return "memory.revisionAction.updated";
+    case "deleted":
+      return "memory.revisionAction.deleted";
+    case "reverted":
+      return "memory.revisionAction.reverted";
+    default:
+      return "memory.revisionAction.unknown";
+  }
 }
 
 function ClientFeedDetail({
