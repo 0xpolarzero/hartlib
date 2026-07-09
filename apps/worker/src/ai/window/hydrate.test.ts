@@ -228,11 +228,11 @@ const nextRun = (
 
 const ctx = (
   chatId: string,
-  runId: string,
+  aiRunId: string,
   overrides: Partial<HydrateRunContext> = {},
 ): HydrateRunContext => ({
   chatId,
-  runId,
+  aiRunId,
   origin: "initial",
   memories: [],
   access: allPublicAccess,

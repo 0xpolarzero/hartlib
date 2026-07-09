@@ -37,7 +37,7 @@ export interface ContextBlockRow {
 
 export interface HydrateRunContext {
   readonly chatId: string;
-  readonly runId: string;
+  readonly aiRunId: string;
   readonly origin: "initial" | "retry";
   readonly memories: readonly MemoryItem[];
   readonly access: SourceAccess;
@@ -139,7 +139,7 @@ export const loadActiveContextBlocks = loadActiveContextBlocksEffect;
 
 export const markBlocksCited = (
   chatId: string,
-  runId: string,
+  aiRunId: string,
   blockIds: readonly string[],
 ): Effect.Effect<void, SqlError, PgClient.PgClient> =>
   Effect.gen(function* () {
@@ -148,7 +148,7 @@ export const markBlocksCited = (
     for (const blockId of blockIds) {
       yield* sql`
         update chat_context_blocks
-        set last_cited_run_id = ${runId}
+        set last_cited_run_id = ${aiRunId}
         where chat_id = ${chatId}
           and block_id = ${blockId}
       `;
@@ -219,7 +219,7 @@ const fetchDocumentBody = (
   });
 
 const insertObservation = (
-  runId: string,
+  aiRunId: string,
   chatId: string,
   kind: string,
   payload: Record<string, unknown>,
@@ -229,7 +229,7 @@ const insertObservation = (
 
     yield* sql`
       insert into ai_observations (run_id, chat_id, kind, payload)
-      values (${runId}, ${chatId}, ${kind}, ${sql.json(payload)})
+      values (${aiRunId}, ${chatId}, ${kind}, ${sql.json(payload)})
     `;
   });
 
@@ -290,7 +290,7 @@ export const hydrateWindow = (
             const retiredRow = retiredRows[0];
             if (retiredRow !== undefined) {
               retiredMemoryBlockId = retiredRow.blockId;
-              yield* insertObservation(context.runId, context.chatId, "context_block_evicted", {
+              yield* insertObservation(context.aiRunId, context.chatId, "context_block_evicted", {
                 blockId: retiredRow.blockId,
                 reason: "memory_superseded",
               });
@@ -324,7 +324,7 @@ export const hydrateWindow = (
               ${null},
               ${null},
               ${sql.json(provenance)},
-              ${context.runId}
+              ${context.aiRunId}
             where not exists (
               select 1
               from chat_context_blocks existing
@@ -340,7 +340,7 @@ export const hydrateWindow = (
 
           if (insertedRows[0] !== undefined) {
             addedBlockIds.push(insertedRows[0].blockId);
-            yield* insertObservation(context.runId, context.chatId, "context_block_added", {
+            yield* insertObservation(context.aiRunId, context.chatId, "context_block_added", {
               blockId: block.blockId,
               tokenEstimate: block.tokenEstimate,
               origin: context.origin,
@@ -390,7 +390,7 @@ export const hydrateWindow = (
               ${block.charStart},
               ${block.charEnd},
               ${sql.json(provenance)},
-              ${context.runId}
+              ${context.aiRunId}
             )
             on conflict do nothing
             returning block_id as "blockId"
@@ -398,7 +398,7 @@ export const hydrateWindow = (
 
           if (insertedRows[0] !== undefined) {
             addedBlockIds.push(insertedRows[0].blockId);
-            yield* insertObservation(context.runId, context.chatId, "context_block_added", {
+            yield* insertObservation(context.aiRunId, context.chatId, "context_block_added", {
               blockId: block.blockId,
               documentId: block.documentId,
               charStart: block.charStart,
@@ -423,7 +423,7 @@ export const hydrateWindow = (
           const evictedRow = evictedRows[0];
           if (evictedRow !== undefined) {
             evictedBlockIds.push(evictedRow.blockId);
-            yield* insertObservation(context.runId, context.chatId, "context_block_evicted", {
+            yield* insertObservation(context.aiRunId, context.chatId, "context_block_evicted", {
               blockId: evictedRow.blockId,
               reason: eviction.reason,
             });
@@ -432,13 +432,13 @@ export const hydrateWindow = (
 
         yield* sql`
           delete from ai_observations
-          where run_id = ${context.runId}
+          where run_id = ${context.aiRunId}
             and kind = 'context_block_dropped'
             and payload->>'origin' = ${context.origin}
         `;
 
         for (const dropped of plan.dropped) {
-          yield* insertObservation(context.runId, context.chatId, "context_block_dropped", {
+          yield* insertObservation(context.aiRunId, context.chatId, "context_block_dropped", {
             documentId: dropped.documentId,
             charStart: dropped.charStart,
             charEnd: dropped.charEnd,

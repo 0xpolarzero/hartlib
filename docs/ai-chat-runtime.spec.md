@@ -319,6 +319,7 @@ Storage comes from `createSmithersPostgres` (async; the worker awaits it at star
 Workflow input is the `ai_runs` id. The Smithers run id is derived from it, so job retries resume instead of restarting.
 
 Tasks, all compute tasks with Zod-validated outputs: `load-turn`, `preflight`, `hydrate`, `answer`, `memory`, `finalize`.
+Smithers dependency aliases must resolve to these canonical task ids through `needs` whenever the callback argument name differs from the task id, for example `load` -> `load-turn` and `preflight2` -> `preflight-2`.
 
 Task settings:
 
@@ -424,7 +425,7 @@ The retrieval migration (search vector, indexes, mapping function) ships with th
 
 Smithers output tables do not auto-migrate on Postgres when a task output schema evolves. The deploy path ships the matching `alter table` in Brief migrations, or drops the fully-pruned output tables so boot recreates them from the current schemas.
 
-The `ai_chat_run` job kind is added to the existing `JobKind` union. A `purge_ai_runtime` sweep job prunes finished runs' rows from all Smithers table sets and stale `ai_run_events`.
+The `ai_chat_run` job kind is added to the existing `JobKind` union. Its payload is `{ aiRunId: string }`, where `aiRunId` is the Brief `ai_runs.id`; Smithers' own run id is derived by the worker. A `purge_ai_runtime` sweep job prunes finished runs' rows from all Smithers table sets and stale `ai_run_events`.
 
 ## Observability
 

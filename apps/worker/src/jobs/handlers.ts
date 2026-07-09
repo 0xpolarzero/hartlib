@@ -3,13 +3,29 @@ import {
   publicSourceDefinitions,
   type PublicSourceId,
 } from "@brief/source-ingestion";
-import { Effect } from "effect";
+import { PgClient } from "@effect/sql-pg";
+import { Config, Effect } from "effect";
+import { makeAiClient, makeEffectRetrievalExecutor } from "../ai/llm";
+import {
+  createSmithersStorage,
+  runSmithersWorkflow,
+  smithersRunExists,
+} from "../ai/smithers-interop";
+import { aiChatSchemas, buildAiChatWorkflow } from "../ai/workflow/ai-chat";
+import { appendAiRunEvent, runAiWorkflowDb } from "../ai/workflow/events";
+import {
+  deleteSmithersRowsForRun,
+  pruneFinishedAiRunEvents,
+  sweepAiChatSmithersRows,
+} from "../ai/workflow/smithers-cleanup";
+import { loadWorkerConfig } from "../config";
 import { runPublicSourceIngestion } from "../source-ingestion/orchestrator";
 import type { PublicSourceIngestionRepository } from "../source-ingestion/repository";
 import type { PublicSourceIngestionOptions } from "../source-ingestion/types";
 import type { JobRecord, JobResult } from "./types";
 
 const publicSourceIds = new Set<string>(publicSourceDefinitions.map((source) => source.id));
+const defaultDatabaseUrl = "postgres://brief:brief@localhost:5432/brief";
 
 type PublicSourceIngestionJobPayload = {
   readonly sourceId: PublicSourceId;
@@ -92,12 +108,258 @@ const handlePublicSourceIngestionJob = (
     } satisfies JobResult;
   });
 
+type AiChatRunJobPayload = {
+  readonly aiRunId: string;
+};
+
+type PurgeAiRuntimeJobPayload = {
+  readonly gracePeriodMs?: number;
+};
+
+interface TerminalRunRow {
+  readonly terminal: boolean;
+  readonly smithersRunId: string | null;
+}
+
+const parseAiChatRunPayload = (payload: unknown): AiChatRunJobPayload => {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("ai_chat_run payload must be an object");
+  }
+
+  const candidate = payload as Record<string, unknown>;
+  if (typeof candidate.aiRunId !== "string" || candidate.aiRunId.length === 0) {
+    throw new Error("ai_chat_run payload has an invalid aiRunId");
+  }
+
+  return { aiRunId: candidate.aiRunId };
+};
+
+const parsePurgeAiRuntimePayload = (payload: unknown): PurgeAiRuntimeJobPayload => {
+  if (payload === undefined || payload === null) {
+    return {};
+  }
+
+  if (typeof payload !== "object") {
+    throw new Error("purge_ai_runtime payload must be an object");
+  }
+
+  const candidate = payload as Record<string, unknown>;
+  if (
+    "gracePeriodMs" in candidate &&
+    (typeof candidate.gracePeriodMs !== "number" ||
+      !Number.isFinite(candidate.gracePeriodMs) ||
+      candidate.gracePeriodMs < 0)
+  ) {
+    throw new Error("purge_ai_runtime payload has an invalid gracePeriodMs");
+  }
+
+  return typeof candidate.gracePeriodMs === "number"
+    ? { gracePeriodMs: candidate.gracePeriodMs }
+    : {};
+};
+
+export const deriveAiChatSmithersRunId = (aiRunId: string): string => `ai-chat:${aiRunId}`;
+
+const isResumeMetadataMismatch = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { readonly code?: unknown }).code)
+      : "";
+
+  return code === "RESUME_METADATA_MISMATCH" || message.includes("RESUME_METADATA_MISMATCH");
+};
+
+const loadRunTerminalState = (connectionString: string, aiRunId: string) =>
+  runAiWorkflowDb(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<TerminalRunRow>`
+        select
+          (finished_at is not null or failed_at is not null) as terminal,
+          smithers_run_id as "smithersRunId"
+        from ai_runs
+        where id = ${aiRunId}
+      `;
+      const row = rows[0];
+
+      if (row === undefined) {
+        throw new Error(`ai run not found: ${aiRunId}`);
+      }
+
+      return row;
+    }),
+  );
+
+const setRunSmithersRunId = (connectionString: string, aiRunId: string, smithersRunId: string) =>
+  runAiWorkflowDb(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      yield* sql`
+        update ai_runs
+        set smithers_run_id = coalesce(smithers_run_id, ${smithersRunId})
+        where id = ${aiRunId}
+      `;
+    }),
+  );
+
+const markRunFailedForResumeMismatch = (connectionString: string, aiRunId: string): Promise<void> =>
+  runAiWorkflowDb(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const code = "resume_metadata_mismatch";
+
+      yield* sql`
+        update ai_runs
+        set failed_at = coalesce(failed_at, now()),
+            error = ${code}
+        where id = ${aiRunId}
+          and finished_at is null
+      `;
+      yield* appendAiRunEvent(aiRunId, { type: "error", code });
+    }),
+  );
+
+const handleAiChatRunJob = (job: JobRecord): Effect.Effect<JobResult, unknown> =>
+  Effect.gen(function* () {
+    const payload = yield* Effect.try({
+      try: () => parseAiChatRunPayload(job.payload),
+      catch: (error) => error,
+    });
+    const config = yield* loadWorkerConfig;
+    const connectionString = yield* Config.string("DATABASE_URL").pipe(
+      Config.withDefault(defaultDatabaseUrl),
+    );
+    const smithersRunId = deriveAiChatSmithersRunId(payload.aiRunId);
+    const terminalState = yield* Effect.tryPromise(() =>
+      loadRunTerminalState(connectionString, payload.aiRunId),
+    );
+
+    if (terminalState.terminal) {
+      if (terminalState.smithersRunId !== null) {
+        const smithersRunIdToDelete = terminalState.smithersRunId;
+        yield* Effect.tryPromise(() =>
+          runAiWorkflowDb(connectionString, deleteSmithersRowsForRun(smithersRunIdToDelete)),
+        );
+      }
+
+      return {
+        status: "completed",
+        message: "ai chat run already terminal",
+      } satisfies JobResult;
+    }
+
+    yield* Effect.tryPromise(() =>
+      setRunSmithersRunId(connectionString, payload.aiRunId, smithersRunId),
+    );
+
+    const runRetrievalEffect = <A, E, R>(effect: Effect.Effect<A, E, R>): Promise<A> =>
+      runAiWorkflowDb(
+        connectionString,
+        effect as unknown as Effect.Effect<A, E, PgClient.PgClient>,
+      );
+
+    const aiClient = makeAiClient(config, makeEffectRetrievalExecutor(runRetrievalEffect));
+
+    const result = yield* Effect.tryPromise({
+      try: async () => {
+        const api = await createSmithersStorage(aiChatSchemas, { connectionString });
+
+        try {
+          const workflow = buildAiChatWorkflow(api, {
+            connectionString,
+            config,
+            aiClient,
+          });
+          const resume = await smithersRunExists(api, smithersRunId);
+
+          return await runSmithersWorkflow(workflow, {
+            runId: smithersRunId,
+            input: { aiRunId: payload.aiRunId },
+            logDir: null,
+            resume,
+          });
+        } finally {
+          await api.close();
+        }
+      },
+      catch: (error) => error,
+    }).pipe(
+      Effect.catch((error) =>
+        isResumeMetadataMismatch(error)
+          ? Effect.tryPromise(() =>
+              markRunFailedForResumeMismatch(connectionString, payload.aiRunId),
+            ).pipe(
+              Effect.as({
+                status: "finished",
+                runId: smithersRunId,
+              } as const),
+            )
+          : Effect.fail(error),
+      ),
+    );
+
+    if (result.status !== "finished") {
+      return yield* Effect.fail(
+        new Error(`ai-chat Smithers run ${smithersRunId} ended with status ${result.status}`),
+      );
+    }
+
+    yield* Effect.tryPromise(() =>
+      runAiWorkflowDb(connectionString, deleteSmithersRowsForRun(smithersRunId)),
+    );
+
+    return {
+      status: "completed",
+      message: `ai chat run completed: ${payload.aiRunId}`,
+    } satisfies JobResult;
+  });
+
+const handlePurgeAiRuntimeJob = (job: JobRecord): Effect.Effect<JobResult, unknown> =>
+  Effect.gen(function* () {
+    const payload = yield* Effect.try({
+      try: () => parsePurgeAiRuntimePayload(job.payload),
+      catch: (error) => error,
+    });
+    const connectionString = yield* Config.string("DATABASE_URL").pipe(
+      Config.withDefault(defaultDatabaseUrl),
+    );
+    const gracePeriodMs = payload.gracePeriodMs ?? 60 * 60 * 1000;
+    const result = yield* Effect.tryPromise(() =>
+      runAiWorkflowDb(
+        connectionString,
+        Effect.gen(function* () {
+          const sweptRuns = yield* sweepAiChatSmithersRows();
+          const prunedEvents = yield* pruneFinishedAiRunEvents(gracePeriodMs);
+
+          return { sweptRuns, prunedEvents };
+        }),
+      ),
+    );
+
+    return {
+      status: "completed",
+      message: `purged ${result.sweptRuns} Smithers runs and ${result.prunedEvents} AI run events`,
+    } satisfies JobResult;
+  });
+
 export const handleJob = (
   job: JobRecord,
 ): Effect.Effect<JobResult, unknown, PublicSourceIngestionRepository> =>
   Effect.gen(function* () {
     if (job.kind === "public_source_ingestion") {
       return yield* handlePublicSourceIngestionJob(job);
+    }
+
+    if (job.kind === "ai_chat_run") {
+      return yield* handleAiChatRunJob(job);
+    }
+
+    if (job.kind === "purge_ai_runtime") {
+      return yield* handlePurgeAiRuntimeJob(job);
     }
 
     yield* Effect.logInfo("handling job placeholder").pipe(
