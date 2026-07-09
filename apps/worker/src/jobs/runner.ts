@@ -1,5 +1,5 @@
 import { Duration, Effect, Schedule } from "effect";
-import { handleJob } from "./handlers";
+import { handleJob, type HandleJobOptions } from "./handlers";
 import { JobRepository, type JobRepositoryShape } from "./repository";
 import type { JobRecord } from "./types";
 
@@ -11,42 +11,51 @@ const runJobHeartbeat = (jobs: JobRepositoryShape, job: JobRecord) =>
     }
   });
 
-const handleJobWithHeartbeat = (jobs: JobRepositoryShape, job: JobRecord) =>
-  Effect.raceFirst(handleJob(job), runJobHeartbeat(jobs, job));
+const handleJobWithHeartbeat = (
+  jobs: JobRepositoryShape,
+  job: JobRecord,
+  options?: HandleJobOptions,
+) => Effect.raceFirst(handleJob(job, options), runJobHeartbeat(jobs, job));
 
-export const runWorkerTick = Effect.gen(function* () {
-  const jobs = yield* JobRepository;
-  const job = yield* jobs.claimNext;
-  if (!job) {
-    yield* Effect.logDebug("no job available");
-    return;
-  }
+export const makeWorkerTick = (options?: HandleJobOptions) =>
+  Effect.gen(function* () {
+    const jobs = yield* JobRepository;
+    const job = yield* jobs.claimNext;
+    if (!job) {
+      yield* Effect.logDebug("no job available");
+      return;
+    }
 
-  const result = yield* handleJobWithHeartbeat(jobs, job).pipe(
+    const result = yield* handleJobWithHeartbeat(jobs, job, options).pipe(
+      Effect.catch((error) =>
+        jobs.markFailed(job, error).pipe(
+          Effect.as({
+            status: "failed",
+            message: String(error),
+          } as const),
+        ),
+      ),
+    );
+
+    if (result.status === "completed") {
+      yield* jobs.markCompleted(job);
+    }
+  });
+
+export const runWorkerTick = makeWorkerTick();
+
+export const makeWorkerSafeTick = (options?: HandleJobOptions) =>
+  makeWorkerTick(options).pipe(
     Effect.catch((error) =>
-      jobs.markFailed(job, error).pipe(
-        Effect.as({
-          status: "failed",
-          message: String(error),
-        } as const),
+      Effect.logError("worker job tick failed").pipe(
+        Effect.annotateLogs({
+          error: error instanceof Error ? error.message : String(error),
+        }),
       ),
     ),
   );
 
-  if (result.status === "completed") {
-    yield* jobs.markCompleted(job);
-  }
-});
-
-export const runWorkerSafeTick = runWorkerTick.pipe(
-  Effect.catch((error) =>
-    Effect.logError("worker job tick failed").pipe(
-      Effect.annotateLogs({
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    ),
-  ),
-);
+export const runWorkerSafeTick = makeWorkerSafeTick();
 
 export const runWorker = (pollIntervalMs: number) =>
   Effect.gen(function* () {

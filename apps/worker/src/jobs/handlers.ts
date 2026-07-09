@@ -113,6 +113,10 @@ type AiChatRunJobPayload = {
   readonly aiRunId: string;
 };
 
+export interface HandleJobOptions {
+  readonly signal?: AbortSignal | undefined;
+}
+
 type PurgeAiRuntimeJobPayload = {
   readonly gracePeriodMs?: number;
 };
@@ -270,7 +274,10 @@ const markRunFailedForSmithersTerminalStatus = (
     }),
   );
 
-const handleAiChatRunJob = (job: JobRecord): Effect.Effect<JobResult, unknown> =>
+const handleAiChatRunJob = (
+  job: JobRecord,
+  options?: HandleJobOptions,
+): Effect.Effect<JobResult, unknown> =>
   Effect.gen(function* () {
     const payload = yield* Effect.try({
       try: () => parseAiChatRunPayload(job.payload),
@@ -328,6 +335,7 @@ const handleAiChatRunJob = (job: JobRecord): Effect.Effect<JobResult, unknown> =
             input: { aiRunId: payload.aiRunId },
             logDir: null,
             resume,
+            ...(options?.signal === undefined ? {} : { signal: options.signal }),
           });
         } finally {
           await api.close();
@@ -345,12 +353,23 @@ const handleAiChatRunJob = (job: JobRecord): Effect.Effect<JobResult, unknown> =
                 runId: smithersRunId,
               } as const),
             )
-          : Effect.fail(error),
+          : options?.signal?.aborted === true
+            ? Effect.tryPromise(() =>
+                runAiWorkflowDb(connectionString, deleteSmithersRowsForRun(smithersRunId)),
+              ).pipe(Effect.flatMap(() => Effect.fail(error)))
+            : Effect.fail(error),
       ),
     );
 
     const terminalFailureStatus =
       result.status === "failed" ? "failed" : result.status === "cancelled" ? "cancelled" : null;
+
+    if (result.status === "cancelled" && options?.signal?.aborted === true) {
+      yield* Effect.tryPromise(() =>
+        runAiWorkflowDb(connectionString, deleteSmithersRowsForRun(smithersRunId)),
+      );
+      return yield* Effect.fail(new Error(`ai-chat Smithers run aborted: ${smithersRunId}`));
+    }
 
     if (terminalFailureStatus !== null) {
       yield* Effect.tryPromise(() =>
@@ -417,6 +436,7 @@ const handlePurgeAiRuntimeJob = (job: JobRecord): Effect.Effect<JobResult, unkno
 
 export const handleJob = (
   job: JobRecord,
+  options?: HandleJobOptions,
 ): Effect.Effect<JobResult, unknown, PublicSourceIngestionRepository> =>
   Effect.gen(function* () {
     if (job.kind === "public_source_ingestion") {
@@ -424,7 +444,7 @@ export const handleJob = (
     }
 
     if (job.kind === "ai_chat_run") {
-      return yield* handleAiChatRunJob(job);
+      return yield* handleAiChatRunJob(job, options);
     }
 
     if (job.kind === "purge_ai_runtime") {

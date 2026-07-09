@@ -22,7 +22,7 @@ export const makeAiClient = (
   fakeScenario?: FakeAiClientScenario,
 ): AiClient => {
   if (config.aiFake) {
-    return new FakeAiClient(fakeScenario);
+    return new FakeAiClient(fakeScenario, retrieval);
   }
 
   if (retrieval === undefined) {
