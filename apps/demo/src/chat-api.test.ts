@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { mapApiMessagesToTranscript, type ChatApiMessage } from "./chat-api";
 
+const labels = {
+  memoryBlockLabel: "Localized memories",
+  memoryCitation: "Localized memory",
+};
+
 describe("mapApiMessagesToTranscript", () => {
   it("maps API payload messages to transcript messages", () => {
     const messages: readonly ChatApiMessage[] = [
@@ -19,6 +24,7 @@ describe("mapApiMessagesToTranscript", () => {
         citations: [
           {
             blockId: "b1",
+            kind: "document",
             label: "Journal officiel",
             sourceDisplayName: "Journal officiel",
             title: "Décret",
@@ -37,7 +43,7 @@ describe("mapApiMessagesToTranscript", () => {
       },
     ];
 
-    expect(mapApiMessagesToTranscript(messages)).toEqual([
+    expect(mapApiMessagesToTranscript(messages, labels)).toEqual([
       {
         id: "m1",
         author: "user",
@@ -81,9 +87,10 @@ describe("mapApiMessagesToTranscript", () => {
         citations: [
           {
             blockId: "b2",
-            label: "saved-memory",
+            kind: "memory",
+            label: null,
             sourceDisplayName: null,
-            title: "Saved memory",
+            title: null,
             canonicalUrl: null,
             publishedAt: null,
           },
@@ -92,20 +99,28 @@ describe("mapApiMessagesToTranscript", () => {
           {
             blockId: "b2",
             kind: "memory",
-            label: "saved user memories",
+            label: null,
             tokenEstimate: 24,
           },
         ],
       },
     ];
 
-    expect(mapApiMessagesToTranscript(messages)[0]?.citations?.[0]).toEqual({
+    const transcript = mapApiMessagesToTranscript(messages, labels);
+
+    expect(transcript[0]?.citations?.[0]).toEqual({
       id: "b2",
-      label: "saved-memory",
+      label: "Localized memory",
       url: null,
       publishedAt: null,
-      title: "Saved memory",
+      title: "Localized memory",
       sourceDisplayName: null,
+    });
+    expect(transcript[0]?.contextBlocks?.[0]).toEqual({
+      blockId: "b2",
+      kind: "memory",
+      label: "Localized memories",
+      tokenEstimate: 24,
     });
   });
 });

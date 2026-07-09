@@ -227,7 +227,7 @@ Provenance lives in the block row, not in the model-visible schema: document id,
 
 The `user_memory` block is a single `memory` block containing the injected memories. It is versioned, not mutated: when memories change between turns, code retires the current memory block and appends a new one with a fresh id. Retired versions stay resolvable for old citations. The active memory block renders in the memory slot of the window regardless of its id.
 
-A `memory` citation resolves to a saved-memory label linking to the memories panel, not to an external source.
+A `memory` citation resolves to a localized saved-memory label linking to the memories panel, not to an external source.
 
 ## Preflight Contract
 
@@ -354,7 +354,7 @@ Event vocabulary:
 - `run_started`
 - `preflight_search`: query summary and result count
 - `preflight_peek`: document id
-- `context_window`: active block ids, labels, kinds, token estimates
+- `context_window`: active block ids, nullable labels, kinds, token estimates
 - `answer_started`: attempt number; clients reset the in-progress assistant text on it
 - `answer_retry`: insufficiency gap description
 - `text_delta`: streamed answer text with tags inline
@@ -363,7 +363,7 @@ Event vocabulary:
 - `done`: assistant message id
 - `error`: terminal error code, plus `retryable: true` when the user should resend the turn
 
-The stream ends after `done` or `error`. The UI renders citation tags from `context_window` data during streaming and re-fetches the chat for resolved citations after `done`.
+The stream ends after `done` or `error`. During streaming, `context_window` data resolves inline citation markers and powers the sources-read affordance; the visible references list includes only block ids that appear in parsed `[[cite:...]]` tags. After `done`, the UI re-fetches the chat for resolved citations.
 
 `ai_run_events` is transient and restricted content. A sweep prunes events for finished runs after a grace period.
 
@@ -382,8 +382,8 @@ The public browser API is:
 An assistant message in `GET /v1/chat` carries:
 
 - `content` with citation tags inline; the client replaces tags with citation markers at render time
-- `citations`: block id, label, source display name, title, canonical URL, published date; memory citations carry the saved-memory label instead of a URL
-- `contextBlocks`: block id, kind, label, token estimate — the sources that entered the model context for that message, from `context_block_added` observations; this powers the sources-read view in `docs/design.spec.md`
+- `citations`: block id, kind, label, source display name, title, canonical URL, published date; memory citations carry `kind: "memory"`, `label: null`, and no URL so the client can localize the saved-memory label
+- `contextBlocks`: block id, kind, label, token estimate — the sources that entered the model context for that message, from `context_block_added` observations; memory context blocks carry `label: null` so the client can localize the sources-read label
 
 The demo does not expose public chat ids, a stop or cancel endpoint, or a source picker.
 

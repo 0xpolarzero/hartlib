@@ -460,7 +460,8 @@ describe.skipIf(!isBun || !databaseUrl)("chat runtime API routes", () => {
         readonly author: string;
         readonly citations?: readonly {
           readonly blockId: string;
-          readonly label: string;
+          readonly kind: string;
+          readonly label: string | null;
           readonly sourceDisplayName: string | null;
           readonly title: string | null;
           readonly canonicalUrl: string | null;
@@ -478,6 +479,7 @@ describe.skipIf(!isBun || !databaseUrl)("chat runtime API routes", () => {
     expect(assistant?.citations).toEqual([
       {
         blockId: "b1",
+        kind: "document",
         label: "Source One",
         sourceDisplayName: "Source One",
         title: "Document One",

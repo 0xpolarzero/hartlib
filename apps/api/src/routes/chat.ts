@@ -10,8 +10,6 @@ import { corsHeaders, json, type Route } from "../http";
 
 const maxMessageTextLength = 12_000;
 export const maxSendMessageBodyBytes = 64 * 1024;
-const memoryCitationLabel = "saved-memory";
-
 type PgLayer = Layer.Layer<PgClient.PgClient | SqlClient, Config.ConfigError | SqlError, never>;
 
 export interface ChatRow {
@@ -57,7 +55,8 @@ export interface ChatMessageResponse {
 
 export interface CitationResponse {
   readonly blockId: string;
-  readonly label: string;
+  readonly kind: "document" | "memory";
+  readonly label: string | null;
   readonly sourceDisplayName: string | null;
   readonly title: string | null;
   readonly canonicalUrl: string | null;
@@ -67,7 +66,7 @@ export interface CitationResponse {
 export interface ContextBlockResponse {
   readonly blockId: string;
   readonly kind: "document" | "memory";
-  readonly label: string;
+  readonly label: string | null;
   readonly tokenEstimate: number;
 }
 
@@ -88,7 +87,7 @@ const stringField = (record: Record<string, unknown>, field: string): string | n
   typeof record[field] === "string" ? record[field] : null;
 
 const blockLabel = (block: ContextBlockRow): string => {
-  if (block.kind === "memory") return "saved user memories";
+  if (block.kind === "memory") return block.block_id;
   const provenance = asRecord(block.provenance);
   const source = stringField(provenance, "sourceDisplayName") ?? "source";
   const title = stringField(provenance, "title") ?? block.block_id;
@@ -99,9 +98,10 @@ const citationFromBlock = (block: ContextBlockRow): CitationResponse => {
   if (block.kind === "memory") {
     return {
       blockId: block.block_id,
-      label: memoryCitationLabel,
+      kind: "memory",
+      label: null,
       sourceDisplayName: null,
-      title: "Saved memory",
+      title: null,
       canonicalUrl: null,
       publishedAt: null,
     };
@@ -110,6 +110,7 @@ const citationFromBlock = (block: ContextBlockRow): CitationResponse => {
   const provenance = asRecord(block.provenance);
   return {
     blockId: block.block_id,
+    kind: "document",
     label: stringField(provenance, "sourceDisplayName") ?? block.block_id,
     sourceDisplayName: stringField(provenance, "sourceDisplayName"),
     title: stringField(provenance, "title"),
@@ -130,7 +131,7 @@ const contextBlockFromObservation = (
   return {
     blockId,
     kind: block.kind,
-    label: stringField(payload, "label") ?? blockLabel(block),
+    label: block.kind === "memory" ? null : (stringField(payload, "label") ?? blockLabel(block)),
     tokenEstimate:
       typeof payload.tokenEstimate === "number" ? payload.tokenEstimate : block.token_estimate,
   };

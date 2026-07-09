@@ -34,7 +34,18 @@ export type ChatTranscriptMessage = {
   streaming?: boolean | undefined;
 };
 
-export function ChatBubble({ message }: { message: ChatTranscriptMessage }) {
+export type ChatTranscriptAuthorLabels = {
+  readonly assistant: string;
+  readonly client: string;
+};
+
+export function ChatBubble({
+  message,
+  authorLabels,
+}: {
+  message: ChatTranscriptMessage;
+  authorLabels: ChatTranscriptAuthorLabels;
+}) {
   const isAssistant = message.author === "assistant";
   const intl = useIntl();
   const citationsById = useMemo(
@@ -42,8 +53,13 @@ export function ChatBubble({ message }: { message: ChatTranscriptMessage }) {
     [message.citations],
   );
   const parsed = useMemo(
-    () => parseCitationTags(message.content, [...citationsById.keys()]),
-    [citationsById, message.content],
+    () =>
+      parseCitationTags(
+        message.content,
+        [...citationsById.keys()],
+        message.streaming === true ? "streaming" : "final",
+      ),
+    [citationsById, message.content, message.streaming],
   );
 
   return (
@@ -69,7 +85,7 @@ export function ChatBubble({ message }: { message: ChatTranscriptMessage }) {
           ) : (
             <Users className="brief-chat-meta-icon size-3" aria-hidden="true" />
           )}
-          {isAssistant ? "Assistant" : "Client"}
+          {isAssistant ? authorLabels.assistant : authorLabels.client}
         </div>
         <div className="brief-chat-content whitespace-pre-wrap font-serif text-sm leading-6">
           {parsed.segments.map((segment, index) => {
@@ -210,6 +226,7 @@ function SourcesRead({ contextBlocks }: { contextBlocks: readonly ChatTranscript
 
 export function VirtualizedChatTranscript({
   messages,
+  authorLabels,
   className,
   height = 544,
   estimateSize = 148,
@@ -217,6 +234,7 @@ export function VirtualizedChatTranscript({
   scrollToLatest = true,
 }: {
   messages: readonly ChatTranscriptMessage[];
+  authorLabels: ChatTranscriptAuthorLabels;
   className?: string | undefined;
   height?: CSSProperties["height"] | undefined;
   estimateSize?: number | undefined;
@@ -268,7 +286,7 @@ export function VirtualizedChatTranscript({
                 transform: `translateY(${virtualItem.start}px)`,
               }}
             >
-              <ChatBubble message={message} />
+              <ChatBubble message={message} authorLabels={authorLabels} />
             </div>
           );
         })}

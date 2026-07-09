@@ -32,7 +32,7 @@ The MVP uses real accounts, real publisher content, and the real compliance post
 
 The demo is a separate app under `apps/demo`.
 
-The demo can use OpenRouter and cheap models.
+The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`: z.ai sits behind the Brief backend, and the provider is selected through configuration.
 
 The demo uses fake accounts, seeded publisher content, and a real test database.
 
@@ -489,7 +489,7 @@ The MVP stores files in EU object storage.
 
 Restricted content should stay in EU-region services.
 
-OpenRouter can be used for demos with fixtures and fake accounts.
+Demo AI calls use the provider boundary in `docs/ai-chat-runtime.spec.md`; OpenRouter remains a later production provider path.
 
 Mistral is the AI provider for the MVP.
 

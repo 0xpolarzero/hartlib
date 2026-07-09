@@ -413,6 +413,8 @@ interface ChatResponse {
     readonly content: string;
     readonly citations?: readonly {
       readonly blockId: string;
+      readonly kind: "document" | "memory";
+      readonly label: string | null;
       readonly sourceDisplayName: string | null;
       readonly canonicalUrl: string | null;
       readonly publishedAt: string | null;

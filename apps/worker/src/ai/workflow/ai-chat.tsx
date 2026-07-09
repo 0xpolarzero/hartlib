@@ -202,7 +202,7 @@ const ContextBlockSchema = z.object({
 }) satisfies z.ZodType<SerializedContextBlockRow>;
 const BlockSummarySchema = z.object({
   blockId: z.string(),
-  label: z.string(),
+  label: z.string().nullable(),
   kind: z.enum(["document", "memory"]),
   tokenEstimate: z.number(),
 });
@@ -603,9 +603,11 @@ function requireOkOrThrowRetryable<A>(
   return { ok: false, failure: terminalFailure(agent, result) };
 }
 
-const blockLabel = (block: Pick<ContextBlockRow, "kind" | "provenance" | "blockId">): string => {
+const blockLabel = (
+  block: Pick<ContextBlockRow, "kind" | "provenance" | "blockId">,
+): string | null => {
   if (block.kind === "memory") {
-    return "saved user memories";
+    return null;
   }
 
   const provenance = block.provenance as unknown as Record<string, unknown>;

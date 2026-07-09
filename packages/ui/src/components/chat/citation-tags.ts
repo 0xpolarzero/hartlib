@@ -15,6 +15,8 @@ export type ParsedCitationTags = {
   readonly pendingTail: string;
 };
 
+export type CitationParseMode = "streaming" | "final";
+
 const citationOpen = "[[cite:";
 const citationTagPattern = /\[\[cite:([A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*)\]\]/g;
 
@@ -56,9 +58,12 @@ const splitPendingTail = (
 export function parseCitationTags(
   text: string,
   knownCitationIds: readonly string[],
+  mode: CitationParseMode = "streaming",
 ): ParsedCitationTags {
   const knownIds = new Set(knownCitationIds);
-  const { visible, pendingTail } = splitPendingTail(text);
+  const tailSplit = splitPendingTail(text);
+  const visible = mode === "streaming" ? tailSplit.visible : text;
+  const pendingTail = mode === "streaming" ? tailSplit.pendingTail : "";
   const segments: CitationTagSegment[] = [];
   let cursor = 0;
 

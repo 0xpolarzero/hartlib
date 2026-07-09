@@ -35,6 +35,20 @@ describe("parseCitationTags", () => {
     });
   });
 
+  it("renders a trailing partial citation opener as literal text in final mode", () => {
+    expect(parseCitationTags("Texte [[cite:b1", ["b1"], "final")).toEqual({
+      segments: [{ type: "text", text: "Texte [[cite:b1" }],
+      pendingTail: "",
+    });
+  });
+
+  it("renders a trailing opener prefix as literal text in final mode", () => {
+    expect(parseCitationTags("Texte [[", ["b1"], "final")).toEqual({
+      segments: [{ type: "text", text: "Texte [[" }],
+      pendingTail: "",
+    });
+  });
+
   it("handles adjacent tags", () => {
     expect(parseCitationTags("[[cite:b1]][[cite:b2]]", ["b1", "b2"])).toEqual({
       segments: [

@@ -41,12 +41,14 @@ export {
 export {
   ChatBubble,
   VirtualizedChatTranscript,
+  type ChatTranscriptAuthorLabels,
   type ChatTranscriptContextBlock,
   type ChatTranscriptCitation,
   type ChatTranscriptMessage,
 } from "./components/chat/virtualized-chat-transcript";
 export {
   parseCitationTags,
+  type CitationParseMode,
   type CitationMarkerSegment,
   type CitationTagSegment,
   type CitationTextSegment,

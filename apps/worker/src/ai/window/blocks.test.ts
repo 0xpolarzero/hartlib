@@ -67,7 +67,7 @@ describe("blocks", () => {
     };
 
     expect(renderBlock(block)).toBe(
-      "[b3] memory — saved user memories\n- (preference) Use concise answers.\n- (fact) Works in TypeScript.",
+      "[b3] memory\n- (preference) Use concise answers.\n- (fact) Works in TypeScript.",
     );
   });
 

@@ -283,30 +283,50 @@ Backend API style:
 
 ## AI Integration
 
-The AI chat runtime is specified in `docs/ai-chat-runtime.spec.md`.
+`docs/ai-chat-runtime.spec.md` is the canonical specification for the chat runtime. If this section and `docs/ai-chat-runtime.spec.md` conflict for chat behavior, use `docs/ai-chat-runtime.spec.md`.
 
-For chat runtime work, Pi makes model calls inside Smithers workflow tasks. The demo provider is z.ai behind the Brief backend. OpenRouter remains a later production provider path, and Mistral remains the EU/French positioning story.
+For chat runtime work:
 
-Effect AI may still fit future non-chat model calls, but it is not the chat agent runtime.
+- the browser talks only to the Brief backend
+- the Brief backend owns authentication, authorization, tenant boundaries, chat history, and stream access
+- worker jobs run Smithers workflows for active AI turns
+- Pi makes model calls inside Smithers workflow compute tasks
+- Smithers state is in-flight runtime state and is deleted after finalization
+- Brief product tables persist chat history, context blocks, observations, memories, usage, and final assistant messages
 
-The backend exposes AI chat streaming endpoints to the frontend.
+Provider boundary:
 
-Streaming endpoints emit:
+- the demo provider is z.ai behind the Brief backend
+- the provider sits behind configuration
+- browser code must not call z.ai, Pi, Smithers, or provider APIs directly
+- OpenRouter remains a later production provider path
+- Mistral remains the EU/French positioning story for the MVP and requires the compliance posture specified elsewhere in this document
 
-- assistant text deltas
-- tool start/end events
-- source-read events
-- final usage/credit metadata
+Effect AI may fit future non-chat model calls, but it is not the chat agent runtime.
 
-The internal AI pipeline is Effect-first:
+The chat runtime uses the preflight/answer/memory loop in `docs/ai-chat-runtime.spec.md`:
 
-- retrieve selected subscription sources
-- run tools
-- assemble model context
-- stream model output
-- track credits
-- record source usage
-- persist chat messages
+- code loads turn state, source access, active context blocks, memories, and recent history
+- the preflight agent gets exactly three tools: `search_documents`, `peek_document`, and `emit_manifest`
+- code hydrates the preflight manifest into durable context blocks and enforces token budgets
+- the main answer agent has zero tools and streams answer text with inline citation tags
+- code records context blocks and citation observations, stores the final assistant message, and marks the run finished
+
+The chat stream SSE vocabulary is the one in `docs/ai-chat-runtime.spec.md`:
+
+- `run_started`
+- `preflight_search`
+- `preflight_peek`
+- `context_window`
+- `answer_started`
+- `answer_retry`
+- `text_delta`
+- `memory_updated`
+- `usage`
+- `done`
+- `error`
+
+Generic tool start/end events, source-read events, and credit metadata are not part of the demo chat stream contract.
 
 AI request lifecycle:
 
@@ -314,58 +334,28 @@ AI request lifecycle:
 - store run status
 - store tool calls
 - store sources read
-- store credits consumed
+- store usage for observability
 - store artifacts created
 - store errors
 - use run records for retries, audit, and debugging
 
-AI tools:
+Billing and credit accounting are out of scope for the demo. Production billing must be designed explicitly before launch and must not be inferred from demo usage fields.
+
+Future publisher-issue tools may include:
 
 - `list_issues`
 - `search_issues`
 - `read_issue`
-- OpenRouter web search server tool
-- artifact workspace tools
 
-`list_issues`:
+Those tools are future non-chat or post-demo scope unless `docs/ai-chat-runtime.spec.md` is amended to include them.
 
-- lists issues from the chat's selected subscription sources
-- defaults to most recent first
-- supports optional source filter
-- supports optional date range
-- supports optional search terms
-- supports limit and cursor
-- returns issue metadata, not full issue text
+Future web research:
 
-`search_issues`:
-
-- searches issue chunks with Postgres hybrid retrieval
-- accepts one or more search terms
-- searches only the chat's selected subscription sources
-- returns ranked matching issues
-- returns relevant text snippets
-- returns issue ids, document ids, page numbers when available, and chunk ids
-
-`read_issue`:
-
-- reads extracted text for one issue
-- accepts issue id
-- accepts optional page range or chunk ids
-- can return full extracted issue text when it fits the context budget
-- returns paginated text when the issue is too large
-- returns citation metadata for every returned text block
-
-Use `read_issue` rather than a batch `read_issues` tool for MVP.
-
-This keeps context size predictable and makes source attribution easier.
-
-Web search:
-
-- use OpenRouter's `openrouter:web_search` server tool for MVP
-- send the web search tool only when web access is enabled for that chat/company
+- OpenRouter web search is a future production provider path, not demo chat runtime scope
+- send web research tools only when web access is enabled for that chat/company
 - cap search calls and returned results
-- charge web search through the same credit system
 - store returned web citation metadata
+- define billing before enabling web research in production
 
 Artifacts:
 
@@ -464,7 +454,7 @@ MVP product events:
 - PDF downloaded
 - AI message sent
 - issue pulled into AI context
-- credits consumed
+- AI usage recorded
 - artifact created
 - artifact checked
 

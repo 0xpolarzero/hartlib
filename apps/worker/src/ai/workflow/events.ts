@@ -19,7 +19,7 @@ export type AiRunEvent =
       readonly type: "context_window";
       readonly blocks: ReadonlyArray<{
         readonly blockId: string;
-        readonly label: string;
+        readonly label: string | null;
         readonly kind: "document" | "memory";
         readonly tokenEstimate: number;
       }>;

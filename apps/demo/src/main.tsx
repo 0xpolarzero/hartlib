@@ -59,8 +59,6 @@ import {
   Textarea,
   VirtualizedChatTranscript,
   type BreadcrumbItem,
-  type ChatTranscriptCitation,
-  type ChatTranscriptContextBlock,
   type ChatTranscriptMessage,
   type ClientFeedTableRow,
   type DraftSubscriber,
@@ -81,12 +79,8 @@ import {
   type MemoryResponse,
   type SendMessageResponse,
 } from "./chat-api";
-import {
-  initialChatStreamState,
-  reduceChatStream,
-  type ChatStreamEvent,
-  type ChatStreamPhase,
-} from "./chat-stream";
+import { initialChatStreamState, reduceChatStream, type ChatStreamEvent } from "./chat-stream";
+import { buildTranscriptMessages } from "./chat-transcript";
 import "./styles.css";
 
 const emptyPublicContent: PublicSourcesResponse = { sources: [], publications: [] };
@@ -764,6 +758,20 @@ function ClientFeedsList({
   const [memoriesStatus, setMemoriesStatus] = useState<"loading" | "ready" | "error">("loading");
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [revertingMemoryId, setRevertingMemoryId] = useState<string | null>(null);
+  const chatDisplayLabels = useMemo(
+    () => ({
+      memoryBlockLabel: intl.formatMessage({ id: "chat.memoryBlockLabel" }),
+      memoryCitation: intl.formatMessage({ id: "chat.memoryCitation" }),
+    }),
+    [intl],
+  );
+  const chatAuthorLabels = useMemo(
+    () => ({
+      assistant: intl.formatMessage({ id: "chat.author.assistant" }),
+      client: intl.formatMessage({ id: "chat.author.client" }),
+    }),
+    [intl],
+  );
 
   // `feedSubscriptions` stores only the user's *manual overrides*. The default
   // subscription state is derived reactively from the active market so that
@@ -777,11 +785,11 @@ function ClientFeedsList({
 
   const refreshChat = useCallback(async () => {
     const chat = await fetchDemoChat();
-    setChatMessages(mapApiMessagesToTranscript(chat.messages));
+    setChatMessages(mapApiMessagesToTranscript(chat.messages, chatDisplayLabels));
     setActiveRunId(chat.activeRunId);
     setChatStatus("ready");
     return chat;
-  }, []);
+  }, [chatDisplayLabels]);
 
   const refreshMemories = useCallback(async () => {
     const result = await fetchDemoMemories();
@@ -797,7 +805,7 @@ function ClientFeedsList({
     void fetchDemoChat()
       .then((chat) => {
         if (cancelled) return;
-        setChatMessages(mapApiMessagesToTranscript(chat.messages));
+        setChatMessages(mapApiMessagesToTranscript(chat.messages, chatDisplayLabels));
         setActiveRunId(chat.activeRunId);
         setChatStatus("ready");
       })
@@ -809,7 +817,7 @@ function ClientFeedsList({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [chatDisplayLabels]);
 
   useEffect(() => {
     let cancelled = false;
@@ -982,8 +990,15 @@ function ClientFeedsList({
 
   const runActive = activeRunId !== null;
   const transcriptMessages = useMemo(
-    () => buildTranscriptMessages(chatMessages, activeRunId, streamState.phase, streamState),
-    [activeRunId, chatMessages, streamState],
+    () =>
+      buildTranscriptMessages(
+        chatMessages,
+        activeRunId,
+        streamState.phase,
+        streamState,
+        chatDisplayLabels,
+      ),
+    [activeRunId, chatDisplayLabels, chatMessages, streamState],
   );
   const showProgress =
     runActive &&
@@ -994,7 +1009,7 @@ function ClientFeedsList({
   return (
     <div className="mx-auto max-w-5xl space-y-7">
       <section className="animate-in stagger-1">
-        <VirtualizedChatTranscript messages={transcriptMessages} />
+        <VirtualizedChatTranscript messages={transcriptMessages} authorLabels={chatAuthorLabels} />
 
         {chatStatus === "loading" ? (
           <p className="mt-2 font-mono text-[11px] text-faint">
@@ -1099,45 +1114,6 @@ function ClientFeedsList({
       </section>
     </div>
   );
-}
-
-function isStreamingPhase(phase: ChatStreamPhase): boolean {
-  return phase === "answering" || phase === "retrying";
-}
-
-function citationFromContextBlock(block: ChatTranscriptContextBlock): ChatTranscriptCitation {
-  return {
-    id: block.blockId,
-    label: block.label,
-    url: null,
-    publishedAt: null,
-    title: block.label,
-    sourceDisplayName: null,
-  };
-}
-
-function buildTranscriptMessages(
-  messages: readonly ChatTranscriptMessage[],
-  activeRunId: string | null,
-  phase: ChatStreamPhase,
-  stream: {
-    readonly assistantText: string;
-    readonly contextBlocks: readonly ChatTranscriptContextBlock[];
-  },
-): readonly ChatTranscriptMessage[] {
-  if (activeRunId === null || !isStreamingPhase(phase)) return messages;
-
-  return [
-    ...messages,
-    {
-      id: `streaming:${activeRunId}`,
-      author: "assistant",
-      content: stream.assistantText,
-      citations: stream.contextBlocks.map(citationFromContextBlock),
-      contextBlocks: stream.contextBlocks,
-      streaming: true,
-    },
-  ];
 }
 
 function MemoriesPanel({

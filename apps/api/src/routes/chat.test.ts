@@ -77,6 +77,7 @@ describe("chatMessagesResponseFromRows", () => {
     expect(response[1]?.citations).toEqual([
       {
         blockId: "b1",
+        kind: "document",
         label: "Source One",
         sourceDisplayName: "Source One",
         title: "Document One",
@@ -85,9 +86,10 @@ describe("chatMessagesResponseFromRows", () => {
       },
       {
         blockId: "b2",
-        label: "saved-memory",
+        kind: "memory",
+        label: null,
         sourceDisplayName: null,
-        title: "Saved memory",
+        title: null,
         canonicalUrl: null,
         publishedAt: null,
       },
@@ -116,7 +118,7 @@ describe("chatMessagesResponseFromRows", () => {
 
     expect(response[0]?.contextBlocks).toEqual([
       { blockId: "b1", kind: "document", label: "Custom label", tokenEstimate: 99 },
-      { blockId: "b2", kind: "memory", label: "saved user memories", tokenEstimate: 24 },
+      { blockId: "b2", kind: "memory", label: null, tokenEstimate: 24 },
     ]);
   });
 

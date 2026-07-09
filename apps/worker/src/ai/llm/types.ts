@@ -68,7 +68,7 @@ export interface SourceCatalogSummaryItem {
 
 export interface StandingWindowBlockSummary {
   readonly blockId: string;
-  readonly label: string;
+  readonly label: string | null;
   readonly tokenEstimate: number;
 }
 

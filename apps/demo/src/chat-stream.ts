@@ -1,12 +1,17 @@
-import type { ChatTranscriptContextBlock } from "@brief/ui";
-
 export type ChatStreamPhase = "idle" | "preflight" | "answering" | "retrying" | "done" | "error";
+
+export type ChatStreamContextBlock = {
+  readonly blockId: string;
+  readonly kind: "document" | "memory";
+  readonly label: string | null;
+  readonly tokenEstimate: number;
+};
 
 export type ChatStreamEvent =
   | { readonly type: "run_started" }
   | { readonly type: "preflight_search"; readonly terms: string; readonly resultCount: number }
   | { readonly type: "preflight_peek"; readonly documentId: string }
-  | { readonly type: "context_window"; readonly blocks: readonly ChatTranscriptContextBlock[] }
+  | { readonly type: "context_window"; readonly blocks: readonly ChatStreamContextBlock[] }
   | { readonly type: "answer_started"; readonly attempt: number }
   | { readonly type: "answer_retry"; readonly gap: string }
   | { readonly type: "text_delta"; readonly delta: string }
@@ -43,7 +48,7 @@ export type ChatStreamState = {
   readonly attempt: number;
   readonly searchCount: number;
   readonly latestResultCount: number;
-  readonly contextBlocks: readonly ChatTranscriptContextBlock[];
+  readonly contextBlocks: readonly ChatStreamContextBlock[];
   readonly memoryUpdated: ChatStreamMemoryUpdate | null;
   readonly error: ChatStreamError | null;
 };

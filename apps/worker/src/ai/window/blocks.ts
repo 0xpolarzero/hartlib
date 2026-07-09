@@ -109,7 +109,7 @@ export const renderBlock = (block: RenderableBlock): string => {
       throw new Error("memory block must carry memory provenance");
     }
 
-    return [`[${block.blockId}] memory — saved user memories`, block.content].join("\n");
+    return [`[${block.blockId}] memory`, block.content].join("\n");
   }
 
   throw new Error("unknown block kind");

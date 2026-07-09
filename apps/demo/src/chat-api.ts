@@ -6,7 +6,8 @@ import type {
 
 export type ChatApiCitation = {
   readonly blockId: string;
-  readonly label: string;
+  readonly kind: "document" | "memory";
+  readonly label: string | null;
   readonly sourceDisplayName: string | null;
   readonly title: string | null;
   readonly canonicalUrl: string | null;
@@ -16,7 +17,7 @@ export type ChatApiCitation = {
 export type ChatApiContextBlock = {
   readonly blockId: string;
   readonly kind: "document" | "memory";
-  readonly label: string;
+  readonly label: string | null;
   readonly tokenEstimate: number;
 };
 
@@ -69,29 +70,41 @@ export type MemoriesApiResponse = {
   readonly memories: readonly MemoryResponse[];
 };
 
-const mapCitation = (citation: ChatApiCitation): ChatTranscriptCitation => ({
+export type ChatDisplayLabels = {
+  readonly memoryCitation: string;
+  readonly memoryBlockLabel: string;
+};
+
+const mapCitation = (
+  citation: ChatApiCitation,
+  labels: ChatDisplayLabels,
+): ChatTranscriptCitation => ({
   id: citation.blockId,
-  label: citation.label,
+  label: citation.kind === "memory" ? labels.memoryCitation : (citation.label ?? citation.blockId),
   url: citation.canonicalUrl,
   publishedAt: citation.publishedAt,
-  title: citation.title,
+  title: citation.kind === "memory" ? labels.memoryCitation : citation.title,
   sourceDisplayName: citation.sourceDisplayName,
 });
 
-const mapContextBlock = (block: ChatApiContextBlock): ChatTranscriptContextBlock => ({
+const mapContextBlock = (
+  block: ChatApiContextBlock,
+  labels: ChatDisplayLabels,
+): ChatTranscriptContextBlock => ({
   blockId: block.blockId,
   kind: block.kind,
-  label: block.label,
+  label: block.kind === "memory" ? labels.memoryBlockLabel : (block.label ?? block.blockId),
   tokenEstimate: block.tokenEstimate,
 });
 
 export const mapApiMessagesToTranscript = (
   messages: readonly ChatApiMessage[],
+  labels: ChatDisplayLabels,
 ): readonly ChatTranscriptMessage[] =>
   messages.map((message) => ({
     id: message.id,
     author: message.author,
     content: message.content,
-    citations: (message.citations ?? []).map(mapCitation),
-    contextBlocks: (message.contextBlocks ?? []).map(mapContextBlock),
+    citations: (message.citations ?? []).map((citation) => mapCitation(citation, labels)),
+    contextBlocks: (message.contextBlocks ?? []).map((block) => mapContextBlock(block, labels)),
   }));
