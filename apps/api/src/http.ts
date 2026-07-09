@@ -19,6 +19,12 @@ export const json = (body: unknown, init?: ResponseInit): Response => {
   });
 };
 
+export const corsHeaders = (init?: HeadersInit): Headers => {
+  const headers = new Headers(init);
+  headers.set("access-control-allow-origin", "*");
+  return headers;
+};
+
 export const notFound = json(
   {
     error: "not_found",

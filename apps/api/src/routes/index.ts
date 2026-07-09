@@ -4,19 +4,17 @@ import {
   artifactListFilesRoute,
   artifactReadFileRoute,
 } from "./artifacts";
-import { listIssuesToolRoute, readIssueToolRoute, searchIssuesToolRoute } from "./ai-tools";
-import { chatStreamRoute } from "./chat";
+import { chatRoutes } from "./chat";
 import { healthRoute } from "./health";
+import { memoryRoutes } from "./memories";
 import { publicSourceDocumentContentRoute, publicSourcesRoute } from "./public-sources";
 
 export const routes = [
   healthRoute,
   publicSourcesRoute,
   publicSourceDocumentContentRoute,
-  chatStreamRoute,
-  listIssuesToolRoute,
-  searchIssuesToolRoute,
-  readIssueToolRoute,
+  ...chatRoutes,
+  ...memoryRoutes,
   artifactListFilesRoute,
   artifactReadFileRoute,
   artifactApplyPatchRoute,

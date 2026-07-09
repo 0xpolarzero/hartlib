@@ -459,7 +459,7 @@ New keys, read through the existing config loaders (`apps/worker/src/config.ts`,
 - `AI_PREFLIGHT_MAX_TURNS`, default 4; `AI_PREFLIGHT_MAX_SEARCHES`, default 8; `AI_PREFLIGHT_MAX_PEEKS`, default 4
 - `AI_PREFLIGHT_TIMEOUT_MS`, default 30000; `AI_ANSWER_TIMEOUT_MS`, default 120000
 - `AI_SEARCH_MAX_LIMIT`, default 20; `AI_SEARCH_RECENCY_HALF_LIFE_DAYS`, default 14
-- `AI_STREAM_POLL_MS`, default 300
+- `AI_STREAM_POLL_MS`, default 300; `AI_STREAM_KEEPALIVE_MS`, default 15000
 - `AI_MEMORY_MAX_WRITES_PER_TURN`, default 5
 - `AI_PLANNER_BASELINE`, default false — replaces the preflight loop with one search and code-ranked top-k hydration, for evaluation only
 
