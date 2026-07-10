@@ -276,14 +276,30 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               and table_name = 'public_source_documents'
               and column_name = 'search_vector'
           `;
+          const initialMemoryEvidenceColumns = yield* sql<ColumnRow>`
+            select column_name
+            from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'user_memories'
+              and column_name = 'evidence_quote'
+          `;
           const migrationsBefore = yield* sql<NamedRow>`
             select name
             from schema_migrations
             order by name
           `;
 
+          yield* sql`alter table user_memories add column evidence_quote text`;
           yield* sql`delete from schema_migrations`;
           yield* runMigrations;
+
+          const memoryEvidenceColumnsAfter = yield* sql<ColumnRow>`
+            select column_name
+            from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'user_memories'
+              and column_name = 'evidence_quote'
+          `;
 
           const migrationsAfter = yield* sql<NamedRow>`
             select name
@@ -296,6 +312,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             extensionCount: extension?.count,
             indexNames: indexes.map((index) => index.indexname),
             searchVectorColumnCount: searchVectorColumns.length,
+            initialMemoryEvidenceColumnCount: initialMemoryEvidenceColumns.length,
+            memoryEvidenceColumnCountAfter: memoryEvidenceColumnsAfter.length,
             migrationsBefore: migrationsBefore.map((migration) => migration.name),
             migrationsAfter: migrationsAfter.map((migration) => migration.name),
           };
@@ -313,10 +331,13 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       expect(result.indexNames).toContain("public_source_documents_search_vector_idx");
       expect(result.indexNames).toContain("public_source_documents_title_trgm_idx");
       expect(result.searchVectorColumnCount).toBe(1);
+      expect(result.initialMemoryEvidenceColumnCount).toBe(0);
+      expect(result.memoryEvidenceColumnCountAfter).toBe(0);
       expect(result.migrationsBefore).toEqual(expectedMigrations);
       expect(result.migrationsBefore).toContain("0008_ai_chat_runtime.sql");
       expect(result.migrationsBefore).toContain("0009_document_search.sql");
       expect(result.migrationsBefore).toContain("0010_user_memory_revision_run_set_null.sql");
+      expect(result.migrationsBefore).toContain("0014_simplify_user_memories.sql");
       expect(result.migrationsAfter).toEqual(expectedMigrations);
     },
   );
@@ -445,14 +466,12 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               user_id,
               kind,
               content,
-              evidence_quote,
               source_message_id
             )
             values (
               'eeeeeeee-0000-0000-0000-000000000008',
               'demo-user',
               'fact',
-              'duplicate chat memory',
               'duplicate chat memory',
               'eeeeeeee-0000-0000-0000-000000000004'
             )
@@ -1069,8 +1088,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           on conflict (id) do nothing
         `;
           yield* sql`
-          insert into user_memories (id, user_id, kind, content, evidence_quote, source_message_id)
-          values ('dddddddd-0000-0000-0000-000000000004', 'migration-memory-delete-user', 'fact', 'Prefers concise briefs', 'Prefers concise briefs', 'dddddddd-0000-0000-0000-000000000002')
+          insert into user_memories (id, user_id, kind, content, source_message_id)
+          values ('dddddddd-0000-0000-0000-000000000004', 'migration-memory-delete-user', 'fact', 'Prefers concise briefs', 'dddddddd-0000-0000-0000-000000000002')
           on conflict (id) do nothing
         `;
           yield* sql`

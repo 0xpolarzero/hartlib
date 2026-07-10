@@ -53,7 +53,6 @@ const clientFor = (chunks: readonly string[], finalText = chunks.join("")) =>
     preflightMaxPeeks: 4,
     preflightTimeoutMs: 30_000,
     answerTimeoutMs: 120_000,
-    memoryMaxWritesPerTurn: 5,
     boundary: {
       streamSimple: () => streamText(chunks, finalText),
     },

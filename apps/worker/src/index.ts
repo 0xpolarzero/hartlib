@@ -10,19 +10,31 @@ import { runPublicSourcePolling, runPublicSourceStartupBackfill } from "./source
 
 const program = Effect.gen(function* () {
   const config = yield* loadWorkerConfig;
+  const aiConfigured = config.zaiApiKey.trim().length > 0;
 
   yield* Effect.logInfo("starting worker").pipe(
     Effect.annotateLogs({
       ...serviceLogFields,
       jobPollIntervalMs: config.jobPollIntervalMs,
+      workerConcurrency: config.workerConcurrency,
       runMigrationsOnStartup: config.runMigrationsOnStartup,
       publicSourceIngestionEnabled: config.publicSourceIngestionEnabled,
       publicSourcePollIntervalMs: config.publicSourcePollIntervalMs,
       publicSourceStartupBackfillDays: config.publicSourceStartupBackfillDays,
       publicSourceOperationTimeoutMs: config.publicSourceOperationTimeoutMs,
+      aiConfigured,
+      aiBaseUrl: config.aiBaseUrl,
+      aiMainModel: config.aiMainModel,
+      aiFastModel: config.aiFastModel,
       nodeEnv: config.nodeEnv,
     }),
   );
+
+  if (!aiConfigured) {
+    return yield* Effect.fail(
+      new Error("ZAI_API_KEY is required for the worker because AI chat always uses real AI"),
+    );
+  }
 
   if (config.runMigrationsOnStartup) {
     yield* runMigrations;
@@ -37,10 +49,13 @@ const program = Effect.gen(function* () {
 
   yield* runPublicSourceStartupBackfill(publicSourceWatcherConfig);
 
-  yield* Effect.all(
-    [runWorker(config.jobPollIntervalMs), runPublicSourcePolling(publicSourceWatcherConfig)],
-    { concurrency: "unbounded" },
+  const workerLoops = Array.from({ length: Math.max(1, config.workerConcurrency) }, () =>
+    runWorker(config.jobPollIntervalMs),
   );
+
+  yield* Effect.all([...workerLoops, runPublicSourcePolling(publicSourceWatcherConfig)], {
+    concurrency: "unbounded",
+  });
 });
 
 BunRuntime.runMain(

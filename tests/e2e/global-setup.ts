@@ -195,13 +195,10 @@ export default async function globalSetup(_config: FullConfig) {
   const commonEnv = {
     DATABASE_URL: databaseUrl,
     NODE_ENV: "test",
-    AI_FAKE: "true",
-    AI_FAKE_DELAY_MS: "200",
-    AI_FAKE_SCENARIO: "demo-cited-answer",
     AI_STREAM_POLL_MS: "50",
     AI_STREAM_KEEPALIVE_MS: "1000",
     PUBLIC_SOURCE_INGESTION_ENABLED: "false",
-    ZAI_API_KEY: "fake",
+    ZAI_API_KEY: process.env.ZAI_API_KEY ?? "",
   };
   const api = startProcess(
     "api",

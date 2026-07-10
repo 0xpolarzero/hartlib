@@ -20,6 +20,7 @@ const program = Effect.gen(function* () {
   Bun.serve({
     hostname: config.host,
     port: config.port,
+    idleTimeout: 255,
     fetch: (request) =>
       Effect.runPromise(routeRequest(routes, request).pipe(Effect.provide(JsonLoggerLayer))),
   });

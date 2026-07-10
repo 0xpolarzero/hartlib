@@ -106,7 +106,6 @@ const client = (
     preflightMaxPeeks: 4,
     preflightTimeoutMs: 30_000,
     answerTimeoutMs: 120_000,
-    memoryMaxWritesPerTurn: 5,
     retrieval: retrieval(),
     boundary: {
       preflightStreamFn: streamFn,

@@ -583,8 +583,8 @@ describe.skipIf(!isBun || !databaseUrl)("chat runtime API routes", () => {
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         const rows = yield* sql<{ readonly id: string }>`
-          insert into user_memories (user_id, kind, content, evidence_quote, deleted_at)
-          values ('demo-user', 'preference', 'new content', 'evidence', now())
+          insert into user_memories (user_id, kind, content, deleted_at)
+          values ('demo-user', 'preference', 'new content', now())
           returning id::text
         `;
         const memoryId = rows[0]!.id;

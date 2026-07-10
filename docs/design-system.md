@@ -154,15 +154,15 @@ Reusable product UI for the demo and MVP lives in `@brief/ui`, while apps keep r
 
 - `SourcesTable` — publisher source rows with subscriber counts, issue counts, and latest publication date
 - `PublicationsTable` — publisher publication rows with metrics, scheduled-state treatment, and optional scheduled deletion
-- `ClientPublicationsTable` — delivered publication rows with assistant-context visibility toggles
+- `ClientPublicationsTable` — delivered publication rows without per-publication assistant-context controls; AI source selection is source-level in production and fixed to the authorized set in the live demo
 - `PublicationDetail` — publication title, metadata, summary, scheduled-state treatment, document list, and editable scheduled-publication fields
 - `DocumentsTable` — document title/description/PDF rows with optional inline editing and upload affordance; storage and PDF opening behavior stay in the consuming app through callbacks
 - `SubscribersTable` — subscriber list, pause/resume/delete controls, and draft subscriber row with company combobox and email validation display
 - `Breadcrumbs`, `SectionHeader`, `InlineEditableField`, `ConfirmingDeleteButton`, and `ScheduledPublicationIcon` are reusable support components used by these product surfaces. Breadcrumb publication titles truncate responsively with the full title available through the element title.
 
-### ArtifactFrame
+### DocumentFrame
 
-Renders HTML content on a paper surface inside a sandboxed iframe. Used for reading issue documents and AI-generated artifacts.
+Renders stored HTML issue content on a paper surface inside a sandboxed iframe.
 
 - Paper background (`--color-paper`), 1px rule border, `rounded-sm` backed by `--radius`
 - Title bar in bottom-bordered strip, 11px uppercase tracked label
@@ -175,8 +175,12 @@ Renders HTML content on a paper surface inside a sandboxed iframe. Used for read
 Reusable chat transcript primitives for client AI conversations.
 
 - `ChatBubble` — renders user and assistant message bubbles with citations
+- `ChatRunOutcome` — renders queued/running state or the durable localized failed-run code beneath its user message, with resubmit only when `retryable` is true
 - `VirtualizedChatTranscript` — renders long chat histories with TanStack Virtual, variable-height measurement, overscan, and optional scroll-to-latest behavior
-- Message data stays owned by the consuming app; the UI package accepts a minimal `{ id, author, content, citations }` shape
+- `ChatSourcesRead` — renders the separate direct/topic answer-context source list for an assistant message; it never receives selector previews, reducer inspections, synthesis packets, or omitted candidates
+- `ChatWebSearchToggle` — explicit per-message web-search choice driven by the shared effective-policy union, with its typed localized disabled reason
+- Message data stays owned by the consuming app; reusable transcript primitives accept a discriminated message union: user messages carry `{ id, author: "user", content, run }` with the durable public run outcome, while assistant messages carry `{ id, author: "assistant", content, citations, sourcesRead }`. They do not know about Smithers tasks, fanout topic packets, or raw context plans.
+- Citation renderers support document, earlier-chat, saved-memory, and web source kinds. Earlier-chat citations target a transcript message, memory citations open the exact owner-only revision view in the memories panel, and document/web citations use authorized or canonical links.
 
 ## Usage Rules
 

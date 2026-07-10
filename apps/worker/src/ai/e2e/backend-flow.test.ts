@@ -5,13 +5,16 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 import { runMigrations } from "../../db/migrate";
 import {
-  clearFakeAiClientScenario,
-  setFakeAiClientScenario,
   type AiCallResult,
+  type AiClient,
   type AnswerStreamEvent,
-  type FakeAiClientScenario,
+  type MemoryExtractionInput,
   type MemoryExtractionOutput,
+  type PreflightInputs,
   type PreflightOutput,
+  type PreflightToolContext,
+  type RetrievalExecutor,
+  type StreamAnswerInput,
 } from "../llm";
 import { zeroUsage } from "../llm";
 import type { QuerySpec } from "../retrieval/query-spec";
@@ -58,7 +61,7 @@ const assistantMessage = (text: string) => ({
   content: [{ type: "text" as const, text }],
   api: "openai-completions" as const,
   provider: "zai",
-  model: "fake",
+  model: "test-scripted",
   usage,
   stopReason: "stop" as const,
   timestamp: Date.now(),
@@ -99,6 +102,148 @@ const answerInsufficient = (gap: string): readonly AnswerStreamEvent[] => {
   ];
 };
 
+type MaybePromise<A> = A | Promise<A>;
+type AnswerScriptResult =
+  | readonly AnswerStreamEvent[]
+  | AsyncIterable<AnswerStreamEvent>
+  | Promise<readonly AnswerStreamEvent[] | AsyncIterable<AnswerStreamEvent>>;
+
+interface ScriptedAiScenario {
+  readonly preflight?:
+    | AiCallResult<PreflightOutput>
+    | readonly AiCallResult<PreflightOutput>[]
+    | ((
+        inputs: PreflightInputs,
+        toolContext: PreflightToolContext,
+        callIndex: number,
+        retrieval: RetrievalExecutor,
+      ) => MaybePromise<AiCallResult<PreflightOutput>>)
+    | undefined;
+  readonly answer?:
+    | readonly AnswerStreamEvent[]
+    | readonly (readonly AnswerStreamEvent[])[]
+    | ((input: StreamAnswerInput, callIndex: number) => AnswerScriptResult)
+    | undefined;
+  readonly memories?:
+    | AiCallResult<MemoryExtractionOutput>
+    | readonly AiCallResult<MemoryExtractionOutput>[]
+    | ((
+        input: MemoryExtractionInput,
+        callIndex: number,
+      ) => MaybePromise<AiCallResult<MemoryExtractionOutput>>)
+    | undefined;
+  readonly captures?:
+    | {
+        readonly preflightInputs?: PreflightInputs[] | undefined;
+        readonly answerInputs?: StreamAnswerInput[] | undefined;
+        readonly memoryInputs?: MemoryExtractionInput[] | undefined;
+      }
+    | undefined;
+}
+
+const selectAnswerEvents = async (
+  script: ScriptedAiScenario["answer"],
+  input: StreamAnswerInput,
+  callIndex: number,
+): Promise<readonly AnswerStreamEvent[] | AsyncIterable<AnswerStreamEvent>> => {
+  if (script === undefined) return [];
+
+  if (typeof script === "function") {
+    return script(input, callIndex);
+  }
+
+  if (Array.isArray(script)) {
+    if (isAnswerEventList(script)) return script;
+    return (script as readonly (readonly AnswerStreamEvent[])[])[callIndex] ?? [];
+  }
+
+  return script as readonly AnswerStreamEvent[];
+};
+
+class ScriptedAiClient implements AiClient {
+  private preflightCalls = 0;
+  private answerCalls = 0;
+  private memoryCalls = 0;
+
+  constructor(
+    private readonly scenario: ScriptedAiScenario,
+    private readonly retrieval: RetrievalExecutor,
+  ) {}
+
+  async runPreflight(inputs: PreflightInputs, toolContext: PreflightToolContext) {
+    this.scenario.captures?.preflightInputs?.push(inputs);
+    const script = this.scenario.preflight;
+    const callIndex = this.preflightCalls++;
+
+    if (script === undefined) {
+      return {
+        kind: "ok" as const,
+        value: { manifest: [], usage, toolEvents: [] },
+      };
+    }
+
+    if (typeof script === "function") {
+      return script(inputs, toolContext, callIndex, this.retrieval);
+    }
+
+    if (Array.isArray(script)) {
+      return script[callIndex] ?? { kind: "ok", value: { manifest: [], usage, toolEvents: [] } };
+    }
+
+    return script;
+  }
+
+  async *streamAnswer(input: StreamAnswerInput): AsyncIterable<AnswerStreamEvent> {
+    this.scenario.captures?.answerInputs?.push(input);
+    const script = this.scenario.answer;
+    const callIndex = this.answerCalls++;
+    const events = await selectAnswerEvents(script, input, callIndex);
+
+    for await (const event of toAsyncIterable(events)) {
+      yield event;
+    }
+  }
+
+  async extractMemories(input: MemoryExtractionInput) {
+    this.scenario.captures?.memoryInputs?.push(input);
+    const script = this.scenario.memories;
+    const callIndex = this.memoryCalls++;
+
+    if (script === undefined) {
+      return { kind: "ok" as const, value: { proposals: [], discarded: [], usage } };
+    }
+
+    if (typeof script === "function") {
+      return script(input, callIndex);
+    }
+
+    if (Array.isArray(script)) {
+      return script[callIndex] ?? { kind: "ok", value: { proposals: [], discarded: [], usage } };
+    }
+
+    return script;
+  }
+}
+
+const isAnswerEventList = (value: readonly unknown[]): value is readonly AnswerStreamEvent[] =>
+  value.length === 0 ||
+  (typeof value[0] === "object" &&
+    value[0] !== null &&
+    "type" in value[0] &&
+    ((value[0] as { readonly type?: unknown }).type === "text_delta" ||
+      (value[0] as { readonly type?: unknown }).type === "result"));
+
+async function* toAsyncIterable(
+  events: readonly AnswerStreamEvent[] | AsyncIterable<AnswerStreamEvent>,
+): AsyncIterable<AnswerStreamEvent> {
+  if (Symbol.asyncIterator in events) {
+    yield* events;
+    return;
+  }
+
+  yield* events;
+}
+
 function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
   return Effect.runPromise(
     effect.pipe(
@@ -117,8 +262,7 @@ const envFor = (overrides: Record<string, string> = {}) =>
     ConfigProvider.fromEnv({
       env: {
         DATABASE_URL: isolatedDatabaseUrl(),
-        AI_FAKE: "true",
-        ZAI_API_KEY: "fake",
+        ZAI_API_KEY: "test-scripted",
         AI_STREAM_POLL_MS: "5",
         AI_STREAM_KEEPALIVE_MS: "1000",
         WORKER_JOB_LOCK_TIMEOUT_MS: "80",
@@ -189,8 +333,7 @@ const apiEnv = (port: number): Record<string, string> => {
     AI_STREAM_POLL_MS: "50",
     AI_STREAM_KEEPALIVE_MS: "1000",
     NODE_ENV: "test",
-    AI_FAKE: "true",
-    ZAI_API_KEY: "fake",
+    ZAI_API_KEY: "test-scripted",
     PUBLIC_SOURCE_INGESTION_ENABLED: "false",
   };
 };
@@ -269,9 +412,18 @@ const apiFetch = (method: string, path: string, init?: RequestInit): Promise<Res
   return fetch(`${apiBaseUrl}${path}`, { ...init, method });
 };
 
-const runWorkerOnce = (env: Record<string, string> = {}, signal?: AbortSignal) =>
+const runWorkerOnce = (
+  env: Record<string, string> = {},
+  signal?: AbortSignal,
+  scenario?: ScriptedAiScenario,
+) =>
   Effect.runPromise(
-    makeWorkerTick(signal === undefined ? {} : { signal }).pipe(
+    makeWorkerTick({
+      ...(signal === undefined ? {} : { signal }),
+      ...(scenario === undefined
+        ? {}
+        : { aiClientFactory: (_config, retrieval) => new ScriptedAiClient(scenario, retrieval) }),
+    }).pipe(
       Effect.provide(JobRepositoryPgLayer),
       Effect.provide(InMemoryPublicSourceIngestionRepositoryLayer()),
       Effect.provide(envFor(env)),
@@ -370,15 +522,14 @@ const streamRun = (runId: string) => apiFetch("GET", `/v1/ai-runs/${runId}/strea
 
 const runTurn = async (
   text: string,
-  scenario: FakeAiClientScenario,
+  scenario: ScriptedAiScenario,
   env: Record<string, string> = {},
 ) => {
-  setFakeAiClientScenario(scenario);
   const posted = await sendMessage(text);
   const streamResponse = await streamRun(posted.runId);
   expect(streamResponse.status).toBe(200);
   const streamPromise = sseEvents(streamResponse);
-  await runWorkerOnce(env);
+  await runWorkerOnce(env, undefined, scenario);
   const events = await streamPromise;
   const chatResponse = await apiFetch("GET", "/v1/chat");
   expect(chatResponse.status).toBe(200);
@@ -389,15 +540,14 @@ const runTurn = async (
 
 const runTurnFr = async (
   text: string,
-  scenario: FakeAiClientScenario,
+  scenario: ScriptedAiScenario,
   env: Record<string, string> = {},
 ) => {
-  setFakeAiClientScenario(scenario);
   const posted = await sendMessageFr(text);
   const streamResponse = await streamRun(posted.runId);
   expect(streamResponse.status).toBe(200);
   const streamPromise = sseEvents(streamResponse);
-  await runWorkerOnce(env);
+  await runWorkerOnce(env, undefined, scenario);
   const events = await streamPromise;
   const chatResponse = await apiFetch("GET", "/v1/chat");
   expect(chatResponse.status).toBe(200);
@@ -435,15 +585,12 @@ const preflightFromSearch =
       readonly charEnd?: number;
     }[],
     peeks: readonly string[] = [],
-  ): NonNullable<FakeAiClientScenario["preflight"]> =>
+  ): NonNullable<ScriptedAiScenario["preflight"]> =>
   async (_inputs, toolContext, _callIndex, retrieval): Promise<AiCallResult<PreflightOutput>> => {
-    const results =
-      retrieval === undefined ? [] : await retrieval.searchDocuments(spec, toolContext);
+    const results = await retrieval.searchDocuments(spec, toolContext);
 
     for (const documentId of peeks) {
-      if (retrieval !== undefined) {
-        await retrieval.peekDocument(documentId, undefined, undefined, toolContext);
-      }
+      await retrieval.peekDocument(documentId, undefined, undefined, toolContext);
     }
 
     return {
@@ -744,7 +891,6 @@ describe.skipIf(!isBun || !databaseUrl)("backend AI chat flow E2E", () => {
   }, 60_000);
 
   afterEach(async () => {
-    clearFakeAiClientScenario();
     await clearDemoRuntime();
   }, 60_000);
 
@@ -851,7 +997,7 @@ describe.skipIf(!isBun || !databaseUrl)("backend AI chat flow E2E", () => {
   });
 
   it("shows an insufficiency retry and passes first-pass block ids into retry preflight", async () => {
-    const captures: NonNullable<FakeAiClientScenario["captures"]> = { preflightInputs: [] };
+    const captures: NonNullable<ScriptedAiScenario["captures"]> = { preflightInputs: [] };
     const result = await runTurn("Compare clean power and transmission.", {
       captures,
       preflight: [
@@ -911,7 +1057,6 @@ describe.skipIf(!isBun || !databaseUrl)("backend AI chat flow E2E", () => {
         {
           kind: "preference",
           content: "I prefer concise energy briefings.",
-          evidenceQuote: "I prefer concise energy briefings.",
         },
       ]),
     });
@@ -938,7 +1083,6 @@ describe.skipIf(!isBun || !databaseUrl)("backend AI chat flow E2E", () => {
         {
           kind: "preference",
           content: "I prefer detailed energy briefings.",
-          evidenceQuote: "Actually make it more detailed.",
           targetMemoryId: memory.id,
         },
       ]),
@@ -954,7 +1098,7 @@ describe.skipIf(!isBun || !databaseUrl)("backend AI chat flow E2E", () => {
     );
     expect(reverted.memory.content).toBe("I prefer concise energy briefings.");
 
-    const captures: NonNullable<FakeAiClientScenario["captures"]> = { preflightInputs: [] };
+    const captures: NonNullable<ScriptedAiScenario["captures"]> = { preflightInputs: [] };
     const next = await runTurn("Use my saved preference.", {
       captures,
       preflight: preflightFromSearch({ terms: "transmission", limit: 5 }, []),
@@ -1048,7 +1192,7 @@ describe.skipIf(!isBun || !databaseUrl)("backend AI chat flow E2E", () => {
     });
     const controller = new AbortController();
 
-    setFakeAiClientScenario({
+    const abortScenario: ScriptedAiScenario = {
       preflight: preflightFromSearch({ terms: "clean power", limit: 5 }, [
         { documentId: "e2e-doc-en-a" },
       ]),
@@ -1057,9 +1201,9 @@ describe.skipIf(!isBun || !databaseUrl)("backend AI chat flow E2E", () => {
         await releaseAnswerPromise;
         yield* answerOk("Resumed clean power answer. [[cite:b1]]");
       },
-    });
+    };
     const posted = await sendMessage("Crash and resume this.");
-    const firstTick = runWorkerOnce({}, controller.signal).catch(() => undefined);
+    const firstTick = runWorkerOnce({}, controller.signal, abortScenario).catch(() => undefined);
     await answerStartedPromise;
     controller.abort();
     releaseAnswer();
@@ -1080,13 +1224,13 @@ describe.skipIf(!isBun || !databaseUrl)("backend AI chat flow E2E", () => {
 
     const streamResponse = await streamRun(posted.runId);
     const streamPromise = sseEvents(streamResponse);
-    setFakeAiClientScenario({
+    const resumeScenario: ScriptedAiScenario = {
       preflight: preflightFromSearch({ terms: "clean power", limit: 5 }, [
         { documentId: "e2e-doc-en-a" },
       ]),
       answer: answerOk("Resumed clean power answer. [[cite:b1]]"),
-    });
-    await runWorkerOnce();
+    };
+    await runWorkerOnce({}, undefined, resumeScenario);
     const events = await streamPromise;
 
     const counts = await runtimeCounts();
@@ -1106,7 +1250,7 @@ describe.skipIf(!isBun || !databaseUrl)("backend AI chat flow E2E", () => {
     const releaseAnswerPromise = new Promise<void>((resolve) => {
       releaseAnswer = resolve;
     });
-    setFakeAiClientScenario({
+    const slowScenario: ScriptedAiScenario = {
       preflight: preflightFromSearch({ terms: "clean power", limit: 5 }, [
         { documentId: "e2e-doc-en-a" },
       ]),
@@ -1115,11 +1259,11 @@ describe.skipIf(!isBun || !databaseUrl)("backend AI chat flow E2E", () => {
         await releaseAnswerPromise;
         yield* answerOk("Slow answer. [[cite:b1]]");
       },
-    });
+    };
     const posted = await sendMessage("Start a slow run.");
     const streamResponse = await streamRun(posted.runId);
     const streamPromise = sseEvents(streamResponse);
-    const workerPromise = runWorkerOnce();
+    const workerPromise = runWorkerOnce({}, undefined, slowScenario);
     await answerStartedPromise;
 
     const conflict = await apiFetch("POST", "/v1/chat/messages", {

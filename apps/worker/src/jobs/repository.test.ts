@@ -206,6 +206,33 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
     );
   });
 
+  it("claims higher-priority chat jobs ahead of older ingestion jobs", async () => {
+    await runDb(
+      Effect.gen(function* () {
+        yield* resetDatabase;
+        const repository = yield* makePgJobRepository(60_000);
+
+        yield* repository.enqueue({
+          kind: "public_source_ingestion",
+          payload: { sourceId: "tresor", mode: "poll" },
+          uniqueKey: "public_source_ingestion:tresor:poll",
+        });
+        yield* repository.enqueue({
+          kind: "ai_chat_run",
+          payload: { aiRunId: "run-priority-test" },
+          uniqueKey: "ai_chat_run:run-priority-test",
+          priority: 100,
+        });
+
+        const claimed = yield* repository.claimNext;
+        expect(claimed).toMatchObject({
+          kind: "ai_chat_run",
+          payload: { aiRunId: "run-priority-test" },
+        });
+      }),
+    );
+  });
+
   it("recovers stale running jobs and exhausts retries durably", async () => {
     await runDb(
       Effect.gen(function* () {

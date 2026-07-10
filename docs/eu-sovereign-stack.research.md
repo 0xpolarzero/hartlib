@@ -31,7 +31,7 @@ Offer a stronger EU/French hosting story if it becomes commercially useful for p
 
 Mistral is part of the later EU/French positioning story.
 
-The MVP uses OpenRouter instead.
+The demo chat uses z.ai behind Brief's provider boundary. The production MVP uses Mistral under the contractual controls in `docs/data-access.spec.md`. OpenRouter remains a later provider option.
 
 ## Providers To Keep
 

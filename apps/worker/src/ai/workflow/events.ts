@@ -3,6 +3,7 @@ import { Effect, Redacted } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import type { Usage } from "@earendil-works/pi-ai";
+import { JsonLoggerLayer, serviceLogFields } from "../../logging";
 
 export type AiRunEvent =
   | { readonly type: "run_started" }
@@ -186,5 +187,7 @@ export const runAiWorkflowDb = <A, E>(
           applicationName: "brief-ai-chat-workflow",
         }),
       ),
+      Effect.provide(JsonLoggerLayer),
+      Effect.annotateLogs(serviceLogFields),
     ),
   );

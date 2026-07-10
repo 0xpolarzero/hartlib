@@ -78,7 +78,7 @@ const assistantMessage = (text: string, stopReason: "stop" | "error" | "length" 
   content: [{ type: "text" as const, text }],
   api: "openai-completions" as const,
   provider: "zai",
-  model: "fake",
+  model: "test-scripted",
   usage,
   stopReason,
   timestamp: Date.now(),
@@ -126,7 +126,7 @@ const answerFatal = (): readonly AnswerStreamEvent[] => [
       kind: "fatal",
       message: assistantMessage("", "error"),
       usage,
-      errorMessage: "fatal fake answer",
+      errorMessage: "fatal scripted answer",
     },
   },
 ];
@@ -192,6 +192,8 @@ const config: AiChatWorkflowRuntime["config"] = {
   aiAnswerTimeoutMs: 120_000,
   aiMemoryInjectAllMaxTokens: 1500,
   aiPlannerBaseline: false,
+  aiMainModel: "glm-5.2",
+  aiFastModel: "glm-5-turbo",
 };
 
 interface ChatRunFixture {

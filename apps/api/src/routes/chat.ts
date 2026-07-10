@@ -7,6 +7,7 @@ import type { SqlError } from "effect/unstable/sql/SqlError";
 import { loadApiConfig } from "../config";
 import { resolveDemoUserId } from "../demo-user";
 import { corsHeaders, json, type Route } from "../http";
+import { JsonLoggerLayer, serviceLogFields } from "../logging";
 
 const maxMessageTextLength = 12_000;
 export const maxSendMessageBodyBytes = 64 * 1024;
@@ -28,6 +29,16 @@ export interface MessageRow {
 
 export interface ActiveRunRow {
   readonly id: string;
+}
+
+export interface ActiveRunContextRow {
+  readonly id: string;
+  readonly chat_id: string;
+}
+
+export interface RunStreamContext {
+  readonly runId: string;
+  readonly chatId: string;
 }
 
 export interface ContextBlockRow {
@@ -362,20 +373,41 @@ const isUniqueViolation = (error: unknown): boolean => {
 
 const activeRunConflict = json({ error: "run_active" }, { status: 409 });
 
-const userHasActiveRun = (userId: string) =>
+const logChatInfo = (message: string, fields: Record<string, unknown>) =>
+  Effect.logInfo(message).pipe(Effect.annotateLogs({ component: "ai_chat", ...fields }));
+
+const runStreamLogInfo = (message: string, fields: Record<string, unknown>): void => {
+  void Effect.runPromise(
+    logChatInfo(message, fields).pipe(
+      Effect.provide(JsonLoggerLayer),
+      Effect.annotateLogs(serviceLogFields),
+    ),
+  ).catch(() => undefined);
+};
+
+const activeRunConflictResponse = (
+  fields: Record<string, unknown>,
+): Effect.Effect<Response, never> =>
+  logChatInfo("ai chat message rejected because run is active", {
+    route: "POST /v1/chat/messages",
+    status: "conflict",
+    ...fields,
+  }).pipe(Effect.as(activeRunConflict));
+
+const findActiveRunForUser = (userId: string) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
-    const rows = yield* sql<{ readonly exists: boolean }>`
-      select exists(
-        select 1
-        from chats c
-        join ai_runs r on r.chat_id = c.id
-        where c.user_id = ${userId}
-          and r.finished_at is null
-          and r.failed_at is null
-      ) as exists
+    const rows = yield* sql<ActiveRunContextRow>`
+      select r.id::text, c.id::text as chat_id
+      from chats c
+      join ai_runs r on r.chat_id = c.id
+      where c.user_id = ${userId}
+        and r.finished_at is null
+        and r.failed_at is null
+      order by r.created_at asc
+      limit 1
     `;
-    return rows[0]?.exists === true;
+    return rows[0] ?? null;
   });
 
 const createUserMessageAndRun = (
@@ -397,7 +429,13 @@ const createUserMessageAndRun = (
             and failed_at is null
           limit 1
         `;
-        if (activeRuns[0] !== undefined) return { conflict: true as const };
+        if (activeRuns[0] !== undefined) {
+          return {
+            conflict: true as const,
+            chatId: chat.id,
+            runId: activeRuns[0].id,
+          };
+        }
 
         const messageRows = yield* sql<{ readonly id: string }>`
           insert into chat_messages (chat_id, author, content)
@@ -412,16 +450,17 @@ const createUserMessageAndRun = (
         `;
         const runId = runRows[0]!.id;
         yield* sql`
-          insert into jobs (kind, payload, unique_key)
+          insert into jobs (kind, payload, unique_key, priority)
           values (
             'ai_chat_run',
             ${sql.json({ aiRunId: runId })},
-            ${`ai_chat_run:${runId}`}
+            ${`ai_chat_run:${runId}`},
+            100
           )
           on conflict (unique_key) where unique_key is not null do nothing
         `;
 
-        return { conflict: false as const, messageId, runId };
+        return { conflict: false as const, chatId: chat.id, messageId, runId };
       }),
     );
   });
@@ -432,18 +471,46 @@ const sendMessage = (
 ) =>
   Effect.gen(function* () {
     const userId = yield* resolveDemoUserId(request);
-    const active = yield* userHasActiveRun(userId);
-    if (active) return activeRunConflict;
+    const active = yield* findActiveRunForUser(userId);
+    if (active !== null) {
+      return yield* activeRunConflictResponse({
+        userId,
+        chatId: active.chat_id,
+        runId: active.id,
+      });
+    }
 
-    const result = yield* createUserMessageAndRun(userId, input);
-    if (result.conflict) return activeRunConflict;
+    const result = yield* createUserMessageAndRun(userId, input).pipe(
+      Effect.catch((error: unknown) => {
+        if (isUniqueViolation(error)) {
+          return Effect.succeed({
+            conflict: true as const,
+            chatId: null,
+            runId: null,
+            conflictSource: "unique_violation",
+          });
+        }
+        return Effect.fail(error);
+      }),
+    );
+    if (result.conflict) {
+      return yield* activeRunConflictResponse({
+        userId,
+        chatId: result.chatId,
+        runId: result.runId,
+        conflictSource: "conflictSource" in result ? result.conflictSource : "active_run",
+      });
+    }
+    yield* logChatInfo("ai chat message accepted and enqueued", {
+      route: "POST /v1/chat/messages",
+      status: "enqueued",
+      userId,
+      chatId: result.chatId,
+      messageId: result.messageId,
+      runId: result.runId,
+    });
     return json({ messageId: result.messageId, runId: result.runId });
-  }).pipe(
-    Effect.catch((error: unknown) => {
-      if (isUniqueViolation(error)) return Effect.succeed(activeRunConflict);
-      return Effect.fail(error);
-    }),
-  );
+  });
 
 export type AiRunEventRow = {
   readonly seq: number;
@@ -494,6 +561,8 @@ const readAiRunEventsAfter = (runId: string, afterSeq: number, pgLayer: PgLayer)
 const incrementalSse = (args: {
   readonly request: Request;
   readonly runId: string;
+  readonly chatId: string;
+  readonly userId: string;
   readonly afterSeq: number;
   readonly pollMs: number;
   readonly keepAliveMs: number;
@@ -503,7 +572,11 @@ const incrementalSse = (args: {
   const encoder = new TextEncoder();
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
-  let closeStream: (mode?: "close" | "error" | "silent", error?: unknown) => void = () => {
+  let closeStream: (
+    mode?: "close" | "error" | "silent",
+    error?: unknown,
+    status?: "closed" | "aborted" | "cancelled" | "error",
+  ) => void = () => {
     closed = true;
     if (timeout !== undefined) {
       clearTimeout(timeout);
@@ -525,11 +598,39 @@ const incrementalSse = (args: {
         let afterSeq = args.afterSeq;
         let lastWrite = Date.now();
 
-        const onAbort = () => closeStream("close");
-        closeStream = (mode = "close", error?: unknown) => {
+        const baseFields = {
+          route: "GET /v1/ai-runs/:runId/stream",
+          userId: args.userId,
+          chatId: args.chatId,
+          runId: args.runId,
+        } as const;
+
+        runStreamLogInfo("ai chat stream opened", {
+          ...baseFields,
+          status: args.afterSeq > 0 ? "replayed" : "opened",
+          afterSeq: args.afterSeq,
+        });
+
+        const onAbort = () => closeStream("close", undefined, "aborted");
+        closeStream = (mode = "close", error?: unknown, status = "closed") => {
           if (closed) return;
           markClosed();
           args.request.signal.removeEventListener("abort", onAbort);
+
+          if (status === "error") {
+            runStreamLogInfo("ai chat stream error", {
+              ...baseFields,
+              status,
+              afterSeq,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          } else if (status !== "closed" || mode !== "silent") {
+            runStreamLogInfo("ai chat stream closed", {
+              ...baseFields,
+              status,
+              afterSeq,
+            });
+          }
 
           if (mode === "silent") return;
 
@@ -571,7 +672,19 @@ const incrementalSse = (args: {
               write(encodeSseEvent(row));
               afterSeq = row.seq;
               const type = eventType(row.event);
+              runStreamLogInfo("ai chat stream event forwarded", {
+                ...baseFields,
+                status: "forwarded",
+                eventType: type,
+                seq: row.seq,
+              });
               if (type === "done" || type === "error") {
+                runStreamLogInfo("ai chat stream terminal event", {
+                  ...baseFields,
+                  status: "terminal",
+                  eventType: type,
+                  seq: row.seq,
+                });
                 closeStream("close");
                 return;
               }
@@ -597,7 +710,7 @@ const incrementalSse = (args: {
               closeStream("close");
               return;
             }
-            closeStream("error", error);
+            closeStream("error", error, "error");
           }
         };
 
@@ -606,26 +719,25 @@ const incrementalSse = (args: {
         void tick();
       },
       cancel() {
-        closeStream("silent");
+        closeStream("silent", undefined, "cancelled");
       },
     }),
     { headers: sseHeaders() },
   );
 };
 
-const runBelongsToUser = (runId: string, userId: string) =>
+const readRunStreamContext = (runId: string, userId: string) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
-    const rows = yield* sql<{ readonly exists: boolean }>`
-      select exists(
-        select 1
-        from ai_runs r
-        join chats c on c.id = r.chat_id
-        where r.id = ${runId}
-          and c.user_id = ${userId}
-      ) as exists
+    const rows = yield* sql<RunStreamContext>`
+      select r.id::text as "runId", c.id::text as "chatId"
+      from ai_runs r
+      join chats c on c.id = r.chat_id
+      where r.id = ${runId}
+        and c.user_id = ${userId}
+      limit 1
     `;
-    return rows[0]?.exists === true;
+    return rows[0] ?? null;
   });
 
 const readRunId = (url: URL): string =>
@@ -678,8 +790,10 @@ export const makeChatRoutes = (
       Effect.gen(function* () {
         const runId = readRunId(url);
         const userId = yield* resolveDemoUserId(request);
-        const belongs = yield* runBelongsToUser(runId, userId).pipe(Effect.provide(pgLayer));
-        if (!belongs) return json({ error: "not_found" }, { status: 404 });
+        const streamContext = yield* readRunStreamContext(runId, userId).pipe(
+          Effect.provide(pgLayer),
+        );
+        if (streamContext === null) return json({ error: "not_found" }, { status: 404 });
 
         const config = yield* loadApiConfig;
         const headerSeq = parseSeq(request.headers.get("last-event-id"));
@@ -687,6 +801,8 @@ export const makeChatRoutes = (
         return incrementalSse({
           request,
           runId,
+          chatId: streamContext.chatId,
+          userId,
           afterSeq: Math.max(headerSeq, querySeq),
           pollMs: config.aiStreamPollMs,
           keepAliveMs: config.aiStreamKeepAliveMs,

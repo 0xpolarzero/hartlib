@@ -24,7 +24,7 @@ import { peekDocument, searchDocuments } from "../retrieval/retrieval";
 import type { DocumentPeek, DocumentPreview, QuerySpec } from "../retrieval/query-spec";
 import type { ManifestEntry, MemoryKind } from "../window/blocks";
 import { answerOutputFromMessage, withholdInsufficiencyPrefix } from "./insufficiency";
-import { verifyMemoryProposals } from "./memory";
+import { prepareMemoryProposals } from "./memory";
 import { resolveZaiModel } from "./models";
 import { classifyAssistantMessage } from "./stop-reason";
 import type {
@@ -89,7 +89,6 @@ const RecordMemoriesSchema = Type.Object({
     Type.Object({
       kind: MemoryKindSchema,
       content: Type.String(),
-      evidenceQuote: Type.String(),
       targetMemoryId: Type.Optional(Type.String()),
     }),
   ),
@@ -97,7 +96,7 @@ const RecordMemoriesSchema = Type.Object({
 
 const RecordMemoriesTool = {
   name: "record_memories",
-  description: "Record memory proposals with verbatim evidence quotes.",
+  description: "Record durable memory proposals from the user's message.",
   parameters: RecordMemoriesSchema,
 } satisfies Tool<typeof RecordMemoriesSchema>;
 
@@ -136,7 +135,6 @@ export interface PiAiClientOptions {
   readonly preflightMaxPeeks: number;
   readonly preflightTimeoutMs: number;
   readonly answerTimeoutMs: number;
-  readonly memoryMaxWritesPerTurn: number;
   readonly retrieval?: RetrievalExecutor | undefined;
   readonly boundary?: PiBoundary | undefined;
 }
@@ -669,7 +667,7 @@ export class PiAiClient implements AiClient {
   ): Promise<AiCallResult<MemoryExtractionOutput>> {
     const context: Context = {
       systemPrompt:
-        "Extract only durable memories supported by verbatim quotes from the user's text. Never use assistant or document content.",
+        "Extract durable memories from the user's message. Use targetMemoryId when updating an existing memory. Never invent ids and never use assistant or document content.",
       messages: [
         {
           role: "user",
@@ -726,21 +724,15 @@ export class PiAiClient implements AiClient {
     const proposals: ProposedMemory[] = args.memories.map((memory) => ({
       kind: toMemoryKind(memory.kind),
       content: memory.content,
-      evidenceQuote: memory.evidenceQuote,
       ...(memory.targetMemoryId === undefined ? {} : { targetMemoryId: memory.targetMemoryId }),
     }));
-    const verified = verifyMemoryProposals(
-      proposals,
-      input.userText,
-      input.existingMemories,
-      this.options.memoryMaxWritesPerTurn,
-    );
+    const prepared = prepareMemoryProposals(proposals, input.existingMemories);
 
     return {
       kind: "ok",
       value: {
-        proposals: verified.accepted,
-        discarded: verified.discarded,
+        proposals: prepared.accepted,
+        discarded: prepared.discarded,
         usage: message.usage,
       },
     };

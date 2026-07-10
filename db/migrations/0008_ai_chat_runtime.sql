@@ -112,7 +112,6 @@ create table if not exists user_memories (
   user_id text not null,
   kind text not null,
   content text not null,
-  evidence_quote text not null,
   source_message_id uuid references chat_messages (id) on delete set null,
   deleted_at timestamptz,
   created_at timestamptz not null default now(),

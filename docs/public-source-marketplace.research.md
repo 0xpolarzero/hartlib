@@ -53,12 +53,13 @@ These sources are excluded from the catalog because no official full-content API
 
 The platform ingests public sources globally, stores each item once, and lets client companies opt sources in or out for retrieval. Client source toggles never trigger per-client fetching.
 
-Store four layers:
+Store three current layers:
 
 1. Raw fetched artifact.
 2. Canonical document.
-3. Retrieval chunks.
-4. Search/vector indexes.
+3. Indexed full-text search representation over canonical title and text.
+
+The chat retriever selects whole documents or stable character ranges from canonical text. Semantic chunks, embeddings, and pgvector indexes are added only with the evaluated semantic retrieval arm; they are not required by the current full-text path.
 
 Visible public publications are stored only after the worker has a complete readable artifact. `public_source_items` is the publication table, not a discovery ledger: a row in that table means the worker has a current content hash, a latest raw artifact, and a latest canonical document. Incomplete discoveries, failed fetches, old backlog entries observed during startup, and source drift belong in `public_source_candidates` until they can be fetched and normalized successfully.
 
@@ -153,6 +154,8 @@ The source catalog does not include cadence guesses.
 
 Public sources appear alongside publisher invitation sources as unified sources in the client UI. Both source types share the same source -> publications -> detail navigation. The UI marks invited publisher sources; public sources do not need a separate public badge.
 
-Each source row lets the client include or exclude it from AI context. Results cite the original official source, and completeness is bounded by connector health and the official source surface.
+Each production source row lets the client include or exclude it from AI context. The live demo presents read-only subscription state and uses all sources authorized for its demo user. Results cite the original official source, and completeness is bounded by connector health and the official source surface.
+
+Public-source items use the internal AI-exposure funnel when their content becomes visible to a model, including previews shown to the internal retriever; SQL-only matches do not count. They do not enter any publisher's customer-facing pull totals. Publisher-facing issue/document pulls include only content owned by that publisher. Final sources read and final citations remain separate later stages.
 
 Some official websites apply security challenges, JavaScript gates, or anti-bot behavior even when content is public. Those sources do not enter the catalog unless they expose a reliable API, dataset, content feed, or official document representation.

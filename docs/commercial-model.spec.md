@@ -84,7 +84,7 @@ AI usage is prepaid.
 
 Credits are consumed by AI chats.
 
-AI chats can answer with summaries, comparisons, web research, graphs, and visualizations.
+AI chats can answer in text with summaries, comparisons, explicit web research, and Markdown tables. Generated graphs, visualizations, and executable artifacts are not part of the current runtime.
 
 Reading, downloading, and basic archive search are included with subscription access.
 
@@ -104,7 +104,9 @@ Usage is prepaid through monthly credits and additional credits.
 
 Credits are an internal cost-control unit.
 
-Credit calculation can use tokens in, tokens out, cached tokens, web research, and tool usage.
+Internal cost accounting records every model request made by conversation resolution, execution planning, internal retrieval, memory selection, web research, context reduction, direct/topic answers, synthesis, and memory extraction. Tool-loop agent runs and their individual model requests are counted separately. Every web search and fetch operation is also recorded separately, including empty and failed operations, without retaining its query or URL in usage rows.
+
+Customer credits remain one turn-level product abstraction. Credit calculation can use aggregate tokens in, tokens out, cached/reasoning tokens, web search/fetch usage, tool usage, and fanout topic count without exposing the internal agent graph to the customer.
 
 Monthly plan pricing must cover maximum expected credit cost plus margin.
 
@@ -120,7 +122,7 @@ Client company admins can buy monthly plans and additional credits.
 
 Client company admins control web research settings.
 
-New client companies have web research enabled with no allowlist.
+New client companies have web research disabled. Admins can enable it only when the deployment has an approved and disclosed web-search adapter.
 
 Client company admins can add a web domain allowlist.
 
@@ -204,7 +206,7 @@ Client company AI plans can still be used over already delivered issues.
 
 The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`. Fixtures and fake accounts remain acceptable for non-chat demo data.
 
-The MVP uses Mistral only.
+The MVP sends model calls only to Mistral. Web research remains disabled until a separately approved search adapter is contracted and disclosed.
 
 The platform hosts AI.
 

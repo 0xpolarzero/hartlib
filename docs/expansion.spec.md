@@ -24,11 +24,11 @@ Later, publishers may connect their own databases, news systems, CMS, or archive
 
 This belongs after the MVP.
 
-The MVP ingestion model is PDF upload with optional EPUB upload.
+The MVP publisher ingestion model is PDF upload. EPUB and direct CMS/database/archive connectors remain later source options.
 
 Public recurring sources may later appear as opt-in marketplace sources for client search and AI context.
 
-The demo already previews this marketplace: public sources from `packages/source-ingestion` appear alongside publisher invitation sources as unified flux in the client UI, with a subscribed checkbox and a source-type distinction. The MVP access model remains publisher invite only.
+The demo previews this marketplace: public sources from `packages/source-ingestion` appear alongside publisher invitation sources as unified flux in the client UI, with read-only subscription state and a source-type distinction. The MVP access model remains publisher invite only.
 
 Initial public-source marketplace research lives in `docs/public-source-marketplace.research.md`.
 
@@ -46,4 +46,4 @@ This is controlled by the client company.
 
 This is separate from publisher subscription management.
 
-The French MVP uses Mistral only.
+The French MVP sends model calls only to Mistral. Web research remains disabled until a separately approved search adapter is disclosed under `docs/data-access.spec.md`.

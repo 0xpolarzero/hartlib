@@ -12,7 +12,6 @@ interface MemoryRow {
   readonly id: string;
   readonly kind: string;
   readonly content: string;
-  readonly evidence_quote: string;
   readonly deleted_at: Date | null;
   readonly created_at: Date;
   readonly updated_at: Date;
@@ -40,7 +39,6 @@ const memoryResponse = (memory: MemoryRow, revisions: readonly RevisionRow[]) =>
   id: memory.id,
   kind: memory.kind,
   content: memory.content,
-  evidenceQuote: memory.evidence_quote,
   deleted: memory.deleted_at !== null,
   deletedAt: memory.deleted_at?.toISOString() ?? null,
   createdAt: memory.created_at.toISOString(),
@@ -59,7 +57,7 @@ const listMemories = (userId: string) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const memories = yield* sql<MemoryRow>`
-      select id::text, kind, content, evidence_quote, deleted_at, created_at, updated_at
+      select id::text, kind, content, deleted_at, created_at, updated_at
       from user_memories
       where user_id = ${userId}
       order by deleted_at nulls first, updated_at desc, created_at desc
@@ -105,7 +103,7 @@ const revertMemory = (userId: string, memoryId: string) =>
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         const memories = yield* sql<MemoryRow>`
-          select id::text, kind, content, evidence_quote, deleted_at, created_at, updated_at
+          select id::text, kind, content, deleted_at, created_at, updated_at
           from user_memories
           where id = ${memoryId}
             and user_id = ${userId}
@@ -137,7 +135,7 @@ const revertMemory = (userId: string, memoryId: string) =>
               deleted_at = null,
               updated_at = now()
           where id = ${memoryId}
-          returning id::text, kind, content, evidence_quote, deleted_at, created_at, updated_at
+          returning id::text, kind, content, deleted_at, created_at, updated_at
         `;
         yield* sql`
           insert into user_memory_revisions (memory_id, action, content_before, content_after)

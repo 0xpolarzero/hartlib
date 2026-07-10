@@ -1,15 +1,24 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 
-import {
-  demoCitedAnswerExpectedDocuments,
-  demoCitedAnswerSearchTerms,
-} from "../../../../tests/e2e/demo-cited-answer-fixture";
 import { runMigrations } from "../db/migrate";
 
 const defaultDatabaseUrl = "postgres://brief:brief@localhost:5432/brief_e2e";
 const databaseUrl = process.env.BRIEF_E2E_DATABASE_URL ?? defaultDatabaseUrl;
 const databaseName = new URL(databaseUrl).pathname.replace(/^\//, "") || "brief_e2e";
+const seededAnswerSearchTerms = "solaire raccordements";
+const seededAnswerExpectedDocuments = [
+  {
+    documentId: "e2e-fr-solaire-raccordements",
+    title: "France solaire: raccordements acceleres",
+    canonicalUrl: "https://e2e.example/fr/solaire-raccordements",
+  },
+  {
+    documentId: "e2e-fr-stockage-reseau",
+    title: "Stockage et reseau: priorites publiques",
+    canonicalUrl: "https://e2e.example/fr/stockage-reseau",
+  },
+] as const;
 
 const databaseUrlFor = (name: string): string => {
   const url = new URL(databaseUrl);
@@ -71,7 +80,7 @@ const docText = (lead: string): string =>
 
 const seedCorpus = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
-  const [solarDoc, storageDoc] = demoCitedAnswerExpectedDocuments;
+  const [solarDoc, storageDoc] = seededAnswerExpectedDocuments;
 
   const docs = [
     {
@@ -241,20 +250,20 @@ const assertSeededCorpusSearchable = Effect.gen(function* () {
     join public_sources s on s.source_id = d.source_id
     where s.country = 'FR'
       and d.language = 'fr-FR'
-      and d.search_vector @@ websearch_to_tsquery('french', ${demoCitedAnswerSearchTerms})
+      and d.search_vector @@ websearch_to_tsquery('french', ${seededAnswerSearchTerms})
     order by
-      ts_rank_cd(d.search_vector, websearch_to_tsquery('french', ${demoCitedAnswerSearchTerms})) desc,
+      ts_rank_cd(d.search_vector, websearch_to_tsquery('french', ${seededAnswerSearchTerms})) desc,
       d.published_at desc nulls last,
       d.document_id asc
-    limit ${demoCitedAnswerExpectedDocuments.length}
+    limit ${seededAnswerExpectedDocuments.length}
   `;
   const documentIds = rows.map((row) => row.documentId);
-  const expectedDocumentIds = demoCitedAnswerExpectedDocuments.map((doc) => doc.documentId);
+  const expectedDocumentIds = seededAnswerExpectedDocuments.map((doc) => doc.documentId);
 
   if (documentIds.join("\n") !== expectedDocumentIds.join("\n")) {
     return yield* Effect.fail(
       new Error(
-        `E2E seed corpus FTS validation failed for "${demoCitedAnswerSearchTerms}". ` +
+        `E2E seed corpus FTS validation failed for "${seededAnswerSearchTerms}". ` +
           `Expected ${expectedDocumentIds.join(", ")}; returned ${
             documentIds.join(", ") || "<none>"
           }.`,

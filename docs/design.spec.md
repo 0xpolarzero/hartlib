@@ -6,7 +6,7 @@ A web app for publishers of professional briefings, confidential letters, and sp
 
 Publishers create private subscriptions, publish issue documents, invite client companies, and let client users read and query delivered archives with AI.
 
-The AI answers from the client's selected subscription sources and, when enabled, approved web sources. It cites sources and can create summaries, comparisons, graphs, and visualizations.
+The AI answers in text from the client's selected subscription sources and, when enabled, approved web sources. It cites sources and can create summaries, comparisons, and Markdown tables.
 
 ## Initial Market
 
@@ -79,11 +79,11 @@ Inline editable fields are visually quiet at rest, show a subtle surface and rul
 
 Long editable document fields expand when focused so the edit surface is obvious.
 
-The demo client chat is live. It reads chat history from the Brief API, sends messages through the Brief API, streams active AI runs over SSE, renders citations from inline citation tags, and shows the sources read for each assistant answer.
+The demo client chat is live. It reads chat history from the Brief API, sends messages through the Brief API, streams active AI runs over SSE, renders citations from inline citation tags, and shows the sources read for each assistant answer. The composer sends an explicit per-message web-search choice. The UI does not treat streamed answer completion as terminal until the required parallel memory write has committed and `done` arrives. A terminal failure discards the provisional assistant draft and remains reload-durable on the originating user message, with resubmit only when the run is retryable.
 
-The demo client surface includes a compact memories panel where users can inspect saved memories, view revisions, and revert a memory.
+The demo client surface includes a compact memories panel where users can inspect saved memories, tombstone them for future use, view the 30-day reversible history, and append a revert revision.
 
-The client demo root centers on one chat and a compact table of flux. Flux include both seeded publisher invitation sources and real public sources ingested by the worker, unified as one source model. Each flux row shows the source name, a source-type distinction (invitation vs public), the latest publication date when present, and a subscribed checkbox. The per-publication AI hide/show action has been removed from the client publications list.
+The client demo root centers on one chat and a compact table of flux. Flux include both seeded publisher invitation sources and real public sources ingested by the worker, unified as one source model. Each flux row shows the source name, a source-type distinction (invitation vs public), the latest publication date when present, and read-only subscription state. Publication rows have no AI hide/show action. The live demo has no source-subscription mutation and no per-chat source picker; its chat queries the demo user's server-authorized source set.
 
 The demo supports `fr-FR` and `en-US` locales via localized URL prefixes and defaults to `fr-FR` + `FR`. See `localization.spec.md`.
 
@@ -295,7 +295,7 @@ Publishers can see AI indexing errors.
 
 ## AI Scope
 
-AI chats answer from selected subscription sources.
+Production AI chats answer from selected subscription sources and relevant context selected fresh for each turn.
 
 A new chat selects all subscription sources the client user can access.
 
@@ -305,15 +305,21 @@ The user can check or uncheck subscription sources for a chat.
 
 Selected subscription sources define the archive context and the issue-search tools available to the AI.
 
+The live demo fixes that production selection to all sources currently authorized for the demo user and does not expose the per-chat selector.
+
 Each selected subscription source includes issue documents delivered to the client company.
 
 Users can ask about a topic, entity, trend, or event across selected subscription sources.
 
 Answers must cite the issue documents they use.
 
+The answer model has no search or read tools. Conversation resolver C first selects relevant original turns or asks a clarification. Execution planner D then chooses a single or semantically separable fanout route. Internal retriever A, memory selector B, and eligible web researcher W prepare each selected path in parallel. Brief code authorizes, deduplicates, renders, and exact-counts their outputs before any direct/topic answer or synthesis call.
+
+Fanout is chosen before retrieval when topics can be researched independently and safely recombined. Only the final synthesis is shown to the user. Oversized single/topic prompts use an explicit keep/range/omit context plan; code never silently truncates context.
+
 Web research is controlled by the client company.
 
-New client companies have web research enabled with no allowlist.
+New client companies have web research disabled. An admin can enable it only in a deployment with an approved and disclosed web-search adapter.
 
 Client company admins can enable or disable web research.
 
@@ -321,7 +327,9 @@ Client company admins can add a web domain allowlist.
 
 When a client company has an allowlist, web research can fetch only from allowlisted domains.
 
-When web research is enabled, client users can use it in AI chats.
+When web research is enabled by both deployment and company policy, client users can opt into it per AI message.
+
+The user makes an explicit web-search choice for each message. Company policy and allowlists remain authoritative. Enabled web research runs in parallel with internal and memory retrieval and returns selected URL-backed verbatim quotations.
 
 Web research answers must cite web sources.
 
@@ -385,11 +393,9 @@ Archive search does not use credits.
 
 ## AI Sources And Citations
 
-AI has tools to search and read issues from selected subscription sources.
+Internal retriever A has controlled tools to search and inspect issue/public documents and older messages in the same chat. Web researcher W has controlled tools to search and fetch allowed web pages. The direct answer, topic-answer, and synthesis agents have no tools.
 
-AI has tools to search the web when web research is enabled.
-
-Tool results include citation metadata.
+Retrieval results carry typed provenance. Agents emit references or selected quotations; Brief code performs authorization, content fetching, and turn-local source-key assignment.
 
 For issue sources, citation metadata includes:
 
@@ -397,6 +403,7 @@ For issue sources, citation metadata includes:
 - publication date
 - brief document title
 - page number when available
+- the immutable document version used by the answer in restricted provenance
 
 For web sources, citation metadata includes:
 
@@ -405,13 +412,21 @@ For web sources, citation metadata includes:
 - URL
 - access date
 
+For older-chat sources, citation metadata includes the message ID and a localized earlier-conversation label.
+
+For memory sources, citation metadata includes the memory ID, the exact pre-update memory revision ID, and a localized saved-memory label. Memory citations occur only in the owner's non-shareable `private_owner` chat.
+
 AI answers use special citation tags.
 
 The UI renders citation tags as source links.
 
+Citation keys are local to one saved assistant message. A citation does not pin its source into any later prompt.
+
 The UI also shows a separate sources-read view.
 
-The sources-read view lists the issue and web sources that entered the AI context.
+The sources-read view lists the deduplicated document, older-chat, memory, and web evidence serialized into the direct answer context or a fanout topic-answer context.
+
+Database matches, selector previews, reducer inspections, and explicitly omitted candidates are not sources read. They are tracked separately as AI exposures for operations and publisher aggregate metrics.
 
 The sources-read view is separate from inline answer citations.
 
@@ -419,7 +434,7 @@ Client users see sources used for their own AI answers.
 
 Client users do not see aggregate AI context pull analytics.
 
-Uncited claims must be phrased as inference or omitted.
+External factual claims without current document/web evidence must be phrased explicitly as inference or omitted. Recent or retrieved chat messages may ground statements about what participants previously said or requested, and saved memories may ground user-specific context, but neither prior assistant assertions nor memories become verified external-world evidence.
 
 ## Permissions
 
@@ -493,19 +508,23 @@ Demo AI calls use the provider boundary in `docs/ai-chat-runtime.spec.md`; OpenR
 
 Mistral is the AI provider for the MVP.
 
-Stripe, Clerk, Resend, and Mistral are disclosed as subprocessors for the MVP.
+Stripe, Clerk, Resend, and Mistral are disclosed as subprocessors for the MVP. If web research is enabled, its approved search provider is disclosed before activation; the MVP otherwise keeps web policy disabled.
 
 ## Chats
 
 Chats are private by default.
 
-The creator can promote a chat to shared.
+Before its first accepted AI turn, a chat receives an immutable memory mode: `private_owner` or `disabled`. The normal private-chat mode is `private_owner`; a chat intended for later sharing must use `disabled` from the start.
+
+The creator can promote a private chat to shared only when its memory mode has always been `disabled`. A memory-grounded `private_owner` chat cannot be shared later.
 
 Shared chats appear in the shared chats list for the client company.
 
 Shared chat links open the shared chat inside the platform.
 
 Shared chat viewers must belong to the same client company and have access to every subscription source selected in the chat.
+
+Saved memories are always user-private. Shared/`disabled` answers never receive or cite participant memories. Memory extraction may still save the initiating user's current message into that user's private memory store, but those memories cannot ground the shared answer.
 
 Client chats are hidden from publisher users.
 
@@ -520,6 +539,10 @@ The creator can unshare shared chats.
 The creator can delete shared chats.
 
 Deleted chats disappear immediately and are purged from active storage within 30 days.
+
+Conversation resolver C can select bounded recent complete user/assistant turns and terminal failed user-only turns from the current chat; provisional failed drafts never enter history. Internal retriever A can search older messages only in that same accessible chat. Deleted chats and messages are excluded immediately from both paths.
+
+Prompt membership is rebuilt on every turn. Prior sources, citations, memories, and messages enter a later prompt only when the current turn's selectors choose them.
 
 ## Client Access
 
@@ -616,9 +639,9 @@ Issue pages show total AI context pulls for the issue.
 
 Issue pages show AI context pulls per brief document.
 
-Issue AI context pulls count how many times issue content entered model context.
+Issue AI context pulls count runs in which some issue content became visible to an AI model. A SQL-only match does not count. A preview or snippet returned to a retrieval agent does count even if that agent does not select it for the final answer context.
 
-Retrieval candidates that are searched but not used as model context do not count.
+Each issue/document counts at most once per run in the publisher metric. Detailed internal exposure events, final sources read, and final citations remain separate funnel stages.
 
 AI context pull metrics are aggregated across all clients.
 
@@ -758,7 +781,7 @@ AI usage is measured with credits.
 
 Credits are consumed by AI chats.
 
-AI chats can answer with summaries, comparisons, web research, graphs, and visualizations.
+AI chats can answer in text with summaries, comparisons, explicit web research, and Markdown tables. Generated graphs, visualizations, and executable artifacts are outside the current chat runtime.
 
 Reading, downloading, and basic archive search are included with subscription access.
 

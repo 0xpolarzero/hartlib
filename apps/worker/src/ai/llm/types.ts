@@ -156,13 +156,12 @@ export interface ExistingMemory {
 export interface ProposedMemory {
   readonly kind: MemoryKind;
   readonly content: string;
-  readonly evidenceQuote: string;
   readonly targetMemoryId?: string | undefined;
 }
 
 export interface DiscardedMemoryProposal {
   readonly proposal: ProposedMemory;
-  readonly reason: "empty_content" | "invalid_quote" | "duplicate" | "write_cap";
+  readonly reason: "empty_content" | "duplicate" | "unknown_target";
 }
 
 export interface MemoryExtractionInput {

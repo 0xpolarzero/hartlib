@@ -841,7 +841,7 @@ function ClientFeedsList({
   useEffect(() => {
     if (activeRunId === null) {
       streamSeqRef.current = 0;
-      setStreamState(initialChatStreamState);
+      setStreamState((current) => (current.phase === "error" ? current : initialChatStreamState));
       return;
     }
 

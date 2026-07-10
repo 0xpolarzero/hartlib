@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { z } from "zod";
 
 import type { WorkerConfig } from "../../config";
+import { JsonLoggerLayer, serviceLogFields } from "../../logging";
 import type {
   AiClient,
   AiCallResult,
@@ -210,7 +211,6 @@ const BlockSummarySchema = z.object({
 const ProposedMemorySchema = z.object({
   kind: MemoryKindSchema,
   content: z.string(),
-  evidenceQuote: z.string(),
   targetMemoryId: z.string().optional(),
 }) satisfies z.ZodType<ProposedMemory>;
 const PreflightOutputSchema = z.object({
@@ -325,6 +325,8 @@ export interface AiChatWorkflowRuntime {
     | "aiAnswerTimeoutMs"
     | "aiMemoryInjectAllMaxTokens"
     | "aiPlannerBaseline"
+    | "aiMainModel"
+    | "aiFastModel"
   >;
   readonly aiClient: AiClient;
   readonly now?: () => Date;
@@ -387,6 +389,54 @@ const retryAnswerSystemPrompt =
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const sanitizedAiErrorMessage = (message: string): string =>
+  message
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[redacted]")
+    .slice(0, 500);
+
+type LifecycleLogFields = Record<string, string | number | boolean | null | undefined>;
+
+const aiLifecycleLogFields = (fields: LifecycleLogFields) => ({
+  component: "ai_chat",
+  ...fields,
+});
+
+const logAiLifecycle = (message: string, fields: LifecycleLogFields) =>
+  Effect.logInfo(message).pipe(Effect.annotateLogs(aiLifecycleLogFields(fields)));
+
+const logAiLifecycleWarning = (message: string, fields: LifecycleLogFields) =>
+  Effect.logWarning(message).pipe(Effect.annotateLogs(aiLifecycleLogFields(fields)));
+
+const logAiLifecycleError = (message: string, fields: LifecycleLogFields) =>
+  Effect.logError(message).pipe(Effect.annotateLogs(aiLifecycleLogFields(fields)));
+
+const logAiLifecyclePromise = (message: string, fields: LifecycleLogFields): Promise<void> =>
+  Effect.runPromise(
+    logAiLifecycle(message, fields).pipe(
+      Effect.provide(JsonLoggerLayer),
+      Effect.annotateLogs(serviceLogFields),
+    ),
+  );
+
+const preflightEventCounts = (events: readonly PreflightToolEvent[]) => {
+  let searchCount = 0;
+  let peekCount = 0;
+  let manifestCount = 0;
+  let rejectedCount = 0;
+  let degradedCount = 0;
+
+  for (const event of events) {
+    if (event.type === "search") searchCount += 1;
+    if (event.type === "peek") peekCount += 1;
+    if (event.type === "manifest") manifestCount += 1;
+    if (event.type === "tool_rejected") rejectedCount += 1;
+    if (event.type === "degraded") degradedCount += 1;
+  }
+
+  return { searchCount, peekCount, manifestCount, rejectedCount, degradedCount };
+};
 
 const formatIssuePath = (path: readonly (string | number | symbol)[]): string =>
   path.length === 0 ? "<root>" : path.map((segment) => String(segment)).join(".");
@@ -606,6 +656,10 @@ const loadTurn = (runtime: AiChatWorkflowRuntime, aiRunId: string): Promise<Load
   runAiWorkflowDb(
     runtime.connectionString,
     Effect.gen(function* () {
+      yield* logAiLifecycle("ai chat load turn started", {
+        aiRunId,
+        stage: "load-turn",
+      });
       const sql = yield* PgClient.PgClient;
       const rows = yield* sql<LoadTurnRow>`
         select
@@ -660,6 +714,26 @@ const loadTurn = (runtime: AiChatWorkflowRuntime, aiRunId: string): Promise<Load
       `;
       const activeBlocks = yield* loadActiveContextBlocks(row.chatId);
       const activeTokens = activeBlocks.reduce((sum, block) => sum + block.tokenEstimate, 0);
+      const remainingBudget = remainingBlockBudget(
+        activeTokens,
+        runtime.config.aiContextBlockBudget,
+      );
+
+      yield* logAiLifecycle("ai chat load turn completed", {
+        aiRunId: row.aiRunId,
+        chatId: row.chatId,
+        userId: row.userId,
+        userMessageId: row.userMessageId,
+        stage: "load-turn",
+        historyMessages: history.length,
+        sourceCount: sourceCatalog.length,
+        memoryCount: memories.length,
+        activeBlockCount: activeBlocks.length,
+        activeTokens,
+        remainingBlockBudget: remainingBudget,
+        locale: row.locale,
+        market: row.market,
+      });
 
       return validateTaskOutput("aiChatLoadTurn", aiChatSchemas.aiChatLoadTurn, {
         aiRunId: row.aiRunId,
@@ -673,10 +747,7 @@ const loadTurn = (runtime: AiChatWorkflowRuntime, aiRunId: string): Promise<Load
         sourceCatalog: [...sourceCatalog],
         memories: [...memories],
         activeBlocks: activeBlocks.map(toSerializedContextBlockRow),
-        remainingBlockBudget: remainingBlockBudget(
-          activeTokens,
-          runtime.config.aiContextBlockBudget,
-        ),
+        remainingBlockBudget: remainingBudget,
       });
     }),
   );
@@ -707,6 +778,20 @@ const recordPreflightToolEvents = (
 
     for (const event of toolEvents) {
       if (event.type === "search") {
+        yield* logAiLifecycle("ai chat retrieval search completed", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: taskId,
+          termsLength: event.spec.terms.length,
+          sourceFilterCount: event.spec.sourceIds?.length ?? 0,
+          countryFilterCount: event.spec.countries?.length ?? 0,
+          languageFilterCount: event.spec.languages?.length ?? 0,
+          documentTypeFilterCount: event.spec.documentTypes?.length ?? 0,
+          orderBy: event.spec.orderBy ?? "relevance",
+          limit: event.spec.limit ?? null,
+          resultCount: event.resultCount,
+        });
         yield* insertAiObservation(load.aiRunId, load.chatId, "search", {
           query: event.spec,
           resultCount: event.resultCount,
@@ -714,11 +799,52 @@ const recordPreflightToolEvents = (
       }
 
       if (event.type === "peek") {
+        yield* logAiLifecycle("ai chat retrieval peek completed", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: taskId,
+          documentId: event.documentId,
+          offsetChars: event.offsetChars,
+          lengthChars: event.lengthChars,
+          found: event.found,
+        });
         yield* insertAiObservation(load.aiRunId, load.chatId, "peek", {
           documentId: event.documentId,
           offsetChars: event.offsetChars,
           lengthChars: event.lengthChars,
           found: event.found,
+        });
+      }
+
+      if (event.type === "manifest") {
+        yield* logAiLifecycle("ai chat preflight manifest emitted", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: taskId,
+          manifestEntries: event.entries.length,
+        });
+      }
+
+      if (event.type === "tool_rejected") {
+        yield* logAiLifecycleWarning("ai chat preflight tool rejected", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: taskId,
+          toolName: event.toolName,
+          reason: event.reason,
+        });
+      }
+
+      if (event.type === "degraded") {
+        yield* logAiLifecycleWarning("ai chat preflight degraded", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: taskId,
+          reason: event.reason,
         });
       }
     }
@@ -759,6 +885,15 @@ const runPlannerBaselineTask = (
   return runAiWorkflowDb(
     runtime.connectionString,
     Effect.gen(function* () {
+      const startedAt = Date.now();
+      yield* logAiLifecycle("ai chat planner baseline started", {
+        aiRunId: load.aiRunId,
+        chatId: load.chatId,
+        userId: load.userId,
+        stage: taskId,
+        remainingBlockBudget: remainingBudget,
+        searchMaxLimit: runtime.config.aiSearchMaxLimit,
+      });
       const previews = yield* searchDocuments(spec, {
         access: sourceAccess,
         maxLimit: runtime.config.aiSearchMaxLimit,
@@ -776,6 +911,15 @@ const runPlannerBaselineTask = (
         type: "usage",
         agent: "preflight",
         usage: zeroUsage(),
+      });
+      yield* logAiLifecycle("ai chat planner baseline completed", {
+        aiRunId: load.aiRunId,
+        chatId: load.chatId,
+        userId: load.userId,
+        stage: taskId,
+        durationMs: Date.now() - startedAt,
+        resultCount: previews.length,
+        manifestEntries: manifest.length,
       });
 
       return validateTaskOutput("aiChatPreflight", aiChatSchemas.aiChatPreflight, {
@@ -799,6 +943,7 @@ const runPreflightTask = async (
     readonly insufficiencyGap?: string;
   },
 ): Promise<PreflightOutput> => {
+  const startedAt = Date.now();
   const standingWindow = options.standingWindow ?? load.activeBlocks;
   const standingWindowSummary: readonly StandingWindowBlockSummary[] = (() => {
     if (standingWindow.length > 0 && "label" in standingWindow[0]!) {
@@ -812,6 +957,18 @@ const runPreflightTask = async (
     return summarizeBlocks(standingWindow as LoadTurnOutput["activeBlocks"]);
   })();
   const budget = options.remainingBlockBudget ?? load.remainingBlockBudget;
+
+  await logAiLifecyclePromise("ai chat preflight started", {
+    aiRunId: load.aiRunId,
+    chatId: load.chatId,
+    userId: load.userId,
+    stage: options.taskId,
+    plannerBaseline: runtime.config.aiPlannerBaseline,
+    standingWindowBlocks: standingWindowSummary.length,
+    remainingBlockBudget: budget,
+    insufficiencyRetry: options.insufficiencyGap !== undefined,
+    model: runtime.config.aiFastModel,
+  });
 
   if (runtime.config.aiPlannerBaseline) {
     return runPlannerBaselineTask(runtime, load, options.taskId, budget);
@@ -849,7 +1006,21 @@ const runPreflightTask = async (
   if (!result.ok) {
     await runAiWorkflowDb(
       runtime.connectionString,
-      replaceAiRunEventsForTask(load.aiRunId, options.taskId, []),
+      Effect.gen(function* () {
+        yield* replaceAiRunEventsForTask(load.aiRunId, options.taskId, []);
+        yield* logAiLifecycleWarning("ai chat preflight failed", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: options.taskId,
+          durationMs: Date.now() - startedAt,
+          failureCode: result.failure.code,
+          failureKind: result.failure.kind,
+          failureMessage: sanitizedAiErrorMessage(result.failure.message),
+          usageTotalTokens: result.failure.usage.totalTokens,
+          model: runtime.config.aiFastModel,
+        });
+      }),
     );
 
     return validateTaskOutput("aiChatPreflight", aiChatSchemas.aiChatPreflight, {
@@ -870,6 +1041,17 @@ const runPreflightTask = async (
         agent: "preflight",
         usage: result.value.usage,
       });
+      yield* logAiLifecycle("ai chat preflight completed", {
+        aiRunId: load.aiRunId,
+        chatId: load.chatId,
+        userId: load.userId,
+        stage: options.taskId,
+        durationMs: Date.now() - startedAt,
+        manifestEntries: result.value.manifest.length,
+        usageTotalTokens: result.value.usage.totalTokens,
+        model: runtime.config.aiFastModel,
+        ...preflightEventCounts(result.value.toolEvents),
+      });
     }),
   );
 
@@ -889,11 +1071,33 @@ const runHydrateTask = (
   origin: "initial" | "retry",
 ): Promise<HydrateOutput> => {
   const taskId = origin === "initial" ? "hydrate" : "hydrate-2";
+  const startedAt = Date.now();
+
+  void logAiLifecyclePromise("ai chat hydrate started", {
+    aiRunId: load.aiRunId,
+    chatId: load.chatId,
+    userId: load.userId,
+    stage: taskId,
+    origin,
+    preflightStatus: preflight.status,
+    manifestEntries: preflight.manifest.length,
+  });
 
   if (preflight.status === "failed") {
     return runAiWorkflowDb(
       runtime.connectionString,
-      replaceAiRunEventsForTask(load.aiRunId, taskId, []),
+      Effect.gen(function* () {
+        yield* replaceAiRunEventsForTask(load.aiRunId, taskId, []);
+        yield* logAiLifecycleWarning("ai chat hydrate skipped after failed preflight", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: taskId,
+          origin,
+          durationMs: Date.now() - startedAt,
+          failureCode: preflight.failure?.code ?? null,
+        });
+      }),
     ).then(() =>
       validateTaskOutput("aiChatHydrate", aiChatSchemas.aiChatHydrate, {
         status: "failed",
@@ -945,6 +1149,21 @@ const runHydrateTask = (
       yield* insertAiObservation(load.aiRunId, load.chatId, "context_window", {
         blockIds: blockSummaries.map((block) => block.blockId),
       });
+      yield* logAiLifecycle("ai chat hydrate completed", {
+        aiRunId: load.aiRunId,
+        chatId: load.chatId,
+        userId: load.userId,
+        stage: taskId,
+        origin,
+        durationMs: Date.now() - startedAt,
+        manifestEntries: preflight.manifest.length,
+        memoryBlockIncluded: hydrated.memoryBlock !== null,
+        documentBlockCount: hydrated.documentBlocks.length,
+        activeBlockCount: blockSummaries.length,
+        addedBlockCount: hydrated.addedBlockIds.length,
+        evictedBlockCount: hydrated.evictedBlockIds.length,
+        totalActiveTokens: hydrated.totalActiveTokens,
+      });
 
       return validateTaskOutput("aiChatHydrate", aiChatSchemas.aiChatHydrate, {
         status: "ok" as const,
@@ -968,11 +1187,23 @@ const runAnswerTask = async (
   attempt: 1 | 2,
 ): Promise<AnswerOutput> => {
   const taskId = attempt === 1 ? "answer" : "answer-2";
+  const startedAt = Date.now();
 
   if (hydrate.status === "failed") {
     await runAiWorkflowDb(
       runtime.connectionString,
-      replaceAiRunEventsForTask(load.aiRunId, taskId, []),
+      Effect.gen(function* () {
+        yield* replaceAiRunEventsForTask(load.aiRunId, taskId, []);
+        yield* logAiLifecycleWarning("ai chat answer skipped after failed hydrate", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: taskId,
+          attempt,
+          durationMs: Date.now() - startedAt,
+          failureCode: hydrate.failure?.code ?? null,
+        });
+      }),
     );
 
     return validateTaskOutput("aiChatAnswer", aiChatSchemas.aiChatAnswer, {
@@ -1001,6 +1232,16 @@ const runAnswerTask = async (
           { type: "answer_started", attempt },
           taskId,
         );
+        yield* logAiLifecycle("ai chat answer started", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: taskId,
+          attempt,
+          contextBlockCount: allWindowBlocks(hydrate).length,
+          totalActiveTokens: hydrate.totalActiveTokens,
+          model: runtime.config.aiMainModel,
+        });
       }),
     ),
   );
@@ -1014,12 +1255,41 @@ const runAnswerTask = async (
     historyMaxMessages: runtime.config.aiHistoryMaxMessages,
   });
   let final: AiCallResult<LlmAnswerOutput> | null = null;
+  let deltaCount = 0;
+  let deltaChars = 0;
+  let firstDeltaLogged = false;
+
+  await logAiLifecyclePromise("ai chat answer prompt assembled", {
+    aiRunId: load.aiRunId,
+    chatId: load.chatId,
+    userId: load.userId,
+    stage: taskId,
+    attempt,
+    model: runtime.config.aiMainModel,
+    promptMessages: prompt.messages.length,
+    historyMessages: load.history.length,
+    contextBlockCount: allWindowBlocks(hydrate).length,
+  });
 
   for await (const event of runtime.aiClient.streamAnswer({
     systemPrompt: prompt.system,
     messages: prompt.messages,
   })) {
     if (event.type === "text_delta") {
+      deltaCount += 1;
+      deltaChars += event.delta.length;
+      if (!firstDeltaLogged) {
+        firstDeltaLogged = true;
+        await logAiLifecyclePromise("ai chat answer first delta received", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: taskId,
+          attempt,
+          timeToFirstDeltaMs: Date.now() - startedAt,
+          model: runtime.config.aiMainModel,
+        });
+      }
       await runAiWorkflowDb(
         runtime.connectionString,
         appendAiRunEventForTask(load.aiRunId, taskId, {
@@ -1033,6 +1303,17 @@ const runAnswerTask = async (
   }
 
   if (final === null) {
+    await logAiLifecyclePromise("ai chat answer missing final result", {
+      aiRunId: load.aiRunId,
+      chatId: load.chatId,
+      userId: load.userId,
+      stage: taskId,
+      attempt,
+      durationMs: Date.now() - startedAt,
+      deltaCount,
+      deltaChars,
+      model: runtime.config.aiMainModel,
+    });
     return validateTaskOutput("aiChatAnswer", aiChatSchemas.aiChatAnswer, {
       status: "failed",
       attempt,
@@ -1051,6 +1332,20 @@ const runAnswerTask = async (
 
   const result = requireOkOrThrowRetryable("answer", final);
   if (!result.ok) {
+    await logAiLifecyclePromise("ai chat answer failed", {
+      aiRunId: load.aiRunId,
+      chatId: load.chatId,
+      userId: load.userId,
+      stage: taskId,
+      attempt,
+      durationMs: Date.now() - startedAt,
+      deltaCount,
+      deltaChars,
+      failureCode: result.failure.code,
+      failureKind: result.failure.kind,
+      usageTotalTokens: result.failure.usage.totalTokens,
+      model: runtime.config.aiMainModel,
+    });
     return validateTaskOutput("aiChatAnswer", aiChatSchemas.aiChatAnswer, {
       status: "failed",
       attempt,
@@ -1079,6 +1374,20 @@ const runAnswerTask = async (
           gap: result.value.insufficiencyGap,
         });
       }
+      yield* logAiLifecycle("ai chat answer completed", {
+        aiRunId: load.aiRunId,
+        chatId: load.chatId,
+        userId: load.userId,
+        stage: taskId,
+        attempt,
+        durationMs: Date.now() - startedAt,
+        deltaCount,
+        deltaChars,
+        answerChars: result.value.text.length,
+        insufficiencyRetryRequested: result.value.insufficiencyGap !== null,
+        usageTotalTokens: result.value.usage.totalTokens,
+        model: runtime.config.aiMainModel,
+      });
     }),
   );
 
@@ -1098,11 +1407,23 @@ const runMemoryTask = async (
   answer: AnswerOutput,
   answer2: Answer2Output,
 ): Promise<MemoryOutput> => {
+  const startedAt = Date.now();
   const terminalAnswer = answer2.status === "ok" ? answer2 : answer;
   if (terminalAnswer.status !== "ok" || terminalAnswer.failure !== null) {
     await runAiWorkflowDb(
       runtime.connectionString,
-      replaceAiRunEventsForTask(load.aiRunId, "memory", []),
+      Effect.gen(function* () {
+        yield* replaceAiRunEventsForTask(load.aiRunId, "memory", []);
+        yield* logAiLifecycle("ai chat memory skipped", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: "memory",
+          durationMs: Date.now() - startedAt,
+          answerStatus: terminalAnswer.status,
+          failureCode: terminalAnswer.failure?.code ?? null,
+        });
+      }),
     );
 
     return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
@@ -1115,6 +1436,14 @@ const runMemoryTask = async (
   }
 
   try {
+    await logAiLifecyclePromise("ai chat memory extraction started", {
+      aiRunId: load.aiRunId,
+      chatId: load.chatId,
+      userId: load.userId,
+      stage: "memory",
+      existingMemoryCount: load.memories.length,
+      model: runtime.config.aiFastModel,
+    });
     const result = requireOkOrThrowRetryable(
       "memory",
       await runtime.aiClient.extractMemories({
@@ -1130,7 +1459,20 @@ const runMemoryTask = async (
     if (!result.ok) {
       await runAiWorkflowDb(
         runtime.connectionString,
-        replaceAiRunEventsForTask(load.aiRunId, "memory", []),
+        Effect.gen(function* () {
+          yield* replaceAiRunEventsForTask(load.aiRunId, "memory", []);
+          yield* logAiLifecycleWarning("ai chat memory extraction failed", {
+            aiRunId: load.aiRunId,
+            chatId: load.chatId,
+            userId: load.userId,
+            stage: "memory",
+            durationMs: Date.now() - startedAt,
+            failureCode: result.failure.code,
+            failureKind: result.failure.kind,
+            usageTotalTokens: result.failure.usage.totalTokens,
+            model: runtime.config.aiFastModel,
+          });
+        }),
       );
 
       return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
@@ -1144,13 +1486,26 @@ const runMemoryTask = async (
 
     await runAiWorkflowDb(
       runtime.connectionString,
-      replaceAiRunEventsForTask(load.aiRunId, "memory", [
-        {
-          type: "usage",
-          agent: "memory",
-          usage: result.value.usage,
-        },
-      ]),
+      Effect.gen(function* () {
+        yield* replaceAiRunEventsForTask(load.aiRunId, "memory", [
+          {
+            type: "usage",
+            agent: "memory",
+            usage: result.value.usage,
+          },
+        ]);
+        yield* logAiLifecycle("ai chat memory extraction completed", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: "memory",
+          durationMs: Date.now() - startedAt,
+          proposedMemoryCount: result.value.proposals.length,
+          discardedMemoryCount: result.value.discarded.length,
+          usageTotalTokens: result.value.usage.totalTokens,
+          model: runtime.config.aiFastModel,
+        });
+      }),
     );
 
     return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
@@ -1167,7 +1522,18 @@ const runMemoryTask = async (
 
     await runAiWorkflowDb(
       runtime.connectionString,
-      replaceAiRunEventsForTask(load.aiRunId, "memory", []),
+      Effect.gen(function* () {
+        yield* replaceAiRunEventsForTask(load.aiRunId, "memory", []);
+        yield* logAiLifecycleError("ai chat memory extraction errored", {
+          aiRunId: load.aiRunId,
+          chatId: load.chatId,
+          userId: load.userId,
+          stage: "memory",
+          durationMs: Date.now() - startedAt,
+          error: errorMessage(error),
+          model: runtime.config.aiFastModel,
+        });
+      }),
     );
 
     return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
@@ -1240,8 +1606,12 @@ const persistMemoryWrites = (
       }
 
       if (proposal.targetMemoryId !== undefined) {
-        const beforeRows = yield* sql<{ readonly id: string; readonly content: string }>`
-          select id::text, content
+        const beforeRows = yield* sql<{
+          readonly id: string;
+          readonly kind: string;
+          readonly content: string;
+        }>`
+          select id::text, kind, content
           from user_memories
           where id = ${proposal.targetMemoryId}
             and user_id = ${load.userId}
@@ -1250,12 +1620,15 @@ const persistMemoryWrites = (
         `;
         const before = beforeRows[0];
 
-        if (before !== undefined && before.content !== proposal.content) {
+        if (before === undefined) {
+          continue;
+        }
+
+        if (before.kind !== proposal.kind || before.content !== proposal.content) {
           yield* sql`
             update user_memories
             set kind = ${proposal.kind},
                 content = ${proposal.content},
-                evidence_quote = ${proposal.evidenceQuote},
                 source_message_id = ${load.userMessageId},
                 updated_at = now()
             where id = ${before.id}
@@ -1275,8 +1648,9 @@ const persistMemoryWrites = (
             action: "updated",
           });
           updated += 1;
-          continue;
         }
+
+        continue;
       }
 
       const insertedRows = yield* sql<IdRow>`
@@ -1284,14 +1658,12 @@ const persistMemoryWrites = (
           user_id,
           kind,
           content,
-          evidence_quote,
           source_message_id
         )
         values (
           ${load.userId},
           ${proposal.kind},
           ${proposal.content},
-          ${proposal.evidenceQuote},
           ${load.userMessageId}
         )
         returning id::text
@@ -1330,6 +1702,7 @@ const finalizeRun = (
   runAiWorkflowDb(
     runtime.connectionString,
     Effect.gen(function* () {
+      const startedAt = Date.now();
       const sql = yield* PgClient.PgClient;
       const finalAnswer = answer2.status === "ok" ? answer2 : answer;
       const failure =
@@ -1349,6 +1722,21 @@ const finalizeRun = (
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           yield* sql`select pg_advisory_xact_lock(hashtext(${`brief:ai-run-finalize:${load.aiRunId}`}))`;
+          yield* logAiLifecycle("ai chat finalize started", {
+            aiRunId: load.aiRunId,
+            chatId: load.chatId,
+            userId: load.userId,
+            stage: "finalize",
+            finalAnswerAttempt: finalAnswer.attempt,
+            finalAnswerStatus: finalAnswer.status,
+            preflightStatus: preflight.status,
+            hydrateStatus: hydrate.status,
+            answerStatus: answer.status,
+            preflight2Status: preflight2.status,
+            hydrate2Status: hydrate2.status,
+            answer2Status: answer2.status,
+            memoryStatus: memory.status,
+          });
           yield* sql`
             update ai_runs
             set usage = ${sql.json(usage)}
@@ -1366,6 +1754,16 @@ const finalizeRun = (
             yield* replaceAiRunEventsForTask(load.aiRunId, "finalize", [
               { type: "error", code: failure.code },
             ]);
+            yield* logAiLifecycleError("ai chat finalize failed run", {
+              aiRunId: load.aiRunId,
+              chatId: load.chatId,
+              userId: load.userId,
+              stage: "finalize",
+              durationMs: Date.now() - startedAt,
+              failureCode: failure.code,
+              failureKind: failure.kind,
+              failureAgent: failure.agent,
+            });
 
             return validateTaskOutput("aiChatFinalize", aiChatSchemas.aiChatFinalize, {
               status: "failed" as const,
@@ -1412,9 +1810,12 @@ const finalizeRun = (
           const activeBlockIds = new Set(activeBlocks.map((block) => block.blockId));
           const citedTokens = citationTokens(finalAnswer.text);
           const knownCitedIds: string[] = [];
+          let malformedCitationCount = 0;
+          let unknownCitationCount = 0;
 
           for (const token of citedTokens) {
             if (token.kind === "malformed") {
+              malformedCitationCount += 1;
               yield* insertAiObservation(load.aiRunId, load.chatId, "citation_defect", {
                 token: truncateCitationDefectToken(token.token),
               });
@@ -1428,6 +1829,7 @@ const finalizeRun = (
                 messageId: assistantMessageId,
               });
             } else {
+              unknownCitationCount += 1;
               yield* insertAiObservation(load.aiRunId, load.chatId, "citation_defect", {
                 token: truncateCitationDefectToken(token.blockId),
               });
@@ -1448,6 +1850,24 @@ const finalizeRun = (
               assistantMessageId,
             },
           ]);
+          yield* logAiLifecycle("ai chat finalize completed", {
+            aiRunId: load.aiRunId,
+            chatId: load.chatId,
+            userId: load.userId,
+            stage: "finalize",
+            durationMs: Date.now() - startedAt,
+            assistantMessageId,
+            answerChars: finalAnswer.text.length,
+            citedTokenCount: citedTokens.length,
+            resolvedCitationCount: knownCitedIds.length,
+            malformedCitationCount,
+            unknownCitationCount,
+            memoryCreated: memoryCounts.created,
+            memoryUpdated: memoryCounts.updated,
+            memoryDiscarded: memory.discardedCount,
+            usageTotalTokens:
+              usage.preflight.totalTokens + usage.answer.totalTokens + usage.memory.totalTokens,
+          });
 
           return validateTaskOutput("aiChatFinalize", aiChatSchemas.aiChatFinalize, {
             status: "done" as const,
@@ -1497,9 +1917,24 @@ const runPreflight2Task = async (
   answer: AnswerOutput,
 ): Promise<Preflight2Output> => {
   if (answer.status !== "ok" || answer.insufficiencyGap === null) {
+    await logAiLifecyclePromise("ai chat insufficiency retry skipped", {
+      aiRunId: load.aiRunId,
+      chatId: load.chatId,
+      userId: load.userId,
+      stage: "preflight-2",
+      answerStatus: answer.status,
+      failureCode: answer.failure?.code ?? null,
+    });
     return skippedPreflight2();
   }
 
+  await logAiLifecyclePromise("ai chat insufficiency retry triggered", {
+    aiRunId: load.aiRunId,
+    chatId: load.chatId,
+    userId: load.userId,
+    stage: "preflight-2",
+    gapLength: answer.insufficiencyGap.length,
+  });
   const output = await runPreflightTask(runtime, load, {
     taskId: "preflight-2",
     standingWindow: hydrate.blockSummaries,

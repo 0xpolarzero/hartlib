@@ -19,7 +19,6 @@ describe("decodeAppEnv", () => {
     ["AI_SEARCH_RECENCY_HALF_LIFE_DAYS", "14"],
     ["AI_STREAM_POLL_MS", "300"],
     ["AI_STREAM_KEEPALIVE_MS", "15000"],
-    ["AI_MEMORY_MAX_WRITES_PER_TURN", "5"],
     ["AI_MEMORY_INJECT_ALL_MAX_TOKENS", "1500"],
     ["AI_PLANNER_BASELINE", "false"],
   ] as const)("defaults %s to %s", async (key, expected) => {

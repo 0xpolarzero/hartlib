@@ -122,7 +122,6 @@ The demo seeds:
 - published issues
 - delivered client archives
 - seeded publisher source metadata
-- representative artifact output when useful
 
 The demo lets the viewer switch between publisher and client accounts.
 
@@ -140,7 +139,7 @@ Read-only or guarded areas mean:
 - publisher create, upload, edit, publish, invite, billing, and destructive actions are disabled, hidden, or local-only depending on the scenario
 - client admin controls are visible only when useful for understanding the product
 - client chat sends through the Brief API and streams active AI runs over SSE
-- memories are visible on the client surface with revision and revert controls
+- memories are visible on the client surface with tombstone, revision, and revert controls
 
 The demo chat runtime uses the provider and runtime boundary specified in `docs/ai-chat-runtime.spec.md`.
 
@@ -170,7 +169,6 @@ For the demo, keep real:
 - archive search over seeded content
 - chat rendering
 - source metadata rendering
-- artifact rendering
 - public-source data from the worker/API path
 
 Demo code must be isolated from production behavior by the separate `apps/demo` app and demo-only modules.
@@ -292,8 +290,9 @@ For chat runtime work:
 - the Brief backend owns authentication, authorization, tenant boundaries, chat history, and stream access
 - worker jobs run Smithers workflows for active AI turns
 - Pi makes model calls inside Smithers workflow compute tasks
-- Smithers state is in-flight runtime state and is deleted after finalization
-- Brief product tables persist chat history, context blocks, observations, memories, usage, and final assistant messages
+- Smithers state is in-flight runtime state and is deleted only after either `finalize` or the fatal-failure handler has committed the product terminal transition
+- Brief product tables persist chat history, per-run source exposure, the sources read by each saved answer, citation provenance, observations, memories, provider usage, and final assistant messages
+- prompt membership is rebuilt per turn; durable citations never pin content into later prompts
 
 Provider boundary:
 
@@ -305,136 +304,59 @@ Provider boundary:
 
 Effect AI may fit future non-chat model calls, but it is not the chat agent runtime.
 
-The chat runtime uses the preflight/answer/memory loop in `docs/ai-chat-runtime.spec.md`:
+The chat runtime uses the composed workflow in `docs/ai-chat-runtime.spec.md`:
 
-- code loads turn state, source access, active context blocks, memories, and recent history
-- the preflight agent gets exactly three tools: `search_documents`, `peek_document`, and `emit_manifest`
-- code hydrates the preflight manifest into durable context blocks and enforces token budgets
-- the main answer agent has zero tools and streams answer text with inline citation tags
-- code records context blocks and citation observations, stores the final assistant message, and marks the run finished
+- code loads the run, bounded recent-turn inventory, accessible source catalog, memories, locale, market, and explicit web-search choice
+- conversation resolver C selects relevant original turns or returns a clarification question
+- execution planner D chooses a single or semantically separable fanout route before retrieval
+- each single/topic path runs internal retriever A, memory selector B, and eligible web researcher W in parallel
+- agents emit typed queries and references, never SQL; code enforces authorization and executes parameterized retrieval
+- code authorizes, hydrates, deduplicates, renders, and exact-counts every complete provider-shaped request, including fast-agent tool transcripts
+- an oversized single/topic path uses context reducer O in a bounded keep/range/omit correction loop; code never silently truncates context
+- the direct answer, topic-answer, and synthesis agents have zero tools
+- fanout topic packets are bounded, citation-bearing intermediate state; only final synthesis streams
+- memory extraction runs in parallel with the entire answer lane and is required before finalization and `done`
+- provider usage and planning/measurement observations are written idempotently by their owning tasks; finalization validates them, atomically stores memory changes, the final assistant message, immutable source map/uses, citation observations, aggregate usage event, and terminal outcome
 
 The chat stream SSE vocabulary is the one in `docs/ai-chat-runtime.spec.md`:
 
 - `run_started`
-- `preflight_search`
-- `preflight_peek`
-- `context_window`
+- `context_ready`
 - `answer_started`
-- `answer_retry`
 - `text_delta`
 - `memory_updated`
 - `usage`
 - `done`
 - `error`
 
-Generic tool start/end events, source-read events, and credit metadata are not part of the demo chat stream contract.
+Raw selector queries, tool calls, context decisions, topic packets, and credit metadata are not part of the browser stream contract.
 
 AI request lifecycle:
 
 - create a durable `ai_run` record for each AI message
-- store run status
-- store tool calls
-- store sources read
-- store usage for observability
-- store artifacts created
+- derive run status from terminal timestamps and queue state
+- store typed plan/measurement observations without copying internal source bodies
+- store AI-exposed sources separately from sources serialized into direct/topic answer contexts
+- store the turn-local source-key map and exact per-consumer uses needed for saved citations, multi-range provenance, and immutable memory-revision audit
+- store model usage by role/task/iteration/attempt/request and web search/fetch operation usage by task/attempt/request, including empty and failed operations
 - store errors
 - use run records for retries, audit, and debugging
 
 Billing and credit accounting are out of scope for the demo. Production billing must be designed explicitly before launch and must not be inferred from demo usage fields.
 
-Future publisher-issue tools may include:
+Internal retrieval is exposed to agent A through the typed `search_internal`, `inspect_internal`, and manifest boundary in `docs/ai-chat-runtime.spec.md`. The document target covers every document in the demo user's authorized seeded-publisher and public-source set, plus production publisher-issue documents as those sources are indexed. Source-specific SQL and storage adapters remain behind that stable tool contract.
 
-- `list_issues`
-- `search_issues`
-- `read_issue`
+Web research:
 
-Those tools are future non-chat or post-demo scope unless `docs/ai-chat-runtime.spec.md` is amended to include them.
+- the user makes an explicit per-message web-search choice
+- company policy and domain allowlists are enforced before search or fetch
+- W runs only when the choice is enabled and authorized
+- W has bounded safe search/fetch tools and emits URL-backed verbatim quotations
+- store only selected quotations and citation metadata with the saved answer; full fetched pages remain transient
+- a requested web path that exhausts retries fails visibly rather than silently degrading to internal-only research
+- production credit conversion for web calls must be defined before billing launches
 
-Future web research:
-
-- OpenRouter web search is a future production provider path, not demo chat runtime scope
-- send web research tools only when web access is enabled for that chat/company
-- cap search calls and returned results
-- store returned web citation metadata
-- define billing before enabling web research in production
-
-Artifacts:
-
-- artifacts are chat-scoped virtual file workspaces
-- support freeform HTML artifacts in MVP
-- allow Tailwind utility classes
-- allow ECharts inside artifacts
-- render artifacts in isolated sandboxed iframes
-- keep artifacts separate from the main app DOM
-- store artifact files in Postgres
-
-MVP artifact workspace:
-
-- one artifact per assistant message
-- one required file: `index.html`
-- optional metadata stored by the platform
-- file content stored in Postgres
-- artifacts belong to one chat
-- users can render artifacts only from chats they can access
-- the agent can list, read, patch, and check only artifacts in the current chat
-
-Artifact tools should feel like normal coding-agent file tools:
-
-- `artifact.list_files`
-- `artifact.read_file`
-- `artifact.apply_patch`
-- `artifact.check`
-
-`artifact.apply_patch` is the only write primitive.
-
-It supports adding, updating, and deleting artifact files through patch operations.
-
-The AI references artifacts in assistant messages with directive syntax:
-
-```md
-::artifact{id="art_123" title="Timeline"}
-```
-
-The UI renders artifact directives as artifact links or embeds.
-
-The AI can write and patch the HTML artifact it wants through `artifact.apply_patch`.
-
-`artifact.check` renders the artifact in the sandbox and returns validation, runtime, console, blocked-operation, timeout, and blank-render errors.
-
-Artifact sandbox:
-
-- no app cookies
-- no app session access
-- no direct app API access
-- no parent DOM access
-- no network access for MVP
-- no form submission
-- no top-level navigation
-- no browser storage access
-
-The artifact may include text, tables, layouts, and visualizations.
-
-The artifact may use the data and claims the AI includes in the artifact.
-
-The artifact cannot independently fetch private data from the platform.
-
-This means the AI can write rich freeform HTML, but the iframe cannot act as an authenticated app user.
-
-ECharts is available for charts and visualizations.
-
-The app should preload approved artifact libraries instead of letting artifacts load remote scripts.
-
-Artifact checks:
-
-- use Playwright-based render checks for MVP
-- render the artifact in the same sandbox policy as the app
-- capture syntax errors
-- capture runtime errors
-- capture console errors
-- capture blocked network attempts
-- detect blank render
-- enforce timeout
-- store the last check result with the artifact
+Artifacts are outside the current chat runtime and MVP. If introduced, they require a separate canonical workflow, API, storage, authorization, sandbox, and E2E specification; no current answer agent receives artifact tools.
 
 ## Observability
 
@@ -446,6 +368,8 @@ Use Railway logs for basic runtime logs.
 
 Use structured backend and worker logs.
 
+For local AI chat development, `bun run dev:demo` must emit enough structured API and worker logs to follow a single chat message from send, enqueue, job claim, workflow execution, C conversation resolution, D route planning, per-path A/B/W selectors, exact context measurement, O reduction iterations, direct or topic/synthesis calls, streaming, parallel memory extraction, finalization, and cleanup. These logs use stable IDs, topic/task IDs, durations, counts, and exact token totals. Raw user text, resolved questions, topic questions, search terms, retrieved text, web quotations, context-decision reasons, topic packets, answer deltas, and memory content do not belong in console logs.
+
 Store product events in Postgres first.
 
 MVP product events:
@@ -454,10 +378,9 @@ MVP product events:
 - issue opened
 - PDF downloaded
 - AI message sent
-- issue pulled into AI context
+- issue content exposed to AI
+- issue serialized into an answer context
 - AI usage recorded
-- artifact created
-- artifact checked
 
 Do not add a separate analytics platform for MVP.
 
@@ -465,7 +388,7 @@ Do not add a separate analytics platform for MVP.
 
 Use Vitest for unit and integration tests.
 
-Use Playwright for narrow frontend E2E tests and artifact render checks.
+Use Playwright for narrow frontend E2E tests.
 
 Build the backend so domain logic can be tested without complex UI E2E tests.
 
@@ -478,7 +401,9 @@ Use real Postgres integration tests for:
 - PDF extraction state
 - search and retrieval
 - AI source metadata
-- artifact storage and checks
+- AI source-exposure idempotency and sources-read/citation persistence
+- same-chat older-message retrieval and deleted-message exclusion
+- exact context-plan persistence and atomic answer-plus-memory finalization
 - durable job locking, retries, and public-source ingestion state
 - credits
 - Stripe webhook state changes
@@ -491,8 +416,12 @@ Use pure unit tests for:
 - credit math
 - date and status transitions
 - directive parsing
-- artifact validation
 - small permission helpers
+- conversation/execution plan validation
+- deterministic context deduplication and source-key assignment
+- exact provider-request token counting
+- complete keep/range/omit accounting and fanout output allocation
+- topic-packet and synthesis citation preservation
 
 Use Effect test layers for service tests.
 
@@ -512,7 +441,6 @@ Use frontend tests mainly for:
 - critical forms
 - API integration assumptions
 - TanStack DB synchronization behavior
-- artifact rendering shell
 
 Keep MVP E2E coverage narrow.
 
@@ -522,14 +450,15 @@ Critical MVP E2E paths:
 - client sees issue and downloads PDF
 - client chats against source
 - AI produces citation and source metadata
-- AI creates and checks artifact
+- clarification, web-toggle, and fanout final-only streaming behavior
+- the next message is accepted only after prior memory writes commit
 - client admin billing flow via Stripe webhook simulation
 
 ## Data Stack Recommendation
 
 Use Postgres as the primary database.
 
-Use pgvector for embeddings.
+Use pgvector when the semantic retrieval arm is introduced. It is not required for the current full-text chat path.
 
 Use Postgres full-text search for MVP archive search.
 
@@ -672,8 +601,7 @@ MVP durable jobs:
 
 - publish scheduled issues
 - extract text from PDFs
-- chunk extracted text
-- generate embeddings
+- normalize canonical searchable text and update full-text indexes
 - update AI indexing status
 - import historical issues
 - send platform and email notifications
@@ -683,6 +611,7 @@ MVP durable jobs:
 - reset monthly credit counters
 - generate exports
 - purge deleted chats after retention
+- purge expired memory tombstones or reduce answer-referenced tombstones to provenance-only revisions
 - purge permanently deleted draft/scheduled files
 
 ## File Processing
@@ -726,26 +655,28 @@ PDF extraction tooling:
 
 ## Retrieval
 
-Use Postgres hybrid retrieval for MVP.
+Use Postgres full-text retrieval for the current runtime.
 
-Use:
+Use indexed full-text search for terms, names, dates, companies, and acronyms. The typed internal-query contract supports documents and older messages and leaves room for a semantic arm without changing agent contracts.
 
-- Postgres full-text search for exact terms, names, dates, companies, and acronyms
-- pgvector similarity search for semantic retrieval
-- backend reranking or merging logic
+Add pgvector similarity search and deterministic result merging only when evaluation demonstrates a concrete recall improvement. It is not an admission-control or context-budget mechanism.
 
-Do not use an external search engine for MVP.
+Do not use an external search engine for internal archive retrieval in the MVP. This does not prohibit the explicit, policy-controlled W web-research path.
 
-Store text chunks with:
+Store canonical searchable text as immutable document versions with:
 
-- issue id
-- document id
-- page number when available
+- source and issue id when applicable
+- logical document id and immutable document-version id
+- content hash
+- page or stable character-range metadata when available
 - text
-- token estimate
-- embedding vector
+- full-text search vector
 
-The AI can cite only chunks that were actually returned to its context.
+Current-document pointers are separate from immutable versions. Updating extracted/canonical content creates a new version and moves the pointer; it never mutates text or offsets in a version already exposed to AI. Versions referenced by retained `assistant_message_sources` remain resolvable for the answer's retention lifetime.
+
+Semantic chunks and embedding vectors are added with the semantic arm, not fabricated for the full-text path.
+
+The AI can cite only turn-local source keys serialized into its direct/topic answer context. Durable source provenance is separate from future prompt membership.
 
 Jobs must be idempotent.
 
@@ -774,7 +705,7 @@ The platform must support:
 
 ## Open Decisions
 
-- None.
+- Select and contract the MVP `WebResearchService` adapter, document its region/retention/training posture, and add it to the disclosed subprocessor list before production web research can be enabled. The demo adapter is Z.AI's structured Web Search API.
 
 ## References
 

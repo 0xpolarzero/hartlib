@@ -4,6 +4,7 @@ import { ZAI_CODING_PLAN_BASE_URL } from "./ai/llm/models";
 
 export interface WorkerConfig {
   readonly jobPollIntervalMs: number;
+  readonly workerConcurrency: number;
   readonly runMigrationsOnStartup: boolean;
   readonly publicSourceIngestionEnabled: boolean;
   readonly publicSourcePollIntervalMs: number;
@@ -26,11 +27,8 @@ export interface WorkerConfig {
   readonly aiPreflightTimeoutMs: number;
   readonly aiAnswerTimeoutMs: number;
   readonly aiStreamPollMs: number;
-  readonly aiMemoryMaxWritesPerTurn: number;
   readonly aiMemoryInjectAllMaxTokens: number;
   readonly aiPlannerBaseline: boolean;
-  readonly aiFake: boolean;
-  readonly aiFakeDelayMs: number;
   readonly nodeEnv: string;
 }
 
@@ -38,6 +36,7 @@ export const loadWorkerConfig = Effect.gen(function* () {
   const jobPollIntervalMs = yield* Config.number("WORKER_POLL_INTERVAL_MS").pipe(
     Config.withDefault(5000),
   );
+  const workerConcurrency = yield* Config.number("WORKER_CONCURRENCY").pipe(Config.withDefault(2));
   const publicSourceIngestionEnabled = yield* Config.boolean(
     "PUBLIC_SOURCE_INGESTION_ENABLED",
   ).pipe(Config.withDefault(true));
@@ -92,17 +91,12 @@ export const loadWorkerConfig = Effect.gen(function* () {
     Config.withDefault(120_000),
   );
   const aiStreamPollMs = yield* Config.number("AI_STREAM_POLL_MS").pipe(Config.withDefault(300));
-  const aiMemoryMaxWritesPerTurn = yield* Config.number("AI_MEMORY_MAX_WRITES_PER_TURN").pipe(
-    Config.withDefault(5),
-  );
   const aiMemoryInjectAllMaxTokens = yield* Config.number("AI_MEMORY_INJECT_ALL_MAX_TOKENS").pipe(
     Config.withDefault(1500),
   );
   const aiPlannerBaseline = yield* Config.boolean("AI_PLANNER_BASELINE").pipe(
     Config.withDefault(false),
   );
-  const aiFake = yield* Config.boolean("AI_FAKE").pipe(Config.withDefault(false));
-  const aiFakeDelayMs = yield* Config.number("AI_FAKE_DELAY_MS").pipe(Config.withDefault(0));
   const nodeEnv = yield* Config.string("NODE_ENV").pipe(Config.withDefault("development"));
   const runMigrationsOnStartup = yield* Config.boolean("WORKER_RUN_MIGRATIONS_ON_STARTUP").pipe(
     Config.withDefault(nodeEnv !== "production"),
@@ -110,6 +104,7 @@ export const loadWorkerConfig = Effect.gen(function* () {
 
   return {
     jobPollIntervalMs,
+    workerConcurrency,
     runMigrationsOnStartup,
     publicSourceIngestionEnabled,
     publicSourcePollIntervalMs,
@@ -132,11 +127,8 @@ export const loadWorkerConfig = Effect.gen(function* () {
     aiPreflightTimeoutMs,
     aiAnswerTimeoutMs,
     aiStreamPollMs,
-    aiMemoryMaxWritesPerTurn,
     aiMemoryInjectAllMaxTokens,
     aiPlannerBaseline,
-    aiFake,
-    aiFakeDelayMs,
     nodeEnv,
   } satisfies WorkerConfig;
 });

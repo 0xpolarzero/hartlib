@@ -57,7 +57,6 @@ export type MemoryResponse = {
   readonly id: string;
   readonly kind: string;
   readonly content: string;
-  readonly evidenceQuote: string;
   readonly deleted: boolean;
   readonly deletedAt: string | null;
   readonly createdAt: string;

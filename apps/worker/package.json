@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "db:migrate": "bun src/db/migrate.ts",
-    "db:reset": "bun src/db/reset.ts",
-    "dev": "bun --watch src/index.ts",
-    "start": "bun src/index.ts",
+    "db:migrate": "bun --env-file=../../.env --env-file=../../.env.local src/db/migrate.ts",
+    "db:reset": "bun --env-file=../../.env --env-file=../../.env.local src/db/reset.ts",
+    "dev": "bun --env-file=../../.env --env-file=../../.env.local --watch src/index.ts",
+    "start": "bun --env-file=../../.env --env-file=../../.env.local src/index.ts",
     "build": "tsc -b --noEmit",
     "test": "bunx --bun vitest run --root ../.. apps/worker/src"
   },

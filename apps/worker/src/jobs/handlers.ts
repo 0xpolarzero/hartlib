@@ -5,7 +5,12 @@ import {
 } from "@brief/source-ingestion";
 import { PgClient } from "@effect/sql-pg";
 import { Config, Effect } from "effect";
-import { makeAiClient, makeEffectRetrievalExecutor } from "../ai/llm";
+import {
+  makeAiClient,
+  makeEffectRetrievalExecutor,
+  type AiClient,
+  type RetrievalExecutor,
+} from "../ai/llm";
 import {
   createSmithersStorage,
   runSmithersWorkflow,
@@ -19,9 +24,11 @@ import {
   sweepAiChatSmithersRows,
 } from "../ai/workflow/smithers-cleanup";
 import { loadWorkerConfig } from "../config";
+import { JsonLoggerLayer, serviceLogFields } from "../logging";
 import { runPublicSourceIngestion } from "../source-ingestion/orchestrator";
 import type { PublicSourceIngestionRepository } from "../source-ingestion/repository";
 import type { PublicSourceIngestionOptions } from "../source-ingestion/types";
+import type { WorkerConfig } from "../config";
 import type { JobRecord, JobResult } from "./types";
 
 const publicSourceIds = new Set<string>(publicSourceDefinitions.map((source) => source.id));
@@ -115,6 +122,9 @@ type AiChatRunJobPayload = {
 
 export interface HandleJobOptions {
   readonly signal?: AbortSignal | undefined;
+  readonly aiClientFactory?:
+    | ((config: WorkerConfig, retrieval: RetrievalExecutor) => AiClient)
+    | undefined;
 }
 
 type PurgeAiRuntimeJobPayload = {
@@ -177,6 +187,11 @@ const isResumeMetadataMismatch = (error: unknown): boolean => {
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const runJsonLog = (effect: Effect.Effect<void>): Promise<void> =>
+  Effect.runPromise(
+    effect.pipe(Effect.provide(JsonLoggerLayer), Effect.annotateLogs(serviceLogFields)),
+  );
 
 const runResultError = (result: unknown): unknown =>
   typeof result === "object" && result !== null && "error" in result
@@ -283,6 +298,14 @@ const handleAiChatRunJob = (
       try: () => parseAiChatRunPayload(job.payload),
       catch: (error) => error,
     });
+    yield* Effect.logInfo("ai chat job started").pipe(
+      Effect.annotateLogs({
+        component: "ai_chat",
+        jobId: job.id,
+        jobKind: job.kind,
+        aiRunId: payload.aiRunId,
+      }),
+    );
     const config = yield* loadWorkerConfig;
     const connectionString = yield* Config.string("DATABASE_URL").pipe(
       Config.withDefault(defaultDatabaseUrl),
@@ -293,10 +316,27 @@ const handleAiChatRunJob = (
     );
 
     if (terminalState.terminal) {
+      yield* Effect.logInfo("ai chat job already terminal").pipe(
+        Effect.annotateLogs({
+          component: "ai_chat",
+          jobId: job.id,
+          aiRunId: payload.aiRunId,
+          smithersRunId: terminalState.smithersRunId,
+        }),
+      );
       if (terminalState.smithersRunId !== null) {
         const smithersRunIdToDelete = terminalState.smithersRunId;
         yield* Effect.tryPromise(() =>
           runAiWorkflowDb(connectionString, deleteSmithersRowsForRun(smithersRunIdToDelete)),
+        );
+        yield* Effect.logInfo("ai chat Smithers rows cleaned").pipe(
+          Effect.annotateLogs({
+            component: "ai_chat",
+            jobId: job.id,
+            aiRunId: payload.aiRunId,
+            smithersRunId: smithersRunIdToDelete,
+            reason: "already_terminal",
+          }),
         );
       }
 
@@ -309,6 +349,14 @@ const handleAiChatRunJob = (
     yield* Effect.tryPromise(() =>
       setRunSmithersRunId(connectionString, payload.aiRunId, smithersRunId),
     );
+    yield* Effect.logInfo("ai chat Smithers run id assigned").pipe(
+      Effect.annotateLogs({
+        component: "ai_chat",
+        jobId: job.id,
+        aiRunId: payload.aiRunId,
+        smithersRunId,
+      }),
+    );
 
     const runRetrievalEffect = <A, E, R>(effect: Effect.Effect<A, E, R>): Promise<A> =>
       runAiWorkflowDb(
@@ -316,7 +364,9 @@ const handleAiChatRunJob = (
         effect as unknown as Effect.Effect<A, E, PgClient.PgClient>,
       );
 
-    const aiClient = makeAiClient(config, makeEffectRetrievalExecutor(runRetrievalEffect));
+    const retrieval = makeEffectRetrievalExecutor(runRetrievalEffect);
+    const aiClient =
+      options?.aiClientFactory?.(config, retrieval) ?? makeAiClient(config, retrieval);
 
     const result = yield* Effect.tryPromise({
       try: async () => {
@@ -330,13 +380,38 @@ const handleAiChatRunJob = (
           });
           const resume = await smithersRunExists(api, smithersRunId);
 
-          return await runSmithersWorkflow(workflow, {
+          await runJsonLog(
+            Effect.logInfo("ai chat Smithers workflow launching").pipe(
+              Effect.annotateLogs({
+                component: "ai_chat",
+                jobId: job.id,
+                aiRunId: payload.aiRunId,
+                smithersRunId,
+                resume,
+              }),
+            ),
+          );
+
+          const workflowResult = await runSmithersWorkflow(workflow, {
             runId: smithersRunId,
             input: { aiRunId: payload.aiRunId },
             logDir: null,
             resume,
             ...(options?.signal === undefined ? {} : { signal: options.signal }),
           });
+          await runJsonLog(
+            Effect.logInfo("ai chat Smithers workflow ended").pipe(
+              Effect.annotateLogs({
+                component: "ai_chat",
+                jobId: job.id,
+                aiRunId: payload.aiRunId,
+                smithersRunId,
+                status: workflowResult.status,
+              }),
+            ),
+          );
+
+          return workflowResult;
         } finally {
           await api.close();
         }
@@ -368,6 +443,15 @@ const handleAiChatRunJob = (
       yield* Effect.tryPromise(() =>
         runAiWorkflowDb(connectionString, deleteSmithersRowsForRun(smithersRunId)),
       );
+      yield* Effect.logInfo("ai chat Smithers rows cleaned").pipe(
+        Effect.annotateLogs({
+          component: "ai_chat",
+          jobId: job.id,
+          aiRunId: payload.aiRunId,
+          smithersRunId,
+          reason: "aborted",
+        }),
+      );
       return yield* Effect.fail(new Error(`ai-chat Smithers run aborted: ${smithersRunId}`));
     }
 
@@ -382,6 +466,15 @@ const handleAiChatRunJob = (
       );
       yield* Effect.tryPromise(() =>
         runAiWorkflowDb(connectionString, deleteSmithersRowsForRun(smithersRunId)),
+      );
+      yield* Effect.logInfo("ai chat Smithers rows cleaned").pipe(
+        Effect.annotateLogs({
+          component: "ai_chat",
+          jobId: job.id,
+          aiRunId: payload.aiRunId,
+          smithersRunId,
+          reason: terminalFailureStatus,
+        }),
       );
 
       return {
@@ -398,6 +491,15 @@ const handleAiChatRunJob = (
 
     yield* Effect.tryPromise(() =>
       runAiWorkflowDb(connectionString, deleteSmithersRowsForRun(smithersRunId)),
+    );
+    yield* Effect.logInfo("ai chat Smithers rows cleaned").pipe(
+      Effect.annotateLogs({
+        component: "ai_chat",
+        jobId: job.id,
+        aiRunId: payload.aiRunId,
+        smithersRunId,
+        reason: "finished",
+      }),
     );
 
     return {

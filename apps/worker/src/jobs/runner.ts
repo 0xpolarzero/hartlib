@@ -3,6 +3,14 @@ import { handleJob, type HandleJobOptions } from "./handlers";
 import { JobRepository, type JobRepositoryShape } from "./repository";
 import type { JobRecord } from "./types";
 
+const aiRunIdFromPayload = (payload: unknown): string | null =>
+  typeof payload === "object" &&
+  payload !== null &&
+  "aiRunId" in payload &&
+  typeof (payload as { readonly aiRunId?: unknown }).aiRunId === "string"
+    ? (payload as { readonly aiRunId: string }).aiRunId
+    : null;
+
 const runJobHeartbeat = (jobs: JobRepositoryShape, job: JobRecord) =>
   Effect.gen(function* () {
     while (true) {
@@ -25,6 +33,16 @@ export const makeWorkerTick = (options?: HandleJobOptions) =>
       yield* Effect.logDebug("no job available");
       return;
     }
+
+    yield* Effect.logInfo("worker job claimed").pipe(
+      Effect.annotateLogs({
+        jobId: job.id,
+        jobKind: job.kind,
+        attempts: job.attempts,
+        lockedBy: job.lockedBy,
+        aiRunId: aiRunIdFromPayload(job.payload),
+      }),
+    );
 
     const result = yield* handleJobWithHeartbeat(jobs, job, options).pipe(
       Effect.catch((error) =>

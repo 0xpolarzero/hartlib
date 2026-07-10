@@ -1,5 +1,4 @@
 export * from "./client";
-export * from "./fake-ai-client";
 export * from "./insufficiency";
 export * from "./memory";
 export * from "./models";

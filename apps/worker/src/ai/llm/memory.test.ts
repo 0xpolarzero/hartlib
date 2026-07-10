@@ -1,7 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 
-import { verifyMemoryProposals } from "./memory";
+import { prepareMemoryProposals } from "./memory";
 import { PiAiClient } from "./pi-ai-client";
 import type { ProposedMemory } from "./types";
 import { zeroUsage } from "./types";
@@ -24,38 +24,52 @@ const recordMemoriesMessage = (memories: unknown): AssistantMessage => ({
   timestamp: Date.now(),
 });
 
-describe("memory proposal verification", () => {
-  it("accepts quoted memories, rejects unquoted ones, caps writes, and deduplicates", () => {
-    const userText =
-      "I live in Paris. I prefer short answers. My VAT number is FR123. I like weekly summaries.";
+describe("memory proposal preparation", () => {
+  it("normalizes content and exactly deduplicates without a write cap", () => {
     const proposals: ProposedMemory[] = [
-      { kind: "profile", content: "Lives in Paris", evidenceQuote: "I live in Paris" },
-      { kind: "preference", content: "Prefers short answers", evidenceQuote: "short answers" },
-      { kind: "fact", content: "Has VAT number FR123", evidenceQuote: "FR123" },
-      { kind: "instruction", content: "Use weekly summaries", evidenceQuote: "weekly summaries" },
-      { kind: "episode", content: "Asked about copied text", evidenceQuote: "not user text" },
-      { kind: "profile", content: "Lives in Paris", evidenceQuote: "I live in Paris" },
+      { kind: "profile", content: "  Lives in Paris " },
+      { kind: "preference", content: "Prefers short answers" },
+      { kind: "fact", content: "Has VAT number FR123" },
+      { kind: "instruction", content: "Use weekly summaries" },
+      { kind: "episode", content: "Asked for an energy briefing" },
+      { kind: "fact", content: "Works in energy" },
+      { kind: "preference", content: "Prefers tables" },
+      { kind: "profile", content: "Lives in Paris" },
+      { kind: "fact", content: "   " },
     ];
-    const result = verifyMemoryProposals(
-      proposals,
-      userText,
-      [{ id: "existing-1", kind: "preference", content: "Prefers short answers" }],
-      2,
-    );
+    const result = prepareMemoryProposals(proposals, [
+      { id: "existing-1", kind: "preference", content: "Prefers short answers" },
+    ]);
 
     expect(result.accepted).toEqual([
-      { kind: "profile", content: "Lives in Paris", evidenceQuote: "I live in Paris" },
-      { kind: "fact", content: "Has VAT number FR123", evidenceQuote: "FR123" },
+      { kind: "profile", content: "Lives in Paris" },
+      { kind: "fact", content: "Has VAT number FR123" },
+      { kind: "instruction", content: "Use weekly summaries" },
+      { kind: "episode", content: "Asked for an energy briefing" },
+      { kind: "fact", content: "Works in energy" },
+      { kind: "preference", content: "Prefers tables" },
     ]);
     expect(result.discarded.map((discarded) => discarded.reason)).toEqual([
       "duplicate",
-      "write_cap",
-      "invalid_quote",
       "duplicate",
+      "empty_content",
     ]);
   });
 
-  it("extractMemories forces record_memories and verifies the returned proposals", async () => {
+  it("discards an invented update target before persistence", () => {
+    const proposal: ProposedMemory = {
+      kind: "fact",
+      content: "Invented update",
+      targetMemoryId: "not-a-memory-id",
+    };
+
+    expect(prepareMemoryProposals([proposal], [])).toEqual({
+      accepted: [],
+      discarded: [{ proposal, reason: "unknown_target" }],
+    });
+  });
+
+  it("extractMemories forces record_memories and prepares the returned proposals", async () => {
     const userText = "I am based in Lyon. Please keep examples in TypeScript.";
     const client = new PiAiClient({
       apiKey: "test-key",
@@ -66,35 +80,35 @@ describe("memory proposal verification", () => {
       preflightMaxPeeks: 4,
       preflightTimeoutMs: 30_000,
       answerTimeoutMs: 120_000,
-      memoryMaxWritesPerTurn: 5,
       boundary: {
         complete: async () =>
           recordMemoriesMessage([
-            { kind: "profile", content: "Based in Lyon", evidenceQuote: "based in Lyon" },
+            { kind: "profile", content: "Based in Lyon" },
             {
               kind: "instruction",
               content: "Keep examples in TypeScript",
-              evidenceQuote: "examples in TypeScript",
             },
-            { kind: "fact", content: "Read a source article", evidenceQuote: "source article" },
+            { kind: "preference", content: "Prefers concise examples" },
           ]),
       },
     });
-    const result = await client.extractMemories({ userText, existingMemories: [] });
+    const result = await client.extractMemories({
+      userText,
+      existingMemories: [{ id: "memory-1", kind: "profile", content: "Based in Lyon" }],
+    });
 
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") {
       throw new Error("expected ok");
     }
     expect(result.value.proposals).toEqual([
-      { kind: "profile", content: "Based in Lyon", evidenceQuote: "based in Lyon" },
       {
         kind: "instruction",
         content: "Keep examples in TypeScript",
-        evidenceQuote: "examples in TypeScript",
       },
+      { kind: "preference", content: "Prefers concise examples" },
     ]);
-    expect(result.value.discarded).toMatchObject([{ reason: "invalid_quote" }]);
+    expect(result.value.discarded).toMatchObject([{ reason: "duplicate" }]);
   });
 
   it("extractMemories discards a malformed record_memories output without failing the run", async () => {
@@ -107,12 +121,11 @@ describe("memory proposal verification", () => {
       preflightMaxPeeks: 4,
       preflightTimeoutMs: 30_000,
       answerTimeoutMs: 120_000,
-      memoryMaxWritesPerTurn: 5,
       boundary: {
         complete: async () =>
           recordMemoriesMessage([
-            { kind: "profile", content: "Based in Lyon", evidenceQuote: "based in Lyon" },
-            { kind: "instruction", evidenceQuote: "examples in TypeScript" },
+            { kind: "profile", content: "Based in Lyon" },
+            { kind: "instruction" },
           ]),
       },
     });

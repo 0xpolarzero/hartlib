@@ -1,4 +1,3 @@
-import { FakeAiClient, type FakeAiClientScenario } from "./fake-ai-client";
 import { PiAiClient, type RetrievalExecutor } from "./pi-ai-client";
 import type { AiClient } from "./types";
 
@@ -12,24 +11,12 @@ export interface AiClientRuntimeConfig {
   readonly aiPreflightMaxPeeks: number;
   readonly aiPreflightTimeoutMs: number;
   readonly aiAnswerTimeoutMs: number;
-  readonly aiMemoryMaxWritesPerTurn: number;
-  readonly aiFake: boolean;
-  readonly aiFakeDelayMs: number;
 }
 
 export const makeAiClient = (
   config: AiClientRuntimeConfig,
-  retrieval?: RetrievalExecutor,
-  fakeScenario?: FakeAiClientScenario,
+  retrieval: RetrievalExecutor,
 ): AiClient => {
-  if (config.aiFake) {
-    return new FakeAiClient(fakeScenario, retrieval, config.aiFakeDelayMs);
-  }
-
-  if (retrieval === undefined) {
-    throw new Error("makeAiClient requires retrieval when AI_FAKE is false");
-  }
-
   return new PiAiClient({
     apiKey: config.zaiApiKey,
     baseUrl: config.aiBaseUrl,
@@ -40,7 +27,6 @@ export const makeAiClient = (
     preflightMaxPeeks: config.aiPreflightMaxPeeks,
     preflightTimeoutMs: config.aiPreflightTimeoutMs,
     answerTimeoutMs: config.aiAnswerTimeoutMs,
-    memoryMaxWritesPerTurn: config.aiMemoryMaxWritesPerTurn,
     retrieval,
   });
 };
