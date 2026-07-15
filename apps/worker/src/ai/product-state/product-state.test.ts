@@ -552,6 +552,198 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     });
   });
 
+  it("rejects divergent replays for every bound observability field", async () => {
+    const fixture = await runDb(createFixture("observability-replay"));
+    const expectConflict = async (operation: Promise<unknown>): Promise<void> => {
+      await expect(operation).rejects.toThrow(/replay conflicts with an existing immutable row/u);
+    };
+
+    const observation = {
+      runId: fixture.runId,
+      chatId: fixture.chatId,
+      emittingTask: "replay-task",
+      loopIteration: 0,
+      attempt: 0,
+      observationKey: "replay:observation",
+      kind: "context_measurement",
+      payload: { mandatoryTokens: 3, passed: true },
+    } as const;
+    await expect(runDb(insertAiObservation(observation))).resolves.toBe(true);
+    await expect(runDb(insertAiObservation(observation))).resolves.toBe(false);
+    for (const divergent of [
+      { ...observation, chatId: crypto.randomUUID() },
+      { ...observation, emittingTask: "other-task" },
+      { ...observation, loopIteration: 1 },
+      { ...observation, attempt: 1 },
+      { ...observation, kind: "context_decision" },
+      { ...observation, payload: { mandatoryTokens: 4, passed: true } },
+    ]) {
+      await expectConflict(runDb(insertAiObservation(divergent)));
+    }
+
+    const usage = {
+      runId: fixture.runId,
+      taskId: "replay-model",
+      loopIteration: 0,
+      attempt: 0,
+      providerRequestIndex: 0,
+      agentRole: "direct_answer",
+      modelId: "glm-5-turbo",
+      providerServiceId: "deterministic_test" as const,
+      usage: {
+        inputTokens: 10,
+        outputTokens: 4,
+        cachedTokens: 2,
+        reasoningTokens: 1,
+        totalTokens: 16,
+        stopReason: "toolUse",
+      },
+    } as const;
+    await expect(runDb(insertAiRunUsage(usage))).resolves.toBe(true);
+    await expect(runDb(insertAiRunUsage(usage))).resolves.toBe(false);
+    await expectConflict(runDb(insertAiRunUsage({ ...usage, agentRole: "topic_answer" })));
+    await expectConflict(runDb(insertAiRunUsage({ ...usage, modelId: "glm-5.2" })));
+    await expectConflict(
+      runDb(insertAiRunUsage({ ...usage, providerServiceId: "openai_compatible_custom" })),
+    );
+    await expectConflict(
+      runDb(
+        insertAiRunUsage({
+          ...usage,
+          usage: { ...usage.usage, inputTokens: 11, totalTokens: 17 },
+        }),
+      ),
+    );
+    await expectConflict(
+      runDb(
+        insertAiRunUsage({
+          ...usage,
+          usage: { ...usage.usage, outputTokens: 5, totalTokens: 17 },
+        }),
+      ),
+    );
+    await expectConflict(
+      runDb(
+        insertAiRunUsage({
+          ...usage,
+          usage: { ...usage.usage, cachedTokens: 3, totalTokens: 17 },
+        }),
+      ),
+    );
+    await expectConflict(
+      runDb(insertAiRunUsage({ ...usage, usage: { ...usage.usage, reasoningTokens: 2 } })),
+    );
+    await expectConflict(
+      runDb(
+        insertAiRunUsage({
+          ...usage,
+          usage: { ...usage.usage, inputTokens: 9, totalTokens: 15 },
+        }),
+      ),
+    );
+    await expectConflict(
+      runDb(insertAiRunUsage({ ...usage, usage: { ...usage.usage, stopReason: "stop" } })),
+    );
+
+    const external = {
+      runId: fixture.runId,
+      taskId: "replay-web",
+      loopIteration: 0,
+      attempt: 0,
+      toolRequestIndex: 0,
+      providerServiceId: "deterministic_test",
+      operation: "web_search" as const,
+      status: "ok" as const,
+      resultCount: 2,
+      responseBytes: 32,
+      billedUnits: 1,
+      durationMs: 20,
+    };
+    await expect(runDb(insertAiExternalToolUsage(external))).resolves.toBe(true);
+    await expect(runDb(insertAiExternalToolUsage(external))).resolves.toBe(false);
+    for (const divergent of [
+      { ...external, providerServiceId: "tinyfish_search_official" },
+      { ...external, operation: "web_fetch" as const },
+      { ...external, status: "failed" as const },
+      { ...external, resultCount: 3 },
+      { ...external, responseBytes: 33 },
+      { ...external, billedUnits: null },
+      { ...external, durationMs: 21 },
+    ]) {
+      await expectConflict(runDb(insertAiExternalToolUsage(divergent)));
+    }
+
+    const exposure = {
+      runId: fixture.runId,
+      taskId: "replay-exposure",
+      loopIteration: 0,
+      attempt: 0,
+      providerRequestIndex: 0,
+      providerRequestSha256Hex: "b".repeat(64),
+      sourceKind: "document" as const,
+      logicalSourceIdentity: "document:replay",
+      publisherIssueId: "issue:replay",
+      publisherDocumentId: "document:replay",
+      contentItemIdentity: "version:replay:range:0-8",
+      exposureStage: "context_candidate_inspection",
+      visibleTokenCount: 8,
+      documentReconstruction: {
+        sourceId: "publisher:replay",
+        documentId: "document-replay",
+        documentVersionId: "version-replay",
+        contentHash: "c".repeat(64),
+        ranges: [{ charStart: 0, charEnd: 8 }],
+      },
+    };
+    await expect(runDb(insertAiSourceExposure(exposure))).resolves.toBe(true);
+    await expect(runDb(insertAiSourceExposure(exposure))).resolves.toBe(false);
+    for (const divergent of [
+      { ...exposure, sourceKind: "memory" as const, documentReconstruction: undefined },
+      { ...exposure, logicalSourceIdentity: "document:other" },
+      { ...exposure, publisherIssueId: "issue:other" },
+      { ...exposure, publisherDocumentId: "document:other" },
+      { ...exposure, visibleTokenCount: 9 },
+      { ...exposure, providerRequestSha256Hex: "d".repeat(64) },
+      {
+        ...exposure,
+        documentReconstruction: {
+          ...exposure.documentReconstruction,
+          sourceId: "publisher:other",
+        },
+      },
+      {
+        ...exposure,
+        documentReconstruction: {
+          ...exposure.documentReconstruction,
+          documentId: "document-other",
+        },
+      },
+      {
+        ...exposure,
+        documentReconstruction: {
+          ...exposure.documentReconstruction,
+          documentVersionId: "version-other",
+        },
+      },
+      {
+        ...exposure,
+        documentReconstruction: {
+          ...exposure.documentReconstruction,
+          contentHash: "e".repeat(64),
+        },
+      },
+      {
+        ...exposure,
+        documentReconstruction: {
+          ...exposure.documentReconstruction,
+          ranges: [{ charStart: 1, charEnd: 8 }],
+        },
+      },
+    ]) {
+      await expectConflict(runDb(insertAiSourceExposure(divergent)));
+    }
+  });
+
   it("locks the run before concurrent usage child inserts append events", async () => {
     const fixture = await runDb(createFixture("usage-event-lock-order"));
     const operations = Array.from({ length: 48 }, (_, index) => {

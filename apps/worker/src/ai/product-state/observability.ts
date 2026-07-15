@@ -106,6 +106,9 @@ interface IdRow {
   readonly id: string;
 }
 
+const replayConflict = (table: string, key: string): Error =>
+  new Error(`${table} replay conflicts with an existing immutable row (${key})`);
+
 interface AggregateRow {
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -188,7 +191,7 @@ export const sourceExposureAttestationPayload = (input: AiSourceExposureInput) =
 
 export const insertAiSourceExposure = (
   input: AiSourceExposureInput,
-): Effect.Effect<boolean, SqlError, PgClient.PgClient> =>
+): Effect.Effect<boolean, SqlError | Error, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const documentRangesJson =
@@ -248,33 +251,128 @@ export const insertAiSourceExposure = (
           ) do nothing
           returning id::text
         `;
-        if (rows.length === 0) return false;
-        const attestations = yield* sql<IdRow>`
-          insert into ai_observations (
-            run_id, chat_id, emitting_task, loop_iteration, attempt,
-            observation_key, kind, payload
-          )
-                 select runs.id, runs.chat_id, ${input.taskId}, ${input.loopIteration},
-                 ${input.attempt}, ${sourceExposureAttestationKey(input)},
-                 'source_exposure_attestation',
-                 ${attestationPayloadJson}::jsonb
-          from ai_runs runs where runs.id = ${input.runId}
-          on conflict (run_id, observation_key) do nothing
-          returning id::text
+
+        if (rows.length === 0) {
+          const existing = yield* sql<IdRow>`
+            select id::text
+            from ai_source_exposures
+            where run_id = ${input.runId}
+              and task_id = ${input.taskId}
+              and loop_iteration = ${input.loopIteration}
+              and attempt = ${input.attempt}
+              and provider_request_index = ${input.providerRequestIndex}
+              and exposure_stage = ${input.exposureStage}
+              and content_item_identity = ${input.contentItemIdentity}
+            for update
+          `;
+          if (existing.length !== 1) {
+            return yield* Effect.fail(
+              replayConflict(
+                "ai_source_exposures",
+                `${input.runId}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.providerRequestIndex}:${input.exposureStage}:${input.contentItemIdentity}`,
+              ),
+            );
+          }
+
+          const matching = yield* sql<IdRow>`
+            select id::text
+            from ai_source_exposures
+            where id = ${existing[0]!.id}
+              and run_id = ${input.runId}
+              and task_id = ${input.taskId}
+              and loop_iteration = ${input.loopIteration}
+              and attempt = ${input.attempt}
+              and provider_request_index = ${input.providerRequestIndex}
+              and source_kind = ${input.sourceKind}
+              and logical_source_identity = ${input.logicalSourceIdentity}
+              and publisher_issue_id is not distinct from ${input.publisherIssueId ?? null}
+              and publisher_document_id is not distinct from ${input.publisherDocumentId ?? null}
+              and content_item_identity = ${input.contentItemIdentity}
+              and exposure_stage = ${input.exposureStage}
+              and visible_token_count = ${input.visibleTokenCount}
+              and document_source_id is not distinct from ${input.documentReconstruction?.sourceId ?? null}
+              and document_id is not distinct from ${input.documentReconstruction?.documentId ?? null}
+              and document_version_id is not distinct from ${input.documentReconstruction?.documentVersionId ?? null}
+              and document_content_hash is not distinct from ${input.documentReconstruction?.contentHash ?? null}
+              and document_ranges is not distinct from ${documentRangesJson}::jsonb
+            for update
+          `;
+          if (matching.length !== 1) {
+            return yield* Effect.fail(
+              replayConflict(
+                "ai_source_exposures",
+                `${input.runId}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.providerRequestIndex}:${input.exposureStage}:${input.contentItemIdentity}`,
+              ),
+            );
+          }
+        }
+
+        const attestationPayload = sourceExposureAttestationPayload(input);
+        const attestationIdentity = {
+          providerRequestIndex: input.providerRequestIndex,
+          sourceKind: input.sourceKind,
+          logicalSourceIdentity: input.logicalSourceIdentity,
+          contentItemIdentity: input.contentItemIdentity,
+          exposureStage: input.exposureStage,
+        };
+        const identityAttestations = yield* sql<IdRow>`
+          select id::text
+          from ai_observations
+          where run_id = ${input.runId}
+            and emitting_task = ${input.taskId}
+            and loop_iteration = ${input.loopIteration}
+            and attempt = ${input.attempt}
+            and kind = 'source_exposure_attestation'
+            and payload @> ${sql.json(attestationIdentity)}
+          for update
         `;
-        if (attestations.length !== 1) {
-          return yield* Effect.die(
-            new Error("source exposure attestation was not inserted exactly once"),
+        const exactAttestations = yield* sql<IdRow>`
+          select id::text
+          from ai_observations
+          where run_id = ${input.runId}
+            and emitting_task = ${input.taskId}
+            and loop_iteration = ${input.loopIteration}
+            and attempt = ${input.attempt}
+            and kind = 'source_exposure_attestation'
+            and payload = ${attestationPayloadJson}::jsonb
+          for update
+        `;
+        if (
+          identityAttestations.length > 0 &&
+          (identityAttestations.length !== 1 || exactAttestations.length !== 1)
+        ) {
+          return yield* Effect.fail(
+            replayConflict(
+              "ai_observations(source_exposure_attestation)",
+              `${input.runId}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.providerRequestIndex}:${input.exposureStage}:${input.contentItemIdentity}`,
+            ),
           );
         }
-        return true;
+
+        yield* insertAiObservationInTransaction({
+          runId: input.runId,
+          chatId:
+            (yield* sql<{ readonly chatId: string }>`
+            select chat_id::text as "chatId" from ai_runs where id = ${input.runId}
+          `)[0]?.chatId ?? "",
+          emittingTask: input.taskId,
+          loopIteration: input.loopIteration,
+          attempt: input.attempt,
+          observationKey: sourceExposureAttestationKey(input),
+          kind: "source_exposure_attestation",
+          payload: attestationPayload,
+        });
+        // A legacy row may predate its attestation. Replaying it is still
+        // idempotent after the missing attestation is repaired in this same
+        // transaction.
+        return rows.length === 1;
       }),
     );
   });
 
-export const insertAiObservation = (
+const insertAiObservationInTransaction = (
   input: AiObservationInput,
-): Effect.Effect<boolean, SqlError, PgClient.PgClient> =>
+): Effect.Effect<boolean, SqlError | Error, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const rows = yield* sql<IdRow>`
@@ -302,7 +400,49 @@ export const insertAiObservation = (
       returning id::text
     `;
 
-    return rows.length === 1;
+    if (rows.length === 1) return true;
+
+    const existing = yield* sql<IdRow>`
+      select id::text
+      from ai_observations
+      where run_id = ${input.runId}
+        and observation_key = ${input.observationKey}
+      for update
+    `;
+    if (existing.length !== 1) {
+      return yield* Effect.fail(
+        replayConflict("ai_observations", `${input.runId}:${input.observationKey}`),
+      );
+    }
+
+    const matching = yield* sql<IdRow>`
+      select id::text
+      from ai_observations
+      where id = ${existing[0]!.id}
+        and run_id = ${input.runId}
+        and chat_id = ${input.chatId}
+        and emitting_task = ${input.emittingTask}
+        and loop_iteration = ${input.loopIteration}
+        and attempt = ${input.attempt}
+        and observation_key = ${input.observationKey}
+        and kind = ${input.kind}
+        and payload is not distinct from ${sql.json(input.payload)}
+      for update
+    `;
+    if (matching.length !== 1) {
+      return yield* Effect.fail(
+        replayConflict("ai_observations", `${input.runId}:${input.observationKey}`),
+      );
+    }
+    return false;
+  });
+
+export const insertAiObservation = (
+  input: AiObservationInput,
+): Effect.Effect<boolean, SqlError | Error, PgClient.PgClient> =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    return yield* sql.withTransaction(insertAiObservationInTransaction(input));
   });
 
 const modelUsageEvent = (input: AiRunUsageInput): AiRunEvent => ({
@@ -364,6 +504,55 @@ export const insertAiRunUsageInTransaction = (
       on conflict (run_id, task_id, loop_iteration, attempt, provider_request_index) do nothing
       returning id::text
     `;
+
+    if (rows.length === 0) {
+      const existing = yield* sql<IdRow>`
+        select id::text
+        from ai_run_usage
+        where run_id = ${input.runId}
+          and task_id = ${input.taskId}
+          and loop_iteration = ${input.loopIteration}
+          and attempt = ${input.attempt}
+          and provider_request_index = ${input.providerRequestIndex}
+        for update
+      `;
+      if (existing.length !== 1) {
+        return yield* Effect.fail(
+          replayConflict(
+            "ai_run_usage",
+            `${input.runId}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.providerRequestIndex}`,
+          ),
+        );
+      }
+      const matching = yield* sql<IdRow>`
+        select id::text
+        from ai_run_usage
+        where id = ${existing[0]!.id}
+          and run_id = ${input.runId}
+          and task_id = ${input.taskId}
+          and loop_iteration = ${input.loopIteration}
+          and attempt = ${input.attempt}
+          and provider_request_index = ${input.providerRequestIndex}
+          and agent_role = ${input.agentRole}
+          and model_id = ${input.modelId}
+          and provider_service_id = ${input.providerServiceId}
+          and input_tokens = ${input.usage.inputTokens}
+          and output_tokens = ${input.usage.outputTokens}
+          and cached_tokens = ${input.usage.cachedTokens}
+          and reasoning_tokens = ${input.usage.reasoningTokens}
+          and total_tokens = ${input.usage.totalTokens}
+          and stop_reason = ${input.usage.stopReason}
+        for update
+      `;
+      if (matching.length !== 1) {
+        return yield* Effect.fail(
+          replayConflict(
+            "ai_run_usage",
+            `${input.runId}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.providerRequestIndex}`,
+          ),
+        );
+      }
+    }
 
     yield* appendAiRunEventInTransaction({
       runId: input.runId,
@@ -432,6 +621,53 @@ export const insertAiExternalToolUsageInTransaction = (
       on conflict (run_id, task_id, loop_iteration, attempt, tool_request_index) do nothing
       returning id::text
     `;
+
+    if (rows.length === 0) {
+      const existing = yield* sql<IdRow>`
+        select id::text
+        from ai_external_tool_usage
+        where run_id = ${input.runId}
+          and task_id = ${input.taskId}
+          and loop_iteration = ${input.loopIteration}
+          and attempt = ${input.attempt}
+          and tool_request_index = ${input.toolRequestIndex}
+        for update
+      `;
+      if (existing.length !== 1) {
+        return yield* Effect.fail(
+          replayConflict(
+            "ai_external_tool_usage",
+            `${input.runId}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.toolRequestIndex}`,
+          ),
+        );
+      }
+      const matching = yield* sql<IdRow>`
+        select id::text
+        from ai_external_tool_usage
+        where id = ${existing[0]!.id}
+          and run_id = ${input.runId}
+          and task_id = ${input.taskId}
+          and loop_iteration = ${input.loopIteration}
+          and attempt = ${input.attempt}
+          and tool_request_index = ${input.toolRequestIndex}
+          and provider_service_id = ${input.providerServiceId}
+          and operation = ${input.operation}
+          and status = ${input.status}
+          and result_count = ${input.resultCount}
+          and response_bytes = ${input.responseBytes}
+          and billed_units is not distinct from ${input.billedUnits}
+          and duration_ms = ${input.durationMs}
+        for update
+      `;
+      if (matching.length !== 1) {
+        return yield* Effect.fail(
+          replayConflict(
+            "ai_external_tool_usage",
+            `${input.runId}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.toolRequestIndex}`,
+          ),
+        );
+      }
+    }
 
     yield* appendAiRunEventInTransaction({
       runId: input.runId,
