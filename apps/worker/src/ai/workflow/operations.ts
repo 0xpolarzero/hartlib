@@ -801,19 +801,98 @@ const searchWithinCandidatePage = (
     // pass would recompose case-folded Greek combining sequences and no longer
     // be equivalent to default Unicode case folding.
     Array.from(value.normalize("NFKC"), caseFoldCodePoint).join("");
-  const segmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
   const normalizeWithOriginalSpans = (value: string, originalOffset: number): FoldedText => {
+    type NormalizationEntry = { readonly text: string; readonly span: OriginalSpan };
+
+    // NFKC is NFKD followed by canonical composition. Decomposing one source
+    // code point at a time retains its exact UTF-16 span; the normalization of
+    // the concatenated decomposed text then only reorders and composes those
+    // entries. This keeps combining marks and supplementary code points
+    // separate instead of widening every folded unit to a grapheme cluster.
+    const decomposed: NormalizationEntry[] = [];
+    for (let index = 0; index < value.length; ) {
+      const codePoint = value.codePointAt(index);
+      if (codePoint === undefined) break;
+      const source = String.fromCodePoint(codePoint);
+      const span = {
+        charStart: originalOffset + index,
+        charEnd: originalOffset + index + source.length,
+      };
+      for (const normalized of Array.from(source.normalize("NFKD"))) {
+        decomposed.push({ text: normalized, span });
+      }
+      index += source.length;
+    }
+
+    const decomposedText = decomposed.map((entry) => entry.text).join("");
+    const reorderedText = decomposedText.normalize("NFD");
+    const reordered: NormalizationEntry[] = [];
+    const indicesByText = new Map<string, number[]>();
+    for (let index = 0; index < decomposed.length; index += 1) {
+      const entry = decomposed[index];
+      if (entry === undefined) throw new Error("candidate search lost a decomposed contributor");
+      const indices = indicesByText.get(entry.text);
+      if (indices === undefined) indicesByText.set(entry.text, [index]);
+      else indices.push(index);
+    }
+    const nextIndexByText = new Map<string, number>();
+    for (const normalized of Array.from(reorderedText)) {
+      const indices = indicesByText.get(normalized);
+      const occurrence = nextIndexByText.get(normalized) ?? 0;
+      const index = indices?.[occurrence];
+      if (index === undefined) {
+        throw new Error("candidate search lost a normalized contributor");
+      }
+      nextIndexByText.set(normalized, occurrence + 1);
+      const entry = decomposed[index];
+      if (entry === undefined) throw new Error("candidate search lost a reordered contributor");
+      reordered.push(entry);
+    }
+
+    const composedText = reorderedText.normalize("NFC");
+    const composed = [] as NormalizationEntry[];
+    let reorderedOffset = 0;
+    for (const normalized of Array.from(composedText)) {
+      let end = reorderedOffset + 1;
+      let contributors: NormalizationEntry[] | undefined;
+      while (end <= reordered.length) {
+        const candidate = reordered
+          .slice(reorderedOffset, end)
+          .map((entry) => entry.text)
+          .join("")
+          .normalize("NFC");
+        if (Array.from(candidate).length !== 1) break;
+        if (candidate === normalized) {
+          contributors = reordered.slice(reorderedOffset, end);
+        }
+        end += 1;
+      }
+      if (contributors === undefined || contributors.length === 0) {
+        throw new Error("candidate search lost a composed contributor");
+      }
+      let charStart = Number.POSITIVE_INFINITY;
+      let charEnd = 0;
+      for (const contributor of contributors) {
+        charStart = Math.min(charStart, contributor.span.charStart);
+        charEnd = Math.max(charEnd, contributor.span.charEnd);
+      }
+      composed.push({
+        text: normalized,
+        span: { charStart, charEnd },
+      });
+      reorderedOffset += contributors.length;
+    }
+    if (reorderedOffset !== reordered.length) {
+      throw new Error("candidate search left normalized contributors unmapped");
+    }
+
     const foldedParts: string[] = [];
     const spans: OriginalSpan[] = [];
-    for (const segment of segmenter.segment(value)) {
-      const folded = normalizeAndCaseFold(segment.segment);
-      const span = {
-        charStart: originalOffset + segment.index,
-        charEnd: originalOffset + segment.index + segment.segment.length,
-      };
+    for (const entry of composed) {
+      const folded = caseFoldCodePoint(entry.text);
       for (let index = 0; index < folded.length; index += 1) {
         foldedParts.push(folded[index] ?? "");
-        spans.push(span);
+        spans.push(entry.span);
       }
     }
     return { text: foldedParts.join(""), spans };

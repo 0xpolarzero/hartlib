@@ -186,6 +186,82 @@ describe("document selection range semantics", () => {
     expect(searchWithinCandidate(candidate, "😀")).toEqual([{ charStart: 12, charEnd: 14 }]);
   });
 
+  it("keeps a combining-mark match narrower than its base code point", () => {
+    const text = "x\u0301 next";
+    const candidate: AnswerCandidate = {
+      id: "document:combining-only",
+      kind: "document",
+      rank: 0,
+      purpose: "test combining-only spans",
+      sourceId: "source-combining-only",
+      documentId: "document-combining-only",
+      documentVersionId: "version-combining-only",
+      contentHash: "1".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Combining only",
+      publicProvenance: {
+        documentTitle: "Combining only",
+        citationUrl: "https://example.test/combining-only",
+      },
+      renderedTokenCount: 0,
+    };
+
+    expect(searchWithinCandidate(candidate, "x")).toEqual([{ charStart: 0, charEnd: 1 }]);
+    expect(searchWithinCandidate(candidate, "\u0301")).toEqual([{ charStart: 1, charEnd: 2 }]);
+  });
+
+  it("maps canonically reordered marks to their original code-point spans", () => {
+    const text = "x\u0315\u0300";
+    const candidate: AnswerCandidate = {
+      id: "document:reordered-marks",
+      kind: "document",
+      rank: 0,
+      purpose: "test reordered combining marks",
+      sourceId: "source-reordered-marks",
+      documentId: "document-reordered-marks",
+      documentVersionId: "version-reordered-marks",
+      contentHash: "2".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Reordered marks",
+      publicProvenance: {
+        documentTitle: "Reordered marks",
+        citationUrl: "https://example.test/reordered-marks",
+      },
+      renderedTokenCount: 0,
+    };
+
+    expect(searchWithinCandidate(candidate, "\u0300")).toEqual([{ charStart: 2, charEnd: 3 }]);
+    expect(searchWithinCandidate(candidate, "\u0315")).toEqual([{ charStart: 1, charEnd: 2 }]);
+  });
+
+  it("keeps supplementary and following combining contributors distinct", () => {
+    const text = "😀\u0301";
+    const candidate: AnswerCandidate = {
+      id: "document:supplementary-combining",
+      kind: "document",
+      rank: 0,
+      purpose: "test supplementary combining spans",
+      sourceId: "source-supplementary-combining",
+      documentId: "document-supplementary-combining",
+      documentVersionId: "version-supplementary-combining",
+      contentHash: "3".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Supplementary combining",
+      publicProvenance: {
+        documentTitle: "Supplementary combining",
+        citationUrl: "https://example.test/supplementary-combining",
+      },
+      renderedTokenCount: 0,
+    };
+
+    expect(searchWithinCandidate(candidate, "😀")).toEqual([{ charStart: 0, charEnd: 2 }]);
+    expect(searchWithinCandidate(candidate, "\u0301")).toEqual([{ charStart: 2, charEnd: 3 }]);
+    expect(searchWithinCandidate(candidate, "😀\u0301")).toEqual([{ charStart: 0, charEnd: 3 }]);
+  });
+
   it("maps length-changing full folds, including an expanded prefix, without shifting later spans", () => {
     const text = "pre Straße and ẞ and ﬃ before \u0130 alpha";
     const candidate: AnswerCandidate = {
