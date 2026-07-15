@@ -154,6 +154,96 @@ describe("document selection range semantics", () => {
     ]);
   });
 
+  it("maps composed, decomposed, combining, and supplementary matches to UTF-16 spans", () => {
+    const text = "Cafe\u0301 CAFÉ x😀y";
+    const candidate: AnswerCandidate = {
+      id: "document:unicode-spans",
+      kind: "document",
+      rank: 0,
+      purpose: "test normalized UTF-16 spans",
+      sourceId: "source-unicode-spans",
+      documentId: "document-unicode-spans",
+      documentVersionId: "version-unicode-spans",
+      contentHash: "d".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Unicode spans",
+      publicProvenance: {
+        documentTitle: "Unicode spans",
+        citationUrl: "https://example.test/unicode-spans",
+      },
+      renderedTokenCount: 0,
+    };
+
+    expect(searchWithinCandidate(candidate, "café")).toEqual([
+      { charStart: 0, charEnd: 5 },
+      { charStart: 6, charEnd: 10 },
+    ]);
+    expect(searchWithinCandidate(candidate, "e\u0301")).toEqual([
+      { charStart: 3, charEnd: 5 },
+      { charStart: 9, charEnd: 10 },
+    ]);
+    expect(searchWithinCandidate(candidate, "😀")).toEqual([{ charStart: 12, charEnd: 14 }]);
+  });
+
+  it("maps length-changing full folds, including an expanded prefix, without shifting later spans", () => {
+    const text = "pre Straße and ẞ and ﬃ before \u0130 alpha";
+    const candidate: AnswerCandidate = {
+      id: "document:fold-expansions",
+      kind: "document",
+      rank: 0,
+      purpose: "test full fold expansions",
+      sourceId: "source-fold-expansions",
+      documentId: "document-fold-expansions",
+      documentVersionId: "version-fold-expansions",
+      contentHash: "e".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Fold expansions",
+      publicProvenance: {
+        documentTitle: "Fold expansions",
+        citationUrl: "https://example.test/fold-expansions",
+      },
+      renderedTokenCount: 0,
+    };
+
+    expect(searchWithinCandidate(candidate, "strasse")).toEqual([{ charStart: 4, charEnd: 10 }]);
+    expect(searchWithinCandidate(candidate, "ss")).toEqual([
+      { charStart: 8, charEnd: 9 },
+      { charStart: 15, charEnd: 16 },
+    ]);
+    expect(searchWithinCandidate(candidate, "ffi")).toEqual([{ charStart: 21, charEnd: 22 }]);
+    expect(searchWithinCandidate(candidate, "i\u0307")).toEqual([{ charStart: 30, charEnd: 31 }]);
+    expect(searchWithinCandidate(candidate, "alpha")).toEqual([{ charStart: 32, charEnd: 37 }]);
+  });
+
+  it("keeps default case-folded Greek combining sequences in canonical search order", () => {
+    const text = "ΐ ΐ";
+    const candidate: AnswerCandidate = {
+      id: "document:greek-case-fold",
+      kind: "document",
+      rank: 0,
+      purpose: "test default Unicode case folding",
+      sourceId: "source-greek-case-fold",
+      documentId: "document-greek-case-fold",
+      documentVersionId: "version-greek-case-fold",
+      contentHash: "f".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Greek case fold",
+      publicProvenance: {
+        documentTitle: "Greek case fold",
+        citationUrl: "https://example.test/greek-case-fold",
+      },
+      renderedTokenCount: 0,
+    };
+
+    expect(searchWithinCandidate(candidate, "ΐ")).toEqual([
+      { charStart: 0, charEnd: 1 },
+      { charStart: 2, charEnd: 5 },
+    ]);
+  });
+
   it("surfaces structurally distinct verbatim match previews with exact document ranges", () => {
     const text =
       "Region 1 signed row 1: curtailment baseline. " +
@@ -220,6 +310,41 @@ describe("document selection range semantics", () => {
       matches: [
         { charStart: text.lastIndexOf("alpha", text.lastIndexOf("alpha") - 1) },
         { charStart: text.lastIndexOf("alpha") },
+      ],
+    });
+  });
+
+  it("paginates normalized matches by ordinal without skipping folded expansions", () => {
+    const text = Array.from({ length: 5 }, () => "ß").join(" ");
+    const candidate: AnswerCandidate = {
+      id: "chat_message:folded-pages",
+      kind: "chat_message",
+      rank: 0,
+      purpose: "test normalized pagination",
+      messageId: "folded-pages",
+      text,
+      label: null,
+      renderedTokenCount: 0,
+    };
+
+    const first = searchWithinCandidateWindow(candidate, "SS", 0, 2);
+    expect(first).toMatchObject({
+      complete: false,
+      truncated: true,
+      cursor: 2,
+      matches: [
+        { charStart: 0, charEnd: 1 },
+        { charStart: 2, charEnd: 3 },
+      ],
+    });
+    expect(searchWithinCandidateWindow(candidate, "SS", first.cursor ?? 0, 3)).toMatchObject({
+      complete: true,
+      truncated: false,
+      cursor: null,
+      matches: [
+        { charStart: 4, charEnd: 5 },
+        { charStart: 6, charEnd: 7 },
+        { charStart: 8, charEnd: 9 },
       ],
     });
   });

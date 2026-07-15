@@ -520,6 +520,79 @@ class CorrectingReducerAgent extends CanonicalAgentClient {
   }
 }
 
+type ReducerProtocolProbeMode = "valid" | "invalid-after-success" | "unmeasured" | "drift";
+
+class ReducerProtocolProbeAgent extends CanonicalAgentClient {
+  constructor(private readonly mode: ReducerProtocolProbeMode) {
+    super({} as ExactPiBoundary);
+  }
+
+  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
+    if (input.terminalToolName !== "emit_context_plan") {
+      throw new Error(`unexpected tool loop ${input.terminalToolName}`);
+    }
+    const measure = input.tools.find((tool) => tool.definition.name === "measure_plan");
+    if (measure === undefined) throw new Error("missing reducer measurement tool");
+    const candidateIds = (
+      JSON.parse(input.user) as { readonly candidates: readonly { readonly id: string }[] }
+    ).candidates.map((candidate) => candidate.id);
+    const decisions = candidateIds.map((id) => ({
+      id,
+      action: "omit" as const,
+      reason: "omit for protocol validation",
+    }));
+    const driftedDecisions = candidateIds.map((id) => ({
+      id,
+      action: "keep" as const,
+      reason: "drift from the measured plan",
+    }));
+    const coordinatesAt = (providerRequestIndex: number): PiBoundaryCoordinates => ({
+      ...input.coordinates,
+      loopIteration: 0,
+      providerRequestIndex,
+    });
+    const completionFor = (arguments_: Readonly<Record<string, unknown>>): PiCompletion => ({
+      text: "",
+      toolCalls: [{ id: "terminal", name: "emit_context_plan", arguments: arguments_ }],
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        cachedTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 2,
+        stopReason: "toolUse",
+      },
+      stopReason: "toolUse",
+    });
+    const measureAt = async (
+      value: readonly unknown[],
+      providerRequestIndex: number,
+    ): Promise<Readonly<Record<string, unknown>>> => {
+      const coordinates = coordinatesAt(providerRequestIndex);
+      await invokeToolLoopProviderHook(input, coordinates);
+      return measure.execute({ decisions: value }, coordinates);
+    };
+    const terminalAt = async (
+      value: readonly unknown[],
+      providerRequestIndex: number,
+    ): Promise<Output> => {
+      const coordinates = coordinatesAt(providerRequestIndex);
+      await invokeToolLoopProviderHook(input, coordinates);
+      const output = input.validateTerminal({ decisions: value });
+      await input.onTerminal?.(output, coordinates, completionFor({ decisions: value }));
+      return output;
+    };
+
+    if (this.mode === "unmeasured") return terminalAt(decisions, 0);
+    await measureAt(decisions, 0);
+    if (this.mode === "invalid-after-success") {
+      await measureAt([], 1);
+      return terminalAt(decisions, 2);
+    }
+    return terminalAt(this.mode === "drift" ? driftedDecisions : decisions, 1);
+  }
+}
+
 class WebManifestAgent extends CanonicalAgentClient {
   constructor(
     private readonly quote: string,
@@ -2642,6 +2715,84 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         }),
       );
       expect(currentQuestionPulls).toBe(0);
+    },
+    120_000,
+  );
+
+  it.each([
+    ["valid", true, ""],
+    ["invalid-after-success", false, "successful prior measurement"],
+    ["unmeasured", false, "successful prior measurement"],
+    ["drift", false, "drifted from its successfully measured decisions"],
+  ] as const)(
+    "enforces the reducer measurement phase for a %s terminal plan",
+    async (mode, succeeds, message) => {
+      const longText = "Liquidity evidence remains verbatim and immutable. ".repeat(8_000);
+      const fixture = await runDb(createFixtureWithCanonicalText(longText));
+      const operations = new CanonicalWorkflowOperations(
+        databaseUrlFor(databaseName),
+        {
+          aiMainModel: "glm-5-turbo",
+          aiFastModel: "glm-5-turbo",
+          aiMainInputMaxTokens: 2_000,
+          aiMainOutputMaxTokens: 128,
+          aiFastInputMaxTokens: 100_000,
+          aiFastOutputMaxTokens: 4096,
+          aiConversationRecentTurns: 12,
+          aiFanoutMaxTopics: 3,
+          aiRetrievalMaxTurns: 4,
+          aiInternalMaxSearches: 4,
+          aiInternalMaxInspections: 4,
+          aiWebMaxSearches: 2,
+          aiWebMaxFetches: 2,
+          aiWebMaxDomainFilters: 8,
+          aiContextReductionMaxIterations: 2,
+          aiMemoryDirectMaxItems: 50,
+          aiMemoryToolResultMaxItems: 20,
+          webResearchProvider: "",
+        },
+        new ReducerProtocolProbeAgent(mode),
+      );
+      const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+      const initial = await assembleAndMeasureContext(
+        operations,
+        load,
+        "What changed in liquidity?",
+        {
+          internal: [
+            {
+              kind: "document",
+              documentId: fixture.documentId,
+              documentVersionId: fixture.documentVersionId,
+              source: {
+                kind: "publisher",
+                sourceId: `publisher:${fixture.subscriptionId}`,
+                issueId: fixture.issueId,
+                documentId: fixture.documentId,
+              },
+              ranges: [{ charStart: 0, charEnd: longText.length }],
+              purpose: "answer with the complete liquidity evidence",
+            },
+          ],
+          memories: [],
+          memorySelection: "enabled",
+          web: [],
+          webSelection: "enabled",
+        },
+        "single-answer",
+        undefined,
+        [],
+      );
+      expect(initial.status).toBe("needs_reduction");
+
+      const reduction = inTask("single-reduce-plan", () =>
+        operations.planReduction(load, initial, "single-reduce-plan", 0),
+      );
+      if (succeeds) {
+        await expect(reduction).resolves.toMatchObject({ decisions: expect.any(Array) });
+      } else {
+        await expect(reduction).rejects.toThrow(message);
+      }
     },
     120_000,
   );

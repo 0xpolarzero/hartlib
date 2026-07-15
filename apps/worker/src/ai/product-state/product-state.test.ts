@@ -519,6 +519,13 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       contentItemIdentity: "version:1:range:a",
       exposureStage: "selector_preview",
       visibleTokenCount: 8,
+      documentReconstruction: {
+        sourceId: "public:source-1",
+        documentId: "document-1",
+        documentVersionId: "version-1",
+        contentHash: "a".repeat(64),
+        ranges: [{ charStart: 0, charEnd: 8 }],
+      },
     };
     expect(await runDb(insertAiSourceExposure(exposure))).toBe(true);
     expect(await runDb(insertAiSourceExposure(exposure))).toBe(false);

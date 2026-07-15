@@ -30,6 +30,7 @@ import {
   markAiRunStarted,
   runAiProductState,
 } from "../product-state/repository";
+import type { AiDocumentExposureReconstruction } from "../product-state/observability";
 import { searchDocuments } from "../retrieval/retrieval";
 import type { DocumentPreview } from "../retrieval/query-spec";
 import {
@@ -62,6 +63,7 @@ import { resolveRuntimeModel } from "../runtime/model-registry";
 import type { PiBoundaryCoordinates } from "../runtime/pi-boundary";
 import {
   providerRequestSha256Hex,
+  stableJson,
   type LiveProviderRequest,
   type ProviderRequest,
 } from "../runtime/provider-request";
@@ -296,6 +298,7 @@ interface InternalProviderExposure {
   readonly contentItemIdentity: string;
   readonly publisherIssueId?: string | undefined;
   readonly publisherDocumentId?: string | undefined;
+  readonly documentReconstruction?: AiDocumentExposureReconstruction | undefined;
   readonly stage: "internal_search_preview" | "internal_inspection";
   readonly visibleTokenCount: number;
 }
@@ -595,6 +598,20 @@ const InternalManifestOutputSchema = z
 const WebManifestOutputSchema = z.object({ entries: z.array(WebEvidenceSchema) }).strict();
 const ContextPlanOutputSchema = z.object({ decisions: ContextDecisionArraySchema }).strict();
 
+const canonicalContextDecisionSet = (
+  decisions: readonly ContextDecision[],
+  candidates: readonly { readonly id: string }[],
+): readonly ContextDecision[] => {
+  const decisionsById = new Map(decisions.map((decision) => [decision.id, decision]));
+  return candidates.map((candidate) => {
+    const decision = decisionsById.get(candidate.id);
+    if (decision === undefined) {
+      throw new Error(`context decision set is missing candidate ${candidate.id}`);
+    }
+    return decision;
+  });
+};
+
 /** Provider-authored value contracts; exported for exhaustive boundary tests. */
 export const canonicalProviderValueSchemas = {
   conversationResolution: ConversationResolutionSchema,
@@ -758,36 +775,91 @@ const searchWithinCandidatePage = (
   if (terms === "" || maximumMatches < 1 || cursor < 0) {
     throw new Error("candidate search bounds must be positive and the query must be non-empty");
   }
+
+  type OriginalSpan = { readonly charStart: number; readonly charEnd: number };
+  type FoldedText = { readonly text: string; readonly spans: ReadonlyArray<OriginalSpan> };
+
+  // JavaScript has no full case-fold primitive. The default Unicode
+  // upper/lower mapping supplies full-fold expansions (for example, ß -> ss);
+  // these explicit exceptions cover code points where that composition differs.
+  const caseFoldCodePoint = (value: string): string => {
+    const codePoint = value.codePointAt(0);
+    if (codePoint === undefined) return "";
+    if (codePoint === 0x0131) return "ı";
+    if (codePoint === 0x1e9e) return "ss";
+    if (codePoint >= 0x13a0 && codePoint <= 0x13f5) return value;
+    if (codePoint >= 0x13f8 && codePoint <= 0x13fd) {
+      return String.fromCodePoint(codePoint - 8);
+    }
+    if (codePoint >= 0xab70 && codePoint <= 0xabbf) {
+      return String.fromCodePoint(codePoint - 0x97d0);
+    }
+    return value.toUpperCase().toLowerCase();
+  };
+  const normalizeAndCaseFold = (value: string): string =>
+    // Keep the prescribed NFKC-then-case-fold order. A second normalization
+    // pass would recompose case-folded Greek combining sequences and no longer
+    // be equivalent to default Unicode case folding.
+    Array.from(value.normalize("NFKC"), caseFoldCodePoint).join("");
+  const segmenter = new Intl.Segmenter("und", { granularity: "grapheme" });
+  const normalizeWithOriginalSpans = (value: string, originalOffset: number): FoldedText => {
+    const foldedParts: string[] = [];
+    const spans: OriginalSpan[] = [];
+    for (const segment of segmenter.segment(value)) {
+      const folded = normalizeAndCaseFold(segment.segment);
+      const span = {
+        charStart: originalOffset + segment.index,
+        charEnd: originalOffset + segment.index + segment.segment.length,
+      };
+      for (let index = 0; index < folded.length; index += 1) {
+        foldedParts.push(folded[index] ?? "");
+        spans.push(span);
+      }
+    }
+    return { text: foldedParts.join(""), spans };
+  };
+
+  const candidateText = reductionCandidateText(candidate);
+  const normalizedTerms = normalizeAndCaseFold(terms);
+  if (normalizedTerms === "") {
+    throw new Error("candidate search query must contain a normalized character");
+  }
   const matches: Array<{ readonly charStart: number; readonly charEnd: number }> = [];
   const searchedRanges =
     candidate.kind === "document"
       ? candidate.ranges
-      : [{ charStart: 0, charEnd: reductionCandidateText(candidate).length }];
+      : [{ charStart: 0, charEnd: candidateText.length }];
   let matchedBeforePage = 0;
   for (const range of searchedRanges) {
     const text =
       candidate.kind === "document"
         ? candidate.text.slice(range.charStart, range.charEnd)
-        : reductionCandidateText(candidate);
-    // Use the Unicode-aware regular-expression matcher on the original text.
-    // Lowercasing the complete string first can expand a code point (for
-    // example, U+0130) and move every later match, so an index in that derived
-    // string is not an offset that can safely be passed to String#slice.
-    const matcher = new RegExp(terms.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "giu");
-    let match: RegExpExecArray | null;
-    while ((match = matcher.exec(text)) !== null) {
-      const index = match.index;
+        : candidateText;
+    const folded = normalizeWithOriginalSpans(text, range.charStart);
+    let foldedOffset = 0;
+    while (foldedOffset < folded.text.length) {
+      const index = folded.text.indexOf(normalizedTerms, foldedOffset);
+      if (index < 0) break;
+      const end = index + normalizedTerms.length;
+      let charStart = Number.POSITIVE_INFINITY;
+      let charEnd = 0;
+      for (let spanIndex = index; spanIndex < end; spanIndex += 1) {
+        const span = folded.spans[spanIndex];
+        if (span === undefined) {
+          throw new Error("candidate search lost an original UTF-16 span");
+        }
+        charStart = Math.min(charStart, span.charStart);
+        charEnd = Math.max(charEnd, span.charEnd);
+      }
+      if (!Number.isFinite(charStart) || charStart >= charEnd) {
+        throw new Error("candidate search produced an empty original UTF-16 span");
+      }
       if (matchedBeforePage >= cursor) {
-        matches.push({
-          charStart: range.charStart + index,
-          charEnd: range.charStart + index + match[0].length,
-        });
+        matches.push({ charStart, charEnd });
         if (matches.length > maximumMatches) break;
       }
       matchedBeforePage += 1;
-      // The literal matcher cannot produce an empty match for non-empty
-      // terms, but keep the progress guard for unusual Unicode input.
-      if (match[0].length === 0) matcher.lastIndex += 1;
+      foldedOffset = end;
     }
     if (matches.length > maximumMatches) break;
   }
@@ -823,8 +895,7 @@ const searchWithinCandidatePage = (
               charEnd = Math.min(sourceRange.charEnd, match.charEnd + 320);
             }
             const text = candidate.text.slice(charStart, charEnd);
-            const fingerprint = text
-              .toLocaleLowerCase()
+            const fingerprint = normalizeAndCaseFold(text)
               .replace(/\p{Number}+/gu, "#")
               .replace(/\s+/gu, " ")
               .trim();
@@ -2492,6 +2563,9 @@ export class CanonicalWorkflowOperations {
             contentItemIdentity: exposure.contentItemIdentity,
             exposureStage: exposure.stage,
             visibleTokenCount: exposure.visibleTokenCount,
+            ...(exposure.documentReconstruction === undefined
+              ? {}
+              : { documentReconstruction: exposure.documentReconstruction }),
           }),
         ),
       ),
@@ -2562,6 +2636,17 @@ export class CanonicalWorkflowOperations {
             contentItemIdentity,
             exposureStage: "answer_serialized",
             visibleTokenCount: this.visibleTokenCount(content, this.config.aiMainModel),
+            ...(candidate.kind === "document"
+              ? {
+                  documentReconstruction: {
+                    sourceId: candidate.sourceId,
+                    documentId: candidate.documentId,
+                    documentVersionId: candidate.documentVersionId,
+                    contentHash: candidate.contentHash,
+                    ranges: candidate.ranges,
+                  },
+                }
+              : {}),
           }),
         );
       }),
@@ -3708,10 +3793,11 @@ export class CanonicalWorkflowOperations {
         const rows = yield* sql<{
           readonly text: string;
           readonly textCharCount: number;
+          readonly contentHash: string;
           readonly publisherIssueId: string | null;
           readonly publisherDocumentId: string | null;
         }>`
-          select text, text_char_count as "textCharCount",
+          select text, text_char_count as "textCharCount", content_hash as "contentHash",
                  null::text as "publisherIssueId",
                  null::text as "publisherDocumentId"
           from public_source_documents
@@ -3749,6 +3835,7 @@ export class CanonicalWorkflowOperations {
           union all
           select versions.canonical_text as text,
                  versions.text_char_count as "textCharCount",
+                 versions.content_hash as "contentHash",
                  issues.id::text as "publisherIssueId",
                  documents.id::text as "publisherDocumentId"
           from chat_subscription_sources selected
@@ -3830,6 +3917,13 @@ export class CanonicalWorkflowOperations {
                 publisherDocumentId: reference.source.documentId,
               }
             : {}),
+          documentReconstruction: {
+            sourceId: reference.source.sourceId,
+            documentId: reference.documentId,
+            documentVersionId: reference.documentVersionId,
+            contentHash: row.contentHash,
+            ranges,
+          },
           contentItemIdentity: documentContentItemIdentity(
             documentReferenceIdentity(reference),
             reference.documentVersionId,
@@ -5177,12 +5271,15 @@ export class CanonicalWorkflowOperations {
         readonly candidate: AnswerCandidate;
         readonly contentItemIdentity: string;
         readonly visibleTokenCount: number;
+        readonly documentReconstruction?: AiDocumentExposureReconstruction | undefined;
       }
     >();
     const inspectedConversation = new Map<string, ConversationEntry>();
     const providerRequestDigests = new Map<number, string>();
     let measurementRequested = false;
     let measurementResolved = false;
+    let measuredDecisionSet: readonly ContextDecision[] | undefined;
+    let measuredDecisionProviderRequestIndex: number | undefined;
     let inspectionOrSearchCompleted = false;
     const raw = await this.agents.toolLoop({
       requestClass: "fast",
@@ -5224,6 +5321,7 @@ export class CanonicalWorkflowOperations {
           candidate,
           contentItemIdentity,
           visibleTokenCount,
+          documentReconstruction,
         } of providerExposures.values()) {
           await this.db(
             insertAiSourceExposure({
@@ -5251,6 +5349,7 @@ export class CanonicalWorkflowOperations {
               contentItemIdentity,
               exposureStage: "context_candidate_inspection",
               visibleTokenCount,
+              ...(documentReconstruction === undefined ? {} : { documentReconstruction }),
             }),
           );
         }
@@ -5279,7 +5378,24 @@ export class CanonicalWorkflowOperations {
       },
       terminalOnlyForTurn: () => measurementResolved,
       exclusiveToolNames: ["measure_plan", "emit_context_plan"],
-      onTerminal: async (_output, terminalCoordinates, completion) => {
+      onTerminal: async (output, terminalCoordinates, completion) => {
+        if (
+          !measurementResolved ||
+          measuredDecisionSet === undefined ||
+          measuredDecisionProviderRequestIndex === undefined
+        ) {
+          throw new Error("context plan terminal requires a successful prior measurement");
+        }
+        if (terminalCoordinates.providerRequestIndex <= measuredDecisionProviderRequestIndex) {
+          throw new Error("context plan terminal requires a later provider turn than measurement");
+        }
+        const terminalDecisions = canonicalContextDecisionSet(
+          validateContextDecisions(output, reductionCandidates),
+          reductionCandidates,
+        );
+        if (stableJson(terminalDecisions) !== stableJson(measuredDecisionSet)) {
+          throw new Error("context plan terminal drifted from its successfully measured decisions");
+        }
         const providerRequestDigest = providerRequestDigests.get(
           terminalCoordinates.providerRequestIndex,
         );
@@ -5525,6 +5641,25 @@ export class CanonicalWorkflowOperations {
               candidate: item,
               contentItemIdentity,
               visibleTokenCount: this.visibleTokenCount(text, this.config.aiFastModel),
+              ...(item.kind === "document"
+                ? {
+                    documentReconstruction: {
+                      sourceId: item.sourceId,
+                      documentId: item.documentId,
+                      documentVersionId: item.documentVersionId,
+                      contentHash: item.contentHash,
+                      ranges:
+                        parsed.range === undefined
+                          ? item.ranges
+                          : [
+                              {
+                                charStart: parsed.range.charStart,
+                                charEnd: parsed.range.charEnd,
+                              },
+                            ],
+                    },
+                  }
+                : {}),
             });
             inspectionOrSearchCompleted = true;
             return response;
@@ -5581,6 +5716,13 @@ export class CanonicalWorkflowOperations {
                       candidate: item,
                       contentItemIdentity,
                       visibleTokenCount,
+                      documentReconstruction: {
+                        sourceId: item.sourceId,
+                        documentId: item.documentId,
+                        documentVersionId: item.documentVersionId,
+                        contentHash: item.contentHash,
+                        ranges: [preview.range],
+                      },
                     });
                     return providerVisibleExposureMarker({
                       sourceKind: "document",
@@ -5608,15 +5750,26 @@ export class CanonicalWorkflowOperations {
             description: "Validate and measure a complete candidate plan.",
             parameters: z.toJSONSchema(ContextPlanOutputSchema),
           },
-          execute: async (args) => {
+          execute: async (args, requestCoordinates) => {
             measurementRequested = true;
+            measurementResolved = false;
+            measuredDecisionSet = undefined;
+            measuredDecisionProviderRequestIndex = undefined;
             try {
               const decisions = validateContextDecisions(
                 ContextPlanOutputSchema.parse(args).decisions,
                 reductionCandidates,
               );
+              const canonicalDecisions = canonicalContextDecisionSet(
+                decisions,
+                reductionCandidates,
+              );
               const measured = this.applyDecisions(load, state, decisions);
               measurementResolved = measured.status === "ready";
+              if (measurementResolved) {
+                measuredDecisionSet = canonicalDecisions;
+                measuredDecisionProviderRequestIndex = requestCoordinates.providerRequestIndex;
+              }
               return {
                 valid: true,
                 resolved: measured.status === "ready",

@@ -14,6 +14,17 @@ import {
 
 export type SourceKind = "document" | "chat_message" | "memory" | "web";
 
+export interface AiDocumentExposureReconstruction {
+  /** The immutable, namespaced source identity used by the document locator. */
+  readonly sourceId: string;
+  readonly documentId: string;
+  readonly documentVersionId: string;
+  /** SHA-256 hex digest of the immutable stored document text. */
+  readonly contentHash: string;
+  /** Already normalized, non-overlapping UTF-16 ranges into that text. */
+  readonly ranges: readonly { readonly charStart: number; readonly charEnd: number }[];
+}
+
 export interface AiSourceExposureInput {
   readonly runId: string;
   readonly taskId: string;
@@ -29,6 +40,7 @@ export interface AiSourceExposureInput {
   readonly contentItemIdentity: string;
   readonly exposureStage: string;
   readonly visibleTokenCount: number;
+  readonly documentReconstruction?: AiDocumentExposureReconstruction | undefined;
 }
 
 export interface AiObservationInput {
@@ -142,6 +154,7 @@ const sourceExposureAttestationKey = (input: AiSourceExposureInput): string =>
           input.exposureStage,
           input.visibleTokenCount,
           input.providerRequestSha256Hex,
+          input.documentReconstruction,
         ]),
       )
       .digest("hex"),
@@ -162,6 +175,15 @@ export const sourceExposureAttestationPayload = (input: AiSourceExposureInput) =
     exposureStage: input.exposureStage,
     visibleTokenCount: input.visibleTokenCount,
   }),
+  ...(input.documentReconstruction === undefined
+    ? {}
+    : {
+        documentSourceId: input.documentReconstruction.sourceId,
+        documentId: input.documentReconstruction.documentId,
+        documentVersionId: input.documentReconstruction.documentVersionId,
+        documentContentHash: input.documentReconstruction.contentHash,
+        documentRanges: input.documentReconstruction.ranges,
+      }),
 });
 
 export const insertAiSourceExposure = (
@@ -169,6 +191,11 @@ export const insertAiSourceExposure = (
 ): Effect.Effect<boolean, SqlError, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
+    const documentRangesJson =
+      input.documentReconstruction === undefined
+        ? null
+        : JSON.stringify(input.documentReconstruction.ranges);
+    const attestationPayloadJson = JSON.stringify(sourceExposureAttestationPayload(input));
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         const rows = yield* sql<IdRow>`
@@ -184,7 +211,12 @@ export const insertAiSourceExposure = (
             publisher_document_id,
             content_item_identity,
             exposure_stage,
-            visible_token_count
+            visible_token_count,
+            document_source_id,
+            document_id,
+            document_version_id,
+            document_content_hash,
+            document_ranges
           )
           values (
             ${input.runId},
@@ -198,7 +230,12 @@ export const insertAiSourceExposure = (
             ${input.publisherDocumentId ?? null},
             ${input.contentItemIdentity},
             ${input.exposureStage},
-            ${input.visibleTokenCount}
+            ${input.visibleTokenCount},
+            ${input.documentReconstruction?.sourceId ?? null},
+            ${input.documentReconstruction?.documentId ?? null},
+            ${input.documentReconstruction?.documentVersionId ?? null},
+            ${input.documentReconstruction?.contentHash ?? null},
+            ${documentRangesJson}::jsonb
           )
           on conflict (
             run_id,
@@ -217,10 +254,10 @@ export const insertAiSourceExposure = (
             run_id, chat_id, emitting_task, loop_iteration, attempt,
             observation_key, kind, payload
           )
-          select runs.id, runs.chat_id, ${input.taskId}, ${input.loopIteration},
+                 select runs.id, runs.chat_id, ${input.taskId}, ${input.loopIteration},
                  ${input.attempt}, ${sourceExposureAttestationKey(input)},
                  'source_exposure_attestation',
-                 ${sql.json(sourceExposureAttestationPayload(input))}
+                 ${attestationPayloadJson}::jsonb
           from ai_runs runs where runs.id = ${input.runId}
           on conflict (run_id, observation_key) do nothing
           returning id::text

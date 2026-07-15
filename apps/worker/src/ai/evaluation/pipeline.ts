@@ -864,6 +864,17 @@ const DurableRunEvidenceSchema = z
           contentItemIdentity: z.string().min(1),
           exposureStage: z.string().min(1),
           visibleTokenCount: z.number().int().nonnegative(),
+          documentSourceId: z
+            .string()
+            .regex(/^(?:public|publisher):[^:\s]+$/u)
+            .nullable(),
+          documentId: z.string().min(1).nullable(),
+          documentVersionId: z.string().min(1).nullable(),
+          documentContentHash: z
+            .string()
+            .regex(/^[0-9a-f]{64}$/u)
+            .nullable(),
+          documentRanges: z.array(BindingRangeSchema).nullable(),
           createdAt: z.iso.datetime(),
         })
         .strict(),
@@ -2084,6 +2095,22 @@ const executeBaseline = async (
                         exposureStage: `evaluation_general_planner_${exposure.stage}`,
                         visibleTokenCount:
                           resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
+                        ...(source.kind === "document" && binding.kind === "document"
+                          ? {
+                              documentReconstruction: {
+                                sourceId: binding.sourceId,
+                                documentId: binding.documentId,
+                                documentVersionId: binding.documentVersionId,
+                                contentHash: binding.contentHash,
+                                ranges: [
+                                  {
+                                    charStart: exposure.charStart,
+                                    charEnd: exposure.charEnd,
+                                  },
+                                ],
+                              },
+                            }
+                          : {}),
                       }),
                     );
                   }),
@@ -2382,6 +2409,11 @@ const loadDurableRunEvidence = (
         readonly contentItemIdentity: string;
         readonly exposureStage: string;
         readonly visibleTokenCount: number;
+        readonly documentSourceId: string | null;
+        readonly documentId: string | null;
+        readonly documentVersionId: string | null;
+        readonly documentContentHash: string | null;
+        readonly documentRanges: EvaluationRange[] | null;
         readonly createdAt: Date;
       }>`
         select id::text, task_id as "taskId", loop_iteration as "loopIteration", attempt,
@@ -2391,6 +2423,11 @@ const loadDurableRunEvidence = (
                publisher_document_id as "publisherDocumentId",
                content_item_identity as "contentItemIdentity",
                exposure_stage as "exposureStage", visible_token_count as "visibleTokenCount",
+               document_source_id as "documentSourceId",
+               document_id as "documentId",
+               document_version_id as "documentVersionId",
+               document_content_hash as "documentContentHash",
+               document_ranges as "documentRanges",
                created_at as "createdAt"
         from ai_source_exposures where run_id = ${aiRunId}
         order by task_id, loop_iteration, attempt, provider_request_index,
@@ -4390,6 +4427,17 @@ const SourceExposureAttestationSchema = z
     exposureStage: z.string().min(1),
     visibleTokenCount: z.number().int().nonnegative(),
     providerSerializationProofSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
+    documentSourceId: z
+      .string()
+      .regex(/^(?:public|publisher):[^:\s]+$/u)
+      .optional(),
+    documentId: z.string().min(1).optional(),
+    documentVersionId: z.string().min(1).optional(),
+    documentContentHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/u)
+      .optional(),
+    documentRanges: z.array(BindingRangeSchema).optional(),
   })
   .strict();
 
@@ -4425,41 +4473,72 @@ const exposureCoordinateKey = (exposure: DurableRunEvidence["sourceExposures"][n
     exposure.contentItemIdentity,
   ]);
 
-const exactExposureDocumentText = (
-  fixture: GoldenEvaluationCase,
-  evidence: DurableRunEvidence,
+const reconstructDocumentExposureText = (
+  manifest: EvaluationSeedManifest,
+  exposure: DurableRunEvidence["sourceExposures"][number],
   sourceId: string,
-  contentItemIdentity: string,
-): string | undefined => {
-  const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId);
-  if (source?.kind !== "document") return undefined;
-  const hashMatch = /:([A-Za-z0-9_-]{43})$/u.exec(contentItemIdentity);
-  if (hashMatch === null) return undefined;
-  const expectedHash = hashMatch[1]!;
-  const documentText = storedDocumentText(source.content);
-  const ranges: EvaluationRange[][] = [
-    source.ranges,
-    fixture.labels.acceptableRanges[sourceId] ?? [],
-    [{ charStart: 0, charEnd: documentText.length }],
-    ...evidence.sourceUses.map((use) => use.ranges),
-  ];
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) {
-      const parsed = z.array(BindingRangeSchema).safeParse(value);
-      if (parsed.success) ranges.push(parsed.data);
-      for (const nested of value) visit(nested);
-      return;
-    }
-    if (value === null || typeof value !== "object") return;
-    for (const nested of Object.values(value as Record<string, unknown>)) visit(nested);
-  };
-  for (const observation of evidence.observations) visit(observation.payload);
-  const matched = ranges.find(
-    (candidate) => sha256Base64Url(JSON.stringify(candidate)) === expectedHash,
+  source: { readonly kind: string; readonly content: string },
+): string => {
+  if (source.kind !== "document") {
+    throw new Error(`${manifest.caseId} document exposure mapped to a non-document source`);
+  }
+  const binding = manifest.sourceBindings.find(
+    (candidate) =>
+      candidate.kind === "document" && evaluationBindingGoldenSourceId(candidate) === sourceId,
   );
-  return matched === undefined
-    ? undefined
-    : matched.map((range) => documentText.slice(range.charStart, range.charEnd)).join("\n…\n");
+  if (binding === undefined || binding.kind !== "document") {
+    throw new Error(`${manifest.caseId} document exposure has no immutable binding`);
+  }
+  const metadata = {
+    sourceId: exposure.documentSourceId,
+    documentId: exposure.documentId,
+    documentVersionId: exposure.documentVersionId,
+    contentHash: exposure.documentContentHash,
+    ranges: exposure.documentRanges,
+  };
+  if (
+    metadata.sourceId === null ||
+    metadata.documentId === null ||
+    metadata.documentVersionId === null ||
+    metadata.contentHash === null ||
+    metadata.ranges === null
+  ) {
+    throw new Error(`${manifest.caseId} document exposure lacks reconstruction metadata`);
+  }
+  const documentText = storedDocumentText(source.content);
+  if (
+    metadata.sourceId !== binding.sourceId ||
+    metadata.documentId !== binding.documentId ||
+    metadata.documentVersionId !== binding.documentVersionId ||
+    metadata.contentHash !== binding.contentHash ||
+    metadata.contentHash !== sha256Hex(documentText)
+  ) {
+    throw new Error(`${manifest.caseId} document exposure immutable identity is invalid`);
+  }
+  let ranges: readonly EvaluationRange[];
+  try {
+    ranges = normalizeCharacterRanges(metadata.ranges, documentText.length);
+  } catch (error) {
+    throw new Error(
+      `${manifest.caseId} document exposure ranges are invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (canonicalJson(ranges) !== canonicalJson(metadata.ranges)) {
+    throw new Error(`${manifest.caseId} document exposure ranges are not normalized`);
+  }
+  // jsonb is free to reorder object keys; rebuild the producer's exact
+  // charStart/charEnd object shape before checking its range digest.
+  const rangeIdentityJson = JSON.stringify(
+    metadata.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd })),
+  );
+  const expectedIdentity = `${documentBindingIdentity(binding)}:${binding.documentVersionId}:${sha256Base64Url(rangeIdentityJson)}`;
+  if (exposure.logicalSourceIdentity !== documentBindingIdentity(binding)) {
+    throw new Error(`${manifest.caseId} document exposure namespace is invalid`);
+  }
+  if (exposure.contentItemIdentity !== expectedIdentity) {
+    throw new Error(`${manifest.caseId} document exposure range identity is invalid`);
+  }
+  return ranges.map((range) => documentText.slice(range.charStart, range.charEnd)).join("\n…\n");
 };
 
 const expectedExposureVisibleTokenCount = (
@@ -4533,8 +4612,7 @@ const expectedExposureVisibleTokenCount = (
   ) {
     visibleText =
       source.kind === "document"
-        ? (exactExposureDocumentText(fixture, evidence, sourceId, exposure.contentItemIdentity) ??
-          "")
+        ? reconstructDocumentExposureText(manifest, exposure, sourceId, source)
         : source.kind === "chat_message"
           ? stripHistoricalCitationTags(source.content)
           : source.content;
@@ -4547,8 +4625,7 @@ const expectedExposureVisibleTokenCount = (
   } else if (exposure.exposureStage === "answer_serialized") {
     visibleText =
       source.kind === "document"
-        ? (exactExposureDocumentText(fixture, evidence, sourceId, exposure.contentItemIdentity) ??
-          "")
+        ? reconstructDocumentExposureText(manifest, exposure, sourceId, source)
         : source.content;
   } else {
     throw new Error(`${manifest.caseId} exposure stage lacks exact visible-token semantics`);
@@ -4640,6 +4717,20 @@ const attestExactSourceExposureRows = (
       exposure,
       requestAttestation?.modelId ?? "glm-5-turbo",
     );
+    const attestedDocumentMetadata = {
+      sourceId: payload.documentSourceId ?? null,
+      documentId: payload.documentId ?? null,
+      documentVersionId: payload.documentVersionId ?? null,
+      contentHash: payload.documentContentHash ?? null,
+      ranges: payload.documentRanges ?? null,
+    };
+    const durableDocumentMetadata = {
+      sourceId: exposure.documentSourceId,
+      documentId: exposure.documentId,
+      documentVersionId: exposure.documentVersionId,
+      contentHash: exposure.documentContentHash,
+      ranges: exposure.documentRanges,
+    };
     if (
       payload.providerRequestIndex !== exposure.providerRequestIndex ||
       requestAttestation === undefined ||
@@ -4651,7 +4742,8 @@ const attestExactSourceExposureRows = (
       payload.exposureStage !== exposure.exposureStage ||
       payload.visibleTokenCount !== exposure.visibleTokenCount ||
       (expectedVisibleTokenCount !== null &&
-        exposure.visibleTokenCount !== expectedVisibleTokenCount)
+        exposure.visibleTokenCount !== expectedVisibleTokenCount) ||
+      canonicalJson(attestedDocumentMetadata) !== canonicalJson(durableDocumentMetadata)
     ) {
       throw new Error(
         `${manifest.caseId} source exposure differs from its provider-request-bound attestation`,
@@ -4727,7 +4819,7 @@ const validDocumentRangeIdentities = (
   return new Set(
     ranges.map(
       (value) =>
-        `${documentBindingIdentity(binding)}:${binding.documentVersionId}:${sha256Base64Url(JSON.stringify(value))}`,
+        `${documentBindingIdentity(binding)}:${binding.documentVersionId}:${sha256Base64Url(JSON.stringify(value.map(({ charStart, charEnd }) => ({ charStart, charEnd }))))}`,
     ),
   );
 };

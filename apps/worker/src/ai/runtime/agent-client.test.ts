@@ -763,6 +763,99 @@ describe("canonical agent tool loop", () => {
     ).rejects.toMatchObject({ code: "context_reducer_failed" });
   });
 
+  it("preflights every complete call array before executing an exclusive measurement", async () => {
+    const complete = vi.fn(async () =>
+      completion([
+        { id: "measure-1", name: "measure_plan", arguments: {} },
+        { id: "measure-2", name: "measure_plan", arguments: {} },
+      ]),
+    );
+    const measure = vi.fn(async () => ({ complete: true, resolved: true }));
+    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
+
+    await expect(
+      inTask(() =>
+        client.toolLoop({
+          requestClass: "fast",
+          model: "glm-5-turbo",
+          system: "system",
+          user: "user",
+          tools: [
+            {
+              definition: { name: "measure_plan", description: "Measure", parameters: {} },
+              execute: measure,
+            },
+            {
+              definition: { name: "emit_context_plan", description: "Emit", parameters: {} },
+              execute: async () => ({ complete: true }),
+            },
+          ],
+          terminalToolName: "emit_context_plan",
+          exclusiveToolNames: ["measure_plan", "emit_context_plan"],
+          validateTerminal: (value) => value,
+          maximumTurns: 2,
+          requestedOutputTokens: 64,
+          reasoning: "medium",
+          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reducer" },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "context_reducer_failed" });
+    expect(measure).not.toHaveBeenCalled();
+  });
+
+  it("does not consume a continuation obligation created earlier in the same response", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completion([
+          { id: "search-1", name: "search", arguments: { query: "solar" } },
+          { id: "search-same-turn", name: "search", arguments: { query: "solar", cursor: 2 } },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        completion([{ id: "search-2", name: "search", arguments: { query: "solar", cursor: 2 } }]),
+      )
+      .mockResolvedValueOnce(
+        completion([{ id: "emit-1", name: "emit", arguments: { ids: ["a"] } }]),
+      );
+    const search = vi
+      .fn()
+      .mockResolvedValueOnce({ complete: false, truncated: true, cursor: 2, items: [{ id: "a" }] })
+      .mockResolvedValueOnce({ complete: true, truncated: false, cursor: null, items: [] });
+    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
+
+    await expect(
+      inTask(() =>
+        client.toolLoop({
+          requestClass: "fast",
+          model: "glm-5-turbo",
+          system: "system",
+          user: "user",
+          tools: [
+            {
+              definition: { name: "search", description: "Search", parameters: {} },
+              execute: search,
+            },
+            {
+              definition: { name: "emit", description: "Emit", parameters: {} },
+              execute: async () => ({ complete: true }),
+            },
+          ],
+          terminalToolName: "emit",
+          validateTerminal: (value) => value as { readonly ids: readonly string[] },
+          maximumTurns: 3,
+          requestedOutputTokens: 64,
+          reasoning: "medium",
+          coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
+        }),
+      ),
+    ).resolves.toEqual({ ids: ["a"] });
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(complete.mock.calls[1]?.[0].messages.at(-1)?.content).toContain(
+      '"continuationRequired":true',
+    );
+  });
+
   it("recovers when terminal persistence rejects an otherwise valid output", async () => {
     const complete = vi
       .fn()

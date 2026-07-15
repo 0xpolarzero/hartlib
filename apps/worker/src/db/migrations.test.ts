@@ -4078,6 +4078,66 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           }
 
           yield* sql`
+            insert into ai_source_exposures (
+              run_id, task_id, loop_iteration, attempt, provider_request_index,
+              source_kind, logical_source_identity, content_item_identity,
+              exposure_stage, visible_token_count,
+              document_source_id, document_id, document_version_id,
+              document_content_hash, document_ranges
+            ) values (
+              ${evaluationRunId}, 'reconstructable-inspection', 0, 0, 0,
+              'document', 'public:source-1',
+              'public:source-1:document-1:version-1:range-a',
+              'internal_inspection', 3,
+              'public:source-1', 'document-1', 'version-1', ${"a".repeat(64)},
+              ${JSON.stringify([{ charStart: 0, charEnd: 3 }])}::jsonb
+            )
+          `;
+          const reconstructionFailures = [
+            yield* Effect.flip(sql`
+              insert into ai_source_exposures (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                source_kind, logical_source_identity, content_item_identity,
+                exposure_stage, visible_token_count
+              ) values (
+                ${evaluationRunId}, 'missing-reconstruction', 0, 0, 0,
+                'document', 'public:source-1', 'missing', 'internal_inspection', 1
+              )
+            `),
+            yield* Effect.flip(sql`
+              insert into ai_source_exposures (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                source_kind, logical_source_identity, content_item_identity,
+                exposure_stage, visible_token_count,
+                document_source_id, document_id, document_version_id,
+                document_content_hash, document_ranges
+              ) values (
+                ${evaluationRunId}, 'overlapping-reconstruction', 0, 0, 0,
+                'document', 'public:source-1', 'overlapping', 'context_candidate_inspection', 1,
+                'public:source-1', 'document-1', 'version-1', ${"a".repeat(64)},
+                ${JSON.stringify([
+                  { charStart: 0, charEnd: 3 },
+                  { charStart: 2, charEnd: 4 },
+                ])}::jsonb
+              )
+            `),
+            yield* Effect.flip(sql`
+              insert into ai_source_exposures (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                source_kind, logical_source_identity, content_item_identity,
+                exposure_stage, visible_token_count,
+                document_source_id, document_id, document_version_id,
+                document_content_hash, document_ranges
+              ) values (
+                ${evaluationRunId}, 'unscoped-reconstruction', 0, 0, 0,
+                'document', 'document:source-1', 'unscoped', 'internal_inspection', 1,
+                'document:source-1', 'document-1', 'version-1', ${"a".repeat(64)},
+                ${JSON.stringify([{ charStart: 0, charEnd: 3 }])}::jsonb
+              )
+            `),
+          ];
+
+          yield* sql`
             insert into ai_observations (
               run_id, chat_id, emitting_task, loop_iteration, attempt,
               observation_key, kind, payload
@@ -4192,7 +4252,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 (select count(*) from ai_external_tool_usage where run_id = ${ordinaryRunId})
               )::int as "ordinaryEvidence"
           `;
-          return { updateFailures, deleteFailures, counts };
+          return { updateFailures, deleteFailures, reconstructionFailures, counts };
         }),
       );
 
@@ -4201,9 +4261,12 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           "canonical AI evaluation runtime evidence is append-only",
         );
       }
+      for (const failure of result.reconstructionFailures) {
+        expect(errorText(failure)).toContain("ai_source_exposures_document_reconstruction");
+      }
       expect(result.counts).toEqual({
         evaluationObservations: 1,
-        evaluationExposures: 1,
+        evaluationExposures: 2,
         evaluationUsage: 1,
         evaluationExternalUsage: 1,
         ordinaryEvidence: 0,

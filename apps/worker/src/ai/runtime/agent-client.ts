@@ -375,6 +375,7 @@ export class CanonicalAgentClient {
           aiRunErrorCodeForRole(input.coordinates.agentRole),
         );
       }
+      const priorContinuationObligations = new Map(continuationObligations);
       const exclusiveToolNames = new Set(input.exclusiveToolNames ?? []);
       const exclusiveCall = completion.toolCalls.find((call) => exclusiveToolNames.has(call.name));
       const hasTerminalCall = completion.toolCalls.some(
@@ -396,6 +397,50 @@ export class CanonicalAgentClient {
           aiRunErrorCodeForRole(input.coordinates.agentRole),
         );
       }
+      const preflightContinuationKeys = new Set<string>();
+      for (const call of completion.toolCalls) {
+        if (call.name === input.terminalToolName || disabledTools.has(call.name)) continue;
+        if (!visibleToolsByName.has(call.name)) {
+          throw providerOutputError(
+            new Error(`unknown tool call ${call.name}`),
+            aiRunErrorCodeForRole(input.coordinates.agentRole),
+          );
+        }
+        const key = continuationKey(call.name, call.arguments);
+        const obligation = priorContinuationObligations.get(key);
+        if (obligation === undefined) continue;
+        if (preflightContinuationKeys.has(key)) {
+          throw providerOutputError(
+            new Error(`tool continuation ${call.name} was called more than once in one turn`),
+            aiRunErrorCodeForRole(input.coordinates.agentRole),
+          );
+        }
+        preflightContinuationKeys.add(key);
+        if (
+          obligation.expectedCursor !== undefined &&
+          exactStableJson(call.arguments.cursor) !== exactStableJson(obligation.expectedCursor)
+        ) {
+          throw providerOutputError(
+            new Error("tool continuation did not use the exact returned cursor"),
+            aiRunErrorCodeForRole(input.coordinates.agentRole),
+          );
+        }
+        if (
+          obligation.narrowerRangeRequired === true &&
+          !isStrictlyNarrowerRange(obligation.previousRanges, rangeFromArguments(call.arguments))
+        ) {
+          throw providerOutputError(
+            new Error("tool continuation did not use a strictly narrower range"),
+            aiRunErrorCodeForRole(input.coordinates.agentRole),
+          );
+        }
+      }
+      const continuationTurnHasUnresolvedMismatch =
+        priorContinuationObligations.size > 0 &&
+        completion.toolCalls.some((call) => {
+          if (call.name === input.terminalToolName || disabledTools.has(call.name)) return false;
+          return !priorContinuationObligations.has(continuationKey(call.name, call.arguments));
+        });
       messages.push({
         role: "assistant",
         content: completion.text,
@@ -494,8 +539,12 @@ export class CanonicalAgentClient {
           );
         }
         const obligationKey = continuationKey(call.name, call.arguments);
-        const obligation = continuationObligations.get(obligationKey);
-        if (continuationObligations.size > 0 && obligation === undefined) {
+        const obligation = priorContinuationObligations.get(obligationKey);
+        if (
+          continuationTurnHasUnresolvedMismatch ||
+          (priorContinuationObligations.size > 0 && obligation === undefined) ||
+          (obligation === undefined && continuationObligations.has(obligationKey))
+        ) {
           messages.push({
             role: "tool",
             toolCallId: call.id,
@@ -508,24 +557,6 @@ export class CanonicalAgentClient {
             }),
           });
           continue;
-        }
-        if (
-          obligation?.expectedCursor !== undefined &&
-          exactStableJson(call.arguments.cursor) !== exactStableJson(obligation.expectedCursor)
-        ) {
-          throw providerOutputError(
-            new Error("tool continuation did not use the exact returned cursor"),
-            aiRunErrorCodeForRole(input.coordinates.agentRole),
-          );
-        }
-        if (
-          obligation?.narrowerRangeRequired === true &&
-          !isStrictlyNarrowerRange(obligation.previousRanges, rangeFromArguments(call.arguments))
-        ) {
-          throw providerOutputError(
-            new Error("tool continuation did not use a strictly narrower range"),
-            aiRunErrorCodeForRole(input.coordinates.agentRole),
-          );
         }
         let result: Readonly<Record<string, unknown>>;
         if (forceTerminalNextTurn) {

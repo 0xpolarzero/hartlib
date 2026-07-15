@@ -34,6 +34,7 @@ import {
 import { CanonicalAgentClient, type ToolLoopInput } from "../runtime/agent-client";
 import { measureProviderRequest, resolveRegisteredModel } from "../runtime/model-registry";
 import { TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY } from "../web/tinyfish-search";
+import { deleteSmithersRowsForRunWithSchemas } from "../workflow/smithers-cleanup";
 import type {
   BeforeProviderRequest,
   ExactPiBoundary,
@@ -163,6 +164,8 @@ const crashResumeFailureSessionId = "50000000-0000-4000-8000-000000000112";
 const sameMillisecondUsageSessionId = "50000000-0000-4000-8000-000000000113";
 const focusedAbortSessionId = "50000000-0000-4000-8000-000000000114";
 const invertedEventTimestampSessionId = "50000000-0000-4000-8000-000000000115";
+const transcriptReconstructionSessionId = "50000000-0000-4000-8000-000000000116";
+const documentMetadataTamperSessionId = "50000000-0000-4000-8000-000000000117";
 const focusedProductionCaseId = "first-message-document-fr";
 const focusedClarificationCaseId = "ambiguous-reference-needs-clarification";
 const fixtureProviderRequestSha256Hex = "a".repeat(64);
@@ -690,6 +693,7 @@ const completeDurableCaptureSession = async (
     | "clarification_boundary_count"
     | "wrong_document_version"
     | "coordinated_document_hash"
+    | "tampered_document_reconstruction"
     | "wrong_memory_revision"
     | "wrong_web_identity"
     | "wrong_web_stage"
@@ -1314,6 +1318,13 @@ const completeDurableCaptureSession = async (
         contentItemIdentity: `${namespacedDocumentEvidenceIdentity(binding.source, binding.documentId)}:${binding.documentVersionId}:${sha256Base64Url(JSON.stringify(ranges))}`,
         exposureStage: "internal_inspection" as const,
         visibleTokenCount: model.countTextTokens(text),
+        documentReconstruction: {
+          sourceId: binding.sourceId,
+          documentId: binding.documentId,
+          documentVersionId: binding.documentVersionId,
+          contentHash: binding.contentHash,
+          ranges,
+        },
       };
     };
     const oversizedDocumentSourceIds = isSpecializedOversized
@@ -1360,6 +1371,17 @@ const completeDurableCaptureSession = async (
                 : `${canonicalizeWebUrl(binding.url)}:${webQuoteHash(source.content)}`,
         exposureStage: "context_candidate_inspection",
         visibleTokenCount: model.countTextTokens(source.content),
+        ...(binding.kind === "document"
+          ? {
+              documentReconstruction: {
+                sourceId: binding.sourceId,
+                documentId: binding.documentId,
+                documentVersionId: binding.documentVersionId,
+                contentHash: binding.contentHash,
+                ranges: source.ranges,
+              },
+            }
+          : {}),
       } as const;
     };
     const exposedPreviewMarkerFor = (sourceId: string) => {
@@ -1376,14 +1398,51 @@ const completeDurableCaptureSession = async (
     const exposedReductionMarkerFor = (sourceId: string) => {
       const marker = reductionMarkerFor(sourceId);
       const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId)!;
-      return tamper === "wrong_kind_o" && source.kind === "memory"
-        ? { ...marker, sourceKind: "document" as const }
-        : marker;
+      if (tamper !== "wrong_kind_o" || source.kind !== "memory") return marker;
+      const documentSource = fixture.evidence.find((candidate) => candidate.kind === "document");
+      const documentBinding = manifest.sourceBindings.find(
+        (
+          candidate,
+        ): candidate is Extract<
+          EvaluationSeedManifest["sourceBindings"][number],
+          { kind: "document" }
+        > =>
+          candidate.kind === "document" &&
+          evaluationBindingGoldenSourceId(candidate) === documentSource?.sourceId,
+      );
+      if (documentSource === undefined || documentBinding === undefined) {
+        throw new Error("wrong-kind O tamper lacks a canonical document binding");
+      }
+      return {
+        ...marker,
+        sourceKind: "document" as const,
+        documentReconstruction: {
+          sourceId: documentBinding.sourceId,
+          documentId: documentBinding.documentId,
+          documentVersionId: documentBinding.documentVersionId,
+          contentHash: documentBinding.contentHash,
+          ranges: documentSource.ranges,
+        },
+      };
     };
     const sourceProofsForRequest = (
       taskId: string,
       providerRequestIndex: number,
     ): readonly string[] => {
+      const proofFor = (marker: {
+        readonly sourceKind: "document" | "chat_message" | "memory" | "web";
+        readonly logicalSourceIdentity: string;
+        readonly contentItemIdentity: string;
+        readonly exposureStage: string;
+        readonly visibleTokenCount: number;
+      }) =>
+        providerVisibleSourceExposureProofSha256Hex({
+          sourceKind: marker.sourceKind,
+          logicalSourceIdentity: marker.logicalSourceIdentity,
+          contentItemIdentity: marker.contentItemIdentity,
+          exposureStage: marker.exposureStage,
+          visibleTokenCount: marker.visibleTokenCount,
+        });
       const previewMarkers = selectedIds
         .filter((sourceId) => {
           const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId)!;
@@ -1410,7 +1469,7 @@ const completeDurableCaptureSession = async (
         : taskId === "single-reduce-plan"
           ? selectedIds.map(exposedReductionMarkerFor)
           : [];
-      return [...new Set(markers.map(providerVisibleSourceExposureProofSha256Hex))].sort();
+      return [...new Set(markers.map(proofFor))].sort();
     };
     const specializedMemoryRequest = {
       taskId: "memory-extract",
@@ -2265,6 +2324,19 @@ const completeDurableCaptureSession = async (
               contentItemIdentity: reductionMarker.contentItemIdentity,
               exposureStage: "context_candidate_inspection",
               visibleTokenCount: model.countTextTokens(source.content),
+              ...(reductionMarker.sourceKind === "document" &&
+              "documentReconstruction" in reductionMarker &&
+              reductionMarker.documentReconstruction !== undefined
+                ? {
+                    documentReconstruction:
+                      tamper === "tampered_document_reconstruction"
+                        ? {
+                            ...reductionMarker.documentReconstruction,
+                            contentHash: "b".repeat(64),
+                          }
+                        : reductionMarker.documentReconstruction,
+                  }
+                : {}),
             });
           }
         }
@@ -2283,6 +2355,16 @@ const completeDurableCaptureSession = async (
               contentItemIdentity: marker.contentItemIdentity,
               exposureStage: marker.exposureStage,
               visibleTokenCount: marker.visibleTokenCount,
+              ...(marker.sourceKind === "document" &&
+              "documentReconstruction" in marker &&
+              marker.documentReconstruction !== undefined
+                ? {
+                    documentReconstruction:
+                      tamper === "tampered_document_reconstruction"
+                        ? { ...marker.documentReconstruction, contentHash: "b".repeat(64) }
+                        : marker.documentReconstruction,
+                  }
+                : {}),
             });
           }
         }
@@ -4321,6 +4403,56 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     ).resolves.toBeTypeOf("string");
   }, 120_000);
 
+  it("reconstructs durable document inspections after Smithers transcript deletion", async () => {
+    await completeDurableCaptureSession(transcriptReconstructionSessionId);
+    await bindEvaluationAnnotations(
+      isolatedDatabaseUrl(),
+      transcriptReconstructionSessionId,
+      labeledAnnotations(transcriptReconstructionSessionId),
+    );
+    const suite = await captureEvaluationSession(
+      isolatedDatabaseUrl(),
+      transcriptReconstructionSessionId,
+    );
+    const captured = suite.specialized[0];
+    if (captured === undefined) throw new Error("durable specialized capture is missing");
+    const smithersRunId = `ai-chat:${captured.capture.runId}`;
+
+    await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          create table if not exists _smithers_reconstruction_test (
+            run_id text primary key,
+            transcript text not null
+          )
+        `;
+        yield* sql`
+          insert into _smithers_reconstruction_test (run_id, transcript)
+          values (${smithersRunId}, 'provider transcript')
+        `;
+      }),
+    );
+    expect(await smithersRowsForRun(smithersRunId)).toContain("_smithers_reconstruction_test");
+
+    await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        yield* deleteSmithersRowsForRunWithSchemas({}, smithersRunId);
+      }),
+    );
+    expect(await smithersRowsForRun(smithersRunId)).toEqual([]);
+    await expect(
+      revalidateCapturedArtifacts(
+        isolatedDatabaseUrl(),
+        transcriptReconstructionSessionId,
+        suite.specialized,
+        suite.baseline,
+      ),
+    ).resolves.toEqual(suite);
+  }, 120_000);
+
   it("binds the complete accepted run snapshot and durable usage chronology after sealing", async () => {
     await completeDurableCaptureSession(sealedSnapshotTamperSessionId);
     await bindEvaluationAnnotations(
@@ -5364,6 +5496,11 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         sessionId: documentHashTamperSessionId,
         tamper: "coordinated_document_hash" as const,
         error: /missing or unbound source-serialization proof/u,
+      },
+      {
+        sessionId: documentMetadataTamperSessionId,
+        tamper: "tampered_document_reconstruction" as const,
+        error: /immutable identity is invalid/u,
       },
       {
         sessionId: memoryRevisionTamperSessionId,
