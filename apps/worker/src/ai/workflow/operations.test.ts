@@ -187,7 +187,7 @@ describe("document selection range semantics", () => {
   });
 
   it("keeps a combining-mark match narrower than its base code point", () => {
-    const text = "x\u0301 next";
+    const text = "x\u0301";
     const candidate: AnswerCandidate = {
       id: "document:combining-only",
       kind: "document",
@@ -234,6 +234,33 @@ describe("document selection range semantics", () => {
 
     expect(searchWithinCandidate(candidate, "\u0300")).toEqual([{ charStart: 2, charEnd: 3 }]);
     expect(searchWithinCandidate(candidate, "\u0315")).toEqual([{ charStart: 1, charEnd: 2 }]);
+  });
+
+  it("maps a composed code point to only the source contributors it needs", () => {
+    const text = "a\u0301\u0323";
+    const candidate: AnswerCandidate = {
+      id: "document:composed-reordered-mark",
+      kind: "document",
+      rank: 0,
+      purpose: "test composed reordered contributors",
+      sourceId: "source-composed-reordered-mark",
+      documentId: "document-composed-reordered-mark",
+      documentVersionId: "version-composed-reordered-mark",
+      contentHash: "4".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Composed reordered mark",
+      publicProvenance: {
+        documentTitle: "Composed reordered mark",
+        citationUrl: "https://example.test/composed-reordered-mark",
+      },
+      renderedTokenCount: 0,
+    };
+
+    // NFKC reorders the marks before composing a + dot-below into ạ. The
+    // range is the smallest UTF-16 interval containing those contributors.
+    expect(searchWithinCandidate(candidate, "ạ")).toEqual([{ charStart: 0, charEnd: 3 }]);
+    expect(searchWithinCandidate(candidate, "\u0301")).toEqual([{ charStart: 1, charEnd: 2 }]);
   });
 
   it("keeps supplementary and following combining contributors distinct", () => {
