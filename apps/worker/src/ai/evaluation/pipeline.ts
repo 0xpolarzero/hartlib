@@ -612,7 +612,8 @@ const documentBindingMatchesLocator = (
     value.kind !== "document" ||
     value.sourceId !== documentBindingSourceId(binding) ||
     value.documentId !== binding.documentId ||
-    value.documentVersionId !== binding.documentVersionId
+    value.documentVersionId !== binding.documentVersionId ||
+    value.contentHash !== binding.contentHash
   ) {
     return false;
   }
@@ -1557,15 +1558,21 @@ const baselineSourceMap = async (
     manifest.sourceBindings.map((binding) => [evaluationBindingGoldenSourceId(binding), binding]),
   );
   const evidence = new Map(fixture.evidence.map((source) => [source.sourceId, source]));
+  const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
   const model = resolveRegisteredModel("glm-5-turbo");
   return output.selectedSources.map((selection, index) => {
     const binding = bindings.get(selection.sourceId)!;
     const source = evidence.get(selection.sourceId)!;
     const sourceKey = sourceKeyForOrdinal(Buffer.from(nonceHex, "hex"), index + 1);
     const selectedText =
-      source.kind === "document" && selection.ranges.length > 0
-        ? selection.ranges
-            .map((range) => source.content.slice(range.charStart, range.charEnd))
+      source.kind === "document"
+        ? (selection.ranges.length > 0
+            ? selection.ranges
+            : [{ charStart: 0, charEnd: storedDocuments.get(selection.sourceId)!.text.length }]
+          )
+            .map((range) =>
+              storedDocuments.get(selection.sourceId)!.text.slice(range.charStart, range.charEnd),
+            )
             .join("\n…\n")
         : source.content;
     const use = {
@@ -2020,6 +2027,8 @@ const executeBaseline = async (
   if (config.aiE2eFakeProvider && !deterministicTestProviderAllowed)
     throw new Error("evaluation execution forbids AI_E2E_FAKE_PROVIDER");
   if (config.zaiApiKey.trim() === "") throw new Error("evaluation execution requires ZAI_API_KEY");
+  const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
+  const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
   await ensureEvaluationCaseRunning(connectionString, row);
   const smithersRunId = `ai-evaluation-general-planner:${row.sessionId}:${row.caseId}`;
   await db(
@@ -2080,7 +2089,12 @@ const executeBaseline = async (
                         `baseline document source ${source.sourceId} resolved to ${binding.kind} binding`,
                       );
                     }
-                    const visibleText = source.content.slice(exposure.charStart, exposure.charEnd);
+                    const visibleText =
+                      source.kind === "document"
+                        ? storedDocuments
+                            .get(exposure.sourceId)!
+                            .text.slice(exposure.charStart, exposure.charEnd)
+                        : source.content.slice(exposure.charStart, exposure.charEnd);
                     const logicalSourceIdentity =
                       binding.kind === "document"
                         ? documentBindingIdentity(binding)
@@ -3290,6 +3304,7 @@ const attestRelationalEvidence = (
   evidence: DurableRunEvidence,
   manifest: EvaluationSeedManifest,
   fixture: GoldenEvaluationCase,
+  storedDocuments: StoredEvaluationDocuments,
 ): void => {
   const current = evidence.currentUserMessage;
   const assistant = evidence.assistantMessage;
@@ -3388,7 +3403,12 @@ const attestRelationalEvidence = (
               evidence.sourceUses
                 .filter((use) => use.sourceKey === source.sourceKey)
                 .flatMap((use) => use.ranges),
-              storedDocumentText(golden.content).length,
+              storedDocuments.get(evaluationBindingGoldenSourceId(binding))?.text.length ??
+                (() => {
+                  throw new Error(
+                    `${row.topology}/${row.caseId} document source lacks current stored text`,
+                  );
+                })(),
             ),
             ...(binding.source.kind === "publisher"
               ? {
@@ -3557,7 +3577,11 @@ const attestRelationalEvidence = (
   }
 };
 
-const attestAcceptedRunSnapshot = (row: CaseRunRow, evidence: DurableRunEvidence): void => {
+const attestAcceptedRunSnapshot = (
+  row: CaseRunRow,
+  evidence: DurableRunEvidence,
+  storedDocuments: StoredEvaluationDocuments,
+): void => {
   const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
   const fixture = fixtureFor(row.caseId);
   const expectedPolicy: EffectiveWebPolicy =
@@ -3588,14 +3612,18 @@ const attestAcceptedRunSnapshot = (row: CaseRunRow, evidence: DurableRunEvidence
   attestConversationInventorySnapshot(row, evidence, manifest, fixture);
   attestDurableUsageChronology(row, evidence);
   deriveTrustedPromptMeasurements(row.topology, row.caseId, evidence.usage, evidence.observations);
-  attestExactSourceExposureRows(manifest, evidence);
+  attestExactSourceExposureRows(manifest, evidence, storedDocuments);
   attestEventEvidence(row, evidence, manifest, fixture);
-  attestRetrievalManifestEvidence(row, evidence, manifest);
-  attestRelationalEvidence(row, evidence, manifest, fixture);
+  attestRetrievalManifestEvidence(row, evidence, manifest, storedDocuments);
+  attestRelationalEvidence(row, evidence, manifest, fixture, storedDocuments);
 };
 
-const evaluationRunEvidenceDigest = (row: CaseRunRow, evidence: DurableRunEvidence): string => {
-  attestAcceptedRunSnapshot(row, evidence);
+const evaluationRunEvidenceDigest = (
+  row: CaseRunRow,
+  evidence: DurableRunEvidence,
+  storedDocuments: StoredEvaluationDocuments,
+): string => {
+  attestAcceptedRunSnapshot(row, evidence, storedDocuments);
   if (
     row.evaluationConfigSha256Hex === null ||
     row.providerEndpointIdentity !== TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY
@@ -3667,18 +3695,17 @@ const assertLiveEvaluationAuthorization = async (
 };
 
 const finalizeCaseEvidence = async (connectionString: string, row: CaseRunRow): Promise<string> => {
-  await assertLiveEvaluationAuthorization(
-    connectionString,
-    EvaluationSeedManifestSchema.parse(row.seedManifest),
-  );
+  const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
+  await assertLiveEvaluationAuthorization(connectionString, manifest);
   const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
+  const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
   if (
     evidence.usage.length === 0 ||
     evidence.usage.some((usage) => usage.providerServiceId !== ZAI_CODING_PLAN_PROVIDER_SERVICE_ID)
   ) {
     throw new Error(`${row.topology}/${row.caseId} is not exclusively backed by real Z.AI usage`);
   }
-  const digest = evaluationRunEvidenceDigest(row, evidence);
+  const digest = evaluationRunEvidenceDigest(row, evidence, storedDocuments);
   const transitioned = await db(
     connectionString,
     Effect.gen(function* () {
@@ -3717,13 +3744,13 @@ export const attestEvaluationCaseFromDurableRun = async (
   if (row === undefined) throw new Error(`unknown evaluation case run ${topology}/${caseId}`);
   if (row.status !== "running") {
     if (row.status === "succeeded" && row.runEvidenceSha256Hex !== null) {
-      await assertLiveEvaluationAuthorization(
-        connectionString,
-        EvaluationSeedManifestSchema.parse(row.seedManifest),
-      );
+      const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
+      await assertLiveEvaluationAuthorization(connectionString, manifest);
+      const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
       const current = evaluationRunEvidenceDigest(
         row,
         await loadDurableRunEvidence(connectionString, row.aiRunId),
+        storedDocuments,
       );
       if (current !== row.runEvidenceSha256Hex) {
         throw new Error(`${topology}/${caseId} durable evidence changed after attestation`);
@@ -4271,7 +4298,9 @@ const bindEvaluationCaseAnnotationRow = async (
     throw new Error(`${annotation.topology}/${annotation.caseId} is not ready for annotation`);
   }
   const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
-  const currentDigest = evaluationRunEvidenceDigest(row, evidence);
+  const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
+  const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
+  const currentDigest = evaluationRunEvidenceDigest(row, evidence, storedDocuments);
   if (currentDigest !== row.runEvidenceSha256Hex) {
     throw new Error(`${annotation.topology}/${annotation.caseId} durable evidence changed`);
   }
@@ -4378,49 +4407,194 @@ const mapReferenceToGolden = (
   manifest: EvaluationSeedManifest,
   reference: Record<string, unknown>,
 ): string | undefined => {
-  const identityFields = [
-    reference.sourceId,
-    reference.documentVersionId,
-    reference.messageId,
-    reference.memoryRevisionId,
-    reference.url,
-  ].filter((value) => typeof value === "string");
-  if (identityFields.length !== 1) return undefined;
-  const binding = manifest.sourceBindings.find((binding) => {
-    if (binding.kind === "document") {
-      const namespace = DocumentSourceNamespaceSchema.safeParse(reference.source);
-      if (!namespace.success) return false;
+  const internal = DurableInternalManifestReferenceSchema.safeParse(reference);
+  if (internal.success) {
+    const bindings =
+      internal.data.kind === "document"
+        ? (() => {
+            const reference = internal.data;
+            return manifest.sourceBindings.filter(
+              (candidate) =>
+                candidate.kind === "document" &&
+                candidate.documentId === reference.documentId &&
+                candidate.documentVersionId === reference.documentVersionId &&
+                canonicalJson(candidate.source) === canonicalJson(reference.source),
+            );
+          })()
+        : (() => {
+            const reference = internal.data;
+            return manifest.sourceBindings.filter(
+              (candidate) =>
+                candidate.kind === "chat_message" && candidate.messageId === reference.messageId,
+            );
+          })();
+    return bindings.length === 1 ? evaluationBindingGoldenSourceId(bindings[0]!) : undefined;
+  }
+
+  const memory = DurableMemoryManifestReferenceSchema.safeParse(reference);
+  if (memory.success) {
+    const bindings = manifest.sourceBindings.filter(
+      (candidate) =>
+        candidate.kind === "memory" &&
+        candidate.memoryId === memory.data.memoryId &&
+        candidate.memoryRevisionId === memory.data.memoryRevisionId,
+    );
+    return bindings.length === 1 ? evaluationBindingGoldenSourceId(bindings[0]!) : undefined;
+  }
+
+  const web = DurableWebManifestReferenceSchema.safeParse(reference);
+  if (web.success) {
+    const bindings = manifest.sourceBindings.filter((candidate) => {
       if (
-        namespace.data.kind === "publisher" &&
-        namespace.data.documentId !== reference.documentId
+        candidate.kind !== "web" ||
+        candidate.url !== web.data.url ||
+        candidate.title !== web.data.title ||
+        candidate.domain !== web.data.domain ||
+        candidate.capturedAt !== web.data.capturedAt
       ) {
         return false;
       }
       return (
-        binding.documentVersionId === reference.documentVersionId &&
-        (reference.documentId === undefined || binding.documentId === reference.documentId) &&
-        canonicalJson(binding.source) === canonicalJson(namespace.data)
-      );
-    }
-    if (binding.kind === "chat_message") return binding.messageId === reference.messageId;
-    if (binding.kind === "memory") {
-      return (
-        binding.memoryRevisionId === reference.memoryRevisionId &&
-        (reference.memoryId === undefined || binding.memoryId === reference.memoryId)
-      );
-    }
-    if (binding.url !== reference.url) return false;
-    const quote = reference.quote;
-    return (
-      quote === undefined ||
-      (typeof quote === "string" &&
         fixtureFor(manifest.caseId).evidence.find(
-          (source) => source.sourceId === evaluationBindingGoldenSourceId(binding),
-        )?.content === quote)
-    );
-  });
-  return binding === undefined ? undefined : evaluationBindingGoldenSourceId(binding);
+          (source) => source.sourceId === evaluationBindingGoldenSourceId(candidate),
+        )?.content === web.data.quote
+      );
+    });
+    return bindings.length === 1 ? evaluationBindingGoldenSourceId(bindings[0]!) : undefined;
+  }
+
+  return undefined;
 };
+
+/**
+ * Baseline selector observations deliberately retain the provider output's
+ * golden source IDs and ranges rather than pretending to be production
+ * retrieval manifests. Resolve that shape separately so capture can validate
+ * the baseline artifact without weakening the namespaced production resolver.
+ */
+const mapBaselineReferenceToGolden = (
+  manifest: EvaluationSeedManifest,
+  reference: Record<string, unknown>,
+  storedDocuments: StoredEvaluationDocuments,
+): string | undefined => {
+  const parsed = z
+    .object({
+      sourceId: z.string().min(1),
+      ranges: z.array(BindingRangeSchema),
+    })
+    .strict()
+    .safeParse(reference);
+  if (!parsed.success) return undefined;
+  const fixtureSource = fixtureFor(manifest.caseId).evidence.find(
+    (source) => source.sourceId === parsed.data.sourceId,
+  );
+  const binding = manifest.sourceBindings.find(
+    (candidate) => evaluationBindingGoldenSourceId(candidate) === parsed.data.sourceId,
+  );
+  if (fixtureSource === undefined || binding === undefined) return undefined;
+  if (fixtureSource.kind !== "document" && parsed.data.ranges.length !== 0) return undefined;
+  try {
+    const normalized = normalizeCharacterRanges(
+      parsed.data.ranges,
+      fixtureSource.kind === "document"
+        ? (storedDocuments.get(parsed.data.sourceId)?.text.length ?? 0)
+        : fixtureSource.content.length,
+    );
+    if (canonicalJson(normalized) !== canonicalJson(parsed.data.ranges)) return undefined;
+  } catch {
+    return undefined;
+  }
+  return parsed.data.sourceId;
+};
+
+interface StoredEvaluationDocument {
+  readonly sourceId: string;
+  readonly documentId: string;
+  readonly documentVersionId: string;
+  readonly text: string;
+  readonly contentHash: string;
+  readonly textCharCount: number;
+}
+
+type StoredEvaluationDocuments = ReadonlyMap<string, StoredEvaluationDocument>;
+
+/**
+ * Reads the exact current text for every namespaced evaluation document. The
+ * fixture is not a substitute for the persisted public/publisher document:
+ * trusted capture must independently hash the row that the runtime exposed.
+ */
+const loadStoredEvaluationDocuments = (
+  connectionString: string,
+  manifest: EvaluationSeedManifest,
+): Promise<StoredEvaluationDocuments> =>
+  db(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const documents = new Map<string, StoredEvaluationDocument>();
+      for (const binding of manifest.sourceBindings) {
+        if (binding.kind !== "document") continue;
+        const rows = yield* sql<{
+          readonly sourceId: string;
+          readonly documentId: string;
+          readonly documentVersionId: string;
+          readonly text: string;
+          readonly contentHash: string;
+          readonly textCharCount: number;
+        }>`
+          select source_id::text as "sourceId",
+                 document_id::text as "documentId",
+                 document_id::text as "documentVersionId",
+                 text, content_hash as "contentHash", text_char_count as "textCharCount"
+          from public_source_documents
+          where ${binding.source.kind === "public"} = true
+            and source_id = ${binding.source.kind === "public" ? binding.source.sourceId.slice("public:".length) : null}
+            and document_id = ${binding.documentId}
+          union all
+          select subscriptions.id::text as "sourceId",
+                 documents.id::text as "documentId",
+                 versions.id::text as "documentVersionId",
+                 versions.canonical_text as text, versions.content_hash as "contentHash",
+                 versions.text_char_count as "textCharCount"
+          from brief_document_versions versions
+          join brief_documents documents on documents.id = versions.brief_document_id
+          join publisher_issues issues on issues.id = documents.issue_id
+          join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
+          where ${binding.source.kind === "publisher"} = true
+            and subscriptions.id::text = ${binding.source.kind === "publisher" ? binding.source.sourceId.slice("publisher:".length) : null}
+            and issues.id::text = ${binding.source.kind === "publisher" ? binding.source.issueId : null}
+            and documents.id::text = ${binding.documentId}
+            and versions.id::text = ${binding.documentVersionId}
+        `;
+        if (rows.length !== 1) {
+          throw new Error(
+            `${manifest.caseId}/${evaluationBindingGoldenSourceId(binding)} lacks one current stored document version`,
+          );
+        }
+        const stored = rows[0]!;
+        if (
+          stored.sourceId !== binding.source.sourceId.slice(`${binding.source.kind}:`.length) ||
+          stored.documentId !== binding.documentId ||
+          stored.documentVersionId !== binding.documentVersionId ||
+          stored.contentHash !== binding.contentHash ||
+          sha256Hex(stored.text) !== stored.contentHash
+        ) {
+          throw new Error(
+            `${manifest.caseId}/${evaluationBindingGoldenSourceId(binding)} stored document text/hash drift`,
+          );
+        }
+        documents.set(evaluationBindingGoldenSourceId(binding), {
+          sourceId: stored.sourceId,
+          documentId: stored.documentId,
+          documentVersionId: stored.documentVersionId,
+          text: stored.text,
+          contentHash: stored.contentHash,
+          textCharCount: stored.textCharCount,
+        });
+      }
+      return documents;
+    }),
+  );
 
 const SourceExposureAttestationSchema = z
   .object({
@@ -4483,6 +4657,7 @@ const reconstructDocumentExposureText = (
   exposure: DurableRunEvidence["sourceExposures"][number],
   sourceId: string,
   source: { readonly kind: string; readonly content: string },
+  storedDocuments: StoredEvaluationDocuments,
 ): string => {
   if (source.kind !== "document") {
     throw new Error(`${manifest.caseId} document exposure mapped to a non-document source`);
@@ -4510,7 +4685,11 @@ const reconstructDocumentExposureText = (
   ) {
     throw new Error(`${manifest.caseId} document exposure lacks reconstruction metadata`);
   }
-  const documentText = storedDocumentText(source.content);
+  const stored = storedDocuments.get(sourceId);
+  if (stored === undefined) {
+    throw new Error(`${manifest.caseId} document exposure has no current stored document`);
+  }
+  const documentText = stored.text;
   if (
     metadata.sourceId !== binding.sourceId ||
     metadata.documentId !== binding.documentId ||
@@ -4551,6 +4730,7 @@ const expectedExposureVisibleTokenCount = (
   evidence: DurableRunEvidence,
   exposure: DurableRunEvidence["sourceExposures"][number],
   modelId: string,
+  storedDocuments: StoredEvaluationDocuments,
 ): number | null => {
   // Search previews intentionally commit only their marker proof: the
   // body-free snippet identity is not reversible after the provider turn.
@@ -4580,7 +4760,7 @@ const expectedExposureVisibleTokenCount = (
     return model.countTextTokens(message.content);
   }
   const fixture = fixtureFor(manifest.caseId);
-  const sourceId = mapExposureToGolden(manifest, evidence, exposure);
+  const sourceId = mapExposureToGolden(manifest, evidence, exposure, storedDocuments);
   const source =
     sourceId === null
       ? undefined
@@ -4608,7 +4788,21 @@ const expectedExposureVisibleTokenCount = (
     }
     const start = Number(match[2]);
     const end = Number(match[3]);
-    visibleText = source.content.slice(start, end);
+    const documentText =
+      source.kind === "document" ? storedDocuments.get(sourceId)?.text : source.content;
+    if (source.kind === "document") {
+      const binding = manifest.sourceBindings.find(
+        (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
+      );
+      if (
+        binding?.kind !== "document" ||
+        documentText === undefined ||
+        sha256Hex(documentText) !== binding.contentHash
+      ) {
+        throw new Error(`${manifest.caseId} baseline document text/hash drift`);
+      }
+    }
+    visibleText = documentText!.slice(start, end);
   } else if (exposure.exposureStage === "web_search_preview") {
     visibleText = source.content.slice(0, 300);
   } else if (
@@ -4617,7 +4811,7 @@ const expectedExposureVisibleTokenCount = (
   ) {
     visibleText =
       source.kind === "document"
-        ? reconstructDocumentExposureText(manifest, exposure, sourceId, source)
+        ? reconstructDocumentExposureText(manifest, exposure, sourceId, source, storedDocuments)
         : source.kind === "chat_message"
           ? stripHistoricalCitationTags(source.content)
           : source.content;
@@ -4630,7 +4824,7 @@ const expectedExposureVisibleTokenCount = (
   } else if (exposure.exposureStage === "answer_serialized") {
     visibleText =
       source.kind === "document"
-        ? reconstructDocumentExposureText(manifest, exposure, sourceId, source)
+        ? reconstructDocumentExposureText(manifest, exposure, sourceId, source, storedDocuments)
         : source.content;
   } else {
     throw new Error(`${manifest.caseId} exposure stage lacks exact visible-token semantics`);
@@ -4644,6 +4838,7 @@ const expectedExposureVisibleTokenCount = (
 const attestExactSourceExposureRows = (
   manifest: EvaluationSeedManifest,
   evidence: DurableRunEvidence,
+  storedDocuments: StoredEvaluationDocuments,
 ): void => {
   const attestations = evidence.observations.filter(
     (observation) => observation.kind === "source_exposure_attestation",
@@ -4721,6 +4916,7 @@ const attestExactSourceExposureRows = (
       evidence,
       exposure,
       requestAttestation?.modelId ?? "glm-5-turbo",
+      storedDocuments,
     );
     const attestedDocumentMetadata = {
       sourceId: payload.documentSourceId ?? null,
@@ -4782,10 +4978,15 @@ const validDocumentRangeIdentities = (
   manifest: EvaluationSeedManifest,
   evidence: DurableRunEvidence,
   binding: Extract<EvaluationSeedManifest["sourceBindings"][number], { readonly kind: "document" }>,
+  storedDocuments: StoredEvaluationDocuments,
 ): ReadonlySet<string> => {
   const source = fixture.evidence.find(
     (candidate) => candidate.sourceId === evaluationBindingGoldenSourceId(binding),
   )!;
+  const stored = storedDocuments.get(evaluationBindingGoldenSourceId(binding));
+  if (stored === undefined) {
+    throw new Error(`${manifest.caseId} document range identity lacks current stored document`);
+  }
   const ranges: EvaluationRange[][] = [];
   const add = (value: unknown): void => {
     const parsed = z.array(BindingRangeSchema).safeParse(value);
@@ -4793,7 +4994,7 @@ const validDocumentRangeIdentities = (
   };
   add(source.ranges);
   add(fixture.labels.acceptableRanges[evaluationBindingGoldenSourceId(binding)]);
-  add([{ charStart: 0, charEnd: source.content.length }]);
+  add([{ charStart: 0, charEnd: stored.text.length }]);
   for (const durableSource of evidence.sources) {
     if (durableSource.documentVersionId === binding.documentVersionId) {
       add(durableSource.locator.ranges);
@@ -4908,7 +5109,7 @@ const assertExposureStageTask = (
 
 const exactBaselineExposureMatches = (
   logicalSourceIdentity: string,
-  content: string,
+  documentText: string,
   contentItemIdentity: string,
 ): boolean => {
   const match = /^(.*):([0-9]+):([0-9]+):([0-9a-f]{64})$/u.exec(contentItemIdentity);
@@ -4920,8 +5121,8 @@ const exactBaselineExposureMatches = (
     Number.isSafeInteger(charEnd) &&
     charStart >= 0 &&
     charEnd > charStart &&
-    charEnd <= content.length &&
-    match[4] === sha256Hex(content.slice(charStart, charEnd))
+    charEnd <= documentText.length &&
+    match[4] === sha256Hex(documentText.slice(charStart, charEnd))
   );
 };
 
@@ -4929,6 +5130,7 @@ const mapExposureToGolden = (
   manifest: EvaluationSeedManifest,
   evidence: DurableRunEvidence,
   exposure: DurableRunEvidence["sourceExposures"][number],
+  storedDocuments: StoredEvaluationDocuments,
 ): string | null => {
   assertExposureStageTask(manifest, exposure);
   if (exposure.sourceKind === "chat_message" && exposure.exposureStage === "provider_input") {
@@ -4992,7 +5194,9 @@ const mapExposureToGolden = (
           : evaluationBindingGoldenSourceId(binding);
       exact = exactBaselineExposureMatches(
         expectedIdentity,
-        source.content,
+        binding?.kind === "document"
+          ? (storedDocuments.get(evaluationBindingGoldenSourceId(binding))?.text ?? "")
+          : source.content,
         exposure.contentItemIdentity,
       );
     } else if (binding.kind === "document") {
@@ -5004,7 +5208,7 @@ const mapExposureToGolden = (
       exact =
         structurallyExact &&
         (stage === "answer_serialized"
-          ? validDocumentRangeIdentities(fixture, manifest, evidence, binding).has(
+          ? validDocumentRangeIdentities(fixture, manifest, evidence, binding, storedDocuments).has(
               exposure.contentItemIdentity,
             )
           : stage === "internal_search_preview" ||
@@ -5051,11 +5255,12 @@ const mapExposureToGolden = (
 const exposedGoldenSourceIds = (
   manifest: EvaluationSeedManifest,
   evidence: DurableRunEvidence,
+  storedDocuments: StoredEvaluationDocuments,
 ): readonly string[] => {
-  attestExactSourceExposureRows(manifest, evidence);
+  attestExactSourceExposureRows(manifest, evidence, storedDocuments);
   const exposed = new Set(
     evidence.sourceExposures.flatMap((exposure) => {
-      const sourceId = mapExposureToGolden(manifest, evidence, exposure);
+      const sourceId = mapExposureToGolden(manifest, evidence, exposure, storedDocuments);
       return sourceId === null ? [] : [sourceId];
     }),
   );
@@ -5100,6 +5305,7 @@ const sourceAudit = async (
   connectionString: string,
   manifest: EvaluationSeedManifest,
   evidence: DurableRunEvidence,
+  storedDocuments: StoredEvaluationDocuments,
 ): Promise<
   readonly {
     readonly sourceId: string;
@@ -5108,7 +5314,7 @@ const sourceAudit = async (
   }[]
 > => {
   const fixture = fixtureFor(manifest.caseId);
-  const exposedSourceIds = exposedGoldenSourceIds(manifest, evidence);
+  const exposedSourceIds = exposedGoldenSourceIds(manifest, evidence, storedDocuments);
   const sourceIds = new Set(
     evidence.sources.flatMap((source) => {
       const sourceId = mapDurableSource(manifest, source);
@@ -5125,7 +5331,14 @@ const sourceAudit = async (
       if (reference === null || typeof reference !== "object") {
         throw new Error(`${manifest.caseId} has a malformed durable selector reference`);
       }
-      const sourceId = mapReferenceToGolden(manifest, reference as Record<string, unknown>);
+      const sourceId =
+        observation.payload.selectorRole === "general_planner"
+          ? mapBaselineReferenceToGolden(
+              manifest,
+              reference as Record<string, unknown>,
+              storedDocuments,
+            )
+          : mapReferenceToGolden(manifest, reference as Record<string, unknown>);
       if (sourceId === undefined) {
         throw new Error(`${manifest.caseId} has an unmapped durable selector reference`);
       }
@@ -5478,7 +5691,8 @@ const commonCapturedResult = async (
   const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
   await assertLiveEvaluationAuthorization(connectionString, manifest);
   const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
-  const currentDigest = evaluationRunEvidenceDigest(row, evidence);
+  const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
+  const currentDigest = evaluationRunEvidenceDigest(row, evidence, storedDocuments);
   if (row.runEvidenceSha256Hex !== currentDigest)
     throw new Error(`${row.topology}/${row.caseId} evidence attestation mismatch`);
   if (
@@ -5546,6 +5760,13 @@ const commonCapturedResult = async (
   const selections = serializedSourceIds.map((sourceId) => {
     const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId)!;
     const ranges = rangesBySource.get(sourceId) ?? [];
+    const documentLength =
+      source.kind === "document"
+        ? (storedDocuments.get(sourceId)?.text.length ??
+          (() => {
+            throw new Error(`${row.topology}/${row.caseId} document lacks current stored text`);
+          })())
+        : source.content.length;
     return {
       sourceId,
       ranges:
@@ -5554,10 +5775,10 @@ const commonCapturedResult = async (
               ranges
                 .map((range) => ({
                   charStart: range.charStart,
-                  charEnd: Math.min(range.charEnd, source.content.length),
+                  charEnd: Math.min(range.charEnd, documentLength),
                 }))
                 .filter((range) => range.charEnd > range.charStart),
-              source.content.length,
+              documentLength,
             )
           : ranges,
     };
@@ -5614,6 +5835,7 @@ const commonCapturedResult = async (
     manifest,
     evidence,
     selections,
+    storedDocuments,
     common: {
       artifactVersion: 2 as const,
       goldenSetVersion: 2 as const,
@@ -5651,7 +5873,7 @@ const commonCapturedResult = async (
       pulledSourceIds: [] as string[],
       serializedSourceIds,
       serializedContextTokens,
-      sourceAudit: await sourceAudit(connectionString, manifest, evidence),
+      sourceAudit: await sourceAudit(connectionString, manifest, evidence, storedDocuments),
       timing: {
         timeToFirstTokenMs: Math.max(0, Date.parse(firstDeltaEvent.createdAt) - startedMs),
         timeToTerminalMs: Math.max(
@@ -6841,6 +7063,7 @@ const terminalRetrievalManifests = (
   row: CaseRunRow,
   evidence: DurableRunEvidence,
   manifest: EvaluationSeedManifest,
+  storedDocuments: StoredEvaluationDocuments,
 ): readonly AttestedTerminalManifest[] => {
   if (row.topology !== "specialized") return [];
   const routing = canonicalResolutionAndPlan(row, evidence, manifest);
@@ -6950,11 +7173,12 @@ const terminalRetrievalManifests = (
         const binding = manifest.sourceBindings.find(
           (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
         );
-        if (source === undefined || binding === undefined) {
+        if (sourceId === undefined || source === undefined || binding === undefined) {
           throw new Error(`${row.topology}/${row.caseId}/${taskId} has an unbound manifest item`);
         }
+        const resolvedSourceId = sourceId;
         const fixtureSource = fixture.evidence.find(
-          (candidate) => candidate.sourceId === sourceId,
+          (candidate) => candidate.sourceId === resolvedSourceId,
         )!;
         let ranges: readonly EvaluationRange[] = [];
         let candidateId: string;
@@ -6964,11 +7188,22 @@ const terminalRetrievalManifests = (
           if (documentReference.kind !== "document") {
             throw new Error(`${row.topology}/${row.caseId}/${taskId} has a kind-mismatched item`);
           }
+          const storedDocument = storedDocuments.get(resolvedSourceId);
+          if (storedDocument === undefined) {
+            throw new Error(
+              `${row.topology}/${row.caseId}/${taskId} lacks current stored document text`,
+            );
+          }
           ranges = normalizeCharacterRanges(
             documentReference.ranges === undefined || documentReference.ranges.length === 0
-              ? [{ charStart: 0, charEnd: storedDocumentText(fixtureSource.content).length }]
+              ? [
+                  {
+                    charStart: 0,
+                    charEnd: storedDocument.text.length,
+                  },
+                ]
               : documentReference.ranges,
-            storedDocumentText(fixtureSource.content).length,
+            storedDocument.text.length,
           );
           candidateId = documentBindingIdentity(binding);
           exact =
@@ -7021,7 +7256,7 @@ const terminalRetrievalManifests = (
             exposure.attempt === terminal.attempt &&
             exposure.providerRequestIndex === terminalUsage?.providerRequestIndex &&
             requiredExposureStages.includes(exposure.exposureStage) &&
-            mapExposureToGolden(manifest, evidence, exposure) === sourceId,
+            mapExposureToGolden(manifest, evidence, exposure, storedDocuments) === sourceId,
         );
         if (!exposureMatches) {
           throw new Error(
@@ -7069,7 +7304,7 @@ const terminalRetrievalManifests = (
           terminalExposures.filter((exposure) => exposure.exposureStage === stage);
         const previewRows = exactStageRows("internal_search_preview");
         const previewSourceIds = previewRows
-          .map((exposure) => mapExposureToGolden(manifest, evidence, exposure))
+          .map((exposure) => mapExposureToGolden(manifest, evidence, exposure, storedDocuments))
           .sort();
         if (
           previewRows.length !== 6 ||
@@ -7091,8 +7326,9 @@ const attestRetrievalManifestEvidence = (
   row: CaseRunRow,
   evidence: DurableRunEvidence,
   manifest: EvaluationSeedManifest,
+  storedDocuments: StoredEvaluationDocuments,
 ): void => {
-  terminalRetrievalManifests(row, evidence, manifest);
+  terminalRetrievalManifests(row, evidence, manifest, storedDocuments);
 };
 
 const initialProductionLedger = (
@@ -7672,7 +7908,7 @@ const captureSpecialized = async (
       readonly candidateId: string;
     }
   >();
-  const manifests = terminalRetrievalManifests(row, evidence, manifest);
+  const manifests = terminalRetrievalManifests(row, evidence, manifest, captured.storedDocuments);
   for (const terminalManifest of manifests) {
     for (const { sourceId, candidateId, ranges } of terminalManifest.references) {
       const prior = pulledSelections.get(sourceId);
@@ -7691,18 +7927,23 @@ const captureSpecialized = async (
   for (const key of ["A", "B", "W"] as const)
     selectorSelections[key] = [...new Set(selectorSelections[key])];
   const candidateSourceIds = [...pulledSelections.keys()];
-  const pulledSourceIds = exposedGoldenSourceIds(manifest, evidence);
+  const pulledSourceIds = exposedGoldenSourceIds(manifest, evidence, captured.storedDocuments);
   const semanticRanges = (sourceId: string, ranges: readonly EvaluationRange[]) => {
     const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId);
     if (source?.kind !== "document" || ranges.length === 0) return ranges;
+    const documentLength =
+      captured.storedDocuments.get(sourceId)?.text.length ??
+      (() => {
+        throw new Error(`${row.topology}/${row.caseId} document lacks current stored text`);
+      })();
     return normalizeCharacterRanges(
       ranges
         .map((range) => ({
           charStart: range.charStart,
-          charEnd: Math.min(range.charEnd, source.content.length),
+          charEnd: Math.min(range.charEnd, documentLength),
         }))
         .filter((range) => range.charEnd > range.charStart),
-      source.content.length,
+      documentLength,
     );
   };
   const candidateSelections = candidateSourceIds.map((sourceId) => ({
@@ -7780,7 +8021,11 @@ const captureBaseline = async (
   return GeneralPlannerEvaluationResultsSchema.element.parse({
     ...captured.common,
     topology: "general_planner",
-    pulledSourceIds: exposedGoldenSourceIds(captured.manifest, captured.evidence),
+    pulledSourceIds: exposedGoldenSourceIds(
+      captured.manifest,
+      captured.evidence,
+      captured.storedDocuments,
+    ),
   });
 };
 

@@ -4454,6 +4454,111 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       }),
     );
     expect(await smithersRowsForRun(smithersRunId)).toEqual([]);
+
+    const storedDocument = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{
+          readonly documentId: string;
+          readonly text: string;
+          readonly contentHash: string;
+        }>`
+          select documents.document_id::text as "documentId",
+                 documents.text,
+                 documents.content_hash as "contentHash"
+          from ai_evaluation_case_runs cases
+          cross join lateral jsonb_array_elements(cases.seed_manifest->'sourceBindings') binding
+          join public_source_documents documents
+            on documents.document_id::text = binding.value->>'documentId'
+          where cases.session_id = ${transcriptReconstructionSessionId}
+            and binding.value->>'kind' = 'document'
+          order by cases.case_id, cases.topology
+          limit 1
+        `;
+        const row = rows[0];
+        if (row === undefined) return yield* Effect.fail(new Error("stored document is missing"));
+        return row;
+      }),
+    );
+    const forgedText = `${storedDocument.text} forged after transcript deletion`;
+    const forgedHash = createHash("sha256").update(forgedText).digest("hex");
+    await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          alter table public_source_documents
+          drop constraint if exists public_source_documents_content_hash_sha256
+        `;
+        yield* sql`
+          alter table public_source_documents
+          disable trigger public_source_documents_protect_text_hash
+        `;
+        yield* sql`
+          update public_source_documents
+          set text = ${forgedText}, text_char_count = ${forgedText.length},
+              content_hash = ${storedDocument.contentHash}
+          where document_id = ${storedDocument.documentId}
+        `;
+      }),
+    );
+    try {
+      await expect(
+        revalidateCapturedArtifacts(
+          isolatedDatabaseUrl(),
+          transcriptReconstructionSessionId,
+          suite.specialized,
+          suite.baseline,
+        ),
+      ).rejects.toThrow(/stored document text\/hash drift/u);
+
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update public_source_documents
+            set text = ${storedDocument.text},
+                text_char_count = ${storedDocument.text.length},
+                content_hash = ${forgedHash}
+            where document_id = ${storedDocument.documentId}
+          `;
+        }),
+      );
+      await expect(
+        revalidateCapturedArtifacts(
+          isolatedDatabaseUrl(),
+          transcriptReconstructionSessionId,
+          suite.specialized,
+          suite.baseline,
+        ),
+      ).rejects.toThrow(/stored document text\/hash drift/u);
+    } finally {
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update public_source_documents
+            set text = ${storedDocument.text},
+                text_char_count = ${storedDocument.text.length},
+                content_hash = ${storedDocument.contentHash}
+            where document_id = ${storedDocument.documentId}
+          `;
+          yield* sql`
+            alter table public_source_documents
+            enable trigger public_source_documents_protect_text_hash
+          `;
+          yield* sql`
+            alter table public_source_documents
+            add constraint public_source_documents_content_hash_sha256
+            check (content_hash = encode(digest(convert_to(text, 'UTF8'), 'sha256'), 'hex'))
+            not valid
+          `;
+        }),
+      );
+    }
     await expect(
       revalidateCapturedArtifacts(
         isolatedDatabaseUrl(),
