@@ -1,7 +1,7 @@
 import * as SmithersTaskRuntimeModule from "@smithers-orchestrator/driver/task-runtime";
 
 /**
- * Smithers 0.26.1 publishes the task-runtime JavaScript subpath, but its
+ * Smithers 0.27.0 publishes the task-runtime JavaScript subpath, but its
  * generated subpath declaration points at the driver's aggregate declarations
  * and omits these exports. Keep the package-specific structural cast here so
  * no Smithers or Effect v3 type leaks into the Effect v4 worker runtime.

@@ -37,7 +37,7 @@
     "vitest": "4.1.9"
   },
   "patchedDependencies": {
-    "@smithers-orchestrator/engine@0.26.1": "patches/@smithers-orchestrator%2Fengine@0.26.1.patch",
-    "smithers-orchestrator@0.26.1": "patches/smithers-orchestrator@0.26.1.patch"
+    "@smithers-orchestrator/engine@0.27.0": "patches/@smithers-orchestrator%2Fengine@0.27.0.patch",
+    "smithers-orchestrator@0.27.0": "patches/smithers-orchestrator@0.27.0.patch"
   }
 }

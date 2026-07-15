@@ -118,7 +118,7 @@ export async function createSmithersStorage<Schemas extends Record<string, z.Zod
     connectionString: options.connectionString,
   });
 
-  // Smithers 0.26 provisions a single node-postgres Client, while Parallel nodes
+  // Smithers 0.27 provisions a single node-postgres Client, while Parallel nodes
   // may issue durable-state queries concurrently. node-postgres does not support
   // overlapping callback queries on one Client (and pg 9 will reject them), so
   // serialize only the storage transport. Workflow tasks and provider calls still

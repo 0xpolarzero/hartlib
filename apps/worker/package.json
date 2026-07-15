@@ -24,11 +24,11 @@
     "@huggingface/jinja": "0.5.9",
     "@lenml/tokenizers": "^3.7.2",
     "@sentry/bun": "10.62.0",
-    "@smithers-orchestrator/driver": "0.26.1",
+    "@smithers-orchestrator/driver": "0.27.0",
     "effect": "4.0.0-beta.92",
     "effect3": "npm:effect@3.21.4",
     "resend": "6.16.0",
-    "smithers-orchestrator": "0.26.1",
+    "smithers-orchestrator": "0.27.0",
     "zod": "4.4.3"
   },
   "devDependencies": {

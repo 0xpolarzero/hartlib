@@ -140,7 +140,7 @@ export const isAbortError = (error: unknown): error is Error =>
 export class AiRuntimeError extends Error {
   readonly retryable: boolean;
   readonly providerStatus: number | null;
-  /** Smithers 0.26.1 honors this structural flag without importing its Effect 3 errors. */
+  /** Smithers 0.27.0 honors this structural flag without importing its Effect 3 errors. */
   readonly details:
     | { readonly failureRetryable: false; readonly providerStatus?: number }
     | undefined;

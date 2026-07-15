@@ -1,5 +1,5 @@
 diff --git a/src/effect/single-runner.js b/src/effect/single-runner.js
-index e319b8d3017098f5c062ccb4bf1206e96b479c54..691ef93bbafc51605557f7e7870e5ba979b41b85 100644
+index e319b8d3017098f5c062ccb4bf1206e96b479c54..8e2ac3c4d6803effb46f2a10ca9e8a6480561b39 100644
 --- a/src/effect/single-runner.js
 +++ b/src/effect/single-runner.js
 @@ -1,6 +1,6 @@
@@ -57,10 +57,10 @@ index e319b8d3017098f5c062ccb4bf1206e96b479c54..691ef93bbafc51605557f7e7870e5ba9
 + * Close the process-local SingleRunner runtime after all worker executions finish.
 + *
 + * The runtime is normally retained for the lifetime of the worker process. Finite
-+ * callers (for example, a command-line evaluation) must close it explicitly so
-+ * Effect Cluster fibers and their schedulers do not keep the process alive.
-+ * Concurrent closes share one promise. Closing while a worker execution is still
-+ * registered is rejected and leaves the runtime available for the active work.
++ * callers must close it explicitly so Effect Cluster fibers and their schedulers
++ * do not keep the process alive. Concurrent closes share one promise. Closing
++ * while a worker execution is still registered is rejected and leaves the runtime
++ * available for active work.
 + *
 + * @returns {Promise<void>}
 + */
