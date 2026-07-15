@@ -5573,7 +5573,8 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       {
         sessionId: memoryInternalStageTamperSessionId,
         tamper: "memory_as_internal_preview" as const,
-        error: /lacks terminal provider usage|stage-incompatible|replay conflicts with an existing immutable row/u,
+        error:
+          /lacks terminal provider usage|stage-incompatible|replay conflicts with an existing immutable row/u,
       },
       {
         sessionId: chatWebStageTamperSessionId,
