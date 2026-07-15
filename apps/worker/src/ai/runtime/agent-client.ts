@@ -33,6 +33,12 @@ export interface StructuredCallInput<Output> {
 
 export interface ToolLoopTool {
   readonly definition: ProviderToolDefinition;
+  /**
+   * Validate provider-authored arguments before any sibling tool call runs.
+   * Production tools provide their strict Zod parser; the fallback still
+   * rejects malformed non-object call arguments at the protocol boundary.
+   */
+  readonly parseArguments?: (value: unknown) => Readonly<Record<string, unknown>>;
   readonly execute: (
     arguments_: Readonly<Record<string, unknown>>,
     coordinates: PiBoundaryCoordinates,
@@ -157,6 +163,59 @@ const exactStableValue = (value: unknown): unknown => {
 const stableJson = (value: unknown): string => JSON.stringify(stableValue(value)) ?? "undefined";
 const exactStableJson = (value: unknown): string =>
   JSON.stringify(exactStableValue(value)) ?? "undefined";
+
+const isJsonRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const parseToolArguments = (value: unknown): Readonly<Record<string, unknown>> => {
+  if (!isJsonRecord(value)) {
+    throw new Error("tool call arguments must be a JSON object");
+  }
+  return value;
+};
+
+interface ParsedToolCall {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: Readonly<Record<string, unknown>>;
+}
+
+const parseToolCalls = (
+  value: unknown,
+  tools: ReadonlyMap<string, ToolLoopTool>,
+  skipStrictArgumentParsing: ReadonlySet<string>,
+): readonly ParsedToolCall[] => {
+  if (!Array.isArray(value)) {
+    throw new Error("assistant tool calls must be an array");
+  }
+  return value.map((candidate, index) => {
+    if (!isJsonRecord(candidate)) {
+      throw new Error(`tool call ${index} must be an object`);
+    }
+    if (
+      Object.keys(candidate).some((key) => key !== "id" && key !== "name" && key !== "arguments") ||
+      typeof candidate.id !== "string" ||
+      candidate.id.length === 0 ||
+      typeof candidate.name !== "string" ||
+      candidate.name.length === 0 ||
+      !Object.hasOwn(candidate, "arguments")
+    ) {
+      throw new Error(`tool call ${index} has an invalid shape`);
+    }
+    const tool = tools.get(candidate.name);
+    if (tool === undefined) {
+      throw new Error(`unknown tool call ${candidate.name}`);
+    }
+    const parseArguments = skipStrictArgumentParsing.has(candidate.name)
+      ? parseToolArguments
+      : (tool.parseArguments ?? parseToolArguments);
+    const arguments_ = parseArguments(candidate.arguments);
+    if (!isJsonRecord(arguments_)) {
+      throw new Error(`tool call ${candidate.name} arguments did not produce an object`);
+    }
+    return { id: candidate.id, name: candidate.name, arguments: arguments_ };
+  });
+};
 
 interface ToolContinuationObligation {
   readonly expectedCursor?: unknown;
@@ -369,7 +428,17 @@ export class CanonicalAgentClient {
       } catch (error) {
         throw toAiRuntimeError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
       }
-      if (completion.toolCalls.length === 0) {
+      let toolCalls: readonly ParsedToolCall[];
+      try {
+        toolCalls = parseToolCalls(
+          completion.toolCalls,
+          tools,
+          new Set([...disabledTools, input.terminalToolName]),
+        );
+      } catch (error) {
+        throw providerOutputError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
+      }
+      if (toolCalls.length === 0) {
         throw providerOutputError(
           new Error("tool loop assistant returned no tool call"),
           aiRunErrorCodeForRole(input.coordinates.agentRole),
@@ -377,16 +446,13 @@ export class CanonicalAgentClient {
       }
       const priorContinuationObligations = new Map(continuationObligations);
       const exclusiveToolNames = new Set(input.exclusiveToolNames ?? []);
-      const exclusiveCall = completion.toolCalls.find((call) => exclusiveToolNames.has(call.name));
-      const hasTerminalCall = completion.toolCalls.some(
-        (call) => call.name === input.terminalToolName,
-      );
+      const exclusiveCall = toolCalls.find((call) => exclusiveToolNames.has(call.name));
+      const hasTerminalCall = toolCalls.some((call) => call.name === input.terminalToolName);
       if (
         (terminalTurn &&
-          (completion.toolCalls.length !== 1 ||
-            completion.toolCalls[0]?.name !== input.terminalToolName)) ||
-        (hasTerminalCall && completion.toolCalls.length !== 1) ||
-        (exclusiveCall !== undefined && completion.toolCalls.length !== 1)
+          (toolCalls.length !== 1 || toolCalls[0]?.name !== input.terminalToolName)) ||
+        (hasTerminalCall && toolCalls.length !== 1) ||
+        (exclusiveCall !== undefined && toolCalls.length !== 1)
       ) {
         throw providerOutputError(
           new Error(
@@ -398,7 +464,7 @@ export class CanonicalAgentClient {
         );
       }
       const preflightContinuationKeys = new Set<string>();
-      for (const call of completion.toolCalls) {
+      for (const call of toolCalls) {
         if (call.name === input.terminalToolName || disabledTools.has(call.name)) continue;
         if (!visibleToolsByName.has(call.name)) {
           throw providerOutputError(
@@ -435,19 +501,14 @@ export class CanonicalAgentClient {
           );
         }
       }
-      const continuationTurnHasUnresolvedMismatch =
-        priorContinuationObligations.size > 0 &&
-        completion.toolCalls.some((call) => {
-          if (call.name === input.terminalToolName || disabledTools.has(call.name)) return false;
-          return !priorContinuationObligations.has(continuationKey(call.name, call.arguments));
-        });
       messages.push({
         role: "assistant",
         content: completion.text,
         toolCalls: completion.toolCalls,
       });
 
-      for (const call of completion.toolCalls) {
+      let continuationCreatedInCurrentResponse = false;
+      for (const call of toolCalls) {
         if (enforceTerminalTurn && call.name === input.terminalToolName && !terminalTurn) {
           const error = new Error("terminal tool called before its reserved terminal turn");
           const recovery = input.recoverTerminal?.(call.arguments, error, coordinates);
@@ -463,7 +524,7 @@ export class CanonicalAgentClient {
           throw providerOutputError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
         }
         if (call.name === input.terminalToolName) {
-          if (completion.toolCalls.length !== 1) {
+          if (toolCalls.length !== 1) {
             throw providerOutputError(
               new Error("terminal tool call must be the only call in its turn"),
               aiRunErrorCodeForRole(input.coordinates.agentRole),
@@ -541,9 +602,8 @@ export class CanonicalAgentClient {
         const obligationKey = continuationKey(call.name, call.arguments);
         const obligation = priorContinuationObligations.get(obligationKey);
         if (
-          continuationTurnHasUnresolvedMismatch ||
           (priorContinuationObligations.size > 0 && obligation === undefined) ||
-          (obligation === undefined && continuationObligations.has(obligationKey))
+          continuationCreatedInCurrentResponse
         ) {
           messages.push({
             role: "tool",
@@ -616,6 +676,7 @@ export class CanonicalAgentClient {
             narrowerRangeRequired,
             ...(previousRanges === undefined ? {} : { previousRanges }),
           });
+          continuationCreatedInCurrentResponse = true;
         } else if (obligation !== undefined) {
           continuationObligations.delete(obligationKey);
         }

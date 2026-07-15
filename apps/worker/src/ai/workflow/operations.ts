@@ -2259,6 +2259,13 @@ export class CanonicalWorkflowOperations {
     terminalSchema: Readonly<Record<string, unknown>>,
     onVisible: (memories: readonly MemorySnapshot[]) => void,
   ) {
+    const parseSearchMemoriesArguments = (value: unknown) =>
+      z
+        .object({ query: z.string(), cursor: z.number().int().min(0).optional() })
+        .strict()
+        .parse(value);
+    const parseInspectMemoryArguments = (value: unknown) =>
+      z.object({ memoryId: z.string() }).strict().parse(value);
     return [
       {
         definition: {
@@ -2268,11 +2275,9 @@ export class CanonicalWorkflowOperations {
             z.object({ query: z.string(), cursor: z.number().int().min(0).optional() }).strict(),
           ),
         },
+        parseArguments: parseSearchMemoriesArguments,
         execute: async (args: Readonly<Record<string, unknown>>) => {
-          const parsed = z
-            .object({ query: z.string(), cursor: z.number().int().min(0).optional() })
-            .strict()
-            .parse(args);
+          const parsed = parseSearchMemoriesArguments(args);
           const terms = parsed.query.toLocaleLowerCase();
           const matches = await this.liveMemorySnapshots(load, load.memories, { terms });
           const offset = parsed.cursor ?? 0;
@@ -2314,8 +2319,9 @@ export class CanonicalWorkflowOperations {
           description: "Inspect one complete active memory snapshot.",
           parameters: z.toJSONSchema(z.object({ memoryId: z.string() }).strict()),
         },
+        parseArguments: parseInspectMemoryArguments,
         execute: async (args: Readonly<Record<string, unknown>>) => {
-          const { memoryId } = z.object({ memoryId: z.string() }).strict().parse(args);
+          const { memoryId } = parseInspectMemoryArguments(args);
           const memory = (await this.liveMemorySnapshots(load, load.memories, { memoryId }))[0];
           if (memory === undefined) return { found: false, complete: true };
           const tokens = this.visibleTokenCount(
@@ -2919,6 +2925,13 @@ export class CanonicalWorkflowOperations {
     const inspectedDocumentRanges = new Set<string>();
     let protocolErrorReturned = false;
     let completeNonEmptySearch = false;
+    const parseSearchInternalArguments = (value: unknown) =>
+      z
+        .object({ query: InternalQuerySchema, cursor: z.number().int().min(0).optional() })
+        .strict()
+        .parse(value);
+    const parseInspectInternalArguments = (value: unknown) =>
+      z.object({ reference: InternalReferenceSchema }).strict().parse(value);
     const terminalSchema = z.toJSONSchema(InternalManifestOutputSchema);
     const references = await this.agents.toolLoop({
       requestClass: "fast",
@@ -3036,13 +3049,11 @@ export class CanonicalWorkflowOperations {
                 .strict(),
             ),
           },
+          parseArguments: parseSearchInternalArguments,
           execute: async (args, coordinates) => {
             if (++searches > this.config.aiInternalMaxSearches)
               throw new Error("internal search limit exceeded");
-            const parsed = z
-              .object({ query: InternalQuerySchema, cursor: z.number().int().min(0).optional() })
-              .strict()
-              .parse(args);
+            const parsed = parseSearchInternalArguments(args);
             const query: InternalQuery = parsed.query;
             const queryIssue = internalSearchQueryIssue(query.terms);
             if (queryIssue !== undefined) {
@@ -3295,13 +3306,11 @@ export class CanonicalWorkflowOperations {
             description: "Inspect a complete chat message or bounded verbatim document range.",
             parameters: z.toJSONSchema(z.object({ reference: InternalReferenceSchema }).strict()),
           },
+          parseArguments: parseInspectInternalArguments,
           execute: async (args) => {
             if (++inspections > this.config.aiInternalMaxInspections)
               throw new Error("internal inspection limit exceeded");
-            const reference = z
-              .object({ reference: InternalReferenceSchema })
-              .strict()
-              .parse(args).reference;
+            const reference = parseInspectInternalArguments(args).reference;
             return this.inspectInternal(
               load,
               reference,
@@ -4003,6 +4012,10 @@ export class CanonicalWorkflowOperations {
     >();
     let protocolErrorReturned = false;
     let invalidFetchReturned = false;
+    const parseWebSearchArguments = (value: unknown) =>
+      z.object({ query: z.string(), cursor: z.string().optional() }).strict().parse(value);
+    const parseWebFetchArguments = (value: unknown) =>
+      z.object({ url: z.string().url() }).strict().parse(value);
     const entries = await this.agents.toolLoop({
       requestClass: "fast",
       model: this.config.aiFastModel,
@@ -4145,15 +4158,13 @@ export class CanonicalWorkflowOperations {
               z.object({ query: z.string(), cursor: z.string().optional() }).strict(),
             ),
           },
+          parseArguments: parseWebSearchArguments,
           execute: async (args, coordinates) => {
             if (++searches > this.config.aiWebMaxSearches) {
               protocolErrorReturned = true;
               return { complete: true, protocolError: "web search limit exceeded" };
             }
-            const parsed = z
-              .object({ query: z.string(), cursor: z.string().optional() })
-              .strict()
-              .parse(args);
+            const parsed = parseWebSearchArguments(args);
             if (completeNonEmptySearch && parsed.cursor === undefined) {
               protocolErrorReturned = true;
               return {
@@ -4203,12 +4214,13 @@ export class CanonicalWorkflowOperations {
             description: "Fetch one policy-allowed URL through the safe Brief boundary.",
             parameters: z.toJSONSchema(z.object({ url: z.string().url() }).strict()),
           },
+          parseArguments: parseWebFetchArguments,
           execute: async (args, coordinates) => {
             if (++fetches > this.config.aiWebMaxFetches) {
               protocolErrorReturned = true;
               return { complete: true, protocolError: "web fetch limit exceeded" };
             }
-            const { url } = z.object({ url: z.string().url() }).strict().parse(args);
+            const { url } = parseWebFetchArguments(args);
             await this.assertLiveAuthorization(load, { requireWebPolicy: true });
             const normalizedRequestedUrl = canonicalizeWebUrl(url);
             const discoveredTurn = discoveredUrls.get(normalizedRequestedUrl);
@@ -5281,6 +5293,30 @@ export class CanonicalWorkflowOperations {
     let measuredDecisionSet: readonly ContextDecision[] | undefined;
     let measuredDecisionProviderRequestIndex: number | undefined;
     let inspectionOrSearchCompleted = false;
+    const parseInspectCandidateArguments = (value: unknown) =>
+      z
+        .object({
+          id: z.string(),
+          range: z
+            .object({
+              charStart: z.number().int().min(0),
+              charEnd: z.number().int().positive(),
+            })
+            .strict()
+            .optional(),
+        })
+        .strict()
+        .parse(value);
+    const parseSearchWithinCandidateArguments = (value: unknown) =>
+      z
+        .object({
+          id: z.string(),
+          terms: z.string().min(1),
+          cursor: z.number().int().min(0).optional(),
+        })
+        .strict()
+        .parse(value);
+    const parseMeasurePlanArguments = (value: unknown) => ContextPlanOutputSchema.parse(value);
     const raw = await this.agents.toolLoop({
       requestClass: "fast",
       model: this.config.aiFastModel,
@@ -5442,20 +5478,9 @@ export class CanonicalWorkflowOperations {
                 .strict(),
             ),
           },
+          parseArguments: parseInspectCandidateArguments,
           execute: async (args) => {
-            const parsed = z
-              .object({
-                id: z.string(),
-                range: z
-                  .object({
-                    charStart: z.number().int().min(0),
-                    charEnd: z.number().int().positive(),
-                  })
-                  .strict()
-                  .optional(),
-              })
-              .strict()
-              .parse(args);
+            const parsed = parseInspectCandidateArguments(args);
             const item = reductionCandidates.find((candidate) => candidate.id === parsed.id);
             if (item === undefined)
               return {
@@ -5679,15 +5704,9 @@ export class CanonicalWorkflowOperations {
                 .strict(),
             ),
           },
+          parseArguments: parseSearchWithinCandidateArguments,
           execute: async (args) => {
-            const parsed = z
-              .object({
-                id: z.string(),
-                terms: z.string().min(1),
-                cursor: z.number().int().min(0).optional(),
-              })
-              .strict()
-              .parse(args);
+            const parsed = parseSearchWithinCandidateArguments(args);
             const item = reductionCandidates.find((candidate) => candidate.id === parsed.id);
             if (item === undefined)
               return {
@@ -5750,6 +5769,7 @@ export class CanonicalWorkflowOperations {
             description: "Validate and measure a complete candidate plan.",
             parameters: z.toJSONSchema(ContextPlanOutputSchema),
           },
+          parseArguments: parseMeasurePlanArguments,
           execute: async (args, requestCoordinates) => {
             measurementRequested = true;
             measurementResolved = false;
@@ -5757,7 +5777,7 @@ export class CanonicalWorkflowOperations {
             measuredDecisionProviderRequestIndex = undefined;
             try {
               const decisions = validateContextDecisions(
-                ContextPlanOutputSchema.parse(args).decisions,
+                parseMeasurePlanArguments(args).decisions,
                 reductionCandidates,
               );
               const canonicalDecisions = canonicalContextDecisionSet(

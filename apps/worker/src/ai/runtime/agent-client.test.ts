@@ -803,6 +803,111 @@ describe("canonical agent tool loop", () => {
     expect(measure).not.toHaveBeenCalled();
   });
 
+  it("preflights malformed sibling arguments before executing any tool", async () => {
+    const complete = vi.fn(async () =>
+      completion([
+        { id: "first-1", name: "first", arguments: {} },
+        {
+          id: "second-1",
+          name: "second",
+          arguments: null as unknown as Readonly<Record<string, unknown>>,
+        },
+      ]),
+    );
+    const first = vi.fn(async () => ({ complete: true }));
+    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
+
+    await expect(
+      inTask(() =>
+        client.toolLoop({
+          requestClass: "fast",
+          model: "glm-5-turbo",
+          system: "system",
+          user: "user",
+          tools: [
+            {
+              definition: { name: "first", description: "First", parameters: {} },
+              execute: first,
+            },
+            {
+              definition: { name: "second", description: "Second", parameters: {} },
+              parseArguments: () => {
+                throw new Error("malformed second arguments");
+              },
+              execute: async () => ({ complete: true }),
+            },
+          ],
+          terminalToolName: "emit",
+          validateTerminal: (value) => value,
+          maximumTurns: 1,
+          requestedOutputTokens: 64,
+          reasoning: "medium",
+          coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "internal_retrieval_failed" });
+    expect(first).not.toHaveBeenCalled();
+  });
+
+  it("suppresses every later non-disabled sibling after an incomplete result", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completion([
+          { id: "search-1", name: "search", arguments: { query: "solar" } },
+          { id: "inspect-1", name: "inspect", arguments: { id: "document-a" } },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        completion([{ id: "search-2", name: "search", arguments: { query: "solar", cursor: 2 } }]),
+      )
+      .mockResolvedValueOnce(
+        completion([{ id: "emit-1", name: "emit", arguments: { ids: ["document-a"] } }]),
+      );
+    const search = vi
+      .fn()
+      .mockResolvedValueOnce({ complete: false, truncated: true, cursor: 2, items: [{ id: "a" }] })
+      .mockResolvedValueOnce({ complete: true, truncated: false, cursor: null, items: [] });
+    const inspect = vi.fn(async () => ({ complete: true, found: true }));
+    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
+
+    await expect(
+      inTask(() =>
+        client.toolLoop({
+          requestClass: "fast",
+          model: "glm-5-turbo",
+          system: "system",
+          user: "user",
+          tools: [
+            {
+              definition: { name: "search", description: "Search", parameters: {} },
+              execute: search,
+            },
+            {
+              definition: { name: "inspect", description: "Inspect", parameters: {} },
+              execute: inspect,
+            },
+            {
+              definition: { name: "emit", description: "Emit", parameters: {} },
+              execute: async () => ({ complete: true }),
+            },
+          ],
+          terminalToolName: "emit",
+          validateTerminal: (value) => value as { readonly ids: readonly string[] },
+          maximumTurns: 3,
+          requestedOutputTokens: 64,
+          reasoning: "medium",
+          coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
+        }),
+      ),
+    ).resolves.toEqual({ ids: ["document-a"] });
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(inspect).not.toHaveBeenCalled();
+    expect(complete.mock.calls[1]?.[0].messages.at(-1)?.content).toContain(
+      '"continuationRequired":true',
+    );
+  });
+
   it("does not consume a continuation obligation created earlier in the same response", async () => {
     const complete = vi
       .fn()
