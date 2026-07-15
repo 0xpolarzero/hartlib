@@ -2075,6 +2075,11 @@ const executeBaseline = async (
                     if (binding === undefined) {
                       throw new Error("baseline exposed an unbound golden source");
                     }
+                    if (source.kind === "document" && binding.kind !== "document") {
+                      throw new Error(
+                        `baseline document source ${source.sourceId} resolved to ${binding.kind} binding`,
+                      );
+                    }
                     const visibleText = source.content.slice(exposure.charStart, exposure.charEnd);
                     const logicalSourceIdentity =
                       binding.kind === "document"

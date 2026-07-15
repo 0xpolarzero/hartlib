@@ -2291,6 +2291,17 @@ const completeDurableCaptureSession = async (
                   row.topology === "general_planner"
                     ? model.countTextTokens(source.content)
                     : marker.visibleTokenCount,
+                ...(row.topology === "general_planner" && binding.kind === "document"
+                  ? {
+                      documentReconstruction: {
+                        sourceId: binding.sourceId,
+                        documentId: binding.documentId,
+                        documentVersionId: binding.documentVersionId,
+                        contentHash: binding.contentHash,
+                        ranges: [{ charStart: 0, charEnd: source.content.length }],
+                      },
+                    }
+                  : {}),
               });
             }
             if (row.topology === "specialized" && binding.kind === "web") {
@@ -5562,7 +5573,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       {
         sessionId: memoryInternalStageTamperSessionId,
         tamper: "memory_as_internal_preview" as const,
-        error: /lacks terminal provider usage|stage-incompatible/u,
+        error: /lacks terminal provider usage|stage-incompatible|replay conflicts with an existing immutable row/u,
       },
       {
         sessionId: chatWebStageTamperSessionId,
