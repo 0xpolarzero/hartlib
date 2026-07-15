@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Fiber, Redacted } from "effect";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EXPORT_ARCHIVE_FILE_EXTENSION,
@@ -3741,7 +3742,7 @@ describe.skipIf(!isBun || !databaseUrl)(
               id, brief_document_id, content_hash, language, canonical_text,
               text_char_count, page_ranges
             ) values (
-              ${restrictedVersionId}, ${restrictedDocumentId}, ${"d".repeat(64)},
+              ${restrictedVersionId}, ${restrictedDocumentId}, encode(digest(convert_to(${restrictedText}, 'UTF8'), 'sha256'), 'hex'),
               'fr-FR', ${restrictedText}, ${restrictedText.length},
               ${JSON.stringify([
                 { pageNumber: 1, charStart: 0, charEnd: restrictedText.length },
@@ -3784,7 +3785,7 @@ describe.skipIf(!isBun || !databaseUrl)(
               ${sql.json({
                 kind: "document",
                 documentVersionId: restrictedVersionId,
-                contentHash: "d".repeat(64),
+                contentHash: createHash("sha256").update(restrictedText, "utf8").digest("hex"),
                 ranges: [{ pageNumber: 1, charStart: 0, charEnd: restrictedText.length }],
               })},
               ${restrictedVersionId}, ${restrictedVersionId},
@@ -3889,19 +3890,27 @@ describe.skipIf(!isBun || !databaseUrl)(
             insert into ai_source_exposures (
               run_id, task_id, loop_iteration, attempt, provider_request_index,
               source_kind, logical_source_identity, publisher_issue_id,
-              content_item_identity, exposure_stage, visible_token_count
+              content_item_identity, exposure_stage, visible_token_count,
+              document_source_id, document_id, document_version_id,
+              document_content_hash, document_ranges
             ) values
               (
                 ${runOne}, 'publisher-metric', 0, 0, 0, 'document',
-                'document:one', ${delivered.issueId}, 'version:one', 'answer', 10
+                'document:one', ${delivered.issueId}, 'version:one', 'answer', 10,
+                ${`publisher:${delivered.issueId}`}, 'document:one', 'version:one',
+                ${"a".repeat(64)}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               ),
               (
                 ${runOne}, 'publisher-metric', 0, 0, 0, 'document',
-                'document:two', ${delivered.issueId}, 'version:two', 'answer', 12
+                'document:two', ${delivered.issueId}, 'version:two', 'answer', 12,
+                ${`publisher:${delivered.issueId}`}, 'document:two', 'version:two',
+                ${"b".repeat(64)}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               ),
               (
                 ${runTwo}, 'publisher-metric', 0, 0, 0, 'document',
-                'document:three', ${delivered.issueId}, 'version:three', 'answer', 14
+                'document:three', ${delivered.issueId}, 'version:three', 'answer', 14,
+                ${`publisher:${delivered.issueId}`}, 'document:three', 'version:three',
+                ${"c".repeat(64)}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               )
           `;
           yield* sql`

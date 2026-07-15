@@ -17,6 +17,7 @@ export interface AppendAiRunEventInput {
 export interface AppendedAiRunEvent {
   readonly seq: number;
   readonly event: AiRunEvent;
+  readonly emittedByTask: string | null;
   readonly inserted: boolean;
 }
 
@@ -28,6 +29,7 @@ interface RunSequenceRow {
 interface EventRow {
   readonly seq: number;
   readonly event: AiRunEvent;
+  readonly emittedByTask: string | null;
 }
 
 /**
@@ -84,7 +86,7 @@ export const appendAiRunEventInTransaction = (
     }
 
     const existing = yield* sql<EventRow>`
-      select seq, event
+      select seq, event, emitted_by_task as "emittedByTask"
       from ai_run_events
       where run_id = ${input.runId}
         and emission_key = ${input.emissionKey}
@@ -93,7 +95,7 @@ export const appendAiRunEventInTransaction = (
     const prior = existing[0];
 
     if (prior !== undefined) {
-      return { seq: prior.seq, event: prior.event, inserted: false };
+      return { ...prior, inserted: false };
     }
 
     if (run.terminal && input.emissionKey !== "terminal") {
@@ -117,7 +119,7 @@ export const appendAiRunEventInTransaction = (
         ${sql.json(input.event)},
         ${input.emittedByTask ?? null}
       )
-      returning seq, event
+      returning seq, event, emitted_by_task as "emittedByTask"
     `;
 
     yield* sql`

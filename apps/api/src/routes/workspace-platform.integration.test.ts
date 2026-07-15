@@ -1,6 +1,7 @@
 import type { WebhookEvent } from "@clerk/backend/webhooks";
 import { PgClient } from "@effect/sql-pg";
 import { ConfigProvider, Effect, Redacted } from "effect";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createPublisherIssue,
@@ -219,7 +220,7 @@ const seedMarketplacePublicDocument = Effect.gen(function* () {
       'public-document-1', 'official-marketplace-source', ${artifactId},
       'https://example.test/publication', 'publication-1', 'Public publication',
       ${documentText}, 'fr-FR', now(), now(), now(), 'publication',
-      ${"b".repeat(64)}, ${documentText.length}
+      encode(digest(convert_to(${documentText}, 'UTF8'), 'sha256'), 'hex'), ${documentText.length}
     )
   `;
   yield* sql`
@@ -229,7 +230,7 @@ const seedMarketplacePublicDocument = Effect.gen(function* () {
       last_fetched_at, last_successful_fetch_at
     ) values (
       'official-marketplace-source', 'https://example.test/publication', 'publication-1',
-      'Public publication', now(), now(), ${"b".repeat(64)}, 'public-document-1',
+      'Public publication', now(), now(), encode(digest(convert_to(${documentText}, 'UTF8'), 'sha256'), 'hex'), 'public-document-1',
       ${artifactId}, now(), now()
     )
   `;
@@ -3053,10 +3054,12 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
     const staleDocumentId = "stale-public-document";
     const artifactId = crypto.randomUUID();
     const alternateArtifactId = crypto.randomUUID();
+    const authorizedText = "Authorized hosted public content ".repeat(10);
+    const authorizedContentHash = createHash("sha256").update(authorizedText, "utf8").digest("hex");
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        const text = "Authorized hosted public content ".repeat(10);
+        const text = authorizedText;
         yield* sql`
           update client_companies
           set clerk_organization_id = 'org_public_content'
@@ -3086,7 +3089,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           ) values (
             ${documentId}, 'official-marketplace-source', ${artifactId},
             'https://example.test/authorized-content', 'authorized-content', 'Authorized content',
-            ${text}, 'fr-FR', now(), now(), now(), 'publication', ${"d".repeat(64)}, ${text.length}
+            ${text}, 'fr-FR', now(), now(), now(), 'publication', encode(digest(convert_to(${text}, 'UTF8'), 'sha256'), 'hex'), ${text.length}
           )
         `;
         yield* sql`
@@ -3098,7 +3101,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             ${staleDocumentId}, 'official-marketplace-source', ${alternateArtifactId},
             'https://example.test/stale-artifact', 'stale-artifact', 'Stale artifact',
             ${"Stale hosted public content ".repeat(10)}, 'fr-FR', now(), now(), now(), 'publication',
-            ${"e".repeat(64)}, ${"Stale hosted public content ".repeat(10).length}
+            encode(digest(convert_to(${"Stale hosted public content ".repeat(10)}, 'UTF8'), 'sha256'), 'hex'), ${"Stale hosted public content ".repeat(10).length}
           )
         `;
         yield* sql`
@@ -3108,7 +3111,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             last_fetched_at, last_successful_fetch_at
           ) values (
             'official-marketplace-source', 'https://example.test/authorized-content',
-            'authorized-content', 'Authorized content', now(), now(), ${"d".repeat(64)},
+            'authorized-content', 'Authorized content', now(), now(), encode(digest(convert_to(${text}, 'UTF8'), 'sha256'), 'hex'),
             ${documentId}, ${artifactId}, now(), now()
           )
         `;
@@ -3190,7 +3193,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
     expect(deniedPreflight.headers.get("access-control-allow-origin")).toBeNull();
 
     const staleCases = [
-      { column: "current_content_hash", value: "e".repeat(64), restored: "d".repeat(64) },
+      { column: "current_content_hash", value: "e".repeat(64), restored: authorizedContentHash },
       { column: "latest_document_id", value: staleDocumentId, restored: documentId },
       { column: "latest_raw_artifact_id", value: alternateArtifactId, restored: artifactId },
     ] as const;
@@ -3423,7 +3426,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
                  timestamptz '2026-07-01 00:00:00+00',
                  timestamptz '2026-07-01 00:00:00+00',
                  'publication',
-                 encode(digest(raw.canonical_url, 'sha256'), 'hex'),
+                 encode(digest(convert_to(repeat('Bounded archive evidence ', 20), 'UTF8'), 'sha256'), 'hex'),
                  length(repeat('Bounded archive evidence ', 20))
           from public_source_raw_artifacts raw
           where raw.source_id = 'official-marketplace-source'
@@ -4258,12 +4261,15 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
               run_id, task_id, loop_iteration, attempt, provider_request_index,
               source_kind, logical_source_identity, publisher_issue_id,
               publisher_document_id, content_item_identity, exposure_stage,
-              visible_token_count
+              visible_token_count, document_source_id, document_id,
+              document_version_id, document_content_hash, document_ranges
             ) values (
               ${exposure.runId}, ${exposure.task}, 0, 0, 0, 'document',
               ${`publisher-document:${exposure.documentId}`}, ${metricsIssueId},
               ${exposure.documentId}, ${exposure.documentId}, 'provider_context',
-              ${exposure.tokens}
+              ${exposure.tokens}, ${`publisher:${subscriptionId}`},
+              ${exposure.documentId}, ${exposure.documentId}, ${"a".repeat(64)},
+              ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
             )
           `;
         }

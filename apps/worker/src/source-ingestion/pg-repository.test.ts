@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
@@ -100,7 +101,7 @@ const ingested = (body: string, fetchedAt: Date): IngestedSourceItem => {
   } as const;
   const readableText =
     "Stable readable public source document text with enough content to satisfy the publication storage invariant.";
-  const contentHash = "a".repeat(64);
+  const contentHash = createHash("sha256").update(readableText, "utf8").digest("hex");
 
   return {
     status: "ingested",
@@ -113,7 +114,7 @@ const ingested = (body: string, fetchedAt: Date): IngestedSourceItem => {
       body,
     },
     document: {
-      id: "service_public:https%3A%2F%2Fexample.test%2Farticles%2Fstable:aaaaaaaaaaaaaaaa",
+      id: `service_public:https%3A%2F%2Fexample.test%2Farticles%2Fstable:${contentHash.slice(0, 16)}`,
       sourceId: "service_public",
       externalId: item.externalId,
       canonicalUrl: item.canonicalUrl,
@@ -377,6 +378,53 @@ describe.skipIf(!databaseUrl)("postgres public source repository", () => {
         expect(rows[0]?.latest_raw_artifact_id).toBe(rows[0]?.document_raw_artifact_id);
         expect(rows[0]?.current_content_hash).toBe(rows[0]?.content_hash);
         expect(rows[0]?.body).toBe("<article>second wrapper around stable text</article>");
+      }),
+    );
+  });
+
+  it("rejects same-ID canonical text and hash drift while keeping the original version", async () => {
+    await runDb(
+      Effect.gen(function* () {
+        yield* resetDatabase;
+        const sql = yield* PgClient.PgClient;
+        const repository = yield* makePgPublicSourceIngestionRepository();
+        const initial = ingested("stable body", new Date("2026-07-07T10:01:00.000Z"));
+
+        yield* repository.startRun(source, { mode: "poll" });
+        yield* repository.storeIngestedItem(initial);
+
+        const divergentText =
+          "A divergent canonical document body must never reuse its ID. ".repeat(3);
+        const divergent = {
+          ...initial,
+          raw: {
+            ...initial.raw,
+            body: "<article>divergent raw artifact</article>",
+            fetchedAt: new Date("2026-07-07T10:02:00.000Z"),
+          },
+          document: {
+            ...initial.document,
+            fetchedAt: new Date("2026-07-07T10:02:00.000Z"),
+            text: divergentText,
+            textCharCount: divergentText.length,
+            contentHash: createHash("sha256").update(divergentText, "utf8").digest("hex"),
+          },
+        } as const;
+
+        const result = yield* Effect.exit(repository.storeIngestedItem(divergent));
+        expect(result._tag).toBe("Failure");
+
+        const rows = yield* sql<{
+          readonly text: string;
+          readonly content_hash: string;
+        }>`
+          select text, content_hash
+          from public_source_documents
+          where document_id = ${initial.document.id}
+        `;
+        expect(rows).toEqual([
+          { text: initial.document.text, content_hash: initial.document.contentHash },
+        ]);
       }),
     );
   });

@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runMigrations } from "../../db/migrate";
@@ -84,6 +85,8 @@ type DocumentFixture = {
   readonly documentType: string;
   readonly contentHash: string;
 };
+
+const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
 const sourceFixtures: ReadonlyArray<SourceFixture> = [
   {
@@ -263,7 +266,7 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     documentType: "article",
     contentHash: "ret-h-15",
   },
-];
+].map((fixture) => ({ ...fixture, contentHash: sha256(fixture.text) }));
 
 const sortedDocumentIds = (previews: ReadonlyArray<{ readonly documentId: string }>) =>
   previews.map((preview) => preview.documentId).sort();

@@ -1659,7 +1659,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
             id, brief_document_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${versionId}, ${documentId}, ${"b".repeat(64)}, 'en-US', ${publisherText},
+            ${versionId}, ${documentId}, encode(digest(convert_to(${publisherText}, 'UTF8'), 'sha256'), 'hex'), 'en-US', ${publisherText},
             ${publisherText.length},
             ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: publisherText.length }])}::jsonb
           )

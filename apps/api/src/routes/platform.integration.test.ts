@@ -1,6 +1,7 @@
 import type { WebhookEvent } from "@clerk/backend/webhooks";
 import { PgClient } from "@effect/sql-pg";
 import { ConfigProvider, Effect, Redacted } from "effect";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { routeRequest } from "../http";
@@ -1456,7 +1457,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
             id, brief_document_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${versionId}, ${documentId}, ${"b".repeat(64)}, 'en-US',
+            ${versionId}, ${documentId}, encode(digest(convert_to('Late publisher evidence', 'UTF8'), 'sha256'), 'hex'), 'en-US',
             'Late publisher evidence', 23,
             '[{"pageNumber":1,"charStart":0,"charEnd":23}]'::jsonb
           )
@@ -1522,7 +1523,9 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
               ${sql.json({
                 kind: "document",
                 documentVersionId: fixture.versionId,
-                contentHash: "b".repeat(64),
+                contentHash: createHash("sha256")
+                  .update("Late publisher evidence", "utf8")
+                  .digest("hex"),
                 ranges: [{ pageNumber: 1, charStart: 0, charEnd: 23 }],
               })},
               ${fixture.versionId}, ${fixture.versionId}, 'Late publisher evidence',

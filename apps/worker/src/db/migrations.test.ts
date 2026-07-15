@@ -2527,7 +2527,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 'article',
                 repeat('contexte budgétaire ', 10),
                 200,
-                'fts-c1',
+                encode(digest(convert_to(repeat('contexte budgétaire ', 10), 'UTF8'), 'sha256'), 'hex'),
                 'aaaaaaaa-0000-0000-0000-000000000001'
               ),
               (
@@ -2542,7 +2542,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 'article',
                 'Les réformes économiques annoncées par le gouvernement ' || repeat('remplissage ', 20),
                 200,
-                'fts-c2',
+                encode(digest(convert_to('Les réformes économiques annoncées par le gouvernement ' || repeat('remplissage ', 20), 'UTF8'), 'sha256'), 'hex'),
                 'aaaaaaaa-0000-0000-0000-000000000002'
               ),
               (
@@ -2557,7 +2557,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 'article',
                 'The committee is running new stress tests this quarter ' || repeat('filler ', 20),
                 200,
-                'fts-c3',
+                encode(digest(convert_to('The committee is running new stress tests this quarter ' || repeat('filler ', 20), 'UTF8'), 'sha256'), 'hex'),
                 'aaaaaaaa-0000-0000-0000-000000000003'
               ),
               (
@@ -2572,7 +2572,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 'article',
                 'Wirtschaftsberichte und laufende Analysen ' || repeat('inhalt ', 20),
                 200,
-                'fts-c4',
+                encode(digest(convert_to('Wirtschaftsberichte und laufende Analysen ' || repeat('inhalt ', 20), 'UTF8'), 'sha256'), 'hex'),
                 'aaaaaaaa-0000-0000-0000-000000000004'
               )
             on conflict (document_id) do update
@@ -2636,6 +2636,150 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       expect(result.ranked[0]).toBe("fts-doc-fr-title");
     },
   );
+
+  it("binds public and publisher document hashes to immutable UTF-8 text", async () => {
+    const result = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const suffix = crypto.randomUUID();
+        const publicSourceId = `hash-source-${suffix}`;
+        const publicDocumentId = `hash-public-document-${suffix}`;
+        const publicInvalidDocumentId = `hash-public-invalid-${suffix}`;
+        const publicArtifactId = crypto.randomUUID();
+        const publisherCompanyId = crypto.randomUUID();
+        const subscriptionId = crypto.randomUUID();
+        const issueId = crypto.randomUUID();
+        const publisherDocumentId = crypto.randomUUID();
+        const publisherVersionId = crypto.randomUUID();
+        const publisherInvalidVersionId = crypto.randomUUID();
+        const publicText = "Données publiques ✅ ".repeat(10);
+        const publisherText = "Version publiée ✅";
+
+        yield* sql`
+          insert into public_sources (
+            source_id, display_name, publisher_name, description,
+            ingestion_method, discovery_url, average_chars_per_item
+          ) values (
+            ${publicSourceId}, 'Hash source', 'Hash publisher', 'Hash fixture',
+            'manual', ${`https://hash.example/${suffix}`}, 100
+          )
+        `;
+        yield* sql`
+          insert into public_source_raw_artifacts (
+            id, source_id, canonical_url, fetched_at, media_type, body, body_hash
+          ) values (
+            ${publicArtifactId}, ${publicSourceId}, ${`https://hash.example/${suffix}`},
+            now(), 'text/html', ${publicText}, 'hash-artifact'
+          )
+        `;
+        const publicHashFailure = yield* Effect.flip(sql`
+          insert into public_source_documents (
+            document_id, source_id, raw_artifact_id, canonical_url, title, text,
+            language, discovered_at, fetched_at, document_type, content_hash, text_char_count
+          ) values (
+            ${publicInvalidDocumentId}, ${publicSourceId}, ${publicArtifactId},
+            ${`https://hash.example/${suffix}`}, 'Invalid hash', ${publicText}, 'en-US',
+            now(), now(), 'article', ${"a".repeat(64)}, char_length(${publicText})
+          )
+        `);
+        yield* sql`
+          insert into public_source_documents (
+            document_id, source_id, raw_artifact_id, canonical_url, title, text,
+            language, discovered_at, fetched_at, document_type, content_hash, text_char_count
+          ) values (
+            ${publicDocumentId}, ${publicSourceId}, ${publicArtifactId},
+            ${`https://hash.example/${suffix}`}, 'Valid hash', ${publicText}, 'en-US',
+            now(), now(), 'article',
+            encode(digest(convert_to(${publicText}, 'UTF8'), 'sha256'), 'hex'),
+            char_length(${publicText})
+          )
+        `;
+        const publicTextUpdateFailure = yield* Effect.flip(sql`
+          update public_source_documents
+          set text = ${"Réécriture interdite ❌ ".repeat(10)}
+          where document_id = ${publicDocumentId}
+        `);
+        yield* sql`
+          update public_source_documents
+          set source_metadata = '{"reviewed":true}'::jsonb
+          where document_id = ${publicDocumentId}
+        `;
+
+        yield* sql`
+          insert into publisher_companies (id, name)
+          values (${publisherCompanyId}, 'Hash publisher')
+        `;
+        yield* sql`
+          insert into publisher_subscriptions (id, publisher_company_id, name, created_by_user_id)
+          values (${subscriptionId}, ${publisherCompanyId}, 'Hash subscription', 'hash-user')
+        `;
+        yield* sql`
+          insert into publisher_issues (
+            id, subscription_id, title, status, created_by_user_id
+          ) values (
+            ${issueId}, ${subscriptionId}, 'Hash issue', 'draft', 'hash-user'
+          )
+        `;
+        yield* sql`
+          insert into brief_documents (
+            id, issue_id, title, original_file_name, object_key, media_type,
+            byte_size, sha256_hex, upload_completed_at, language, created_by_user_id
+          ) values (
+            ${publisherDocumentId}, ${issueId}, 'Hash document', 'hash.pdf',
+            ${`hash/${publisherDocumentId}.pdf`}, 'application/pdf', 1,
+            ${"b".repeat(64)}, now(), 'en-US', 'hash-user'
+          )
+        `;
+        const publisherHashFailure = yield* Effect.flip(sql`
+          insert into brief_document_versions (
+            id, brief_document_id, content_hash, language, canonical_text,
+            text_char_count, page_ranges
+          ) values (
+            ${publisherInvalidVersionId}, ${publisherDocumentId}, ${"b".repeat(64)},
+            'en-US', ${publisherText}, char_length(${publisherText}),
+            '[{"pageNumber":1,"charStart":0,"charEnd":17}]'::jsonb
+          )
+        `);
+        yield* sql`
+          insert into brief_document_versions (
+            id, brief_document_id, content_hash, language, canonical_text,
+            text_char_count, page_ranges
+          ) values (
+            ${publisherVersionId}, ${publisherDocumentId},
+            encode(digest(convert_to(${publisherText}, 'UTF8'), 'sha256'), 'hex'),
+            'en-US', ${publisherText}, char_length(${publisherText}),
+            '[{"pageNumber":1,"charStart":0,"charEnd":17}]'::jsonb
+          )
+        `;
+        const publisherTextUpdateFailure = yield* Effect.flip(sql`
+          update brief_document_versions
+          set canonical_text = 'Réécriture interdite ❌'
+          where id = ${publisherVersionId}
+        `);
+
+        return {
+          publicHashFailure,
+          publicTextUpdateFailure,
+          publisherHashFailure,
+          publisherTextUpdateFailure,
+        };
+      }),
+    );
+
+    expect(errorText(result.publicHashFailure)).toContain(
+      "public source document content hash must match exact UTF-8 text",
+    );
+    expect(errorText(result.publicTextUpdateFailure)).toContain(
+      "public source document content hash must match exact UTF-8 text",
+    );
+    expect(errorText(result.publisherHashFailure)).toContain(
+      "publisher document version content hash must match exact UTF-8 text",
+    );
+    expect(errorText(result.publisherTextUpdateFailure)).toContain(
+      "brief document versions are immutable",
+    );
+  });
 
   it("enforces one unterminated run per chat", { timeout: 60_000 }, async () => {
     const testUrl = isolatedDatabaseUrl();
@@ -4133,6 +4277,31 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 'document', 'document:source-1', 'unscoped', 'internal_inspection', 1,
                 'document:source-1', 'document-1', 'version-1', ${"a".repeat(64)},
                 ${JSON.stringify([{ charStart: 0, charEnd: 3 }])}::jsonb
+              )
+            `),
+            yield* Effect.flip(sql`
+              insert into ai_source_exposures (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                source_kind, logical_source_identity, content_item_identity,
+                exposure_stage, visible_token_count,
+                document_source_id, document_id, document_version_id,
+                document_content_hash
+              ) values (
+                ${evaluationRunId}, 'partial-reconstruction', 0, 0, 0,
+                'document', 'public:source-1', 'partial', 'answer_serialized', 1,
+                'public:source-1', 'document-1', 'version-1', ${"a".repeat(64)}
+              )
+            `),
+            yield* Effect.flip(sql`
+              insert into ai_source_exposures (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                source_kind, logical_source_identity, content_item_identity,
+                exposure_stage, visible_token_count,
+                document_source_id
+              ) values (
+                ${evaluationRunId}, 'partial-non-document', 0, 0, 0,
+                'memory', 'memory:source-1', 'partial', 'memory_tool_result', 1,
+                'public:source-1'
               )
             `),
           ];

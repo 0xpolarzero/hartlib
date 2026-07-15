@@ -54,36 +54,47 @@ alter table ai_source_exposures
   add constraint ai_source_exposures_document_reconstruction_consistent
     check (
       (
-        document_source_id is null
-        and document_id is null
-        and document_version_id is null
-        and document_content_hash is null
-        and document_ranges is null
-        and (source_kind <> 'document' or exposure_stage = 'internal_search_preview')
-      )
-      or (
-        source_kind = 'document'
-        and document_source_id ~ '^((public|publisher):[^:[:space:]]+)$'
-        and btrim(document_id) <> ''
-        and btrim(document_version_id) <> ''
-        and document_content_hash ~ '^[0-9a-f]{64}$'
-        and brief_valid_document_exposure_ranges(document_ranges)
-      )
+        (
+          (
+            (document_source_id is not null)::integer
+            + (document_id is not null)::integer
+            + (document_version_id is not null)::integer
+            + (document_content_hash is not null)::integer
+            + (document_ranges is not null)::integer
+          ) = 0
+          and (source_kind <> 'document' or exposure_stage = 'internal_search_preview')
+        )
+        or (
+          (
+            (document_source_id is not null)::integer
+            + (document_id is not null)::integer
+            + (document_version_id is not null)::integer
+            + (document_content_hash is not null)::integer
+            + (document_ranges is not null)::integer
+          ) = 5
+          and source_kind = 'document'
+          and document_source_id ~ '^((public|publisher):[^:[:space:]]+)$'
+          and btrim(document_id) <> ''
+          and btrim(document_version_id) <> ''
+          and document_content_hash ~ '^[0-9a-f]{64}$'
+          and brief_valid_document_exposure_ranges(document_ranges) is true
+        )
+      ) is true
     ) not valid,
   drop constraint if exists ai_source_exposures_document_reconstruction_required,
   add constraint ai_source_exposures_document_reconstruction_required
     check (
-      not (
-        source_kind = 'document'
-        and exposure_stage in ('internal_inspection', 'context_candidate_inspection')
-      )
-      or (
-        document_source_id is not null
-        and document_id is not null
-        and document_version_id is not null
-        and document_content_hash is not null
-        and document_ranges is not null
-      )
+      (
+        source_kind <> 'document'
+        or exposure_stage = 'internal_search_preview'
+        or (
+          document_source_id is not null
+          and document_id is not null
+          and document_version_id is not null
+          and document_content_hash is not null
+          and document_ranges is not null
+        )
+      ) is true
     ) not valid;
 
 create index if not exists ai_source_exposures_document_reconstruction_idx

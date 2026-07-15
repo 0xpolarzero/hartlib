@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { purgeUserMemoryTombstones } from "../ai/product-state/retention";
@@ -336,7 +337,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
             id, brief_document_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${versionId}, ${fixture.documentId}, ${"b".repeat(64)}, 'en-US',
+            ${versionId}, ${fixture.documentId}, encode(digest(convert_to('Cited publisher evidence', 'UTF8'), 'sha256'), 'hex'), 'en-US',
             'Cited publisher evidence', 24,
             '[{"pageNumber":1,"charStart":0,"charEnd":24}]'::jsonb
           )
@@ -359,7 +360,9 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
             ${sql.json({
               kind: "document",
               documentVersionId: versionId,
-              contentHash: "b".repeat(64),
+              contentHash: createHash("sha256")
+                .update("Cited publisher evidence", "utf8")
+                .digest("hex"),
               ranges: [{ pageNumber: 1, charStart: 0, charEnd: 24 }],
             })},
             ${versionId}, ${versionId}, 'Cited publisher evidence',

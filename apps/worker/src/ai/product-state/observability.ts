@@ -109,6 +109,17 @@ interface IdRow {
 const replayConflict = (table: string, key: string): Error =>
   new Error(`${table} replay conflicts with an existing immutable row (${key})`);
 
+const stableJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
 interface AggregateRow {
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -554,12 +565,20 @@ export const insertAiRunUsageInTransaction = (
       }
     }
 
-    yield* appendAiRunEventInTransaction({
+    const emissionKey = `usage:request:model:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.providerRequestIndex}`;
+    const appended = yield* appendAiRunEventInTransaction({
       runId: input.runId,
-      emissionKey: `usage:request:model:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.providerRequestIndex}`,
+      emissionKey,
       event: modelUsageEvent(input),
       emittedByTask: input.taskId,
     });
+    if (
+      !appended.inserted &&
+      (appended.emittedByTask !== input.taskId ||
+        stableJson(appended.event) !== stableJson(modelUsageEvent(input)))
+    ) {
+      return yield* Effect.fail(replayConflict("ai_run_events", `${input.runId}:${emissionKey}`));
+    }
 
     return rows.length === 1;
   });
@@ -669,12 +688,20 @@ export const insertAiExternalToolUsageInTransaction = (
       }
     }
 
-    yield* appendAiRunEventInTransaction({
+    const emissionKey = `usage:request:${input.operation}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.toolRequestIndex}`;
+    const appended = yield* appendAiRunEventInTransaction({
       runId: input.runId,
-      emissionKey: `usage:request:${input.operation}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.toolRequestIndex}`,
+      emissionKey,
       event: externalUsageEvent(input),
       emittedByTask: input.taskId,
     });
+    if (
+      !appended.inserted &&
+      (appended.emittedByTask !== input.taskId ||
+        stableJson(appended.event) !== stableJson(externalUsageEvent(input)))
+    ) {
+      return yield* Effect.fail(replayConflict("ai_run_events", `${input.runId}:${emissionKey}`));
+    }
 
     return rows.length === 1;
   });

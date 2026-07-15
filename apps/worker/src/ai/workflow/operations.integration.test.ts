@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import * as SmithersTaskRuntimeModule from "@smithers-orchestrator/driver/task-runtime";
 import { Effect, Redacted } from "effect";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runMigrations } from "../../db/migrate";
@@ -200,6 +201,7 @@ interface Fixture {
   readonly issueId: string;
   readonly documentId: string;
   readonly documentVersionId: string;
+  readonly contentHash: string;
   readonly runId: string;
   readonly subscriptionId: string;
 }
@@ -322,7 +324,7 @@ const createFixtureWithCanonicalText = (canonicalText: string) =>
       id, brief_document_id, content_hash, language, canonical_text,
       text_char_count, page_ranges
     ) values (
-      ${documentVersionId}, ${documentId}, ${"b".repeat(64)}, 'english',
+      ${documentVersionId}, ${documentId}, encode(digest(convert_to(${canonicalText}, 'UTF8'), 'sha256'), 'hex'), 'english',
       ${canonicalText}, ${canonicalText.length},
       ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: canonicalText.length }])}::jsonb
     )
@@ -379,6 +381,7 @@ const createFixtureWithCanonicalText = (canonicalText: string) =>
       issueId,
       documentId,
       documentVersionId,
+      contentHash: createHash("sha256").update(canonicalText, "utf8").digest("hex"),
       runId,
       subscriptionId,
     } satisfies Fixture;
@@ -1012,7 +1015,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         sourceId,
         documentId: fixture.documentId,
         documentVersionId: fixture.documentVersionId,
-        contentHash: "b".repeat(64),
+        contentHash: fixture.contentHash,
         ranges: [{ charStart: 0, charEnd: 20 }],
         publisherIssueId: fixture.issueId,
         publisherDocumentId: fixture.documentId,
@@ -1227,7 +1230,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             id, brief_document_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${replacementVersionId}, ${fixture.documentId}, ${"c".repeat(64)}, 'english',
+            ${replacementVersionId}, ${fixture.documentId}, encode(digest(convert_to(${replacementText}, 'UTF8'), 'sha256'), 'hex'), 'english',
             ${replacementText}, ${replacementText.length},
             ${JSON.stringify([
               { pageNumber: 1, charStart: 0, charEnd: replacementText.length },
@@ -1374,7 +1377,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
               id, brief_document_id, content_hash, language, canonical_text,
               text_char_count, page_ranges
             ) values (
-              ${replacementVersionId}, ${fixture.documentId}, ${"d".repeat(64)}, 'english',
+              ${replacementVersionId}, ${fixture.documentId}, encode(digest(convert_to(${replacementText}, 'UTF8'), 'sha256'), 'hex'), 'english',
               ${replacementText}, ${replacementText.length},
               ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: replacementText.length }])}::jsonb
             )
@@ -1632,11 +1635,11 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       inventedCursorAgent,
     );
     await expect(
-      inTask("single-retrieve-internal", () =>
+      inTask("single-retrieve-internal-invented-cursor", () =>
         inventedCursorOperations.retrieveInternal(
           load,
           "find the older needle",
-          "single-retrieve-internal",
+          "single-retrieve-internal-invented-cursor",
           [],
         ),
       ),

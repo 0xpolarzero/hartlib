@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { publisherIssueAdvisoryLockKey } from "@brief/shared";
 
@@ -313,7 +314,7 @@ const createPublisherSourceFixture = (
     const issueId = crypto.randomUUID();
     const documentId = crypto.randomUUID();
     const versionId = crypto.randomUUID();
-    const contentHash = "c".repeat(64);
+    const contentHash = createHash("sha256").update("Fence source text", "utf8").digest("hex");
     yield* sql`
       insert into publisher_companies (id, name)
       values (${publisherCompanyId}, ${`Fence publisher ${issueId}`})
@@ -644,6 +645,21 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     await expectConflict(
       runDb(insertAiRunUsage({ ...usage, usage: { ...usage.usage, stopReason: "stop" } })),
     );
+
+    const tamperedUsage = { ...usage, taskId: "replay-model-event" };
+    await expect(runDb(insertAiRunUsage(tamperedUsage))).resolves.toBe(true);
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update ai_run_events
+          set event = jsonb_set(event, '{role}', '"tampered"'::jsonb)
+          where run_id = ${fixture.runId}
+            and emission_key = ${`usage:request:model:${tamperedUsage.taskId}:0:0:0`}
+        `;
+      }),
+    );
+    await expectConflict(runDb(insertAiRunUsage(tamperedUsage)));
 
     const external = {
       runId: fixture.runId,
@@ -1193,7 +1209,11 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         const sourceId = `collision-source-${crypto.randomUUID()}`;
         const canonicalUrl = "https://public.example/colliding-document";
         const text = "Public collision evidence. ".repeat(5);
-        const contentHash = "a".repeat(64);
+        const publisherText = "Publisher collision text";
+        const publicContentHash = createHash("sha256").update(text, "utf8").digest("hex");
+        const publisherContentHash = createHash("sha256")
+          .update(publisherText, "utf8")
+          .digest("hex");
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
@@ -1229,8 +1249,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                 id, brief_document_id, content_hash, language, canonical_text,
                 text_char_count, page_ranges
               ) values (
-                ${publicDocumentId}, ${publisherDocumentId}, ${contentHash}, 'english',
-                'Publisher collision text', 24,
+                ${publicDocumentId}, ${publisherDocumentId}, ${publisherContentHash}, 'english',
+                ${publisherText}, ${publisherText.length},
                 '[{"pageNumber":1,"charStart":0,"charEnd":24}]'::jsonb
               )
             `;
@@ -1258,7 +1278,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                 id, source_id, canonical_url, fetched_at, media_type, body, body_hash
               ) values (
                 ${rawArtifactId}, ${sourceId}, ${canonicalUrl}, now(), 'text/html',
-                ${text}, ${contentHash}
+                ${text}, ${publicContentHash}
               )
             `;
             yield* sql`
@@ -1268,7 +1288,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                 text_char_count, content_hash, raw_artifact_id
               ) values (
                 ${publicDocumentId}, ${sourceId}, ${canonicalUrl}, 'Public collision document', now(),
-                now(), now(), 'en', 'article', ${text}, ${text.length}, ${contentHash}, ${rawArtifactId}
+                now(), now(), 'en', 'article', ${text}, ${text.length}, ${publicContentHash}, ${rawArtifactId}
               )
             `;
             yield* sql`
@@ -1284,7 +1304,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           publicDocumentId,
           publisherIssueId,
           publisherDocumentId,
-          contentHash,
+          publicContentHash,
+          publisherContentHash,
           canonicalUrl,
         };
       }),
@@ -1300,7 +1321,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         sourceId: `public:${collision.sourceId}`,
         documentId: collision.publicDocumentId,
         documentVersionId: collision.publicDocumentId,
-        contentHash: collision.contentHash,
+        contentHash: collision.publicContentHash,
         ranges: [{ charStart: 0, charEnd: 8 }],
       },
       label: "Public collision document",
@@ -1366,7 +1387,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         sourceId: `publisher:${collision.subscriptionId}`,
         documentId: collision.publisherDocumentId,
         documentVersionId: collision.publicDocumentId,
-        contentHash: collision.contentHash,
+        contentHash: collision.publisherContentHash,
         publisherIssueId: wrongIssueId,
         publisherDocumentId: collision.publisherDocumentId,
         ranges: [{ charStart: 0, charEnd: 8 }],
