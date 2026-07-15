@@ -152,6 +152,12 @@ Monthly plan downgrades apply next billing cycle.
 
 Additional credits are unaffected by monthly plan changes.
 
+Changing an existing monthly plan is an MFA-verified client-company-admin mutation. Selecting the already active tier is an idempotent no-op. An upgrade requires an active subscription whose current-period invoice is paid and succeeds only after Stripe has atomically changed the single canonical subscription item and returned a positive, paid `subscription_update` proration invoice for that exact customer and subscription; the higher tier is then effective immediately. A trial cannot be upgraded through a path that would avoid that charge. A downgrade leaves the current tier and price in force, creates one owned Stripe subscription schedule with no proration, and changes the price at the exact current-period end. While that schedule is pending, a different plan change is rejected rather than replacing or weakening the prepaid commitment. If Stripe cancels or aborts the owned schedule before the transition, the current plan remains in force and the cleared pending state allows the admin to submit a new protected change.
+
+Every plan-change request carries a company-scoped idempotency key. The platform durably binds the key to the previous tier, target tier, customer, subscription, prices, and period end before contacting Stripe. Same-key/same-request replay returns the original outcome; different payload reuse is a conflict; only one plan change per company can be processing. Retrying an uncertain Stripe response resumes the same Stripe idempotency operations and owned schedule. Provider failures retain only a bounded error code. Additional-credit lots, balances, and expiry are never mutated by this workflow or by its subscription webhooks.
+
+A client company whose monthly subscription is terminally inactive or cancelled can start a replacement monthly Checkout. The replacement must become a distinct paid active/trialing subscription for the same bound Stripe customer before it becomes authoritative; late events from the old subscription cannot overwrite it. Non-terminal accounts continue through plan change or Stripe portal recovery and cannot create a parallel monthly subscription.
+
 The product should recommend a larger monthly plan when additional credit purchases become recurring.
 
 ## Usage Controls
@@ -159,6 +165,8 @@ The product should recommend a larger monthly plan when additional credit purcha
 Client company admins can set monthly usage limits for all employees and for specific employees.
 
 Monthly credits are consumed before additional credits.
+
+Company current-period usage is the sum of the retained credit-usage ledger, including usage by employees who subsequently leave the company. The per-employee breakdown contains current members only; membership removal cannot reduce the company total or weaken the company usage gate.
 
 When available credits are exhausted, AI chat pauses for that client company.
 
@@ -206,13 +214,13 @@ Client company AI plans can still be used over already delivered issues.
 
 The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`. Fixtures and fake accounts remain acceptable for non-chat demo data.
 
-The MVP sends model calls only to Mistral. Web research remains disabled until a separately approved search adapter is contracted and disclosed.
+The approved development runtime sends model calls through the exact registered GLM-5-Turbo contract on Z.AI's official Coding Plan endpoint. Optional development web discovery uses Tinyfish Search when `TINYFISH_API_KEY` is present. These development choices do not approve either provider for production customer data.
 
 The platform hosts AI.
 
-The platform should contract with Mistral directly for the MVP.
+The platform selects and contracts its production AI provider through `docs/production-readiness.spec.md`. Mistral is one candidate; provider choice, exact model contract, data terms, price, regions/transfers, and disclosures remain deferred until that guided comparison is accepted.
 
-Real publisher content requires Mistral Zero Data Retention or an equivalent written contractual guarantee.
+Real publisher content requires written, account-specific confidentiality, training/data-use exclusion, retention/deletion, security, subprocessor, incident, and transfer terms for the selected exact provider service and endpoint. Production web research remains disabled until the equivalent Tinyfish decision, conformance evidence, and disclosure are accepted.
 
 Publisher documents and client chats are excluded from model training.
 
@@ -251,7 +259,8 @@ Client terms cover:
 Data processing and security documentation covers:
 
 - subprocessors
-- Mistral
+- the accepted production AI provider and exact service
+- Tinyfish when production web research is accepted and enabled
 - data retention
 - restricted support access
 - EU hosting

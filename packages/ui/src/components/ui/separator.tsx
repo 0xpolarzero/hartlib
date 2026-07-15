@@ -25,14 +25,3 @@ export function Separator({
     />
   );
 }
-
-/**
- * Rule — hairline divider, exported as an alias of Separator for backward compatibility.
- * Defaults to horizontal orientation with the Pressroom border-rule color.
- */
-export function Rule({
-  className,
-  ...props
-}: React.ComponentProps<typeof SeparatorPrimitive.Root>) {
-  return <Separator className={cn("bg-rule", className)} orientation="horizontal" {...props} />;
-}

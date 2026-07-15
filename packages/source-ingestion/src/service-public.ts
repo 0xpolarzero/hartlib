@@ -1,5 +1,11 @@
 import { Effect } from "effect";
 import { sha256Hex } from "./hash";
+import { fetchPublicSourceText } from "./http";
+import {
+  canonicalizeSourceCanonicalUrl,
+  canonicalizeSourceFetchUrl,
+  makeSourcePolicyFetcher,
+} from "./source-url-policy";
 import { decodeHtmlEntities, stableDocumentId, stripHtml } from "./text";
 import type {
   CanonicalDocument,
@@ -15,6 +21,14 @@ import type {
   SourceFetchResult,
 } from "./types";
 import { SourceIngestionError } from "./types";
+
+/**
+ * DILA exposes directory listings rather than a paginated index. Keep one
+ * audience's listing within the same code-owned discovery budget used by the
+ * recurring poller. A listing above this limit is rejected before any item
+ * XML is fetched; silently dropping entries would make discovery incomplete.
+ */
+export const SERVICE_PUBLIC_MAX_DIRECTORY_ENTRIES = 1_000;
 
 const decodeXmlText = (value: string): string =>
   decodeHtmlEntities(value.replace(/^<!\[CDATA\[([\s\S]*)\]\]>$/u, "$1")).trim();
@@ -90,6 +104,20 @@ const discoveryRequestInit = (
   return validators ? conditionalRequestInit({ validators }) : undefined;
 };
 
+const withAbortSignal = (init: RequestInit | undefined, signal: AbortSignal): RequestInit => ({
+  ...init,
+  signal,
+});
+
+const throwIfAborted = (sourceId: PublicSourceDefinition["id"], signal: AbortSignal): void => {
+  if (signal.aborted) {
+    throw new SourceIngestionError("Service-Public XML discovery was aborted", {
+      sourceId,
+      cause: signal.reason,
+    });
+  }
+};
+
 const responseMetadata = async (
   url: string,
   response: Awaited<ReturnType<Fetcher>>,
@@ -142,27 +170,51 @@ export const parseServicePublicDirectory = (
   source: PublicSourceDefinition,
   body: string,
   directoryUrl: string,
-): readonly DiscoveredItem[] =>
-  parseDirectoryLinks(body, directoryUrl)
-    .filter((url) => /\.xml$/iu.test(url))
-    .map((xmlUrl): DiscoveredItem => {
-      const externalId =
-        xmlUrl
-          .split("/")
-          .pop()
-          ?.replace(/\.xml$/iu, "") ?? xmlUrl;
-      return {
-        sourceId: source.id,
-        externalId,
-        canonicalUrl: xmlUrl,
-        title: externalId,
-        publishedAt: null,
-        metadata: {
-          datasetUrl: directoryUrl,
-          xmlUrl,
-        },
-      };
+): readonly DiscoveredItem[] => {
+  const items: DiscoveredItem[] = [];
+  for (const match of body.matchAll(/<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1/giu)) {
+    const href = match[2] ?? "";
+    if (!href || href === "../") {
+      continue;
+    }
+    let xmlUrl: string;
+    try {
+      const resolved = new URL(href, directoryUrl).toString();
+      const canonical = canonicalizeSourceFetchUrl(source, resolved);
+      if (canonical === null || !/\.xml$/iu.test(canonical)) {
+        continue;
+      }
+      xmlUrl = canonical;
+    } catch {
+      continue;
+    }
+
+    const externalId =
+      xmlUrl
+        .split("/")
+        .pop()
+        ?.replace(/\.xml$/iu, "") ?? xmlUrl;
+    items.push({
+      sourceId: source.id,
+      externalId,
+      canonicalUrl: xmlUrl,
+      title: externalId,
+      publishedAt: null,
+      metadata: {
+        datasetUrl: directoryUrl,
+        xmlUrl,
+      },
     });
+
+    if (items.length > SERVICE_PUBLIC_MAX_DIRECTORY_ENTRIES) {
+      throw new SourceIngestionError(
+        `Service-Public XML directory exceeds the ${SERVICE_PUBLIC_MAX_DIRECTORY_ENTRIES}-entry limit`,
+        { sourceId: source.id },
+      );
+    }
+  }
+  return items;
+};
 
 export const parseServicePublicArticleXml = (
   source: PublicSourceDefinition,
@@ -172,7 +224,8 @@ export const parseServicePublicArticleXml = (
   const attributes = getRootAttributes(body);
   const externalId = attributes.ID ?? getTagText(body, "identifier") ?? xmlUrl;
   const title = getTagText(body, "title") ?? externalId;
-  const canonicalUrl = attributes.spUrl ?? xmlUrl;
+  const canonicalUrl = canonicalizeSourceCanonicalUrl(source, attributes.spUrl ?? xmlUrl);
+  if (canonicalUrl === null) return undefined;
   const publishedAt =
     parseDate(attributes.datePremiereMiseEnLigne) ??
     parseDate(attributes.dateMiseAJour) ??
@@ -217,13 +270,19 @@ export const parseServicePublicIndex = (
     const attributes = getRootAttributes(block);
     const externalId = attributes.ID ?? getTagText(block, "ID") ?? getTagText(block, "guid");
     const title = getTagText(block, "title") ?? getTagText(block, "Titre");
-    const canonicalUrl =
+    const canonicalCandidate =
       attributes.spUrl ?? getTagText(block, "spUrl") ?? getTagText(block, "link");
-    const xmlUrl = resolveXmlUrl(
+    const canonicalUrl = canonicalCandidate
+      ? canonicalizeSourceCanonicalUrl(source, canonicalCandidate)
+      : null;
+    const resolvedXmlUrl = resolveXmlUrl(
       indexUrl,
       getTagText(block, "xmlUrl") ?? getTagText(block, "fichier") ?? getTagText(block, "xml"),
     );
-    if (!externalId || !title || !canonicalUrl) {
+    const xmlUrl = resolvedXmlUrl
+      ? (canonicalizeSourceFetchUrl(source, resolvedXmlUrl) ?? undefined)
+      : undefined;
+    if (!externalId || !title || canonicalUrl === null) {
       return [];
     }
 
@@ -286,21 +345,28 @@ export const makeServicePublicXmlAdapter = (
   definition: PublicSourceDefinition,
   options: { readonly fetcher?: Fetcher } = {},
 ): SourceAdapter => {
-  const fetcher = options.fetcher ?? fetch;
+  const fetcher = makeSourcePolicyFetcher(definition, options.fetcher ?? fetch);
   const discoveryUrls = definition.discoveryUrls ?? [definition.discoveryUrl];
 
   return {
     definition,
     discover: (discoverOptions) =>
       Effect.tryPromise({
-        try: async () => {
+        try: async (signal) => {
           const discoveredAt = new Date();
           const metadata: DiscoveryFetchMetadata[] = [];
           const items: DiscoveredItem[] = [];
           let fetchedCount = 0;
 
           for (const url of discoveryUrls) {
-            const response = await fetcher(url, discoveryRequestInit(url, discoverOptions));
+            throwIfAborted(definition.id, signal);
+            const { response, body } = await fetchPublicSourceText(
+              fetcher,
+              definition.id,
+              url,
+              withAbortSignal(discoveryRequestInit(url, discoverOptions), signal),
+            );
+            throwIfAborted(definition.id, signal);
             if (response.status === 304) {
               metadata.push(await responseMetadata(url, response));
               continue;
@@ -313,16 +379,20 @@ export const makeServicePublicXmlAdapter = (
                 },
               );
             }
-            const body = await response.text();
+            const responseBody = body ?? "";
             metadata.push(await responseMetadata(url, response, body));
-            const directoryUrl = /<html\b/iu.test(body)
-              ? servicePublicArticleDirectoryUrl(url, body)
+            const directoryUrl = /<html\b/iu.test(responseBody)
+              ? servicePublicArticleDirectoryUrl(url, responseBody)
               : undefined;
             if (directoryUrl) {
-              const directoryResponse = await fetcher(
+              const directoryResult = await fetchPublicSourceText(
+                fetcher,
+                definition.id,
                 directoryUrl,
-                discoveryRequestInit(directoryUrl, discoverOptions),
+                withAbortSignal(discoveryRequestInit(directoryUrl, discoverOptions), signal),
               );
+              throwIfAborted(definition.id, signal);
+              const { response: directoryResponse, body: directoryBody } = directoryResult;
               if (directoryResponse.status === 304) {
                 metadata.push(await responseMetadata(directoryUrl, directoryResponse));
                 fetchedCount += 1;
@@ -334,33 +404,43 @@ export const makeServicePublicXmlAdapter = (
                   { sourceId: definition.id },
                 );
               }
-              const directoryBody = await directoryResponse.text();
-              metadata.push(await responseMetadata(directoryUrl, directoryResponse, directoryBody));
+              const directoryResponseBody = directoryBody ?? "";
+              metadata.push(
+                await responseMetadata(directoryUrl, directoryResponse, directoryResponseBody),
+              );
               for (const listed of parseServicePublicDirectory(
                 definition,
-                directoryBody,
+                directoryResponseBody,
                 directoryUrl,
               )) {
+                throwIfAborted(definition.id, signal);
                 const xmlUrl =
                   typeof listed.metadata?.xmlUrl === "string" ? listed.metadata.xmlUrl : undefined;
                 if (!xmlUrl) {
                   continue;
                 }
-                const xmlResponse = await fetcher(xmlUrl);
+                const xmlResult = await fetchPublicSourceText(
+                  fetcher,
+                  definition.id,
+                  xmlUrl,
+                  withAbortSignal(undefined, signal),
+                );
+                throwIfAborted(definition.id, signal);
+                const { response: xmlResponse, body: xmlBody } = xmlResult;
                 if (!xmlResponse.ok) {
                   throw new SourceIngestionError(
                     `Service-Public item XML failed with HTTP ${xmlResponse.status}`,
                     { sourceId: definition.id },
                   );
                 }
-                const xmlBody = await xmlResponse.text();
-                const item = parseServicePublicArticleXml(definition, xmlBody, xmlUrl);
+                const item = parseServicePublicArticleXml(definition, xmlBody ?? "", xmlUrl);
                 if (item) {
                   items.push(item);
                 }
               }
             } else {
-              items.push(...parseServicePublicIndex(definition, body, url));
+              throwIfAborted(definition.id, signal);
+              items.push(...parseServicePublicIndex(definition, responseBody, url));
             }
             fetchedCount += 1;
           }
@@ -391,7 +471,7 @@ export const makeServicePublicXmlAdapter = (
       }),
     fetch: (item, fetchOptions?: SourceFetchOptions) =>
       Effect.tryPromise({
-        try: async () => {
+        try: async (signal) => {
           const xmlBody =
             typeof item.metadata?.xmlBody === "string" ? item.metadata.xmlBody : undefined;
           if (xmlBody) {
@@ -420,7 +500,13 @@ export const makeServicePublicXmlAdapter = (
               sourceId: definition.id,
             });
           }
-          const response = await fetcher(xmlUrl, conditionalRequestInit(fetchOptions));
+          const { response, body } = await fetchPublicSourceText(
+            fetcher,
+            definition.id,
+            xmlUrl,
+            withAbortSignal(conditionalRequestInit(fetchOptions), signal),
+          );
+          throwIfAborted(definition.id, signal);
           if (response.status === 304) {
             return {
               status: "not_modified",
@@ -441,7 +527,6 @@ export const makeServicePublicXmlAdapter = (
               { sourceId: definition.id },
             );
           }
-          const body = await response.text();
           return {
             status: "fetched",
             raw: {
@@ -449,7 +534,7 @@ export const makeServicePublicXmlAdapter = (
               canonicalUrl: item.canonicalUrl,
               fetchedAt: new Date(),
               mediaType: "text/html",
-              body: servicePublicArticleHtml(body),
+              body: servicePublicArticleHtml(body ?? ""),
               metadata: {
                 externalId: item.externalId,
                 xmlUrl,

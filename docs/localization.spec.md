@@ -33,7 +33,7 @@ Optional pretty aliases for public demo entry:
 /us -> en-US + US
 ```
 
-Internal state always uses the real codes.
+Internal state always uses the real codes. A pretty alias is an explicit pair and overrides a conflicting stored market; after parsing, normal route generation uses the canonical locale prefix.
 
 Never auto-redirect away from an explicit locale URL. If a user opens `/en-US/client`, honor it.
 
@@ -41,7 +41,7 @@ Never auto-redirect away from an explicit locale URL. If a user opens `/en-US/cl
 
 For neutral entry points like `/` or `/demo` only, resolve the target in this order:
 
-1. Stored user choice (cookie or localStorage).
+1. Stored locale and stored market choices (cookie or localStorage), validated independently.
 2. URL locale, if present and valid.
 3. Browser `Accept-Language`.
 4. Optional country signal, if available.
@@ -51,6 +51,7 @@ For neutral entry points like `/` or `/demo` only, resolve the target in this or
 
 - Public sources carry `country` (Market) and `language` (Locale) metadata at the source-definition level.
 - The French demo defaults to sources where `country === "FR"`. The US demo defaults to `country === "US"`.
+- The live demo requests `GET /v1/public-sources?market=<FR|US>` on initial load and every market change. It renders only the response tagged for the currently selected market; a late response for the prior market is discarded and cannot leave stale sources or publications visible.
 - Documents keep their own per-document `language`. Individual documents may vary.
 - If a production user manually changes their selected sources, that selection is preserved across locale and market switches. The switcher does not clear manual selections. The live demo has no manual source selection; it uses the server-authorized set.
 
@@ -68,11 +69,20 @@ For neutral entry points like `/` or `/demo` only, resolve the target in this or
 - AI chat chrome is localized in both catalogs: web-search toggle and each effective-policy reason (`deployment_unavailable`, `company_disabled`, `allowlist_unsupported`), clarification state, document/earlier-chat/saved-memory/web source-kind labels, sources-read empty state, context-fit failure guidance, memory-finalization failure, memory tombstone/revert actions and 30-day notice, resubmit state, provisional draft state, and terminal errors.
 - Source display names, publication titles, summaries, and citation text are content, not chrome. They remain in their original language for now. The demo translates UI chrome only.
 
+## Transactional Email Locale
+
+- Each client-company notification preference stores an independently selectable email locale constrained to `fr-FR` or `en-US`; when no preference row exists, it defaults to `fr-FR`.
+- The notification settings UI reads and writes that locale with the three email opt-in categories. Changing the browser locale does not silently overwrite the saved email locale.
+- The worker resolves the current saved locale, current primary email, and current opt-in immediately before the provider call. It does not rely on values snapshotted when the notification was enqueued.
+- Internal email subjects, text, HTML, and link labels live in the same canonical JSON catalogs as UI chrome. Publisher titles and other content remain in their original language.
+- Email platform links use the canonical localized production route: `/fr-FR/...` or `/en-US/...`.
+
 ## Locale and Market Switcher
 
-- The navbar dropdown switches both UI language and default market filters together, while remaining technically decoupled.
+- The navbar exposes explicit locale and market controls. Changing locale preserves the selected market, and changing market preserves the selected locale.
 - It switches to the same route in the other locale when possible.
-- It persists the choice in localStorage.
+- It validates and persists both choices independently in localStorage. Invalid persisted market values are ignored and fall back to the locale's safe default.
+- An explicit canonical locale route (`/fr-FR/...` or `/en-US/...`) changes only the UI locale. On initial load or reload it preserves a separately stored valid market, and changing either control preserves the other value. The `/fr` and `/us` demo aliases are the deliberate exception because each denotes the full locale/market pair above.
 - It does not clear production user-selected sources after a manual change. No source-selection mutation exists in the live demo.
 
 ## Terminology

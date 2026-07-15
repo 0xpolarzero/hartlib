@@ -1,0 +1,2 @@
+# Pinned provider assets are verified byte-for-byte by SHA-256 at runtime.
+apps/worker/src/ai/tokenizer-assets/

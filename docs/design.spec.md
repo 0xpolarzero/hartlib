@@ -22,9 +22,9 @@ The MVP is in French.
 
 The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`. Fixtures and fake accounts remain acceptable for non-chat demo data.
 
-The MVP uses platform-hosted AI with Mistral.
+The MVP uses platform-hosted AI. Development uses the exact registered GLM-5-Turbo contract through Z.AI; the production provider is selected later through `docs/production-readiness.spec.md`, with Mistral as one candidate rather than a fixed dependency.
 
-The MVP launch with real publisher content requires Mistral Zero Data Retention or an equivalent written contractual guarantee.
+The MVP launch with real publisher content requires accepted, account-specific confidentiality, training/data-use exclusion, retention/deletion, security, region/transfer, and subprocessor terms for the selected exact provider service and endpoint.
 
 The MVP uses real accounts, real publisher content, and the real compliance posture.
 
@@ -32,7 +32,7 @@ The MVP uses real accounts, real publisher content, and the real compliance post
 
 The demo is a separate app under `apps/demo`.
 
-The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`: z.ai sits behind the Brief backend, and the provider is selected through configuration.
+The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`: Z.AI model calls and optional Tinyfish discovery sit behind the Brief backend, with Brief-owned safe fetching for evidence.
 
 The demo uses fake accounts, seeded publisher content, and a real test database.
 
@@ -83,11 +83,11 @@ The demo client chat is live. It reads chat history from the Brief API, sends me
 
 The demo client surface includes a compact memories panel where users can inspect saved memories, tombstone them for future use, view the 30-day reversible history, and append a revert revision.
 
-The client demo root centers on one chat and a compact table of flux. Flux include both seeded publisher invitation sources and real public sources ingested by the worker, unified as one source model. Each flux row shows the source name, a source-type distinction (invitation vs public), the latest publication date when present, and read-only subscription state. Publication rows have no AI hide/show action. The live demo has no source-subscription mutation and no per-chat source picker; its chat queries the demo user's server-authorized source set.
+The client demo root centers on one chat and a compact table of flux. Flux include both seeded publisher invitation sources and real public sources ingested by the worker, unified as one source model. Public rows are projected from the demo company's enabled `client_company_public_source_settings` and therefore use the same server-authorized source set as chat retrieval; globally ingested but unauthorized rows are not displayed. Each flux row shows the source name, a source-type distinction (invitation vs public), the latest publication date when present, and read-only subscription state. Publication rows have no AI hide/show action. The live demo has no source-subscription mutation and no per-chat source picker; its chat queries the demo user's server-authorized source set. Public-source subscriber, open, download, and AI-context-pull analytics are unavailable unless backed by an authoritative persisted fact and are represented as null rather than fabricated zeroes.
 
 The demo supports `fr-FR` and `en-US` locales via localized URL prefixes and defaults to `fr-FR` + `FR`. See `localization.spec.md`.
 
-The API serves real public source data from Postgres through a read route consumed by the demo client.
+The API serves real public source data from Postgres through an authenticated, demo-company-authorized read route consumed by the demo client. If no worker-ingested, authorized public-source data exists locally, the demo shows a public-source-specific honest empty state alongside any publisher invitation rows.
 
 Local development requires Postgres migrations and at least one worker public-source backfill before public rows appear in the demo.
 
@@ -272,6 +272,8 @@ The platform notification opens the issue.
 Client users can enable email notifications in settings.
 
 Email notifications link to the issue in the platform.
+
+Users select the email language independently in notification settings. The worker uses the current selection and current account email at delivery time, and the issue link uses the matching canonical locale prefix.
 
 Email notifications do not include issue file attachments.
 
@@ -471,6 +473,8 @@ Login methods:
 
 Clerk organizations are used for publisher companies and client companies.
 
+When an authenticated Clerk session carries an active organization claim, every client- or publisher-workspace authorization check requires that claim to match the workspace's persisted `clerk_organization_id` in addition to the live Postgres membership, role, grant, and lifecycle checks. The same binding is rechecked transactionally for chat writes, export acceptance, and idempotent export replay; a mismatched active organization fails closed.
+
 Issue documents and chats require authenticated access.
 
 Shared links open inside the authenticated app.
@@ -506,9 +510,9 @@ Restricted content should stay in EU-region services.
 
 Demo AI calls use the provider boundary in `docs/ai-chat-runtime.spec.md`; OpenRouter remains a later production provider path.
 
-Mistral is the AI provider for the MVP.
+The production AI provider is deferred until the guided comparison and evidence requirements in `docs/production-readiness.spec.md` are accepted.
 
-Stripe, Clerk, Resend, and Mistral are disclosed as subprocessors for the MVP. If web research is enabled, its approved search provider is disclosed before activation; the MVP otherwise keeps web policy disabled.
+Every enabled production service—including Stripe, Clerk, Resend, the selected AI provider, and Tinyfish if web research is approved—is disclosed consistently before activation. Production web policy remains disabled while its provider decision is deferred.
 
 ## Chats
 
@@ -521,6 +525,8 @@ The creator can promote a private chat to shared only when its memory mode has a
 Shared chats appear in the shared chats list for the client company.
 
 Shared chat links open the shared chat inside the platform.
+
+Shared chat viewers are read-only: only the creator can submit a new message or change the chat's sharing state.
 
 Shared chat viewers must belong to the same client company and have access to every subscription source selected in the chat.
 
@@ -800,6 +806,8 @@ Monthly plan upgrades charge the prorated difference immediately.
 Monthly plan downgrades apply next billing cycle.
 
 Additional credits are unaffected by monthly plan changes.
+
+The billing screen shows the active tier, any next-cycle downgrade and its effective date, and whether the selected change is immediate or next-cycle. Only an MFA-verified client company admin can submit a change. A successful upgrade is shown only after the prorated Stripe invoice is paid; a downgrade keeps the current tier visible and records the scheduled target until the next billing cycle. Retrying a failed or uncertain submission reuses the same protected request, while a different change is unavailable until the pending downgrade resolves. The additional-credit purchase control remains independent and its existing balance does not change.
 
 The client company admin can set a monthly usage limit for all employees.
 

@@ -13,18 +13,34 @@ export interface QuerySpec {
 }
 
 export type SourceAccess =
-  | { readonly kind: "allPublicSources" }
-  | { readonly kind: "sourceIds"; readonly sourceIds: readonly string[] };
+  | {
+      readonly kind: "sourceIds";
+      readonly sourceIds: readonly string[];
+    }
+  | {
+      /**
+       * Worker-only live authorization. The predicate is compiled into the
+       * ranked search itself so a disabled source or revoked chat membership
+       * cannot expose a preview or consume a pre-limit result slot.
+       */
+      readonly kind: "liveChatSourceIds";
+      readonly chatId: string;
+      readonly initiatingUserId: string;
+      readonly sourceIds: readonly string[];
+    };
 
 export interface DocumentPreview {
+  readonly kind: "public_source" | "publisher";
+  readonly sourceId: string;
   readonly documentId: string;
+  readonly documentVersionId: string;
+  readonly issueId?: string | undefined;
   readonly title: string;
   readonly sourceDisplayName: string;
   readonly publishedAt: Date | null;
   readonly language: string;
   readonly documentType: string;
   readonly textCharCount: number;
-  readonly estimatedTokens: number;
   readonly snippet: string;
 }
 
@@ -39,5 +55,3 @@ export interface DocumentPeek {
 export const SNIPPET_MAX_CHARS = 300;
 export const DEFAULT_PEEK_LENGTH_CHARS = 2000;
 export const MAX_PEEK_LENGTH_CHARS = 8000;
-
-export const estimateTokens = (charCount: number): number => Math.ceil(charCount / 4);

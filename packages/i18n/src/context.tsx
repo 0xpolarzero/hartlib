@@ -14,10 +14,12 @@ import {
   type Locale,
   type LocaleMarketPair,
   type Market,
-  type Messages,
   isLocale,
   isMarket,
 } from "./types.js";
+import { catalogs } from "./catalogs.js";
+
+export { messageForLocale } from "./catalogs.js";
 
 // Re-export react-intl primitives so apps import i18n helpers from one place.
 export {
@@ -27,15 +29,6 @@ export {
   FormattedRelativeTime,
   FormattedTime,
   useIntl,
-};
-
-import frFR from "./locales/fr-FR.json";
-import enUS from "./locales/en-US.json";
-
-/** Catalogs keyed by locale. Indexing with a `Locale` is always safe. */
-const catalogs: Record<Locale, Messages> = {
-  "fr-FR": frFR,
-  "en-US": enUS,
 };
 
 interface LocaleMarketContextValue {

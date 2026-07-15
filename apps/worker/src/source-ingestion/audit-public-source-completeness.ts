@@ -1,5 +1,6 @@
 import { BunRuntime } from "@effect/platform-bun";
 import { PgClient } from "@effect/sql-pg";
+import { databaseUrlRedactedConfig, loadPublicSourceAuditConfig } from "@brief/config";
 import {
   ingestDiscoveredItem,
   makePublicSourceAdapter,
@@ -7,7 +8,7 @@ import {
   type DiscoveredItem,
   type PublicSourceId,
 } from "@brief/source-ingestion";
-import { Config, Effect, Redacted } from "effect";
+import { Config, Effect } from "effect";
 
 type StoredPublicationRow = {
   readonly source_id: PublicSourceId;
@@ -19,19 +20,17 @@ type StoredPublicationRow = {
   readonly media_type: string;
 };
 
-const backfillDays = Number.parseInt(process.env.PUBLIC_SOURCE_STARTUP_BACKFILL_DAYS ?? "7", 10);
-const fetchMissing = process.env.PUBLIC_SOURCE_AUDIT_FETCH_MISSING === "1";
-const fetchTimeoutMs = Number.parseInt(
-  process.env.PUBLIC_SOURCE_AUDIT_FETCH_TIMEOUT_MS ?? "15000",
-  10,
-);
-const now = new Date();
-const since = new Date(now.getTime() - backfillDays * 24 * 60 * 60 * 1000);
+interface AuditConfig {
+  readonly fetchMissing: boolean;
+  readonly fetchTimeoutMs: number;
+  readonly now: Date;
+  readonly since: Date;
+}
 
 const itemDate = (item: DiscoveredItem): Date | undefined =>
   item.publishedAt ?? item.discoveredAt ?? undefined;
 
-const isEligible = (item: DiscoveredItem): boolean => {
+const isEligible = (item: DiscoveredItem, since: Date): boolean => {
   if (item.publishedAt !== null) {
     return item.publishedAt >= since;
   }
@@ -47,14 +46,11 @@ const orderedUniqueItems = (items: readonly DiscoveredItem[]): readonly Discover
   });
 
 const PgLayer = PgClient.layerConfig({
-  url: Config.string("DATABASE_URL").pipe(
-    Config.withDefault("postgres://brief:brief@localhost:5432/brief"),
-    Config.map(Redacted.make),
-  ),
+  url: databaseUrlRedactedConfig,
   applicationName: Config.succeed("brief-public-source-completeness-audit"),
 });
 
-const storedPublications = (sourceId: PublicSourceId) =>
+const storedPublications = (sourceId: PublicSourceId, since: Date) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const rows = yield* sql<StoredPublicationRow>`
@@ -80,16 +76,13 @@ const storedPublications = (sourceId: PublicSourceId) =>
       where i.source_id = ${sourceId}
         and coalesce(i.published_at, i.discovered_at) >= ${since}
         and d.text_char_count >= 100
-        and (
-          lower(r.media_type) like '%html%'
-          or lower(r.media_type) like '%pdf%'
-        )
+        and btrim(lower(split_part(r.media_type, ';', 1))) in ('text/html', 'application/pdf')
       order by coalesce(i.published_at, i.discovered_at) desc, i.title asc
     `;
     return new Map(rows.map((row) => [row.canonical_url, row]));
   });
 
-const auditSource = (sourceId: PublicSourceId) =>
+const auditSource = (sourceId: PublicSourceId, config: AuditConfig) =>
   Effect.gen(function* () {
     const adapter = makePublicSourceAdapter(sourceId);
     const discovery = yield* adapter.discover();
@@ -97,17 +90,19 @@ const auditSource = (sourceId: PublicSourceId) =>
       return yield* Effect.fail(new Error(`${sourceId}: discovery returned not_modified`));
     }
 
-    const expected = orderedUniqueItems(discovery.items.filter(isEligible));
-    const stored = yield* storedPublications(sourceId);
+    const expected = orderedUniqueItems(
+      discovery.items.filter((item) => isEligible(item, config.since)),
+    );
+    const stored = yield* storedPublications(sourceId, config.since);
     const missing = expected.filter((item) => !stored.has(item.canonicalUrl));
     const unexpected = [...stored.keys()].filter(
       (canonicalUrl) => !expected.some((item) => item.canonicalUrl === canonicalUrl),
     );
-    const missingFetchResults = fetchMissing
+    const missingFetchResults = config.fetchMissing
       ? yield* Effect.all(
           missing.map((item) =>
             ingestDiscoveredItem(adapter, item).pipe(
-              Effect.timeout(`${fetchTimeoutMs} millis`),
+              Effect.timeout(`${config.fetchTimeoutMs} millis`),
               Effect.map((result) => ({
                 item,
                 status: result.status,
@@ -142,8 +137,12 @@ const auditSource = (sourceId: PublicSourceId) =>
   });
 
 const program = Effect.gen(function* () {
+  const { backfillDays, fetchMissing, fetchTimeoutMs } = yield* loadPublicSourceAuditConfig;
+  const now = new Date();
+  const since = new Date(now.getTime() - backfillDays * 24 * 60 * 60 * 1000);
+  const auditConfig = { fetchMissing, fetchTimeoutMs, now, since } satisfies AuditConfig;
   const results = yield* Effect.all(
-    publicSourceDefinitions.map((definition) => auditSource(definition.id)),
+    publicSourceDefinitions.map((definition) => auditSource(definition.id, auditConfig)),
     { concurrency: 1 },
   );
 

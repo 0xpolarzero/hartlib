@@ -18,7 +18,7 @@ export type SourceTableRow = {
   name: string;
   issueCount: number;
   lastPublishedAt: string | null;
-  subscriberCount: number;
+  subscriberCount: number | null;
 };
 
 const sourceColumnHelper = createColumnHelper<SourceTableRow>();
@@ -96,6 +96,8 @@ export function SourcesTable({
             <span className="font-medium text-ink">
               {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
             </span>
+          ) : cell.column.id === "subscriberCount" && row.original.subscriberCount === null ? (
+            "-"
           ) : (
             renderTableContent(cell.column.columnDef.cell, cell.getContext())
           )}

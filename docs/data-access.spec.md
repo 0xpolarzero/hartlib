@@ -159,6 +159,8 @@ Client employees see their own private chats.
 
 Client employees see shared chats for their client company when they have access to every subscription source selected in the chat.
 
+AI-run SSE handshakes, replay polls, and live stream reauthorization apply this owner/shared-chat boundary independently of web evidence: a private run is owner-only before and after web exposure, while a shared run is available only to an authorized same-company member.
+
 A chat can be shared only if its immutable memory mode was `disabled` before its first AI turn. A private chat whose answers could use the creator's saved memories cannot be promoted to shared.
 
 Shared chat links open inside the platform.
@@ -167,7 +169,11 @@ Shared chat viewers must belong to the same client company and have access to ev
 
 Shared answers contain no saved-memory source records or links. Saved memories and their revisions remain visible only to their owning user.
 
-Issue documents and chats require authenticated access.
+Issue documents and chats require authenticated access. A delivered-client issue detail is projected with its live user, company, unrevoked membership, active/ending/paused access, employee grant, issue, and non-deleted documents in one SQL statement; authorization and returned content never come from different snapshots.
+
+Publisher PDF reads use `/v1/issues/{issueId}/documents/{documentId}/content`. The route rechecks current publisher authorization or a delivered-client lane with a live user/company, unrevoked membership/grant, and access state exactly `active`, `ending`, or `paused`, then returns a private, non-cacheable signed object-store redirect with a five-minute lifetime; object keys and long-lived public URLs are never exposed.
+
+The issue/document rows, the complete sorted client-company lane set for every delivered company (discovered independently of the requester's current membership), applicable publisher lane, and live user/company rows remain locked through the bounded signing operation, so membership acceptance, revocation, or account deletion cannot commit between authorization and bearer URL issuance. Chat lists and issue details take their applicable sorted membership lanes before the final projection. Full chat reads additionally lock the chat and chat-execution lane through every message, run, and visible-source query. Demo `GET /v1/chat` idempotently ensures the workspace and then uses this same authorized full-projection lease. AI success finalization and fatal failure handling take that same execution lane after the user-memory, chat-row, and company-membership locks and before the run-row lock, making terminal transition, revocation, unshare, deletion, and the entire projection one linearizable ordering.
 
 Shared links open inside the authenticated app.
 
@@ -193,7 +199,7 @@ Client company admins do not see private employee chats.
 
 The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`. Fixtures and fake accounts remain acceptable for non-chat demo data.
 
-The MVP uses Mistral.
+The approved development runtime uses the exact registered GLM-5-Turbo contract through Z.AI's official Coding Plan endpoint. The production AI provider is deferred and must be selected through `docs/production-readiness.spec.md`; Mistral is one option, not an implicit dependency.
 
 The platform sends the configured AI provider only the role-specific context required by `docs/ai-chat-runtime.spec.md`:
 
@@ -223,29 +229,9 @@ The platform contract with the AI provider must cover:
 - security
 - training exclusion
 
-The MVP must use Mistral Scale or a stronger commercial plan where input and output data is excluded from model training.
+Production use with real publisher content requires written, account-specific terms for the selected AI provider and exact stateless endpoint that establish confidentiality, training/data-use exclusion, retention and deletion, subprocessors, security, incident obligations, and international transfers. A public product page, development key, plan name, or manually entered attestation is insufficient. Brief calls stateless endpoints directly and stores files in platform storage; provider file, conversation, agent, or other stateful products are outside the current runtime.
 
-The MVP launch with real publisher content requires Zero Data Retention or an equivalent written contractual guarantee for supported stateless API endpoints.
-
-Zero Data Retention requires Mistral approval.
-
-Zero Data Retention applies only to supported stateless API endpoints.
-
-Current public Mistral policy lists `/v1/chat/completions`, embeddings, OCR, moderation, classification, speech, and transcription among supported stateless endpoints.
-
-Current public Mistral policy excludes stateful products and APIs from Zero Data Retention, including agents, conversations, libraries, batch files, and `/v1/files`.
-
-The MVP calls stateless endpoints directly and stores files in platform storage.
-
-If Zero Data Retention or an equivalent written contractual guarantee is not active, demo and sales pilots can use fake data only.
-
-Real publisher content waits until the guarantee is active.
-
-Current public Mistral policy says Scale Plan input and output data is not used for model training.
-
-Current public Mistral policy says Zero Data Retention means API inputs and outputs are not retained beyond what is required to return the response.
-
-The platform security page should summarize the Mistral posture and link to Mistral's current legal and help pages.
+Until those decisions and evidence are accepted, production startup fails closed and real publisher content is not sent to an unapproved provider. Development and sales fixtures may use non-sensitive synthetic data. The platform security page names the selected provider and exact current posture only after acceptance, links to the governing terms, and never generalizes a provider-wide claim from an unsupported endpoint or account tier.
 
 ## Hosting And Region
 
@@ -257,16 +243,24 @@ The MVP stores files in EU object storage.
 
 Restricted content should stay in EU-region services.
 
-MVP subprocessors are:
+The current development services that can receive AI/web query data are Z.AI and, when enabled with a local key, Tinyfish Search. They are development capabilities, not an approved production subprocessor selection.
+
+Production subprocessors are generated from the accepted decisions in `docs/production-readiness.spec.md`. The currently contemplated service categories include:
 
 - Stripe
 - Clerk
+
+Clerk is identity and invitation-delivery infrastructure, not the product authorization store. Postgres retains the immutable workspace invitation identity and sends its local UUID to Clerk only as private provider metadata for idempotent reconciliation. The local record contains the normalized invite email, role, intended grants, provider ID, expiry, terminal state, bounded delivery-attempt metadata, and no invitation message body. Signed acceptance takes the applicable company-membership lane and then a shared live-user row lock through every membership/grant write. A user create/update that may relink accepted invitations first acquires the globally sorted complete typed client/publisher lane set, rechecks that set, preserves lifecycle-row-before-platform-user ordering, and rechecks the permanent deletion tombstone only after locking the existing user row. Signed Clerk user events retain only their event ID, type, payload hash, ordered lifecycle projection, and profile version needed to prevent replay or out-of-order resurrection; neither lane waits nor a stale pre-purge tombstone read can resurrect a permanently purged identity.
+
+Client membership removal retains the company/user identity row because chats and other durable records reference it. The row and its historical data cease authorizing immediately when `revoked_at` is set, all employee subscription grants are revoked in the same transaction, and every product read or mutation requires an unrevoked membership and live user/company. Physical membership deletion occurs only inside the retention-aware account purge.
+
 - Resend
-- Mistral
+- the selected AI provider
+- the selected web-search provider when web research is enabled
 
 When web research is enabled, the configured search service is also a subprocessor and must be named here, in customer disclosures, and on the security page with its region, retention, and training/use posture. A deployment may not enable the web toggle while that entry is unspecified.
 
-The live demo uses Z.AI for both model calls and its structured Web Search API when `WEB_RESEARCH_PROVIDER=zai`; Z.AI is disclosed for that environment. The MVP web-search adapter is a launch decision and web policy remains disabled until that decision and its data-processing review are complete.
+The development runtime uses Z.AI only for model calls and Tinyfish Search only for discovery when `TINYFISH_API_KEY` is present. Brief fetches candidate pages itself through its DNS-pinned safe-fetch boundary. Tinyfish's public terms do not by themselves establish the production customer-data posture required here; production web policy therefore remains disabled until the Tinyfish decisions and evidence in `docs/production-readiness.spec.md` are accepted.
 
 ## Disclosure
 
@@ -278,7 +272,7 @@ Terms, privacy policy, and security documentation explain:
 - how restricted support access is logged
 - which AI provider is used
 - how AI provider data use is limited
-- Mistral training and retention posture
+- the selected AI provider's exact training/data-use, retention, deletion, region, and transfer posture
 - chat retention rules
 - deletion and export rights
 - subprocessor list
@@ -292,7 +286,7 @@ Publisher terms cover publisher content uploads, publisher client access control
 
 Client terms cover platform AI usage payments, AI limitations, export rules, deletion rules, and retention rules.
 
-Data processing and security documentation covers subprocessors, Mistral, data retention, restricted support access, and EU hosting.
+Data processing and security documentation covers the accepted subprocessors and provider postures, data retention, restricted support access, and the exact hosting/transfer commitments.
 
 ## Security Page
 
@@ -301,10 +295,10 @@ The MVP includes a public `/security` page.
 The security page explains:
 
 - EU hosting posture
-- Mistral as AI provider for the MVP
-- Mistral paid API input and output excluded from model training
-- Mistral API retention period or Zero Data Retention status
-- Stripe, Clerk, Resend, and Mistral as subprocessors
+- the selected production AI provider, exact service, and endpoint
+- the accepted account-specific training/data-use exclusion
+- the accepted retention and deletion status
+- every accepted production subprocessor, including Stripe, Clerk, Resend, and the selected AI provider when those services are enabled
 - the configured web-search provider, region, and retention posture when web research is enabled
 - publisher documents and client chats excluded from model training
 - publisher users cannot see client chats
@@ -344,6 +338,12 @@ Publisher users can export their own issues, brief documents, issue metadata, an
 
 Client company admins can export delivered issue documents, delivered issue metadata, shared chats, and company-owned chat data.
 
+An export is authorized once at request acceptance. Acceptance takes the exact sorted company-membership lanes before its shared live-requester row lock, the same order used by full-chat reads and account purge, and never waits for a membership lane while holding that user row. Its durable authorization snapshot contains the requester, scope, role, and exact authorized access, issue, document, chat, and chat-message IDs, but no source body. Publisher membership and grant mutations, including Clerk invitation acceptance, use the same company-scoped authorization lane as acceptance, so their ordering is linearizable. The asynchronous generator may export only those immutable identities; neither a later grant nor a message or finalization committed after the message snapshot can expand it, and timestamps are not identity boundaries. Content deleted before generation remains excluded. Each write has an append-only, never-reused `attempt-<generation>` object key recorded before upload; only a definitively successful unfenced write is promoted to the completed request, and retries cannot overwrite it. Timeout, failure, and interruption make the attempted writer conservatively unknown, while a process death can leave it in flight; neither state is ever certified deleted. Export archives use only the separately configured `EXPORT_BUCKET_*` dedicated private unversioned bucket, never the `RAILWAY_BUCKET_*` publisher-file bucket. They are downloadable through a five-minute signed URL only when a PostgreSQL-clock query finds an unexpired, not-physically-deleted object and the requester remains a live platform user; request and user locks remain held through signing. The product download surface expires after 24 hours by default. The request also retains immutable normalized legal-hold scope keys. Before its 500-row cap, object GC non-authoritatively filters currently visible durable and embedded holds from unfenced rows so they cannot starve later eligible objects, while already-fenced retries always remain eligible because a later hold cannot revoke their committed authorization. It locks and authoritatively rechecks every selected unfenced candidate, which catches concurrent hold placement before fencing. GC commits an immutable deletion fence as the hold-versus-purge linearization point, then requires abortable `DeleteObject` plus strongly consistent HEAD absence before recording a PostgreSQL-clock physical-deletion timestamp and exact monotonic probe evidence for a known writer. A completed HEAD that still finds an object records one attempt and an exact five-minute reprobe for known and ambiguous writers, while a HEAD network failure records no completed attempt. Ambiguous writers also retain their append-only evidence and receive that exact reprobe after HEAD absence instead of a false deletion marker; generator retry, terminal failure, and a hold committed after the fence never shorten or suppress an existing fenced reprobe schedule. GC is enqueued every five minutes under a unique five-minute UTC bucket.
+
+An accepted legacy export without a valid exact chat-message string array cannot be reconstructed from mutable current data. Missing, non-array, non-string, null, object, empty, and whitespace-only `chatMessageIds` are all unresolved; JSON text coercion is not validation. The message-snapshot migration therefore blocks concurrent export writes and fails closed until every affected queued/running request is drained or terminalized and every affected retained legacy object is physically purged. It assigns an empty message set only to terminal legacy records with no object and never guesses from current rows or timestamps. Before deriving holds, it validates every required identity array and the complete version/time/role/requester/scope envelope of every existing row against that row. The generation migration likewise refuses active workers/requests, every undeleted legacy object, and pointers outside completed/failed terminal states. A deleted completed pointer becomes explicit generation-zero succeeded/promoted/fenced/deleted evidence. A deleted failed pointer becomes generation-zero unknown/fenced/not-certified-deleted evidence due for reprobe, after which only the failed request pointer is cleared under the table-locked migration guard. Unavailable legacy hash/size evidence stays null; it is never replaced by placeholder values. Runtime inserts must be positive clean generations with bounded database-clock deadlines, and every post-migration request insert must supply the same valid envelope and every snapshot identity array explicitly.
+
+The user-chat company universe is exactly the distinct companies represented by the requester's current unrevoked employee grants with `active`, `ending`, or `paused` access. Within that universe the chat snapshot includes visible own chats with zero publisher-subscription sources and public-only source history; membership alone in another company exports nothing from it. Snapshot client-company IDs, chat/message IDs, and client-company hold keys all use this same boundary. Hold-only identities are broader than export content authority: for user-chat exports they derive cited publisher issue IDs and owning publisher companies only from the same exact snapshotted chat-message IDs used by the generator, and for delivered client-company issues they add the owning publisher companies, solely so later legal holds cannot miss the retained archive. A later answer cannot expand either the archive or its hold scope. Download signing holds the export row and live requester row through its bounded signing operation.
+
 Client users can delete their private chats.
 
 Shared chat creators can unshare shared chats.
@@ -356,6 +356,8 @@ Full client company deletion is a support-request flow in the MVP.
 
 The product exposes a request company deletion action in client company settings.
 
+Platform `admin` and `legal` roles review those requests through an MFA-protected queue. Rejection resolves the request without changing company availability. Approval is one serialized transaction that resolves the request and sets the client company's recovery deletion timestamp plus an exact 180-day purge deadline; authorization stops treating that company as active immediately. A repeated decision with the same request-scoped idempotency key and decision returns the committed result, while a conflicting decision is rejected. Approval/rejection successes and all authenticated RBAC, MFA, scope, state, and idempotency denials are authorization-audited.
+
 Company deletion removes or anonymizes product data after required retention is satisfied.
 
 The launch retention schedule is:
@@ -366,7 +368,7 @@ The launch retention schedule is:
 - operational application logs without restricted content: 30 days
 - database and object-storage backups: a 30-day rolling window
 
-Legal hold pauses the affected deletion. Before entering another market, legal review may lengthen a category where required; it may not silently shorten a customer-facing deletion promise.
+Legal hold pauses the affected deletion. Hold placement/release and every retention deletion, including private export-object GC, linearize on the same normalized, sorted canonical scope keys (`user`, `client_company`, `publisher_company`, `chat`, and `issue` as applicable): the worker takes those advisory locks, row-locks the candidate, and rechecks both durable scope holds and canonical record-level hold fields immediately before deletion. User account purge additionally discovers both membership sets, forms one deduplicated set of typed `client:<uuid>` and `publisher:<uuid>` lane keys, sorts the complete strings lexically, and acquires them before locking the user row. It then rechecks both membership sets and aborts rather than acquiring a newly discovered lane after the user lock. Mixed-scope publisher-document reads use the identical comparator, eliminating cross-kind client/publisher cycles. Hold-scope snapshots are immutable, so a later pointer change cannot detach the retained object. Hold history is append-only; release may set only the release fields. Restricted-support grants/access logs and authorization audits snapshot their complete hold-scope keys immutably when written, so later pointer deletion cannot detach retained evidence from a hold. Accounting retention likewise resolves immutable generated Stripe customer, subscription, schedule, payment, invoice, and Checkout-session identities through snapshotted company/requester mappings rather than mutable current account pointers. Before entering another market, legal review may lengthen a category where required; it may not silently shorten a customer-facing deletion promise.
 
 ### User-Deleted Chats
 
@@ -432,6 +434,8 @@ Published issues can be hidden or restricted only through restricted support act
 Restricted support access logs are retained for audit.
 
 They are retained for 24 months under the launch schedule above.
+
+The separate authorization audit contains content-free authenticated administrative outcomes for successful and denied mutations, including platform-support and company-export actions. Denials retain only the actor/session/request identifiers, action and scope identifiers, outcome, and a bounded machine reason code; unauthenticated traffic is excluded. The database enforces append-only hash-chain integrity, and these records follow the same 24-month retention category.
 
 ## Implementation Requirements
 

@@ -14,7 +14,6 @@ import {
   type DocumentPreview,
   type QuerySpec,
   type SourceAccess,
-  estimateTokens,
 } from "./query-spec";
 
 export interface SearchDocumentsOptions {
@@ -26,6 +25,7 @@ export interface SearchDocumentsOptions {
 }
 
 interface SearchRow {
+  readonly sourceId: string;
   readonly documentId: string;
   readonly title: string;
   readonly sourceDisplayName: string;
@@ -60,14 +60,16 @@ export const searchDocuments = (
     });
     const rows = yield* sql<SearchRow>`${fragment}`;
     return rows.map((row) => ({
+      kind: "public_source" as const,
+      sourceId: `public:${row.sourceId}`,
       documentId: row.documentId,
+      documentVersionId: row.documentId,
       title: row.title,
       sourceDisplayName: row.sourceDisplayName,
       publishedAt: row.publishedAt,
       language: row.language,
       documentType: row.documentType,
       textCharCount: row.textCharCount,
-      estimatedTokens: estimateTokens(row.textCharCount),
       snippet: row.snippet,
     }));
   });

@@ -1,9 +1,10 @@
-import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
+import { Effect, Fiber } from "effect";
+import { describe, expect, it, vi } from "vitest";
 import {
   makeServicePublicXmlAdapter,
   parseServicePublicDirectory,
   parseServicePublicIndex,
+  SERVICE_PUBLIC_MAX_DIRECTORY_ENTRIES,
   servicePublicArticleDirectoryUrl,
 } from "./service-public";
 import { publicSourceDefinitions } from "./source-catalog";
@@ -18,6 +19,12 @@ const source = {
   language: "fr-FR",
   ingestionMethod: "xml_dataset",
   discoveryUrl: "https://lecomarquage.service-public.gouv.fr/actu/3.5/part/",
+  canonicalUrlOrigins: [
+    "https://www.service-public.fr",
+    "https://www.service-public.gouv.fr",
+    "https://lecomarquage.service-public.gouv.fr",
+  ],
+  fetchOrigins: ["https://lecomarquage.service-public.gouv.fr"],
   contentFormats: ["html", "text"],
   averageCharsPerItem: 7651,
 } as const satisfies PublicSourceDefinition;
@@ -53,6 +60,12 @@ const response = (url: string, body: string): FetchResponse => ({
   ok: true,
   headers: new Headers({ "content-type": "application/xml" }),
   text: async () => body,
+  body: new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(body));
+      controller.close();
+    },
+  }),
 });
 
 const notModifiedResponse = (url: string): FetchResponse => ({
@@ -64,6 +77,14 @@ const notModifiedResponse = (url: string): FetchResponse => ({
     throw new Error("304 responses should not be read");
   },
 });
+
+const directoryWithEntries = (count: number): string => `<html><body><pre>
+${Array.from(
+  { length: count },
+  (_, index) =>
+    `<a href="A${String(index + 1).padStart(5, "0")}.xml">A${String(index + 1).padStart(5, "0")}.xml</a>`,
+).join("\n")}
+</pre></body></html>`;
 
 describe("Service-Public XML adapter", () => {
   it("pins the official Service-Public source catalog roots", () => {
@@ -107,6 +128,16 @@ describe("Service-Public XML adapter", () => {
           "https://lecomarquage.service-public.gouv.fr/actu/3.5/part/xml/actualites/A00001.xml",
       },
     });
+  });
+
+  it("fails closed when an XML directory exceeds the code-owned entry cap", () => {
+    expect(() =>
+      parseServicePublicDirectory(
+        source,
+        directoryWithEntries(SERVICE_PUBLIC_MAX_DIRECTORY_ENTRIES + 1),
+        "https://lecomarquage.service-public.gouv.fr/actu/3.5/part/xml/actualites/",
+      ),
+    ).toThrow(`exceeds the ${SERVICE_PUBLIC_MAX_DIRECTORY_ENTRIES}-entry limit`);
   });
 
   it("parses official article XML records into discovered items", () => {
@@ -262,5 +293,71 @@ describe("Service-Public XML adapter", () => {
         { url: directoryUrl, status: 304, etag: '"directory-cache"' },
       ],
     });
+  });
+
+  it("propagates Effect interruption to the active XML fetch without starting the next entry", async () => {
+    const xmlSignals: AbortSignal[] = [];
+    let itemFetches = 0;
+    const twoEntryDirectory = directoryWithEntries(2);
+    const fetcher = async (url: string, init?: RequestInit): Promise<FetchResponse> => {
+      if (url === source.discoveryUrl) {
+        return response(url, resourceRootHtml);
+      }
+      if (url.endsWith("/xml/actualites/")) {
+        return response(url, twoEntryDirectory);
+      }
+      itemFetches += 1;
+      const signal = init?.signal;
+      if (signal) xmlSignals.push(signal);
+      return new Promise<FetchResponse>((_resolve, reject) => {
+        const abort = () => reject(new Error("item fetch aborted"));
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+      });
+    };
+
+    const adapter = makeServicePublicXmlAdapter(source, { fetcher });
+    const fiber = Effect.runFork(adapter.discover());
+    await vi.waitFor(() => expect(itemFetches).toBe(1));
+    await Effect.runPromise(Fiber.interrupt(fiber));
+
+    expect(xmlSignals[0]?.aborted).toBe(true);
+    expect(itemFetches).toBe(1);
+  });
+
+  it("lets the operation timeout abort the sequential XML fetch before another starts", async () => {
+    let activeFetches = 0;
+    let maximumActiveFetches = 0;
+    let itemFetches = 0;
+    const twoEntryDirectory = directoryWithEntries(2);
+    const fetcher = async (url: string, init?: RequestInit): Promise<FetchResponse> => {
+      if (url === source.discoveryUrl) {
+        return response(url, resourceRootHtml);
+      }
+      if (url.endsWith("/xml/actualites/")) {
+        return response(url, twoEntryDirectory);
+      }
+      itemFetches += 1;
+      activeFetches += 1;
+      maximumActiveFetches = Math.max(maximumActiveFetches, activeFetches);
+      const signal = init?.signal;
+      return new Promise<FetchResponse>((_resolve, reject) => {
+        const abort = () => {
+          activeFetches -= 1;
+          reject(new Error("item fetch aborted"));
+        };
+        if (signal?.aborted) abort();
+        else signal?.addEventListener("abort", abort, { once: true });
+      });
+    };
+
+    const adapter = makeServicePublicXmlAdapter(source, { fetcher });
+    await expect(
+      Effect.runPromise(adapter.discover().pipe(Effect.timeout("20 millis"))),
+    ).rejects.toThrow();
+
+    expect(maximumActiveFetches).toBe(1);
+    expect(itemFetches).toBe(1);
+    expect(activeFetches).toBe(0);
   });
 });

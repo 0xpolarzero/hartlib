@@ -16,14 +16,14 @@ import {
 import { runPublicSourceIngestion } from "./orchestrator";
 
 const definition = {
-  id: "tresor",
-  displayName: "Direction generale du Tresor",
-  publisherName: "Direction generale du Tresor",
+  id: "service_public",
+  displayName: "Service-Public",
+  publisherName: "Direction de l'information legale et administrative",
   description: "Official Government news and explanations.",
   country: "FR",
   language: "fr-FR",
-  ingestionMethod: "atom_feed",
-  discoveryUrl: "https://example.test/atom.xml",
+  ingestionMethod: "xml_dataset",
+  discoveryUrl: "https://example.test/service-public.xml",
   contentFormats: ["html", "text"],
   averageCharsPerItem: 1000,
 } as const;
@@ -43,14 +43,16 @@ const item = (input: {
   readonly publishedAt?: string;
   readonly discoveredAt?: string;
   readonly updatedAt?: string;
+  readonly metadata?: Record<string, unknown>;
 }): DiscoveredItem => ({
-  sourceId: "tresor",
+  sourceId: "service_public",
   externalId: input.id,
   canonicalUrl: input.url ?? `https://example.test/articles/${input.id}`,
   title: `Article ${input.id}`,
   publishedAt: input.publishedAt ? new Date(input.publishedAt) : null,
   ...(input.discoveredAt ? { discoveredAt: new Date(input.discoveredAt) } : {}),
   ...(input.updatedAt ? { updatedAt: new Date(input.updatedAt) } : {}),
+  ...(input.metadata ? { metadata: input.metadata } : {}),
 });
 
 const readableBody = (label: string): string =>
@@ -104,7 +106,7 @@ const adapterWith = (options: {
       Effect.succeed({
         status: "fetched",
         raw: {
-          sourceId: "tresor",
+          sourceId: "service_public",
           canonicalUrl: discovered.canonicalUrl,
           fetchedAt: new Date("2026-07-06T10:01:00.000Z"),
           mediaType: "text/html",
@@ -117,8 +119,8 @@ const adapterWith = (options: {
       })),
   normalize: (raw: RawArtifact, discovered) =>
     Effect.succeed({
-      id: `tresor:${discovered?.externalId}:${options.hashForBody?.(raw.body) ?? raw.body}`,
-      sourceId: "tresor",
+      id: `service_public:${discovered?.externalId}:${options.hashForBody?.(raw.body) ?? raw.body}`,
+      sourceId: "service_public",
       ...(discovered?.externalId ? { externalId: discovered.externalId } : {}),
       canonicalUrl: raw.canonicalUrl,
       title: discovered?.title ?? raw.canonicalUrl,
@@ -130,7 +132,7 @@ const adapterWith = (options: {
       text: raw.body,
       textCharCount: raw.body.length,
       contentHash: options.hashForBody?.(raw.body) ?? raw.body,
-      rawArtifactKey: `tresor/${options.hashForBody?.(raw.body) ?? raw.body}`,
+      rawArtifactKey: `service_public/${options.hashForBody?.(raw.body) ?? raw.body}`,
       sourceMetadata: raw.metadata ?? {},
     }),
 });
@@ -163,11 +165,38 @@ describe("public source ingestion orchestration", () => {
           },
         ).pipe(Effect.provide(InMemoryPublicSourceIngestionRepositoryLayer(state))),
       ),
-    ).rejects.toThrow("public source discovery timed out for tresor after 5ms");
+    ).rejects.toThrow("public source discovery timed out for service_public after 5ms");
 
     expect(state.runs[0]).toMatchObject({
       status: "failed",
-      error: "public source discovery timed out for tresor after 5ms",
+      error: "public source discovery timed out for service_public after 5ms",
+    });
+  });
+
+  it("rejects unsafe discovery provenance before candidate persistence or item fetch", async () => {
+    const state = makeState();
+    let fetched = false;
+
+    await expect(
+      runWithState(
+        adapterWith({
+          items: [item({ id: "unsafe", url: "https://127.0.0.1/latest/meta-data" })],
+          fetch: () => {
+            fetched = true;
+            return Effect.die(new Error("unsafe item must not be fetched"));
+          },
+        }),
+        state,
+        { mode: "poll" },
+      ),
+    ).rejects.toThrow("invalid provenance URL");
+
+    expect(fetched).toBe(false);
+    expect(state.candidates.size).toBe(0);
+    expect(state.items.size).toBe(0);
+    expect(state.runs[0]).toMatchObject({
+      status: "failed",
+      error: "public source discovery returned an invalid provenance URL",
     });
   });
 
@@ -197,8 +226,8 @@ describe("public source ingestion orchestration", () => {
     expect([...state.documents.keys()]).toHaveLength(1);
     expect([...state.documents.keys()].some((key) => key.includes("recent"))).toBe(true);
     expect([...state.documents.keys()].some((key) => key.includes("old"))).toBe(false);
-    expect(state.items.has("tresor\nhttps://example.test/articles/old")).toBe(false);
-    expect(state.candidates.has("tresor\nhttps://example.test/articles/old")).toBe(true);
+    expect(state.items.has("service_public\nhttps://example.test/articles/old")).toBe(false);
+    expect(state.candidates.has("service_public\nhttps://example.test/articles/old")).toBe(true);
   });
 
   it("startup backfill excludes old published items even when they were discovered recently", async () => {
@@ -228,11 +257,13 @@ describe("public source ingestion orchestration", () => {
       failedCount: 0,
     });
     expect([...state.documents.keys()]).toHaveLength(0);
-    expect(state.items.has("tresor\nhttps://example.test/articles/old-but-newly-discovered")).toBe(
-      false,
-    );
     expect(
-      state.candidates.has("tresor\nhttps://example.test/articles/old-but-newly-discovered"),
+      state.items.has("service_public\nhttps://example.test/articles/old-but-newly-discovered"),
+    ).toBe(false);
+    expect(
+      state.candidates.has(
+        "service_public\nhttps://example.test/articles/old-but-newly-discovered",
+      ),
     ).toBe(true);
   });
 
@@ -345,7 +376,7 @@ describe("public source ingestion orchestration", () => {
         fetch: () =>
           Effect.fail(
             new SourceIngestionError("temporary fetch failure", {
-              sourceId: "tresor",
+              sourceId: "service_public",
             }),
           ),
       }),
@@ -387,7 +418,7 @@ describe("public source ingestion orchestration", () => {
         fetch: () =>
           Effect.fail(
             new SourceIngestionError("temporary fetch failure", {
-              sourceId: "tresor",
+              sourceId: "service_public",
             }),
           ),
       }),
@@ -435,7 +466,7 @@ describe("public source ingestion orchestration", () => {
         now: () => new Date("2026-07-06T10:00:00.000Z"),
       },
     );
-    const key = "tresor\nhttps://example.test/articles/missing-raw";
+    const key = "service_public\nhttps://example.test/articles/missing-raw";
     const existing = state.items.get(key);
     if (!existing) {
       throw new Error("expected seeded item state");
@@ -452,7 +483,7 @@ describe("public source ingestion orchestration", () => {
           return Effect.succeed({
             status: "fetched",
             raw: {
-              sourceId: "tresor",
+              sourceId: "service_public",
               canonicalUrl: discovered.canonicalUrl,
               fetchedAt: new Date("2026-07-06T10:06:00.000Z"),
               mediaType: "text/html",
@@ -482,6 +513,39 @@ describe("public source ingestion orchestration", () => {
     expect(calls[0]?.validators).toBeUndefined();
   });
 
+  it("backfill skips complete metadata-unchanged publications", async () => {
+    const state = makeState();
+    let fetchCount = 0;
+    const adapter = adapterWith({
+      items: [item({ id: "backfill-stable", publishedAt: "2026-07-05T00:00:00.000Z" })],
+      fetch: (discovered) => {
+        fetchCount += 1;
+        return Effect.succeed({
+          status: "fetched",
+          raw: {
+            sourceId: "service_public",
+            canonicalUrl: discovered.canonicalUrl,
+            fetchedAt: new Date("2026-07-06T10:01:00.000Z"),
+            mediaType: "text/html",
+            body: readableBody("stable backfill body"),
+          },
+        });
+      },
+      hashForBody: () => "stable-backfill-hash",
+    });
+    const options = {
+      mode: "backfill" as const,
+      since: new Date("2026-06-29T00:00:00.000Z"),
+      now: () => new Date("2026-07-06T10:00:00.000Z"),
+    };
+
+    await runWithState(adapter, state, options);
+    const second = await runWithState(adapter, state, options);
+
+    expect(fetchCount).toBe(1);
+    expect(second).toMatchObject({ fetchedCount: 0, unchangedCount: 0, storedDocumentCount: 0 });
+  });
+
   it("startup backfill bypasses validators for known incomplete items even when rediscovered", async () => {
     const state = makeState();
     const calls: Array<SourceFetchOptions | undefined> = [];
@@ -496,7 +560,7 @@ describe("public source ingestion orchestration", () => {
         now: () => new Date("2026-07-06T10:00:00.000Z"),
       },
     );
-    const key = "tresor\nhttps://example.test/articles/rediscovered-missing";
+    const key = "service_public\nhttps://example.test/articles/rediscovered-missing";
     const existing = state.items.get(key);
     if (!existing) {
       throw new Error("expected seeded item state");
@@ -512,7 +576,7 @@ describe("public source ingestion orchestration", () => {
           return Effect.succeed({
             status: "fetched",
             raw: {
-              sourceId: "tresor",
+              sourceId: "service_public",
               canonicalUrl: discovered.canonicalUrl,
               fetchedAt: new Date("2026-07-06T10:06:00.000Z"),
               mediaType: "text/html",
@@ -576,7 +640,7 @@ describe("public source ingestion orchestration", () => {
         return Effect.succeed({
           status: "fetched",
           raw: {
-            sourceId: "tresor",
+            sourceId: "service_public",
             canonicalUrl: discovered.canonicalUrl,
             fetchedAt: new Date("2026-07-06T10:01:00.000Z"),
             mediaType: "text/html",
@@ -598,6 +662,49 @@ describe("public source ingestion orchestration", () => {
     expect(state.rawArtifacts.size).toBe(1);
   });
 
+  it("treats the transient Service-Public XML body as unchanged durable metadata", async () => {
+    const state = makeState();
+    let fetchCount = 0;
+    const discovered = item({
+      id: "embedded-xml",
+      publishedAt: "2026-07-05T00:00:00.000Z",
+      metadata: {
+        audience: "part",
+        xmlUrl: "https://example.test/xml/actualites/embedded-xml.xml",
+        xmlBody: "<publication><title>Stable official body</title></publication>",
+      },
+    });
+    const adapter = adapterWith({
+      items: [discovered],
+      fetch: (item) => {
+        fetchCount += 1;
+        return Effect.succeed({
+          status: "fetched",
+          raw: {
+            sourceId: "service_public",
+            canonicalUrl: item.canonicalUrl,
+            fetchedAt: new Date("2026-07-06T10:01:00.000Z"),
+            mediaType: "text/html",
+            body: readableBody("stable embedded XML"),
+          },
+        });
+      },
+      hashForBody: () => "stable-xml-hash",
+    });
+
+    await runWithState(adapter, state, { mode: "poll" });
+    const stats = await runWithState(adapter, state, { mode: "poll" });
+
+    expect(stats).toMatchObject({ fetchedCount: 0, unchangedCount: 1, storedDocumentCount: 0 });
+    expect(fetchCount).toBe(1);
+    expect(
+      state.items.get("service_public\nhttps://example.test/articles/embedded-xml")?.item.metadata,
+    ).toEqual({
+      audience: "part",
+      xmlUrl: "https://example.test/xml/actualites/embedded-xml.xml",
+    });
+  });
+
   it("treats stored undated items as complete when they have artifacts and content", async () => {
     const state = makeState();
     let fetchCount = 0;
@@ -608,7 +715,7 @@ describe("public source ingestion orchestration", () => {
         return Effect.succeed({
           status: "fetched",
           raw: {
-            sourceId: "tresor",
+            sourceId: "service_public",
             canonicalUrl: discovered.canonicalUrl,
             fetchedAt: new Date("2026-07-06T10:01:00.000Z"),
             mediaType: "text/html",
@@ -644,7 +751,7 @@ describe("public source ingestion orchestration", () => {
           Effect.succeed({
             status: "fetched",
             raw: {
-              sourceId: "tresor",
+              sourceId: "service_public",
               canonicalUrl: discovered.canonicalUrl,
               fetchedAt: new Date("2026-07-06T10:01:00.000Z"),
               mediaType: "text/html",
@@ -662,7 +769,7 @@ describe("public source ingestion orchestration", () => {
           Effect.succeed({
             status: "fetched",
             raw: {
-              sourceId: "tresor",
+              sourceId: "service_public",
               canonicalUrl: discovered.canonicalUrl,
               fetchedAt: new Date("2026-07-06T10:02:00.000Z"),
               mediaType: "text/html",
@@ -690,7 +797,7 @@ describe("public source ingestion orchestration", () => {
           calls.push(options);
           return Effect.succeed({
             status: "not_modified",
-            sourceId: "tresor",
+            sourceId: "service_public",
             canonicalUrl: discovered.canonicalUrl,
             fetchedAt: new Date("2026-07-06T10:02:00.000Z"),
             metadata: {
@@ -716,7 +823,7 @@ describe("public source ingestion orchestration", () => {
     await runWithState(adapterWith({ items: [item({ id: "recovered" })] }), state, {
       mode: "poll",
     });
-    const key = "tresor\nhttps://example.test/articles/recovered";
+    const key = "service_public\nhttps://example.test/articles/recovered";
     const existing = state.items.get(key);
     if (!existing) {
       throw new Error("expected seeded item state");
@@ -729,7 +836,7 @@ describe("public source ingestion orchestration", () => {
         fetch: (discovered, options) =>
           Effect.succeed({
             status: "not_modified",
-            sourceId: "tresor",
+            sourceId: "service_public",
             canonicalUrl: discovered.canonicalUrl,
             fetchedAt: new Date("2026-07-06T10:02:00.000Z"),
             metadata: {
@@ -757,13 +864,13 @@ describe("public source ingestion orchestration", () => {
           discovered.externalId === "fail"
             ? Effect.fail(
                 new SourceIngestionError("transient fetch failed", {
-                  sourceId: "tresor",
+                  sourceId: "service_public",
                 }),
               )
             : Effect.succeed({
                 status: "fetched",
                 raw: {
-                  sourceId: "tresor",
+                  sourceId: "service_public",
                   canonicalUrl: discovered.canonicalUrl,
                   fetchedAt: new Date("2026-07-06T10:01:00.000Z"),
                   mediaType: "text/html",
@@ -775,8 +882,10 @@ describe("public source ingestion orchestration", () => {
       { mode: "poll" },
     );
 
-    const failedState = state.items.get("tresor\nhttps://example.test/articles/fail");
-    const failedCandidate = state.candidates.get("tresor\nhttps://example.test/articles/fail");
+    const failedState = state.items.get("service_public\nhttps://example.test/articles/fail");
+    const failedCandidate = state.candidates.get(
+      "service_public\nhttps://example.test/articles/fail",
+    );
     expect(stats).toMatchObject({
       fetchedCount: 1,
       storedDocumentCount: 1,
@@ -784,6 +893,230 @@ describe("public source ingestion orchestration", () => {
     });
     expect(failedState).toBeUndefined();
     expect(failedCandidate?.failures).toEqual(["transient fetch failed"]);
+  });
+
+  it("retries a failed candidate on a later poll after bounded backoff and stores once", async () => {
+    const state = makeState();
+    const firstPoll = new Date("2026-07-06T10:00:00.000Z");
+    const secondPollTooSoon = new Date("2026-07-06T10:00:30.000Z");
+    const secondPollReady = new Date("2026-07-06T10:01:00.000Z");
+    let attempts = 0;
+    const adapter = adapterWith({
+      items: [item({ id: "recoverable" })],
+      fetch: (discovered) => {
+        attempts += 1;
+        return attempts === 1
+          ? Effect.fail(
+              new SourceIngestionError("temporary upstream failure", {
+                sourceId: "service_public",
+              }),
+            )
+          : Effect.succeed({
+              status: "fetched",
+              raw: {
+                sourceId: "service_public",
+                canonicalUrl: discovered.canonicalUrl,
+                fetchedAt: secondPollReady,
+                mediaType: "text/html",
+                body: readableBody("recovered body"),
+              },
+            });
+      },
+      hashForBody: () => "recovered-hash",
+    });
+
+    await expect(
+      runWithState(adapter, state, { mode: "poll", now: () => firstPoll }),
+    ).resolves.toMatchObject({ failedCount: 1, fetchedCount: 0 });
+    await expect(
+      runWithState(adapter, state, { mode: "poll", now: () => secondPollTooSoon }),
+    ).resolves.toMatchObject({ failedCount: 0, fetchedCount: 0, unchangedCount: 0 });
+    expect(attempts).toBe(1);
+    await expect(
+      runWithState(adapter, state, { mode: "poll", now: () => secondPollReady }),
+    ).resolves.toMatchObject({ failedCount: 0, fetchedCount: 1, storedDocumentCount: 1 });
+    expect(attempts).toBe(2);
+    expect(state.documents.size).toBe(1);
+
+    // A successful candidate becomes a complete item and a repeated poll is
+    // metadata-unchanged; it never creates a duplicate document.
+    await expect(
+      runWithState(adapter, state, { mode: "poll", now: () => new Date("2026-07-06T10:02:00Z") }),
+    ).resolves.toMatchObject({ fetchedCount: 0, unchangedCount: 1 });
+    expect(attempts).toBe(2);
+    expect(state.documents.size).toBe(1);
+  });
+
+  it("loads retry-eligible candidates when poll discovery is not modified", async () => {
+    const state = makeState();
+    const firstPoll = new Date("2026-07-06T10:00:00.000Z");
+    const retryPoll = new Date("2026-07-06T10:01:00.000Z");
+    let attempts = 0;
+    await expect(
+      runWithState(
+        adapterWith({
+          items: [item({ id: "304-recovery" })],
+          fetch: () => {
+            attempts += 1;
+            return Effect.fail(
+              new SourceIngestionError("temporary source outage", { sourceId: "service_public" }),
+            );
+          },
+        }),
+        state,
+        { mode: "poll", now: () => firstPoll },
+      ),
+    ).resolves.toMatchObject({ failedCount: 1 });
+
+    const stats = await runWithState(
+      adapterWith({
+        discoveryStatus: "not_modified",
+        items: [],
+        fetch: (discovered) => {
+          attempts += 1;
+          return Effect.succeed({
+            status: "fetched",
+            raw: {
+              sourceId: "service_public",
+              canonicalUrl: discovered.canonicalUrl,
+              fetchedAt: retryPoll,
+              mediaType: "text/html",
+              body: readableBody("304 recovery body"),
+            },
+          });
+        },
+      }),
+      state,
+      { mode: "poll", now: () => retryPoll },
+    );
+
+    expect(attempts).toBe(2);
+    expect(stats).toMatchObject({ discoveredCount: 1, fetchedCount: 1, storedDocumentCount: 1 });
+  });
+
+  it("recovers an unattempted durable candidate after a crash and later discovery 304", async () => {
+    const state = makeState();
+    const crashedCandidate = item({ id: "crash-window" });
+    await Effect.runPromise(
+      makeInMemoryPublicSourceIngestionRepository(state).recordDiscoveredItem(
+        crashedCandidate,
+        true,
+      ),
+    );
+    let attempts = 0;
+
+    const stats = await runWithState(
+      adapterWith({
+        discoveryStatus: "not_modified",
+        items: [],
+        fetch: (discovered) => {
+          attempts += 1;
+          return Effect.succeed({
+            status: "fetched",
+            raw: {
+              sourceId: "service_public",
+              canonicalUrl: discovered.canonicalUrl,
+              fetchedAt: new Date("2026-07-06T10:01:00.000Z"),
+              mediaType: "text/html",
+              body: readableBody("crash recovery body"),
+            },
+          });
+        },
+      }),
+      state,
+      { mode: "poll", now: () => new Date("2026-07-06T10:01:00.000Z") },
+    );
+
+    expect(attempts).toBe(1);
+    expect(stats).toMatchObject({ discoveredCount: 1, fetchedCount: 1, storedDocumentCount: 1 });
+  });
+
+  it("keeps every atomically committed discovery candidate available after a later 304", async () => {
+    const state = makeState();
+    const first = item({ id: "atomic-first" });
+    const second = item({ id: "atomic-second" });
+    const repository = makeInMemoryPublicSourceIngestionRepository(state);
+    await Effect.runPromise(
+      repository.recordDiscoveryResult(
+        definition,
+        {
+          status: "fetched",
+          discoveredAt: new Date("2026-07-06T10:00:00.000Z"),
+          metadata: [{ url: definition.discoveryUrl, status: 200, etag: '"feed-a"' }],
+          items: [first, second],
+        },
+        { items: [first, second], pollEligible: true },
+      ),
+    );
+
+    const fetched: string[] = [];
+    const stats = await runWithState(
+      adapterWith({
+        discoveryStatus: "not_modified",
+        items: [],
+        fetch: (discovered) => {
+          fetched.push(discovered.externalId);
+          return Effect.succeed({
+            status: "fetched",
+            raw: {
+              sourceId: "service_public",
+              canonicalUrl: discovered.canonicalUrl,
+              fetchedAt: new Date("2026-07-06T10:01:00.000Z"),
+              mediaType: "text/html",
+              body: readableBody(discovered.externalId),
+            },
+          });
+        },
+      }),
+      state,
+      { mode: "poll", now: () => new Date("2026-07-06T10:01:00.000Z") },
+    );
+
+    expect(fetched).toEqual(["atomic-first", "atomic-second"]);
+    expect(stats).toMatchObject({ discoveredCount: 2, fetchedCount: 2, storedDocumentCount: 2 });
+  });
+
+  it("uses bounded exponential candidate retry delays", async () => {
+    const state = makeState();
+    const key = "service_public\nhttps://example.test/articles/backoff";
+    const candidate = item({ id: "backoff" });
+    await runWithState(
+      adapterWith({
+        items: [candidate],
+        fetch: () =>
+          Effect.fail(new SourceIngestionError("initial outage", { sourceId: "service_public" })),
+      }),
+      state,
+      {
+        mode: "poll",
+        now: () => new Date("2026-07-06T10:00:00.000Z"),
+      },
+    );
+    state.candidates.set(key, {
+      ...state.candidates.get(key)!,
+      failures: ["1", "2", "3", "4", "5", "6", "7"],
+      lastFetchedAt: new Date("2026-07-06T10:00:00.000Z"),
+    });
+    let attempts = 0;
+    const adapter = adapterWith({
+      items: [candidate],
+      fetch: () => {
+        attempts += 1;
+        return Effect.fail(
+          new SourceIngestionError("still unavailable", { sourceId: "service_public" }),
+        );
+      },
+    });
+    await runWithState(adapter, state, {
+      mode: "poll",
+      now: () => new Date("2026-07-06T10:59:59.999Z"),
+    });
+    expect(attempts).toBe(0);
+    await runWithState(adapter, state, {
+      mode: "poll",
+      now: () => new Date("2026-07-06T11:00:00.000Z"),
+    });
+    expect(attempts).toBe(1);
   });
 
   it("rejects short unreadable artifacts instead of creating a public item", async () => {
@@ -795,7 +1128,7 @@ describe("public source ingestion orchestration", () => {
           Effect.succeed({
             status: "fetched",
             raw: {
-              sourceId: "tresor",
+              sourceId: "service_public",
               canonicalUrl: discovered.canonicalUrl,
               fetchedAt: new Date("2026-07-06T10:01:00.000Z"),
               mediaType: "text/html",
@@ -807,7 +1140,7 @@ describe("public source ingestion orchestration", () => {
       { mode: "poll" },
     );
 
-    const key = "tresor\nhttps://example.test/articles/too-short";
+    const key = "service_public\nhttps://example.test/articles/too-short";
     expect(stats).toMatchObject({
       fetchedCount: 0,
       storedDocumentCount: 0,

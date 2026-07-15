@@ -15,6 +15,12 @@ export const publicSourceDefinitions = [
       "https://lecomarquage.service-public.gouv.fr/actu/3.5/part/",
       "https://lecomarquage.service-public.gouv.fr/actu/3.5/pro/",
     ],
+    canonicalUrlOrigins: [
+      "https://www.service-public.fr",
+      "https://www.service-public.gouv.fr",
+      "https://lecomarquage.service-public.gouv.fr",
+    ],
+    fetchOrigins: ["https://lecomarquage.service-public.gouv.fr"],
     contentFormats: ["html", "text"],
     averageCharsPerItem: 7651,
   },
@@ -30,6 +36,8 @@ export const publicSourceDefinitions = [
       "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/bofip-vigueur/records",
     contentUrl:
       "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/bofip-vigueur/records",
+    canonicalUrlOrigins: ["https://bofip.impots.gouv.fr"],
+    fetchOrigins: ["https://data.economie.gouv.fr"],
     contentFormats: ["html", "text"],
     averageCharsPerItem: 1859,
   },
@@ -42,7 +50,12 @@ export const publicSourceDefinitions = [
     language: "fr-FR",
     ingestionMethod: "official_document",
     discoveryUrl: "https://www2.assemblee-nationale.fr/feeds/detail/documents-parlementaires",
-    contentFormats: ["html", "text"],
+    canonicalUrlOrigins: [
+      "https://www.assemblee-nationale.fr",
+      "https://www2.assemblee-nationale.fr",
+    ],
+    fetchOrigins: ["https://www.assemblee-nationale.fr", "https://www2.assemblee-nationale.fr"],
+    contentFormats: ["html", "pdf", "text"],
     averageCharsPerItem: 4981,
   },
 ] as const satisfies readonly PublicSourceDefinition[];

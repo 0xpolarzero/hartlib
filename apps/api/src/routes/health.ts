@@ -1,12 +1,13 @@
 import { Effect } from "effect";
-import { json, type Route } from "../http";
+import { HealthResponse } from "@brief/shared";
+import { jsonFromSchema, type Route } from "../http";
 
 export const healthRoute: Route = {
   method: "GET",
-  pattern: /^\/health$/,
-  handle: () =>
+  path: "/health",
+  execute: () =>
     Effect.succeed(
-      json({
+      jsonFromSchema(HealthResponse, {
         ok: true,
         service: "api",
       }),

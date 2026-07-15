@@ -1,44 +1,111 @@
-export type ChatStreamPhase = "idle" | "preflight" | "answering" | "retrying" | "done" | "error";
+import type {
+  ActiveAiRunConflict,
+  AiRunEvent,
+  GetChatResponse,
+  PublicSourceRecord,
+  SendChatMessageRequest,
+} from "@brief/shared";
+import { ApiResponseError } from "@brief/api-client";
+import type { PersistedRunStreamState } from "@brief/api-client/stream";
 
-export type ChatStreamContextBlock = {
-  readonly blockId: string;
-  readonly kind: "document" | "memory";
-  readonly label: string | null;
-  readonly tokenEstimate: number;
+export type ChatStreamPhase = "idle" | "preparing" | "answering" | "done" | "error";
+export type ChatStreamEvent = AiRunEvent;
+
+export type UserScopedConflict = {
+  readonly runId: string;
+  readonly request: SendChatMessageRequest;
+  /** User-message IDs present before the ambiguous POST was retried. */
+  readonly knownMessageIds?: readonly string[];
 };
 
-export type ChatStreamEvent =
-  | { readonly type: "run_started" }
-  | { readonly type: "preflight_search"; readonly terms: string; readonly resultCount: number }
-  | { readonly type: "preflight_peek"; readonly documentId: string }
-  | { readonly type: "context_window"; readonly blocks: readonly ChatStreamContextBlock[] }
-  | { readonly type: "answer_started"; readonly attempt: number }
-  | { readonly type: "answer_retry"; readonly gap: string }
-  | { readonly type: "text_delta"; readonly delta: string }
-  | {
-      readonly type: "memory_updated";
-      readonly created: number;
-      readonly updated: number;
-      readonly discarded: number;
+export const userConflictRetryDelayMs = 1_000;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const asActiveAiRunConflict = (value: unknown): ActiveAiRunConflict | null => {
+  if (!isRecord(value)) return null;
+  const activeRun = value.activeRun;
+  if (
+    value.code !== "active_ai_run" ||
+    (value.conflictScope !== "chat" && value.conflictScope !== "user") ||
+    !isRecord(activeRun) ||
+    typeof activeRun.id !== "string" ||
+    (activeRun.status !== "queued" && activeRun.status !== "running") ||
+    typeof activeRun.streamPath !== "string"
+  ) {
+    return null;
+  }
+  return value as ActiveAiRunConflict;
+};
+
+const conflictFromCause = (cause: unknown): ActiveAiRunConflict | null =>
+  cause instanceof ApiResponseError && cause.status === 409
+    ? asActiveAiRunConflict(cause.body)
+    : null;
+
+const waitForRetry = (delayMs: number, signal: AbortSignal): Promise<boolean> =>
+  new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve(false);
+      return;
     }
-  | { readonly type: "usage"; readonly agent: string; readonly usage: unknown }
-  | { readonly type: "done"; readonly assistantMessageId: string }
-  | { readonly type: "error"; readonly code: string; readonly retryable?: boolean };
+    let settled = false;
+    const finish = (result: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      resolve(result);
+    };
+    const abort = () => finish(false);
+    const timer = setTimeout(() => finish(true), delayMs);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+
+/**
+ * Replays one rejected user-scoped send until the API accepts it or a
+ * different/ambiguous outcome requires the UI to stop. A confirmed 409 is
+ * the only retryable result: it proves the exact POST was not accepted.
+ */
+export const reconcileUserScopedConflict = async <Accepted>(options: {
+  readonly conflict: UserScopedConflict;
+  readonly signal: AbortSignal;
+  readonly send: (request: SendChatMessageRequest) => Promise<Accepted>;
+  readonly onAccepted: (response: Accepted) => void | Promise<void>;
+  readonly onStillActive: (conflict: ActiveAiRunConflict) => void;
+  readonly onChatConflict: (conflict: ActiveAiRunConflict) => void | Promise<void>;
+  readonly onStopped: (cause: unknown) => void | Promise<void>;
+  readonly delayMs?: number;
+}): Promise<void> => {
+  const delayMs = options.delayMs ?? userConflictRetryDelayMs;
+  while (await waitForRetry(delayMs, options.signal)) {
+    let response: Accepted;
+    try {
+      response = await options.send(options.conflict.request);
+    } catch (cause) {
+      if (options.signal.aborted) return;
+      const conflict = conflictFromCause(cause);
+      if (conflict?.conflictScope === "user") {
+        options.onStillActive(conflict);
+        continue;
+      }
+      if (conflict?.conflictScope === "chat") {
+        await options.onChatConflict(conflict);
+        return;
+      }
+      await options.onStopped(cause);
+      return;
+    }
+    if (options.signal.aborted) return;
+    await options.onAccepted(response);
+    return;
+  }
+};
 
 export type ChatStreamInput = {
   readonly seq: number;
   readonly event: ChatStreamEvent;
-};
-
-export type ChatStreamMemoryUpdate = {
-  readonly created: number;
-  readonly updated: number;
-  readonly discarded: number;
-};
-
-export type ChatStreamError = {
-  readonly code: string;
-  readonly retryable: boolean;
 };
 
 export type ChatStreamState = {
@@ -46,11 +113,14 @@ export type ChatStreamState = {
   readonly assistantText: string;
   readonly seq: number;
   readonly attempt: number;
-  readonly searchCount: number;
-  readonly latestResultCount: number;
-  readonly contextBlocks: readonly ChatStreamContextBlock[];
-  readonly memoryUpdated: ChatStreamMemoryUpdate | null;
-  readonly error: ChatStreamError | null;
+  readonly mode: "clarification" | "single" | "synthesis" | null;
+  readonly sourcesRead: readonly PublicSourceRecord[];
+  readonly memoryUpdated: {
+    readonly created: number;
+    readonly updated: number;
+    readonly discarded: number;
+  } | null;
+  readonly error: { readonly code: string; readonly retryable: boolean } | null;
 };
 
 export const initialChatStreamState: ChatStreamState = {
@@ -58,83 +128,113 @@ export const initialChatStreamState: ChatStreamState = {
   assistantText: "",
   seq: 0,
   attempt: 0,
-  searchCount: 0,
-  latestResultCount: 0,
-  contextBlocks: [],
+  mode: null,
+  sourcesRead: [],
   memoryUpdated: null,
   error: null,
 };
+
+/** A terminal run is no longer replayable once its SSE event has aged out. */
+export const isTerminalEventUnavailable = (cause: unknown): boolean =>
+  cause instanceof ApiResponseError &&
+  cause.status === 410 &&
+  cause.code === "terminal_event_unavailable";
+
+/** Definitive SSE handshake failures cannot recover by replaying a cursor. */
+export const isDefinitiveStreamHandshakeFailure = (cause: unknown): boolean =>
+  cause instanceof ApiResponseError &&
+  (cause.status === 401 || cause.status === 403 || cause.status === 404);
+
+export const streamReconnectAction = (cause: unknown): "reconcile" | "retry" =>
+  isTerminalEventUnavailable(cause) || isDefinitiveStreamHandshakeFailure(cause)
+    ? "reconcile"
+    : "retry";
+
+/** A send rejection proves the cached web toggle is stale. */
+export const isWebResearchUnavailable = (cause: unknown): boolean =>
+  cause instanceof ApiResponseError &&
+  cause.status === 403 &&
+  cause.code === "web_research_unavailable";
+
+export type AmbiguousConflictResolution =
+  | { readonly action: "attach"; readonly runId: string }
+  | { readonly action: "clear" };
+
+type ChatUserMessage = Extract<GetChatResponse["messages"][number], { readonly author: "user" }>;
+
+/**
+ * Reconcile a POST whose transport outcome is unknown using the authoritative
+ * chat projection. A newly persisted matching user message proves acceptance;
+ * otherwise the request can be released without automatically replaying it.
+ */
+export const resolveAmbiguousUserScopedConflict = (
+  conflict: UserScopedConflict,
+  chat: Pick<GetChatResponse, "messages" | "activeRun">,
+): AmbiguousConflictResolution => {
+  if (chat.activeRun !== null) return { action: "attach", runId: chat.activeRun.id };
+  const known = conflict.knownMessageIds === undefined ? null : new Set(conflict.knownMessageIds);
+  const matched = [...chat.messages]
+    .reverse()
+    .find(
+      (message): message is ChatUserMessage =>
+        message.author === "user" &&
+        message.content === conflict.request.text.trim() &&
+        (known === null || !known.has(message.id)),
+    );
+  if (
+    matched !== undefined &&
+    (matched.run.status === "queued" || matched.run.status === "running")
+  ) {
+    return { action: "attach", runId: matched.run.id };
+  }
+  return { action: "clear" };
+};
+
+export const restoreChatStreamState = (
+  persisted: PersistedRunStreamState | null,
+): ChatStreamState =>
+  persisted === null
+    ? initialChatStreamState
+    : {
+        ...initialChatStreamState,
+        phase: persisted.draft.text === "" ? "preparing" : "answering",
+        assistantText: persisted.draft.text,
+        seq: persisted.lastSeq,
+        attempt: persisted.draft.attempt,
+        sourcesRead: persisted.draft.sourcesRead,
+      };
 
 const assertNever = (value: never): never => {
   throw new Error(`Unhandled chat stream event: ${JSON.stringify(value)}`);
 };
 
-const blockIdNumber = (blockId: string): number | null => {
-  const match = /^b(\d+)$/.exec(blockId);
-  if (match === null) return null;
-  return Number(match[1]);
-};
-
-const compareBlockIds = (left: string, right: string): number => {
-  const leftNumber = blockIdNumber(left);
-  const rightNumber = blockIdNumber(right);
-  if (leftNumber !== null && rightNumber !== null && leftNumber !== rightNumber) {
-    return leftNumber - rightNumber;
-  }
-  return left.localeCompare(right);
-};
-
 export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput): ChatStreamState {
   if (input.seq <= state.seq) return state;
-
   const base = { ...state, seq: input.seq };
 
   switch (input.event.type) {
     case "run_started":
+      return { ...base, phase: "preparing", error: null };
+    case "context_ready":
       return {
         ...base,
-        phase: "preflight",
-        error: null,
+        phase: "preparing",
+        mode: input.event.mode,
+        sourcesRead: input.event.sourcesRead,
       };
-    case "preflight_search":
-      return {
-        ...base,
-        phase: base.phase === "idle" ? "preflight" : base.phase,
-        searchCount: state.searchCount + 1,
-        latestResultCount: input.event.resultCount,
-      };
-    case "preflight_peek":
-      return {
-        ...base,
-        phase: base.phase === "idle" ? "preflight" : base.phase,
-      };
-    case "context_window":
-      return {
-        ...base,
-        phase: base.phase === "idle" ? "preflight" : base.phase,
-        contextBlocks: [...input.event.blocks].sort((a, b) =>
-          compareBlockIds(a.blockId, b.blockId),
-        ),
-      };
-    case "answer_started": {
-      const nextAttempt = input.event.attempt;
+    case "answer_started":
       return {
         ...base,
         phase: "answering",
-        attempt: Math.max(state.attempt, nextAttempt),
-        assistantText: nextAttempt > state.attempt ? "" : state.assistantText,
+        mode: input.event.mode,
+        attempt: Math.max(state.attempt, input.event.attempt),
+        assistantText: input.event.attempt > state.attempt ? "" : state.assistantText,
         error: null,
-      };
-    }
-    case "answer_retry":
-      return {
-        ...base,
-        phase: "retrying",
       };
     case "text_delta":
       return {
         ...base,
-        phase: base.phase === "idle" || base.phase === "preflight" ? "answering" : base.phase,
+        phase: "answering",
         assistantText: state.assistantText + input.event.delta,
       };
     case "memory_updated":
@@ -149,18 +249,14 @@ export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput)
     case "usage":
       return base;
     case "done":
-      return {
-        ...base,
-        phase: "done",
-      };
+      return { ...base, phase: "done" };
     case "error":
       return {
         ...base,
         phase: "error",
-        error: {
-          code: input.event.code,
-          retryable: input.event.retryable === true,
-        },
+        assistantText: "",
+        sourcesRead: [],
+        error: { code: input.event.code, retryable: input.event.retryable },
       };
   }
 

@@ -9,6 +9,7 @@ import type {
   SourceAdapter,
   SourceIngestionResult,
 } from "@brief/source-ingestion";
+import { canonicalPublicSourceHttpsUrl } from "@brief/shared";
 import { Cause, Effect } from "effect";
 import { PublicSourceIngestionRepository } from "./repository";
 import type {
@@ -17,6 +18,7 @@ import type {
   PublicSourceIngestionStats,
   PublicSourceItemState,
 } from "./types";
+import { durablePublicSourceItemMetadata } from "./types";
 
 const isWithinIngestionWindow = (item: DiscoveredItem, since: Date | undefined): boolean => {
   if (!since) {
@@ -31,6 +33,21 @@ const isWithinIngestionWindow = (item: DiscoveredItem, since: Date | undefined):
 };
 
 const defaultOperationTimeoutMs = 60_000;
+
+// Failed discovery candidates are retried by subsequent polls.  The delay is
+// deliberately code-owned and bounded: one poll performs at most one attempt,
+// while a long-lived upstream outage cannot permanently starve a candidate
+// after the first failure.
+export const PUBLIC_SOURCE_ITEM_RETRY_BASE_DELAY_MS = 60_000;
+export const PUBLIC_SOURCE_ITEM_RETRY_MAX_DELAY_MS = 60 * 60_000;
+
+const publicSourceItemRetryDelayMs = (consecutiveFailures: number): number => {
+  if (!Number.isSafeInteger(consecutiveFailures) || consecutiveFailures <= 0) return 0;
+  return Math.min(
+    PUBLIC_SOURCE_ITEM_RETRY_MAX_DELAY_MS,
+    PUBLIC_SOURCE_ITEM_RETRY_BASE_DELAY_MS * 2 ** Math.min(consecutiveFailures - 1, 31),
+  );
+};
 
 const publicSourceOperationTimeoutError = (
   label: string,
@@ -110,7 +127,8 @@ const itemStateIsIncomplete = (itemState: PublicSourceItemState | undefined): bo
     !itemState.currentContentHash ||
     !itemState.latestDocumentId ||
     !itemState.latestRawArtifactId ||
-    itemState.title.includes("�"));
+    itemState.title.includes("�") ||
+    itemState.consecutiveFailures > 0);
 
 const itemStateIsComplete = (
   itemState: PublicSourceItemState | undefined,
@@ -146,13 +164,31 @@ const feedMetadataUnchanged = (
   dateTime(itemState.publishedAt) === dateTime(item.publishedAt) &&
   dateTime(itemState.updatedAt) === dateTime(item.updatedAt) &&
   (itemState.summary ?? undefined) === (item.summary ?? undefined) &&
-  stableJson(itemState.metadata ?? {}) === stableJson(item.metadata ?? {});
+  stableJson(durablePublicSourceItemMetadata(itemState.metadata)) ===
+    stableJson(durablePublicSourceItemMetadata(item.metadata));
 
 const validateReadableIngestedItem = (
   result: Extract<SourceIngestionResult, { status: "ingested" }>,
 ): SourceIngestionResult => {
-  const mediaType = result.raw.mediaType.toLowerCase();
-  if (!mediaType.includes("html") && !mediaType.includes("pdf")) {
+  const canonicalUrl = canonicalPublicSourceHttpsUrl(result.item.canonicalUrl);
+  if (
+    canonicalUrl === null ||
+    canonicalUrl !== result.item.canonicalUrl ||
+    result.raw.sourceId !== result.item.sourceId ||
+    result.document.sourceId !== result.item.sourceId ||
+    result.raw.canonicalUrl !== result.item.canonicalUrl ||
+    result.document.canonicalUrl !== result.item.canonicalUrl
+  ) {
+    return {
+      status: "failed",
+      item: result.item,
+      error: new SourceIngestionError("public source artifact provenance tuple is invalid", {
+        sourceId: result.item.sourceId,
+      }),
+    } satisfies SourceIngestionResult;
+  }
+  const mediaType = result.raw.mediaType.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "text/html" && mediaType !== "application/pdf") {
     return {
       status: "failed",
       item: result.item,
@@ -186,14 +222,30 @@ const shouldFetchDiscoveredItem = (
   options: PublicSourceIngestionOptions,
 ): boolean => {
   if (options.mode === "backfill") {
-    return isWithinIngestionWindow(item, options.since);
+    if (!isWithinIngestionWindow(item, options.since)) return false;
+    if (!itemState) return true;
+    if (itemStateIsIncomplete(itemState)) return true;
+    return !feedMetadataUnchanged(item, itemState);
   }
 
   if (!itemState) {
     return true;
   }
 
-  return itemState.stored;
+  if (!itemState.stored && !itemState.pollEligible) return false;
+
+  // Stored items are eligible whenever discovery metadata changed.  Complete
+  // unchanged items are filtered by `feedMetadataUnchanged` below.  A
+  // candidate that has never been attempted is immediately eligible; failed
+  // candidates become eligible again after a bounded exponential delay.  This
+  // is intentionally based on the durable last-attempt timestamp so recurring
+  // polls recover transient failures without re-ingesting successful rows.
+  if (itemState.consecutiveFailures === 0) return true;
+  if (options.now === undefined && itemState.retryEligible === false) return false;
+  const lastAttemptedAt = itemState.lastFetchedAt?.getTime();
+  if (lastAttemptedAt === undefined || !Number.isFinite(lastAttemptedAt)) return true;
+  const now = (options.now ?? (() => new Date()))().getTime();
+  return now - lastAttemptedAt >= publicSourceItemRetryDelayMs(itemState.consecutiveFailures);
 };
 
 export const runPublicSourceIngestion = (
@@ -231,26 +283,61 @@ export const runPublicSourceIngestion = (
         ),
       );
 
-      yield* repository.recordDiscoveryResult(adapter.definition, discovered);
-
       const discoveredItems = discovered.status === "fetched" ? discovered.items : [];
+      const invalidDiscovery = discoveredItems.find(
+        (item) =>
+          item.sourceId !== adapter.definition.id ||
+          canonicalPublicSourceHttpsUrl(item.canonicalUrl) !== item.canonicalUrl,
+      );
+      if (invalidDiscovery) {
+        const error = new SourceIngestionError(
+          "public source discovery returned an invalid provenance URL",
+          { sourceId: adapter.definition.id },
+        );
+        yield* repository.recordDiscoveryFailure(adapter.definition, error);
+        return yield* Effect.fail(error);
+      }
+
+      yield* repository.recordDiscoveryResult(adapter.definition, discovered, {
+        items: discoveredItems,
+        pollEligible: options.mode === "poll",
+      });
+
       const itemStatesBeforeDiscovery = new Map<string, PublicSourceItemState | undefined>();
       for (const item of discoveredItems) {
         const itemState = yield* repository.getItemState(item.sourceId, item.canonicalUrl);
         itemStatesBeforeDiscovery.set(itemKey(item), itemState);
-        if (!itemState?.stored) {
-          yield* repository.recordDiscoveredItem(item);
+      }
+
+      const retryEligibleItems =
+        options.mode === "poll"
+          ? yield* repository.getRetryEligibleItems(adapter.definition, options.now?.())
+          : [];
+      for (const item of retryEligibleItems) {
+        const key = itemKey(item);
+        if (!itemStatesBeforeDiscovery.has(key)) {
+          itemStatesBeforeDiscovery.set(
+            key,
+            yield* repository.getItemState(item.sourceId, item.canonicalUrl),
+          );
         }
       }
 
       const fetchableDiscoveredItems = discoveredItems.filter((item) =>
         shouldFetchDiscoveredItem(item, itemStatesBeforeDiscovery.get(itemKey(item)), options),
       );
+      const fetchableRetryItems = retryEligibleItems.filter((item) =>
+        shouldFetchDiscoveredItem(item, itemStatesBeforeDiscovery.get(itemKey(item)), options),
+      );
       const missingRecentItems =
         options.mode === "backfill" && options.since
           ? yield* repository.getRecentIncompleteItems(adapter.definition, options.since)
           : [];
-      const items = uniqueItemsByCanonicalUrl([...fetchableDiscoveredItems, ...missingRecentItems]);
+      const items = uniqueItemsByCanonicalUrl([
+        ...fetchableDiscoveredItems,
+        ...fetchableRetryItems,
+        ...missingRecentItems,
+      ]);
 
       stats = {
         ...stats,
@@ -260,7 +347,7 @@ export const runPublicSourceIngestion = (
       for (const item of items) {
         const itemState = yield* repository.getItemState(item.sourceId, item.canonicalUrl);
 
-        if (options.mode === "poll" && feedMetadataUnchanged(item, itemState)) {
+        if (feedMetadataUnchanged(item, itemState)) {
           stats = {
             ...stats,
             unchangedCount: stats.unchangedCount + 1,
@@ -303,7 +390,10 @@ export const runPublicSourceIngestion = (
           yield* repository.recordUnchangedItem(validatedResult);
           stats = addResultToStats(stats, validatedResult, false);
         } else {
-          yield* repository.recordItemFailure(validatedResult);
+          yield* repository.recordItemFailure(
+            validatedResult,
+            (options.now ?? (() => new Date()))(),
+          );
           stats = addResultToStats(stats, validatedResult, false);
         }
       }

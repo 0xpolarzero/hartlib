@@ -1,7 +1,7 @@
 export const jobSql = {
   enqueue: `
     insert into jobs (kind, payload, unique_key, available_at, priority, max_attempts)
-    values ($1, $2, $3, $4, $5, $6)
+    values ($1, $2, $3, coalesce($4::timestamptz, now()), $5, $6)
     on conflict (unique_key) where unique_key is not null do update set
       payload = case
         when jobs.status in ('completed', 'failed') then excluded.payload
@@ -46,16 +46,16 @@ export const jobSql = {
 
     update jobs
     set status = case
-          when attempts < max_attempts then 'retrying'
+          when kind = 'ai_chat_run' or attempts < max_attempts then 'retrying'
           else 'failed'
         end,
         available_at = case
-          when attempts < max_attempts then now()
+          when kind = 'ai_chat_run' or attempts < max_attempts then now()
           else available_at
         end,
         locked_at = null,
         locked_by = null,
-        last_error = 'Job lock expired before completion',
+        last_error = 'job_lock_expired',
         updated_at = now()
     where status = 'running'
       and locked_at < now() - ($1 * interval '1 millisecond');
@@ -110,11 +110,12 @@ export const jobSql = {
   markFailed: `
     update jobs
     set status = case
-          when attempts < max_attempts then 'retrying'
+          when kind = 'ai_chat_run' or attempts < max_attempts then 'retrying'
           else 'failed'
         end,
         available_at = case
-          when attempts < max_attempts then now() + ($3 * interval '1 millisecond')
+          when kind = 'ai_chat_run' or attempts < max_attempts
+            then now() + ($3 * interval '1 millisecond')
           else available_at
         end,
         locked_at = null,

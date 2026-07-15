@@ -13,9 +13,12 @@ const isolatedDatabaseName = `brief_retrieval_test_${process.pid}_${crypto.rando
 const now = new Date();
 const daysAgo = (days: number) => new Date(now.getTime() - days * 86_400_000);
 
-const allPublicAccess = { kind: "allPublicSources" } as const;
+const authorizedSourceAccess = {
+  kind: "sourceIds",
+  sourceIds: ["ret-fr-a", "ret-fr-b", "ret-us"],
+} as const;
 const baseOptions = {
-  access: allPublicAccess,
+  access: authorizedSourceAccess,
   maxLimit: 20,
   recencyHalfLifeDays: 14,
   now,
@@ -430,6 +433,12 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
             "ret-doc-stag-fr",
             "ret-doc-stag-fr-b",
           ]);
+          expect([...new Set(previews.map((preview) => preview.sourceId))].sort()).toEqual([
+            "public:ret-fr-a",
+            "public:ret-fr-b",
+            "public:ret-us",
+          ]);
+          expect(previews.every((preview) => preview.kind === "public_source")).toBe(true);
         }),
       );
     },
@@ -607,7 +616,6 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
         expect(preview.language).toBe("fr");
         expect(preview.documentType).toBe("article");
         expect(preview.textCharCount).toBe(stagFrText.length);
-        expect(preview.estimatedTokens).toBe(Math.ceil(stagFrText.length / 4));
         expect(preview.publishedAt).toBeInstanceOf(Date);
         expect(preview.snippet).toEqual(expect.any(String));
         expect(preview.snippet.length).toBeGreaterThan(0);
@@ -645,7 +653,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           { terms: "stagflation" },
           {
             ...baseOptions,
-            access: allPublicAccess,
+            access: authorizedSourceAccess,
           },
         );
         expect(sortedDocumentIds(allSourcePreviews)).toEqual([
@@ -708,7 +716,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
         const exactSlice = yield* peekDocument("ret-doc-peek", 10, 25, {
-          access: allPublicAccess,
+          access: authorizedSourceAccess,
         });
         expect(exactSlice).toEqual({
           documentId: "ret-doc-peek",
@@ -719,35 +727,35 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
         });
 
         const defaultSlice = yield* peekDocument("ret-doc-peek", undefined, undefined, {
-          access: allPublicAccess,
+          access: authorizedSourceAccess,
           defaultLengthChars: 50,
         });
         expect(defaultSlice?.text).toBe(peekText.slice(0, 50));
         expect(defaultSlice?.lengthChars).toBe(50);
 
         const maxSlice = yield* peekDocument("ret-doc-peek", 0, 500, {
-          access: allPublicAccess,
+          access: authorizedSourceAccess,
           maxLengthChars: 100,
         });
         expect(maxSlice?.lengthChars).toBe(100);
         expect(maxSlice?.text).toBe(peekText.slice(0, 100));
 
         const outOfBoundsSlice = yield* peekDocument("ret-doc-peek", 1000, 50, {
-          access: allPublicAccess,
+          access: authorizedSourceAccess,
         });
         expect(outOfBoundsSlice?.text).toBe("");
         expect(outOfBoundsSlice?.lengthChars).toBe(0);
         expect(outOfBoundsSlice?.offsetChars).toBe(400);
 
         const hugeOffsetSlice = yield* peekDocument("ret-doc-peek", Number.MAX_SAFE_INTEGER, 50, {
-          access: allPublicAccess,
+          access: authorizedSourceAccess,
         });
         expect(hugeOffsetSlice?.text).toBe("");
         expect(hugeOffsetSlice?.lengthChars).toBe(0);
         expect(hugeOffsetSlice?.offsetChars).toBe(400);
 
         const missingDocument = yield* peekDocument("ret-doc-missing", undefined, undefined, {
-          access: allPublicAccess,
+          access: authorizedSourceAccess,
         });
         expect(missingDocument).toBeNull();
 

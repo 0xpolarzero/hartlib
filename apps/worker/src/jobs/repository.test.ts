@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { TrustedJobFailure } from "./failure";
 import { makePgJobRepository } from "./repository";
 import type { JobRecord } from "./types";
 
@@ -56,7 +57,9 @@ const resetDatabase = Effect.gen(function* () {
       }
     }),
   );
-  yield* sql`truncate table jobs restart identity`;
+  // Later canonical platform tables retain job provenance through foreign keys.
+  // Test isolation intentionally resets that whole dependent graph.
+  yield* sql`truncate table jobs restart identity cascade`;
 });
 
 const jobRows = Effect.gen(function* () {
@@ -76,6 +79,48 @@ const jobRows = Effect.gen(function* () {
 });
 
 describe.skipIf(!databaseUrl)("postgres job repository", () => {
+  it("uses the PostgreSQL clock for immediate default enqueue despite host clock skew", async () => {
+    vi.useFakeTimers({ now: new Date("2099-01-01T00:00:00.000Z") });
+    try {
+      await runDb(
+        Effect.gen(function* () {
+          yield* resetDatabase;
+          const repository = yield* makePgJobRepository(60_000);
+          const sql = yield* PgClient.PgClient;
+
+          const enqueued = yield* repository.enqueue({
+            kind: "public_source_ingestion",
+            payload: { sourceId: "service_public", mode: "poll" },
+            uniqueKey: "database-clock-default",
+          });
+          const scheduledAt = new Date("2100-01-01T00:00:00.000Z");
+          const scheduled = yield* repository.enqueue({
+            kind: "public_source_ingestion",
+            payload: { sourceId: "service_public", mode: "backfill" },
+            uniqueKey: "database-clock-explicit",
+            availableAt: scheduledAt,
+          });
+          const [scheduledRow] = yield* sql<{ readonly available_at: Date }>`
+            select available_at
+            from jobs
+            where id = ${scheduled.id}
+          `;
+          expect(scheduledRow?.available_at.toISOString()).toBe(scheduledAt.toISOString());
+
+          const claimed = yield* repository.claimNext;
+
+          expect(claimed).toMatchObject({
+            id: enqueued.id,
+            kind: "public_source_ingestion",
+            attempts: 1,
+          });
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("claims jobs with durable ownership and requires the same owner to complete", async () => {
     await runDb(
       Effect.gen(function* () {
@@ -84,8 +129,8 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
 
         yield* repository.enqueue({
           kind: "public_source_ingestion",
-          payload: { sourceId: "tresor", mode: "poll" },
-          uniqueKey: "public_source_ingestion:tresor",
+          payload: { sourceId: "service_public", mode: "poll" },
+          uniqueKey: "public_source_ingestion:service_public",
         });
 
         const claimed = yield* repository.claimNext;
@@ -170,6 +215,35 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
     );
   });
 
+  it("deduplicates a completed recurring time bucket without reviving it", async () => {
+    await runDb(
+      Effect.gen(function* () {
+        yield* resetDatabase;
+        const repository = yield* makePgJobRepository(60_000);
+        const first = yield* repository.enqueue({
+          kind: "purge_expired_exports",
+          payload: { value: "first" },
+          uniqueKey: "maintenance:purge_expired_exports:bucket-1",
+          reviveTerminal: false,
+        });
+        const claimed = yield* repository.claimNext;
+        yield* repository.markCompleted(claimed!);
+        const duplicate = yield* repository.enqueue({
+          kind: "purge_expired_exports",
+          payload: { value: "forged-revival" },
+          uniqueKey: "maintenance:purge_expired_exports:bucket-1",
+          reviveTerminal: false,
+        });
+        expect(duplicate.id).toBe(first.id);
+        expect((yield* jobRows)[0]).toMatchObject({
+          status: "completed",
+          attempts: 1,
+          payload: { value: "first" },
+        });
+      }),
+    );
+  });
+
   it("keeps backfill queued behind a running poll for the same source", async () => {
     await runDb(
       Effect.gen(function* () {
@@ -178,15 +252,19 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
 
         yield* repository.enqueue({
           kind: "public_source_ingestion",
-          payload: { sourceId: "tresor", mode: "poll" },
-          uniqueKey: "public_source_ingestion:tresor:poll",
+          payload: { sourceId: "service_public", mode: "poll" },
+          uniqueKey: "public_source_ingestion:service_public:poll",
         });
         const runningPoll = yield* repository.claimNext;
 
         yield* repository.enqueue({
           kind: "public_source_ingestion",
-          payload: { sourceId: "tresor", mode: "backfill", since: "2026-06-29T00:00:00.000Z" },
-          uniqueKey: "public_source_ingestion:tresor:backfill",
+          payload: {
+            sourceId: "service_public",
+            mode: "backfill",
+            since: "2026-06-29T00:00:00.000Z",
+          },
+          uniqueKey: "public_source_ingestion:service_public:backfill",
           priority: 10,
         });
 
@@ -197,7 +275,7 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
         const claimedBackfill = yield* repository.claimNext;
         expect(claimedBackfill).toMatchObject({
           payload: {
-            sourceId: "tresor",
+            sourceId: "service_public",
             mode: "backfill",
             since: "2026-06-29T00:00:00.000Z",
           },
@@ -214,8 +292,8 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
 
         yield* repository.enqueue({
           kind: "public_source_ingestion",
-          payload: { sourceId: "tresor", mode: "poll" },
-          uniqueKey: "public_source_ingestion:tresor:poll",
+          payload: { sourceId: "service_public", mode: "poll" },
+          uniqueKey: "public_source_ingestion:service_public:poll",
         });
         yield* repository.enqueue({
           kind: "ai_chat_run",
@@ -296,17 +374,152 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
               payload: { value: "retryable" },
               status: "running",
               attempts: 2,
-              last_error: "Job lock expired before completion",
+              last_error: "job_lock_expired",
             }),
             expect.objectContaining({
               payload: { value: "exhausted" },
               status: "failed",
               attempts: 3,
               locked_by: null,
-              last_error: "Job lock expired before completion",
+              last_error: "job_lock_expired",
             }),
           ]),
         );
+      }),
+    );
+  });
+
+  it("concurrently reclaims an exhausted stale AI chat job instead of stranding its product run", async () => {
+    await runDb(
+      Effect.gen(function* () {
+        yield* resetDatabase;
+        const sql = yield* PgClient.PgClient;
+        const firstRepository = yield* makePgJobRepository(60_000);
+        const secondRepository = yield* makePgJobRepository(60_000);
+        const [inserted] = yield* sql<JobRecord>`
+          insert into jobs (
+            kind,
+            payload,
+            unique_key,
+            status,
+            attempts,
+            max_attempts,
+            locked_at,
+            locked_by,
+            priority
+          ) values (
+            'ai_chat_run',
+            ${sql.json({ aiRunId: "00000000-0000-4000-8000-000000000001" })},
+            'ai_chat_run:00000000-0000-4000-8000-000000000001',
+            'running',
+            5,
+            5,
+            now() - interval '5 minutes',
+            'brief-worker:dead',
+            100
+          )
+          returning id, kind, payload, attempts, max_attempts as "maxAttempts",
+                    locked_by as "lockedBy"
+        `;
+
+        const claims = yield* Effect.all([firstRepository.claimNext, secondRepository.claimNext], {
+          concurrency: "unbounded",
+        });
+        const claimed = claims.filter((candidate) => candidate !== undefined);
+        expect(claimed).toHaveLength(1);
+        expect(claimed[0]).toMatchObject({
+          id: inserted!.id,
+          kind: "ai_chat_run",
+          attempts: 6,
+          maxAttempts: 5,
+        });
+
+        const [row] = yield* sql<{
+          readonly status: string;
+          readonly attempts: number;
+          readonly maxAttempts: number;
+          readonly lastError: string | null;
+        }>`
+          select status, attempts, max_attempts as "maxAttempts", last_error as "lastError"
+          from jobs
+          where id = ${inserted!.id}
+        `;
+        expect(row).toEqual({
+          status: "running",
+          attempts: 6,
+          maxAttempts: 5,
+          lastError: "job_lock_expired",
+        });
+      }),
+    );
+  });
+
+  it("keeps an exhausted AI chat handler failure retryable while ordinary jobs still exhaust", async () => {
+    await runDb(
+      Effect.gen(function* () {
+        yield* resetDatabase;
+        const sql = yield* PgClient.PgClient;
+        const repository = yield* makePgJobRepository(60_000);
+        const [aiJob] = yield* sql<JobRecord>`
+          insert into jobs (
+            kind, payload, unique_key, status, attempts, max_attempts,
+            locked_at, locked_by, priority
+          ) values (
+            'ai_chat_run',
+            ${sql.json({ aiRunId: "00000000-0000-4000-8000-000000000002" })},
+            'ai_chat_run:00000000-0000-4000-8000-000000000002',
+            'queued', 4, 5, null, null, 100
+          )
+          returning id, kind, payload, attempts, max_attempts as "maxAttempts",
+                    locked_by as "lockedBy"
+        `;
+        yield* sql`
+          insert into jobs (
+            kind, payload, unique_key, status, attempts, max_attempts,
+            locked_at, locked_by, priority
+          ) values (
+            'public_source_ingestion',
+            ${sql.json({ sourceId: "service_public", mode: "poll" })},
+            'ordinary-exhaustion-control',
+            'queued', 4, 5, null, null, 0
+          )
+        `;
+
+        const claimedAiJob = yield* repository.claimNext;
+        expect(claimedAiJob).toMatchObject({ id: aiJob!.id, attempts: 5, maxAttempts: 5 });
+        yield* repository.markFailed(
+          claimedAiJob!,
+          new TrustedJobFailure("terminal_metadata_unavailable"),
+        );
+
+        const [aiAfterFailure] = yield* sql<{
+          readonly status: string;
+          readonly attempts: number;
+          readonly maxAttempts: number;
+          readonly lastError: string | null;
+        }>`
+          select status, attempts, max_attempts as "maxAttempts", last_error as "lastError"
+          from jobs where id = ${aiJob!.id}
+        `;
+        expect(aiAfterFailure).toEqual({
+          status: "retrying",
+          attempts: 5,
+          maxAttempts: 5,
+          lastError: "terminal_metadata_unavailable",
+        });
+
+        yield* sql`update jobs set available_at = now() where id = ${aiJob!.id}`;
+        const reclaimedAiJob = yield* repository.claimNext;
+        expect(reclaimedAiJob).toMatchObject({ id: aiJob!.id, attempts: 6, maxAttempts: 5 });
+        yield* repository.markCompleted(reclaimedAiJob!);
+
+        const ordinaryJob = yield* repository.claimNext;
+        expect(ordinaryJob).toMatchObject({ kind: "public_source_ingestion", attempts: 5 });
+        yield* repository.markFailed(ordinaryJob!, new Error("ordinary infrastructure failure"));
+        const [ordinaryAfterFailure] = yield* sql<{ readonly status: string }>`
+          select status from jobs where unique_key = 'ordinary-exhaustion-control'
+        `;
+        expect(ordinaryAfterFailure?.status).toBe("failed");
       }),
     );
   });
@@ -319,8 +532,8 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
 
         yield* repository.enqueue({
           kind: "public_source_ingestion",
-          payload: { sourceId: "tresor", mode: "poll" },
-          uniqueKey: "public_source_ingestion:tresor:poll",
+          payload: { sourceId: "service_public", mode: "poll" },
+          uniqueKey: "public_source_ingestion:service_public:poll",
         });
 
         const claimed = yield* repository.claimNext;
@@ -342,6 +555,48 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
           last_error: null,
         });
         expect(rows[0]?.locked_by).toBe(claimed?.lockedBy);
+      }),
+    );
+  });
+
+  it("persists only explicitly trusted content-free failure codes", async () => {
+    await runDb(
+      Effect.gen(function* () {
+        yield* resetDatabase;
+        const repository = yield* makePgJobRepository(60_000);
+        yield* repository.enqueue({
+          kind: "public_source_ingestion",
+          payload: { sourceId: "service_public", mode: "poll" },
+          uniqueKey: "content-free-failure",
+        });
+        const first = yield* repository.claimNext;
+        yield* repository.markFailed(
+          first!,
+          new Error("provider returned secret publisher document text"),
+        );
+        expect((yield* jobRows)[0]?.last_error).toBe("job_execution_failed");
+        const sql = yield* PgClient.PgClient;
+        yield* sql`update jobs set available_at = now()`;
+
+        const codeShapedSecret = yield* repository.claimNext;
+        yield* repository.markFailed(codeShapedSecret!, new Error("secret_api_key"));
+        expect((yield* jobRows)[0]?.last_error).toBe("job_execution_failed");
+        yield* sql`update jobs set available_at = now()`;
+
+        const forgedTypedFailure = yield* repository.claimNext;
+        yield* repository.markFailed(
+          forgedTypedFailure!,
+          Object.assign(new Error("ignored detail"), { code: "provider_timeout" }),
+        );
+        expect((yield* jobRows)[0]?.last_error).toBe("job_execution_failed");
+        yield* sql`update jobs set available_at = now()`;
+
+        const trustedFailure = yield* repository.claimNext;
+        yield* repository.markFailed(trustedFailure!, new TrustedJobFailure("provider_timeout"));
+        const rows = yield* jobRows;
+        expect(rows[0]?.last_error).toBe("provider_timeout");
+        expect(JSON.stringify(rows[0])).not.toContain("secret");
+        expect(JSON.stringify(rows[0])).not.toContain("ignored detail");
       }),
     );
   });

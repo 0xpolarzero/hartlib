@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ingestDiscoveredItem } from "./ingest";
 import { makePublicSourceAdapter } from "./registry";
 import { publicSourceDefinitions } from "./source-catalog";
-import type { PublicSourceId } from "./types";
+import type { DiscoveredItem, IngestedSourceItem, PublicSourceId, SourceAdapter } from "./types";
 
 const env =
   (
@@ -22,7 +22,41 @@ const env =
 const liveEnabled = env.PUBLIC_SOURCE_LIVE_CONTRACT_TESTS === "1";
 const liveDescribe = liveEnabled ? describe : describe.skip;
 
-const sampleSize = Number.parseInt(env.PUBLIC_SOURCE_LIVE_SAMPLE_SIZE ?? "3", 10);
+const parsedSampleSize = Number.parseInt(env.PUBLIC_SOURCE_LIVE_SAMPLE_SIZE ?? "3", 10);
+const sampleSize = Number.isSafeInteger(parsedSampleSize)
+  ? Math.min(Math.max(parsedSampleSize, 1), 10)
+  : 3;
+const LIVE_SAMPLE_SCAN_MAX = 50;
+
+/**
+ * Live feeds can put an official landing page or an empty PDF before useful
+ * documents. Scan a bounded prefix and count only fully ingested documents
+ * that satisfy the contract's 250-character requirement.
+ */
+const liveSampleScanLimit = (requestedSize: number): number =>
+  Math.min(LIVE_SAMPLE_SCAN_MAX, Math.max(requestedSize, requestedSize * 4));
+
+const collectValidLiveSamples = async (
+  adapter: SourceAdapter,
+  items: readonly DiscoveredItem[],
+  requestedSize: number,
+): Promise<readonly IngestedSourceItem[]> => {
+  const samples: IngestedSourceItem[] = [];
+  const scanLimit = Math.min(items.length, liveSampleScanLimit(requestedSize));
+  for (let index = 0; index < scanLimit && samples.length < requestedSize; index += 1) {
+    const item = items[index]!;
+    try {
+      const result = await Effect.runPromise(ingestDiscoveredItem(adapter, item));
+      if (result.status === "ingested" && result.document.textCharCount >= 250) {
+        samples.push(result);
+      }
+    } catch {
+      // A failed/empty/short official representation is not a successful
+      // sample. Continue through the bounded discovery prefix.
+    }
+  }
+  return samples;
+};
 
 const sourceExpectations = {
   service_public: {
@@ -34,11 +68,6 @@ const sourceExpectations = {
     minTextChars: 250,
     rawBodyIncludes: "<",
     metadataKey: "externalId",
-  },
-  tresor: {
-    minTextChars: 250,
-    rawBodyIncludes: "<",
-    metadataKey: "embeddedFeedContent",
   },
   assemblee_nationale: {
     minTextChars: 250,
@@ -54,6 +83,16 @@ const sourceExpectations = {
   }
 >;
 
+describe("bounded live source sampling", () => {
+  it.each([
+    [1, 4],
+    [3, 12],
+    [20, 50],
+  ])("caps a requested sample size of %i at %i scanned items", (requested, expected) => {
+    expect(liveSampleScanLimit(requested)).toBe(expected);
+  });
+});
+
 liveDescribe("live public source contracts", () => {
   it.each(publicSourceDefinitions)(
     "$id provides current official content that can be fetched, normalized, and stored",
@@ -67,19 +106,20 @@ liveDescribe("live public source contracts", () => {
       }
       expect(discovery.items.length).toBeGreaterThan(0);
 
-      const sampled = discovery.items.slice(0, sampleSize);
-      expect(sampled.length).toBeGreaterThan(0);
+      const sampled = await collectValidLiveSamples(adapter, discovery.items, sampleSize);
+      expect(sampled).toHaveLength(sampleSize);
 
-      for (const item of sampled) {
-        const result = await Effect.runPromise(ingestDiscoveredItem(adapter, item));
-        expect(result.status).toBe("ingested");
-        if (result.status !== "ingested") {
-          throw new Error(`${definition.id} failed to ingest ${item.canonicalUrl}`);
-        }
-
+      for (const result of sampled) {
         const expectation = sourceExpectations[definition.id];
-        expect(result.raw.body).toContain(expectation.rawBodyIncludes);
-        expect(result.raw.mediaType.toLowerCase()).toMatch(/html|pdf/u);
+        const baseMediaType = result.raw.mediaType.split(";", 1)[0]?.trim().toLowerCase();
+        expect(["text/html", "application/pdf"]).toContain(baseMediaType);
+        if (baseMediaType === "application/pdf") {
+          expect(result.raw.body).toBe("");
+          expect(result.raw.bodyBytes?.subarray(0, 5)).toEqual(new TextEncoder().encode("%PDF-"));
+        } else {
+          expect(result.raw.body).toContain(expectation.rawBodyIncludes);
+          expect(result.raw.bodyBytes).toBeUndefined();
+        }
         expect(result.document.textCharCount).toBeGreaterThanOrEqual(expectation.minTextChars);
         expect(result.document.text).not.toMatch(
           /\b(this website requires js enabled|enable javascript and cookies|security verification|captcha|access denied)\b/iu,

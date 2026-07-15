@@ -6,9 +6,8 @@
 - Keep `docs/` in sync whenever code changes affect behavior, architecture, interfaces, or project expectations.
 - Do not use `docs/` as a journal or changelog. It is the canonical specification, not a history log.
 - For Effect v4 backend work, always use `docs/references/effect-smol/` as the local reference before relying on memory or older Effect patterns.
-- For Smithers implementation workflows, prefer Claude Code agents using `glm-5.2` at maximum reasoning for implementation work.
-- For Smithers verification and review, prefer Codex agents using `gpt-5.5` at medium-to-high reasoning, depending on task risk and scope.
-- For commits and very fast mechanical work, prefer a subagent using `gpt-5.3-codex-spark`.
+- For every repository agent delegation, including directly spawned subagents and every nested Smithers task agent, use Codex `gpt-5.6-luna` at high-to-xhigh reasoning for implementation, debugging, test authoring, and other intensive execution work.
+- Use Codex `gpt-5.6-sol` at high-to-xhigh reasoning for planning, orchestration, delegation, synthesis, and independent review. Sol agents should delegate intensive execution work to Luna agents and remain independently responsible for reconciling and reviewing the result.
 
 <!-- smithers:prefer-workflows START -->
 

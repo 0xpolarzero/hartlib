@@ -2,6 +2,7 @@ import { Duration, Effect, Schedule } from "effect";
 import { handleJob, type HandleJobOptions } from "./handlers";
 import { JobRepository, type JobRepositoryShape } from "./repository";
 import type { JobRecord } from "./types";
+import { captureWorkerOperationalError } from "../telemetry";
 
 const aiRunIdFromPayload = (payload: unknown): string | null =>
   typeof payload === "object" &&
@@ -46,10 +47,13 @@ export const makeWorkerTick = (options?: HandleJobOptions) =>
 
     const result = yield* handleJobWithHeartbeat(jobs, job, options).pipe(
       Effect.catch((error) =>
-        jobs.markFailed(job, error).pipe(
+        Effect.sync(() =>
+          captureWorkerOperationalError("job_execution_failed", { jobKind: job.kind }),
+        ).pipe(
+          Effect.andThen(jobs.markFailed(job, error)),
           Effect.as({
             status: "failed",
-            message: String(error),
+            message: "job_execution_failed",
           } as const),
         ),
       ),
@@ -64,10 +68,11 @@ export const runWorkerTick = makeWorkerTick();
 
 export const makeWorkerSafeTick = (options?: HandleJobOptions) =>
   makeWorkerTick(options).pipe(
-    Effect.catch((error) =>
-      Effect.logError("worker job tick failed").pipe(
+    Effect.catch(() =>
+      Effect.sync(() => captureWorkerOperationalError("worker_tick_failed")).pipe(
+        Effect.andThen(Effect.logError("worker job tick failed")),
         Effect.annotateLogs({
-          error: error instanceof Error ? error.message : String(error),
+          errorCode: "worker_tick_failed",
         }),
       ),
     ),
@@ -75,7 +80,9 @@ export const makeWorkerSafeTick = (options?: HandleJobOptions) =>
 
 export const runWorkerSafeTick = makeWorkerSafeTick();
 
-export const runWorker = (pollIntervalMs: number) =>
+export const runWorker = (pollIntervalMs: number, options?: HandleJobOptions) =>
   Effect.gen(function* () {
-    yield* runWorkerSafeTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(pollIntervalMs))));
+    yield* makeWorkerSafeTick(options).pipe(
+      Effect.repeat(Schedule.spaced(Duration.millis(pollIntervalMs))),
+    );
   });

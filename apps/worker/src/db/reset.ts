@@ -1,14 +1,12 @@
 import { BunRuntime } from "@effect/platform-bun";
 import { PgClient } from "@effect/sql-pg";
-import { Config, Effect } from "effect";
+import { Effect } from "effect";
+import { loadDatabaseResetConfig } from "@brief/config";
 
 import { DatabaseMigrationLayer, runMigrations } from "./migrate";
 
 export const assertResetAllowed = Effect.gen(function* () {
-  const nodeEnv = yield* Config.string("NODE_ENV").pipe(Config.withDefault("development"));
-  const allowProductionReset = yield* Config.boolean("BRIEF_ALLOW_DB_RESET").pipe(
-    Config.withDefault(false),
-  );
+  const { nodeEnv, allowProductionReset } = yield* loadDatabaseResetConfig;
 
   if (nodeEnv === "production" && !allowProductionReset) {
     yield* Effect.fail(

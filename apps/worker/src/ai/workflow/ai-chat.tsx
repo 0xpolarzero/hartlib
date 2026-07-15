@@ -1,2015 +1,1475 @@
 /** @jsxImportSource smithers-orchestrator */
-import type { Usage } from "@earendil-works/pi-ai";
-import { PgClient } from "@effect/sql-pg";
-import { Effect } from "effect";
 import { z } from "zod";
 
 import type { WorkerConfig } from "../../config";
-import { JsonLoggerLayer, serviceLogFields } from "../../logging";
-import type {
-  AiClient,
-  AiCallResult,
-  AnswerOutput as LlmAnswerOutput,
-  PreflightToolEvent,
-  ProposedMemory,
-  SourceCatalogSummaryItem,
-  StandingWindowBlockSummary,
-} from "../llm";
-import { zeroUsage } from "../llm";
-import type { QuerySpec, SourceAccess } from "../retrieval/query-spec";
-import { searchDocuments } from "../retrieval/retrieval";
-import { remainingBlockBudget } from "../window/plan-window";
-import type { ContextBlockRow } from "../window/hydrate";
-import { hydrateWindow, loadActiveContextBlocks, markBlocksCited } from "../window/hydrate";
-import { assembleContextWindow, type ChatHistoryMessage } from "../window/assemble-prompt";
-import type {
-  BlockProvenance,
-  DocumentBlockProvenance,
-  ManifestEntry,
-  MemoryBlockProvenance,
-  MemoryItem,
-} from "../window/blocks";
-import type { CreateSmithersApi } from "../smithers-interop";
+import { assertFinalSourceMap } from "../product-state/finalization";
 import {
-  appendAiRunEventForTask,
-  appendAiRunEventOnce,
-  appendAiRunEventInTransaction,
-  type AiRunEvent,
-  insertAiObservation,
-  replaceAiRunEventsForTask,
-  runAiWorkflowDb,
-  withAiRunEventTransaction,
-} from "./events";
+  registerSmithersWorkflowMaxConcurrency,
+  type CreateSmithersApi,
+} from "../smithers-interop";
+import {
+  AiRuntimeError,
+  isAiRunErrorCode,
+  isRetryableAiRunError,
+  type AiRunErrorCode,
+} from "../runtime/errors";
+import type {
+  AnswerLaneResult,
+  ConversationResolution,
+  MemoryExtractionArtifact,
+  MemoryReference,
+  NormalizedExecutionPlan,
+  TopicPacket,
+  WebEvidence,
+} from "../runtime/types";
+import type {
+  ContextAssembly,
+  ContextReductionPlan,
+  ContextState,
+  FanoutSourceKeySet,
+  LoadedTurn,
+  MemorySelectorResult,
+  SelectorBundle,
+  WebSelectorResult,
+} from "./operations";
+import { CanonicalWorkflowOperations } from "./operations";
+import { PublicProvenanceSchema } from "../runtime/source-schemas";
 
-type SerializedQuerySpec = Omit<
-  QuerySpec,
-  "sourceIds" | "countries" | "languages" | "documentTypes"
-> & {
-  sourceIds?: string[] | undefined;
-  countries?: string[] | undefined;
-  languages?: string[] | undefined;
-  documentTypes?: string[] | undefined;
-};
-
-type SerializedManifestEntry = ManifestEntry;
-
-type SerializedPreflightToolEvent =
-  | {
-      readonly type: "search";
-      readonly spec: SerializedQuerySpec;
-      readonly resultCount: number;
-    }
-  | {
-      readonly type: "peek";
-      readonly documentId: string;
-      readonly offsetChars: number | null;
-      readonly lengthChars: number | null;
-      readonly found: boolean;
-    }
-  | {
-      readonly type: "manifest";
-      readonly entries: SerializedManifestEntry[];
-    }
-  | {
-      readonly type: "tool_rejected";
-      readonly toolName: string;
-      readonly reason: string;
-    }
-  | {
-      readonly type: "degraded";
-      readonly reason: "forced_manifest" | "empty_delta";
-    };
-
-type SerializedMemoryBlockProvenance = Omit<MemoryBlockProvenance, "memoryIds"> & {
-  readonly memoryIds: string[];
-};
-type SerializedBlockProvenance = DocumentBlockProvenance | SerializedMemoryBlockProvenance;
-type SerializedContextBlockRow = Omit<ContextBlockRow, "provenance"> & {
-  readonly provenance: SerializedBlockProvenance;
-};
-
-type SerializedUsage = Omit<Usage, "cacheWrite1h" | "reasoning"> & {
-  readonly cacheWrite1h?: number | undefined;
-  readonly reasoning?: number | undefined;
-};
-
-const UsageSchema = z.object({
-  input: z.number(),
-  output: z.number(),
-  cacheRead: z.number(),
-  cacheWrite: z.number(),
-  cacheWrite1h: z.number().optional(),
-  reasoning: z.number().optional(),
-  totalTokens: z.number(),
-  cost: z.object({
-    input: z.number(),
-    output: z.number(),
-    cacheRead: z.number(),
-    cacheWrite: z.number(),
-    total: z.number(),
-  }),
-}) satisfies z.ZodType<SerializedUsage>;
-const FailureSchema = z
-  .object({
-    agent: z.string(),
-    kind: z.enum(["overflow", "fatal", "truncated"]),
-    code: z.string(),
-    message: z.string(),
-    usage: UsageSchema,
+const CharacterRangeSchema = z
+  .strictObject({
+    charStart: z.number().int().min(0),
+    charEnd: z.number().int().positive(),
   })
-  .nullable();
-const MemoryKindSchema = z.enum(["profile", "preference", "instruction", "fact", "episode"]);
-const ManifestEntrySchema = z.object({
-  documentId: z.string(),
-  charStart: z.number().optional(),
-  charEnd: z.number().optional(),
-}) satisfies z.ZodType<SerializedManifestEntry>;
-const QuerySpecSchema = z.object({
-  terms: z.string(),
-  sourceIds: z.array(z.string()).optional(),
-  countries: z.array(z.string()).optional(),
-  languages: z.array(z.string()).optional(),
-  documentTypes: z.array(z.string()).optional(),
-  publishedAfter: z.string().optional(),
-  publishedBefore: z.string().optional(),
-  orderBy: z.enum(["relevance", "recency"]).optional(),
-  limit: z.number().optional(),
-}) satisfies z.ZodType<SerializedQuerySpec>;
-const PreflightToolEventSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("search"),
-    spec: QuerySpecSchema,
-    resultCount: z.number(),
-  }),
-  z.object({
-    type: z.literal("peek"),
-    documentId: z.string(),
-    offsetChars: z.number().nullable(),
-    lengthChars: z.number().nullable(),
-    found: z.boolean(),
-  }),
-  z.object({
-    type: z.literal("manifest"),
-    entries: z.array(ManifestEntrySchema),
-  }),
-  z.object({
-    type: z.literal("tool_rejected"),
-    toolName: z.string(),
+  .superRefine((range, context) => {
+    if (range.charEnd <= range.charStart) {
+      context.addIssue({
+        code: "custom",
+        path: ["charEnd"],
+        message: "character ranges must be non-empty half-open intervals",
+      });
+    }
+  });
+const NormalizedDocumentRangesSchema = z
+  .array(CharacterRangeSchema)
+  .min(1)
+  .superRefine((ranges, context) => {
+    for (let index = 1; index < ranges.length; index += 1) {
+      const previous = ranges[index - 1]!;
+      const current = ranges[index]!;
+      if (current.charStart <= previous.charEnd) {
+        context.addIssue({
+          code: "custom",
+          path: [index],
+          message: "document ranges must be sorted, non-overlapping, and non-adjacent",
+        });
+      }
+    }
+  });
+const Sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+const ContextDecisionSchema = z.discriminatedUnion("action", [
+  z.strictObject({ id: z.string(), action: z.literal("keep"), reason: z.string() }),
+  z.strictObject({
+    id: z.string(),
+    action: z.literal("range"),
+    ranges: z.array(CharacterRangeSchema),
     reason: z.string(),
   }),
-  z.object({
-    type: z.literal("degraded"),
-    reason: z.enum(["forced_manifest", "empty_delta"]),
+  z.strictObject({ id: z.string(), action: z.literal("omit"), reason: z.string() }),
+]);
+const ConversationEntrySchema = z.union([
+  z.strictObject({
+    turnId: z.string(),
+    userMessageId: z.string(),
+    userContent: z.string(),
+    assistantMessageId: z.string(),
+    assistantContent: z.string(),
   }),
-]) satisfies z.ZodType<SerializedPreflightToolEvent>;
-const SourceCatalogItemSchema = z.object({
-  sourceId: z.string(),
-  displayName: z.string(),
-  country: z.string(),
-  language: z.string(),
-  ingestionType: z.string(),
-}) satisfies z.ZodType<SourceCatalogSummaryItem>;
-const MemoryItemSchema = z.object({
-  id: z.string(),
-  kind: MemoryKindSchema,
+  z.strictObject({
+    turnId: z.string(),
+    userMessageId: z.string(),
+    userContent: z.string(),
+    errorCode: z.string(),
+    retryable: z.boolean(),
+  }),
+]);
+const MemorySnapshotSchema = z.strictObject({
+  memoryId: z.string(),
+  memoryRevisionId: z.string(),
+  kind: z.enum(["profile", "preference", "instruction", "fact", "episode"]),
   content: z.string(),
-}) satisfies z.ZodType<MemoryItem>;
-const HistoryMessageSchema = z.object({
-  author: z.enum(["user", "assistant"]),
-  content: z.string(),
-}) satisfies z.ZodType<ChatHistoryMessage>;
-const DocumentBlockProvenanceSchema = z.object({
-  documentId: z.string(),
-  sourceId: z.string(),
-  sourceDisplayName: z.string(),
-  canonicalUrl: z.string(),
+});
+const WebPolicySchema = z.union([
+  z.strictObject({
+    enabled: z.literal(false),
+    reason: z.enum(["deployment_unavailable", "company_disabled", "allowlist_unsupported"]),
+    allowlistActive: z.boolean(),
+  }),
+  z.strictObject({
+    enabled: z.literal(true),
+    provider: z.literal("tinyfish"),
+    allowedDomains: z.array(z.string()).nullable(),
+  }),
+]);
+const DocumentSourceIdSchema = z.string().regex(/^(?:public|publisher):[^:\s]+$/u);
+const PublicDocumentSourceIdSchema = z.string().regex(/^public:[^:\s]+$/u);
+const PublisherDocumentSourceIdSchema = z.string().regex(/^publisher:[^:\s]+$/u);
+const LoadedTurnSchema = z.strictObject({
+  aiRunId: z.string(),
+  chatId: z.string(),
+  initiatingUserId: z.string(),
+  userMessageId: z.string(),
+  userMessage: z.string(),
+  locale: z.string(),
+  market: z.string(),
+  currentDate: z.string(),
+  citationNonce: z.array(z.number().int().min(0).max(255)).length(16),
+  priorTerminalTurnCount: z.number().int().min(0),
+  conversation: z.array(ConversationEntrySchema),
+  memories: z.array(MemorySnapshotSchema),
+  memoryMode: z.enum(["private_owner", "disabled"]),
+  sourceCatalog: z.array(
+    z.strictObject({
+      sourceId: DocumentSourceIdSchema,
+      displayName: z.string(),
+      country: z.string(),
+      language: z.string(),
+      ingestionType: z.string(),
+    }),
+  ),
+  webRequested: z.boolean(),
+  webPolicy: WebPolicySchema,
+});
+const ConversationResolutionSchema = z.discriminatedUnion("mode", [
+  z.strictObject({
+    mode: z.literal("continue"),
+    retrievalQuestion: z.string(),
+    selectedTurnIds: z.array(z.string()),
+  }),
+  z.strictObject({ mode: z.literal("clarify"), question: z.string() }),
+]);
+const ExecutionPlanSchema = z.discriminatedUnion("mode", [
+  z.strictObject({ mode: z.literal("single"), reason: z.string() }),
+  z.strictObject({
+    mode: z.literal("fanout"),
+    reason: z.string(),
+    topics: z
+      .array(z.strictObject({ question: z.string(), relevantTurnIds: z.array(z.string()) }))
+      .min(2)
+      .max(3),
+  }),
+]);
+const NormalizedPlanSchema = z.discriminatedUnion("mode", [
+  z.strictObject({ mode: z.literal("single"), reason: z.string() }),
+  z.strictObject({
+    mode: z.literal("fanout"),
+    reason: z.string(),
+    topics: z
+      .array(
+        z.strictObject({
+          topicId: z.enum(["t1", "t2", "t3"]),
+          question: z.string(),
+          relevantTurnIds: z.array(z.string()),
+        }),
+      )
+      .min(2)
+      .max(3),
+  }),
+]);
+const InternalReferenceSchema = z
+  .union([
+    z.strictObject({
+      kind: z.literal("document"),
+      documentId: z.string(),
+      documentVersionId: z.string(),
+      source: z.discriminatedUnion("kind", [
+        z.strictObject({ kind: z.literal("public"), sourceId: PublicDocumentSourceIdSchema }),
+        z.strictObject({
+          kind: z.literal("publisher"),
+          sourceId: PublisherDocumentSourceIdSchema,
+          issueId: z.string(),
+          documentId: z.string(),
+        }),
+      ]),
+      ranges: z.array(CharacterRangeSchema).optional(),
+      purpose: z.string(),
+    }),
+    z.strictObject({ kind: z.literal("chat_message"), messageId: z.string(), purpose: z.string() }),
+  ])
+  .superRefine((reference, context) => {
+    if (
+      reference.kind === "document" &&
+      reference.source.kind === "publisher" &&
+      reference.source.documentId !== reference.documentId
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "publisher source documentId must equal the outer documentId",
+      });
+    }
+  });
+const MemoryReferenceSchema = z.strictObject({
+  memoryId: z.string(),
+  memoryRevisionId: z.string(),
+});
+const WebEvidenceSchema = z.strictObject({
+  url: z.string(),
   title: z.string(),
-  publishedAt: z.string().nullable(),
-  charStart: z.number().nullable(),
-  charEnd: z.number().nullable(),
-}) satisfies z.ZodType<DocumentBlockProvenance>;
-const MemoryBlockProvenanceSchema = z.object({
-  memoryIds: z.array(z.string()),
-}) satisfies z.ZodType<SerializedMemoryBlockProvenance>;
-const ContextBlockSchema = z.object({
-  blockId: z.string(),
-  kind: z.enum(["document", "memory"]),
-  content: z.string(),
-  tokenEstimate: z.number(),
-  documentId: z.string().nullable(),
-  charStart: z.number().nullable(),
-  charEnd: z.number().nullable(),
-  provenance: z.union([DocumentBlockProvenanceSchema, MemoryBlockProvenanceSchema]),
-  lastCitedRunId: z.string().nullable(),
-}) satisfies z.ZodType<SerializedContextBlockRow>;
-const BlockSummarySchema = z.object({
-  blockId: z.string(),
+  domain: z.string(),
+  quote: z.string(),
+  publishedAt: z.string().optional(),
+  capturedAt: z.string(),
+  purpose: z.string(),
+});
+const MemorySelectorResultSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("disabled"),
+    reason: z.literal("memory_mode_disabled"),
+  }),
+  z.strictObject({
+    status: z.literal("enabled"),
+    entries: z.array(MemoryReferenceSchema),
+  }),
+]);
+const WebSelectorResultSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("disabled"),
+    reason: z.enum(["not_requested", "policy_disabled"]),
+  }),
+  z.strictObject({
+    status: z.literal("enabled"),
+    entries: z.array(WebEvidenceSchema),
+  }),
+]);
+
+const memorySelectorEntries = (result: MemorySelectorResult): readonly MemoryReference[] =>
+  result.status === "enabled" ? result.entries : [];
+const webSelectorEntries = (result: WebSelectorResult): readonly WebEvidence[] =>
+  result.status === "enabled" ? result.entries : [];
+const ProviderToolCallSchema = z.strictObject({
+  id: z.string(),
+  name: z.string(),
+  arguments: z.record(z.string(), z.unknown()),
+});
+const ProviderMessageSchema = z.union([
+  z.strictObject({ role: z.literal("system"), content: z.string() }),
+  z.strictObject({ role: z.literal("user"), content: z.string() }),
+  z.strictObject({
+    role: z.literal("assistant"),
+    content: z.string(),
+    toolCalls: z.array(ProviderToolCallSchema).optional(),
+  }),
+  z.strictObject({
+    role: z.literal("tool"),
+    toolCallId: z.string(),
+    name: z.string(),
+    content: z.string(),
+  }),
+]);
+const ProviderRequestSchema = z.strictObject({
+  requestClass: z.enum(["fast", "main"]),
+  // Smithers output is durable live chat state. Historical GLM-5.2 captures
+  // are evaluation-only and must fail closed before a resumed Pi call.
+  model: z.literal("glm-5-turbo"),
+  messages: z.array(ProviderMessageSchema),
+  tools: z
+    .array(
+      z.strictObject({
+        name: z.string(),
+        description: z.string(),
+        parameters: z.record(z.string(), z.unknown()),
+      }),
+    )
+    .optional(),
+  toolChoice: z
+    .union([z.enum(["auto", "required", "none"]), z.strictObject({ name: z.string() })])
+    .optional(),
+  responseSchema: z.record(z.string(), z.unknown()).optional(),
+  requestedOutputTokens: z.number().int().positive(),
+  reasoning: z.enum(["minimal", "low", "medium", "high"]),
+});
+const DocumentCandidateSchema = z
+  .strictObject({
+    id: z.string(),
+    kind: z.literal("document"),
+    rank: z.number().int().nonnegative(),
+    purpose: z.string(),
+    sourceId: z.string(),
+    documentId: z.string(),
+    documentVersionId: z.string(),
+    publisherIssueId: z.string().optional(),
+    publisherDocumentId: z.string().optional(),
+    contentHash: Sha256HexSchema,
+    text: z.string(),
+    ranges: NormalizedDocumentRangesSchema,
+    label: z.string().nullable(),
+    publicProvenance: PublicProvenanceSchema,
+    renderedTokenCount: z.number().int().nonnegative(),
+  })
+  .superRefine((candidate, context) => {
+    const hasPublisherIssue = candidate.publisherIssueId !== undefined;
+    const hasPublisherDocument = candidate.publisherDocumentId !== undefined;
+    if (hasPublisherIssue !== hasPublisherDocument) {
+      context.addIssue({
+        code: "custom",
+        path: ["publisherIssueId"],
+        message: "publisher document identity must include both publisher fields",
+      });
+      return;
+    }
+    if (hasPublisherIssue) {
+      if (!PublisherDocumentSourceIdSchema.safeParse(candidate.sourceId).success) {
+        context.addIssue({
+          code: "custom",
+          path: ["sourceId"],
+          message: "publisher document candidates require a canonical publisher sourceId",
+        });
+      }
+      if (candidate.publisherDocumentId !== candidate.documentId) {
+        context.addIssue({
+          code: "custom",
+          path: ["publisherDocumentId"],
+          message: "publisherDocumentId must equal documentId",
+        });
+      }
+    } else if (!PublicDocumentSourceIdSchema.safeParse(candidate.sourceId).success) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceId"],
+        message: "public document candidates require a canonical public sourceId",
+      });
+    }
+  });
+
+const CandidateSchema = z.discriminatedUnion("kind", [
+  DocumentCandidateSchema,
+  z.strictObject({
+    id: z.string(),
+    kind: z.literal("chat_message"),
+    rank: z.number().int().nonnegative(),
+    purpose: z.string(),
+    messageId: z.string(),
+    text: z.string(),
+    label: z.string().nullable(),
+    renderedTokenCount: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    id: z.string(),
+    kind: z.literal("memory"),
+    rank: z.number().int().nonnegative(),
+    purpose: z.string(),
+    memoryId: z.string(),
+    memoryRevisionId: z.string(),
+    text: z.string(),
+    label: z.string().nullable(),
+    renderedTokenCount: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    id: z.string(),
+    kind: z.literal("web"),
+    rank: z.number().int().nonnegative(),
+    purpose: z.string(),
+    url: z.string(),
+    title: z.string(),
+    domain: z.string(),
+    quote: z.string(),
+    quoteHash: z.string(),
+    publishedAt: z.string().optional(),
+    capturedAt: z.string(),
+    label: z.string().nullable(),
+    renderedTokenCount: z.number().int().nonnegative(),
+  }),
+]);
+const SourceUseSchema = z.strictObject({
+  consumerTaskId: z.string(),
+  topicId: z.enum(["t1", "t2", "t3"]).optional(),
+  contextOrder: z.number().int().nonnegative(),
+  renderedTokenCount: z.number().int().nonnegative(),
+  ranges: z.array(CharacterRangeSchema),
+});
+const PublicDocumentLocatorSchema = z.strictObject({
+  kind: z.literal("document"),
+  sourceId: PublicDocumentSourceIdSchema,
+  documentId: z.string(),
+  documentVersionId: z.string(),
+  contentHash: Sha256HexSchema,
+  ranges: NormalizedDocumentRangesSchema,
+});
+const PublisherDocumentLocatorSchema = z
+  .strictObject({
+    kind: z.literal("document"),
+    sourceId: PublisherDocumentSourceIdSchema,
+    documentId: z.string(),
+    documentVersionId: z.string(),
+    contentHash: Sha256HexSchema,
+    ranges: NormalizedDocumentRangesSchema,
+    publisherIssueId: z.string().trim().min(1),
+    publisherDocumentId: z.string().trim().min(1),
+  })
+  .superRefine((locator, context) => {
+    if (locator.publisherDocumentId !== locator.documentId) {
+      context.addIssue({
+        code: "custom",
+        path: ["publisherDocumentId"],
+        message: "publisherDocumentId must equal documentId",
+      });
+    }
+  });
+const SourceLocatorSchema = z.union([
+  PublicDocumentLocatorSchema,
+  PublisherDocumentLocatorSchema,
+  z.strictObject({ kind: z.literal("chat_message"), messageId: z.string() }),
+  z.strictObject({ kind: z.literal("memory"), memoryId: z.string(), memoryRevisionId: z.string() }),
+  z.strictObject({
+    kind: z.literal("web"),
+    url: z.string(),
+    title: z.string(),
+    domain: z.string(),
+    quote: z.string(),
+    quoteHash: z.string(),
+    publishedAt: z.string().optional(),
+    capturedAt: z.string(),
+  }),
+]);
+const SourceRecordSchema = z.strictObject({
+  sourceKey: z.string(),
+  locator: SourceLocatorSchema,
   label: z.string().nullable(),
-  kind: z.enum(["document", "memory"]),
-  tokenEstimate: z.number(),
+  publicProvenance: PublicProvenanceSchema,
+  uses: z.array(SourceUseSchema).min(1),
 });
-const ProposedMemorySchema = z.object({
-  kind: MemoryKindSchema,
-  content: z.string(),
-  targetMemoryId: z.string().optional(),
-}) satisfies z.ZodType<ProposedMemory>;
-const PreflightOutputSchema = z.object({
-  status: z.enum(["ok", "failed"]),
-  manifest: z.array(ManifestEntrySchema),
-  usage: UsageSchema,
-  toolEvents: z.array(PreflightToolEventSchema),
-  failure: FailureSchema,
+const ContextAssemblySchema = z.strictObject({
+  question: z.string(),
+  topicId: z.enum(["t1", "t2", "t3"]).optional(),
+  candidates: z.array(CandidateSchema),
+  sourceMap: z.array(SourceRecordSchema),
+  selectedConversation: z.array(ConversationEntrySchema),
+  gaps: z.array(z.string()),
+  consumerTaskId: z.string(),
+  requestedOutputTokens: z.number().int().positive(),
 });
-const HydrateOutputSchema = z.object({
-  status: z.enum(["ok", "failed"]),
-  memoryBlock: ContextBlockSchema.nullable(),
-  documentBlocks: z.array(ContextBlockSchema),
-  blockSummaries: z.array(BlockSummarySchema),
-  addedBlockIds: z.array(z.string()),
-  evictedBlockIds: z.array(z.string()),
-  totalActiveTokens: z.number(),
-  failure: FailureSchema,
+const ContextSchema = z.strictObject({
+  status: z.enum(["ready", "needs_reduction", "failed"]),
+  question: z.string(),
+  topicId: z.enum(["t1", "t2", "t3"]).optional(),
+  candidates: z.array(CandidateSchema),
+  sourceMap: z.array(SourceRecordSchema),
+  ledgerCandidates: z.array(CandidateSchema),
+  ledgerSourceMap: z.array(SourceRecordSchema),
+  selectedConversation: z.array(ConversationEntrySchema),
+  ledgerConversation: z.array(ConversationEntrySchema).optional(),
+  ledgerConversationTokenCounts: z.array(z.number().int()).optional(),
+  consumers: z.array(
+    z.strictObject({
+      consumer: z.enum(["direct", "topic", "synthesis"]),
+      topicId: z.enum(["t1", "t2", "t3"]).optional(),
+      inputTokens: z.number().int(),
+      requestedOutputTokens: z.number().int().positive(),
+      usableInputTokens: z.number().int(),
+    }),
+  ),
+  gaps: z.array(z.string()),
+  ledgerGaps: z.array(z.string()).optional(),
+  reductionFeedback: z.array(z.string()),
+  request: ProviderRequestSchema,
+  inputTokens: z.number().int(),
+  usableInputTokens: z.number().int(),
+  reductionRan: z.boolean(),
+  failureCode: z
+    .enum([
+      "context_mandatory_too_large",
+      "context_plan_unfit",
+      "context_budget_mismatch",
+      "synthesis_budget_mismatch",
+      "source_access_revoked",
+      "web_policy_revoked",
+    ])
+    .optional(),
 });
-const AnswerOutputSchema = z.object({
-  status: z.enum(["ok", "failed"]),
-  attempt: z.number(),
-  text: z.string(),
-  insufficiencyGap: z.string().nullable(),
-  usage: UsageSchema,
-  failure: FailureSchema,
+const AnswerSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("ok"),
+    mode: z.enum(["clarification", "single", "synthesis"]),
+    content: z.string(),
+    sourceMap: z.array(SourceRecordSchema),
+  }),
+  z.strictObject({ status: z.literal("failed"), code: z.string(), retryable: z.boolean() }),
+]);
+const MemoryExtractionResultSchema = z.strictObject({
+  proposals: z.array(
+    z.strictObject({
+      kind: z.enum(["profile", "preference", "instruction", "fact", "episode"]),
+      content: z.string(),
+      targetMemoryId: z.string().optional(),
+      expectedHeadRevisionId: z.string().optional(),
+    }),
+  ),
+  discardedCount: z.number().int().min(0),
+});
+const MemoryExtractionSchema = z.strictObject({
+  result: MemoryExtractionResultSchema,
+  producer: z.strictObject({
+    taskId: z.enum(["memory-extract", "evaluation-general-planner"]),
+    loopIteration: z.number().int().min(0),
+    attempt: z.number().int().min(0),
+    observationKey: z.string().min(1),
+    extractionSha256Hex: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
+});
+const TopicPacketSchema = z.strictObject({
+  topicId: z.enum(["t1", "t2", "t3"]),
+  status: z.enum(["answered", "partial"]),
+  claims: z.array(z.strictObject({ text: z.string(), sourceKeys: z.array(z.string()) })),
+  gaps: z.array(z.string()),
 });
 
 export const aiChatSchemas = {
-  input: z.object({ aiRunId: z.string() }),
-  aiChatLoadTurn: z.object({
-    aiRunId: z.string(),
-    chatId: z.string(),
-    userId: z.string(),
-    userMessageId: z.string(),
-    userMessage: z.string(),
-    locale: z.string(),
-    market: z.string(),
-    history: z.array(HistoryMessageSchema),
-    sourceCatalog: z.array(SourceCatalogItemSchema),
-    memories: z.array(MemoryItemSchema),
-    activeBlocks: z.array(ContextBlockSchema),
-    remainingBlockBudget: z.number(),
+  input: z.strictObject({ aiRunId: z.string() }),
+  aiChatLoadTurn: z.strictObject({ value: LoadedTurnSchema }),
+  aiChatMemory: z.strictObject({ value: MemoryExtractionSchema }),
+  aiChatResolution: z.strictObject({ value: ConversationResolutionSchema }),
+  aiChatPlan: z.strictObject({ value: ExecutionPlanSchema }),
+  aiChatNormalizedPlan: z.strictObject({ value: NormalizedPlanSchema }),
+  aiChatInternal: z.strictObject({ value: z.array(InternalReferenceSchema) }),
+  aiChatMemories: z.strictObject({ value: MemorySelectorResultSchema }),
+  aiChatWeb: z.strictObject({ value: WebSelectorResultSchema }),
+  aiChatAssembly: z.strictObject({ value: ContextAssemblySchema }),
+  aiChatContext: z.strictObject({ value: ContextSchema }),
+  aiChatReductionPlan: z.strictObject({
+    value: z.strictObject({ decisions: z.array(ContextDecisionSchema) }),
   }),
-  aiChatPreflight: PreflightOutputSchema,
-  aiChatHydrate: HydrateOutputSchema,
-  aiChatAnswer: AnswerOutputSchema,
-  aiChatPreflight2: z.object({
-    status: z.enum(["ok", "failed", "skipped"]),
-    manifest: z.array(ManifestEntrySchema),
-    usage: UsageSchema,
-    toolEvents: z.array(PreflightToolEventSchema),
-    failure: FailureSchema,
+  aiChatAnswer: z.strictObject({ value: AnswerSchema }),
+  aiChatAllocation: z.strictObject({
+    value: z.strictObject({
+      packetOutputTokens: z.number().int().positive(),
+      synthesisUsableInput: z.number().int(),
+      fixedSynthesisInput: z.number().int(),
+    }),
   }),
-  aiChatHydrate2: z.object({
-    status: z.enum(["ok", "failed", "skipped"]),
-    memoryBlock: ContextBlockSchema.nullable(),
-    documentBlocks: z.array(ContextBlockSchema),
-    blockSummaries: z.array(BlockSummarySchema),
-    addedBlockIds: z.array(z.string()),
-    evictedBlockIds: z.array(z.string()),
-    totalActiveTokens: z.number(),
-    failure: FailureSchema,
+  aiChatFanoutSources: z.strictObject({
+    value: z.strictObject({
+      sources: z.array(z.strictObject({ candidateId: z.string(), sourceKey: z.string() })),
+    }),
   }),
-  aiChatAnswer2: z.object({
-    status: z.enum(["ok", "failed", "skipped"]),
-    attempt: z.number(),
-    text: z.string(),
-    insufficiencyGap: z.string().nullable(),
-    usage: UsageSchema,
-    failure: FailureSchema,
+  aiChatTopicResult: z.strictObject({
+    status: z.enum(["ok", "failed"]),
+    packet: TopicPacketSchema.optional(),
+    code: z.string().optional(),
   }),
-  aiChatMemory: z.object({
-    status: z.enum(["ok", "failed", "skipped"]),
-    proposals: z.array(ProposedMemorySchema),
-    discardedCount: z.number(),
-    usage: UsageSchema,
-    error: z.string().nullable(),
+  aiChatFanoutCollect: z.strictObject({
+    status: z.enum(["ok", "failed"]),
+    packets: z.array(TopicPacketSchema),
+    sourceMap: z.array(SourceRecordSchema),
+    contexts: z.array(ContextSchema),
+    code: z.string().optional(),
   }),
-  aiChatFinalize: z.object({
-    status: z.enum(["done", "failed"]),
-    assistantMessageId: z.string().nullable(),
-    errorCode: z.string().nullable(),
+  aiChatFinalize: z.strictObject({
+    status: z.enum(["succeeded", "failed"]),
+    assistantMessageId: z.string().optional(),
+    code: z.string().optional(),
+    alreadyTerminal: z.boolean(),
   }),
 };
+
+// Smithers adds its own persisted run key to non-payload input rows when it
+// re-renders a durable workflow. It is framework metadata rather than a
+// product input and therefore cannot be part of the `input` table shape (the
+// table reserves `runId`), but it is the one additional key accepted at the
+// workflow boundary. Keep this parser strict so arbitrary input keys still
+// fail closed.
+export const aiChatRuntimeInputSchema = aiChatSchemas.input.extend({
+  runId: z.string().optional(),
+});
 
 export type AiChatSchemas = typeof aiChatSchemas;
 export type AiChatWorkflow = ReturnType<CreateSmithersApi<AiChatSchemas>["smithers"]>;
-type LoadTurnOutput = z.infer<(typeof aiChatSchemas)["aiChatLoadTurn"]>;
-type PreflightOutput = z.infer<(typeof aiChatSchemas)["aiChatPreflight"]>;
-type HydrateOutput = z.infer<(typeof aiChatSchemas)["aiChatHydrate"]>;
-type AnswerOutput = z.infer<(typeof aiChatSchemas)["aiChatAnswer"]>;
-type Preflight2Output = z.infer<(typeof aiChatSchemas)["aiChatPreflight2"]>;
-type Hydrate2Output = z.infer<(typeof aiChatSchemas)["aiChatHydrate2"]>;
-type Answer2Output = z.infer<(typeof aiChatSchemas)["aiChatAnswer2"]>;
-type MemoryOutput = z.infer<(typeof aiChatSchemas)["aiChatMemory"]>;
-
-const AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS = 30_000;
 
 export interface AiChatWorkflowRuntime {
-  readonly connectionString: string;
   readonly config: Pick<
     WorkerConfig,
-    | "aiSearchMaxLimit"
-    | "aiSearchRecencyHalfLifeDays"
-    | "aiContextBlockBudget"
-    | "aiContextBlockHardCap"
-    | "aiFullDocMaxChars"
-    | "aiHistoryMaxMessages"
-    | "aiPreflightHistoryMessages"
-    | "aiPreflightTimeoutMs"
+    | "aiFastTaskTimeoutMs"
     | "aiAnswerTimeoutMs"
-    | "aiMemoryInjectAllMaxTokens"
-    | "aiPlannerBaseline"
-    | "aiMainModel"
-    | "aiFastModel"
+    | "aiTopicResearchMaxConcurrency"
+    | "aiTopicAnswerMaxConcurrency"
+    | "aiContextReductionMaxIterations"
   >;
-  readonly aiClient: AiClient;
-  readonly now?: () => Date;
+  readonly operations: CanonicalWorkflowOperations;
 }
 
-class RetryableAiTaskError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "RetryableAiTaskError";
-  }
-}
+export const AI_CHAT_SINGLE_SELECTOR_MAX_CONCURRENCY = 3;
+export const AI_CHAT_MEMORY_LANE_CONCURRENCY = 1;
+export const AI_CHAT_TURN_LANE_MAX_CONCURRENCY = 2;
 
-interface LoadTurnRow {
-  readonly aiRunId: string;
-  readonly chatId: string;
-  readonly userId: string;
-  readonly userMessageId: string;
-  readonly userMessage: string;
-  readonly locale: string;
-  readonly market: string;
-}
+export const aiChatSmithersMaxConcurrency = (
+  config: Pick<
+    AiChatWorkflowRuntime["config"],
+    "aiTopicResearchMaxConcurrency" | "aiTopicAnswerMaxConcurrency"
+  >,
+): number =>
+  AI_CHAT_MEMORY_LANE_CONCURRENCY +
+  Math.max(
+    AI_CHAT_SINGLE_SELECTOR_MAX_CONCURRENCY,
+    config.aiTopicResearchMaxConcurrency,
+    config.aiTopicAnswerMaxConcurrency,
+  );
 
-interface HistoryRow {
-  readonly author: "user" | "assistant";
-  readonly content: string;
-}
-
-interface SourceCatalogRow {
-  readonly sourceId: string;
-  readonly displayName: string;
-  readonly country: string;
-  readonly language: string;
-  readonly ingestionType: string;
-}
-
-interface MemoryRow {
-  readonly id: string;
-  readonly kind: MemoryItem["kind"];
-  readonly content: string;
-}
-
-interface IdRow {
-  readonly id: string;
-}
-
-interface ExistingMessageRow {
-  readonly assistantMessageId: string | null;
-}
-
-const sourceAccess: SourceAccess = { kind: "allPublicSources" };
-
-const preflightSystemPrompt =
-  "Select the smallest useful evidence manifest for the user's question. Use search_documents and peek_document, then emit_manifest with document ids and optional character ranges only.";
-
-const answerSystemPrompt =
-  "You are Brief's editorial assistant. Answer in the user's locale. Ground every factual claim in the provided context blocks. Cite with [[cite:b1]] or [[cite:b1,b2]]. If the window lacks required evidence, reply exactly [[insufficient: one line gap]].";
-
-const retryAnswerSystemPrompt =
-  "You are Brief's editorial assistant. This is the only retry after an insufficiency signal. Answer with the available evidence, cite every factual claim, and state remaining gaps plainly.";
-
-const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
-
-const sanitizedAiErrorMessage = (message: string): string =>
-  message
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
-    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[redacted]")
-    .slice(0, 500);
-
-type LifecycleLogFields = Record<string, string | number | boolean | null | undefined>;
-
-const aiLifecycleLogFields = (fields: LifecycleLogFields) => ({
-  component: "ai_chat",
-  ...fields,
+export const aiChatRetryPolicy = Object.freeze({
+  backoff: "exponential" as const,
+  initialDelayMs: 250,
+});
+const controlledFailure = (code: AiRunErrorCode): AnswerLaneResult => ({
+  status: "failed",
+  code,
+  retryable: isRetryableAiRunError(code),
 });
 
-const logAiLifecycle = (message: string, fields: LifecycleLogFields) =>
-  Effect.logInfo(message).pipe(Effect.annotateLogs(aiLifecycleLogFields(fields)));
-
-const logAiLifecycleWarning = (message: string, fields: LifecycleLogFields) =>
-  Effect.logWarning(message).pipe(Effect.annotateLogs(aiLifecycleLogFields(fields)));
-
-const logAiLifecycleError = (message: string, fields: LifecycleLogFields) =>
-  Effect.logError(message).pipe(Effect.annotateLogs(aiLifecycleLogFields(fields)));
-
-const logAiLifecyclePromise = (message: string, fields: LifecycleLogFields): Promise<void> =>
-  Effect.runPromise(
-    logAiLifecycle(message, fields).pipe(
-      Effect.provide(JsonLoggerLayer),
-      Effect.annotateLogs(serviceLogFields),
-    ),
-  );
-
-const preflightEventCounts = (events: readonly PreflightToolEvent[]) => {
-  let searchCount = 0;
-  let peekCount = 0;
-  let manifestCount = 0;
-  let rejectedCount = 0;
-  let degradedCount = 0;
-
-  for (const event of events) {
-    if (event.type === "search") searchCount += 1;
-    if (event.type === "peek") peekCount += 1;
-    if (event.type === "manifest") manifestCount += 1;
-    if (event.type === "tool_rejected") rejectedCount += 1;
-    if (event.type === "degraded") degradedCount += 1;
-  }
-
-  return { searchCount, peekCount, manifestCount, rejectedCount, degradedCount };
-};
-
-const formatIssuePath = (path: readonly (string | number | symbol)[]): string =>
-  path.length === 0 ? "<root>" : path.map((segment) => String(segment)).join(".");
-
-const issueExpectedType = (issue: z.ZodIssue): string => {
-  const expected = (issue as unknown as { readonly expected?: unknown }).expected;
-  return typeof expected === "string" ? expected : "unknown";
-};
-
-export const formatTaskOutputValidationIssues = (
-  issues: readonly z.ZodIssue[],
-): readonly string[] =>
-  issues.map((issue) =>
-    [
-      `path=${formatIssuePath(issue.path)}`,
-      `code=${issue.code}`,
-      `expected=${issueExpectedType(issue)}`,
-    ].join(" "),
-  );
-
-class TaskOutputValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "TaskOutputValidationError";
-  }
-}
-
-function validateTaskOutput<Schema extends z.ZodTypeAny>(
-  schemaName: string,
-  zodSchema: Schema,
-  value: unknown,
-): z.infer<Schema> {
-  const parsed = zodSchema.safeParse(value);
-
-  if (parsed.success) {
-    return parsed.data;
-  }
-
-  const issues = formatTaskOutputValidationIssues(parsed.error.issues);
-
-  throw new TaskOutputValidationError(
-    `${schemaName} task output failed validation:\n${issues.join("\n")}`,
-  );
-}
-
-const addUsage = (left: SerializedUsage, right: SerializedUsage): SerializedUsage => ({
-  input: left.input + right.input,
-  output: left.output + right.output,
-  cacheRead: left.cacheRead + right.cacheRead,
-  cacheWrite: left.cacheWrite + right.cacheWrite,
-  ...(left.cacheWrite1h !== undefined || right.cacheWrite1h !== undefined
-    ? { cacheWrite1h: (left.cacheWrite1h ?? 0) + (right.cacheWrite1h ?? 0) }
-    : {}),
-  ...(left.reasoning !== undefined || right.reasoning !== undefined
-    ? { reasoning: (left.reasoning ?? 0) + (right.reasoning ?? 0) }
-    : {}),
-  totalTokens: left.totalTokens + right.totalTokens,
-  cost: {
-    input: left.cost.input + right.cost.input,
-    output: left.cost.output + right.cost.output,
-    cacheRead: left.cost.cacheRead + right.cost.cacheRead,
-    cacheWrite: left.cost.cacheWrite + right.cost.cacheWrite,
-    total: left.cost.total + right.cost.total,
-  },
-});
-
-const toSerializedQuerySpec = (spec: QuerySpec): SerializedQuerySpec => ({
-  terms: spec.terms,
-  ...(spec.sourceIds === undefined ? {} : { sourceIds: [...spec.sourceIds] }),
-  ...(spec.countries === undefined ? {} : { countries: [...spec.countries] }),
-  ...(spec.languages === undefined ? {} : { languages: [...spec.languages] }),
-  ...(spec.documentTypes === undefined ? {} : { documentTypes: [...spec.documentTypes] }),
-  ...(spec.publishedAfter === undefined ? {} : { publishedAfter: spec.publishedAfter }),
-  ...(spec.publishedBefore === undefined ? {} : { publishedBefore: spec.publishedBefore }),
-  ...(spec.orderBy === undefined ? {} : { orderBy: spec.orderBy }),
-  ...(spec.limit === undefined ? {} : { limit: spec.limit }),
-});
-
-const toSerializedManifestEntry = (entry: ManifestEntry): SerializedManifestEntry => ({
-  documentId: entry.documentId,
-  ...(entry.charStart === undefined ? {} : { charStart: entry.charStart }),
-  ...(entry.charEnd === undefined ? {} : { charEnd: entry.charEnd }),
-});
-
-const toSerializedPreflightToolEvent = (
-  event: PreflightToolEvent,
-): SerializedPreflightToolEvent => {
-  if (event.type === "search") {
-    return {
-      type: "search",
-      spec: toSerializedQuerySpec(event.spec),
-      resultCount: event.resultCount,
-    };
-  }
-
-  if (event.type === "peek") {
-    return {
-      type: "peek",
-      documentId: event.documentId,
-      offsetChars: event.offsetChars,
-      lengthChars: event.lengthChars,
-      found: event.found,
-    };
-  }
-
-  if (event.type === "manifest") {
-    return {
-      type: "manifest",
-      entries: event.entries.map(toSerializedManifestEntry),
-    };
-  }
-
-  if (event.type === "tool_rejected") {
-    return {
-      type: "tool_rejected",
-      toolName: event.toolName,
-      reason: event.reason,
-    };
-  }
-
-  return {
-    type: "degraded",
-    reason: event.reason,
-  };
-};
-
-const toSerializedProvenance = (provenance: BlockProvenance): SerializedBlockProvenance => {
-  if ("memoryIds" in provenance) {
-    return { memoryIds: [...provenance.memoryIds] };
-  }
-
-  return {
-    documentId: provenance.documentId,
-    sourceId: provenance.sourceId,
-    sourceDisplayName: provenance.sourceDisplayName,
-    canonicalUrl: provenance.canonicalUrl,
-    title: provenance.title,
-    publishedAt: provenance.publishedAt,
-    charStart: provenance.charStart,
-    charEnd: provenance.charEnd,
-  };
-};
-
-const toSerializedContextBlockRow = (row: ContextBlockRow): SerializedContextBlockRow => ({
-  blockId: row.blockId,
-  kind: row.kind,
-  content: row.content,
-  tokenEstimate: row.tokenEstimate,
-  documentId: row.documentId,
-  charStart: row.charStart,
-  charEnd: row.charEnd,
-  provenance: toSerializedProvenance(row.provenance),
-  lastCitedRunId: row.lastCitedRunId,
-});
-
-function terminalFailure<A>(
-  agent: string,
-  result: Exclude<AiCallResult<A>, { readonly kind: "ok" | "retryable" }>,
-): NonNullable<PreflightOutput["failure"]> {
-  return {
-    agent,
-    kind: result.kind,
-    code: `ai_${agent}_${result.kind}`,
-    message: result.errorMessage,
-    usage: result.usage,
-  };
-}
-
-function requireOkOrThrowRetryable<A>(
-  agent: string,
-  result: AiCallResult<A>,
-):
-  | { readonly ok: true; readonly value: A }
-  | { readonly ok: false; readonly failure: NonNullable<PreflightOutput["failure"]> } {
-  if (result.kind === "ok") {
-    return { ok: true, value: result.value };
-  }
-
-  if (result.kind === "retryable") {
-    throw new RetryableAiTaskError(result.errorMessage || `${agent} retryable LLM failure`);
-  }
-
-  return { ok: false, failure: terminalFailure(agent, result) };
-}
-
-const blockLabel = (
-  block: Pick<ContextBlockRow, "kind" | "provenance" | "blockId">,
-): string | null => {
-  if (block.kind === "memory") {
-    return null;
-  }
-
-  const provenance = block.provenance as unknown as Record<string, unknown>;
-  const title = typeof provenance.title === "string" ? provenance.title : block.blockId;
-  const source =
-    typeof provenance.sourceDisplayName === "string" ? provenance.sourceDisplayName : "source";
-
-  return `${source}: ${title}`;
-};
-
-const summarizeBlocks = (blocks: readonly ContextBlockRow[]) =>
-  blocks.map((block) => ({
-    blockId: block.blockId,
-    label: blockLabel(block),
-    kind: block.kind,
-    tokenEstimate: block.tokenEstimate,
-  }));
-
-const allWindowBlocks = (
-  hydrate: HydrateOutput | Hydrate2Output,
-): readonly SerializedContextBlockRow[] => [
-  ...(hydrate.memoryBlock === null ? [] : [hydrate.memoryBlock]),
-  ...hydrate.documentBlocks,
-];
-
-const loadTurn = (runtime: AiChatWorkflowRuntime, aiRunId: string): Promise<LoadTurnOutput> =>
-  runAiWorkflowDb(
-    runtime.connectionString,
-    Effect.gen(function* () {
-      yield* logAiLifecycle("ai chat load turn started", {
-        aiRunId,
-        stage: "load-turn",
-      });
-      const sql = yield* PgClient.PgClient;
-      const rows = yield* sql<LoadTurnRow>`
-        select
-          runs.id::text as "aiRunId",
-          runs.chat_id::text as "chatId",
-          chats.user_id as "userId",
-          runs.user_message_id::text as "userMessageId",
-          messages.content as "userMessage",
-          runs.locale,
-          runs.market
-        from ai_runs runs
-        join chats on chats.id = runs.chat_id
-        join chat_messages messages on messages.id = runs.user_message_id
-        where runs.id = ${aiRunId}
-      `;
-      const row = rows[0];
-
-      if (row === undefined) {
-        throw new Error(`ai run not found: ${aiRunId}`);
-      }
-
-      yield* sql`
-        update ai_runs
-        set started_at = coalesce(started_at, now())
-        where id = ${aiRunId}
-      `;
-      yield* appendAiRunEventOnce(aiRunId, { type: "run_started" });
-
-      const history = yield* sql<HistoryRow>`
-        select author, content
-        from chat_messages
-        where chat_id = ${row.chatId}
-          and id <> ${row.userMessageId}
-        order by created_at asc, id asc
-      `;
-      const sourceCatalog = yield* sql<SourceCatalogRow>`
-        select
-          source_id as "sourceId",
-          display_name as "displayName",
-          coalesce(country, '') as country,
-          coalesce(language, '') as language,
-          ingestion_method as "ingestionType"
-        from public_sources
-        order by display_name asc, source_id asc
-      `;
-      const memories = yield* sql<MemoryRow>`
-        select id::text, kind, content
-        from user_memories
-        where user_id = ${row.userId}
-          and deleted_at is null
-        order by created_at asc, id asc
-      `;
-      const activeBlocks = yield* loadActiveContextBlocks(row.chatId);
-      const activeTokens = activeBlocks.reduce((sum, block) => sum + block.tokenEstimate, 0);
-      const remainingBudget = remainingBlockBudget(
-        activeTokens,
-        runtime.config.aiContextBlockBudget,
-      );
-
-      yield* logAiLifecycle("ai chat load turn completed", {
-        aiRunId: row.aiRunId,
-        chatId: row.chatId,
-        userId: row.userId,
-        userMessageId: row.userMessageId,
-        stage: "load-turn",
-        historyMessages: history.length,
-        sourceCount: sourceCatalog.length,
-        memoryCount: memories.length,
-        activeBlockCount: activeBlocks.length,
-        activeTokens,
-        remainingBlockBudget: remainingBudget,
-        locale: row.locale,
-        market: row.market,
-      });
-
-      return validateTaskOutput("aiChatLoadTurn", aiChatSchemas.aiChatLoadTurn, {
-        aiRunId: row.aiRunId,
-        chatId: row.chatId,
-        userId: row.userId,
-        userMessageId: row.userMessageId,
-        userMessage: row.userMessage,
-        locale: row.locale,
-        market: row.market,
-        history: [...history],
-        sourceCatalog: [...sourceCatalog],
-        memories: [...memories],
-        activeBlocks: activeBlocks.map(toSerializedContextBlockRow),
-        remainingBlockBudget: remainingBudget,
-      });
-    }),
-  );
-
-const recordPreflightToolEvents = (
-  load: LoadTurnOutput,
-  taskId: "preflight" | "preflight-2",
-  toolEvents: readonly PreflightToolEvent[],
-) =>
-  Effect.gen(function* () {
-    const streamEvents: AiRunEvent[] = [];
-
-    for (const event of toolEvents) {
-      if (event.type === "search") {
-        streamEvents.push({
-          type: "preflight_search",
-          terms: event.spec.terms,
-          resultCount: event.resultCount,
-        });
-      }
-
-      if (event.type === "peek") {
-        streamEvents.push({ type: "preflight_peek", documentId: event.documentId });
-      }
-    }
-
-    yield* replaceAiRunEventsForTask(load.aiRunId, taskId, streamEvents);
-
-    for (const event of toolEvents) {
-      if (event.type === "search") {
-        yield* logAiLifecycle("ai chat retrieval search completed", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: taskId,
-          termsLength: event.spec.terms.length,
-          sourceFilterCount: event.spec.sourceIds?.length ?? 0,
-          countryFilterCount: event.spec.countries?.length ?? 0,
-          languageFilterCount: event.spec.languages?.length ?? 0,
-          documentTypeFilterCount: event.spec.documentTypes?.length ?? 0,
-          orderBy: event.spec.orderBy ?? "relevance",
-          limit: event.spec.limit ?? null,
-          resultCount: event.resultCount,
-        });
-        yield* insertAiObservation(load.aiRunId, load.chatId, "search", {
-          query: event.spec,
-          resultCount: event.resultCount,
-        });
-      }
-
-      if (event.type === "peek") {
-        yield* logAiLifecycle("ai chat retrieval peek completed", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: taskId,
-          documentId: event.documentId,
-          offsetChars: event.offsetChars,
-          lengthChars: event.lengthChars,
-          found: event.found,
-        });
-        yield* insertAiObservation(load.aiRunId, load.chatId, "peek", {
-          documentId: event.documentId,
-          offsetChars: event.offsetChars,
-          lengthChars: event.lengthChars,
-          found: event.found,
-        });
-      }
-
-      if (event.type === "manifest") {
-        yield* logAiLifecycle("ai chat preflight manifest emitted", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: taskId,
-          manifestEntries: event.entries.length,
-        });
-      }
-
-      if (event.type === "tool_rejected") {
-        yield* logAiLifecycleWarning("ai chat preflight tool rejected", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: taskId,
-          toolName: event.toolName,
-          reason: event.reason,
-        });
-      }
-
-      if (event.type === "degraded") {
-        yield* logAiLifecycleWarning("ai chat preflight degraded", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: taskId,
-          reason: event.reason,
-        });
-      }
-    }
-  });
-
-const manifestWithinBudget = (
-  previews: readonly { readonly documentId: string; readonly estimatedTokens: number }[],
-  remainingBudget: number,
-): readonly ManifestEntry[] => {
-  const manifest: ManifestEntry[] = [];
-  let usedTokens = 0;
-
-  for (const preview of previews) {
-    if (preview.estimatedTokens > remainingBudget - usedTokens) {
-      continue;
-    }
-    usedTokens += preview.estimatedTokens;
-    manifest.push({ documentId: preview.documentId });
-  }
-
-  return manifest;
-};
-
-const runPlannerBaselineTask = (
-  runtime: AiChatWorkflowRuntime,
-  load: LoadTurnOutput,
-  taskId: "preflight" | "preflight-2",
-  remainingBudget: number,
-): Promise<PreflightOutput> => {
-  const spec: QuerySpec = {
-    terms: load.userMessage,
-    countries: [load.market],
-    languages: [load.locale],
-    orderBy: "relevance",
-    limit: runtime.config.aiSearchMaxLimit,
-  };
-
-  return runAiWorkflowDb(
-    runtime.connectionString,
-    Effect.gen(function* () {
-      const startedAt = Date.now();
-      yield* logAiLifecycle("ai chat planner baseline started", {
-        aiRunId: load.aiRunId,
-        chatId: load.chatId,
-        userId: load.userId,
-        stage: taskId,
-        remainingBlockBudget: remainingBudget,
-        searchMaxLimit: runtime.config.aiSearchMaxLimit,
-      });
-      const previews = yield* searchDocuments(spec, {
-        access: sourceAccess,
-        maxLimit: runtime.config.aiSearchMaxLimit,
-        recencyHalfLifeDays: runtime.config.aiSearchRecencyHalfLifeDays,
-        now: runtime.now?.(),
-      });
-      const manifest = manifestWithinBudget(previews, remainingBudget);
-      const toolEvents: PreflightToolEvent[] = [
-        { type: "search", spec, resultCount: previews.length },
-        { type: "manifest", entries: manifest },
-      ];
-
-      yield* recordPreflightToolEvents(load, taskId, toolEvents);
-      yield* appendAiRunEventForTask(load.aiRunId, taskId, {
-        type: "usage",
-        agent: "preflight",
-        usage: zeroUsage(),
-      });
-      yield* logAiLifecycle("ai chat planner baseline completed", {
-        aiRunId: load.aiRunId,
-        chatId: load.chatId,
-        userId: load.userId,
-        stage: taskId,
-        durationMs: Date.now() - startedAt,
-        resultCount: previews.length,
-        manifestEntries: manifest.length,
-      });
-
-      return validateTaskOutput("aiChatPreflight", aiChatSchemas.aiChatPreflight, {
-        status: "ok",
-        manifest: manifest.map(toSerializedManifestEntry),
-        usage: zeroUsage(),
-        toolEvents: toolEvents.map(toSerializedPreflightToolEvent),
-        failure: null,
-      });
-    }),
-  );
-};
-
-const runPreflightTask = async (
-  runtime: AiChatWorkflowRuntime,
-  load: LoadTurnOutput,
-  options: {
-    readonly taskId: "preflight" | "preflight-2";
-    readonly standingWindow?: LoadTurnOutput["activeBlocks"] | HydrateOutput["blockSummaries"];
-    readonly remainingBlockBudget?: number;
-    readonly insufficiencyGap?: string;
-  },
-): Promise<PreflightOutput> => {
-  const startedAt = Date.now();
-  const standingWindow = options.standingWindow ?? load.activeBlocks;
-  const standingWindowSummary: readonly StandingWindowBlockSummary[] = (() => {
-    if (standingWindow.length > 0 && "label" in standingWindow[0]!) {
-      return (standingWindow as readonly StandingWindowBlockSummary[]).map((block) => ({
-        blockId: block.blockId,
-        label: block.label,
-        tokenEstimate: block.tokenEstimate,
-      }));
-    }
-
-    return summarizeBlocks(standingWindow as LoadTurnOutput["activeBlocks"]);
-  })();
-  const budget = options.remainingBlockBudget ?? load.remainingBlockBudget;
-
-  await logAiLifecyclePromise("ai chat preflight started", {
-    aiRunId: load.aiRunId,
-    chatId: load.chatId,
-    userId: load.userId,
-    stage: options.taskId,
-    plannerBaseline: runtime.config.aiPlannerBaseline,
-    standingWindowBlocks: standingWindowSummary.length,
-    remainingBlockBudget: budget,
-    insufficiencyRetry: options.insufficiencyGap !== undefined,
-    model: runtime.config.aiFastModel,
-  });
-
-  if (runtime.config.aiPlannerBaseline) {
-    return runPlannerBaselineTask(runtime, load, options.taskId, budget);
-  }
-
-  const result = requireOkOrThrowRetryable(
-    "preflight",
-    await runtime.aiClient.runPreflight(
-      {
-        systemPrompt: preflightSystemPrompt,
-        sourceCatalog: load.sourceCatalog,
-        today: (runtime.now?.() ?? new Date()).toISOString().slice(0, 10),
-        market: load.market,
-        locale: load.locale,
-        standingWindow: standingWindowSummary,
-        memories: load.memories,
-        history: load.history.slice(
-          Math.max(load.history.length - runtime.config.aiPreflightHistoryMessages, 0),
-        ),
-        userMessage: load.userMessage,
-        remainingBlockBudget: budget,
-        ...(options.insufficiencyGap === undefined
-          ? {}
-          : { insufficiencyGap: options.insufficiencyGap }),
-      },
-      {
-        access: sourceAccess,
-        maxSearchLimit: runtime.config.aiSearchMaxLimit,
-        recencyHalfLifeDays: runtime.config.aiSearchRecencyHalfLifeDays,
-        now: runtime.now?.(),
-      },
-    ),
-  );
-
-  if (!result.ok) {
-    await runAiWorkflowDb(
-      runtime.connectionString,
-      Effect.gen(function* () {
-        yield* replaceAiRunEventsForTask(load.aiRunId, options.taskId, []);
-        yield* logAiLifecycleWarning("ai chat preflight failed", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: options.taskId,
-          durationMs: Date.now() - startedAt,
-          failureCode: result.failure.code,
-          failureKind: result.failure.kind,
-          failureMessage: sanitizedAiErrorMessage(result.failure.message),
-          usageTotalTokens: result.failure.usage.totalTokens,
-          model: runtime.config.aiFastModel,
-        });
-      }),
-    );
-
-    return validateTaskOutput("aiChatPreflight", aiChatSchemas.aiChatPreflight, {
-      status: "failed",
-      manifest: [],
-      usage: result.failure.usage,
-      toolEvents: [],
-      failure: result.failure,
-    });
-  }
-
-  await runAiWorkflowDb(
-    runtime.connectionString,
-    Effect.gen(function* () {
-      yield* recordPreflightToolEvents(load, options.taskId, result.value.toolEvents);
-      yield* appendAiRunEventForTask(load.aiRunId, options.taskId, {
-        type: "usage",
-        agent: "preflight",
-        usage: result.value.usage,
-      });
-      yield* logAiLifecycle("ai chat preflight completed", {
-        aiRunId: load.aiRunId,
-        chatId: load.chatId,
-        userId: load.userId,
-        stage: options.taskId,
-        durationMs: Date.now() - startedAt,
-        manifestEntries: result.value.manifest.length,
-        usageTotalTokens: result.value.usage.totalTokens,
-        model: runtime.config.aiFastModel,
-        ...preflightEventCounts(result.value.toolEvents),
-      });
-    }),
-  );
-
-  return validateTaskOutput("aiChatPreflight", aiChatSchemas.aiChatPreflight, {
-    status: "ok",
-    manifest: result.value.manifest.map(toSerializedManifestEntry),
-    usage: result.value.usage,
-    toolEvents: result.value.toolEvents.map(toSerializedPreflightToolEvent),
-    failure: null,
-  });
-};
-
-const runHydrateTask = (
-  runtime: AiChatWorkflowRuntime,
-  load: LoadTurnOutput,
-  preflight: Pick<PreflightOutput, "status" | "manifest" | "failure">,
-  origin: "initial" | "retry",
-): Promise<HydrateOutput> => {
-  const taskId = origin === "initial" ? "hydrate" : "hydrate-2";
-  const startedAt = Date.now();
-
-  void logAiLifecyclePromise("ai chat hydrate started", {
-    aiRunId: load.aiRunId,
-    chatId: load.chatId,
-    userId: load.userId,
-    stage: taskId,
-    origin,
-    preflightStatus: preflight.status,
-    manifestEntries: preflight.manifest.length,
-  });
-
-  if (preflight.status === "failed") {
-    return runAiWorkflowDb(
-      runtime.connectionString,
-      Effect.gen(function* () {
-        yield* replaceAiRunEventsForTask(load.aiRunId, taskId, []);
-        yield* logAiLifecycleWarning("ai chat hydrate skipped after failed preflight", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: taskId,
-          origin,
-          durationMs: Date.now() - startedAt,
-          failureCode: preflight.failure?.code ?? null,
-        });
-      }),
-    ).then(() =>
-      validateTaskOutput("aiChatHydrate", aiChatSchemas.aiChatHydrate, {
-        status: "failed",
-        memoryBlock: null,
-        documentBlocks: [],
-        blockSummaries: [],
-        addedBlockIds: [],
-        evictedBlockIds: [],
-        totalActiveTokens: 0,
-        failure: preflight.failure,
-      }),
-    );
-  }
-
-  return runAiWorkflowDb(
-    runtime.connectionString,
-    Effect.gen(function* () {
-      const standingBlocks = yield* loadActiveContextBlocks(load.chatId);
-      const hydrated = yield* hydrateWindow(
-        preflight.manifest,
-        standingBlocks,
-        {
-          blockBudget: runtime.config.aiContextBlockBudget,
-          hardCap: runtime.config.aiContextBlockHardCap,
-          fullDocMaxChars: runtime.config.aiFullDocMaxChars,
-          memoryInjectAllMaxTokens: runtime.config.aiMemoryInjectAllMaxTokens,
-        },
-        {
-          chatId: load.chatId,
-          aiRunId: load.aiRunId,
-          origin,
-          memories: load.memories,
-          userMessage: load.userMessage,
-          access: sourceAccess,
-        },
-      );
-      const activeBlocks = [
-        ...(hydrated.memoryBlock === null ? [] : [hydrated.memoryBlock]),
-        ...hydrated.documentBlocks,
-      ];
-      const blockSummaries = summarizeBlocks(activeBlocks);
-
-      yield* replaceAiRunEventsForTask(load.aiRunId, taskId, [
-        {
-          type: "context_window",
-          blocks: blockSummaries,
-        },
-      ]);
-      yield* insertAiObservation(load.aiRunId, load.chatId, "context_window", {
-        blockIds: blockSummaries.map((block) => block.blockId),
-      });
-      yield* logAiLifecycle("ai chat hydrate completed", {
-        aiRunId: load.aiRunId,
-        chatId: load.chatId,
-        userId: load.userId,
-        stage: taskId,
-        origin,
-        durationMs: Date.now() - startedAt,
-        manifestEntries: preflight.manifest.length,
-        memoryBlockIncluded: hydrated.memoryBlock !== null,
-        documentBlockCount: hydrated.documentBlocks.length,
-        activeBlockCount: blockSummaries.length,
-        addedBlockCount: hydrated.addedBlockIds.length,
-        evictedBlockCount: hydrated.evictedBlockIds.length,
-        totalActiveTokens: hydrated.totalActiveTokens,
-      });
-
-      return validateTaskOutput("aiChatHydrate", aiChatSchemas.aiChatHydrate, {
-        status: "ok" as const,
-        memoryBlock:
-          hydrated.memoryBlock === null ? null : toSerializedContextBlockRow(hydrated.memoryBlock),
-        documentBlocks: hydrated.documentBlocks.map(toSerializedContextBlockRow),
-        blockSummaries,
-        addedBlockIds: [...hydrated.addedBlockIds],
-        evictedBlockIds: [...hydrated.evictedBlockIds],
-        totalActiveTokens: hydrated.totalActiveTokens,
-        failure: null,
-      });
-    }),
-  );
-};
-
-const runAnswerTask = async (
-  runtime: AiChatWorkflowRuntime,
-  load: LoadTurnOutput,
-  hydrate: HydrateOutput | Hydrate2Output,
-  attempt: 1 | 2,
-): Promise<AnswerOutput> => {
-  const taskId = attempt === 1 ? "answer" : "answer-2";
-  const startedAt = Date.now();
-
-  if (hydrate.status === "failed") {
-    await runAiWorkflowDb(
-      runtime.connectionString,
-      Effect.gen(function* () {
-        yield* replaceAiRunEventsForTask(load.aiRunId, taskId, []);
-        yield* logAiLifecycleWarning("ai chat answer skipped after failed hydrate", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: taskId,
-          attempt,
-          durationMs: Date.now() - startedAt,
-          failureCode: hydrate.failure?.code ?? null,
-        });
-      }),
-    );
-
-    return validateTaskOutput("aiChatAnswer", aiChatSchemas.aiChatAnswer, {
-      status: "failed",
-      attempt,
-      text: "",
-      insufficiencyGap: null,
-      usage: hydrate.failure?.usage ?? zeroUsage(),
-      failure: hydrate.failure,
-    });
-  }
-
-  await runAiWorkflowDb(
-    runtime.connectionString,
-    withAiRunEventTransaction(
-      load.aiRunId,
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        yield* sql`
-          delete from ai_run_events
-          where run_id = ${load.aiRunId}
-            and emitted_by_task = ${taskId}
-        `;
-        yield* appendAiRunEventInTransaction(
-          load.aiRunId,
-          { type: "answer_started", attempt },
-          taskId,
-        );
-        yield* logAiLifecycle("ai chat answer started", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: taskId,
-          attempt,
-          contextBlockCount: allWindowBlocks(hydrate).length,
-          totalActiveTokens: hydrate.totalActiveTokens,
-          model: runtime.config.aiMainModel,
-        });
-      }),
-    ),
-  );
-
-  const prompt = assembleContextWindow({
-    systemPrompt: attempt === 1 ? answerSystemPrompt : retryAnswerSystemPrompt,
-    memoryBlock: hydrate.memoryBlock,
-    blocks: allWindowBlocks(hydrate),
-    history: load.history,
-    userMessage: load.userMessage,
-    historyMaxMessages: runtime.config.aiHistoryMaxMessages,
-  });
-  let final: AiCallResult<LlmAnswerOutput> | null = null;
-  let deltaCount = 0;
-  let deltaChars = 0;
-  let firstDeltaLogged = false;
-
-  await logAiLifecyclePromise("ai chat answer prompt assembled", {
-    aiRunId: load.aiRunId,
-    chatId: load.chatId,
-    userId: load.userId,
-    stage: taskId,
-    attempt,
-    model: runtime.config.aiMainModel,
-    promptMessages: prompt.messages.length,
-    historyMessages: load.history.length,
-    contextBlockCount: allWindowBlocks(hydrate).length,
-  });
-
-  for await (const event of runtime.aiClient.streamAnswer({
-    systemPrompt: prompt.system,
-    messages: prompt.messages,
-  })) {
-    if (event.type === "text_delta") {
-      deltaCount += 1;
-      deltaChars += event.delta.length;
-      if (!firstDeltaLogged) {
-        firstDeltaLogged = true;
-        await logAiLifecyclePromise("ai chat answer first delta received", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: taskId,
-          attempt,
-          timeToFirstDeltaMs: Date.now() - startedAt,
-          model: runtime.config.aiMainModel,
-        });
-      }
-      await runAiWorkflowDb(
-        runtime.connectionString,
-        appendAiRunEventForTask(load.aiRunId, taskId, {
-          type: "text_delta",
-          delta: event.delta,
-        }),
-      );
-    } else {
-      final = event.result;
-    }
-  }
-
-  if (final === null) {
-    await logAiLifecyclePromise("ai chat answer missing final result", {
-      aiRunId: load.aiRunId,
-      chatId: load.chatId,
-      userId: load.userId,
-      stage: taskId,
-      attempt,
-      durationMs: Date.now() - startedAt,
-      deltaCount,
-      deltaChars,
-      model: runtime.config.aiMainModel,
-    });
-    return validateTaskOutput("aiChatAnswer", aiChatSchemas.aiChatAnswer, {
-      status: "failed",
-      attempt,
-      text: "",
-      insufficiencyGap: null,
-      usage: zeroUsage(),
-      failure: {
-        agent: "answer",
-        kind: "fatal",
-        code: "ai_answer_missing_result",
-        message: "answer stream ended without a final result",
-        usage: zeroUsage(),
-      },
-    });
-  }
-
-  const result = requireOkOrThrowRetryable("answer", final);
-  if (!result.ok) {
-    await logAiLifecyclePromise("ai chat answer failed", {
-      aiRunId: load.aiRunId,
-      chatId: load.chatId,
-      userId: load.userId,
-      stage: taskId,
-      attempt,
-      durationMs: Date.now() - startedAt,
-      deltaCount,
-      deltaChars,
-      failureCode: result.failure.code,
-      failureKind: result.failure.kind,
-      usageTotalTokens: result.failure.usage.totalTokens,
-      model: runtime.config.aiMainModel,
-    });
-    return validateTaskOutput("aiChatAnswer", aiChatSchemas.aiChatAnswer, {
-      status: "failed",
-      attempt,
-      text: "",
-      insufficiencyGap: null,
-      usage: result.failure.usage,
-      failure: result.failure,
-    });
-  }
-
-  await runAiWorkflowDb(
-    runtime.connectionString,
-    Effect.gen(function* () {
-      yield* appendAiRunEventForTask(load.aiRunId, taskId, {
-        type: "usage",
-        agent: "answer",
-        usage: result.value.usage,
-      });
-
-      if (attempt === 1 && result.value.insufficiencyGap !== null) {
-        yield* appendAiRunEventForTask(load.aiRunId, taskId, {
-          type: "answer_retry",
-          gap: result.value.insufficiencyGap,
-        });
-        yield* insertAiObservation(load.aiRunId, load.chatId, "insufficient_context", {
-          gap: result.value.insufficiencyGap,
-        });
-      }
-      yield* logAiLifecycle("ai chat answer completed", {
-        aiRunId: load.aiRunId,
-        chatId: load.chatId,
-        userId: load.userId,
-        stage: taskId,
-        attempt,
-        durationMs: Date.now() - startedAt,
-        deltaCount,
-        deltaChars,
-        answerChars: result.value.text.length,
-        insufficiencyRetryRequested: result.value.insufficiencyGap !== null,
-        usageTotalTokens: result.value.usage.totalTokens,
-        model: runtime.config.aiMainModel,
-      });
-    }),
-  );
-
-  return validateTaskOutput("aiChatAnswer", aiChatSchemas.aiChatAnswer, {
-    status: "ok",
-    attempt,
-    text: result.value.text,
-    insufficiencyGap: result.value.insufficiencyGap,
-    usage: result.value.usage,
-    failure: null,
-  });
-};
-
-const runMemoryTask = async (
-  runtime: AiChatWorkflowRuntime,
-  load: LoadTurnOutput,
-  answer: AnswerOutput,
-  answer2: Answer2Output,
-): Promise<MemoryOutput> => {
-  const startedAt = Date.now();
-  const terminalAnswer = answer2.status === "ok" ? answer2 : answer;
-  if (terminalAnswer.status !== "ok" || terminalAnswer.failure !== null) {
-    await runAiWorkflowDb(
-      runtime.connectionString,
-      Effect.gen(function* () {
-        yield* replaceAiRunEventsForTask(load.aiRunId, "memory", []);
-        yield* logAiLifecycle("ai chat memory skipped", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: "memory",
-          durationMs: Date.now() - startedAt,
-          answerStatus: terminalAnswer.status,
-          failureCode: terminalAnswer.failure?.code ?? null,
-        });
-      }),
-    );
-
-    return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
-      status: "skipped",
-      proposals: [],
-      discardedCount: 0,
-      usage: zeroUsage(),
-      error: null,
-    });
-  }
-
-  try {
-    await logAiLifecyclePromise("ai chat memory extraction started", {
-      aiRunId: load.aiRunId,
-      chatId: load.chatId,
-      userId: load.userId,
-      stage: "memory",
-      existingMemoryCount: load.memories.length,
-      model: runtime.config.aiFastModel,
-    });
-    const result = requireOkOrThrowRetryable(
-      "memory",
-      await runtime.aiClient.extractMemories({
-        userText: load.userMessage,
-        existingMemories: load.memories.map((memory) => ({
-          id: memory.id,
-          kind: memory.kind,
-          content: memory.content,
-        })),
-      }),
-    );
-
-    if (!result.ok) {
-      await runAiWorkflowDb(
-        runtime.connectionString,
-        Effect.gen(function* () {
-          yield* replaceAiRunEventsForTask(load.aiRunId, "memory", []);
-          yield* logAiLifecycleWarning("ai chat memory extraction failed", {
-            aiRunId: load.aiRunId,
-            chatId: load.chatId,
-            userId: load.userId,
-            stage: "memory",
-            durationMs: Date.now() - startedAt,
-            failureCode: result.failure.code,
-            failureKind: result.failure.kind,
-            usageTotalTokens: result.failure.usage.totalTokens,
-            model: runtime.config.aiFastModel,
-          });
-        }),
-      );
-
-      return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
-        status: "failed",
-        proposals: [],
-        discardedCount: 0,
-        usage: result.failure.usage,
-        error: result.failure.message,
-      });
-    }
-
-    await runAiWorkflowDb(
-      runtime.connectionString,
-      Effect.gen(function* () {
-        yield* replaceAiRunEventsForTask(load.aiRunId, "memory", [
-          {
-            type: "usage",
-            agent: "memory",
-            usage: result.value.usage,
-          },
-        ]);
-        yield* logAiLifecycle("ai chat memory extraction completed", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: "memory",
-          durationMs: Date.now() - startedAt,
-          proposedMemoryCount: result.value.proposals.length,
-          discardedMemoryCount: result.value.discarded.length,
-          usageTotalTokens: result.value.usage.totalTokens,
-          model: runtime.config.aiFastModel,
-        });
-      }),
-    );
-
-    return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
-      status: "ok",
-      proposals: [...result.value.proposals],
-      discardedCount: result.value.discarded.length,
-      usage: result.value.usage,
-      error: null,
-    });
-  } catch (error) {
-    if (error instanceof TaskOutputValidationError) {
-      throw error;
-    }
-
-    await runAiWorkflowDb(
-      runtime.connectionString,
-      Effect.gen(function* () {
-        yield* replaceAiRunEventsForTask(load.aiRunId, "memory", []);
-        yield* logAiLifecycleError("ai chat memory extraction errored", {
-          aiRunId: load.aiRunId,
-          chatId: load.chatId,
-          userId: load.userId,
-          stage: "memory",
-          durationMs: Date.now() - startedAt,
-          error: errorMessage(error),
-          model: runtime.config.aiFastModel,
-        });
-      }),
-    );
-
-    return validateTaskOutput("aiChatMemory", aiChatSchemas.aiChatMemory, {
-      status: "failed",
-      proposals: [],
-      discardedCount: 0,
-      usage: zeroUsage(),
-      error: errorMessage(error),
-    });
-  }
-};
-
-type ParsedCitationToken =
-  | { readonly kind: "block"; readonly blockId: string }
-  | { readonly kind: "malformed"; readonly token: string };
-
-const citationTokens = (text: string): readonly ParsedCitationToken[] => {
-  const tokens: ParsedCitationToken[] = [];
-  const tagPattern = /\[\[cite:([^\]\n]+)\]\]/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = tagPattern.exec(text)) !== null) {
-    const ids = (match[1] ?? "").split(",").map((id) => id.trim());
-
-    for (const id of ids) {
-      if (/^b(0|[1-9]\d*)$/.test(id)) {
-        tokens.push({ kind: "block", blockId: id });
-      } else {
-        tokens.push({ kind: "malformed", token: id });
-      }
-    }
-  }
-
-  return tokens;
-};
-
-const truncateCitationDefectToken = (token: string): string =>
-  token.length > 128 ? token.slice(0, 128) : token;
-
-const persistMemoryWrites = (
-  load: LoadTurnOutput,
-  memory: MemoryOutput,
-): Effect.Effect<
-  { readonly created: number; readonly updated: number },
-  unknown,
-  PgClient.PgClient
-> =>
-  Effect.gen(function* () {
-    if (memory.status !== "ok") {
-      return { created: 0, updated: 0 };
-    }
-
-    const sql = yield* PgClient.PgClient;
-    let created = 0;
-    let updated = 0;
-
-    for (const proposal of memory.proposals) {
-      const duplicateRows = yield* sql<IdRow>`
-        select id::text
-        from user_memories
-        where user_id = ${load.userId}
-          and kind = ${proposal.kind}
-          and content = ${proposal.content}
-          and deleted_at is null
-        limit 1
-      `;
-
-      if (duplicateRows[0] !== undefined) {
-        continue;
-      }
-
-      if (proposal.targetMemoryId !== undefined) {
-        const beforeRows = yield* sql<{
-          readonly id: string;
-          readonly kind: string;
-          readonly content: string;
-        }>`
-          select id::text, kind, content
-          from user_memories
-          where id = ${proposal.targetMemoryId}
-            and user_id = ${load.userId}
-            and deleted_at is null
-          for update
-        `;
-        const before = beforeRows[0];
-
-        if (before === undefined) {
-          continue;
-        }
-
-        if (before.kind !== proposal.kind || before.content !== proposal.content) {
-          yield* sql`
-            update user_memories
-            set kind = ${proposal.kind},
-                content = ${proposal.content},
-                source_message_id = ${load.userMessageId},
-                updated_at = now()
-            where id = ${before.id}
-          `;
-          yield* sql`
-            insert into user_memory_revisions (
-              memory_id,
-              action,
-              content_before,
-              content_after,
-              run_id
-            )
-            values (${before.id}, 'updated', ${before.content}, ${proposal.content}, ${load.aiRunId})
-          `;
-          yield* insertAiObservation(load.aiRunId, load.chatId, "memory_written", {
-            memoryId: before.id,
-            action: "updated",
-          });
-          updated += 1;
-        }
-
-        continue;
-      }
-
-      const insertedRows = yield* sql<IdRow>`
-        insert into user_memories (
-          user_id,
-          kind,
-          content,
-          source_message_id
-        )
-        values (
-          ${load.userId},
-          ${proposal.kind},
-          ${proposal.content},
-          ${load.userMessageId}
-        )
-        returning id::text
-      `;
-      const inserted = insertedRows[0];
-
-      if (inserted === undefined) {
-        continue;
-      }
-
-      yield* sql`
-        insert into user_memory_revisions (memory_id, action, content_after, run_id)
-        values (${inserted.id}, 'created', ${proposal.content}, ${load.aiRunId})
-      `;
-      yield* insertAiObservation(load.aiRunId, load.chatId, "memory_written", {
-        memoryId: inserted.id,
-        action: "created",
-      });
-      created += 1;
-    }
-
-    return { created, updated };
-  });
-
-const finalizeRun = (
-  runtime: AiChatWorkflowRuntime,
-  load: LoadTurnOutput,
-  preflight: PreflightOutput,
-  hydrate: HydrateOutput,
-  answer: AnswerOutput,
-  preflight2: Preflight2Output,
-  hydrate2: Hydrate2Output,
-  answer2: Answer2Output,
-  memory: MemoryOutput,
-) =>
-  runAiWorkflowDb(
-    runtime.connectionString,
-    Effect.gen(function* () {
-      const startedAt = Date.now();
-      const sql = yield* PgClient.PgClient;
-      const finalAnswer = answer2.status === "ok" ? answer2 : answer;
-      const failure =
-        preflight.failure ??
-        hydrate.failure ??
-        answer.failure ??
-        preflight2.failure ??
-        hydrate2.failure ??
-        answer2.failure ??
-        (finalAnswer.status === "ok" ? null : finalAnswer.failure);
-      const usage = {
-        preflight: addUsage(preflight.usage, preflight2.usage),
-        answer: addUsage(answer.usage, answer2.usage),
-        memory: memory.usage,
-      };
-
-      return yield* sql.withTransaction(
-        Effect.gen(function* () {
-          yield* sql`select pg_advisory_xact_lock(hashtext(${`brief:ai-run-finalize:${load.aiRunId}`}))`;
-          yield* logAiLifecycle("ai chat finalize started", {
-            aiRunId: load.aiRunId,
-            chatId: load.chatId,
-            userId: load.userId,
-            stage: "finalize",
-            finalAnswerAttempt: finalAnswer.attempt,
-            finalAnswerStatus: finalAnswer.status,
-            preflightStatus: preflight.status,
-            hydrateStatus: hydrate.status,
-            answerStatus: answer.status,
-            preflight2Status: preflight2.status,
-            hydrate2Status: hydrate2.status,
-            answer2Status: answer2.status,
-            memoryStatus: memory.status,
-          });
-          yield* sql`
-            update ai_runs
-            set usage = ${sql.json(usage)}
-            where id = ${load.aiRunId}
-          `;
-
-          if (failure !== null) {
-            yield* sql`
-              update ai_runs
-              set failed_at = coalesce(failed_at, now()),
-                  error = ${failure.code}
-              where id = ${load.aiRunId}
-                and finished_at is null
-            `;
-            yield* replaceAiRunEventsForTask(load.aiRunId, "finalize", [
-              { type: "error", code: failure.code },
-            ]);
-            yield* logAiLifecycleError("ai chat finalize failed run", {
-              aiRunId: load.aiRunId,
-              chatId: load.chatId,
-              userId: load.userId,
-              stage: "finalize",
-              durationMs: Date.now() - startedAt,
-              failureCode: failure.code,
-              failureKind: failure.kind,
-              failureAgent: failure.agent,
-            });
-
-            return validateTaskOutput("aiChatFinalize", aiChatSchemas.aiChatFinalize, {
-              status: "failed" as const,
-              assistantMessageId: null,
-              errorCode: failure.code,
-            });
-          }
-
-          const existingRows = yield* sql<ExistingMessageRow>`
-            select assistant_message_id::text as "assistantMessageId"
-            from ai_runs
-            where id = ${load.aiRunId}
-            for update
-          `;
-          let assistantMessageId = existingRows[0]?.assistantMessageId ?? null;
-
-          if (assistantMessageId === null) {
-            const insertedRows = yield* sql<IdRow>`
-              insert into chat_messages (chat_id, author, content, ai_run_id)
-              values (${load.chatId}, 'assistant', ${finalAnswer.text}, ${load.aiRunId})
-              returning id::text
-            `;
-            assistantMessageId = insertedRows[0]?.id ?? null;
-
-            if (assistantMessageId === null) {
-              throw new Error(`failed to insert assistant message for run ${load.aiRunId}`);
-            }
-          }
-
-          yield* sql`
-            update ai_runs
-            set assistant_message_id = ${assistantMessageId},
-                finished_at = coalesce(finished_at, now()),
-                error = null
-            where id = ${load.aiRunId}
-          `;
-          yield* sql`
-            delete from ai_observations
-            where run_id = ${load.aiRunId}
-              and kind in ('citation', 'citation_defect')
-          `;
-
-          const activeBlocks = [...allWindowBlocks(hydrate), ...allWindowBlocks(hydrate2)];
-          const activeBlockIds = new Set(activeBlocks.map((block) => block.blockId));
-          const citedTokens = citationTokens(finalAnswer.text);
-          const knownCitedIds: string[] = [];
-          let malformedCitationCount = 0;
-          let unknownCitationCount = 0;
-
-          for (const token of citedTokens) {
-            if (token.kind === "malformed") {
-              malformedCitationCount += 1;
-              yield* insertAiObservation(load.aiRunId, load.chatId, "citation_defect", {
-                token: truncateCitationDefectToken(token.token),
-              });
-              continue;
-            }
-
-            if (activeBlockIds.has(token.blockId)) {
-              knownCitedIds.push(token.blockId);
-              yield* insertAiObservation(load.aiRunId, load.chatId, "citation", {
-                blockId: token.blockId,
-                messageId: assistantMessageId,
-              });
-            } else {
-              unknownCitationCount += 1;
-              yield* insertAiObservation(load.aiRunId, load.chatId, "citation_defect", {
-                token: truncateCitationDefectToken(token.blockId),
-              });
-            }
-          }
-
-          yield* markBlocksCited(load.chatId, load.aiRunId, knownCitedIds);
-          const memoryCounts = yield* persistMemoryWrites(load, memory);
-          yield* replaceAiRunEventsForTask(load.aiRunId, "finalize", [
-            {
-              type: "memory_updated",
-              created: memoryCounts.created,
-              updated: memoryCounts.updated,
-              discarded: memory.discardedCount,
-            },
-            {
-              type: "done",
-              assistantMessageId,
-            },
-          ]);
-          yield* logAiLifecycle("ai chat finalize completed", {
-            aiRunId: load.aiRunId,
-            chatId: load.chatId,
-            userId: load.userId,
-            stage: "finalize",
-            durationMs: Date.now() - startedAt,
-            assistantMessageId,
-            answerChars: finalAnswer.text.length,
-            citedTokenCount: citedTokens.length,
-            resolvedCitationCount: knownCitedIds.length,
-            malformedCitationCount,
-            unknownCitationCount,
-            memoryCreated: memoryCounts.created,
-            memoryUpdated: memoryCounts.updated,
-            memoryDiscarded: memory.discardedCount,
-            usageTotalTokens:
-              usage.preflight.totalTokens + usage.answer.totalTokens + usage.memory.totalTokens,
-          });
-
-          return validateTaskOutput("aiChatFinalize", aiChatSchemas.aiChatFinalize, {
-            status: "done" as const,
-            assistantMessageId,
-            errorCode: null,
-          });
-        }),
-      );
-    }),
-  );
-
-const skippedPreflight2 = (): Preflight2Output =>
-  validateTaskOutput("aiChatPreflight2", aiChatSchemas.aiChatPreflight2, {
-    status: "skipped",
-    manifest: [],
-    usage: zeroUsage(),
-    toolEvents: [],
-    failure: null,
-  });
-
-const skippedHydrate2 = (): Hydrate2Output =>
-  validateTaskOutput("aiChatHydrate2", aiChatSchemas.aiChatHydrate2, {
-    status: "skipped",
-    memoryBlock: null,
-    documentBlocks: [],
-    blockSummaries: [],
-    addedBlockIds: [],
-    evictedBlockIds: [],
-    totalActiveTokens: 0,
-    failure: null,
-  });
-
-const skippedAnswer2 = (): Answer2Output =>
-  validateTaskOutput("aiChatAnswer2", aiChatSchemas.aiChatAnswer2, {
-    status: "skipped",
-    attempt: 2,
-    text: "",
-    insufficiencyGap: null,
-    usage: zeroUsage(),
-    failure: null,
-  });
-
-const runPreflight2Task = async (
-  runtime: AiChatWorkflowRuntime,
-  load: LoadTurnOutput,
-  hydrate: HydrateOutput,
-  answer: AnswerOutput,
-): Promise<Preflight2Output> => {
-  if (answer.status !== "ok" || answer.insufficiencyGap === null) {
-    await logAiLifecyclePromise("ai chat insufficiency retry skipped", {
-      aiRunId: load.aiRunId,
-      chatId: load.chatId,
-      userId: load.userId,
-      stage: "preflight-2",
-      answerStatus: answer.status,
-      failureCode: answer.failure?.code ?? null,
-    });
-    return skippedPreflight2();
-  }
-
-  await logAiLifecyclePromise("ai chat insufficiency retry triggered", {
-    aiRunId: load.aiRunId,
-    chatId: load.chatId,
-    userId: load.userId,
-    stage: "preflight-2",
-    gapLength: answer.insufficiencyGap.length,
-  });
-  const output = await runPreflightTask(runtime, load, {
-    taskId: "preflight-2",
-    standingWindow: hydrate.blockSummaries,
-    remainingBlockBudget: remainingBlockBudget(
-      hydrate.totalActiveTokens,
-      runtime.config.aiContextBlockBudget,
-    ),
-    insufficiencyGap: answer.insufficiencyGap,
-  });
-  return validateTaskOutput("aiChatPreflight2", aiChatSchemas.aiChatPreflight2, {
-    ...output,
-    status: output.status,
-  });
-};
-
-const runHydrate2Task = async (
-  runtime: AiChatWorkflowRuntime,
-  load: LoadTurnOutput,
-  preflight2: Preflight2Output,
-): Promise<Hydrate2Output> => {
-  if (preflight2.status === "skipped") {
-    return skippedHydrate2();
-  }
-
-  const output = await runHydrateTask(
-    runtime,
-    load,
-    {
-      status: preflight2.status,
-      manifest: preflight2.manifest,
-      failure: preflight2.failure,
-    },
-    "retry",
-  );
-  return validateTaskOutput("aiChatHydrate2", aiChatSchemas.aiChatHydrate2, {
-    ...output,
-    status: output.status,
-  });
-};
-
-const runAnswer2Task = async (
-  runtime: AiChatWorkflowRuntime,
-  load: LoadTurnOutput,
-  hydrate2: Hydrate2Output,
-): Promise<Answer2Output> => {
-  if (hydrate2.status === "skipped") {
-    return skippedAnswer2();
-  }
-
-  const output = await runAnswerTask(runtime, load, hydrate2, 2);
-  return validateTaskOutput("aiChatAnswer2", aiChatSchemas.aiChatAnswer2, {
-    ...output,
-    status: output.status,
-  });
-};
-
-const parseWorkflowRunId = (input: unknown): string => {
-  const parsed = aiChatSchemas.input.safeParse(input);
-
-  if (!parsed.success) {
-    throw new Error("ai-chat workflow input must be { aiRunId: string }");
-  }
-
-  return parsed.data.aiRunId;
-};
+const parseRunId = (input: unknown): string => aiChatRuntimeInputSchema.parse(input).aiRunId;
+const citationNonceHex = (nonce: readonly number[]): string =>
+  nonce.map((byte) => byte.toString(16).padStart(2, "0")).join("");
 
 export function buildAiChatWorkflow(
   api: CreateSmithersApi<AiChatSchemas>,
   runtime: AiChatWorkflowRuntime,
 ): AiChatWorkflow {
-  const { Workflow, Task, Sequence, Branch, smithers, outputs } = api;
+  const { Workflow, Task, Sequence, Parallel, Branch, Loop, smithers, outputs } = api;
+  const fast = runtime.config.aiFastTaskTimeoutMs;
+  const answerTimeout = runtime.config.aiAnswerTimeoutMs;
+  const retryPolicy = aiChatRetryPolicy;
 
-  return smithers((ctx) => {
-    const answer = ctx.outputMaybe(outputs.aiChatAnswer, { nodeId: "answer" });
-    const needsSecondPass = answer?.status === "ok" && answer.insufficiencyGap !== null;
+  const workflow = smithers((ctx) => {
+    const load = () =>
+      ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" }).value as LoadedTurn;
+    const resolutionMaybe = ctx.outputMaybe(outputs.aiChatResolution, {
+      nodeId: "resolve-conversation",
+    })?.value as ConversationResolution | undefined;
+    const normalizedMaybe = ctx.outputMaybe(outputs.aiChatNormalizedPlan, {
+      nodeId: "normalize-execution-plan",
+    })?.value as NormalizedExecutionPlan | undefined;
+    const topics = normalizedMaybe?.mode === "fanout" ? normalizedMaybe.topics : [];
+
+    const ReductionLoop = ({ prefix, initialNode }: { prefix: string; initialNode: string }) => {
+      const initial = ctx.outputMaybe(outputs.aiChatContext, { nodeId: initialNode })?.value as
+        | ContextState
+        | undefined;
+      const latest = ctx.latest(outputs.aiChatContext, `${prefix}-reduce-measure`)?.value as
+        | ContextState
+        | undefined;
+      return (
+        <Loop
+          id={`${prefix}-reduction-loop`}
+          skipIf={initial?.status !== "needs_reduction"}
+          until={latest?.status === "ready"}
+          maxIterations={runtime.config.aiContextReductionMaxIterations}
+          onMaxReached="return-last"
+        >
+          <Sequence>
+            <Task
+              id={`${prefix}-reduce-plan`}
+              output={outputs.aiChatReductionPlan}
+              retries={2}
+              retryPolicy={retryPolicy}
+              timeoutMs={fast}
+            >
+              {async () => {
+                const state = (ctx.latest(outputs.aiChatContext, `${prefix}-reduce-measure`)
+                  ?.value ??
+                  ctx.output(outputs.aiChatContext, { nodeId: initialNode }).value) as ContextState;
+                const workflowIteration = ctx.iterations?.[`${prefix}-reduction-loop`] ?? 0;
+                return {
+                  value: await runtime.operations.planReduction(
+                    load(),
+                    state,
+                    `${prefix}-reduce-plan`,
+                    workflowIteration,
+                  ),
+                };
+              }}
+            </Task>
+            <Task
+              id={`${prefix}-reduce-measure`}
+              output={outputs.aiChatContext}
+              retries={2}
+              retryPolicy={retryPolicy}
+              timeoutMs={fast}
+            >
+              {async () => {
+                const state = (ctx.latest(outputs.aiChatContext, `${prefix}-reduce-measure`)
+                  ?.value ??
+                  ctx.output(outputs.aiChatContext, { nodeId: initialNode }).value) as ContextState;
+                const plan = ctx.latest(outputs.aiChatReductionPlan, `${prefix}-reduce-plan`)!
+                  .value as ContextReductionPlan;
+                const workflowIteration = ctx.iterations?.[`${prefix}-reduction-loop`] ?? 0;
+                return {
+                  value: await runtime.operations.measureReduction(
+                    load(),
+                    state,
+                    plan,
+                    `${prefix}-reduce-measure`,
+                    workflowIteration,
+                  ),
+                };
+              }}
+            </Task>
+          </Sequence>
+        </Loop>
+      );
+    };
+
+    const SingleAnswerFlow = () => {
+      const selected = ctx.outputMaybe(outputs.aiChatContext, { nodeId: "single-answer-route" })
+        ?.value as ContextState | undefined;
+      return (
+        <Sequence>
+          <Parallel id="single-selectors" maxConcurrency={AI_CHAT_SINGLE_SELECTOR_MAX_CONCURRENCY}>
+            <Task
+              id="single-retrieve-internal"
+              output={outputs.aiChatInternal}
+              retries={2}
+              retryPolicy={retryPolicy}
+              timeoutMs={fast}
+            >
+              {async () => {
+                ctx.output(outputs.aiChatNormalizedPlan, { nodeId: "normalize-execution-plan" });
+                const resolution = ctx.output(outputs.aiChatResolution, {
+                  nodeId: "resolve-conversation",
+                }).value as Extract<ConversationResolution, { mode: "continue" }>;
+                return {
+                  value: await runtime.operations.retrieveInternal(
+                    load(),
+                    resolution.retrievalQuestion,
+                    "single-retrieve-internal",
+                    resolution.selectedTurnIds,
+                  ),
+                };
+              }}
+            </Task>
+            <Task
+              id="single-select-memories"
+              output={outputs.aiChatMemories}
+              retries={2}
+              retryPolicy={retryPolicy}
+              timeoutMs={fast}
+            >
+              {async () => {
+                void ctx.output(outputs.aiChatNormalizedPlan, {
+                  nodeId: "normalize-execution-plan",
+                });
+                const resolution = ctx.output(outputs.aiChatResolution, {
+                  nodeId: "resolve-conversation",
+                }).value as Extract<ConversationResolution, { mode: "continue" }>;
+                return {
+                  value: await runtime.operations.selectMemories(
+                    load(),
+                    resolution.retrievalQuestion,
+                    "single-select-memories",
+                  ),
+                };
+              }}
+            </Task>
+            <Task
+              id="single-retrieve-web"
+              output={outputs.aiChatWeb}
+              retries={2}
+              retryPolicy={retryPolicy}
+              timeoutMs={fast}
+            >
+              {async () => {
+                const resolution = ctx.output(outputs.aiChatResolution, {
+                  nodeId: "resolve-conversation",
+                }).value as Extract<ConversationResolution, { mode: "continue" }>;
+                return {
+                  value: await runtime.operations.retrieveWeb(
+                    load(),
+                    resolution.retrievalQuestion,
+                    "single-retrieve-web",
+                  ),
+                };
+              }}
+            </Task>
+          </Parallel>
+          <Task
+            id="single-assemble"
+            output={outputs.aiChatAssembly}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => {
+              const resolution = ctx.output(outputs.aiChatResolution, {
+                nodeId: "resolve-conversation",
+              }).value as Extract<ConversationResolution, { mode: "continue" }>;
+              const selectors: SelectorBundle = {
+                internal: ctx.output(outputs.aiChatInternal, { nodeId: "single-retrieve-internal" })
+                  .value,
+                memories: memorySelectorEntries(
+                  ctx.output(outputs.aiChatMemories, { nodeId: "single-select-memories" }).value,
+                ),
+                memorySelection: ctx.output(outputs.aiChatMemories, {
+                  nodeId: "single-select-memories",
+                }).value.status,
+                web: webSelectorEntries(
+                  ctx.output(outputs.aiChatWeb, { nodeId: "single-retrieve-web" }).value,
+                ),
+                webSelection: ctx.output(outputs.aiChatWeb, { nodeId: "single-retrieve-web" }).value
+                  .status,
+              };
+              return {
+                value: await runtime.operations.assembleContext(
+                  load(),
+                  resolution.retrievalQuestion,
+                  selectors,
+                  "single-assemble",
+                  "single-answer",
+                  undefined,
+                  resolution.selectedTurnIds,
+                ),
+              };
+            }}
+          </Task>
+          <Task
+            id="single-measure"
+            output={outputs.aiChatContext}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => ({
+              value: await runtime.operations.measureAssembly(
+                load(),
+                ctx.output(outputs.aiChatAssembly, { nodeId: "single-assemble" })
+                  .value as ContextAssembly,
+                "single-measure",
+              ),
+            })}
+          </Task>
+          <ReductionLoop prefix="single" initialNode="single-measure" />
+          <Task
+            id="single-context-select"
+            output={outputs.aiChatContext}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => {
+              const state = (ctx.latest(outputs.aiChatContext, "single-reduce-measure")?.value ??
+                ctx.output(outputs.aiChatContext, { nodeId: "single-measure" })
+                  .value) as ContextState;
+              return { value: await runtime.operations.freezeContext(load(), state) };
+            }}
+          </Task>
+          <Task
+            id="single-answer-route"
+            output={outputs.aiChatContext}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => ({
+              value: ctx.output(outputs.aiChatContext, { nodeId: "single-context-select" }).value,
+            })}
+          </Task>
+          <Branch
+            if={selected?.status === "ready"}
+            then={
+              <Task
+                id="single-answer"
+                output={outputs.aiChatAnswer}
+                retries={2}
+                retryPolicy={retryPolicy}
+                timeoutMs={answerTimeout}
+              >
+                {async () => ({
+                  value: await runtime.operations.answerDirect(
+                    load(),
+                    ctx.output(outputs.aiChatContext, { nodeId: "single-answer-route" })
+                      .value as ContextState,
+                    "single-answer",
+                  ),
+                })}
+              </Task>
+            }
+            else={
+              <Task
+                id="single-failure"
+                output={outputs.aiChatAnswer}
+                retries={2}
+                retryPolicy={retryPolicy}
+                timeoutMs={fast}
+              >
+                {async () => ({
+                  value: controlledFailure(
+                    (
+                      ctx.output(outputs.aiChatContext, { nodeId: "single-answer-route" })
+                        .value as ContextState
+                    ).failureCode ?? "context_plan_unfit",
+                  ),
+                })}
+              </Task>
+            }
+          />
+          <Task
+            id="single-result"
+            output={outputs.aiChatAnswer}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => ({
+              value: (
+                ctx.outputMaybe(outputs.aiChatAnswer, { nodeId: "single-answer" }) ??
+                ctx.output(outputs.aiChatAnswer, { nodeId: "single-failure" })
+              ).value,
+            })}
+          </Task>
+        </Sequence>
+      );
+    };
+
+    const TopicAnswerFlow = ({ topicId }: { topicId: "t1" | "t2" | "t3"; key?: string }) => {
+      const prefix = `topic-${topicId}`;
+      const selected = ctx.outputMaybe(outputs.aiChatContext, {
+        nodeId: `${prefix}-answer-route`,
+      })?.value as ContextState | undefined;
+      return (
+        <Sequence key={topicId}>
+          <Task
+            id={`${prefix}-assemble`}
+            output={outputs.aiChatAssembly}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => {
+              const plan = ctx.output(outputs.aiChatNormalizedPlan, {
+                nodeId: "normalize-execution-plan",
+              }).value as Extract<NormalizedExecutionPlan, { mode: "fanout" }>;
+              const topic = plan.topics.find((candidate) => candidate.topicId === topicId);
+              if (topic === undefined) {
+                throw new AiRuntimeError("invalid_workflow_output", "fanout topic missing", {
+                  taskRetryable: false,
+                });
+              }
+              const selectors: SelectorBundle = {
+                internal: ctx.output(outputs.aiChatInternal, {
+                  nodeId: `${prefix}-retrieve-internal`,
+                }).value,
+                memories: memorySelectorEntries(
+                  ctx.output(outputs.aiChatMemories, {
+                    nodeId: `${prefix}-select-memories`,
+                  }).value,
+                ),
+                memorySelection: ctx.output(outputs.aiChatMemories, {
+                  nodeId: `${prefix}-select-memories`,
+                }).value.status,
+                web: webSelectorEntries(
+                  ctx.output(outputs.aiChatWeb, { nodeId: `${prefix}-retrieve-web` }).value,
+                ),
+                webSelection: ctx.output(outputs.aiChatWeb, { nodeId: `${prefix}-retrieve-web` })
+                  .value.status,
+              };
+              return {
+                value: await runtime.operations.assembleContext(
+                  load(),
+                  topic.question,
+                  selectors,
+                  `${prefix}-assemble`,
+                  `${prefix}-answer`,
+                  topicId,
+                  topic.relevantTurnIds,
+                  ctx.output(outputs.aiChatFanoutSources, {
+                    nodeId: "fanout-merge-sources",
+                  }).value as FanoutSourceKeySet,
+                  ctx.output(outputs.aiChatAllocation, { nodeId: "fanout-allocate" }).value
+                    .packetOutputTokens,
+                ),
+              };
+            }}
+          </Task>
+          <Task
+            id={`${prefix}-measure`}
+            output={outputs.aiChatContext}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => ({
+              value: await runtime.operations.measureAssembly(
+                load(),
+                ctx.output(outputs.aiChatAssembly, { nodeId: `${prefix}-assemble` })
+                  .value as ContextAssembly,
+                `${prefix}-measure`,
+              ),
+            })}
+          </Task>
+          <ReductionLoop prefix={prefix} initialNode={`${prefix}-measure`} />
+          <Task
+            id={`${prefix}-context-select`}
+            output={outputs.aiChatContext}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => {
+              const state = (ctx.latest(outputs.aiChatContext, `${prefix}-reduce-measure`)?.value ??
+                ctx.output(outputs.aiChatContext, { nodeId: `${prefix}-measure` })
+                  .value) as ContextState;
+              return { value: await runtime.operations.freezeContext(load(), state) };
+            }}
+          </Task>
+          <Task
+            id={`${prefix}-answer-route`}
+            output={outputs.aiChatContext}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => ({
+              value: ctx.output(outputs.aiChatContext, { nodeId: `${prefix}-context-select` })
+                .value,
+            })}
+          </Task>
+          <Branch
+            if={selected?.status === "ready"}
+            then={
+              <Task
+                id={`${prefix}-answer`}
+                output={outputs.aiChatTopicResult}
+                retries={2}
+                retryPolicy={retryPolicy}
+                timeoutMs={answerTimeout}
+              >
+                {async () => {
+                  try {
+                    return {
+                      status: "ok" as const,
+                      packet: await runtime.operations.answerTopic(
+                        load(),
+                        ctx.output(outputs.aiChatContext, { nodeId: `${prefix}-answer-route` })
+                          .value as ContextState,
+                        `${prefix}-answer`,
+                        ctx.output(outputs.aiChatAllocation, { nodeId: "fanout-allocate" }).value
+                          .packetOutputTokens,
+                      ),
+                    };
+                  } catch (error) {
+                    if (error instanceof AiRuntimeError && !error.retryable) {
+                      return { status: "failed" as const, code: error.code };
+                    }
+                    throw error;
+                  }
+                }}
+              </Task>
+            }
+            else={
+              <Task
+                id={`${prefix}-failure`}
+                output={outputs.aiChatTopicResult}
+                retries={2}
+                retryPolicy={retryPolicy}
+                timeoutMs={fast}
+              >
+                {async () => ({
+                  status: "failed" as const,
+                  code:
+                    (
+                      ctx.output(outputs.aiChatContext, { nodeId: `${prefix}-answer-route` })
+                        .value as ContextState
+                    ).failureCode ?? "context_plan_unfit",
+                })}
+              </Task>
+            }
+          />
+          <Task
+            id={`${prefix}-result`}
+            output={outputs.aiChatTopicResult}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => {
+              const result =
+                ctx.outputMaybe(outputs.aiChatTopicResult, { nodeId: `${prefix}-answer` }) ??
+                ctx.output(outputs.aiChatTopicResult, { nodeId: `${prefix}-failure` });
+              return result.status === "ok" && result.packet !== undefined
+                ? { status: "ok" as const, packet: result.packet }
+                : { status: "failed" as const, code: result.code ?? "context_plan_unfit" };
+            }}
+          </Task>
+        </Sequence>
+      );
+    };
+
+    const FanoutAnswerFlow = () => {
+      const synthesis = ctx.outputMaybe(outputs.aiChatContext, {
+        nodeId: "fanout-synthesis-route",
+      })?.value as ContextState | undefined;
+      return (
+        <Sequence>
+          <Task
+            id="fanout-allocate"
+            output={outputs.aiChatAllocation}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => ({
+              value: runtime.operations.allocateFanout(
+                load(),
+                ctx.output(outputs.aiChatNormalizedPlan, { nodeId: "normalize-execution-plan" })
+                  .value as Extract<NormalizedExecutionPlan, { mode: "fanout" }>,
+              ),
+            })}
+          </Task>
+          <Parallel
+            id="fanout-topic-research"
+            maxConcurrency={runtime.config.aiTopicResearchMaxConcurrency}
+          >
+            {topics.flatMap((topic) => {
+              const prefix = `topic-${topic.topicId}`;
+              return [
+                <Task
+                  key={`${prefix}-a`}
+                  id={`${prefix}-retrieve-internal`}
+                  output={outputs.aiChatInternal}
+                  retries={2}
+                  retryPolicy={retryPolicy}
+                  timeoutMs={fast}
+                >
+                  {async () => ({
+                    value: await runtime.operations.retrieveInternal(
+                      load(),
+                      topic.question,
+                      `${prefix}-retrieve-internal`,
+                      topic.relevantTurnIds,
+                    ),
+                  })}
+                </Task>,
+                <Task
+                  key={`${prefix}-b`}
+                  id={`${prefix}-select-memories`}
+                  output={outputs.aiChatMemories}
+                  retries={2}
+                  retryPolicy={retryPolicy}
+                  timeoutMs={fast}
+                >
+                  {async () => ({
+                    value: await runtime.operations.selectMemories(
+                      load(),
+                      topic.question,
+                      `${prefix}-select-memories`,
+                    ),
+                  })}
+                </Task>,
+                <Task
+                  key={`${prefix}-w`}
+                  id={`${prefix}-retrieve-web`}
+                  output={outputs.aiChatWeb}
+                  retries={2}
+                  retryPolicy={retryPolicy}
+                  timeoutMs={fast}
+                >
+                  {async () => ({
+                    value: await runtime.operations.retrieveWeb(
+                      load(),
+                      topic.question,
+                      `${prefix}-retrieve-web`,
+                    ),
+                  })}
+                </Task>,
+              ];
+            })}
+          </Parallel>
+          <Task
+            id="fanout-merge-sources"
+            output={outputs.aiChatFanoutSources}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => {
+              const plan = ctx.output(outputs.aiChatNormalizedPlan, {
+                nodeId: "normalize-execution-plan",
+              }).value as Extract<NormalizedExecutionPlan, { mode: "fanout" }>;
+              const selectors = Object.fromEntries(
+                plan.topics.map((topic) => [
+                  topic.topicId,
+                  {
+                    internal: ctx.output(outputs.aiChatInternal, {
+                      nodeId: `topic-${topic.topicId}-retrieve-internal`,
+                    }).value,
+                    memories: memorySelectorEntries(
+                      ctx.output(outputs.aiChatMemories, {
+                        nodeId: `topic-${topic.topicId}-select-memories`,
+                      }).value,
+                    ),
+                    memorySelection: ctx.output(outputs.aiChatMemories, {
+                      nodeId: `topic-${topic.topicId}-select-memories`,
+                    }).value.status,
+                    web: webSelectorEntries(
+                      ctx.output(outputs.aiChatWeb, {
+                        nodeId: `topic-${topic.topicId}-retrieve-web`,
+                      }).value,
+                    ),
+                    webSelection: ctx.output(outputs.aiChatWeb, {
+                      nodeId: `topic-${topic.topicId}-retrieve-web`,
+                    }).value.status,
+                  },
+                ]),
+              ) as unknown as Record<"t1" | "t2" | "t3", SelectorBundle>;
+              return {
+                value: await runtime.operations.mergeFanoutSources(load(), plan.topics, selectors),
+              };
+            }}
+          </Task>
+          <Parallel
+            id="fanout-topic-answers"
+            maxConcurrency={runtime.config.aiTopicAnswerMaxConcurrency}
+          >
+            {topics.map((topic) => (
+              <TopicAnswerFlow key={topic.topicId} topicId={topic.topicId} />
+            ))}
+          </Parallel>
+          <Task
+            id="fanout-collect"
+            output={outputs.aiChatFanoutCollect}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => {
+              const results = topics.map((topic) =>
+                ctx.output(outputs.aiChatTopicResult, { nodeId: `topic-${topic.topicId}-result` }),
+              );
+              const failed = results.find((result) => result.status === "failed");
+              const contexts = topics.map(
+                (topic) =>
+                  ctx.output(outputs.aiChatContext, {
+                    nodeId: `topic-${topic.topicId}-context-select`,
+                  }).value as ContextState,
+              );
+              if (failed !== undefined)
+                return {
+                  status: "failed" as const,
+                  packets: [],
+                  sourceMap: [],
+                  contexts,
+                  code: failed.code ?? "context_plan_unfit",
+                };
+              const packets = results.flatMap((result) =>
+                result.packet === undefined ? [] : [result.packet],
+              );
+              if (packets.length !== results.length)
+                return {
+                  status: "failed" as const,
+                  packets: [],
+                  sourceMap: [],
+                  contexts,
+                  code: "context_plan_unfit",
+                };
+              return {
+                status: "ok" as const,
+                packets,
+                sourceMap: runtime.operations.mergeFanoutSourceMaps(contexts),
+                contexts,
+              };
+            }}
+          </Task>
+          <Task
+            id="fanout-synthesis-measure"
+            output={outputs.aiChatContext}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => {
+              const collected = ctx.output(outputs.aiChatFanoutCollect, {
+                nodeId: "fanout-collect",
+              });
+              return {
+                value:
+                  collected.status === "ok"
+                    ? runtime.operations.synthesisContext(
+                        load(),
+                        collected.packets as TopicPacket[],
+                        collected.sourceMap,
+                        collected.contexts as ContextState[],
+                        ctx.output(outputs.aiChatAllocation, { nodeId: "fanout-allocate" }).value,
+                      )
+                    : runtime.operations.synthesisContext(
+                        load(),
+                        [],
+                        [],
+                        collected.contexts as ContextState[],
+                        ctx.output(outputs.aiChatAllocation, { nodeId: "fanout-allocate" }).value,
+                      ),
+              };
+            }}
+          </Task>
+          <Task
+            id="fanout-synthesis-route"
+            output={outputs.aiChatContext}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => ({
+              value: ctx.output(outputs.aiChatContext, { nodeId: "fanout-synthesis-measure" })
+                .value,
+            })}
+          </Task>
+          <Branch
+            if={synthesis?.status === "ready"}
+            then={
+              <Task
+                id="fanout-synthesis"
+                output={outputs.aiChatAnswer}
+                retries={2}
+                retryPolicy={retryPolicy}
+                timeoutMs={answerTimeout}
+              >
+                {async () => ({
+                  value: await runtime.operations.synthesize(
+                    load(),
+                    ctx.output(outputs.aiChatContext, { nodeId: "fanout-synthesis-route" })
+                      .value as ContextState,
+                    "fanout-synthesis",
+                  ),
+                })}
+              </Task>
+            }
+            else={
+              <Task
+                id="fanout-synthesis-failure"
+                output={outputs.aiChatAnswer}
+                retries={2}
+                retryPolicy={retryPolicy}
+                timeoutMs={fast}
+              >
+                {async () => {
+                  const collected = ctx.output(outputs.aiChatFanoutCollect, {
+                    nodeId: "fanout-collect",
+                  });
+                  const code =
+                    collected.status === "failed" &&
+                    collected.code !== undefined &&
+                    isAiRunErrorCode(collected.code)
+                      ? collected.code
+                      : "synthesis_budget_mismatch";
+                  return { value: controlledFailure(code) };
+                }}
+              </Task>
+            }
+          />
+          <Task
+            id="fanout-result"
+            output={outputs.aiChatAnswer}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => ({
+              value: (
+                ctx.outputMaybe(outputs.aiChatAnswer, { nodeId: "fanout-synthesis" }) ??
+                ctx.output(outputs.aiChatAnswer, { nodeId: "fanout-synthesis-failure" })
+              ).value,
+            })}
+          </Task>
+        </Sequence>
+      );
+    };
+
+    const AnswerLane = () => (
+      <Sequence>
+        <Task
+          id="resolve-conversation"
+          output={outputs.aiChatResolution}
+          retries={2}
+          retryPolicy={retryPolicy}
+          timeoutMs={fast}
+        >
+          {async () => ({ value: await runtime.operations.resolveConversation(load()) })}
+        </Task>
+        <Branch
+          if={resolutionMaybe?.mode === "clarify"}
+          then={
+            <Task
+              id="clarification-result"
+              output={outputs.aiChatAnswer}
+              retries={2}
+              retryPolicy={retryPolicy}
+              timeoutMs={fast}
+            >
+              {async () => ({
+                value: await runtime.operations.clarify(
+                  load(),
+                  (
+                    ctx.output(outputs.aiChatResolution, { nodeId: "resolve-conversation" })
+                      .value as Extract<ConversationResolution, { mode: "clarify" }>
+                  ).question,
+                ),
+              })}
+            </Task>
+          }
+          else={
+            <Sequence>
+              <Task
+                id="plan-execution"
+                output={outputs.aiChatPlan}
+                retries={2}
+                retryPolicy={retryPolicy}
+                timeoutMs={fast}
+              >
+                {async () => ({
+                  value: await runtime.operations.planExecution(
+                    load(),
+                    ctx.output(outputs.aiChatResolution, { nodeId: "resolve-conversation" })
+                      .value as Extract<ConversationResolution, { mode: "continue" }>,
+                  ),
+                })}
+              </Task>
+              <Task
+                id="normalize-execution-plan"
+                output={outputs.aiChatNormalizedPlan}
+                retries={2}
+                retryPolicy={retryPolicy}
+                timeoutMs={fast}
+              >
+                {async () => ({
+                  value: runtime.operations.normalizePlan(
+                    ctx.output(outputs.aiChatPlan, { nodeId: "plan-execution" }).value,
+                    ctx.output(outputs.aiChatResolution, { nodeId: "resolve-conversation" })
+                      .value as Extract<ConversationResolution, { mode: "continue" }>,
+                  ),
+                })}
+              </Task>
+              <Branch
+                if={normalizedMaybe?.mode === "fanout"}
+                then={<FanoutAnswerFlow />}
+                else={<SingleAnswerFlow />}
+              />
+            </Sequence>
+          }
+        />
+        <Task
+          id="answer-select"
+          output={outputs.aiChatAnswer}
+          retries={2}
+          retryPolicy={retryPolicy}
+          timeoutMs={fast}
+        >
+          {async () => {
+            const answer = (
+              ctx.outputMaybe(outputs.aiChatAnswer, { nodeId: "clarification-result" }) ??
+              ctx.outputMaybe(outputs.aiChatAnswer, { nodeId: "single-result" }) ??
+              ctx.output(outputs.aiChatAnswer, { nodeId: "fanout-result" })
+            ).value as AnswerLaneResult;
+            if (answer.status === "ok") {
+              assertFinalSourceMap(answer, citationNonceHex(load().citationNonce));
+            }
+            return { value: answer };
+          }}
+        </Task>
+      </Sequence>
+    );
 
     return (
       <Workflow name="ai-chat">
@@ -2018,164 +1478,60 @@ export function buildAiChatWorkflow(
             id="load-turn"
             output={outputs.aiChatLoadTurn}
             retries={2}
-            timeoutMs={AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
           >
-            {async () => loadTurn(runtime, parseWorkflowRunId(ctx.input))}
+            {async () => ({ value: await runtime.operations.loadTurn(parseRunId(ctx.input)) })}
           </Task>
-          <Task
-            id="preflight"
-            output={outputs.aiChatPreflight}
-            retries={2}
-            timeoutMs={runtime.config.aiPreflightTimeoutMs}
-          >
-            {async () => {
-              const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
-              return runPreflightTask(runtime, load, { taskId: "preflight" });
-            }}
-          </Task>
-          <Task
-            id="hydrate"
-            output={outputs.aiChatHydrate}
-            retries={2}
-            timeoutMs={AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS}
-          >
-            {async () => {
-              const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
-              const preflight = ctx.output(outputs.aiChatPreflight, { nodeId: "preflight" });
-              return runHydrateTask(runtime, load, preflight, "initial");
-            }}
-          </Task>
-          <Task
-            id="answer"
-            output={outputs.aiChatAnswer}
-            retries={2}
-            timeoutMs={runtime.config.aiAnswerTimeoutMs}
-          >
-            {async () => {
-              const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
-              const hydrate = ctx.output(outputs.aiChatHydrate, { nodeId: "hydrate" });
-              return runAnswerTask(runtime, load, hydrate, 1);
-            }}
-          </Task>
-          <Branch
-            if={needsSecondPass}
-            then={
-              <Sequence>
-                <Task
-                  id="preflight-2"
-                  output={outputs.aiChatPreflight2}
-                  retries={2}
-                  timeoutMs={runtime.config.aiPreflightTimeoutMs}
-                >
-                  {async () => {
-                    const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
-                    const hydrate = ctx.output(outputs.aiChatHydrate, { nodeId: "hydrate" });
-                    const answer = ctx.output(outputs.aiChatAnswer, { nodeId: "answer" });
-                    return runPreflight2Task(runtime, load, hydrate, answer);
-                  }}
-                </Task>
-                <Task
-                  id="hydrate-2"
-                  output={outputs.aiChatHydrate2}
-                  retries={2}
-                  timeoutMs={AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS}
-                >
-                  {async () => {
-                    const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
-                    const preflight2 = ctx.output(outputs.aiChatPreflight2, {
-                      nodeId: "preflight-2",
-                    });
-                    return runHydrate2Task(runtime, load, preflight2);
-                  }}
-                </Task>
-                <Task
-                  id="answer-2"
-                  output={outputs.aiChatAnswer2}
-                  retries={2}
-                  timeoutMs={runtime.config.aiAnswerTimeoutMs}
-                >
-                  {async () => {
-                    const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
-                    const hydrate2 = ctx.output(outputs.aiChatHydrate2, { nodeId: "hydrate-2" });
-                    return runAnswer2Task(runtime, load, hydrate2);
-                  }}
-                </Task>
-              </Sequence>
-            }
-            else={
-              <Sequence>
-                <Task
-                  id="preflight-2"
-                  output={outputs.aiChatPreflight2}
-                  retries={0}
-                  timeoutMs={runtime.config.aiPreflightTimeoutMs}
-                >
-                  {async () => skippedPreflight2()}
-                </Task>
-                <Task
-                  id="hydrate-2"
-                  output={outputs.aiChatHydrate2}
-                  retries={0}
-                  timeoutMs={AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS}
-                >
-                  {async () => skippedHydrate2()}
-                </Task>
-                <Task
-                  id="answer-2"
-                  output={outputs.aiChatAnswer2}
-                  retries={0}
-                  timeoutMs={runtime.config.aiAnswerTimeoutMs}
-                >
-                  {async () => skippedAnswer2()}
-                </Task>
-              </Sequence>
-            }
-          />
-          <Task
-            id="memory"
-            output={outputs.aiChatMemory}
-            retries={1}
-            continueOnFail={true}
-            timeoutMs={runtime.config.aiPreflightTimeoutMs}
-          >
-            {async () => {
-              const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
-              const answer = ctx.output(outputs.aiChatAnswer, { nodeId: "answer" });
-              const answer2 = ctx.output(outputs.aiChatAnswer2, { nodeId: "answer-2" });
-              return runMemoryTask(runtime, load, answer, answer2);
-            }}
-          </Task>
+          <Parallel id="turn-lanes" maxConcurrency={AI_CHAT_TURN_LANE_MAX_CONCURRENCY}>
+            <Task
+              id="memory-extract"
+              output={outputs.aiChatMemory}
+              retries={2}
+              retryPolicy={retryPolicy}
+              timeoutMs={fast}
+            >
+              {async () => ({ value: await runtime.operations.extractMemory(load()) })}
+            </Task>
+            <AnswerLane />
+          </Parallel>
           <Task
             id="finalize"
             output={outputs.aiChatFinalize}
             retries={2}
-            timeoutMs={AI_WORKFLOW_LOCAL_TASK_TIMEOUT_MS}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
           >
             {async () => {
-              const load = ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" });
-              const preflight = ctx.output(outputs.aiChatPreflight, { nodeId: "preflight" });
-              const hydrate = ctx.output(outputs.aiChatHydrate, { nodeId: "hydrate" });
-              const answer = ctx.output(outputs.aiChatAnswer, { nodeId: "answer" });
-              const preflight2 = ctx.output(outputs.aiChatPreflight2, { nodeId: "preflight-2" });
-              const hydrate2 = ctx.output(outputs.aiChatHydrate2, { nodeId: "hydrate-2" });
-              const answer2 = ctx.output(outputs.aiChatAnswer2, { nodeId: "answer-2" });
-              const memory = ctx.output(outputs.aiChatMemory, { nodeId: "memory" });
-
-              return finalizeRun(
-                runtime,
-                load,
-                preflight,
-                hydrate,
-                answer,
-                preflight2,
-                hydrate2,
-                answer2,
-                memory,
+              const terminal = await runtime.operations.finalize(
+                load(),
+                ctx.output(outputs.aiChatAnswer, { nodeId: "answer-select" })
+                  .value as AnswerLaneResult,
+                MemoryExtractionSchema.parse(
+                  ctx.output(outputs.aiChatMemory, { nodeId: "memory-extract" }).value,
+                ) as MemoryExtractionArtifact,
+                `ai-chat:${load().aiRunId}`,
               );
+              return terminal.status === "succeeded"
+                ? {
+                    status: "succeeded" as const,
+                    assistantMessageId: terminal.assistantMessageId,
+                    alreadyTerminal: terminal.alreadyTerminal,
+                  }
+                : {
+                    status: "failed" as const,
+                    code: terminal.code,
+                    alreadyTerminal: terminal.alreadyTerminal,
+                  };
             }}
           </Task>
         </Sequence>
       </Workflow>
     );
   });
+
+  return registerSmithersWorkflowMaxConcurrency(
+    workflow,
+    aiChatSmithersMaxConcurrency(runtime.config),
+  );
 }

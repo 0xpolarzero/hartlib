@@ -1,230 +1,326 @@
-import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
   chatMessagesResponseFromRows,
-  maxSendMessageBodyBytes,
-  parseSendMessageBody,
-  requestJsonWithLimit,
-  type ContextBlockRow,
-  type MessageRow,
-} from "./chat";
+  creditLimitReached,
+  effectiveWebPolicy,
+  normalizeDomainAllowlist,
+} from "../domain/chat";
 
-const at = (iso: string) => new Date(iso);
+const at = (value: string) => new Date(value);
+const citationNonce = "A".repeat(22);
+const citationNonceHex = "00".repeat(16);
+const documentSourceId = "public:test-source";
+const documentId = "test-document";
+const documentVersionId = "test-document-version";
+const documentContentHash = "a".repeat(64);
 
-const documentBlock: ContextBlockRow = {
-  block_id: "b1",
-  kind: "document",
-  token_estimate: 120,
-  provenance: {
-    documentId: "doc-1",
-    sourceId: "source-1",
-    sourceDisplayName: "Source One",
-    canonicalUrl: "https://source.example/doc-1",
-    title: "Document One",
-    publishedAt: "2026-07-08T10:00:00.000Z",
-    charStart: null,
-    charEnd: null,
-  },
-};
-
-const memoryBlock: ContextBlockRow = {
-  block_id: "b2",
-  kind: "memory",
-  token_estimate: 24,
-  provenance: { memoryIds: ["memory-1"] },
-};
-
-const laterDocumentBlock: ContextBlockRow = {
-  ...documentBlock,
-  block_id: "b10",
-  token_estimate: 80,
-  provenance: {
-    documentId: "doc-10",
-    sourceId: "source-1",
-    sourceDisplayName: "Source One",
-    canonicalUrl: "https://source.example/doc-10",
-    title: "Document Ten",
-    publishedAt: "2026-07-08T10:00:00.000Z",
-    charStart: null,
-    charEnd: null,
-  },
-};
-
-const userMessage: MessageRow = {
-  id: "message-1",
-  author: "user",
-  content: "What changed?",
-  ai_run_id: null,
-  created_at: at("2026-07-09T09:00:00.000Z"),
-};
-
-const assistantMessage: MessageRow = {
-  id: "message-2",
-  author: "assistant",
-  content: "It changed [[cite:b1]] and matches your preference [[cite:b2]].",
-  ai_run_id: "run-1",
-  created_at: at("2026-07-09T09:00:02.000Z"),
-};
-
-describe("chatMessagesResponseFromRows", () => {
-  it("orders messages and resolves document and memory citations", () => {
-    const response = chatMessagesResponseFromRows(
-      [assistantMessage, userMessage],
-      [documentBlock, memoryBlock],
-      [
-        {
-          id: "obs-1",
-          run_id: "run-1",
-          kind: "citation",
-          payload: { blockId: "b1", messageId: "message-2" },
-          created_at: at("2026-07-09T09:00:03.000Z"),
-        },
-        {
-          id: "obs-2",
-          run_id: "run-1",
-          kind: "citation",
-          payload: { blockId: "b2", messageId: "message-2" },
-          created_at: at("2026-07-09T09:00:04.000Z"),
-        },
-      ],
+describe("creditLimitReached", () => {
+  it("compares PostgreSQL bigint values without losing precision", () => {
+    expect(creditLimitReached("9007199254740992", "9007199254740993")).toBe(false);
+    expect(creditLimitReached("9007199254740993", "9007199254740993")).toBe(true);
+    expect(creditLimitReached(1n, null)).toBe(false);
+    expect(() => creditLimitReached(Number.MAX_SAFE_INTEGER + 1, 1n)).toThrow(
+      "unsafe_database_integer",
     );
-
-    expect(response.map((message) => message.id)).toEqual(["message-1", "message-2"]);
-    expect(response[1]?.content).toBe(assistantMessage.content);
-    expect(response[1]?.citations).toEqual([
-      {
-        blockId: "b1",
-        kind: "document",
-        label: "Source One",
-        sourceDisplayName: "Source One",
-        title: "Document One",
-        canonicalUrl: "https://source.example/doc-1",
-        publishedAt: "2026-07-08T10:00:00.000Z",
-      },
-      {
-        blockId: "b2",
-        kind: "memory",
-        label: null,
-        sourceDisplayName: null,
-        title: null,
-        canonicalUrl: null,
-        publishedAt: null,
-      },
-    ]);
-  });
-
-  it("maps context block observations for an assistant message run", () => {
-    const response = chatMessagesResponseFromRows(
-      [assistantMessage],
-      [documentBlock, memoryBlock, laterDocumentBlock],
-      [
-        {
-          id: "obs-1",
-          run_id: "run-1",
-          kind: "context_window",
-          payload: { blockIds: ["b2"] },
-          created_at: at("2026-07-09T09:00:03.000Z"),
-        },
-        {
-          id: "obs-2",
-          run_id: "run-1",
-          kind: "context_window",
-          payload: { blockIds: ["b10"] },
-          created_at: at("2026-07-09T09:00:04.000Z"),
-        },
-        {
-          id: "obs-3",
-          run_id: "run-1",
-          kind: "context_window",
-          payload: { blockIds: ["b2", "b10", "b1"] },
-          created_at: at("2026-07-09T09:00:05.000Z"),
-        },
-      ],
-    );
-
-    expect(response[0]?.contextBlocks).toEqual([
-      { blockId: "b1", kind: "document", label: "Source One: Document One", tokenEstimate: 120 },
-      { blockId: "b2", kind: "memory", label: null, tokenEstimate: 24 },
-      { blockId: "b10", kind: "document", label: "Source One: Document Ten", tokenEstimate: 80 },
-    ]);
-  });
-
-  it("leaves unknown citation tags as message text without resolved metadata", () => {
-    const response = chatMessagesResponseFromRows(
-      [
-        {
-          ...assistantMessage,
-          content: "Unknown support [[cite:b999]]",
-        },
-      ],
-      [documentBlock],
-      [
-        {
-          id: "obs-1",
-          run_id: "run-1",
-          kind: "citation",
-          payload: { blockId: "b999", messageId: "message-2" },
-          created_at: at("2026-07-09T09:00:03.000Z"),
-        },
-      ],
-    );
-
-    expect(response[0]?.content).toBe("Unknown support [[cite:b999]]");
-    expect(response[0]?.citations).toEqual([]);
   });
 });
 
-describe("parseSendMessageBody", () => {
-  it("accepts only a strict text, locale, and market object", () => {
-    expect(parseSendMessageBody({ text: " Explain this ", locale: "en-US", market: "US" })).toEqual(
-      {
-        ok: true,
-        text: "Explain this",
-        locale: "en-US",
-        market: "US",
-      },
-    );
+describe("effectiveWebPolicy", () => {
+  it("uses canonical precedence and normalizes a stable allowlist", () => {
+    expect(
+      effectiveWebPolicy({
+        companyEnabled: false,
+        allowedDomains: ["GOUV.FR."],
+        adapterAvailable: false,
+        provider: null,
+        allowlistSupported: false,
+        maxDomainFilters: 8,
+      }),
+    ).toEqual({ enabled: false, reason: "company_disabled", allowlistActive: true });
+    expect(
+      effectiveWebPolicy({
+        companyEnabled: true,
+        allowedDomains: null,
+        adapterAvailable: false,
+        provider: null,
+        allowlistSupported: false,
+        maxDomainFilters: 8,
+      }),
+    ).toEqual({ enabled: false, reason: "deployment_unavailable", allowlistActive: false });
+    expect(
+      effectiveWebPolicy({
+        companyEnabled: true,
+        allowedDomains: [" Example.COM. ", "example.com", "État.fr"],
+        adapterAvailable: true,
+        provider: "tinyfish",
+        allowlistSupported: true,
+        maxDomainFilters: 8,
+      }),
+    ).toEqual({
+      enabled: true,
+      provider: "tinyfish",
+      allowedDomains: ["example.com", "xn--tat-9la.fr"],
+    });
+  });
+
+  it("fails closed before acceptance when the normalized allowlist exceeds adapter fanout", () => {
+    const overLimit = ["a.example.com", "b.example.com", "c.example.com"];
+    expect(
+      effectiveWebPolicy({
+        companyEnabled: false,
+        allowedDomains: overLimit,
+        adapterAvailable: true,
+        provider: "tinyfish",
+        allowlistSupported: true,
+        maxDomainFilters: 2,
+      }),
+    ).toEqual({ enabled: false, reason: "company_disabled", allowlistActive: true });
+    expect(
+      effectiveWebPolicy({
+        companyEnabled: true,
+        allowedDomains: overLimit,
+        adapterAvailable: false,
+        provider: null,
+        allowlistSupported: true,
+        maxDomainFilters: 2,
+      }),
+    ).toEqual({ enabled: false, reason: "deployment_unavailable", allowlistActive: true });
+    expect(
+      effectiveWebPolicy({
+        companyEnabled: true,
+        allowedDomains: overLimit,
+        adapterAvailable: true,
+        provider: "tinyfish",
+        allowlistSupported: true,
+        maxDomainFilters: 2,
+      }),
+    ).toEqual({ enabled: false, reason: "allowlist_unsupported", allowlistActive: true });
 
     expect(
-      parseSendMessageBody({ text: "Explain this", locale: "en-US", market: "US", extra: true }),
-    ).toEqual({ ok: false, error: "invalid_body" });
-    expect(parseSendMessageBody({ text: "Explain this", locale: "en-US" })).toEqual({
-      ok: false,
-      error: "invalid_body",
+      effectiveWebPolicy({
+        companyEnabled: true,
+        allowedDomains: ["a.example.com", "A.EXAMPLE.COM.", "b.example.com"],
+        adapterAvailable: true,
+        provider: "tinyfish",
+        allowlistSupported: true,
+        maxDomainFilters: 2,
+      }),
+    ).toEqual({
+      enabled: true,
+      provider: "tinyfish",
+      allowedDomains: ["a.example.com", "b.example.com"],
     });
-    expect(parseSendMessageBody({ text: "Explain this", locale: "en-US", market: 1 })).toEqual({
-      ok: false,
-      error: "invalid_body",
-    });
+  });
+
+  it.each([
+    "https://example.com",
+    "example.com:443",
+    "example.com/path",
+    "*.example.com",
+    "localhost",
+    "service.local",
+    "service.corp",
+    "router.lan",
+    "127.0.0.1",
+    "127.1",
+    "[::1]",
+    "single-label",
+    "bad_label.example",
+  ])("fails closed for unsafe allowlist entry %s", (domain) => {
+    expect(normalizeDomainAllowlist([domain])).toEqual({ ok: false });
   });
 });
 
-describe("requestJsonWithLimit", () => {
-  it("rejects oversized Content-Length before parsing JSON", async () => {
-    const request = new Request("http://brief.test/v1/chat/messages", {
-      method: "POST",
-      headers: { "content-length": String(maxSendMessageBodyBytes + 1) },
-      body: "{",
-    });
-
-    await expect(Effect.runPromise(requestJsonWithLimit(request))).rejects.toThrow(
-      "request_body_too_large",
+describe("chatMessagesResponseFromRows", () => {
+  it("projects durable run outcomes and immutable source/citation records", () => {
+    const response = chatMessagesResponseFromRows(
+      [
+        {
+          id: "user-message",
+          author: "user",
+          content: "What changed?",
+          created_at: at("2026-07-10T10:00:00.000Z"),
+        },
+        {
+          id: "assistant-message",
+          author: "assistant",
+          content: `A claim [[cite:k_${citationNonce}_1]]. Unknown [[cite:k_unknown]].`,
+          created_at: at("2026-07-10T10:00:02.000Z"),
+        },
+      ],
+      [
+        {
+          id: "run-1",
+          chat_id: "chat-1",
+          user_message_id: "user-message",
+          assistant_message_id: "assistant-message",
+          started_at: at("2026-07-10T10:00:01.000Z"),
+          finished_at: at("2026-07-10T10:00:03.000Z"),
+          failed_at: null,
+          error_code: null,
+          retryable: null,
+        },
+      ],
+      [
+        {
+          assistant_message_id: "assistant-message",
+          source_key: `k_${citationNonce}_1`,
+          citation_nonce_hex: citationNonceHex,
+          publisher_document_version_id: null,
+          source_id: documentSourceId,
+          document_id: documentId,
+          document_version_id: documentVersionId,
+          content_hash: documentContentHash,
+          canonical_url: "https://example.com/document",
+          kind: "document",
+          locator: {
+            kind: "document",
+            sourceId: documentSourceId,
+            documentId,
+            documentVersionId,
+            contentHash: documentContentHash,
+            ranges: [{ pageNumber: 2, charStart: 10, charEnd: 50 }],
+          },
+          display_label: "Official source",
+          public_provenance: {
+            sourceName: "DILA",
+            issueTitle: "Issue",
+            documentTitle: "Document",
+            citationUrl: "https://example.com/document",
+            publishedAt: "2026-07-09T00:00:00.000Z",
+          },
+        },
+      ],
+      [
+        {
+          assistant_message_id: "assistant-message",
+          source_key: `k_${citationNonce}_1`,
+          topic_id: "t2",
+          consumer_task_id: "topic-t2-answer",
+          rendered_token_count: 40,
+          context_order: 0,
+          ranges: [{ pageNumber: 2, charStart: 30, charEnd: 50 }],
+        },
+        {
+          assistant_message_id: "assistant-message",
+          source_key: `k_${citationNonce}_1`,
+          topic_id: "t1",
+          consumer_task_id: "topic-t1-answer",
+          rendered_token_count: 60,
+          context_order: 0,
+          ranges: [{ pageNumber: 2, charStart: 10, charEnd: 30 }],
+        },
+      ],
     );
+
+    expect(response[0]).toMatchObject({
+      author: "user",
+      run: { id: "run-1", status: "succeeded" },
+    });
+    expect(response[1]).toMatchObject({
+      author: "assistant",
+      citations: [{ sourceKey: `k_${citationNonce}_1`, kind: "document" }],
+      sourcesRead: [
+        {
+          sourceKey: `k_${citationNonce}_1`,
+          kind: "document",
+          tokenCount: 100,
+          topicIds: ["t1", "t2"],
+          ranges: [{ pageNumber: 2, charStart: 10, charEnd: 50 }],
+        },
+      ],
+    });
   });
 
-  it("rejects bodies that exceed the bounded reader limit without Content-Length", async () => {
-    const request = new Request("http://brief.test/v1/chat/messages", {
-      method: "POST",
-      body: JSON.stringify({
-        text: "x".repeat(maxSendMessageBodyBytes),
-        locale: "en-US",
-        market: "US",
-      }),
+  it("reloads sources by numeric ordinal and rejects malformed or non-HTTPS provenance", () => {
+    const sourceRow = (sourceKey: string, citationUrl = "https://example.com/document") => ({
+      assistant_message_id: "assistant-message",
+      source_key: sourceKey,
+      citation_nonce_hex: citationNonceHex,
+      publisher_document_version_id: null,
+      source_id: documentSourceId,
+      document_id: documentId,
+      document_version_id: documentVersionId,
+      content_hash: documentContentHash,
+      canonical_url: "https://example.com/document",
+      kind: "document" as const,
+      locator: {
+        kind: "document",
+        sourceId: documentSourceId,
+        documentId,
+        documentVersionId,
+        contentHash: documentContentHash,
+        ranges: [{ charStart: 0, charEnd: 8 }],
+      },
+      display_label: sourceKey,
+      public_provenance: { documentTitle: sourceKey, citationUrl },
     });
-
-    await expect(Effect.runPromise(requestJsonWithLimit(request))).rejects.toThrow(
-      "request_body_too_large",
+    const useRow = (sourceKey: string, context_order: number) => ({
+      assistant_message_id: "assistant-message",
+      source_key: sourceKey,
+      consumer_task_id: "single-answer",
+      topic_id: null,
+      rendered_token_count: 1,
+      context_order,
+      ranges: [{ charStart: 0, charEnd: 8 }],
+    });
+    const projected = chatMessagesResponseFromRows(
+      [
+        {
+          id: "assistant-message",
+          author: "assistant",
+          content: "answer",
+          created_at: at("2026-07-10T10:00:00.000Z"),
+        },
+      ],
+      [],
+      [
+        sourceRow(`k_${citationNonce}_10`),
+        sourceRow(`k_${citationNonce}_2`),
+        sourceRow(`k_${citationNonce}_11`),
+      ],
+      [
+        useRow(`k_${citationNonce}_10`, 1),
+        useRow(`k_${citationNonce}_2`, 0),
+        useRow(`k_${citationNonce}_11`, 2),
+      ],
     );
+    expect(
+      (projected[0] as { sourcesRead: readonly { sourceKey: string }[] }).sourcesRead.map(
+        (source) => source.sourceKey,
+      ),
+    ).toEqual([`k_${citationNonce}_2`, `k_${citationNonce}_10`, `k_${citationNonce}_11`]);
+
+    expect(() =>
+      chatMessagesResponseFromRows(
+        [
+          {
+            id: "assistant-message",
+            author: "assistant",
+            content: "answer",
+            created_at: at("2026-07-10T10:00:00.000Z"),
+          },
+        ],
+        [],
+        [sourceRow(`k_${citationNonce}_bad`)],
+        [useRow(`k_${citationNonce}_bad`, 0)],
+      ),
+    ).toThrow("invalid persisted source key");
+    expect(() =>
+      chatMessagesResponseFromRows(
+        [
+          {
+            id: "assistant-message",
+            author: "assistant",
+            content: "answer",
+            created_at: at("2026-07-10T10:00:00.000Z"),
+          },
+        ],
+        [],
+        [sourceRow(`k_${citationNonce}_1`, "http://example.com/document")],
+        [useRow(`k_${citationNonce}_1`, 0)],
+      ),
+    ).toThrow("invalid persisted source citationUrl");
   });
 });

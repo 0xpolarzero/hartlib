@@ -8,6 +8,7 @@ playwright-report
 test-results
 *.tsbuildinfo
 .smithers/
+.tmp-bun/
 smithers.db
 smithers.db-shm
 smithers.db-wal

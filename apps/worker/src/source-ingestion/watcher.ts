@@ -59,10 +59,10 @@ export const runPublicSourceSafePollTick = (
   config: PublicSourceWatcherConfig,
 ): Effect.Effect<void, never, JobRepository> =>
   runPublicSourcePollTick(config).pipe(
-    Effect.catch((error) =>
+    Effect.catch(() =>
       Effect.logError("public source poll enqueue failed").pipe(
         Effect.annotateLogs({
-          error: error instanceof Error ? error.message : String(error),
+          errorCode: "public_source_poll_enqueue_failed",
         }),
       ),
     ),

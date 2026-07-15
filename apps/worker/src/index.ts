@@ -1,16 +1,32 @@
 import { BunRuntime } from "@effect/platform-bun";
 import { Effect } from "effect";
-import { loadWorkerConfig } from "./config";
+import { assertWorkerAiProviderPosture, loadWorkerConfig } from "./config";
 import { JsonLoggerLayer, serviceLogFields } from "./logging";
 import { JobRepositoryPgLayer } from "./jobs/repository";
 import { runWorker } from "./jobs/runner";
+import { runMaintenanceScheduler } from "./jobs/maintenance";
 import { DatabaseMigrationLayer, runMigrations } from "./db/migrate";
 import { PublicSourceIngestionRepositoryPgLayer } from "./source-ingestion/pg-repository";
 import { runPublicSourcePolling, runPublicSourceStartupBackfill } from "./source-ingestion/watcher";
+import { PlatformFileStoreLive } from "./platform/file-store";
+import { PdfTextExtractorLive } from "./platform/pdf-text";
+import { ExportObjectStoreServiceLive, NotificationEmailServiceLive } from "./platform/adapters";
+import { initializeWorkerTelemetry } from "./telemetry";
+import {
+  createSmithersStorage,
+  withAiChatSmithersProducerFenceEffect,
+} from "./ai/smithers-interop";
+import { aiChatSchemas } from "./ai/workflow/ai-chat";
 
 const program = Effect.gen(function* () {
   const config = yield* loadWorkerConfig;
-  const aiConfigured = config.zaiApiKey.trim().length > 0;
+  initializeWorkerTelemetry(config.sentryDsn, config.nodeEnv);
+  yield* Effect.try({
+    try: () => assertWorkerAiProviderPosture(config),
+    catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+  });
+  const aiConfigured =
+    config.zaiApiKey.trim().length > 0 || (config.nodeEnv === "test" && config.aiE2eFakeProvider);
 
   yield* Effect.logInfo("starting worker").pipe(
     Effect.annotateLogs({
@@ -49,19 +65,38 @@ const program = Effect.gen(function* () {
 
   yield* runPublicSourceStartupBackfill(publicSourceWatcherConfig);
 
-  const workerLoops = Array.from({ length: Math.max(1, config.workerConcurrency) }, () =>
-    runWorker(config.jobPollIntervalMs),
-  );
+  yield* withAiChatSmithersProducerFenceEffect(
+    config.databaseUrl,
+    Effect.gen(function* () {
+      const smithersStorage = yield* Effect.tryPromise({
+        try: () => createSmithersStorage(aiChatSchemas, { connectionString: config.databaseUrl }),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      });
 
-  yield* Effect.all([...workerLoops, runPublicSourcePolling(publicSourceWatcherConfig)], {
-    concurrency: "unbounded",
-  });
+      const workerLoops = Array.from({ length: Math.max(1, config.workerConcurrency) }, () =>
+        runWorker(config.jobPollIntervalMs, { smithersStorage }),
+      );
+
+      yield* Effect.all(
+        [
+          ...workerLoops,
+          runPublicSourcePolling(publicSourceWatcherConfig),
+          runMaintenanceScheduler,
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(Effect.ensuring(Effect.promise(() => smithersStorage.close())));
+    }),
+  );
 });
 
 BunRuntime.runMain(
   program.pipe(
     Effect.provide(JobRepositoryPgLayer),
     Effect.provide(PublicSourceIngestionRepositoryPgLayer),
+    Effect.provide(PlatformFileStoreLive),
+    Effect.provide(PdfTextExtractorLive),
+    Effect.provide(NotificationEmailServiceLive),
+    Effect.provide(ExportObjectStoreServiceLive),
     Effect.provide(DatabaseMigrationLayer),
     Effect.provide(JsonLoggerLayer),
     Effect.annotateLogs(serviceLogFields),

@@ -14,7 +14,7 @@ const compiler = PgClient.makeCompiler();
 const compile = (spec: QuerySpec, overrides?: Partial<CompileQuerySpecOptions>) =>
   compiler.compile(
     compileQuerySpec(spec, {
-      access: { kind: "allPublicSources" },
+      access: { kind: "sourceIds", sourceIds: ["authorized-test-source"] },
       maxLimit: 20,
       recencyHalfLifeDays: 14,
       now: new Date("2026-07-08T00:00:00.000Z"),
@@ -140,7 +140,7 @@ describe("compileQuerySpec", () => {
     ).toBe(true);
   });
 
-  it("emits no clauses for empty filter arrays", () => {
+  it("emits no optional clauses for empty filter arrays while retaining caller access", () => {
     const [text] = compile({
       terms: "x",
       sourceIds: [],
@@ -148,7 +148,7 @@ describe("compileQuerySpec", () => {
       documentTypes: [],
     });
 
-    expect(text).not.toContain("d.source_id in");
+    expect(text).toContain("d.source_id in");
     expect(text).not.toContain("s.country in");
     expect(text).not.toContain("d.document_type in");
   });
@@ -183,10 +183,6 @@ describe("compileQuerySpec", () => {
   });
 
   it("builds source access clauses", () => {
-    const [allPublicText, allPublicParams] = compiler.compile(
-      buildSourceAccessClause({ kind: "allPublicSources" }),
-      false,
-    );
     const [sourceIdsText, sourceIdsParams] = compiler.compile(
       buildSourceAccessClause({ kind: "sourceIds", sourceIds: ["s1", "s2"] }),
       false,
@@ -196,12 +192,38 @@ describe("compileQuerySpec", () => {
       false,
     );
 
-    expect(allPublicText).toBe("1 = 1");
-    expect(allPublicParams).toEqual([]);
     expect(sourceIdsText).toBe("d.source_id in ($1,$2)");
     expect(sourceIdsParams).toEqual(["s1", "s2"]);
     expect(emptySourceIdsText).toBe("1 = 0");
     expect(emptySourceIdsParams).toEqual([]);
+  });
+
+  it("compiles live chat, membership, user, company, and source-setting authorization before ranking", () => {
+    const access = {
+      kind: "liveChatSourceIds" as const,
+      chatId: "00000000-0000-4000-8000-000000000001",
+      initiatingUserId: "user-live",
+      sourceIds: ["source-live"],
+    };
+    const [text, params] = compiler.compile(buildSourceAccessClause(access), false);
+
+    expect(text).toContain("d.source_id in ($1)");
+    expect(text).toContain("authorized_chat.deleted_at is null");
+    expect(text).toContain("authorized_membership.revoked_at is null");
+    expect(text).toContain("authorized_user.recovery_deleted_at is null");
+    expect(text).toContain("authorized_company.purged_at is null");
+    expect(text).toContain("authorized_setting.enabled");
+    expect(params).toEqual([
+      "source-live",
+      "user-live",
+      "00000000-0000-4000-8000-000000000001",
+      "user-live",
+    ]);
+
+    const [searchText] = compile({ terms: "authorized" }, { access });
+    expect(searchText.indexOf("authorized_setting.enabled")).toBeLessThan(
+      searchText.lastIndexOf("limit"),
+    );
   });
 
   it("composes access into the statement", () => {

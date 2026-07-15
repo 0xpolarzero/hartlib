@@ -1,8 +1,12 @@
 import type * as React from "react";
 import { FormattedMessage, useIntl, useLocale } from "@brief/i18n";
 import { cn } from "@brief/ui";
+import { useLocation } from "@tanstack/react-router";
+import { SignedIn } from "@clerk/clerk-react";
 
 import { LocaleSwitcher } from "@/components/layout/locale-switcher";
+import { WorkspaceSwitcher } from "@/components/layout/workspace-switcher";
+import { useWebSecurityContext } from "@/components/auth/auth-boundary";
 
 type AppShellProps = {
   children: React.ReactNode;
@@ -11,8 +15,9 @@ type AppShellProps = {
 export function AppShell({ children }: AppShellProps) {
   const intl = useIntl();
   const locale = useLocale();
+  const location = useLocation();
+  const { mode } = useWebSecurityContext();
   const homeHref = `/${locale}/`;
-  const chatHref = `/${locale}/chat/demo`;
   const wordmark = intl.formatMessage({ id: "app.wordmark" });
 
   return (
@@ -26,14 +31,37 @@ export function AppShell({ children }: AppShellProps) {
             <NavLink href={homeHref}>
               <FormattedMessage id="nav.home" />
             </NavLink>
-            <NavLink href={chatHref}>
-              <FormattedMessage id="nav.chat" />
-            </NavLink>
+            {mode === "demo" ? (
+              <WorkspaceSwitcher pathname={location.pathname} />
+            ) : (
+              <SignedIn>
+                <WorkspaceSwitcher pathname={location.pathname} />
+              </SignedIn>
+            )}
             <LocaleSwitcher />
           </nav>
         </div>
       </header>
       <main className="mx-auto w-full max-w-6xl px-4">{children}</main>
+      <footer className="mt-12 border-t border-rule">
+        <nav className="mx-auto flex max-w-6xl flex-wrap gap-x-5 gap-y-2 px-4 py-6 text-xs text-muted">
+          <a className="hover:text-ink" href={`/${locale}/privacy`}>
+            <FormattedMessage id="nav.privacy" />
+          </a>
+          <a className="hover:text-ink" href={`/${locale}/security`}>
+            <FormattedMessage id="nav.security" />
+          </a>
+          <a className="hover:text-ink" href={`/${locale}/legal/publisher-terms`}>
+            <FormattedMessage id="nav.publisherTerms" />
+          </a>
+          <a className="hover:text-ink" href={`/${locale}/legal/client-terms`}>
+            <FormattedMessage id="nav.clientTerms" />
+          </a>
+          <a className="hover:text-ink" href={`/${locale}/legal/data-processing`}>
+            <FormattedMessage id="nav.dataProcessing" />
+          </a>
+        </nav>
+      </footer>
     </div>
   );
 }

@@ -1,7 +1,9 @@
 import type { Effect } from "effect";
 import type { Locale, Market } from "@brief/shared";
 
-export type PublicSourceId = "service_public" | "bofip_impots" | "tresor" | "assemblee_nationale";
+export const PUBLIC_SOURCE_IDS = ["service_public", "bofip_impots", "assemblee_nationale"] as const;
+
+export type PublicSourceId = (typeof PUBLIC_SOURCE_IDS)[number];
 
 export type SourceIngestionMethod =
   | "atom_feed"
@@ -22,6 +24,10 @@ export type PublicSourceDefinition = {
   readonly discoveryUrl: string;
   readonly discoveryUrls?: readonly string[];
   readonly contentUrl?: string;
+  /** Exact HTTPS origins allowed to appear as customer-visible official URLs. */
+  readonly canonicalUrlOrigins?: readonly string[];
+  /** Exact HTTPS origins the adapter may contact, including redirect targets. */
+  readonly fetchOrigins?: readonly string[];
   readonly contentFormats: readonly SourceContentFormat[];
   readonly averageCharsPerItem: number;
 };
@@ -44,6 +50,8 @@ export type RawArtifact = {
   readonly fetchedAt: Date;
   readonly mediaType: string;
   readonly body: string;
+  /** Exact source bytes for binary artifacts. HTML/text artifacts use `body`. */
+  readonly bodyBytes?: Uint8Array;
   readonly metadata?: Record<string, unknown>;
 };
 
@@ -85,7 +93,9 @@ export type FetchResponse = {
   readonly status: number;
   readonly ok: boolean;
   readonly headers: Headers;
+  readonly body?: ReadableStream<Uint8Array> | null;
   readonly text: () => Promise<string>;
+  readonly arrayBuffer?: () => Promise<ArrayBuffer>;
 };
 
 export type Fetcher = (url: string, init?: RequestInit) => Promise<FetchResponse>;

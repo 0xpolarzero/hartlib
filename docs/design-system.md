@@ -12,7 +12,7 @@ Linear's discipline layered onto the Pressroom concept:
 
 1. **Precision and restraint** — tight, intentional spacing; high information density without clutter. Applied to issue tables, chat surface, and layout rhythm. Every element earns its space.
 
-2. **Type-led hierarchy** — clear type weight and size contrast rather than heavy borders or colored backgrounds for hierarchy. Hairline rules (Rule component, `border-rule`) are the divider system, not boxes.
+2. **Type-led hierarchy** — clear type weight and size contrast rather than heavy borders or colored backgrounds for hierarchy. Hairline rules (`Separator` component, `border-rule`) are the divider system, not boxes.
 
 3. **One-signal-accent** — oxblood (`--color-accent`) serves the same role as Linear's signal-blue: everything else quiet, one color carries the interaction and intelligence signal. Never introduce a second accent.
 
@@ -121,9 +121,9 @@ Small-caps tracked text pill, for state display only (e.g. Actif / Pause).
 - **Variants**: `default` (neutral, rule border), `success` (green), `warning` (amber), `danger` (red)
 - Pill shape (`rounded-full`), 11px uppercase tracking-wider, 1px border, light tinted background per variant
 
-### Rule
+### Separator
 
-Hairline divider. Renders as `<hr>` with no border, 1px background color (`--color-rule`). No margins by default; consumer controls vertical spacing.
+Hairline divider backed by the Radix separator primitive. It uses a 1px background color (`--color-rule`) and has no margins by default; the consumer controls spacing.
 
 ### Table
 
@@ -160,15 +160,9 @@ Reusable product UI for the demo and MVP lives in `@brief/ui`, while apps keep r
 - `SubscribersTable` — subscriber list, pause/resume/delete controls, and draft subscriber row with company combobox and email validation display
 - `Breadcrumbs`, `SectionHeader`, `InlineEditableField`, `ConfirmingDeleteButton`, and `ScheduledPublicationIcon` are reusable support components used by these product surfaces. Breadcrumb publication titles truncate responsively with the full title available through the element title.
 
-### DocumentFrame
+### Hosted Document Opening
 
-Renders stored HTML issue content on a paper surface inside a sandboxed iframe.
-
-- Paper background (`--color-paper`), 1px rule border, `rounded-sm` backed by `--radius`
-- Title bar in bottom-bordered strip, 11px uppercase tracked label
-- Crop-mark corner detail: tiny L-shaped rule at top-right (print "datadrop" metaphor)
-- Sandboxed iframe with CSP: `default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'`
-- Props: `title: string`, `html: string` (raw HTML), `className?: string`
+Archive rows distinguish the official source URL from the platform-hosted artifact. The official URL is a separate external link. Hosted PDFs open only after an authorized response has been verified as `application/pdf`; the API-authorized final signed redirect URL is used when present, and a temporary blob URL is revoked for a direct PDF response. Hosted HTML navigates directly to the API content response so its restrictive CSP and opaque sandbox remain authoritative. Product UI must never copy hosted HTML into a creator-origin blob, `srcdoc`, or unsandboxed application DOM.
 
 ### Chat
 
@@ -188,7 +182,7 @@ Reusable chat transcript primitives for client AI conversations.
 
 2. **No card-in-card** — Page sections are full-width bands or unframed layouts. Cards are for individual repeated items (issues, documents, chat messages). Do not nest cards.
 
-3. **Hairline rules over borders** — Prefer `Rule` component or `border-rule` / `divide-y divide-rule` over heavy box borders. Dividers create structure without visual weight.
+3. **Hairline rules over borders** — Prefer `Separator` or `border-rule` / `divide-y divide-rule` over heavy box borders. Dividers create structure without visual weight.
 
 4. **Type-led layout** — Establish hierarchy through type weight and size, not colored backgrounds or decorative cards. Heavy borders should feel suspect.
 
@@ -218,7 +212,7 @@ The `@brief/ui` package exports:
 | Badge     | —                               | 6 variants: default, secondary, destructive, outline, success, warning                                                |
 | Table     | —                               | Table, TableHeader, TableBody, TableFooter, TableRow, TableHead, TableCell, TableCaption; stickyHeader on TableHeader |
 | DataTable | TanStack Table                  | Shared renderer for sortable dense product tables; feature code supplies columns, sorting state, and cell content     |
-| Separator | `@radix-ui/react-separator`     | Replaces the hand-written Rule; Rule exported as alias for backward compat                                            |
+| Separator | `@radix-ui/react-separator`     | Canonical hairline divider primitive                                                                                  |
 | Tabs      | `@radix-ui/react-tabs`          | Tabs, TabsList, TabsTrigger, TabsContent; replaces hand-rolled switcher patterns                                      |
 | Input     | —                               | Styled text input using `--radius`                                                                                    |
 | Label     | `@radix-ui/react-label`         | Associated with inputs via peer targeting                                                                             |

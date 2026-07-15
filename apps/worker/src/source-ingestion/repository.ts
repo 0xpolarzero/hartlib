@@ -11,6 +11,12 @@ import type {
   PublicSourceIngestionRun,
   PublicSourceIngestionStats,
 } from "./types";
+import { durablePublicSourceItemMetadata } from "./types";
+
+const durableDiscoveredItem = (item: DiscoveredItem): DiscoveredItem => ({
+  ...item,
+  metadata: durablePublicSourceItemMetadata(item.metadata),
+});
 
 const optionalValidators = (
   etag?: string,
@@ -30,8 +36,8 @@ const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 const readableArtifactMediaType = (mediaType: string): boolean => {
-  const lower = mediaType.toLowerCase();
-  return lower.includes("html") || lower.includes("pdf");
+  const baseType = mediaType.split(";", 1)[0]?.trim().toLowerCase();
+  return baseType === "text/html" || baseType === "application/pdf";
 };
 
 const assertReadableStoredItem = (
@@ -78,6 +84,7 @@ type MemoryItemState = {
   readonly lastFetchedAt: Date | undefined;
   readonly lastSuccessfulFetchAt: Date | undefined;
   readonly lastNotModifiedAt: Date | undefined;
+  readonly pollEligible: boolean;
   readonly failures: readonly string[];
 };
 
@@ -104,6 +111,12 @@ const itemStateIsRecent = (state: MemoryItemState, since: Date): boolean =>
   state.item.publishedAt !== null
     ? state.item.publishedAt >= since
     : state.item.discoveredAt === undefined || state.item.discoveredAt >= since;
+
+const retryBackoffElapsed = (state: MemoryItemState, now: number): boolean =>
+  state.failures.length > 0 &&
+  (state.lastFetchedAt === undefined ||
+    now - state.lastFetchedAt.getTime() >=
+      Math.min(60 * 60_000, 60_000 * 2 ** Math.min(state.failures.length - 1, 31)));
 
 export const makeInMemoryPublicSourceIngestionRepository = (
   state: InMemoryPublicSourceIngestionState = {
@@ -192,18 +205,60 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           };
         });
       }),
-    recordDiscoveryResult: (source, result) =>
+    recordDiscoveryResult: (source, result, options) =>
       Effect.sync(() => {
         const sourceState = ensureSource(source);
+        const nextDiscovery = new Map(sourceState.discovery);
         for (const metadata of result.metadata) {
-          const current = sourceState.discovery.get(metadata.url);
-          sourceState.discovery.set(metadata.url, {
+          const current = nextDiscovery.get(metadata.url);
+          nextDiscovery.set(metadata.url, {
             etag: metadata.etag ?? current?.etag,
             lastModified: metadata.lastModified ?? current?.lastModified,
             bodyHash: metadata.bodyHash ?? current?.bodyHash,
             lastStatus: metadata.status,
             lastFetchedAt: result.discoveredAt,
           });
+        }
+
+        const candidateUpdates = (options?.items ?? [])
+          .map((item) => {
+            const key = itemKey(item.sourceId, item.canonicalUrl);
+            // A stored item is authoritative.  Discovery metadata is still
+            // committed above, but it must not create a shadow candidate.
+            if (state.items.has(key)) return undefined;
+            const existing = state.candidates.get(key);
+            return {
+              key,
+              state: {
+                item: {
+                  ...durableDiscoveredItem(item),
+                  discoveredAt: item.discoveredAt ?? existing?.item.discoveredAt ?? new Date(),
+                },
+                etag: existing?.etag,
+                lastModified: existing?.lastModified,
+                currentContentHash: existing?.currentContentHash,
+                latestDocumentId: existing?.latestDocumentId,
+                latestRawArtifactId: existing?.latestRawArtifactId,
+                lastFetchedAt: existing?.lastFetchedAt,
+                lastSuccessfulFetchAt: existing?.lastSuccessfulFetchAt,
+                lastNotModifiedAt: existing?.lastNotModifiedAt,
+                pollEligible: existing?.pollEligible ?? options?.pollEligible ?? false,
+                failures: existing?.failures ?? [],
+              } satisfies MemoryItemState,
+            };
+          })
+          .filter((update): update is NonNullable<typeof update> => update !== undefined);
+
+        // Apply the complete discovery unit only after all derived writes have
+        // been prepared.  The Postgres implementation performs the same unit
+        // inside one SQL transaction.
+        sourceState.discovery.clear();
+        for (const [url, metadata] of nextDiscovery) {
+          sourceState.discovery.set(url, metadata);
+        }
+        state.sources.set(source.id, { ...sourceState, failures: [] });
+        for (const update of candidateUpdates) {
+          state.candidates.set(update.key, update.state);
         }
       }),
     recordDiscoveryFailure: (source, error) =>
@@ -239,6 +294,7 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           lastFetchedAt: row.lastFetchedAt,
           lastSuccessfulFetchAt: row.lastSuccessfulFetchAt,
           consecutiveFailures: row.failures.length,
+          pollEligible: row.pollEligible,
           stored: existing !== undefined,
         };
       }),
@@ -251,13 +307,37 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           )
           .map((existing) => existing.item),
       ),
-    recordDiscoveredItem: (item) =>
+    getRetryEligibleItems: (source, now) =>
+      Effect.sync(() => {
+        const at = (now ?? new Date()).getTime();
+        const rows = [
+          ...[...state.candidates.values()].filter(
+            (existing) =>
+              existing.item.sourceId === source.id &&
+              existing.pollEligible &&
+              ((existing.failures.length === 0 && existing.lastFetchedAt === undefined) ||
+                retryBackoffElapsed(existing, at)),
+          ),
+          ...[...state.items.values()].filter(
+            (existing) =>
+              existing.item.sourceId === source.id &&
+              existing.pollEligible &&
+              retryBackoffElapsed(existing, at),
+          ),
+        ].sort((left, right) => {
+          const leftAt = left.lastFetchedAt?.getTime() ?? 0;
+          const rightAt = right.lastFetchedAt?.getTime() ?? 0;
+          return leftAt - rightAt || left.item.canonicalUrl.localeCompare(right.item.canonicalUrl);
+        });
+        return rows.slice(0, 1_000).map((existing) => existing.item);
+      }),
+    recordDiscoveredItem: (item, pollEligible) =>
       Effect.sync(() => {
         const key = itemKey(item.sourceId, item.canonicalUrl);
         const existing = state.candidates.get(key) ?? state.items.get(key);
         state.candidates.set(key, {
           item: {
-            ...item,
+            ...durableDiscoveredItem(item),
             discoveredAt: item.discoveredAt ?? existing?.item.discoveredAt ?? new Date(),
           },
           etag: existing?.etag,
@@ -268,6 +348,7 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           lastFetchedAt: existing?.lastFetchedAt,
           lastSuccessfulFetchAt: existing?.lastSuccessfulFetchAt,
           lastNotModifiedAt: existing?.lastNotModifiedAt,
+          pollEligible: existing?.pollEligible ?? pollEligible,
           failures: existing?.failures ?? [],
         });
       }),
@@ -290,7 +371,7 @@ export const makeInMemoryPublicSourceIngestionRepository = (
             ? result.raw.metadata.lastModified
             : existing?.lastModified;
         state.items.set(key, {
-          item: result.item,
+          item: durableDiscoveredItem(result.item),
           etag,
           lastModified,
           currentContentHash: result.document.contentHash,
@@ -299,6 +380,7 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           lastFetchedAt: result.raw.fetchedAt,
           lastSuccessfulFetchAt: result.raw.fetchedAt,
           lastNotModifiedAt: existing?.lastNotModifiedAt,
+          pollEligible: existing?.pollEligible ?? true,
           failures: [],
         });
         state.candidates.delete(key);
@@ -317,8 +399,20 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           typeof result.result.metadata?.lastModified === "string"
             ? result.result.metadata.lastModified
             : existing?.lastModified;
-        const next = {
-          item: result.item,
+        const summary = result.item.summary ?? existing?.item.summary;
+        const next: MemoryItemState = {
+          item: {
+            ...durableDiscoveredItem(result.item),
+            externalId: result.item.externalId ?? existing?.item.externalId,
+            publishedAt: result.item.publishedAt ?? existing?.item.publishedAt ?? null,
+            discoveredAt: result.item.discoveredAt ?? existing?.item.discoveredAt ?? new Date(),
+            updatedAt: result.item.updatedAt ?? existing?.item.updatedAt ?? null,
+            metadata: durablePublicSourceItemMetadata({
+              ...existing?.item.metadata,
+              ...result.item.metadata,
+            }),
+            ...(summary !== undefined ? { summary } : {}),
+          },
           etag,
           lastModified,
           currentContentHash: existing?.currentContentHash,
@@ -327,6 +421,7 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           lastFetchedAt: result.result.fetchedAt,
           lastSuccessfulFetchAt: existing?.lastSuccessfulFetchAt,
           lastNotModifiedAt: result.result.fetchedAt,
+          pollEligible: existing?.pollEligible ?? true,
           failures: [],
         };
         if (state.items.has(key)) {
@@ -335,20 +430,24 @@ export const makeInMemoryPublicSourceIngestionRepository = (
           state.candidates.set(key, next);
         }
       }),
-    recordItemFailure: (result) =>
+    recordItemFailure: (result, attemptedAt) =>
       Effect.sync(() => {
         const key = itemKey(result.item.sourceId, result.item.canonicalUrl);
         const existing = state.items.get(key) ?? state.candidates.get(key);
         const next = {
-          item: result.item,
+          item: durableDiscoveredItem(result.item),
           etag: existing?.etag,
           lastModified: existing?.lastModified,
           currentContentHash: existing?.currentContentHash,
           latestDocumentId: existing?.latestDocumentId,
           latestRawArtifactId: existing?.latestRawArtifactId,
-          lastFetchedAt: existing?.lastFetchedAt,
+          // `last_fetched_at` records the most recent attempt, including
+          // failures.  The successful timestamp remains separate so the poll
+          // retry backoff can be evaluated durably.
+          lastFetchedAt: attemptedAt,
           lastSuccessfulFetchAt: existing?.lastSuccessfulFetchAt,
           lastNotModifiedAt: existing?.lastNotModifiedAt,
+          pollEligible: existing?.pollEligible ?? true,
           failures: [...(existing?.failures ?? []), errorMessage(result.error)],
         };
         if (state.items.has(key)) {

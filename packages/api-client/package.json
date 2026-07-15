@@ -1,0 +1,22 @@
+{
+  "name": "@brief/api-client",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./platform": "./src/platform-client.ts",
+    "./stream": "./src/stream.ts"
+  },
+  "scripts": {
+    "build": "tsc -b --noEmit",
+    "test": "vitest run --root ../.. packages/api-client/src"
+  },
+  "dependencies": {
+    "@brief/shared": "workspace:*",
+    "effect": "4.0.0-beta.92"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vitest": "4.1.9"
+  }
+}

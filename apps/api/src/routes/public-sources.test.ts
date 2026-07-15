@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { publicSourcesResponseFromRows } from "./public-sources";
+import {
+  publicSourceDocumentResponseFromRow,
+  publicSourcesResponseFromRows,
+} from "../domain/public-sources";
 
 const source = {
   source_id: "assemblee_nationale",
@@ -116,6 +119,10 @@ describe("publicSourcesResponseFromRows", () => {
     const response = publicSourcesResponseFromRows([source], [item], [document]);
 
     expect(response.sources[0]).toMatchObject({
+      subscribed: false,
+      subscribedSince: null,
+      subscriberCount: null,
+      metrics: { opens: null, downloads: null, aiContextPulls: null },
       latestPublicationId:
         "public:assemblee_nationale:https%3A%2F%2Fwww.assemblee-nationale.fr%2F17%2Fta%2Fta0326.asp",
       latestPublicationDate: "2026-07-07T18:00:00.000Z",
@@ -124,7 +131,69 @@ describe("publicSourcesResponseFromRows", () => {
     expect(response.publications[0]?.documents).toHaveLength(1);
     expect(response.publications[0]?.documents[0]).toMatchObject({
       hostedContentUrl: "/public-source-documents/document-1/content",
+      metrics: { opens: null, downloads: null, aiContextPulls: null },
     });
+    expect(response.publications[0]?.metrics).toEqual({
+      opens: null,
+      downloads: null,
+      aiContextPulls: null,
+    });
+  });
+
+  it("projects only the enabled company setting as subscribed state", () => {
+    const response = publicSourcesResponseFromRows(
+      [{ ...source, subscribed: true, subscribed_since: new Date("2026-07-08T10:00:00.000Z") }],
+      [item],
+      [document],
+      "demo-company",
+    );
+
+    expect(response.sources[0]).toMatchObject({
+      clientCompanyId: "demo-company",
+      subscribed: true,
+      subscribedSince: "2026-07-08T10:00:00.000Z",
+    });
+    expect(response.publications).toHaveLength(1);
+  });
+
+  it("does not return publication rows for a disabled company source", () => {
+    const response = publicSourcesResponseFromRows(
+      [{ ...source, subscribed: false, subscribed_since: null }],
+      [item],
+      [document],
+      "demo-company",
+    );
+
+    expect(response.sources[0]?.subscribed).toBe(false);
+    expect(response.publications).toEqual([]);
+  });
+
+  it("rejects media-type substrings that are not exact displayable base types", () => {
+    for (const raw_media_type of ["application/notpdf", "text/htmlish", "image/pdf-preview"]) {
+      const response = publicSourcesResponseFromRows(
+        [source],
+        [{ ...item, raw_media_type }],
+        [{ ...document, raw_media_type }],
+      );
+      expect(response.sources[0]?.latestPublicationId).toBeNull();
+      expect(response.publications).toEqual([]);
+    }
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "http://www.assemblee-nationale.fr/17/ta/ta0326.asp",
+    "https://user@www.assemblee-nationale.fr/17/ta/ta0326.asp",
+    "https://127.0.0.1/17/ta/ta0326.asp",
+  ])("hides publications with an unsafe canonical URL: %s", (canonical_url) => {
+    const response = publicSourcesResponseFromRows(
+      [source],
+      [{ ...item, canonical_url }],
+      [{ ...document, canonical_url }],
+    );
+
+    expect(response.sources[0]?.latestPublicationId).toBeNull();
+    expect(response.publications).toEqual([]);
   });
 
   it("uses discovered_at as the display date only for undated readable items", () => {
@@ -154,5 +223,59 @@ describe("publicSourcesResponseFromRows", () => {
     expect(response.sources).toHaveLength(1);
     expect(response.sources[0]?.id).toBe("us_source");
     expect(response.publications).toEqual([]);
+  });
+});
+
+describe("publicSourceDocumentResponseFromRow", () => {
+  it("serves exact PDF bytes without text transcoding", async () => {
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x00, 0xff]);
+    const response = publicSourceDocumentResponseFromRow({
+      body: "",
+      body_bytes: bytes,
+      media_type: "application/pdf",
+    });
+
+    expect(response.headers.get("content-type")).toBe("application/pdf");
+    expect(response.headers.get("content-disposition")).toContain("inline");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+  });
+
+  it("serves HTML as UTF-8 under a restrictive content security policy", async () => {
+    const response = publicSourceDocumentResponseFromRow({
+      body: "<main>Document officiel</main>",
+      body_bytes: null,
+      media_type: "text/html; charset=iso-8859-1",
+    });
+
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    const contentSecurityPolicy = response.headers.get("content-security-policy");
+    expect(contentSecurityPolicy).toContain("default-src 'none'");
+    expect(contentSecurityPolicy).toContain("img-src data:");
+    expect(contentSecurityPolicy).not.toContain("https:");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    expect(await response.text()).toBe("<main>Document officiel</main>");
+  });
+
+  it("fails closed for ambiguous media-type substrings", () => {
+    expect(() =>
+      publicSourceDocumentResponseFromRow({
+        body: "<main>not HTML</main>",
+        body_bytes: null,
+        media_type: "text/htmlish",
+      }),
+    ).toThrow("unsupported media type");
+    expect(() =>
+      publicSourceDocumentResponseFromRow({
+        body: "",
+        body_bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
+        media_type: "application/notpdf",
+      }),
+    ).toThrow("unsupported media type");
   });
 });

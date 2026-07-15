@@ -4,5 +4,11 @@
     "composite": true,
     "types": ["bun"]
   },
-  "include": ["src/**/*.ts", "../../packages/shared/src/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "../../packages/backend-domain/src/**/*.ts",
+    "../../packages/config/src/**/*.ts",
+    "../../packages/shared/src/**/*.ts",
+    "../../packages/workspace/src/**/*.ts"
+  ]
 }

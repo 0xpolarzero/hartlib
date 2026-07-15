@@ -11,6 +11,18 @@ import type { Effect } from "effect";
 
 export type PublicSourceIngestionMode = "backfill" | "poll";
 
+/**
+ * Discovery adapters may carry a fetched representation only long enough for
+ * the current ingestion attempt. Persisting or comparing that payload as feed
+ * metadata makes identical Service-Public items look changed on every poll.
+ */
+export const durablePublicSourceItemMetadata = (
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> => {
+  const { xmlBody: _xmlBody, ...durable } = metadata ?? {};
+  return durable;
+};
+
 export interface PublicSourceIngestionOptions {
   readonly mode: PublicSourceIngestionMode;
   readonly since?: Date;
@@ -44,6 +56,10 @@ export interface PublicSourceItemState {
   readonly lastFetchedAt: Date | undefined;
   readonly lastSuccessfulFetchAt: Date | undefined;
   readonly consecutiveFailures: number;
+  /** Whether a candidate first observed during backfill may enter recurring polls. */
+  readonly pollEligible: boolean;
+  /** Repository-computed eligibility using its authoritative clock when available. */
+  readonly retryEligible?: boolean;
   readonly stored: boolean;
 }
 
@@ -74,6 +90,10 @@ export interface PublicSourceIngestionRepositoryShape {
   readonly recordDiscoveryResult: (
     source: PublicSourceDefinition,
     result: SourceDiscoveryResult,
+    options?: {
+      readonly items?: readonly DiscoveredItem[];
+      readonly pollEligible?: boolean;
+    },
   ) => Effect.Effect<void, unknown>;
   readonly recordDiscoveryFailure: (
     source: PublicSourceDefinition,
@@ -87,7 +107,14 @@ export interface PublicSourceIngestionRepositoryShape {
     source: PublicSourceDefinition,
     since: Date,
   ) => Effect.Effect<readonly DiscoveredItem[], unknown>;
-  readonly recordDiscoveredItem: (item: DiscoveredItem) => Effect.Effect<void, unknown>;
+  readonly getRetryEligibleItems: (
+    source: PublicSourceDefinition,
+    now?: Date,
+  ) => Effect.Effect<readonly DiscoveredItem[], unknown>;
+  readonly recordDiscoveredItem: (
+    item: DiscoveredItem,
+    pollEligible: boolean,
+  ) => Effect.Effect<void, unknown>;
   readonly storeIngestedItem: (
     result: Extract<SourceIngestionResult, { readonly status: "ingested" }>,
   ) => Effect.Effect<StoredIngestedItem, unknown>;
@@ -96,5 +123,6 @@ export interface PublicSourceIngestionRepositoryShape {
   ) => Effect.Effect<void, unknown>;
   readonly recordItemFailure: (
     result: Extract<SourceIngestionResult, { readonly status: "failed" }>,
+    attemptedAt: Date,
   ) => Effect.Effect<void, unknown>;
 }

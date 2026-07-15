@@ -5,6 +5,7 @@ import {
   LOCALE_MARKET_ALIASES,
   type LocaleMarketPair,
   type Market,
+  isMarket,
   isLocale,
   resolveRedirectTarget,
 } from "@brief/i18n";
@@ -45,7 +46,7 @@ export function getStoredMarket(): Market | null {
   if (typeof window === "undefined") return null;
   try {
     const value = window.localStorage.getItem(MARKET_STORAGE_KEY);
-    if (value && value !== "") return value as Market;
+    if (value && isMarket(value)) return value;
     return null;
   } catch {
     return null;
@@ -76,10 +77,12 @@ export function detectLocale(): LocaleMarketPair {
   }
 
   const storedLocale = getStoredLocale();
+  const storedMarket = getStoredMarket();
   const acceptLanguage = window.navigator.languages?.join(",").trim() || undefined;
 
   return resolveRedirectTarget({
     ...(storedLocale ? { storedLocale } : {}),
+    ...(storedMarket ? { storedMarket } : {}),
     ...(acceptLanguage ? { acceptLanguage } : {}),
   });
 }

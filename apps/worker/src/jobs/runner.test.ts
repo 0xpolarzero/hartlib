@@ -1,17 +1,48 @@
 import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryPublicSourceIngestionRepositoryLayer } from "../source-ingestion/repository";
+import { makeInMemoryPlatformFileStore } from "../platform/file-store";
+import { makePdfTextExtractorLayer } from "../platform/pdf-text";
+import { ExportObjectStoreService, NotificationEmailService } from "../platform/adapters";
 import { JobRepository } from "./repository";
 import { runWorkerSafeTick, runWorkerTick } from "./runner";
 import type { JobRecord } from "./types";
 
+const handleJobMock = vi.hoisted(() => vi.fn());
+
+vi.mock("./handlers", () => {
+  return {
+    handleJob: (...args: unknown[]) => handleJobMock(...args),
+  };
+});
+
 const claimedJob = {
   id: "job-1",
-  kind: "publish_scheduled_issue",
-  payload: {},
+  kind: "ai_chat_run",
+  payload: { aiRunId: "test-run" },
   attempts: 1,
   lockedBy: "worker-a",
 } satisfies JobRecord;
+
+const platformTestLayers = () =>
+  [
+    makeInMemoryPlatformFileStore().layer,
+    makePdfTextExtractorLayer(() => Effect.succeed([])),
+    Layer.succeed(
+      NotificationEmailService,
+      NotificationEmailService.of({ send: () => Promise.reject(new Error("unused")) }),
+    ),
+    Layer.succeed(
+      ExportObjectStoreService,
+      ExportObjectStoreService.of({
+        verifyPhysicalDeletionSafety: () => Promise.reject(new Error("unused")),
+        get: () => Promise.reject(new Error("unused")),
+        head: () => Promise.reject(new Error("unused")),
+        delete: () => Promise.reject(new Error("unused")),
+        put: () => Promise.reject(new Error("unused")),
+      }),
+    ),
+  ] as const;
 
 const makeLostOwnershipLayer = (completedAttempts: { count: number }) =>
   Layer.succeed(
@@ -40,11 +71,17 @@ const makeLostOwnershipLayer = (completedAttempts: { count: number }) =>
   );
 
 describe("worker runner", () => {
+  beforeEach(() => {
+    handleJobMock.mockReset();
+    handleJobMock.mockReturnValue(Effect.succeed({ status: "completed" as const }));
+  });
+
   it("surfaces lock ownership loss from a raw worker tick", async () => {
     const completedAttempts = { count: 0 };
-    const layer = Layer.merge(
+    const layer = Layer.mergeAll(
       makeLostOwnershipLayer(completedAttempts),
       InMemoryPublicSourceIngestionRepositoryLayer(),
+      ...platformTestLayers(),
     );
 
     await expect(Effect.runPromise(runWorkerTick.pipe(Effect.provide(layer)))).rejects.toThrow(
@@ -56,9 +93,10 @@ describe("worker runner", () => {
 
   it("keeps the worker loop alive when a tick loses job lock ownership", async () => {
     const completedAttempts = { count: 0 };
-    const layer = Layer.merge(
+    const layer = Layer.mergeAll(
       makeLostOwnershipLayer(completedAttempts),
       InMemoryPublicSourceIngestionRepositoryLayer(),
+      ...platformTestLayers(),
     );
 
     await Effect.runPromise(runWorkerSafeTick.pipe(Effect.provide(layer)));
@@ -67,7 +105,8 @@ describe("worker runner", () => {
   });
 
   it("surfaces lock ownership loss from the job heartbeat", async () => {
-    const layer = Layer.merge(
+    handleJobMock.mockReturnValueOnce(Effect.never);
+    const layer = Layer.mergeAll(
       Layer.succeed(
         JobRepository,
         JobRepository.of({
@@ -82,7 +121,7 @@ describe("worker runner", () => {
           claimNext: Effect.succeed({
             id: "job-2",
             kind: "public_source_ingestion",
-            payload: { sourceId: "tresor", mode: "poll" },
+            payload: { sourceId: "service_public", mode: "poll" },
             attempts: 1,
             lockedBy: "worker-a",
           }),
@@ -94,6 +133,7 @@ describe("worker runner", () => {
         }),
       ),
       InMemoryPublicSourceIngestionRepositoryLayer(),
+      ...platformTestLayers(),
     );
 
     await expect(Effect.runPromise(runWorkerTick.pipe(Effect.provide(layer)))).rejects.toThrow(

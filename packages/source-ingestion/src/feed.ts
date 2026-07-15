@@ -1,6 +1,15 @@
 import { Effect } from "effect";
 import { sha256Hex } from "./hash";
 import {
+  cancelPublicSourceResponseBody,
+  fetchPublicSourceText,
+  readPublicSourceBytes,
+  readPublicSourceText,
+  withPublicSourceHttpDeadline,
+} from "./http";
+import { extractPdfPagesIsolated } from "./pdf-extraction";
+import { canonicalizeSourceCanonicalUrl, makeSourcePolicyFetcher } from "./source-url-policy";
+import {
   extractSourceContentText,
   extractHtmlPublishedAt,
   extractHtmlTitle,
@@ -107,34 +116,24 @@ const validatorsForUrl = (
 ): ConditionalRequestValidators | undefined =>
   options?.requests?.find((request) => request.url === url)?.validators ?? options?.validators;
 
-const defaultFetchTimeoutMs = 30_000;
-
-const withTimeoutSignal = async <A>(operation: (signal: AbortSignal) => Promise<A>): Promise<A> => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), defaultFetchTimeoutMs);
-  try {
-    return await operation(controller.signal);
-  } finally {
-    clearTimeout(timeout);
-  }
-};
+const maximumPdfBytes = 25 * 1024 * 1024;
 
 const fetchTextWithTimeout = async (
   fetcher: Fetcher,
+  sourceId: PublicSourceDefinition["id"],
   url: string,
   init?: RequestInit,
 ): Promise<{
   readonly response: Awaited<ReturnType<Fetcher>>;
   readonly body: string | undefined;
-}> =>
-  withTimeoutSignal(async (signal) => {
-    const response = await fetcher(url, {
-      ...init,
-      signal,
-    });
-    const body = response.status === 304 ? undefined : await response.text();
-    return { response, body };
-  });
+}> => fetchPublicSourceText(fetcher, sourceId, url, init);
+
+const fetchWithSignal = async (
+  fetcher: Fetcher,
+  url: string,
+  signal: AbortSignal,
+  init?: RequestInit,
+): Promise<Awaited<ReturnType<Fetcher>>> => fetcher(url, { ...init, signal });
 
 const discoveryRequestInit = (
   url: string,
@@ -214,7 +213,116 @@ const assembleeDocumentContentUrl = (landingUrl: string, html: string): string |
     return absoluteUrl(landingUrl, rawSrc);
   }
 
+  const pdfLink = Array.from(html.matchAll(/<a\b[^>]*>/giu), (match) => match[0])
+    .map((tag) => extractHtmlAttribute(tag, "href"))
+    .find((href) => href?.toLowerCase().split("?", 1)[0]?.endsWith(".pdf"));
+  if (pdfLink) {
+    return absoluteUrl(landingUrl, pdfLink);
+  }
+
   return undefined;
+};
+
+const isPdfMediaType = (mediaType: string): boolean =>
+  mediaType.toLowerCase().split(";", 1)[0]?.trim() === "application/pdf";
+
+const readBoundedPdf = async (
+  definition: PublicSourceDefinition,
+  response: Awaited<ReturnType<Fetcher>>,
+  signal: AbortSignal,
+): Promise<Uint8Array> => {
+  const bytes = await readPublicSourceBytes(response, definition.id, maximumPdfBytes, signal);
+  if (bytes.byteLength < 5 || bytes.byteLength > maximumPdfBytes) {
+    throw new SourceIngestionError("Assemblee nationale PDF has an invalid byte length", {
+      sourceId: definition.id,
+    });
+  }
+  if (new TextDecoder("ascii").decode(bytes.subarray(0, 5)) !== "%PDF-") {
+    throw new SourceIngestionError("Assemblee nationale PDF response has an invalid signature", {
+      sourceId: definition.id,
+    });
+  }
+  return bytes;
+};
+
+const fetchedAssembleeArtifact = async (
+  definition: PublicSourceDefinition,
+  item: DiscoveredItem,
+  response: Awaited<ReturnType<Fetcher>>,
+  requestedContentUrl: string,
+  landingPageUrl: string,
+  signal: AbortSignal,
+): Promise<SourceFetchResult> => {
+  const mediaType = response.headers.get("content-type") ?? "text/html";
+  const metadata = {
+    externalId: item.externalId,
+    landingPageUrl,
+    fetchedContentUrl: response.url || requestedContentUrl,
+    etag: response.headers.get("etag") ?? undefined,
+    lastModified: response.headers.get("last-modified") ?? undefined,
+  };
+  if (isPdfMediaType(mediaType)) {
+    return {
+      status: "fetched",
+      raw: {
+        sourceId: definition.id,
+        canonicalUrl: item.canonicalUrl,
+        fetchedAt: new Date(),
+        mediaType,
+        body: "",
+        bodyBytes: await readBoundedPdf(definition, response, signal),
+        metadata,
+      },
+    };
+  }
+
+  const body = await readPublicSourceText(response, definition.id, signal).then((text) =>
+    assertUsableAssembleeDocumentBody(definition, mediaType, text),
+  );
+  return {
+    status: "fetched",
+    raw: {
+      sourceId: definition.id,
+      canonicalUrl: item.canonicalUrl,
+      fetchedAt: new Date(),
+      mediaType,
+      body,
+      metadata,
+    },
+  };
+};
+
+/**
+ * Public documents are not ingestible until extraction yields a useful body.
+ * Keep this guard at the adapter boundary so an empty PDF cannot become an
+ * `ingested` result that a repository has to discover and discard later.
+ */
+export const MINIMUM_READABLE_PDF_TEXT_CHARS = 100;
+
+export const assertReadablePdfText = (
+  definition: PublicSourceDefinition,
+  extractedText: string,
+): string => {
+  const text = rejectBlockedSourceContent(definition.id, extractedText).trim();
+  if (text.length < MINIMUM_READABLE_PDF_TEXT_CHARS) {
+    throw new SourceIngestionError(
+      `Assemblee nationale PDF extracted content is too short to be considered readable: ${text.length}`,
+      { sourceId: definition.id },
+    );
+  }
+  return text;
+};
+
+const extractPdfText = async (
+  definition: PublicSourceDefinition,
+  bytes: Uint8Array,
+): Promise<string> => {
+  const pages = await extractPdfPagesIsolated(bytes);
+  const text = pages
+    .map((page) => page.text.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  return assertReadablePdfText(definition, text);
 };
 
 const assertUsableAssembleeDocumentBody = (
@@ -222,8 +330,8 @@ const assertUsableAssembleeDocumentBody = (
   mediaType: string,
   body: string,
 ): string => {
-  const lowerMediaType = mediaType.toLowerCase();
-  if (!lowerMediaType.includes("html") && !lowerMediaType.includes("text")) {
+  const baseMediaType = mediaType.toLowerCase().split(";", 1)[0]?.trim();
+  if (baseMediaType !== "text/html") {
     throw new SourceIngestionError(
       "Assemblee nationale official document fetch returned an unsupported media type",
       { sourceId: definition.id },
@@ -259,7 +367,8 @@ export const parseFeed = (
   const entries = kind === "rss" ? getBlocks(xml, "item") : getBlocks(xml, "entry");
 
   return entries.flatMap((entry): DiscoveredItem[] => {
-    const canonicalUrl = kind === "rss" ? getRssLink(entry) : getAtomLink(entry);
+    const candidateUrl = kind === "rss" ? getRssLink(entry) : getAtomLink(entry);
+    const canonicalUrl = candidateUrl ? canonicalizeSourceCanonicalUrl(source, candidateUrl) : null;
     const title = getTagText(entry, "title");
     if (!canonicalUrl || !title) {
       return [];
@@ -282,13 +391,6 @@ export const parseFeed = (
         title,
         publishedAt,
         ...(summary ? { summary: stripHtml(summary) } : {}),
-        ...(contentHtml
-          ? {
-              metadata: {
-                contentHtml,
-              },
-            }
-          : {}),
       },
     ];
   });
@@ -298,7 +400,7 @@ export const makeFeedAdapter = (
   definition: PublicSourceDefinition,
   options: { readonly kind: FeedKind; readonly fetcher?: Fetcher } = { kind: "rss" },
 ): SourceAdapter => {
-  const fetcher = options.fetcher ?? fetch;
+  const fetcher = makeSourcePolicyFetcher(definition, options.fetcher ?? fetch);
   const discoveryUrls = definition.discoveryUrls ?? [definition.discoveryUrl];
 
   return {
@@ -314,6 +416,7 @@ export const makeFeedAdapter = (
           for (const url of discoveryUrls) {
             const { response, body } = await fetchTextWithTimeout(
               fetcher,
+              definition.id,
               url,
               discoveryRequestInit(url, discoverOptions),
             );
@@ -356,194 +459,147 @@ export const makeFeedAdapter = (
       }),
     fetch: (item, fetchOptions) =>
       Effect.tryPromise({
-        try: async () => {
-          const contentHtml =
-            definition.id === "tresor" && typeof item.metadata?.contentHtml === "string"
-              ? item.metadata.contentHtml
-              : undefined;
-          if (contentHtml) {
-            return {
-              status: "fetched",
-              raw: {
+        try: async () =>
+          withPublicSourceHttpDeadline(definition.id, async (signal) => {
+            if (definition.id === "assemblee_nationale") {
+              const directContentUrl = assembleeOpendataUrlFromCanonicalUrl(item.canonicalUrl);
+              if (directContentUrl) {
+                try {
+                  const contentResponse = await fetchWithSignal(
+                    fetcher,
+                    directContentUrl,
+                    signal,
+                    conditionalRequestInit(fetchOptions),
+                  );
+
+                  if (contentResponse.status === 304) {
+                    await cancelPublicSourceResponseBody(contentResponse, "not modified");
+                    return {
+                      status: "not_modified",
+                      sourceId: definition.id,
+                      canonicalUrl: item.canonicalUrl,
+                      fetchedAt: new Date(),
+                      metadata: {
+                        externalId: item.externalId,
+                        landingPageUrl: item.canonicalUrl,
+                        fetchedContentUrl: contentResponse.url || directContentUrl,
+                        etag: contentResponse.headers.get("etag") ?? fetchOptions?.validators?.etag,
+                        lastModified:
+                          contentResponse.headers.get("last-modified") ??
+                          fetchOptions?.validators?.lastModified,
+                      },
+                    } satisfies SourceFetchResult;
+                  }
+                  if (contentResponse.ok) {
+                    return await fetchedAssembleeArtifact(
+                      definition,
+                      item,
+                      contentResponse,
+                      directContentUrl,
+                      item.canonicalUrl,
+                      signal,
+                    );
+                  }
+                  await cancelPublicSourceResponseBody(
+                    contentResponse,
+                    "derived representation unavailable",
+                  );
+                } catch (cause) {
+                  if (signal.aborted) throw cause;
+                  // The derived opendata URL is only an optimization. The canonical
+                  // landing URL remains authoritative when that representation has moved.
+                }
+              }
+            }
+
+            const response = await fetchWithSignal(
+              fetcher,
+              item.canonicalUrl,
+              signal,
+              conditionalRequestInit(fetchOptions),
+            );
+            if (response.status === 304) {
+              await cancelPublicSourceResponseBody(response, "not modified");
+              return {
+                status: "not_modified",
                 sourceId: definition.id,
-                canonicalUrl: item.canonicalUrl,
+                canonicalUrl: response.url || item.canonicalUrl,
                 fetchedAt: new Date(),
-                mediaType: "text/html",
-                body: contentHtml,
                 metadata: {
                   externalId: item.externalId,
-                  embeddedFeedContent: true,
-                },
-              },
-            } satisfies SourceFetchResult;
-          }
-
-          if (definition.id === "tresor") {
-            throw new SourceIngestionError(
-              "Tresor Atom item did not include embedded official HTML content",
-              { sourceId: definition.id },
-            );
-          }
-
-          if (definition.id === "assemblee_nationale") {
-            const directContentUrl = assembleeOpendataUrlFromCanonicalUrl(item.canonicalUrl);
-            if (directContentUrl) {
-              const { response: contentResponse, body: contentBodyText } =
-                await fetchTextWithTimeout(
-                  fetcher,
-                  directContentUrl,
-                  conditionalRequestInit(fetchOptions),
-                );
-
-              if (contentResponse.status === 304) {
-                return {
-                  status: "not_modified",
-                  sourceId: definition.id,
-                  canonicalUrl: item.canonicalUrl,
-                  fetchedAt: new Date(),
-                  metadata: {
-                    externalId: item.externalId,
-                    landingPageUrl: item.canonicalUrl,
-                    fetchedContentUrl: contentResponse.url || directContentUrl,
-                    etag: contentResponse.headers.get("etag") ?? fetchOptions?.validators?.etag,
-                    lastModified:
-                      contentResponse.headers.get("last-modified") ??
-                      fetchOptions?.validators?.lastModified,
-                  },
-                } satisfies SourceFetchResult;
-              }
-
-              if (!contentResponse.ok) {
-                throw new SourceIngestionError(
-                  `Assemblee nationale document fetch failed with HTTP ${contentResponse.status}`,
-                  {
-                    sourceId: definition.id,
-                  },
-                );
-              }
-
-              const mediaType = contentResponse.headers.get("content-type") ?? "text/html";
-              const contentBody = assertUsableAssembleeDocumentBody(
-                definition,
-                mediaType,
-                contentBodyText ?? "",
-              );
-
-              return {
-                status: "fetched",
-                raw: {
-                  sourceId: definition.id,
-                  canonicalUrl: item.canonicalUrl,
-                  fetchedAt: new Date(),
-                  mediaType,
-                  body: contentBody,
-                  metadata: {
-                    externalId: item.externalId,
-                    landingPageUrl: item.canonicalUrl,
-                    fetchedContentUrl: contentResponse.url || directContentUrl,
-                    etag: contentResponse.headers.get("etag") ?? undefined,
-                    lastModified: contentResponse.headers.get("last-modified") ?? undefined,
-                  },
+                  etag: response.headers.get("etag") ?? fetchOptions?.validators?.etag,
+                  lastModified:
+                    response.headers.get("last-modified") ?? fetchOptions?.validators?.lastModified,
                 },
               } satisfies SourceFetchResult;
             }
-          }
 
-          const { response, body } = await fetchTextWithTimeout(
-            fetcher,
-            item.canonicalUrl,
-            conditionalRequestInit(fetchOptions),
-          );
-          if (response.status === 304) {
-            return {
-              status: "not_modified",
-              sourceId: definition.id,
-              canonicalUrl: response.url || item.canonicalUrl,
-              fetchedAt: new Date(),
-              metadata: {
-                externalId: item.externalId,
-                etag: response.headers.get("etag") ?? fetchOptions?.validators?.etag,
-                lastModified:
-                  response.headers.get("last-modified") ?? fetchOptions?.validators?.lastModified,
-              },
-            } satisfies SourceFetchResult;
-          }
+            if (!response.ok) {
+              await cancelPublicSourceResponseBody(response, "item fetch rejected");
+              throw new SourceIngestionError(`Item fetch failed with HTTP ${response.status}`, {
+                sourceId: definition.id,
+              });
+            }
 
-          if (!response.ok) {
-            throw new SourceIngestionError(`Item fetch failed with HTTP ${response.status}`, {
-              sourceId: definition.id,
-            });
-          }
+            if (definition.id === "assemblee_nationale") {
+              const landingPageUrl = response.url || item.canonicalUrl;
+              const landingMediaType = response.headers.get("content-type") ?? "text/html";
+              if (isPdfMediaType(landingMediaType)) {
+                return await fetchedAssembleeArtifact(
+                  definition,
+                  item,
+                  response,
+                  item.canonicalUrl,
+                  item.canonicalUrl,
+                  signal,
+                );
+              }
 
-          if (definition.id === "assemblee_nationale") {
-            const contentUrl = assembleeDocumentContentUrl(
-              response.url || item.canonicalUrl,
-              body ?? "",
-            );
-            if (!contentUrl) {
-              throw new SourceIngestionError(
-                "Assemblee nationale document page did not expose an official HTML document URL",
-                {
-                  sourceId: definition.id,
-                },
+              const landingBody = await readPublicSourceText(response, definition.id, signal);
+              const contentUrl = assembleeDocumentContentUrl(landingPageUrl, landingBody);
+              if (!contentUrl) {
+                throw new SourceIngestionError(
+                  "Assemblee nationale document page did not expose an official HTML/PDF document URL",
+                  { sourceId: definition.id },
+                );
+              }
+
+              const contentResponse = await fetchWithSignal(fetcher, contentUrl, signal);
+              if (!contentResponse.ok) {
+                await cancelPublicSourceResponseBody(contentResponse, "document fetch rejected");
+                throw new SourceIngestionError(
+                  `Assemblee nationale document fetch failed with HTTP ${contentResponse.status}`,
+                  { sourceId: definition.id },
+                );
+              }
+
+              return await fetchedAssembleeArtifact(
+                definition,
+                item,
+                contentResponse,
+                contentUrl,
+                landingPageUrl,
+                signal,
               );
             }
 
-            const { response: contentResponse, body: contentBodyText } = await fetchTextWithTimeout(
-              fetcher,
-              contentUrl,
-            );
-            if (!contentResponse.ok) {
-              throw new SourceIngestionError(
-                `Assemblee nationale document fetch failed with HTTP ${contentResponse.status}`,
-                {
-                  sourceId: definition.id,
-                },
-              );
-            }
-
-            const mediaType = contentResponse.headers.get("content-type") ?? "text/html";
-            const contentBody = assertUsableAssembleeDocumentBody(
-              definition,
-              mediaType,
-              contentBodyText ?? "",
-            );
-
+            const body = await readPublicSourceText(response, definition.id, signal);
             return {
               status: "fetched",
               raw: {
                 sourceId: definition.id,
-                canonicalUrl: item.canonicalUrl,
+                canonicalUrl: response.url || item.canonicalUrl,
                 fetchedAt: new Date(),
-                mediaType,
-                body: contentBody,
+                mediaType: response.headers.get("content-type") ?? "text/html",
+                body,
                 metadata: {
                   externalId: item.externalId,
-                  landingPageUrl: response.url || item.canonicalUrl,
-                  fetchedContentUrl: contentResponse.url || contentUrl,
-                  etag: contentResponse.headers.get("etag") ?? undefined,
-                  lastModified: contentResponse.headers.get("last-modified") ?? undefined,
+                  etag: response.headers.get("etag") ?? undefined,
+                  lastModified: response.headers.get("last-modified") ?? undefined,
                 },
               },
             } satisfies SourceFetchResult;
-          }
-
-          return {
-            status: "fetched",
-            raw: {
-              sourceId: definition.id,
-              canonicalUrl: response.url || item.canonicalUrl,
-              fetchedAt: new Date(),
-              mediaType: response.headers.get("content-type") ?? "text/html",
-              body: body ?? "",
-              metadata: {
-                externalId: item.externalId,
-                etag: response.headers.get("etag") ?? undefined,
-                lastModified: response.headers.get("last-modified") ?? undefined,
-              },
-            },
-          } satisfies SourceFetchResult;
-        },
+          }),
         catch: (cause) =>
           cause instanceof SourceIngestionError
             ? cause
@@ -552,13 +608,22 @@ export const makeFeedAdapter = (
     normalize: (raw, item) =>
       Effect.tryPromise({
         try: async () => {
-          const text = rejectBlockedSourceContent(
-            definition.id,
-            extractSourceContentText(definition.id, raw.body),
-          );
+          const pdf = isPdfMediaType(raw.mediaType);
+          if (pdf && !raw.bodyBytes) {
+            throw new SourceIngestionError("PDF raw artifact is missing exact source bytes", {
+              sourceId: definition.id,
+            });
+          }
+          const text = pdf
+            ? await extractPdfText(definition, raw.bodyBytes!)
+            : rejectBlockedSourceContent(
+                definition.id,
+                extractSourceContentText(definition.id, raw.body),
+              );
           const contentHash = await sha256Hex(text);
-          const publishedAt = item?.publishedAt ?? extractHtmlPublishedAt(raw.body);
-          const title = extractHtmlTitle(raw.body) ?? item?.title ?? raw.canonicalUrl;
+          const publishedAt = item?.publishedAt ?? (pdf ? null : extractHtmlPublishedAt(raw.body));
+          const title =
+            (pdf ? undefined : extractHtmlTitle(raw.body)) ?? item?.title ?? raw.canonicalUrl;
           return {
             id: stableDocumentId(definition.id, raw.canonicalUrl, contentHash),
             sourceId: definition.id,

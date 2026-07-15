@@ -5,9 +5,10 @@
   "exports": {
     ".": "./src/index.ts",
     "./api": "./src/api.ts",
-    "./artifacts": "./src/artifacts.ts",
+    "./chat": "./src/chat.ts",
     "./content": "./src/content.ts",
-    "./directives": "./src/directives.ts"
+    "./export-contract": "./src/export-contract.ts",
+    "./platform": "./src/platform.ts"
   },
   "scripts": {
     "build": "tsc -b --noEmit",

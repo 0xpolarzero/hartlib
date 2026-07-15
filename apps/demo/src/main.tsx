@@ -2,6 +2,12 @@ import { createRoot } from "react-dom/client";
 import { RotateCcw, Send } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { ApiResponseError, createProductApiClient } from "@brief/api-client";
+import {
+  clearRunStreamState,
+  persistRunStreamState,
+  restoreRunStreamState,
+} from "@brief/api-client/stream";
 import {
   demoDataset,
   type BriefPublication,
@@ -9,32 +15,39 @@ import {
   type DemoRole,
 } from "@brief/demo-data";
 import {
-  DEFAULT_MARKET_FOR_LOCALE,
   I18nProvider,
   LOCALES,
+  MARKETS,
   type Locale,
   type LocaleMarketPair,
   type Market,
   FormattedMessage,
   htmlLang,
   isLocale,
+  isMarket,
   useIntl,
   useLocale,
   useMarket,
   useSetLocaleMarket,
 } from "@brief/i18n";
-import type { PublicSourcesResponse } from "@brief/shared";
+import type {
+  EffectiveWebPolicy,
+  MemoryRevisionResponse,
+  PublicSourcesResponse,
+} from "@brief/shared";
+import { Schema } from "effect";
 import {
   type DemoRoute,
   buildLocalePath,
   buildDemoPath,
+  getDemoLocalePrefixFromPath,
   getDemoRouteFromPath,
   resolveDemoRoute,
 } from "./routing";
 import {
   detectLocale,
-  getManualSourceSelection,
-  setManualSourceSelection,
+  getStoredMarket,
+  resolveDemoLocaleMarket,
   setStoredLocale,
   setStoredMarket,
 } from "./locale-bootstrap";
@@ -58,6 +71,10 @@ import {
   TooltipTrigger,
   Textarea,
   VirtualizedChatTranscript,
+  ChatWebSearchToggle,
+  createAuthenticatedDocumentOpener,
+  memoryRevisionFragment,
+  parseMemoryRevisionFragment,
   type BreadcrumbItem,
   type ChatTranscriptMessage,
   type ClientFeedTableRow,
@@ -77,27 +94,41 @@ import {
   type ChatApiResponse,
   type MemoriesApiResponse,
   type MemoryResponse,
+  type SendMessageConflict,
   type SendMessageResponse,
 } from "./chat-api";
-import { initialChatStreamState, reduceChatStream, type ChatStreamEvent } from "./chat-stream";
+import {
+  initialChatStreamState,
+  isWebResearchUnavailable,
+  reconcileUserScopedConflict,
+  reduceChatStream,
+  resolveAmbiguousUserScopedConflict,
+  restoreChatStreamState,
+  streamReconnectAction,
+  type UserScopedConflict,
+  type ChatStreamEvent,
+} from "./chat-stream";
 import { buildTranscriptMessages } from "./chat-transcript";
+import {
+  DemoPublications,
+  readStoredOr,
+  SubscriberSession,
+  type SubscriberSessionState,
+} from "./demo-state";
 import "./styles.css";
+import { loadDemoBrowserConfig } from "./config";
+import {
+  currentMarketPublicContent,
+  emptyPublicContent,
+  scopePublicContentToMarket,
+  type MarketPublicContentState,
+} from "./market-content";
 
-const emptyPublicContent: PublicSourcesResponse = { sources: [], publications: [] };
-const publicApiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
-const streamEventTypes: readonly ChatStreamEvent["type"][] = [
-  "run_started",
-  "preflight_search",
-  "preflight_peek",
-  "context_window",
-  "answer_started",
-  "answer_retry",
-  "text_delta",
-  "memory_updated",
-  "usage",
-  "done",
-  "error",
-];
+const publicApiBaseUrl = loadDemoBrowserConfig(import.meta.env).apiBaseUrl;
+const demoApi = createProductApiClient({
+  fetch: (input, init) => globalThis.fetch(input, init),
+  ...(publicApiBaseUrl === "" ? {} : { baseUrl: publicApiBaseUrl }),
+});
 const demoSubscriberProfiles = [
   {
     id: demoDataset.companies.client.id,
@@ -120,86 +151,42 @@ function isDemoPdfPath(pathname: string) {
   return pathname.startsWith("/demo/pdfs/") && pathname.endsWith(".pdf");
 }
 
-const clientFeedSubscriptionsKey = "brief:demo:client-feed-subscriptions:v1";
-const legacyClientFilSubscriptionsKey = "brief:demo:client-fil-subscriptions:v1";
-
-/**
- * One-time migration: copy the legacy `client-fil-subscriptions` localStorage
- * value into the renamed `client-feed-subscriptions` key when the new key is
- * absent, so existing demo users keep their feed subscriptions.
- */
-function migrateClientFeedSubscriptions(): void {
-  if (typeof window === "undefined") return;
-  try {
-    const hasNew = window.localStorage.getItem(clientFeedSubscriptionsKey);
-    if (hasNew !== null) return;
-    const legacy = window.localStorage.getItem(legacyClientFilSubscriptionsKey);
-    if (legacy !== null) {
-      window.localStorage.setItem(clientFeedSubscriptionsKey, legacy);
-    }
-  } catch {
-    // Ignore storage failures; demo state stays in memory.
-  }
-}
-
-async function fetchPublicContent(): Promise<PublicSourcesResponse> {
-  const response = await fetch(new URL("/public-sources", publicApiBaseUrl));
-  if (!response.ok) {
-    throw new Error(`Failed to fetch public sources: ${response.status}`);
-  }
-  return normalizePublicContentUrls((await response.json()) as PublicSourcesResponse);
-}
-
-function apiUrl(path: string): URL {
-  return new URL(path, publicApiBaseUrl);
+async function fetchPublicContent(market: Market): Promise<PublicSourcesResponse> {
+  return scopePublicContentToMarket(
+    normalizePublicContentUrls(await demoApi.fetchPublicSources(market)),
+    market,
+  );
 }
 
 async function fetchDemoChat(): Promise<ChatApiResponse> {
-  const response = await fetch(apiUrl("/v1/chat"));
-  if (!response.ok) {
-    throw new Error(`Failed to fetch chat: ${response.status}`);
-  }
-  return (await response.json()) as ChatApiResponse;
+  return demoApi.getChat();
 }
 
 async function postDemoChatMessage(input: {
   readonly text: string;
   readonly locale: Locale;
   readonly market: Market;
-}): Promise<Response> {
-  return fetch(apiUrl("/v1/chat/messages"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(input),
-  });
+  readonly webSearchEnabled: boolean;
+}): Promise<SendMessageResponse> {
+  return demoApi.sendChatMessage(input);
 }
 
 async function fetchDemoMemories(): Promise<MemoriesApiResponse> {
-  const response = await fetch(apiUrl("/v1/memories"));
-  if (!response.ok) {
-    throw new Error(`Failed to fetch memories: ${response.status}`);
-  }
-  return (await response.json()) as MemoriesApiResponse;
+  return { memories: await demoApi.fetchMemories() };
 }
 
-async function postRevertMemory(memoryId: string): Promise<void> {
-  const response = await fetch(apiUrl(`/v1/memories/${encodeURIComponent(memoryId)}/revert`), {
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to revert memory: ${response.status}`);
-  }
+async function postRevertMemory(memoryId: string, revisionId: string): Promise<void> {
+  await demoApi.revertMemory(memoryId, revisionId);
+}
+
+async function deleteDemoMemory(memoryId: string): Promise<void> {
+  await demoApi.tombstoneMemory(memoryId);
 }
 
 function readInitialPublications() {
   const fallback = demoDataset.issues.map(clonePublication);
   if (typeof window === "undefined") return fallback;
-  try {
-    const stored = window.localStorage.getItem("brief:demo:issues:v1");
-    return stored ? (JSON.parse(stored) as BriefPublication[]) : fallback;
-  } catch {
-    return fallback;
-  }
+  return readStoredOr(window.localStorage, "brief:demo:issues:v1", DemoPublications, fallback);
 }
 
 function App() {
@@ -212,17 +199,22 @@ function App() {
     [initialPublications],
   );
   const [role, setRole] = useState<DemoRole>(() => initialRoute.role);
-  const [issues, setIssues, resetIssues] = useSessionState<BriefPublication[]>(
+  const [issues, setIssues, resetIssues] = useSessionState<readonly BriefPublication[]>(
     "brief:demo:issues:v1",
     initialPublications,
+    DemoPublications,
   );
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(initialRoute.sourceId);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(initialRoute.issueId);
   const [resetVersion, setResetVersion] = useState(0);
-  const [publicContent, setPublicContent] = useState<PublicSourcesResponse>(emptyPublicContent);
-  const [publicContentStatus, setPublicContentStatus] = useState<"loading" | "ready" | "error">(
-    "loading",
-  );
+  const [loadedPublicContent, setLoadedPublicContent] = useState<MarketPublicContentState>(() => ({
+    market,
+    status: "loading",
+    content: emptyPublicContent(),
+  }));
+  const visiblePublicContent = currentMarketPublicContent(loadedPublicContent, market);
+  const publicContent = visiblePublicContent.content;
+  const publicContentStatus = visiblePublicContent.status;
   const publicationsBySourceId = useMemo(() => buildPublicationsBySourceId(issues), [issues]);
   const sources = useMemo(
     () => [...demoDataset.sources, ...publicContent.sources],
@@ -277,23 +269,21 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
-    setPublicContentStatus("loading");
-    void fetchPublicContent()
+    setLoadedPublicContent({ market, status: "loading", content: emptyPublicContent() });
+    void fetchPublicContent(market)
       .then((content) => {
         if (cancelled) return;
-        setPublicContent(content);
-        setPublicContentStatus("ready");
+        setLoadedPublicContent({ market, status: "ready", content });
       })
       .catch(() => {
         if (cancelled) return;
-        setPublicContent(emptyPublicContent);
-        setPublicContentStatus("error");
+        setLoadedPublicContent({ market, status: "error", content: emptyPublicContent() });
       });
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [market]);
 
   function handleRoleChange(next: DemoRole) {
     if (next === role) return;
@@ -351,7 +341,12 @@ function App() {
 
   return (
     <TooltipProvider>
-      <Tabs value={role} onValueChange={(v) => handleRoleChange(v as DemoRole)}>
+      <Tabs
+        value={role}
+        onValueChange={(value) => {
+          if (value === "publisher" || value === "client") handleRoleChange(value);
+        }}
+      >
         <main className="min-h-screen bg-canvas text-ink">
           <header className="border-b border-rule bg-paper/90">
             <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 sm:px-6 lg:px-8">
@@ -530,6 +525,7 @@ function PublisherSourceDetail({
   const [subscriberState, setSubscriberState] = useSessionState<SubscriberSessionState>(
     `brief:demo:publisher-subscribers:${source.id}`,
     { statuses: {}, deletedIds: [] },
+    SubscriberSession,
   );
   const [draftSubscriber, setDraftSubscriber] = useState<DraftSubscriber | null>(null);
   const [draftErrors, setDraftErrors] = useState<DraftSubscriberErrors>({});
@@ -599,7 +595,11 @@ function PublisherSourceDetail({
     <div className="space-y-8">
       <p className="font-serif text-sm leading-6 text-muted">{source.description}</p>
 
-      <div className="animate-in stagger-1 grid gap-8 xl:grid-cols-[1.3fr_0.7fr]">
+      <div
+        className={`animate-in stagger-1 grid gap-8 ${
+          source.kind === "publisher" ? "xl:grid-cols-[1.3fr_0.7fr]" : ""
+        }`}
+      >
         <section>
           <SectionHeader
             title={intl.formatMessage({ id: "section.publications" })}
@@ -617,32 +617,34 @@ function PublisherSourceDetail({
           </div>
         </section>
 
-        <section>
-          <SectionHeader
-            title={intl.formatMessage({ id: "section.subscribers" })}
-            count={subscribers.length}
-            actionLabel={intl.formatMessage({ id: "action.addSubscriber" })}
-            onAdd={() => setDraftSubscriber((current) => current ?? { company: "", email: "" })}
-          />
-          <div className="mt-4">
-            <SubscribersTable
-              rows={subscribers}
-              draft={draftSubscriber}
-              draftErrors={draftErrors}
-              companyOptions={subscriberCompanies}
-              onCancelDraft={handleCancelSubscriberDraft}
-              onConfirmDraft={handleCreateSubscriber}
-              onDelete={handleDeleteSubscriber}
-              onToggleStatus={handleToggleSubscriberStatus}
-              onUpdateDraft={(nextDraft) => {
-                setDraftErrors((current) =>
-                  clearResolvedDraftErrors(current, nextDraft, subscribers, intl),
-                );
-                setDraftSubscriber(nextDraft);
-              }}
+        {source.kind === "publisher" ? (
+          <section>
+            <SectionHeader
+              title={intl.formatMessage({ id: "section.subscribers" })}
+              count={subscribers.length}
+              actionLabel={intl.formatMessage({ id: "action.addSubscriber" })}
+              onAdd={() => setDraftSubscriber((current) => current ?? { company: "", email: "" })}
             />
-          </div>
-        </section>
+            <div className="mt-4">
+              <SubscribersTable
+                rows={subscribers}
+                draft={draftSubscriber}
+                draftErrors={draftErrors}
+                companyOptions={subscriberCompanies}
+                onCancelDraft={handleCancelSubscriberDraft}
+                onConfirmDraft={handleCreateSubscriber}
+                onDelete={handleDeleteSubscriber}
+                onToggleStatus={handleToggleSubscriberStatus}
+                onUpdateDraft={(nextDraft) => {
+                  setDraftErrors((current) =>
+                    clearResolvedDraftErrors(current, nextDraft, subscribers, intl),
+                  );
+                  setDraftSubscriber(nextDraft);
+                }}
+              />
+            </div>
+          </section>
+        ) : null}
       </div>
     </div>
   );
@@ -743,9 +745,15 @@ function ClientFeedsList({
   const intl = useIntl();
   const locale = useLocale();
   const publishedIssues = publications.filter((issue) => issue.status === "published");
-  const manualSources = useMemo(getManualSourceSelection, []);
   const [chatMessages, setChatMessages] = useState<readonly ChatTranscriptMessage[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [userScopedConflict, setUserScopedConflict] = useState<UserScopedConflict | null>(null);
+  const [effectiveWebPolicy, setEffectiveWebPolicy] = useState<EffectiveWebPolicy>({
+    enabled: false,
+    reason: "deployment_unavailable",
+    allowlistActive: false,
+  });
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [chatStatus, setChatStatus] = useState<"loading" | "ready" | "error">("loading");
   const [draftMessage, setDraftMessage] = useState("");
   const [sendStatus, setSendStatus] = useState<"idle" | "sending">("idle");
@@ -754,17 +762,11 @@ function ClientFeedsList({
   const [failedMessage, setFailedMessage] = useState<string | null>(null);
   const [streamState, setStreamState] = useState(initialChatStreamState);
   const streamSeqRef = useRef(0);
+  const chatRefreshSequenceRef = useRef(0);
   const [memories, setMemories] = useState<readonly MemoryResponse[]>([]);
   const [memoriesStatus, setMemoriesStatus] = useState<"loading" | "ready" | "error">("loading");
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [revertingMemoryId, setRevertingMemoryId] = useState<string | null>(null);
-  const chatDisplayLabels = useMemo(
-    () => ({
-      memoryBlockLabel: intl.formatMessage({ id: "chat.memoryBlockLabel" }),
-      memoryCitation: intl.formatMessage({ id: "chat.memoryCitation" }),
-    }),
-    [intl],
-  );
   const chatAuthorLabels = useMemo(
     () => ({
       assistant: intl.formatMessage({ id: "chat.author.assistant" }),
@@ -772,24 +774,22 @@ function ClientFeedsList({
     }),
     [intl],
   );
-
-  // `feedSubscriptions` stores only the user's *manual overrides*. The default
-  // subscription state is derived reactively from the active market so that
-  // switching locale/market re-defaults public sources (subscribed when their
-  // country matches the market). Once the user toggles a source manually, the
-  // `manualSources` flag is set and their persisted overrides always win.
-  const [feedSubscriptions, setFeedSubscriptions] = useSessionState<Record<string, boolean>>(
-    clientFeedSubscriptionsKey,
-    {},
+  const openAuthenticatedDocument = useMemo(
+    () => createAuthenticatedDocumentOpener(demoApi.fetchPublisherDocument),
+    [],
   );
 
-  const refreshChat = useCallback(async () => {
+  const refreshChat = useCallback(async (preserveActiveRunId?: string) => {
+    const sequence = ++chatRefreshSequenceRef.current;
     const chat = await fetchDemoChat();
-    setChatMessages(mapApiMessagesToTranscript(chat.messages, chatDisplayLabels));
-    setActiveRunId(chat.activeRunId);
+    if (sequence !== chatRefreshSequenceRef.current) return chat;
+    setChatMessages(mapApiMessagesToTranscript(chat.messages));
+    setActiveRunId(preserveActiveRunId ?? chat.activeRun?.id ?? null);
+    setEffectiveWebPolicy(chat.effectiveWebPolicy);
+    if (!chat.effectiveWebPolicy.enabled) setWebSearchEnabled(false);
     setChatStatus("ready");
     return chat;
-  }, [chatDisplayLabels]);
+  }, []);
 
   const refreshMemories = useCallback(async () => {
     const result = await fetchDemoMemories();
@@ -802,12 +802,13 @@ function ClientFeedsList({
   useEffect(() => {
     let cancelled = false;
     setChatStatus("loading");
-    void fetchDemoChat()
+    void refreshChat()
       .then((chat) => {
         if (cancelled) return;
-        setChatMessages(mapApiMessagesToTranscript(chat.messages, chatDisplayLabels));
-        setActiveRunId(chat.activeRunId);
-        setChatStatus("ready");
+        // refreshChat owns the fenced state update. This continuation only
+        // reports errors; an older initial GET must not overwrite a later
+        // accepted send.
+        if (chat !== undefined) setChatStatus("ready");
       })
       .catch(() => {
         if (cancelled) return;
@@ -817,7 +818,7 @@ function ClientFeedsList({
     return () => {
       cancelled = true;
     };
-  }, [chatDisplayLabels]);
+  }, [refreshChat]);
 
   useEffect(() => {
     let cancelled = false;
@@ -846,58 +847,99 @@ function ClientFeedsList({
     }
 
     let closed = false;
-    let eventSource: EventSource | null = null;
+    let controller: AbortController | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    streamSeqRef.current = 0;
-    setStreamState(initialChatStreamState);
+    const restored = restoreRunStreamState(window.sessionStorage, activeRunId);
+    let currentStreamState = restoreChatStreamState(restored);
+    streamSeqRef.current = restored?.lastSeq ?? 0;
+    setStreamState(currentStreamState);
 
     const closeCurrent = () => {
       if (reconnectTimer !== null) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
-      eventSource?.close();
-      eventSource = null;
+      controller?.abort();
+      controller = null;
     };
 
-    const handleStreamMessage = (message: MessageEvent<string>) => {
-      const seq = Number.parseInt(message.lastEventId, 10);
-      if (!Number.isFinite(seq) || seq <= 0) return;
-
-      const event = JSON.parse(message.data) as ChatStreamEvent;
-      setStreamState((current) => {
-        const next = reduceChatStream(current, { seq, event });
-        streamSeqRef.current = next.seq;
-        return next;
-      });
+    const handleStreamEvent = (seq: number, event: ChatStreamEvent) => {
+      if (closed) return;
+      const next = reduceChatStream(currentStreamState, { seq, event });
+      currentStreamState = next;
+      streamSeqRef.current = next.seq;
+      if (event.type !== "done" && event.type !== "error") {
+        persistRunStreamState(window.sessionStorage, {
+          version: 1,
+          runId: activeRunId,
+          lastSeq: next.seq,
+          draft: {
+            runId: activeRunId,
+            text: next.assistantText,
+            attempt: next.attempt,
+            sourcesRead: next.sourcesRead,
+          },
+        });
+      }
+      setStreamState(next);
 
       if (event.type === "done" || event.type === "error") {
         closed = true;
         closeCurrent();
+        clearRunStreamState(window.sessionStorage, activeRunId);
         void refreshChat().catch(() => setChatStatus("error"));
+        void refreshMemories().catch(() => setMemoriesStatus("error"));
+      }
+    };
+
+    const clearLocalStream = () => {
+      closed = true;
+      closeCurrent();
+      clearRunStreamState(window.sessionStorage, activeRunId);
+      setStreamState(initialChatStreamState);
+    };
+
+    const reconcileBeforeRetry = async (): Promise<void> => {
+      if (closed) return;
+      try {
+        const latest = await refreshChat();
+        if (closed) return;
+        if (latest.activeRun?.id !== activeRunId) {
+          clearLocalStream();
+          void refreshMemories().catch(() => setMemoriesStatus("error"));
+          return;
+        }
+        reconnectTimer = setTimeout(connect, 1000);
+      } catch {
+        // A failed authoritative reload cannot establish that the run is
+        // still active. Stop and clear instead of retrying an unknown cursor.
+        clearLocalStream();
+        setChatStatus("error");
         void refreshMemories().catch(() => setMemoriesStatus("error"));
       }
     };
 
     const connect = () => {
       if (closed) return;
-      const url = apiUrl(`/v1/ai-runs/${encodeURIComponent(activeRunId)}/stream`);
-      if (streamSeqRef.current > 0) {
-        url.searchParams.set("afterSeq", String(streamSeqRef.current));
-      }
-
-      const source = new EventSource(url.toString());
-      eventSource = source;
-      for (const type of streamEventTypes) {
-        source.addEventListener(type, (event) =>
-          handleStreamMessage(event as MessageEvent<string>),
-        );
-      }
-      source.onerror = () => {
-        if (closed) return;
-        source.close();
-        reconnectTimer = setTimeout(connect, 1000);
-      };
+      controller = new AbortController();
+      const signal = controller.signal;
+      void (async () => {
+        for await (const frame of demoApi.streamAiRun(activeRunId, streamSeqRef.current, signal)) {
+          handleStreamEvent(frame.seq, frame.event);
+        }
+      })()
+        .then(() => {
+          if (!closed && !signal.aborted) void reconcileBeforeRetry();
+        })
+        .catch((cause) => {
+          if (streamReconnectAction(cause) === "reconcile") {
+            clearLocalStream();
+            void refreshChat().catch(() => setChatStatus("error"));
+            void refreshMemories().catch(() => setMemoriesStatus("error"));
+            return;
+          }
+          if (!closed && !signal.aborted) void reconcileBeforeRetry();
+        });
     };
 
     connect();
@@ -908,10 +950,77 @@ function ClientFeedsList({
     };
   }, [activeRunId, refreshChat, refreshMemories]);
 
+  useEffect(() => {
+    if (userScopedConflict === null) return;
+    const controller = new AbortController();
+    void reconcileUserScopedConflict({
+      conflict: userScopedConflict,
+      signal: controller.signal,
+      send: postDemoChatMessage,
+      onStillActive: (conflict) => {
+        setUserScopedConflict((current) =>
+          current === null || current.runId === conflict.activeRun.id
+            ? current
+            : { ...current, runId: conflict.activeRun.id },
+        );
+      },
+      onAccepted: async (body) => {
+        setChatNotice(null);
+        setUserScopedConflict(null);
+        setDraftMessage("");
+        setActiveRunId(body.run.id);
+        // Fence the accepted run after the refresh. A GET started for an
+        // earlier 409 may resolve later with the foreign run descriptor; it
+        // must never overwrite this 202's own run id.
+        await refreshChat(body.run.id).catch(() => {
+          setChatStatus("error");
+        });
+      },
+      onChatConflict: async (conflict) => {
+        setUserScopedConflict(null);
+        setActiveRunId(conflict.activeRun.id);
+        await refreshChat().catch(() => {
+          setActiveRunId(null);
+          setChatStatus("error");
+        });
+      },
+      onStopped: async () => {
+        try {
+          const latest = await refreshChat();
+          const resolution = resolveAmbiguousUserScopedConflict(userScopedConflict, latest);
+          if (resolution.action === "attach") setActiveRunId(resolution.runId);
+          else setActiveRunId(null);
+        } catch {
+          // Release the permanent blocker after an authoritative attempt. The
+          // request is never replayed automatically, so an explicit user
+          // resend remains the only way to issue another POST.
+          setActiveRunId(null);
+          setChatStatus("error");
+        } finally {
+          setUserScopedConflict(null);
+          setChatError(intl.formatMessage({ id: "chat.sendFailed" }));
+        }
+      },
+    });
+    return () => controller.abort();
+  }, [intl, refreshChat, userScopedConflict]);
+
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
-      if (trimmed.length === 0 || sendStatus === "sending" || activeRunId !== null) return;
+      const request = {
+        text: trimmed,
+        locale,
+        market,
+        webSearchEnabled,
+      } as const;
+      if (
+        trimmed.length === 0 ||
+        sendStatus === "sending" ||
+        activeRunId !== null ||
+        userScopedConflict !== null
+      )
+        return;
 
       setSendStatus("sending");
       setChatNotice(null);
@@ -919,38 +1028,73 @@ function ClientFeedsList({
       setFailedMessage(null);
 
       try {
-        const response = await postDemoChatMessage({ text: trimmed, locale, market });
-        if (response.status === 409) {
-          setChatNotice(intl.formatMessage({ id: "chat.runActive" }));
-          await refreshChat();
-          return;
-        }
-
-        if (!response.ok) {
-          setFailedMessage(trimmed);
-          setChatError(intl.formatMessage({ id: "chat.sendFailed" }));
-          return;
-        }
-
-        const body = (await response.json()) as SendMessageResponse;
+        const body = await postDemoChatMessage(request);
         setDraftMessage("");
-        setActiveRunId(body.runId);
+        setUserScopedConflict(null);
+        setActiveRunId(body.run.id);
         await refreshChat();
-      } catch {
+      } catch (cause) {
+        if (
+          cause instanceof ApiResponseError &&
+          cause.status === 409 &&
+          cause.body !== undefined &&
+          "conflictScope" in cause.body
+        ) {
+          const conflict: SendMessageConflict = cause.body;
+          setChatNotice(intl.formatMessage({ id: "chat.runActive" }));
+          if (conflict.conflictScope === "chat") setActiveRunId(conflict.activeRun.id);
+          if (conflict.conflictScope === "user") {
+            setUserScopedConflict({
+              runId: conflict.activeRun.id,
+              request,
+              knownMessageIds: chatMessages.map((message) => message.id),
+            });
+          }
+          await refreshChat().catch((reloadCause) => {
+            // A revoked viewer cannot safely keep reconciling a foreign run.
+            // Clear the local blocker and stop the retry effect.
+            if (
+              reloadCause instanceof ApiResponseError &&
+              (reloadCause.status === 401 ||
+                reloadCause.status === 403 ||
+                reloadCause.status === 404)
+            ) {
+              setUserScopedConflict(null);
+              setActiveRunId(null);
+              setChatStatus("error");
+            }
+          });
+          return;
+        }
+        if (isWebResearchUnavailable(cause)) {
+          setWebSearchEnabled(false);
+          setChatError(intl.formatMessage({ id: "chat.webPolicyChanged" }));
+          await refreshChat().catch(() => undefined);
+          return;
+        }
         setFailedMessage(trimmed);
         setChatError(intl.formatMessage({ id: "chat.sendFailed" }));
       } finally {
         setSendStatus("idle");
       }
     },
-    [activeRunId, intl, locale, market, refreshChat, sendStatus],
+    [
+      activeRunId,
+      intl,
+      locale,
+      market,
+      refreshChat,
+      sendStatus,
+      userScopedConflict,
+      webSearchEnabled,
+    ],
   );
 
-  async function handleRevertMemory(memoryId: string) {
+  async function handleRevertMemory(memoryId: string, revisionId: string) {
     setRevertingMemoryId(memoryId);
     setMemoryError(null);
     try {
-      await postRevertMemory(memoryId);
+      await postRevertMemory(memoryId, revisionId);
       await refreshMemories();
       await refreshChat();
     } catch {
@@ -960,11 +1104,17 @@ function ClientFeedsList({
     }
   }
 
-  function isSourceSubscribed(source: BriefSource): boolean {
-    const override = feedSubscriptions[source.id];
-    if (override !== undefined) return override;
-    if (manualSources) return source.subscribed;
-    return source.kind === "publisher" ? source.subscribed : source.country === market;
+  async function handleDeleteMemory(memoryId: string) {
+    setRevertingMemoryId(memoryId);
+    setMemoryError(null);
+    try {
+      await deleteDemoMemory(memoryId);
+      await refreshMemories();
+    } catch {
+      setMemoryError(intl.formatMessage({ id: "chat.memoryDeleteFailed" }));
+    } finally {
+      setRevertingMemoryId(null);
+    }
   }
 
   const rows = useMemo<ClientFeedTableRow[]>(() => {
@@ -974,42 +1124,29 @@ function ClientFeedsList({
       name: source.name,
       description: source.description,
       sourceType: source.kind === "publisher" ? "publisher_invite" : "public",
-      subscribed: isSourceSubscribed(source),
+      subscribed: source.subscribed,
       lastPublicationDate: computeSourceLastDate(source, publisherIssueSourceIds, publishedIssues),
       publisherName: source.publisherName,
     }));
-  }, [feedSubscriptions, manualSources, market, publishedIssues, sources]);
+  }, [publishedIssues, sources]);
 
-  function handleToggleSubscribed(feedId: string) {
-    setManualSourceSelection(true);
-    setFeedSubscriptions((current) => ({
-      ...current,
-      [feedId]: !(current[feedId] ?? true),
-    }));
-  }
-
-  const runActive = activeRunId !== null;
+  const runActive = activeRunId !== null || userScopedConflict !== null;
   const transcriptMessages = useMemo(
-    () =>
-      buildTranscriptMessages(
-        chatMessages,
-        activeRunId,
-        streamState.phase,
-        streamState,
-        chatDisplayLabels,
-      ),
-    [activeRunId, chatDisplayLabels, chatMessages, streamState],
+    () => buildTranscriptMessages(chatMessages, activeRunId, streamState.phase, streamState),
+    [activeRunId, chatMessages, streamState],
   );
   const showProgress =
-    runActive &&
-    (streamState.phase === "idle" ||
-      streamState.phase === "preflight" ||
-      streamState.phase === "retrying");
+    runActive && (streamState.phase === "idle" || streamState.phase === "preparing");
 
   return (
     <div className="mx-auto max-w-5xl space-y-7">
       <section className="animate-in stagger-1">
-        <VirtualizedChatTranscript messages={transcriptMessages} authorLabels={chatAuthorLabels} />
+        <VirtualizedChatTranscript
+          messages={transcriptMessages}
+          authorLabels={chatAuthorLabels}
+          onOpenAuthenticatedDocument={openAuthenticatedDocument}
+          onResubmit={(message) => setDraftMessage(message.content)}
+        />
 
         {chatStatus === "loading" ? (
           <p className="mt-2 font-mono text-[11px] text-faint">
@@ -1023,49 +1160,45 @@ function ClientFeedsList({
         ) : null}
         {showProgress ? (
           <p className="mt-2 font-mono text-[11px] text-muted">
-            <FormattedMessage
-              id="chat.searchingSources"
-              values={{
-                searches: streamState.searchCount,
-                results: streamState.latestResultCount,
-              }}
-            />
-          </p>
-        ) : null}
-        {streamState.phase === "error" && streamState.error ? (
-          <p className="mt-2 font-mono text-[11px] text-accent">
-            <FormattedMessage
-              id={streamState.error.retryable ? "chat.streamRetryable" : "chat.streamFailed"}
-              values={{ code: streamState.error.code }}
-            />
+            <FormattedMessage id="chat.preparing" />
           </p>
         ) : null}
 
         <form
-          className="mt-4 flex items-end gap-2 border-t border-rule pt-3"
+          className="mt-4 border-t border-rule pt-3"
           data-testid="chat-composer"
           onSubmit={(event) => {
             event.preventDefault();
             void sendMessage(draftMessage);
           }}
         >
-          <Textarea
-            value={draftMessage}
-            onChange={(event) => setDraftMessage(event.currentTarget.value)}
-            placeholder={intl.formatMessage({ id: "chat.placeholder" })}
-            disabled={runActive || sendStatus === "sending"}
-            rows={2}
-            className="min-h-10 resize-none bg-paper"
-            data-testid="chat-composer-input"
-          />
-          <Button
-            type="submit"
-            disabled={runActive || sendStatus === "sending" || draftMessage.trim().length === 0}
-            data-testid="chat-send-button"
-          >
-            <Send className="size-4" aria-hidden="true" />
-            <FormattedMessage id="action.send" />
-          </Button>
+          <div className="mb-2">
+            <ChatWebSearchToggle
+              policy={effectiveWebPolicy}
+              checked={webSearchEnabled}
+              disabled={runActive || sendStatus === "sending"}
+              onChange={setWebSearchEnabled}
+            />
+          </div>
+          <div className="flex items-end gap-2">
+            <Textarea
+              value={draftMessage}
+              onChange={(event) => setDraftMessage(event.currentTarget.value)}
+              placeholder={intl.formatMessage({ id: "chat.placeholder" })}
+              disabled={runActive || sendStatus === "sending"}
+              rows={2}
+              className="min-h-10 resize-none bg-paper"
+              data-testid="chat-composer-input"
+            />
+            <Button
+              type="submit"
+              disabled={runActive || sendStatus === "sending" || draftMessage.trim().length === 0}
+              data-testid="chat-send-button"
+            >
+              <Send className="size-4" aria-hidden="true" />
+              <FormattedMessage id="action.send" />
+            </Button>
+          </div>
         </form>
         {chatNotice ? <p className="mt-2 text-sm text-muted">{chatNotice}</p> : null}
         {chatError ? (
@@ -1095,6 +1228,7 @@ function ClientFeedsList({
           error={memoryError}
           revertingMemoryId={revertingMemoryId}
           onRevert={handleRevertMemory}
+          onDelete={handleDeleteMemory}
         />
       </section>
 
@@ -1110,12 +1244,16 @@ function ClientFeedsList({
             <FormattedMessage id="state.publicSourcesUnavailable" />
           </p>
         ) : null}
+        {publicContentStatus === "ready" && !sources.some((source) => source.kind === "public") ? (
+          <div
+            className="mt-3 rounded-sm border border-rule bg-paper px-4 py-5 text-sm text-muted"
+            data-testid="public-sources-empty"
+          >
+            <FormattedMessage id="state.noPublicSources" />
+          </div>
+        ) : null}
         <div className="mt-3">
-          <ClientFeedsTable
-            rows={rows}
-            onSelectFeed={onSelectFeed}
-            onToggleSubscribed={handleToggleSubscribed}
-          />
+          <ClientFeedsTable rows={rows} onSelectFeed={onSelectFeed} />
         </div>
       </section>
     </div>
@@ -1128,15 +1266,59 @@ function MemoriesPanel({
   error,
   revertingMemoryId,
   onRevert,
+  onDelete,
 }: {
   memories: readonly MemoryResponse[];
   status: "loading" | "ready" | "error";
   error: string | null;
   revertingMemoryId: string | null;
-  onRevert: (memoryId: string) => void;
+  onRevert: (memoryId: string, revisionId: string) => void;
+  onDelete: (memoryId: string) => void;
 }) {
   const intl = useIntl();
   const [expandedMemoryId, setExpandedMemoryId] = useState<string | null>(null);
+  const [openedMemoryRevision, setOpenedMemoryRevision] = useState<MemoryRevisionResponse | null>(
+    null,
+  );
+  const [provenanceError, setProvenanceError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let requestGeneration = 0;
+    const openHashRevision = () => {
+      const identity = parseMemoryRevisionFragment(window.location.hash);
+      if (identity === null) {
+        requestGeneration += 1;
+        setOpenedMemoryRevision(null);
+        setProvenanceError(null);
+        return;
+      }
+      setExpandedMemoryId(identity.memoryId);
+      setProvenanceError(null);
+      const generation = ++requestGeneration;
+      void demoApi
+        .fetchMemoryRevision(identity.memoryId, identity.revisionId)
+        .then((response) => {
+          if (generation !== requestGeneration) return;
+          setOpenedMemoryRevision(response);
+          window.requestAnimationFrame(() =>
+            document.getElementById(window.location.hash.slice(1))?.scrollIntoView({
+              block: "center",
+            }),
+          );
+        })
+        .catch(() => {
+          if (generation !== requestGeneration) return;
+          setOpenedMemoryRevision(null);
+          setProvenanceError("memory_revision_load_failed");
+        });
+    };
+    openHashRevision();
+    window.addEventListener("hashchange", openHashRevision);
+    return () => {
+      requestGeneration += 1;
+      window.removeEventListener("hashchange", openHashRevision);
+    };
+  }, []);
 
   return (
     <div>
@@ -1148,6 +1330,9 @@ function MemoriesPanel({
           <FormattedMessage id="chat.memoriesCount" values={{ count: memories.length }} />
         </span>
       </div>
+      <p className="mt-1 font-mono text-[11px] text-faint">
+        <FormattedMessage id="chat.memoryDeletionNotice" />
+      </p>
 
       {status === "loading" ? (
         <p className="mt-2 text-sm text-muted">
@@ -1160,6 +1345,40 @@ function MemoriesPanel({
         </p>
       ) : null}
       {error ? <p className="mt-2 text-sm text-accent">{error}</p> : null}
+      {openedMemoryRevision === null ? null : (
+        <article
+          id={memoryRevisionFragment(
+            openedMemoryRevision.memoryId,
+            openedMemoryRevision.revision.id,
+          ).slice(1)}
+          className="mt-2 border border-rule p-3"
+          data-testid="memory-provenance-revision"
+        >
+          <h3 className="font-mono text-[11px] font-medium uppercase tracking-wider text-faint">
+            <FormattedMessage id="memory.provenanceTitle" />
+          </h3>
+          <p className="mt-1 font-serif text-sm leading-5 text-ink">
+            {openedMemoryRevision.revision.after.content}
+          </p>
+          <p className="mt-1 font-mono text-[11px] text-faint">
+            <FormattedMessage
+              id="memory.provenanceDescription"
+              values={{
+                action: intl.formatMessage(
+                  { id: memoryRevisionActionMessageId(openedMemoryRevision.revision.action) },
+                  { action: openedMemoryRevision.revision.action },
+                ),
+                date: openedMemoryRevision.revision.createdAt.slice(0, 10),
+              }}
+            />
+          </p>
+        </article>
+      )}
+      {provenanceError === null ? null : (
+        <p className="mt-2 text-sm text-accent" role="alert">
+          <FormattedMessage id="memory.provenanceError" values={{ code: provenanceError }} />
+        </p>
+      )}
       {status === "ready" && memories.length === 0 ? (
         <p className="mt-2 text-sm text-muted">
           <FormattedMessage id="state.noMemories" />
@@ -1175,10 +1394,10 @@ function MemoriesPanel({
                 <div className="grid gap-2 sm:grid-cols-[7rem_1fr_auto] sm:items-start">
                   <div className="font-mono text-[11px] uppercase tracking-wider text-faint">
                     {intl.formatMessage(
-                      { id: memoryKindMessageId(memory.kind) },
-                      { kind: memory.kind },
+                      { id: memoryKindMessageId(memory.current.kind) },
+                      { kind: memory.current.kind },
                     )}
-                    {memory.deleted ? (
+                    {memory.current.deleted ? (
                       <span className="mt-1 block text-accent">
                         <FormattedMessage id="memory.deleted" />
                       </span>
@@ -1189,7 +1408,7 @@ function MemoriesPanel({
                       className="font-serif text-sm leading-5 text-ink"
                       data-testid="memory-content"
                     >
-                      {memory.content}
+                      {memory.current.content}
                     </p>
                     <p className="mt-1 font-mono text-[11px] text-faint">
                       {memory.updatedAt.slice(0, 10)}
@@ -1207,16 +1426,18 @@ function MemoriesPanel({
                       </button>
                     ) : null}
                   </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={revertingMemoryId === memory.id}
-                    onClick={() => onRevert(memory.id)}
-                    data-testid="memory-revert-button"
-                  >
-                    <FormattedMessage id="action.revertMemory" />
-                  </Button>
+                  {!memory.current.deleted ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={revertingMemoryId === memory.id}
+                      onClick={() => onDelete(memory.id)}
+                      data-testid="memory-delete-button"
+                    >
+                      <FormattedMessage id="action.delete" />
+                    </Button>
+                  ) : null}
                 </div>
                 {expanded ? (
                   <ul
@@ -1224,7 +1445,10 @@ function MemoriesPanel({
                     data-testid="memory-revisions"
                   >
                     {memory.revisions.map((revision) => (
-                      <li key={revision.id} className="font-mono text-[11px] text-muted">
+                      <li
+                        key={revision.id}
+                        className="flex items-center justify-between gap-2 font-mono text-[11px] text-muted"
+                      >
                         <FormattedMessage
                           id="memory.revisionLine"
                           values={{
@@ -1235,6 +1459,17 @@ function MemoriesPanel({
                             date: revision.createdAt.slice(0, 10),
                           }}
                         />
+                        {!revision.after.deleted && revision.id !== memory.headRevisionId ? (
+                          <button
+                            type="button"
+                            className="text-accent underline underline-offset-2"
+                            disabled={revertingMemoryId === memory.id}
+                            onClick={() => onRevert(memory.id, revision.id)}
+                            data-testid="memory-revert-button"
+                          >
+                            <FormattedMessage id="action.revertMemory" />
+                          </button>
+                        ) : null}
                       </li>
                     ))}
                   </ul>
@@ -1267,14 +1502,14 @@ function memoryKindMessageId(kind: string): string {
 
 function memoryRevisionActionMessageId(action: string): string {
   switch (action) {
-    case "created":
-      return "memory.revisionAction.created";
-    case "updated":
-      return "memory.revisionAction.updated";
-    case "deleted":
-      return "memory.revisionAction.deleted";
-    case "reverted":
-      return "memory.revisionAction.reverted";
+    case "create":
+      return "memory.revisionAction.create";
+    case "update":
+      return "memory.revisionAction.update";
+    case "delete":
+      return "memory.revisionAction.delete";
+    case "revert":
+      return "memory.revisionAction.revert";
     default:
       return "memory.revisionAction.unknown";
   }
@@ -1487,21 +1722,17 @@ function toPublicationDetailIssue(
   };
 }
 
-type SubscriberSessionState = {
-  statuses: Record<string, SubscriberStatus>;
-  deletedIds: readonly string[];
-  created?: readonly CreatedSubscriberRow[];
-};
-
 type CreatedSubscriberRow = SubscriberTableRow;
 
 function buildSubscriberRows(
   source: BriefSource,
   state: SubscriberSessionState,
 ): SubscriberTableRow[] {
+  if (source.kind !== "publisher") return [];
+  if (source.subscribedSince === null) return [];
   const baseDate = new Date(source.subscribedSince).getTime();
   const seededRows = demoSubscriberProfiles
-    .slice(0, Math.max(1, source.subscriberCount))
+    .slice(0, Math.max(1, source.subscriberCount ?? 0))
     .map((profile, index) => {
       const status: SubscriberStatus =
         state.statuses[profile.id] === "paused" ? "paused" : "active";
@@ -1779,36 +2010,42 @@ async function runDemoPdfTransaction(
   });
 }
 
-function useSessionState<T>(
+function useSessionState<T, I = T>(
   key: string,
   initialValue: T | (() => T),
+  schema: Schema.Codec<T, I, never, never>,
 ): [T, (next: T | ((prev: T) => T)) => void, (nextValue: T) => void] {
   const [value, setValue] = useState<T>(() => {
     const fallback =
       typeof initialValue === "function" ? (initialValue as () => T)() : initialValue;
     if (typeof window === "undefined") return fallback;
-    try {
-      const stored = window.localStorage.getItem(key);
-      return stored ? (JSON.parse(stored) as T) : fallback;
-    } catch {
-      return fallback;
-    }
+    return readStoredOr(window.localStorage, key, schema, fallback);
   });
 
   function update(next: T | ((prev: T) => T)) {
     setValue((prev) => {
       const resolved = typeof next === "function" ? (next as (prev: T) => T)(prev) : next;
+      let validated: T;
       try {
-        window.localStorage.setItem(key, JSON.stringify(resolved));
+        validated = Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(resolved);
+      } catch {
+        return prev;
+      }
+      try {
+        window.localStorage.setItem(key, JSON.stringify(validated));
       } catch {
         // Ignore storage failures; demo state stays in memory.
       }
-      return resolved;
+      return validated;
     });
   }
 
   function reset(nextValue: T) {
-    setValue(nextValue);
+    try {
+      setValue(Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(nextValue));
+    } catch {
+      // Ignore invalid reset values.
+    }
   }
 
   return [value, update, reset];
@@ -1818,26 +2055,47 @@ function LocaleMarketSwitcher() {
   const intl = useIntl();
   const setLocaleMarket = useSetLocaleMarket();
   const locale = useLocale();
+  const market = useMarket();
 
   return (
-    <select
-      value={locale}
-      aria-label={intl.formatMessage({ id: "localeSwitcher.label" })}
-      className="h-7 rounded-sm border border-rule bg-canvas px-1 !text-[12px] font-medium leading-none text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
-      onChange={(event) => {
-        const next = event.target.value;
-        if (!isLocale(next)) return;
-        setLocaleMarket({ locale: next, market: DEFAULT_MARKET_FOR_LOCALE[next] });
-      }}
-    >
-      {LOCALES.map((optionLocale) => (
-        <option key={optionLocale} value={optionLocale}>
-          {intl.formatMessage({
-            id: optionLocale === "fr-FR" ? "localeSwitcher.frFR" : "localeSwitcher.enUS",
-          })}
-        </option>
-      ))}
-    </select>
+    <div className="flex items-center gap-1">
+      <select
+        value={locale}
+        data-testid="locale-switcher"
+        aria-label={intl.formatMessage({ id: "localeSwitcher.label" })}
+        className="h-7 rounded-sm border border-rule bg-canvas px-1 !text-[12px] font-medium leading-none text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        onChange={(event) => {
+          const next = event.target.value;
+          if (!isLocale(next)) return;
+          setLocaleMarket({ locale: next, market });
+        }}
+      >
+        {LOCALES.map((optionLocale) => (
+          <option key={optionLocale} value={optionLocale}>
+            {intl.formatMessage({
+              id: optionLocale === "fr-FR" ? "localeSwitcher.frFR" : "localeSwitcher.enUS",
+            })}
+          </option>
+        ))}
+      </select>
+      <select
+        value={market}
+        data-testid="market-switcher"
+        aria-label={intl.formatMessage({ id: "marketSwitcher.label" })}
+        className="h-7 rounded-sm border border-rule bg-canvas px-1 !text-[12px] font-medium leading-none text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        onChange={(event) => {
+          const next = event.target.value;
+          if (!isMarket(next)) return;
+          setLocaleMarket({ locale, market: next });
+        }}
+      >
+        {MARKETS.map((optionMarket) => (
+          <option key={optionMarket} value={optionMarket}>
+            {optionMarket}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }
 
@@ -1848,14 +2106,14 @@ function LocaleMarketSwitcher() {
  */
 function DemoShell() {
   const initial = useMemo<DemoRoute & { resolved: LocaleMarketPair }>(() => {
-    migrateClientFeedSubscriptions();
     const parsed = getDemoRouteFromPath(window.location.pathname);
-    const resolved = parsed.locale
-      ? {
-          locale: parsed.locale,
-          market: DEFAULT_MARKET_FOR_LOCALE[parsed.locale],
-        }
-      : detectLocale();
+    const prefix = getDemoLocalePrefixFromPath(window.location.pathname);
+    const resolved = resolveDemoLocaleMarket(
+      parsed.locale,
+      getStoredMarket(),
+      detectLocale(),
+      prefix.forcedMarket,
+    );
     return { ...parsed, resolved };
   }, []);
 

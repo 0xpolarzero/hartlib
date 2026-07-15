@@ -15,6 +15,8 @@ const source = {
     "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/bofip-vigueur/records",
   contentUrl:
     "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/bofip-vigueur/records",
+  canonicalUrlOrigins: ["https://bofip.impots.gouv.fr"],
+  fetchOrigins: ["https://data.economie.gouv.fr"],
   contentFormats: ["html", "text"],
   averageCharsPerItem: 1859,
 } as const satisfies PublicSourceDefinition;
@@ -41,6 +43,12 @@ const response = (url: string, body: string): FetchResponse => ({
   ok: true,
   headers: new Headers({ "content-type": "application/json" }),
   text: async () => body,
+  body: new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(body));
+      controller.close();
+    },
+  }),
 });
 
 const notModifiedResponse = (url: string): FetchResponse => ({

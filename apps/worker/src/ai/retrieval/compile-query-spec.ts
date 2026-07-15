@@ -80,14 +80,35 @@ const csv = (values: readonly string[]): Statement.Fragment =>
   Statement.csv(values.map((value) => frag`${value}`));
 
 export const buildSourceAccessClause = (access: SourceAccess): Statement.Fragment => {
-  switch (access.kind) {
-    case "allPublicSources":
-      return frag`1 = 1`;
-    case "sourceIds":
-      return access.sourceIds.length === 0
-        ? frag`1 = 0`
-        : frag`d.source_id in (${csv(access.sourceIds)})`;
-  }
+  if (access.sourceIds.length === 0) return frag`1 = 0`;
+  const selected = frag`d.source_id in (${csv(access.sourceIds)})`;
+  if (access.kind === "sourceIds") return selected;
+  return frag`${selected} and exists (
+    select 1
+    from chats authorized_chat
+    join client_companies authorized_company
+      on authorized_company.id = authorized_chat.company_id
+     and authorized_company.recovery_deleted_at is null
+     and authorized_company.purged_at is null
+    join client_company_memberships authorized_membership
+      on authorized_membership.company_id = authorized_chat.company_id
+     and authorized_membership.user_id = ${access.initiatingUserId}
+     and authorized_membership.revoked_at is null
+    join platform_users authorized_user
+      on authorized_user.id = authorized_membership.user_id
+     and authorized_user.recovery_deleted_at is null
+     and authorized_user.purged_at is null
+    join client_company_public_source_settings authorized_setting
+      on authorized_setting.client_company_id = authorized_chat.company_id
+     and authorized_setting.source_id = d.source_id
+     and authorized_setting.enabled
+    where authorized_chat.id = ${access.chatId}
+      and authorized_chat.deleted_at is null
+      and (
+        (authorized_chat.shared_at is null and authorized_chat.user_id = ${access.initiatingUserId})
+        or authorized_chat.shared_at is not null
+      )
+  )`;
 };
 
 export const compileQuerySpec = (
@@ -163,6 +184,7 @@ export const compileQuerySpec = (
   const outerOrder = isRecency ? frag`recency_at desc` : frag`score desc`;
 
   return frag`select
+  source_id as "sourceId",
   document_id as "documentId",
   title,
   source_display_name as "sourceDisplayName",
@@ -175,6 +197,7 @@ from (
   select *
   from (
     select distinct on (d.content_hash)
+      d.source_id,
       d.document_id,
       d.title,
       s.display_name as source_display_name,

@@ -46,4 +46,4 @@ This is controlled by the client company.
 
 This is separate from publisher subscription management.
 
-The French MVP sends model calls only to Mistral. Web research remains disabled until a separately approved search adapter is disclosed under `docs/data-access.spec.md`.
+Development sends model calls through the exact registered GLM-5-Turbo contract on Z.AI and may use Tinyfish discovery for non-sensitive local testing. The French production provider and web posture are selected through `docs/production-readiness.spec.md`; production web research remains disabled until the applicable provider, contract, conformance, and disclosure decisions are accepted.

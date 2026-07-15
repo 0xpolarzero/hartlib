@@ -1,6 +1,12 @@
 import { Effect } from "effect";
+import { file } from "bun";
 import { describe, expect, it } from "vitest";
-import { makeFeedAdapter, parseFeed } from "./feed";
+import {
+  assertReadablePdfText,
+  makeFeedAdapter,
+  MINIMUM_READABLE_PDF_TEXT_CHARS,
+  parseFeed,
+} from "./feed";
 import type { FetchResponse, PublicSourceDefinition } from "./types";
 
 const rssSource = {
@@ -12,16 +18,15 @@ const rssSource = {
   language: "fr-FR",
   ingestionMethod: "official_document",
   discoveryUrl: "https://example.test/rss.xml",
+  canonicalUrlOrigins: ["https://example.test", "https://www.assemblee-nationale.fr"],
+  fetchOrigins: ["https://example.test", "https://www.assemblee-nationale.fr"],
   contentFormats: ["html", "text"],
   averageCharsPerItem: 1000,
 } as const satisfies PublicSourceDefinition;
 
 const atomSource = {
   ...rssSource,
-  id: "tresor",
-  ingestionMethod: "atom_feed",
   discoveryUrl: "https://example.test/atom.xml",
-  contentFormats: ["html", "text"],
 } as const satisfies PublicSourceDefinition;
 
 const response = (url: string, body: string, contentType = "text/xml"): FetchResponse => ({
@@ -30,6 +35,62 @@ const response = (url: string, body: string, contentType = "text/xml"): FetchRes
   ok: true,
   headers: new Headers({ "content-type": contentType }),
   text: async () => body,
+  body: new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(body));
+      controller.close();
+    },
+  }),
+});
+
+const binaryResponse = (url: string, bytes: Uint8Array, contentType: string): FetchResponse => ({
+  url,
+  status: 200,
+  ok: true,
+  headers: new Headers({
+    "content-type": contentType,
+    "content-length": String(bytes.byteLength),
+  }),
+  text: async () => {
+    throw new Error("binary response must not be decoded as text");
+  },
+  body: new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(Uint8Array.from(bytes));
+      controller.close();
+    },
+  }),
+});
+
+const streamedBinaryResponse = (
+  url: string,
+  chunks: readonly Uint8Array[],
+  contentType: string,
+): FetchResponse => ({
+  url,
+  status: 200,
+  ok: true,
+  headers: new Headers({ "content-type": contentType }),
+  text: async () => {
+    throw new Error("streamed binary response must not be decoded as text");
+  },
+  body: new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  }),
+  arrayBuffer: async () => {
+    throw new Error("stream reader must be used before arrayBuffer");
+  },
+});
+
+const failedResponse = (url: string, status: number): FetchResponse => ({
+  url,
+  status,
+  ok: false,
+  headers: new Headers(),
+  text: async () => "",
 });
 
 const notModifiedResponse = (url: string): FetchResponse => ({
@@ -43,6 +104,21 @@ const notModifiedResponse = (url: string): FetchResponse => ({
 });
 
 describe("feed adapters", () => {
+  it.each([
+    ["empty", ""],
+    ["whitespace", " \n\t\r  "],
+    ["short", "a".repeat(MINIMUM_READABLE_PDF_TEXT_CHARS - 1)],
+  ])("rejects %s extracted PDF text before ingestion", (_label, text) => {
+    expect(() => assertReadablePdfText(rssSource, text)).toThrow(
+      "extracted content is too short to be considered readable",
+    );
+  });
+
+  it("accepts extracted PDF text at the exact readability boundary", () => {
+    const text = "a".repeat(MINIMUM_READABLE_PDF_TEXT_CHARS);
+    expect(assertReadablePdfText(rssSource, text)).toBe(text);
+  });
+
   it("parses RSS discovery items", () => {
     const items = parseFeed(
       rssSource,
@@ -97,7 +173,7 @@ describe("feed adapters", () => {
       `<?xml version="1.0"?>
       <feed xmlns="http://www.w3.org/2005/Atom">
         <entry>
-          <title>Tresor note</title>
+          <title>Parliamentary note</title>
           <id>tag:example.test,2026:note-1</id>
           <updated>2026-07-05T09:30:00Z</updated>
           <link rel="alternate" href="https://example.test/notes/1" />
@@ -109,10 +185,10 @@ describe("feed adapters", () => {
 
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({
-      sourceId: "tresor",
+      sourceId: "assemblee_nationale",
       externalId: "tag:example.test,2026:note-1",
       canonicalUrl: "https://example.test/notes/1",
-      title: "Tresor note",
+      title: "Parliamentary note",
       summary: "Macro note",
     });
   });
@@ -123,7 +199,7 @@ describe("feed adapters", () => {
       `<?xml version="1.0"?>
       <feed xmlns="http://www.w3.org/2005/Atom">
         <entry>
-          <title>Tresor &amp; economie</title>
+          <title>Parliament &amp; economie</title>
           <id>tag:example.test,2026:note-&amp;-1</id>
           <updated>2026-07-05T09:30:00Z</updated>
           <link rel="alternate" href="https://example.test/notes/1?x=1&amp;y=2" />
@@ -135,7 +211,7 @@ describe("feed adapters", () => {
     expect(items[0]).toMatchObject({
       externalId: "tag:example.test,2026:note-&-1",
       canonicalUrl: "https://example.test/notes/1?x=1&y=2",
-      title: "Tresor & economie",
+      title: "Parliament & economie",
     });
   });
 
@@ -145,7 +221,7 @@ describe("feed adapters", () => {
       `<?xml version="1.0"?>
       <feed xmlns="http://www.w3.org/2005/Atom">
         <entry>
-          <title>Tresor note</title>
+          <title>Parliamentary note</title>
           <id>tag:example.test,2026:note-1</id>
           <updated>2026-07-05T09:30:00Z</updated>
           <link rel="self" href="https://example.test/atom.xml" />
@@ -164,7 +240,7 @@ describe("feed adapters", () => {
       `<?xml version="1.0"?>
       <feed xmlns="http://www.w3.org/2005/Atom">
         <entry>
-          <title>Tresor note</title>
+          <title>Parliamentary note</title>
           <id>tag:example.test,2026:note-1</id>
           <updated>2026-07-05T09:30:00Z</updated>
           <link href="https://example.test/notes/1" />
@@ -175,44 +251,6 @@ describe("feed adapters", () => {
     );
 
     expect(items[0]?.canonicalUrl).toBe("https://example.test/notes/1");
-  });
-
-  it("uses embedded Trésor Atom HTML content instead of fetching the linked page", async () => {
-    const feedBody = `<?xml version="1.0"?>
-      <feed xmlns="http://www.w3.org/2005/Atom">
-        <entry>
-          <title>Tresor note</title>
-          <id>tag:example.test,2026:note-1</id>
-          <updated>2026-07-05T09:30:00Z</updated>
-          <link rel="alternate" href="https://example.test/notes/1" />
-          <content type="html"><![CDATA[<article><h1>Tresor note</h1><p>Official feed body.</p></article>]]></content>
-        </entry>
-      </feed>`;
-    const requestedUrls: string[] = [];
-    const fetcher = async (url: string): Promise<FetchResponse> => {
-      requestedUrls.push(url);
-      return response(url, feedBody);
-    };
-
-    const adapter = makeFeedAdapter(atomSource, { kind: "atom", fetcher });
-    const discovery = await Effect.runPromise(adapter.discover());
-    expect(discovery.status).toBe("fetched");
-    if (discovery.status !== "fetched") {
-      throw new Error("expected fetched discovery");
-    }
-    const [item] = discovery.items;
-    const result = await Effect.runPromise(adapter.fetch(item!));
-    expect(result.status).toBe("fetched");
-    if (result.status !== "fetched") {
-      throw new Error("expected fetched result");
-    }
-    const document = await Effect.runPromise(adapter.normalize(result.raw, item));
-
-    expect(requestedUrls).toEqual(["https://example.test/atom.xml"]);
-    expect(document.text).toBe("Tresor note Official feed body.");
-    expect(document.sourceMetadata).toMatchObject({
-      embeddedFeedContent: true,
-    });
   });
 
   it("discovers, fetches, and normalizes a feed-backed document", async () => {
@@ -371,6 +409,106 @@ describe("feed adapters", () => {
     });
   });
 
+  it("falls back from obsolete opendata HTML to the canonical official PDF and preserves exact bytes", async () => {
+    const fixtureUrl = new URL(
+      "../../../apps/demo/public/demo/pdfs/atlas-regfin-2026-06-17.pdf",
+      import.meta.url,
+    );
+    const pdfBytes = new Uint8Array(await file(fixtureUrl).arrayBuffer());
+    const requestedUrls: string[] = [];
+    const fetcher = async (url: string): Promise<FetchResponse> => {
+      requestedUrls.push(url);
+      if (url.includes("/dyn/opendata/RINFANR5L17B3050.html")) {
+        return failedResponse(url, 404);
+      }
+      return binaryResponse(
+        "https://www.assemblee-nationale.fr/dyn/17/rapports/cion-eco/l17b3050_rapport-information.pdf",
+        pdfBytes,
+        "application/pdf",
+      );
+    };
+
+    const item = {
+      sourceId: "assemblee_nationale",
+      externalId: "i3050",
+      canonicalUrl: "https://www.assemblee-nationale.fr/17/rap-info/i3050.asp",
+      title: "Rapport d'information n° 3050",
+      publishedAt: new Date("2026-07-09T00:00:00.000Z"),
+    } as const;
+    const adapter = makeFeedAdapter(rssSource, { kind: "rss", fetcher });
+    const result = await Effect.runPromise(adapter.fetch(item));
+    expect(result.status).toBe("fetched");
+    if (result.status !== "fetched") throw new Error("expected fetched result");
+
+    expect(requestedUrls).toEqual([
+      "https://www.assemblee-nationale.fr/dyn/opendata/RINFANR5L17B3050.html",
+      item.canonicalUrl,
+    ]);
+    expect(result.raw.mediaType).toBe("application/pdf");
+    expect(result.raw.body).toBe("");
+    expect(result.raw.bodyBytes).toEqual(pdfBytes);
+    expect(result.raw.metadata).toMatchObject({
+      landingPageUrl: item.canonicalUrl,
+      fetchedContentUrl:
+        "https://www.assemblee-nationale.fr/dyn/17/rapports/cion-eco/l17b3050_rapport-information.pdf",
+    });
+
+    const document = await Effect.runPromise(adapter.normalize(result.raw, item));
+    expect(result.raw.bodyBytes).toEqual(pdfBytes);
+    expect(document.title).toBe(item.title);
+    expect(document.publishedAt).toEqual(item.publishedAt);
+    expect(document.textCharCount).toBeGreaterThan(100);
+    expect(document.contentHash).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
+  it("rejects a response labelled as PDF when its exact bytes lack the PDF signature", async () => {
+    const adapter = makeFeedAdapter(rssSource, {
+      kind: "rss",
+      fetcher: async (url) =>
+        binaryResponse(url, new TextEncoder().encode("not-a-pdf"), "application/pdf"),
+    });
+
+    await expect(
+      Effect.runPromise(
+        adapter.fetch({
+          sourceId: "assemblee_nationale",
+          externalId: "i3050",
+          canonicalUrl: "https://www.assemblee-nationale.fr/17/rap-info/i3050.asp",
+          title: "Rapport",
+          publishedAt: null,
+        }),
+      ),
+    ).rejects.toThrow("invalid signature");
+  });
+
+  it("caps streamed PDFs without trusting Content-Length or materializing arrayBuffer", async () => {
+    const overLimit = new Uint8Array(25 * 1024 * 1024 + 1);
+    overLimit[0] = 0x25;
+    overLimit[1] = 0x50;
+    overLimit[2] = 0x44;
+    overLimit[3] = 0x46;
+    overLimit[4] = 0x2d;
+    const adapter = makeFeedAdapter(rssSource, {
+      kind: "rss",
+      fetcher: async (url) =>
+        url.includes("/dyn/opendata/RINFANR5L17B3050.html")
+          ? failedResponse(url, 404)
+          : streamedBinaryResponse(url, [overLimit], "application/pdf"),
+    });
+
+    await expect(
+      Effect.runPromise(
+        adapter.fetch({
+          sourceId: "assemblee_nationale",
+          externalId: "i3050",
+          canonicalUrl: "https://www.assemblee-nationale.fr/17/rap-info/i3050.asp",
+          title: "Rapport",
+          publishedAt: null,
+        }),
+      ),
+    ).rejects.toThrow("exceeds its byte limit");
+  });
+
   it("uses the Assemblee nationale iframe raw document when no opendata HTML link exists", async () => {
     const fetcher = async (url: string): Promise<FetchResponse> => {
       if (url === "https://example.test/articles/1") {
@@ -458,7 +596,7 @@ describe("feed adapters", () => {
           publishedAt: null,
         }),
       ),
-    ).rejects.toThrow("official HTML document URL");
+    ).rejects.toThrow("official HTML/PDF document URL");
   });
 
   it("passes conditional validators to feed discovery", async () => {
@@ -576,29 +714,6 @@ describe("feed adapters", () => {
     });
   });
 
-  it("rejects Trésor Atom items without embedded official HTML instead of fetching linked pages", async () => {
-    const requestedUrls: string[] = [];
-    const fetcher = async (url: string): Promise<FetchResponse> => {
-      requestedUrls.push(url);
-      return response(url, "<html><main>Linked article page should not be fetched.</main></html>");
-    };
-
-    const adapter = makeFeedAdapter(atomSource, { kind: "atom", fetcher });
-
-    await expect(
-      Effect.runPromise(
-        adapter.fetch({
-          sourceId: "tresor",
-          externalId: "tag:example.test,2026:note-1",
-          canonicalUrl: "https://example.test/notes/1",
-          title: "Tresor note",
-          publishedAt: null,
-        }),
-      ),
-    ).rejects.toThrow("embedded official HTML content");
-    expect(requestedUrls).toEqual([]);
-  });
-
   it("extracts source content instead of whole-page boilerplate", async () => {
     const adapter = makeFeedAdapter(rssSource);
     const document = await Effect.runPromise(
@@ -638,23 +753,23 @@ describe("feed adapters", () => {
     const document = await Effect.runPromise(
       adapter.normalize(
         {
-          sourceId: "tresor",
+          sourceId: "assemblee_nationale",
           canonicalUrl: "https://example.test/notes/1",
           fetchedAt: new Date("2026-07-06T10:00:00Z"),
           mediaType: "text/html",
-          body: "<main>Direction g&#233;n&#233;rale du Tr&#233;sor</main>",
+          body: "<main>Assembl&#233;e nationale</main>",
         },
         {
-          sourceId: "tresor",
+          sourceId: "assemblee_nationale",
           externalId: "note-1",
           canonicalUrl: "https://example.test/notes/1",
-          title: "Tresor note",
+          title: "Parliamentary note",
           publishedAt: null,
         },
       ),
     );
 
-    expect(document.text).toBe("Direction générale du Trésor");
+    expect(document.text).toBe("Assemblée nationale");
     expect(document.text).not.toContain("&#233;");
   });
 

@@ -5,14 +5,14 @@ import { SourceIngestionError, type SourceAdapter } from "./types";
 
 const adapter = {
   definition: {
-    id: "tresor",
-    displayName: "Direction generale du Tresor",
-    publisherName: "Direction generale du Tresor",
+    id: "service_public",
+    displayName: "Service-Public",
+    publisherName: "Direction de l'information legale et administrative",
     description: "Official Government news and explanations.",
     country: "FR",
     language: "fr-FR",
-    ingestionMethod: "atom_feed",
-    discoveryUrl: "https://example.test/atom.xml",
+    ingestionMethod: "xml_dataset",
+    discoveryUrl: "https://example.test/service-public.xml",
     contentFormats: ["html", "text"],
     averageCharsPerItem: 1000,
   },
@@ -22,14 +22,14 @@ const adapter = {
       discoveredAt: new Date("2026-07-06T08:00:00Z"),
       metadata: [
         {
-          url: "https://example.test/atom.xml",
+          url: "https://example.test/service-public.xml",
           status: 200,
           etag: '"feed-cache"',
         },
       ],
       items: [
         {
-          sourceId: "tresor",
+          sourceId: "service_public",
           externalId: "article-1",
           canonicalUrl: "https://example.test/articles/1",
           title: "Government update",
@@ -41,7 +41,7 @@ const adapter = {
     Effect.succeed({
       status: "fetched",
       raw: {
-        sourceId: "tresor",
+        sourceId: "service_public",
         canonicalUrl: item.canonicalUrl,
         fetchedAt: new Date("2026-07-06T10:00:00Z"),
         mediaType: "text/html",
@@ -54,8 +54,8 @@ const adapter = {
     }),
   normalize: (raw, item) =>
     Effect.succeed({
-      id: "tresor:version",
-      sourceId: "tresor",
+      id: "service_public:version",
+      sourceId: "service_public",
       ...(item?.externalId ? { externalId: item.externalId } : {}),
       canonicalUrl: raw.canonicalUrl,
       title: item?.title ?? raw.canonicalUrl,
@@ -67,7 +67,7 @@ const adapter = {
       text: "Useful public text.",
       textCharCount: 19,
       contentHash: "hash",
-      rawArtifactKey: "tresor/hash",
+      rawArtifactKey: "service_public/hash",
       sourceMetadata: raw.metadata ?? {},
     }),
 } satisfies SourceAdapter;
@@ -82,7 +82,7 @@ describe("source ingestion helpers", () => {
       discoveredAt,
       metadata: [
         {
-          url: "https://example.test/atom.xml",
+          url: "https://example.test/service-public.xml",
           status: 200,
           etag: '"feed-cache"',
         },
@@ -113,7 +113,7 @@ describe("source ingestion helpers", () => {
     }
     expect(result.raw.metadata).toMatchObject({ requestedEtag: '"abc123"' });
     expect(result.document).toMatchObject({
-      sourceId: "tresor",
+      sourceId: "service_public",
       canonicalUrl: "https://example.test/articles/1",
       text: "Useful public text.",
     });
@@ -128,7 +128,7 @@ describe("source ingestion helpers", () => {
     if (results[0]?.status !== "ingested") {
       throw new Error("expected ingested result");
     }
-    expect(results[0].document.rawArtifactKey).toBe("tresor/hash");
+    expect(results[0].document.rawArtifactKey).toBe("service_public/hash");
   });
 
   it("does not fetch items when discovery reports unchanged", async () => {
@@ -137,11 +137,11 @@ describe("source ingestion helpers", () => {
       discover: () =>
         Effect.succeed({
           status: "not_modified",
-          sourceId: "tresor",
+          sourceId: "service_public",
           discoveredAt: new Date("2026-07-06T08:00:00Z"),
           metadata: [
             {
-              url: "https://example.test/atom.xml",
+              url: "https://example.test/service-public.xml",
               status: 304,
               etag: '"feed-cache"',
             },
@@ -162,17 +162,17 @@ describe("source ingestion helpers", () => {
         Effect.succeed({
           status: "fetched",
           discoveredAt: new Date("2026-07-06T08:00:00Z"),
-          metadata: [{ url: "https://example.test/atom.xml", status: 200 }],
+          metadata: [{ url: "https://example.test/service-public.xml", status: 200 }],
           items: [
             {
-              sourceId: "tresor",
+              sourceId: "service_public",
               externalId: "article-1",
               canonicalUrl: "https://example.test/articles/1",
               title: "Government update",
               publishedAt: null,
             },
             {
-              sourceId: "tresor",
+              sourceId: "service_public",
               externalId: "article-404",
               canonicalUrl: "https://example.test/articles/404",
               title: "Missing update",
@@ -184,7 +184,7 @@ describe("source ingestion helpers", () => {
         item.externalId === "article-404"
           ? Effect.fail(
               new SourceIngestionError("Item fetch failed with HTTP 404", {
-                sourceId: "tresor",
+                sourceId: "service_public",
               }),
             )
           : adapter.fetch(item, undefined),
@@ -208,7 +208,7 @@ describe("source ingestion helpers", () => {
       fetch: (item) =>
         Effect.succeed({
           status: "not_modified",
-          sourceId: "tresor",
+          sourceId: "service_public",
           canonicalUrl: item.canonicalUrl,
           fetchedAt: new Date("2026-07-06T10:00:00Z"),
           metadata: { externalId: item.externalId },

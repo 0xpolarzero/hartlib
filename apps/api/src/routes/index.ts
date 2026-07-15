@@ -1,22 +1,34 @@
-import {
-  artifactApplyPatchRoute,
-  artifactCheckRoute,
-  artifactListFilesRoute,
-  artifactReadFileRoute,
-} from "./artifacts";
-import { chatRoutes } from "./chat";
+import { billingRoutes } from "../domain/billing";
+import { chatRoutes } from "../domain/chat";
+import { clerkWebhookRoute } from "../domain/clerk-webhook";
+import { clientWorkspaceRoutes } from "../domain/client-workspace";
+import { exportRoutes } from "../domain/exports";
 import { healthRoute } from "./health";
-import { memoryRoutes } from "./memories";
-import { publicSourceDocumentContentRoute, publicSourcesRoute } from "./public-sources";
+import { memoryRoutes } from "../domain/memories";
+import { productChatRoutes } from "../domain/product-chats";
+import { platformSupportRoutes } from "../domain/platform-support";
+import { publisherDocumentContentRoute } from "../domain/publisher-documents";
+import { publisherOnboardingRoute } from "../domain/publisher-onboarding";
+import { publisherWorkspaceRoutes } from "../domain/publisher-workspace";
+import { publicSourceDocumentContentRoute, publicSourcesRoute } from "../domain/public-sources";
+import { stripeWebhookRoute } from "../domain/stripe-webhook";
+import { workspaceMembershipRoutes } from "../domain/workspace-memberships";
 
 export const routes = [
   healthRoute,
   publicSourcesRoute,
   publicSourceDocumentContentRoute,
+  clerkWebhookRoute,
+  stripeWebhookRoute,
+  ...billingRoutes,
   ...chatRoutes,
+  ...clientWorkspaceRoutes,
+  ...exportRoutes,
   ...memoryRoutes,
-  artifactListFilesRoute,
-  artifactReadFileRoute,
-  artifactApplyPatchRoute,
-  artifactCheckRoute,
+  ...productChatRoutes,
+  ...platformSupportRoutes,
+  ...publisherWorkspaceRoutes,
+  publisherOnboardingRoute,
+  ...workspaceMembershipRoutes,
+  publisherDocumentContentRoute,
 ] as const;

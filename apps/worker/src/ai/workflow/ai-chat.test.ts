@@ -1,1098 +1,2286 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runMigrations } from "../../db/migrate";
+import type { CanonicalAgentClient } from "../runtime/agent-client";
+import { AiRuntimeError } from "../runtime/errors";
 import type {
-  AiCallResult,
-  AiClient,
-  AnswerStreamEvent,
-  MemoryExtractionInput,
-  PreflightInputs,
-} from "../llm";
-import { zeroUsage, type MemoryExtractionOutput, type PreflightOutput } from "../llm";
+  AnswerLaneResult,
+  ConversationResolution,
+  MemoryExtractionArtifact,
+  NormalizedExecutionPlan,
+  TopicPacket,
+} from "../runtime/types";
+import { createSmithersStorage, runSmithersWorkflow } from "../smithers-interop";
 import {
-  createSmithersStorage,
-  runSmithersWorkflow,
-  smithersRunExists,
-  type RunResult,
-  type RunStatus,
-} from "../smithers-interop";
-import {
+  aiChatRetryPolicy,
+  aiChatRuntimeInputSchema,
   aiChatSchemas,
+  aiChatSmithersMaxConcurrency,
   buildAiChatWorkflow,
-  formatTaskOutputValidationIssues,
-  type AiChatWorkflowRuntime,
 } from "./ai-chat";
-import { appendAiRunEvent, replaceAiRunEventsForTask, runAiWorkflowDb } from "./events";
 import {
-  AI_CHAT_OUTPUT_TABLES,
-  deleteSmithersRowsForRun,
-  pruneFinishedAiRunEvents,
-} from "./smithers-cleanup";
+  CanonicalWorkflowOperations,
+  type ContextAssembly,
+  type ContextReductionPlan,
+  type ContextState,
+  type FanoutSourceKeySet,
+  type LoadedTurn,
+  type MemorySelectorResult,
+  type SelectorBundle,
+  type WebSelectorResult,
+} from "./operations";
 
-const isBun = typeof process.versions.bun === "string";
-const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const isolatedDatabaseName = `brief_ai_workflow_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const sourceDatabaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
+const databaseName = `brief_ai_chat_graph_test_${process.pid}_${crypto
+  .randomUUID()
+  .replaceAll("-", "")
+  .slice(0, 8)}`;
+const migrationIsolationDatabaseName = `${databaseName}_migration`;
+const workflowConfig = {
+  aiFastTaskTimeoutMs: 30_000,
+  aiAnswerTimeoutMs: 30_000,
+  aiTopicResearchMaxConcurrency: 6,
+  aiTopicAnswerMaxConcurrency: 3,
+  aiContextReductionMaxIterations: 2,
+} as const;
 
-const sourceDatabaseUrl = () => {
-  if (databaseUrl === undefined) {
+const databaseUrlFor = (name: string): string => {
+  if (sourceDatabaseUrl === undefined)
     throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL is required");
-  }
-
-  return databaseUrl;
-};
-
-const adminDatabaseUrl = () => {
-  const url = new URL(sourceDatabaseUrl());
-  url.pathname = "/postgres";
+  const url = new URL(sourceDatabaseUrl);
+  url.pathname = `/${name}`;
   return url.toString();
 };
 
-const isolatedDatabaseUrl = () => {
-  const url = new URL(sourceDatabaseUrl());
-  url.pathname = `/${isolatedDatabaseName}`;
-  return url.toString();
-};
-
+const adminDatabaseUrl = (): string => databaseUrlFor("postgres");
+const workflowDatabaseUrl = (): string => databaseUrlFor(databaseName);
+const databaseUrl = sourceDatabaseUrl === undefined ? undefined : workflowDatabaseUrl();
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 
-function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
+const runDb = <A, E>(
+  effect: Effect.Effect<A, E, PgClient.PgClient>,
+  url = workflowDatabaseUrl(),
+): Promise<A> => {
   return Effect.runPromise(
     effect.pipe(
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-ai-workflow-test",
+          applicationName: "brief-ai-chat-graph-test",
         }),
       ),
     ),
   );
-}
-
-const usage = zeroUsage();
-
-const assistantMessage = (text: string, stopReason: "stop" | "error" | "length" = "stop") => ({
-  role: "assistant" as const,
-  content: [{ type: "text" as const, text }],
-  api: "openai-completions" as const,
-  provider: "zai",
-  model: "test-scripted",
-  usage,
-  stopReason,
-  timestamp: Date.now(),
-});
-
-const answerOk = (text: string): readonly AnswerStreamEvent[] => [
-  { type: "text_delta", delta: text },
-  {
-    type: "result",
-    result: {
-      kind: "ok",
-      value: {
-        message: assistantMessage(text),
-        text,
-        usage,
-        insufficiencyGap: null,
-      },
-    },
-  },
-];
-
-const answerInsufficient = (gap: string): readonly AnswerStreamEvent[] => {
-  const text = `[[insufficient: ${gap}]]`;
-
-  return [
-    {
-      type: "result",
-      result: {
-        kind: "ok",
-        value: {
-          message: assistantMessage(text),
-          text,
-          usage,
-          insufficiencyGap: gap,
-        },
-      },
-    },
-  ];
 };
 
-const answerFatal = (): readonly AnswerStreamEvent[] => [
-  {
-    type: "result",
-    result: {
-      kind: "fatal",
-      message: assistantMessage("", "error"),
-      usage,
-      errorMessage: "fatal scripted answer",
-    },
-  },
+interface SmithersFrameElement {
+  readonly kind: string;
+  readonly tag?: string;
+  readonly props?: Readonly<Record<string, string>>;
+  readonly children?: readonly SmithersFrameElement[];
+}
+
+const graphKeyframe = (runId: string): Promise<SmithersFrameElement> =>
+  runDb(
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{ readonly xmlJson: string }>`
+        select xml_json as "xmlJson"
+        from _smithers_frames
+        where run_id = ${runId}
+          and encoding = 'keyframe'
+          and xml_json like '%fanout-topic-research%'
+        order by frame_no desc
+        limit 1
+      `;
+      const frame = rows[0];
+      if (frame === undefined) throw new Error(`missing fanout keyframe for ${runId}`);
+      return JSON.parse(frame.xmlJson) as SmithersFrameElement;
+    }),
+  );
+
+const collectFrameElements = (
+  root: SmithersFrameElement,
+  predicate: (element: SmithersFrameElement) => boolean,
+): readonly SmithersFrameElement[] => [
+  ...(predicate(root) ? [root] : []),
+  ...(root.children ?? []).flatMap((child) => collectFrameElements(child, predicate)),
 ];
 
-class ScriptedAiClient implements AiClient {
-  readonly preflightInputs: PreflightInputs[] = [];
+const normalizedTopicIds = (runId: string): Promise<readonly string[]> =>
+  runDb(
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{ readonly value: string }>`
+        select value
+        from ai_chat_normalized_plan
+        where run_id = ${runId}
+          and node_id = 'normalize-execution-plan'
+          and iteration = 0
+      `;
+      const value = rows[0]?.value;
+      if (value === undefined) throw new Error(`missing normalized plan for ${runId}`);
+      const parsed = JSON.parse(value) as {
+        readonly topics?: readonly { readonly topicId: string }[];
+      };
+      return parsed.topics?.map((topic) => topic.topicId) ?? [];
+    }),
+  );
+
+const finishedTopicNodeIds = (runId: string): Promise<readonly string[]> =>
+  runDb(
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{ readonly nodeId: string }>`
+        select node_id as "nodeId"
+        from _smithers_nodes
+        where run_id = ${runId}
+          and state = 'finished'
+          and node_id like 'topic-%'
+        order by node_id
+      `;
+      return rows.map((row) => row.nodeId);
+    }),
+  );
+
+const finishedNodeIds = (runId: string): Promise<ReadonlySet<string>> =>
+  runDb(
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{ readonly nodeId: string }>`
+        select node_id as "nodeId"
+        from _smithers_nodes
+        where run_id = ${runId}
+          and state = 'finished'
+      `;
+      return new Set(rows.map((row) => row.nodeId));
+    }),
+  );
+
+const waitForFinishedNodes = async (runId: string, expected: readonly string[]): Promise<void> => {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const finished = await finishedNodeIds(runId);
+    if (expected.every((nodeId) => finished.has(nodeId))) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  const finished = await finishedNodeIds(runId);
+  throw new Error(
+    `timed out waiting for Smithers checkpoints: ${expected
+      .filter((nodeId) => !finished.has(nodeId))
+      .join(", ")}`,
+  );
+};
+
+const emptyMemory: MemoryExtractionArtifact = {
+  result: { proposals: [], discardedCount: 0 },
+  producer: {
+    taskId: "memory-extract",
+    loopIteration: 0,
+    attempt: 1,
+    observationKey: "memory-extract:0:1:memory_extraction_result:result",
+    extractionSha256Hex: "0".repeat(64),
+  },
+};
+const load: LoadedTurn = {
+  aiRunId: crypto.randomUUID(),
+  chatId: crypto.randomUUID(),
+  initiatingUserId: "workflow-user",
+  userMessageId: crypto.randomUUID(),
+  userMessage: "Compare the evidence.",
+  locale: "en-US",
+  market: "US",
+  currentDate: "2026-07-10",
+  citationNonce: [...new Uint8Array(16).fill(7)],
+  priorTerminalTurnCount: 0,
+  conversation: [],
+  memories: [],
+  memoryMode: "disabled",
+  sourceCatalog: [],
+  webRequested: false,
+  webPolicy: { enabled: false, reason: "company_disabled", allowlistActive: false },
+};
+const request = {
+  requestClass: "main" as const,
+  model: "glm-5-turbo" as const,
+  messages: [{ role: "user" as const, content: "answer" }],
+  requestedOutputTokens: 32,
+  reasoning: "medium" as const,
+};
+const context = (topicId?: "t1" | "t2" | "t3"): ContextState => ({
+  status: "ready",
+  question: topicId ?? "single",
+  ...(topicId === undefined ? {} : { topicId }),
+  candidates: [],
+  sourceMap: [],
+  ledgerCandidates: [],
+  ledgerSourceMap: [],
+  selectedConversation: [],
+  consumers: [
+    {
+      consumer: topicId === undefined ? "direct" : "topic",
+      ...(topicId === undefined ? {} : { topicId }),
+      inputTokens: 4,
+      requestedOutputTokens: 32,
+      usableInputTokens: 100,
+    },
+  ],
+  gaps: [],
+  reductionFeedback: [],
+  request,
+  inputTokens: 4,
+  usableInputTokens: 100,
+  reductionRan: false,
+});
+const assembly = (topicId?: "t1" | "t2" | "t3"): ContextAssembly => ({
+  question: topicId ?? "single",
+  ...(topicId === undefined ? {} : { topicId }),
+  candidates: [],
+  sourceMap: [],
+  selectedConversation: [],
+  gaps: [],
+  consumerTaskId: topicId === undefined ? "single-answer" : `topic-${topicId}-answer`,
+  requestedOutputTokens: 32,
+});
+
+class ScriptedOperations extends CanonicalWorkflowOperations {
+  readonly calls: string[] = [];
+  readonly finalAnswers: AnswerLaneResult[] = [];
+  readonly reductionFeedbackInputs: (readonly string[])[] = [];
+  readonly streamedTaskIds: string[] = [];
+  readonly structuredTopicTaskIds: string[] = [];
+  private reductionMeasurements = 0;
 
   constructor(
-    private readonly preflights: AiCallResult<PreflightOutput>[],
-    private readonly answers: Array<readonly AnswerStreamEvent[]>,
-    private readonly memory:
-      | AiCallResult<MemoryExtractionOutput>
-      | ((
-          input: MemoryExtractionInput,
-        ) => AiCallResult<MemoryExtractionOutput> | Promise<AiCallResult<MemoryExtractionOutput>>)
-      | Error = {
-      kind: "ok",
-      value: { proposals: [], discarded: [], usage },
-    },
-  ) {}
-
-  async runPreflight(inputs: PreflightInputs) {
-    this.preflightInputs.push(inputs);
-
-    return (
-      this.preflights.shift() ?? {
-        kind: "ok",
-        value: { manifest: [], usage, toolEvents: [] },
-      }
+    readonly route: "clarify" | "single" | "fanout",
+    readonly reduction: "none" | "fit" | "correct-then-fit" | "unfit" = "none",
+    readonly topicFailure: "web_policy_revoked" | "context_plan_unfit" | undefined = undefined,
+  ) {
+    super(
+      "postgres://unused",
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 16_384,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 16_384,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 8,
+        aiInternalMaxInspections: 8,
+        aiWebMaxSearches: 4,
+        aiWebMaxFetches: 8,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryDirectMaxItems: 200,
+        aiMemoryToolResultMaxItems: 50,
+        webResearchProvider: "",
+      },
+      {} as CanonicalAgentClient,
     );
   }
 
-  async *streamAnswer() {
-    const events = this.answers.shift() ?? answerOk("fallback [[cite:b1]]");
-
-    for (const event of events) {
-      yield event;
-    }
+  override async loadTurn() {
+    this.calls.push("load-turn");
+    return load;
   }
-
-  async extractMemories(input: MemoryExtractionInput) {
-    if (this.memory instanceof Error) {
-      throw this.memory;
-    }
-
-    if (typeof this.memory === "function") {
-      return this.memory(input);
-    }
-
-    return this.memory;
+  override async extractMemory() {
+    this.calls.push("memory-extract");
+    return emptyMemory;
   }
-}
-
-const config: AiChatWorkflowRuntime["config"] = {
-  aiSearchMaxLimit: 20,
-  aiSearchRecencyHalfLifeDays: 14,
-  aiContextBlockBudget: 60_000,
-  aiContextBlockHardCap: 100_000,
-  aiFullDocMaxChars: 12_000,
-  aiHistoryMaxMessages: 30,
-  aiPreflightHistoryMessages: 6,
-  aiPreflightTimeoutMs: 30_000,
-  aiAnswerTimeoutMs: 120_000,
-  aiMemoryInjectAllMaxTokens: 1500,
-  aiPlannerBaseline: false,
-  aiMainModel: "glm-5.2",
-  aiFastModel: "glm-5-turbo",
-};
-
-interface ChatRunFixture {
-  readonly chatId: string;
-  readonly userMessageId: string;
-  readonly aiRunId: string;
-}
-
-const createChatRun = (content = "What matters?") =>
-  Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
-    const userId = `workflow-user-${crypto.randomUUID()}`;
-    const chatRows = yield* sql<{ readonly id: string }>`
-      insert into chats (user_id)
-      values (${userId})
-      returning id::text
-    `;
-    const chatId = chatRows[0]!.id;
-    const messageRows = yield* sql<{ readonly id: string }>`
-      insert into chat_messages (chat_id, author, content)
-      values (${chatId}, 'user', ${content})
-      returning id::text
-    `;
-    const userMessageId = messageRows[0]!.id;
-    const runRows = yield* sql<{ readonly id: string }>`
-      insert into ai_runs (chat_id, user_message_id, locale, market)
-      values (${chatId}, ${userMessageId}, 'en-US', 'US')
-      returning id::text
-    `;
-
-    return { chatId, userMessageId, aiRunId: runRows[0]!.id } satisfies ChatRunFixture;
-  });
-
-const preflightFor = (documentId: string): AiCallResult<PreflightOutput> => ({
-  kind: "ok",
-  value: {
-    manifest: [{ documentId }],
-    usage,
-    toolEvents: [
-      {
-        type: "search",
-        spec: { terms: documentId, limit: 5 },
-        resultCount: 1,
-      },
-      {
-        type: "peek",
-        documentId,
-        offsetChars: null,
-        lengthChars: null,
-        found: true,
-      },
-    ],
-  },
-});
-
-const diagnosticValue = (value: unknown): unknown => {
-  if (value instanceof Error) {
-    const errorWithDetails = value as Error & {
-      readonly cause?: unknown;
-      readonly issues?: unknown;
-    };
-
+  override async resolveConversation(): Promise<ConversationResolution> {
+    this.calls.push("resolve-conversation");
+    return this.route === "clarify"
+      ? { mode: "clarify", question: "Which market?" }
+      : { mode: "continue", retrievalQuestion: "Compare", selectedTurnIds: [] };
+  }
+  override async clarify(_load: LoadedTurn, question: string): Promise<AnswerLaneResult> {
+    this.calls.push("clarification-result");
+    return { status: "ok", mode: "clarification", content: question, sourceMap: [] };
+  }
+  override async planExecution() {
+    this.calls.push("plan-execution");
+    return this.route === "fanout"
+      ? {
+          mode: "fanout" as const,
+          reason: "independent",
+          topics: [
+            { question: "one", relevantTurnIds: [] },
+            { question: "two", relevantTurnIds: [] },
+          ],
+        }
+      : { mode: "single" as const, reason: "atomic" };
+  }
+  override normalizePlan(value: unknown): NormalizedExecutionPlan {
+    this.calls.push("normalize-execution-plan");
+    const plan = value as Awaited<ReturnType<ScriptedOperations["planExecution"]>>;
+    return plan.mode === "single"
+      ? plan
+      : {
+          ...plan,
+          topics: plan.topics.map((topic, index) => ({
+            ...topic,
+            topicId: (index === 0 ? "t1" : "t2") as "t1" | "t2",
+          })),
+        };
+  }
+  override async retrieveInternal(
+    _load: LoadedTurn,
+    _question: string,
+    taskId: string,
+    _selectedTurnIds?: readonly string[],
+  ) {
+    this.calls.push(taskId);
+    return [];
+  }
+  override async selectMemories(
+    _load: LoadedTurn,
+    _question: string,
+    taskId: string,
+  ): Promise<MemorySelectorResult> {
+    this.calls.push(taskId);
+    return { status: "enabled", entries: [] } satisfies MemorySelectorResult;
+  }
+  override async retrieveWeb(
+    _load: LoadedTurn,
+    _question: string,
+    taskId: string,
+  ): Promise<WebSelectorResult> {
+    this.calls.push(taskId);
+    return { status: "enabled", entries: [] } satisfies WebSelectorResult;
+  }
+  override async assembleContext(
+    _load: LoadedTurn,
+    _question: string,
+    _selectors: SelectorBundle,
+    observationTaskId: string,
+    _consumerTaskId: string,
+    topicId?: "t1" | "t2" | "t3",
+    _selectedTurnIds?: readonly string[],
+    _fanoutSourceKeys?: FanoutSourceKeySet,
+    _requestedOutputTokens?: number,
+  ) {
+    this.calls.push(observationTaskId);
+    return assembly(topicId);
+  }
+  override async measureAssembly(
+    _load: LoadedTurn,
+    value: ContextAssembly,
+    observationTaskId: string,
+  ) {
+    this.calls.push(observationTaskId);
+    return this.reduction === "none" || value.topicId !== undefined
+      ? context(value.topicId)
+      : {
+          ...context(),
+          status: "needs_reduction" as const,
+          inputTokens: 101,
+          usableInputTokens: 100,
+        };
+  }
+  override async planReduction(
+    _load: LoadedTurn,
+    state: ContextState,
+  ): Promise<ContextReductionPlan> {
+    this.calls.push("single-reduce-plan");
+    this.reductionFeedbackInputs.push(state.reductionFeedback);
+    return { decisions: [] };
+  }
+  override async measureReduction(_load: LoadedTurn, state: ContextState): Promise<ContextState> {
+    this.calls.push("single-reduce-measure");
+    this.reductionMeasurements += 1;
+    if (
+      this.reduction === "fit" ||
+      (this.reduction === "correct-then-fit" && this.reductionMeasurements > 1)
+    ) {
+      return {
+        ...state,
+        status: "ready",
+        inputTokens: 90,
+        reductionRan: true,
+        reductionFeedback: [],
+      };
+    }
     return {
-      name: value.name,
-      message: value.message,
-      issues: errorWithDetails.issues,
-      cause: errorWithDetails.cause,
-      stack: value.stack,
+      ...state,
+      status: "needs_reduction",
+      reductionRan: true,
+      reductionFeedback:
+        this.reduction === "correct-then-fit"
+          ? ["complete accounting is required"]
+          : ["validated plan remains oversized"],
     };
   }
-
-  return value;
-};
-
-const truncateDiagnostic = (value: unknown): string => {
-  const diagnostic = diagnosticValue(value);
-  const text =
-    typeof diagnostic === "string"
-      ? diagnostic
-      : JSON.stringify(diagnostic, (_, item) =>
-          typeof item === "bigint" ? item.toString() : diagnosticValue(item),
-        );
-
-  return (text ?? "null").slice(0, 2_000);
-};
-
-const parseJsonColumn = (value: unknown): unknown => {
-  if (typeof value !== "string") {
-    return value;
-  }
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-};
-
-const decodeSmithersNodeRow = (row: unknown): unknown => row;
-
-const decodeSmithersAttemptRow = (row: unknown): unknown => {
-  if (row === null || row === undefined || typeof row !== "object" || Array.isArray(row)) {
-    return row;
-  }
-
-  const record = row as Record<string, unknown>;
-  return {
-    ...record,
-    heartbeat_data_json: parseJsonColumn(record.heartbeat_data_json),
-    error_json: parseJsonColumn(record.error_json),
-    meta_json: parseJsonColumn(record.meta_json),
-  };
-};
-
-const errorTextFromJson = (value: unknown): string => {
-  if (value === null || value === undefined) {
-    return "";
-  }
-
-  if (typeof value === "string") {
-    try {
-      return errorTextFromJson(JSON.parse(value));
-    } catch {
-      return value;
+  override async freezeContext(_load: LoadedTurn, state: ContextState) {
+    this.calls.push(
+      state.topicId === undefined
+        ? "single-context-select"
+        : `topic-${state.topicId}-context-select`,
+    );
+    if (state.topicId === "t1" && this.topicFailure !== undefined) {
+      return { ...state, status: "failed" as const, failureCode: this.topicFailure };
     }
+    return state;
+  }
+  override async answerDirect(
+    _load: LoadedTurn,
+    _state: ContextState,
+    taskId: string,
+  ): Promise<AnswerLaneResult> {
+    this.calls.push("single-answer");
+    this.streamedTaskIds.push(taskId);
+    return { status: "ok", mode: "single", content: "single", sourceMap: [] };
+  }
+  override allocateFanout() {
+    this.calls.push("fanout-allocate");
+    return { packetOutputTokens: 1024, synthesisUsableInput: 100_000, fixedSynthesisInput: 100 };
+  }
+  override async mergeFanoutSources(
+    _load: LoadedTurn,
+    _topics: Extract<NormalizedExecutionPlan, { mode: "fanout" }>["topics"],
+    _selectors: Readonly<Record<"t1" | "t2" | "t3", SelectorBundle>>,
+  ): Promise<FanoutSourceKeySet> {
+    this.calls.push("fanout-merge-sources");
+    return { sources: [] };
+  }
+  override async answerTopic(
+    _load: LoadedTurn,
+    state: ContextState,
+    taskId: string,
+    _packetOutputTokens?: number,
+  ): Promise<TopicPacket> {
+    this.calls.push(taskId);
+    this.structuredTopicTaskIds.push(taskId);
+    return { topicId: state.topicId!, status: "partial", claims: [], gaps: ["none"] };
+  }
+  override mergeFanoutSourceMaps() {
+    this.calls.push("fanout-collect");
+    return [];
+  }
+  override synthesisContext(_load: LoadedTurn, packets: readonly TopicPacket[]) {
+    this.calls.push("fanout-synthesis-measure");
+    return packets.length === 0
+      ? {
+          ...context(),
+          status: "failed" as const,
+          failureCode: "synthesis_budget_mismatch" as const,
+        }
+      : context();
+  }
+  override async synthesize(
+    _load: LoadedTurn,
+    _state: ContextState,
+    taskId: string,
+  ): Promise<AnswerLaneResult> {
+    this.calls.push("fanout-synthesis");
+    this.streamedTaskIds.push(taskId);
+    return { status: "ok", mode: "synthesis", content: "fanout", sourceMap: [] };
+  }
+  override async finalize(
+    _load: LoadedTurn,
+    answer: AnswerLaneResult,
+    _memory: MemoryExtractionArtifact,
+  ) {
+    this.finalAnswers.push(answer);
+    this.calls.push(`finalize:${answer.status === "ok" ? answer.mode : "failed"}`);
+    return {
+      status: "succeeded" as const,
+      assistantMessageId: crypto.randomUUID(),
+      memory: { created: 0, updated: 0, discarded: 0, writes: [] },
+      usage: {
+        model: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 0,
+          requestCount: 0,
+        },
+        web: { searchCount: 0, fetchCount: 0, responseBytes: 0, billedUnits: 0 },
+      },
+      alreadyTerminal: false,
+    };
+  }
+}
+
+class BlockingAnswerOperations extends ScriptedOperations {
+  readonly answerStarted: Promise<void>;
+  private readonly blockedAnswer: Promise<AnswerLaneResult>;
+  private resolveStarted!: () => void;
+  private rejectAnswer!: (error: Error) => void;
+
+  constructor() {
+    super("single");
+    this.answerStarted = new Promise<void>((resolve) => {
+      this.resolveStarted = resolve;
+    });
+    this.blockedAnswer = new Promise<AnswerLaneResult>((_resolve, reject) => {
+      this.rejectAnswer = reject;
+    });
+    void this.blockedAnswer.catch(() => undefined);
   }
 
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    for (const key of ["message", "errorMessage", "reason", "cause"]) {
-      const nested = errorTextFromJson(record[key]);
-      if (nested.length > 0) {
-        return nested;
-      }
-    }
+  override async answerDirect(): Promise<AnswerLaneResult> {
+    this.calls.push("single-answer-blocked");
+    this.resolveStarted();
+    return this.blockedAnswer;
   }
 
-  return truncateDiagnostic(value);
-};
+  interrupt(): void {
+    this.rejectAnswer(new Error("worker interrupted"));
+  }
+}
 
-const runResultFailureFields = (result: RunResult) => ({
-  status: result.status,
-  error: result.error ?? null,
-  failedChildren: result.failedChildren ?? null,
-  failedChildKeys: result.failedChildKeys ?? null,
-});
+class ParallelJoinOperations extends ScriptedOperations {
+  readonly memoryStarted: Promise<void>;
+  readonly answerStarted: Promise<void>;
+  private readonly memoryGate: Promise<MemoryExtractionArtifact>;
+  private readonly answerGate: Promise<AnswerLaneResult>;
+  private resolveMemoryStarted!: () => void;
+  private resolveAnswerStarted!: () => void;
+  private resolveMemory!: (value: MemoryExtractionArtifact) => void;
+  private resolveAnswer!: (value: AnswerLaneResult) => void;
 
-const outputByNodeId = {
-  "load-turn": { schemaName: "aiChatLoadTurn", tableName: "ai_chat_load_turn" },
-  preflight: { schemaName: "aiChatPreflight", tableName: "ai_chat_preflight" },
-  hydrate: { schemaName: "aiChatHydrate", tableName: "ai_chat_hydrate" },
-  answer: { schemaName: "aiChatAnswer", tableName: "ai_chat_answer" },
-  "preflight-2": { schemaName: "aiChatPreflight2", tableName: "ai_chat_preflight2" },
-  "hydrate-2": { schemaName: "aiChatHydrate2", tableName: "ai_chat_hydrate2" },
-  "answer-2": { schemaName: "aiChatAnswer2", tableName: "ai_chat_answer2" },
-  memory: { schemaName: "aiChatMemory", tableName: "ai_chat_memory" },
-  finalize: { schemaName: "aiChatFinalize", tableName: "ai_chat_finalize" },
-} as const;
-
-const pgStringLiteral = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-
-const snakeToCamel = (value: string): string =>
-  value.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
-
-const smithersRowToOutputValue = (row: unknown): unknown => {
-  if (row === null || typeof row !== "object" || Array.isArray(row)) {
-    return row;
+  constructor() {
+    super("single");
+    this.memoryStarted = new Promise<void>((resolve) => {
+      this.resolveMemoryStarted = resolve;
+    });
+    this.answerStarted = new Promise<void>((resolve) => {
+      this.resolveAnswerStarted = resolve;
+    });
+    this.memoryGate = new Promise<MemoryExtractionArtifact>((resolve) => {
+      this.resolveMemory = resolve;
+    });
+    this.answerGate = new Promise<AnswerLaneResult>((resolve) => {
+      this.resolveAnswer = resolve;
+    });
   }
 
-  const output: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(row)) {
-    if (key === "run_id" || key === "node_id" || key === "iteration") {
-      continue;
-    }
-    output[snakeToCamel(key)] = value;
+  override async extractMemory(): Promise<MemoryExtractionArtifact> {
+    this.calls.push("memory-extract");
+    this.resolveMemoryStarted();
+    return this.memoryGate;
   }
 
-  return output;
-};
+  override async answerDirect(): Promise<AnswerLaneResult> {
+    this.calls.push("single-answer");
+    this.resolveAnswerStarted();
+    return this.answerGate;
+  }
 
-const zodIssuesFor = (schemaName: string, value: unknown): unknown => {
-  const schema = aiChatSchemas[schemaName as keyof typeof aiChatSchemas];
-  const parsed = schema.safeParse(value);
+  releaseAnswer(): void {
+    this.resolveAnswer({ status: "ok", mode: "single", content: "single", sourceMap: [] });
+  }
 
-  if (parsed.success) {
+  releaseMemory(): void {
+    this.resolveMemory(emptyMemory);
+  }
+}
+
+class SelectorParallelOperations extends ScriptedOperations {
+  readonly allSelectorsStarted: Promise<void>;
+  readonly selectorCallCounts = new Map<string, number>();
+  readonly selectorTaskIds = new Set<string>();
+  private readonly selectorGate: Promise<void>;
+  private resolveAllStarted!: () => void;
+  private releaseSelectorGate!: () => void;
+
+  constructor(route: "single" | "fanout") {
+    super(route);
+    this.allSelectorsStarted = new Promise<void>((resolve) => {
+      this.resolveAllStarted = resolve;
+    });
+    this.selectorGate = new Promise<void>((resolve) => {
+      this.releaseSelectorGate = resolve;
+    });
+  }
+
+  private async selector(taskId: string): Promise<void> {
+    this.selectorCallCounts.set(taskId, (this.selectorCallCounts.get(taskId) ?? 0) + 1);
+    this.selectorTaskIds.add(taskId);
+    const expected = this.route === "single" ? 3 : 6;
+    if (this.selectorTaskIds.size === expected) this.resolveAllStarted();
+    await this.selectorGate;
+  }
+
+  override async retrieveInternal(
+    _load: LoadedTurn,
+    _question: string,
+    taskId: string,
+  ): Promise<[]> {
+    await this.selector(taskId);
     return [];
   }
 
-  return parsed.error.issues.map((issue) => ({
-    path: issue.path.join("."),
-    code: issue.code,
-    message: issue.message,
-  }));
-};
-
-const workflowFailureDiagnostics = (args: {
-  readonly connectionString: string;
-  readonly aiRunId: string;
-  readonly smithersRunId: string;
-  readonly expectedStatus: RunStatus;
-  readonly result: RunResult;
-}) =>
-  runDb(
-    args.connectionString,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
-      const smithersRuns = yield* sql<{
-        readonly status: string;
-        readonly errorJson: unknown;
-      }>`
-        select status, error_json as "errorJson"
-        from _smithers_runs
-        where run_id = ${args.smithersRunId}
-      `;
-      const failedNodes = yield* sql<{
-        readonly nodeId: string;
-        readonly iteration: number;
-        readonly nodeRow: unknown;
-        readonly attemptRow: unknown;
-        readonly errorJson: unknown;
-      }>`
-        select
-          nodes.node_id as "nodeId",
-          nodes.iteration,
-          to_jsonb(nodes) as "nodeRow",
-          to_jsonb(attempts) as "attemptRow",
-          attempts.error_json as "errorJson"
-        from _smithers_nodes nodes
-        left join _smithers_attempts attempts
-          on attempts.run_id = nodes.run_id
-         and attempts.node_id = nodes.node_id
-         and attempts.iteration = nodes.iteration
-         and attempts.attempt = nodes.last_attempt
-        where nodes.run_id = ${args.smithersRunId}
-          and nodes.state = 'failed'
-        order by nodes.updated_at_ms desc, nodes.node_id asc
-      `;
-      const aiRuns = yield* sql<{ readonly error: string | null }>`
-        select error
-        from ai_runs
-        where id = ${args.aiRunId}
-      `;
-      const errorEvents = yield* sql<{
-        readonly seq: number;
-        readonly event: unknown;
-      }>`
-        select seq, event
-        from ai_run_events
-        where run_id = ${args.aiRunId}
-          and event->>'type' = 'error'
-        order by seq
-      `;
-      const outputDiagnostics: unknown[] = [];
-      const outputIssueDiagnostics: unknown[] = [];
-      const failedNodeDiagnostics = failedNodes.map((row) =>
-        truncateDiagnostic({
-          nodeId: row.nodeId,
-          iteration: row.iteration,
-          nodeRow: decodeSmithersNodeRow(row.nodeRow),
-          attemptRow: decodeSmithersAttemptRow(row.attemptRow),
-          errorText: errorTextFromJson(row.errorJson),
-        }),
-      );
-
-      for (const node of failedNodes) {
-        const output = outputByNodeId[node.nodeId as keyof typeof outputByNodeId];
-        if (output === undefined) {
-          outputIssueDiagnostics.push({
-            nodeId: node.nodeId,
-            iteration: node.iteration,
-            zodIssues: "no output table mapping",
-          });
-          outputDiagnostics.push({
-            nodeId: node.nodeId,
-            iteration: node.iteration,
-            output: "no output table mapping",
-          });
-          continue;
-        }
-
-        const rows = yield* sql.unsafe<{ readonly row: unknown }>(
-          [
-            "select to_jsonb(t) as row",
-            `from ${output.tableName} t`,
-            `where run_id = ${pgStringLiteral(args.smithersRunId)}`,
-            `and node_id = ${pgStringLiteral(node.nodeId)}`,
-            `and iteration = ${node.iteration}`,
-            "limit 1",
-          ].join(" "),
-        );
-        const rawRow = rows[0]?.row ?? null;
-        const outputValue = smithersRowToOutputValue(rawRow);
-        const zodIssues =
-          rawRow === null ? "no output row found" : zodIssuesFor(output.schemaName, outputValue);
-
-        outputIssueDiagnostics.push({
-          nodeId: node.nodeId,
-          iteration: node.iteration,
-          schemaName: output.schemaName,
-          zodIssues,
-        });
-
-        outputDiagnostics.push({
-          nodeId: node.nodeId,
-          iteration: node.iteration,
-          schemaName: output.schemaName,
-          rawRow,
-        });
-      }
-
-      return [
-        `Smithers workflow ${args.smithersRunId} returned status ${args.result.status}; expected ${args.expectedStatus}.`,
-        `RunResult failure fields: ${truncateDiagnostic(runResultFailureFields(args.result))}`,
-        `Smithers run row: ${truncateDiagnostic(smithersRuns[0] ?? null)}`,
-        `Smithers failed nodes:\n${failedNodeDiagnostics.join("\n")}`,
-        `Smithers failed output zod issues: ${truncateDiagnostic(outputIssueDiagnostics)}`,
-        `Smithers failed output diagnostics: ${truncateDiagnostic(outputDiagnostics)}`,
-        `ai_runs.error: ${truncateDiagnostic(aiRuns[0]?.error ?? null)}`,
-        `ai_run_events errors: ${truncateDiagnostic(
-          errorEvents.map((row) => ({
-            seq: row.seq,
-            event: truncateDiagnostic(row.event),
-          })),
-        )}`,
-      ].join("\n");
-    }),
-  );
-
-const runWorkflowFor = async (
-  aiRunId: string,
-  aiClient: AiClient,
-  smithersRunId = `ai-chat:${aiRunId}`,
-  onResumeDecision?: (resume: boolean) => void,
-  expectedStatus: RunStatus = "finished",
-  configOverrides: Partial<AiChatWorkflowRuntime["config"]> = {},
-) => {
-  const connectionString = isolatedDatabaseUrl();
-  const api = await createSmithersStorage(aiChatSchemas, {
-    connectionString,
-  });
-
-  try {
-    const workflow = buildAiChatWorkflow(api, {
-      connectionString,
-      config: { ...config, ...configOverrides },
-      aiClient,
-    });
-    const resume = await smithersRunExists(api, smithersRunId);
-    onResumeDecision?.(resume);
-
-    const result = await runSmithersWorkflow(workflow, {
-      runId: smithersRunId,
-      input: { aiRunId },
-      logDir: null,
-      resume,
-    });
-
-    if (result.status !== expectedStatus) {
-      throw new Error(
-        await workflowFailureDiagnostics({
-          connectionString,
-          aiRunId,
-          smithersRunId,
-          expectedStatus,
-          result,
-        }),
-      );
-    }
-
-    return result;
-  } finally {
-    await api.close();
+  override async selectMemories(
+    _load: LoadedTurn,
+    _question: string,
+    taskId: string,
+  ): Promise<MemorySelectorResult> {
+    await this.selector(taskId);
+    return { status: "enabled", entries: [] };
   }
-};
 
-const eventTypes = (aiRunId: string) =>
-  runDb(
-    isolatedDatabaseUrl(),
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
-      const rows = yield* sql<{ readonly type: string }>`
-        select event->>'type' as type
-        from ai_run_events
-        where run_id = ${aiRunId}
-        order by seq
-      `;
+  override async retrieveWeb(
+    _load: LoadedTurn,
+    _question: string,
+    taskId: string,
+  ): Promise<WebSelectorResult> {
+    await this.selector(taskId);
+    return { status: "enabled", entries: [] };
+  }
 
-      return rows.map((row) => row.type);
-    }),
-  );
+  releaseSelectors(): void {
+    this.releaseSelectorGate();
+  }
+}
 
-const eventsFor = (aiRunId: string) =>
-  runDb(
-    isolatedDatabaseUrl(),
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
-      const rows = yield* sql<{ readonly event: unknown }>`
-        select event
-        from ai_run_events
-        where run_id = ${aiRunId}
-        order by seq
-      `;
+class TopicAnswerParallelOperations extends ScriptedOperations {
+  readonly allTopicAnswersStarted: Promise<void>;
+  readonly topicAnswerTaskIds = new Set<string>();
+  private readonly topicAnswerGate: Promise<void>;
+  private resolveAllStarted!: () => void;
+  private releaseTopicGate!: () => void;
 
-      return rows.map((row) => row.event as Record<string, unknown>);
-    }),
-  );
+  constructor() {
+    super("fanout");
+    this.allTopicAnswersStarted = new Promise<void>((resolve) => {
+      this.resolveAllStarted = resolve;
+    });
+    this.topicAnswerGate = new Promise<void>((resolve) => {
+      this.releaseTopicGate = resolve;
+    });
+  }
 
-const countRows = (query: Effect.Effect<number, SqlError, PgClient.PgClient>) =>
-  runDb(isolatedDatabaseUrl(), query);
+  override async answerTopic(
+    _load: LoadedTurn,
+    state: ContextState,
+    taskId: string,
+  ): Promise<TopicPacket> {
+    this.topicAnswerTaskIds.add(taskId);
+    if (this.topicAnswerTaskIds.size === 2) this.resolveAllStarted();
+    await this.topicAnswerGate;
+    return { topicId: state.topicId!, status: "partial", claims: [], gaps: ["none"] };
+  }
 
-const camelToSnake = (value: string): string =>
-  value.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+  releaseTopicAnswers(): void {
+    this.releaseTopicGate();
+  }
+}
 
-describe("ai chat Smithers schemas", () => {
-  it("does not use Smithers reserved top-level column names", () => {
-    const reservedBySchema = new Map<string, ReadonlySet<string>>([["input", new Set(["run_id"])]]);
-    const outputReserved = new Set(["run_id", "node_id", "iteration"]);
+type FanoutResumeCheckpoint =
+  | "after-plan"
+  | "after-research"
+  | "after-merge"
+  | "after-topic-answers"
+  | "after-synthesis";
 
-    for (const [schemaName, schema] of Object.entries(aiChatSchemas)) {
-      const shape = (schema as unknown as { readonly shape?: Record<string, unknown> }).shape;
-      const reserved = reservedBySchema.get(schemaName) ?? outputReserved;
-      const offenders = Object.keys(shape ?? {}).filter((key) => reserved.has(camelToSnake(key)));
+class BlockingFanoutCheckpointOperations extends ScriptedOperations {
+  readonly checkpointStarted: Promise<void>;
+  private readonly checkpointGate: Promise<never>;
+  private resolveCheckpointStarted!: () => void;
+  private rejectCheckpoint!: (error: Error) => void;
 
-      expect(offenders, schemaName).toEqual([]);
+  constructor(readonly checkpoint: FanoutResumeCheckpoint) {
+    super("fanout");
+    this.checkpointStarted = new Promise<void>((resolve) => {
+      this.resolveCheckpointStarted = resolve;
+    });
+    this.checkpointGate = new Promise<never>((_resolve, reject) => {
+      this.rejectCheckpoint = reject;
+    });
+    void this.checkpointGate.catch(() => undefined);
+  }
+
+  private blockAtCheckpoint<T>(call: string): Promise<T> {
+    this.calls.push(`${call}:blocked`);
+    this.resolveCheckpointStarted();
+    return this.checkpointGate;
+  }
+
+  override async retrieveInternal(
+    loaded: LoadedTurn,
+    question: string,
+    taskId: string,
+    selectedTurnIds?: readonly string[],
+  ): Promise<never[]> {
+    return this.checkpoint === "after-plan"
+      ? this.blockAtCheckpoint<never[]>(taskId)
+      : super.retrieveInternal(loaded, question, taskId, selectedTurnIds);
+  }
+
+  override async selectMemories(
+    loaded: LoadedTurn,
+    question: string,
+    taskId: string,
+  ): Promise<MemorySelectorResult> {
+    return this.checkpoint === "after-plan"
+      ? this.blockAtCheckpoint<MemorySelectorResult>(taskId)
+      : super.selectMemories(loaded, question, taskId);
+  }
+
+  override async retrieveWeb(
+    loaded: LoadedTurn,
+    question: string,
+    taskId: string,
+  ): Promise<WebSelectorResult> {
+    return this.checkpoint === "after-plan"
+      ? this.blockAtCheckpoint<WebSelectorResult>(taskId)
+      : super.retrieveWeb(loaded, question, taskId);
+  }
+
+  override async mergeFanoutSources(
+    loaded: LoadedTurn,
+    topics: Extract<NormalizedExecutionPlan, { mode: "fanout" }>["topics"],
+    selectors: Readonly<Record<"t1" | "t2" | "t3", SelectorBundle>>,
+  ): Promise<FanoutSourceKeySet> {
+    return this.checkpoint === "after-research"
+      ? this.blockAtCheckpoint<FanoutSourceKeySet>("fanout-merge-sources")
+      : super.mergeFanoutSources(loaded, topics, selectors);
+  }
+
+  override async assembleContext(
+    loaded: LoadedTurn,
+    question: string,
+    selectors: SelectorBundle,
+    observationTaskId: string,
+    consumerTaskId: string,
+    topicId?: "t1" | "t2" | "t3",
+    selectedTurnIds?: readonly string[],
+    fanoutSourceKeys?: FanoutSourceKeySet,
+    requestedOutputTokens?: number,
+  ): Promise<ContextAssembly> {
+    return this.checkpoint === "after-merge" && topicId !== undefined
+      ? this.blockAtCheckpoint<ContextAssembly>(observationTaskId)
+      : super.assembleContext(
+          loaded,
+          question,
+          selectors,
+          observationTaskId,
+          consumerTaskId,
+          topicId,
+          selectedTurnIds,
+          fanoutSourceKeys,
+          requestedOutputTokens,
+        );
+  }
+
+  override async answerTopic(
+    loaded: LoadedTurn,
+    state: ContextState,
+    taskId: string,
+    packetOutputTokens?: number,
+  ): Promise<TopicPacket> {
+    return super.answerTopic(loaded, state, taskId, packetOutputTokens);
+  }
+
+  override async synthesize(
+    loaded: LoadedTurn,
+    state: ContextState,
+    taskId: string,
+  ): Promise<AnswerLaneResult> {
+    return this.checkpoint === "after-topic-answers"
+      ? this.blockAtCheckpoint(taskId)
+      : super.synthesize(loaded, state, taskId);
+  }
+
+  override async finalize(
+    loaded: LoadedTurn,
+    answer: AnswerLaneResult,
+    memory: MemoryExtractionArtifact,
+  ): Promise<Awaited<ReturnType<ScriptedOperations["finalize"]>>> {
+    return this.checkpoint === "after-synthesis"
+      ? this.blockAtCheckpoint<Awaited<ReturnType<ScriptedOperations["finalize"]>>>("finalize")
+      : super.finalize(loaded, answer, memory);
+  }
+
+  interrupt(): void {
+    this.rejectCheckpoint(new Error(`worker interrupted ${this.checkpoint}`));
+  }
+}
+
+class SynthesisMismatchOperations extends ScriptedOperations {
+  constructor() {
+    super("fanout");
+  }
+
+  override synthesisContext(): ContextState {
+    this.calls.push("fanout-synthesis-measure");
+    return {
+      ...context(),
+      status: "failed",
+      inputTokens: 101,
+      usableInputTokens: 100,
+      failureCode: "synthesis_budget_mismatch",
+    };
+  }
+}
+
+class RetryingAnswerOperations extends ScriptedOperations {
+  answerAttempts = 0;
+
+  constructor(private readonly failuresBeforeSuccess: number) {
+    super("single");
+  }
+
+  override async answerDirect(): Promise<AnswerLaneResult> {
+    this.answerAttempts += 1;
+    this.calls.push(`single-answer-attempt:${this.answerAttempts}`);
+    if (this.answerAttempts <= this.failuresBeforeSuccess) {
+      throw new Error("retryable provider failure");
+    }
+    return { status: "ok", mode: "single", content: "single", sourceMap: [] };
+  }
+}
+
+class FailingMemoryOperations extends ScriptedOperations {
+  memoryAttempts = 0;
+
+  constructor() {
+    super("single");
+  }
+
+  override async extractMemory(): Promise<MemoryExtractionArtifact> {
+    this.memoryAttempts += 1;
+    throw new Error("memory extraction failed");
+  }
+}
+
+class NonRetryableTopicAnswerOperations extends ScriptedOperations {
+  topicAttempts = 0;
+
+  constructor() {
+    super("fanout");
+  }
+
+  override async answerTopic(
+    loaded: LoadedTurn,
+    state: ContextState,
+    taskId: string,
+    packetOutputTokens?: number,
+  ): Promise<TopicPacket> {
+    if (state.topicId === "t1") {
+      this.topicAttempts += 1;
+      throw new AiRuntimeError("agent_context_budget_exceeded", "topic request cannot fit", {
+        retryable: false,
+        taskRetryable: false,
+      });
+    }
+    return super.answerTopic(loaded, state, taskId, packetOutputTokens);
+  }
+}
+
+class RetryableTopicAnswerOperations extends ScriptedOperations {
+  topicAttempts = 0;
+
+  constructor() {
+    super("fanout");
+  }
+
+  override async answerTopic(
+    loaded: LoadedTurn,
+    state: ContextState,
+    taskId: string,
+    packetOutputTokens?: number,
+  ): Promise<TopicPacket> {
+    if (state.topicId === "t1" && ++this.topicAttempts <= 2) {
+      throw new AiRuntimeError("topic_answer_failed", "transient provider failure", {
+        retryable: true,
+        taskRetryable: true,
+      });
+    }
+    return super.answerTopic(loaded, state, taskId, packetOutputTokens);
+  }
+}
+
+class AbortedTopicAnswerOperations extends ScriptedOperations {
+  topicAttempts = 0;
+
+  constructor() {
+    super("fanout");
+  }
+
+  override async answerTopic(
+    loaded: LoadedTurn,
+    state: ContextState,
+    taskId: string,
+    packetOutputTokens?: number,
+  ): Promise<TopicPacket> {
+    if (state.topicId === "t1") {
+      this.topicAttempts += 1;
+      const error = new Error("topic cancelled");
+      error.name = "AbortError";
+      throw error;
+    }
+    return super.answerTopic(loaded, state, taskId, packetOutputTokens);
+  }
+}
+
+class MalformedSourceMapOperations extends ScriptedOperations {
+  constructor() {
+    super("single");
+  }
+
+  override async answerDirect(): Promise<AnswerLaneResult> {
+    return {
+      status: "ok",
+      mode: "single",
+      content: "invalid citation boundary",
+      sourceMap: [
+        {
+          sourceKey: "k_outside_current_nonce_1",
+          locator: {
+            kind: "memory",
+            memoryId: "memory-1",
+            memoryRevisionId: "memory-revision-1",
+          },
+          label: null,
+          publicProvenance: {},
+          uses: [
+            {
+              consumerTaskId: "single-answer",
+              contextOrder: 0,
+              renderedTokenCount: 1,
+              ranges: [],
+            },
+          ],
+        },
+      ],
+    };
+  }
+}
+
+describe("canonical ai-chat workflow source contract", () => {
+  it("rejects a historical model in durable context state before resume", () => {
+    const parsed = aiChatSchemas.aiChatContext.safeParse({
+      value: {
+        ...context(),
+        request: { ...request, model: "glm-5.2" },
+      },
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects malformed durable document source identities before resume", () => {
+    const base = {
+      sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+      label: null,
+      publicProvenance: { documentTitle: "Document", citationUrl: "https://example.test/doc" },
+      uses: [
+        {
+          consumerTaskId: "single-answer",
+          contextOrder: 0,
+          renderedTokenCount: 1,
+          ranges: [{ charStart: 0, charEnd: 1 }],
+        },
+      ],
+    };
+    const parse = (locator: Record<string, unknown>) =>
+      aiChatSchemas.aiChatAnswer.safeParse({
+        value: {
+          status: "ok",
+          mode: "single",
+          content: "Answer",
+          sourceMap: [{ ...base, locator }],
+        },
+      });
+    const document = {
+      kind: "document",
+      sourceId: "public:source-1",
+      documentId: "document-1",
+      documentVersionId: "version-1",
+      contentHash: "a".repeat(64),
+      ranges: [{ charStart: 0, charEnd: 1 }],
+    };
+    expect(parse(document).success).toBe(true);
+    expect(parse({ ...document, ranges: [] }).success).toBe(false);
+    for (const sourceId of [
+      "source-1",
+      " public:source-1",
+      "public:public:source-1",
+      "public:source-1\u2003",
+      "publisher:subscription-1",
+    ]) {
+      expect(parse({ ...document, sourceId }).success, sourceId).toBe(false);
+    }
+    expect(
+      parse({
+        ...document,
+        sourceId: "publisher:subscription-1",
+        publisherIssueId: "issue-1",
+        publisherDocumentId: "other-document",
+      }).success,
+    ).toBe(false);
+    expect(
+      parse({
+        ...document,
+        sourceId: "publisher:subscription-1",
+        publisherIssueId: "issue-1",
+        publisherDocumentId: "document-1",
+      }).success,
+    ).toBe(true);
+    expect(
+      parse({
+        ...document,
+        publisherIssueId: "issue-1",
+        publisherDocumentId: "document-1",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts the enabled Tinyfish web policy in the load-turn output contract", () => {
+    const parsed = aiChatSchemas.aiChatLoadTurn.safeParse({
+      value: {
+        ...load,
+        webRequested: true,
+        webPolicy: { enabled: true, provider: "tinyfish", allowedDomains: null },
+      },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("accepts only namespaced source-catalog identities in durable load-turn state", () => {
+    const source = {
+      sourceId: "public:e2e-fr-energie",
+      displayName: "E2E Energie France",
+      country: "FR",
+      language: "fr",
+      ingestionType: "public",
+    };
+    expect(
+      aiChatSchemas.aiChatLoadTurn.safeParse({ value: { ...load, sourceCatalog: [source] } })
+        .success,
+    ).toBe(true);
+    for (const sourceId of [
+      "e2e-fr-energie",
+      "public:public:e2e-fr-energie",
+      " publisher:subscription",
+    ]) {
+      expect(
+        aiChatSchemas.aiChatLoadTurn.safeParse({
+          value: { ...load, sourceCatalog: [{ ...source, sourceId }] },
+        }).success,
+      ).toBe(false);
     }
   });
 
-  it("summarizes validation issues without leaf values", () => {
-    const parsed = aiChatSchemas.aiChatLoadTurn.safeParse({
-      aiRunId: "run",
-      chatId: "chat",
-      userId: "user",
-      userMessageId: "message",
-      userMessage: "restricted user text",
-      locale: "en-US",
-      market: "US",
-      history: [],
-      sourceCatalog: [],
-      memories: [{ id: "memory", kind: "fact", content: 123 }],
-      activeBlocks: [],
-      remainingBlockBudget: 1,
-    });
+  it("keeps disabled selectors distinct from enabled empty selections", () => {
+    expect(
+      aiChatSchemas.aiChatMemories.safeParse({
+        value: { status: "disabled", reason: "memory_mode_disabled" },
+      }).success,
+    ).toBe(true);
+    expect(
+      aiChatSchemas.aiChatMemories.safeParse({
+        value: { status: "enabled", entries: [] },
+      }).success,
+    ).toBe(true);
+    expect(
+      aiChatSchemas.aiChatWeb.safeParse({
+        value: { status: "disabled", reason: "not_requested" },
+      }).success,
+    ).toBe(true);
+    expect(
+      aiChatSchemas.aiChatWeb.safeParse({
+        value: { status: "disabled", reason: "policy_disabled" },
+      }).success,
+    ).toBe(true);
+    expect(
+      aiChatSchemas.aiChatWeb.safeParse({
+        value: { status: "enabled", entries: [] },
+      }).success,
+    ).toBe(true);
+    expect(
+      aiChatSchemas.aiChatWeb.safeParse({
+        value: { status: "enabled", entries: [], reason: "none" },
+      }).success,
+    ).toBe(false);
+  });
 
-    expect(parsed.success).toBe(false);
-    if (!parsed.success) {
-      const summary = formatTaskOutputValidationIssues(parsed.error.issues).join("\n");
+  it("rejects unknown fields at durable wrappers and nested positions", () => {
+    expect(
+      aiChatRuntimeInputSchema.safeParse({ aiRunId: load.aiRunId, runId: "smithers-run" }).success,
+    ).toBe(true);
+    expect(
+      aiChatRuntimeInputSchema.safeParse({
+        aiRunId: load.aiRunId,
+        runId: "smithers-run",
+        forged: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      aiChatSchemas.aiChatLoadTurn.safeParse({
+        value: { ...load, forged: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      aiChatSchemas.aiChatLoadTurn.safeParse({
+        value: {
+          ...load,
+          sourceCatalog: [
+            {
+              sourceId: "source-1",
+              displayName: "Source",
+              country: "US",
+              language: "en",
+              ingestionType: "fixture",
+              forged: true,
+            },
+          ],
+        },
+      }).success,
+    ).toBe(false);
 
-      expect(summary).toContain("path=memories.0.content");
-      expect(summary).toContain("code=invalid_type");
-      expect(summary).toContain("expected=string");
-      expect(summary).not.toContain("123");
-      expect(summary).not.toContain("restricted user text");
+    const answer = {
+      status: "ok" as const,
+      mode: "single" as const,
+      content: "Answer",
+      sourceMap: [
+        {
+          sourceKey: "k_source_1",
+          locator: {
+            kind: "memory" as const,
+            memoryId: "memory-1",
+            memoryRevisionId: "revision-1",
+          },
+          label: null,
+          publicProvenance: {},
+          uses: [
+            {
+              consumerTaskId: "single-answer",
+              contextOrder: 0,
+              renderedTokenCount: 1,
+              ranges: [],
+            },
+          ],
+        },
+      ],
+    };
+    expect(aiChatSchemas.aiChatAnswer.safeParse({ value: answer }).success).toBe(true);
+    expect(
+      aiChatSchemas.aiChatAnswer.safeParse({
+        value: {
+          ...answer,
+          sourceMap: [
+            {
+              ...answer.sourceMap[0],
+              uses: [{ ...answer.sourceMap[0]!.uses[0], contextOrder: -1 }],
+            },
+          ],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      aiChatSchemas.aiChatAnswer.safeParse({
+        value: {
+          ...answer,
+          sourceMap: [
+            {
+              ...answer.sourceMap[0],
+              uses: [{ ...answer.sourceMap[0]!.uses[0], renderedTokenCount: -1 }],
+            },
+          ],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      aiChatSchemas.aiChatAnswer.safeParse({
+        value: {
+          ...answer,
+          sourceMap: [
+            {
+              ...answer.sourceMap[0],
+              publicProvenance: { forged: true },
+            },
+          ],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      aiChatSchemas.aiChatAnswer.safeParse({
+        value: {
+          ...answer,
+          sourceMap: [
+            {
+              ...answer.sourceMap[0],
+              publicProvenance: { documentTitle: { nested: true } },
+            },
+          ],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      aiChatSchemas.aiChatAnswer.safeParse({
+        value: {
+          ...answer,
+          sourceMap: [
+            {
+              ...answer.sourceMap[0],
+              uses: [{ ...answer.sourceMap[0]!.uses[0], forged: true }],
+            },
+          ],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      aiChatSchemas.aiChatResolution.safeParse({
+        value: {
+          mode: "continue",
+          retrievalQuestion: "Question",
+          selectedTurnIds: [],
+          forged: true,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      aiChatSchemas.aiChatAllocation.safeParse({
+        forged: true,
+        value: {
+          packetOutputTokens: 32,
+          synthesisUsableInput: 100,
+          fixedSynthesisInput: 10,
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("retains publisher issue/document coordinates in strict durable candidate output", () => {
+    const value = {
+      question: "Compare the evidence.",
+      candidates: [
+        {
+          id: "document:document-1",
+          kind: "document" as const,
+          rank: 0,
+          purpose: "publisher evidence",
+          sourceId: "publisher:source-1",
+          documentId: "document-1",
+          documentVersionId: "version-1",
+          publisherIssueId: "issue-1",
+          publisherDocumentId: "document-1",
+          contentHash: "a".repeat(64),
+          text: "publisher text",
+          ranges: [{ charStart: 0, charEnd: 14 }],
+          label: "Publisher document",
+          publicProvenance: {
+            sourceName: "Publisher",
+            issueTitle: "Issue",
+            documentTitle: "Publisher document",
+            citationUrl: "/v1/issues/issue-1/documents/document-1/content",
+            publishedAt: "2026-07-01T00:00:00.000Z",
+          },
+          renderedTokenCount: 3,
+        },
+      ],
+      sourceMap: [
+        {
+          sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+          locator: {
+            kind: "document" as const,
+            sourceId: "publisher:subscription-1",
+            documentId: "document-1",
+            documentVersionId: "version-1",
+            contentHash: "a".repeat(64),
+            ranges: [{ charStart: 0, charEnd: 14 }],
+            publisherIssueId: "issue-1",
+            publisherDocumentId: "document-1",
+          },
+          label: "Publisher document",
+          publicProvenance: {
+            sourceName: "Publisher",
+            issueTitle: "Issue",
+            documentTitle: "Publisher document",
+            citationUrl: "/v1/issues/issue-1/documents/document-1/content",
+            publishedAt: "2026-07-01T00:00:00.000Z",
+          },
+          uses: [
+            {
+              consumerTaskId: "single-answer",
+              contextOrder: 0,
+              renderedTokenCount: 3,
+              ranges: [{ charStart: 0, charEnd: 14 }],
+            },
+          ],
+        },
+      ],
+      selectedConversation: [],
+      gaps: [],
+      consumerTaskId: "single-answer",
+      requestedOutputTokens: 32,
+    };
+    expect(aiChatSchemas.aiChatAssembly.safeParse({ value }).success).toBe(true);
+    expect(
+      aiChatSchemas.aiChatAssembly.safeParse({
+        value: {
+          ...value,
+          candidates: [{ ...value.candidates[0], publisherIssueId: undefined, forged: true }],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts namespaced public and publisher internal references without a root source alias", () => {
+    const references = [
+      {
+        kind: "document" as const,
+        documentId: "public-document-1",
+        documentVersionId: "public-document-1",
+        source: { kind: "public" as const, sourceId: "public:e2e-fr-energie" },
+        ranges: [{ charStart: 0, charEnd: 24 }],
+        purpose: "public evidence",
+      },
+      {
+        kind: "document" as const,
+        documentId: "publisher-document-1",
+        documentVersionId: "publisher-version-1",
+        source: {
+          kind: "publisher" as const,
+          sourceId: "publisher:subscription-1",
+          issueId: "issue-1",
+          documentId: "publisher-document-1",
+        },
+        ranges: [{ charStart: 0, charEnd: 24 }],
+        purpose: "publisher evidence",
+      },
+    ];
+
+    expect(aiChatSchemas.aiChatInternal.safeParse({ value: references }).success).toBe(true);
+    expect(
+      aiChatSchemas.aiChatInternal.safeParse({
+        value: [{ ...references[0], sourceId: "public:e2e-fr-energie" }],
+      }).success,
+    ).toBe(false);
+    for (const sourceId of [
+      "e2e-fr-energie",
+      "publisher:e2e-fr-energie",
+      "public:public:e2e-fr-energie",
+    ]) {
+      expect(
+        aiChatSchemas.aiChatInternal.safeParse({
+          value: [{ ...references[0], source: { kind: "public", sourceId } }],
+        }).success,
+      ).toBe(false);
     }
+    expect(
+      aiChatSchemas.aiChatInternal.safeParse({
+        value: [
+          {
+            ...references[1]!,
+            source: { ...references[1]!.source, documentId: "different-document" },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("uses one initial attempt plus two exponential-backoff retries on every task", () => {
+    expect(aiChatRetryPolicy).toEqual({ backoff: "exponential", initialDelayMs: 250 });
+    const source = readFileSync(new URL("./ai-chat.tsx", import.meta.url), "utf8");
+    const taskOpenings = source.match(/<Task(?:\s[^>]*)?>/gu) ?? [];
+    expect(taskOpenings.length).toBeGreaterThan(20);
+    for (const opening of taskOpenings) {
+      expect(opening, opening).toContain("retries={2}");
+      expect(opening, opening).toContain("retryPolicy={retryPolicy}");
+      expect(opening, opening).toMatch(/timeoutMs=\{(?:fast|answerTimeout)\}/u);
+    }
+  });
+
+  it("reserves one global Smithers slot for memory beyond the widest configured answer lane", () => {
+    expect(
+      aiChatSmithersMaxConcurrency({
+        aiTopicResearchMaxConcurrency: 6,
+        aiTopicAnswerMaxConcurrency: 3,
+      }),
+    ).toBe(7);
+    expect(
+      aiChatSmithersMaxConcurrency({
+        aiTopicResearchMaxConcurrency: 2,
+        aiTopicAnswerMaxConcurrency: 8,
+      }),
+    ).toBe(9);
+    expect(
+      aiChatSmithersMaxConcurrency({
+        aiTopicResearchMaxConcurrency: 1,
+        aiTopicAnswerMaxConcurrency: 1,
+      }),
+    ).toBe(4);
   });
 });
 
-describe.skipIf(!isBun || !databaseUrl)("ai chat Smithers workflow", () => {
+describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", () => {
   beforeAll(async () => {
     await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`).raw;
+      }),
       adminDatabaseUrl(),
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const rows = yield* sql<{ readonly exists: boolean }>`
-          select exists(select 1 from pg_database where datname = ${isolatedDatabaseName}) as exists
-        `;
-
-        if (rows[0]?.exists !== true) {
-          yield* sql.unsafe(`create database ${quoteIdentifier(isolatedDatabaseName)}`);
-        }
-      }),
     );
-
-    await runDb(
-      isolatedDatabaseUrl(),
-      Effect.gen(function* () {
-        yield* runMigrations;
-        const sql = yield* PgClient.PgClient;
-
-        yield* sql`
-          insert into public_sources (
-            source_id,
-            display_name,
-            publisher_name,
-            description,
-            ingestion_method,
-            discovery_url,
-            average_chars_per_item,
-            country,
-            language
-          )
-          values (
-            'workflow-src',
-            'Workflow Source',
-            'Workflow Publisher',
-            'workflow fixtures',
-            'rss',
-            'https://workflow.example',
-            1000,
-            'US',
-            'en-US'
-          )
-          on conflict (source_id) do nothing
-        `;
-
-        for (const [index, documentId] of ["workflow-doc-1", "workflow-doc-2"].entries()) {
-          const rawId = `eeeeeeee-0000-0000-0000-${String(index + 1).padStart(12, "0")}`;
-          yield* sql`
-            insert into public_source_raw_artifacts (
-              id,
-              source_id,
-              canonical_url,
-              fetched_at,
-              media_type,
-              body,
-              body_hash
-            )
-            values (
-              ${rawId},
-              'workflow-src',
-              ${`https://workflow.example/${documentId}`},
-              now(),
-              'text/html',
-              'body',
-              ${`workflow-body-${index + 1}`}
-            )
-            on conflict (id) do nothing
-          `;
-          yield* sql`
-            insert into public_source_documents (
-              document_id,
-              source_id,
-              raw_artifact_id,
-              canonical_url,
-              title,
-              text,
-              language,
-              published_at,
-              discovered_at,
-              fetched_at,
-              document_type,
-              content_hash,
-              text_char_count
-            )
-            values (
-              ${documentId},
-              'workflow-src',
-              ${rawId},
-              ${`https://workflow.example/${documentId}`},
-              ${`Workflow document ${index + 1}`},
-              ${`Workflow evidence ${index + 1}. `.repeat(20)},
-              'en-US',
-              now(),
-              now(),
-              now(),
-              'article',
-              ${`workflow-hash-${index + 1}`},
-              ${`Workflow evidence ${index + 1}. `.repeat(20).length}
-            )
-            on conflict (document_id) do update
-            set text = excluded.text,
-                text_char_count = excluded.text_char_count
-          `;
-        }
-      }),
-    );
+    await runDb(runMigrations);
   }, 120_000);
 
   afterAll(async () => {
     await runDb(
-      adminDatabaseUrl(),
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql`
           select pg_terminate_backend(pid)
           from pg_stat_activity
-          where datname = ${isolatedDatabaseName}
+          where datname = ${databaseName}
             and pid <> pg_backend_pid()
         `;
-        yield* sql.unsafe(`drop database if exists ${quoteIdentifier(isolatedDatabaseName)}`);
+        yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`).raw;
       }),
+      adminDatabaseUrl(),
     );
   }, 60_000);
 
-  it("stores a happy turn once with ordered stream events, citations, blocks, and usage", async () => {
-    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
-    const result = await runWorkflowFor(
-      fixture.aiRunId,
-      new ScriptedAiClient([preflightFor("workflow-doc-1")], [answerOk("Answer [[cite:b1]]")]),
-    );
-
-    expect(result.status).toBe("finished");
-
-    const rows = await runDb(
-      isolatedDatabaseUrl(),
+  it("provisions canonical migrations before isolated Smithers output state", async () => {
+    const migrationUrl = databaseUrlFor(migrationIsolationDatabaseName);
+    await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        const [messages] = yield* sql<{ readonly count: number }>`
-          select count(*)::int as count from chat_messages where ai_run_id = ${fixture.aiRunId}
-        `;
-        const [blocks] = yield* sql<{ readonly count: number }>`
-          select count(*)::int as count from chat_context_blocks where chat_id = ${fixture.chatId}
-        `;
-        const [citations] = yield* sql<{ readonly count: number }>`
-          select count(*)::int as count from ai_observations where run_id = ${fixture.aiRunId} and kind = 'citation'
-        `;
-        const [run] = yield* sql<{ readonly usage: Record<string, unknown> }>`
-          select usage from ai_runs where id = ${fixture.aiRunId}
-        `;
-
-        return {
-          messages: messages?.count ?? 0,
-          blocks: blocks?.count ?? 0,
-          citations: citations?.count ?? 0,
-          usage: run?.usage ?? {},
-        };
+        yield* sql.unsafe(`create database ${quoteIdentifier(migrationIsolationDatabaseName)}`).raw;
       }),
+      adminDatabaseUrl(),
     );
-
-    expect(rows.messages).toBe(1);
-    expect(rows.blocks).toBeGreaterThan(0);
-    expect(rows.citations).toBe(1);
-    expect(rows.usage).toHaveProperty("answer");
-    expect(await eventTypes(fixture.aiRunId)).toEqual([
-      "run_started",
-      "preflight_search",
-      "preflight_peek",
-      "usage",
-      "context_window",
-      "answer_started",
-      "text_delta",
-      "usage",
-      "usage",
-      "memory_updated",
-      "done",
-    ]);
-
-    const events = await eventsFor(fixture.aiRunId);
-    expect(events.find((event) => event.type === "preflight_search")).toEqual({
-      type: "preflight_search",
-      terms: "workflow-doc-1",
-      resultCount: 1,
-    });
-    expect(events.find((event) => event.type === "preflight_peek")).toEqual({
-      type: "preflight_peek",
-      documentId: "workflow-doc-1",
-    });
-    expect(events.find((event) => event.type === "text_delta")).toEqual({
-      type: "text_delta",
-      delta: "Answer [[cite:b1]]",
-    });
-  });
-
-  it("uses the planner baseline search without invoking the preflight agent", async () => {
-    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun("Workflow evidence"));
-    const client = new ScriptedAiClient([], [answerOk("Baseline answer [[cite:b1]]")]);
-
-    await runWorkflowFor(
-      fixture.aiRunId,
-      client,
-      `ai-chat:${fixture.aiRunId}:baseline`,
-      undefined,
-      "finished",
-      { aiPlannerBaseline: true },
-    );
-
-    expect(client.preflightInputs).toHaveLength(0);
-    expect(await eventTypes(fixture.aiRunId)).not.toContain("preflight_peek");
-
-    const events = await eventsFor(fixture.aiRunId);
-    expect(events.find((event) => event.type === "preflight_search")).toEqual({
-      type: "preflight_search",
-      terms: "Workflow evidence",
-      resultCount: 2,
-    });
-  });
-
-  it("runs one insufficiency retry with distinct second-pass answer events", async () => {
-    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
-    const client = new ScriptedAiClient(
-      [preflightFor("workflow-doc-1"), preflightFor("workflow-doc-2")],
-      [answerInsufficient("need the second source"), answerOk("Retry answer [[cite:b2]]")],
-    );
-    await runWorkflowFor(fixture.aiRunId, client);
-
-    const types = await eventTypes(fixture.aiRunId);
-    expect(types.filter((type) => type === "answer_started")).toHaveLength(2);
-    expect(types).toContain("answer_retry");
-    expect(types.at(-1)).toBe("done");
-    expect(client.preflightInputs[1]?.standingWindow.map((block) => block.blockId)).toContain("b1");
-    expect(client.preflightInputs[1]?.remainingBlockBudget).toBeLessThan(
-      client.preflightInputs[0]?.remainingBlockBudget ?? 0,
-    );
-  });
-
-  it("resumes idempotently without duplicate assistant messages", async () => {
-    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
-    const smithersRunId = `ai-chat:${fixture.aiRunId}:resume`;
-    const resumeDecisions: boolean[] = [];
-    const client = new ScriptedAiClient(
-      [preflightFor("workflow-doc-1")],
-      [answerOk("Resume answer [[cite:b1]]")],
-    );
-
-    await runWorkflowFor(fixture.aiRunId, client, smithersRunId, (resume) =>
-      resumeDecisions.push(resume),
-    );
-    await runWorkflowFor(
-      fixture.aiRunId,
-      new ScriptedAiClient([], [answerOk("must not run")]),
-      smithersRunId,
-      (resume) => resumeDecisions.push(resume),
-    );
-
-    const messages = await countRows(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const [row] = yield* sql<{ readonly count: number }>`
-          select count(*)::int as count from chat_messages where ai_run_id = ${fixture.aiRunId}
-        `;
-
-        return row?.count ?? 0;
-      }),
-    );
-    expect(resumeDecisions).toEqual([false, true]);
-    expect(messages).toBe(1);
-  });
-
-  it("replaces a task's prior stream events when emission re-executes", async () => {
-    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
-
-    await runAiWorkflowDb(
-      isolatedDatabaseUrl(),
-      replaceAiRunEventsForTask(fixture.aiRunId, "answer", [
-        { type: "answer_started", attempt: 1 },
-        { type: "text_delta", delta: "first" },
-      ]),
-    );
-    await runAiWorkflowDb(
-      isolatedDatabaseUrl(),
-      replaceAiRunEventsForTask(fixture.aiRunId, "answer", [
-        { type: "answer_started", attempt: 1 },
-        { type: "text_delta", delta: "second" },
-      ]),
-    );
-
-    expect(await eventsFor(fixture.aiRunId)).toEqual([
-      { type: "answer_started", attempt: 1 },
-      { type: "text_delta", delta: "second" },
-    ]);
-  });
-
-  it("assigns unique contiguous seq values for concurrent appends to one run", async () => {
-    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
-    const count = 25;
-
-    await Promise.all(
-      Array.from({ length: count }, (_unused, index) =>
-        runAiWorkflowDb(
-          isolatedDatabaseUrl(),
-          appendAiRunEvent(fixture.aiRunId, { type: "error", code: `concurrent_${index}` }),
+    try {
+      await runDb(runMigrations, migrationUrl);
+      const [workflowState, sourceState] = await Promise.all([
+        runDb(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return (yield* sql<{
+              readonly databaseName: string;
+              readonly canonicalMigrationCount: number;
+              readonly loadTurnTable: string | null;
+            }>`
+              select
+                current_database() as "databaseName",
+                (
+                  select count(*)::int
+                  from schema_migrations
+                  where name in (
+                    '0031_recreate_canonical_ai_chat_smithers_outputs.sql',
+                    '0048_canonical_ai_chat_node_ownership.sql'
+                  )
+                ) as "canonicalMigrationCount",
+                to_regclass('public.ai_chat_load_turn')::text as "loadTurnTable"
+            `)[0]!;
+          }),
+          migrationUrl,
         ),
-      ),
-    );
+        runDb(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return (yield* sql<{ readonly databaseName: string }>`
+              select current_database() as "databaseName"
+            `)[0]!;
+          }),
+          sourceDatabaseUrl!,
+        ),
+      ]);
 
-    const seqs = await runDb(
-      isolatedDatabaseUrl(),
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const rows = yield* sql<{ readonly seq: number }>`
-          select seq
-          from ai_run_events
-          where run_id = ${fixture.aiRunId}
-          order by seq
-        `;
-
-        return rows.map((row) => row.seq);
-      }),
-    );
-
-    expect(seqs).toEqual(Array.from({ length: count }, (_unused, index) => index + 1));
-    expect(new Set(seqs).size).toBe(count);
-  });
-
-  it("purges Smithers rows and prunes stale run events", async () => {
-    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
-    const smithersRunId = `ai-chat:${fixture.aiRunId}:purge`;
-    await runWorkflowFor(
-      fixture.aiRunId,
-      new ScriptedAiClient([preflightFor("workflow-doc-1")], [answerOk("Purge [[cite:b1]]")]),
-      smithersRunId,
-    );
-
-    await runAiWorkflowDb(isolatedDatabaseUrl(), deleteSmithersRowsForRun(smithersRunId));
-    const remaining = await runDb(
-      isolatedDatabaseUrl(),
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        let total = 0;
-        for (const tableName of ["input", ...AI_CHAT_OUTPUT_TABLES, "_smithers_runs"]) {
-          const rows = yield* sql<{ readonly count: number }>`
-            select count(*)::int as count
-            from ${sql(tableName)}
-            where run_id = ${smithersRunId}
+      expect(workflowState).toEqual({
+        databaseName: migrationIsolationDatabaseName,
+        canonicalMigrationCount: 2,
+        loadTurnTable: null,
+      });
+      expect(sourceState.databaseName).not.toBe(migrationIsolationDatabaseName);
+    } finally {
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            select pg_terminate_backend(pid)
+            from pg_stat_activity
+            where datname = ${migrationIsolationDatabaseName}
+              and pid <> pg_backend_pid()
           `;
-          total += rows[0]?.count ?? 0;
+          yield* sql.unsafe(
+            `drop database if exists ${quoteIdentifier(migrationIsolationDatabaseName)}`,
+          ).raw;
+        }),
+        adminDatabaseUrl(),
+      );
+    }
+  });
+
+  it.each([
+    ["clarify", "finalize:clarification"],
+    ["single", "finalize:single"],
+    ["fanout", "finalize:synthesis"],
+  ] as const)(
+    "completes the %s branch and joins memory before finalization",
+    async (route, terminal) => {
+      const api = await createSmithersStorage(aiChatSchemas, {
+        connectionString: workflowDatabaseUrl(),
+      });
+      const operations = new ScriptedOperations(route);
+      try {
+        const workflow = buildAiChatWorkflow(api, {
+          operations,
+          config: {
+            aiFastTaskTimeoutMs: 30_000,
+            aiAnswerTimeoutMs: 30_000,
+            aiTopicResearchMaxConcurrency: 6,
+            aiTopicAnswerMaxConcurrency: 3,
+            aiContextReductionMaxIterations: 2,
+          },
+        });
+        const runId = `canonical-ai-chat-${route}-${crypto.randomUUID()}`;
+        const result = await runSmithersWorkflow(workflow, {
+          runId,
+          input: { aiRunId: load.aiRunId },
+          logDir: null,
+          resume: false,
+        });
+        expect(result.status).toBe("finished");
+        expect(operations.calls).toContain("memory-extract");
+        expect(operations.calls.at(-1)).toBe(terminal);
+        const finished = await finishedNodeIds(runId);
+        if (route === "single") {
+          expect(finished.has("single-answer-route")).toBe(true);
+          expect(operations.calls.indexOf("single-assemble")).toBeLessThan(
+            operations.calls.indexOf("single-measure"),
+          );
+          expect(operations.calls.indexOf("single-measure")).toBeLessThan(
+            operations.calls.indexOf("single-answer"),
+          );
         }
+        if (route === "fanout") {
+          expect(finished.has("topic-t1-answer-route")).toBe(true);
+          expect(finished.has("topic-t2-answer-route")).toBe(true);
+          expect(finished.has("fanout-synthesis-route")).toBe(true);
+          const mergeIndex = operations.calls.indexOf("fanout-merge-sources");
+          for (const topicId of ["t1", "t2"] as const) {
+            const assembleIndex = operations.calls.indexOf(`topic-${topicId}-assemble`);
+            const measureIndex = operations.calls.indexOf(`topic-${topicId}-measure`);
+            const answerIndex = operations.calls.indexOf(`topic-${topicId}-answer`);
+            expect(mergeIndex).toBeLessThan(assembleIndex);
+            expect(assembleIndex).toBeLessThan(measureIndex);
+            expect(measureIndex).toBeLessThan(answerIndex);
+          }
+        }
+      } finally {
+        await api.close();
+      }
+    },
+    60_000,
+  );
 
-        return total;
-      }),
-    );
-    expect(remaining).toBe(0);
+  it("persists stable topic IDs in one flat research group and streams only synthesis", async () => {
+    const runId = `canonical-ai-chat-fanout-shape-${crypto.randomUUID()}`;
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new ScriptedOperations("fanout");
+    try {
+      const workflow = buildAiChatWorkflow(api, { operations, config: workflowConfig });
+      const result = await runSmithersWorkflow(workflow, {
+        runId,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("finished");
+      expect(await normalizedTopicIds(runId)).toEqual(["t1", "t2"]);
+      expect(await finishedTopicNodeIds(runId)).toEqual([
+        "topic-t1-answer",
+        "topic-t1-answer-route",
+        "topic-t1-assemble",
+        "topic-t1-context-select",
+        "topic-t1-measure",
+        "topic-t1-result",
+        "topic-t1-retrieve-internal",
+        "topic-t1-retrieve-web",
+        "topic-t1-select-memories",
+        "topic-t2-answer",
+        "topic-t2-answer-route",
+        "topic-t2-assemble",
+        "topic-t2-context-select",
+        "topic-t2-measure",
+        "topic-t2-result",
+        "topic-t2-retrieve-internal",
+        "topic-t2-retrieve-web",
+        "topic-t2-select-memories",
+      ]);
+      expect(operations.structuredTopicTaskIds.sort()).toEqual([
+        "topic-t1-answer",
+        "topic-t2-answer",
+      ]);
+      expect(operations.streamedTaskIds).toEqual(["fanout-synthesis"]);
+      expect((await finishedNodeIds(runId)).has("fanout-synthesis-route")).toBe(true);
 
-    const pruned = await runAiWorkflowDb(isolatedDatabaseUrl(), pruneFinishedAiRunEvents(0));
-    expect(pruned).toBeGreaterThan(0);
-  });
+      const frame = await graphKeyframe(runId);
+      const researchGroups = collectFrameElements(
+        frame,
+        (element) =>
+          element.tag === "smithers:parallel" && element.props?.id === "fanout-topic-research",
+      );
+      expect(researchGroups).toHaveLength(1);
+      expect(researchGroups[0]?.children?.map((child) => child.tag)).toEqual(
+        Array.from({ length: 6 }, () => "smithers:task"),
+      );
+      expect(researchGroups[0]?.children?.map((child) => child.props?.id)).toEqual([
+        "topic-t1-retrieve-internal",
+        "topic-t1-select-memories",
+        "topic-t1-retrieve-web",
+        "topic-t2-retrieve-internal",
+        "topic-t2-select-memories",
+        "topic-t2-retrieve-web",
+      ]);
 
-  it("continues when the memory task fails", async () => {
-    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
-    await runWorkflowFor(
-      fixture.aiRunId,
-      new ScriptedAiClient(
-        [preflightFor("workflow-doc-1")],
-        [answerOk("No memory failure [[cite:b1]]")],
-        new Error("memory failed"),
-      ),
-    );
+      for (const nodeId of [
+        "topic-t1-answer-route",
+        "topic-t1-result",
+        "topic-t2-answer-route",
+        "topic-t2-result",
+        "fanout-synthesis-route",
+        "fanout-result",
+        "answer-select",
+      ]) {
+        const normalizers = collectFrameElements(
+          frame,
+          (element) => element.tag === "smithers:task" && element.props?.id === nodeId,
+        );
+        expect(normalizers, `${nodeId} must be mounted exactly once`).toHaveLength(1);
+        expect(normalizers[0]?.props).not.toHaveProperty("dependsOn");
+      }
+      expect(
+        collectFrameElements(
+          frame,
+          (element) => element.tag === "smithers:task" && element.props?.id === "continue-result",
+        ),
+      ).toHaveLength(0);
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
 
-    expect((await eventTypes(fixture.aiRunId)).at(-1)).toBe("done");
-  });
+  it("feeds invalid reduction measurement feedback into the next bounded planning iteration", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new ScriptedOperations("single", "correct-then-fit");
+    try {
+      const workflow = buildAiChatWorkflow(api, {
+        operations,
+        config: {
+          aiFastTaskTimeoutMs: 30_000,
+          aiAnswerTimeoutMs: 30_000,
+          aiTopicResearchMaxConcurrency: 6,
+          aiTopicAnswerMaxConcurrency: 3,
+          aiContextReductionMaxIterations: 2,
+        },
+      });
+      const result = await runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-reduction-correction-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("finished");
+      expect(operations.calls.filter((call) => call === "single-reduce-plan")).toHaveLength(2);
+      expect(operations.calls.filter((call) => call === "single-reduce-measure")).toHaveLength(2);
+      expect(operations.reductionFeedbackInputs).toEqual([[], ["complete accounting is required"]]);
+      expect(operations.calls).toContain("single-answer");
+      expect(operations.calls.at(-1)).toBe("finalize:single");
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
 
-  it("records repeated citations and every malformed or unknown citation token", async () => {
-    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
-    await runWorkflowFor(
-      fixture.aiRunId,
-      new ScriptedAiClient(
-        [preflightFor("workflow-doc-1")],
-        [answerOk("Cites [[cite:b1,,bad-token,b1,b999]]")],
-      ),
-    );
+  it("returns controlled context_plan_unfit after exactly two non-convergent iterations", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new ScriptedOperations("single", "unfit");
+    try {
+      const workflow = buildAiChatWorkflow(api, {
+        operations,
+        config: {
+          aiFastTaskTimeoutMs: 30_000,
+          aiAnswerTimeoutMs: 30_000,
+          aiTopicResearchMaxConcurrency: 6,
+          aiTopicAnswerMaxConcurrency: 3,
+          aiContextReductionMaxIterations: 2,
+        },
+      });
+      const result = await runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-reduction-unfit-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("finished");
+      expect(operations.calls.filter((call) => call === "single-reduce-plan")).toHaveLength(2);
+      expect(operations.calls.filter((call) => call === "single-reduce-measure")).toHaveLength(2);
+      expect(operations.calls).not.toContain("single-answer");
+      expect(operations.calls.at(-1)).toBe("finalize:failed");
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
 
-    const observations = await runDb(
-      isolatedDatabaseUrl(),
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const rows = yield* sql<{
-          readonly kind: string;
-          readonly payload: Record<string, unknown>;
-        }>`
-          select kind, payload
-          from ai_observations
-          where run_id = ${fixture.aiRunId}
-            and kind in ('citation', 'citation_defect')
-          order by id
-        `;
+  it("resumes the same durable graph without re-executing completed answer-lane or memory tasks", async () => {
+    const runId = `canonical-ai-chat-resume-${crypto.randomUUID()}`;
+    const firstStorage = await createSmithersStorage(aiChatSchemas, {
+      connectionString: databaseUrl!,
+    });
+    const blocking = new BlockingAnswerOperations();
+    const firstWorkflow = buildAiChatWorkflow(firstStorage, {
+      operations: blocking,
+      config: {
+        aiFastTaskTimeoutMs: 30_000,
+        aiAnswerTimeoutMs: 30_000,
+        aiTopicResearchMaxConcurrency: 6,
+        aiTopicAnswerMaxConcurrency: 3,
+        aiContextReductionMaxIterations: 2,
+      },
+    });
+    const controller = new AbortController();
+    const pending = runSmithersWorkflow(firstWorkflow, {
+      runId,
+      input: { aiRunId: load.aiRunId },
+      logDir: null,
+      resume: false,
+      signal: controller.signal,
+    });
+    await blocking.answerStarted;
+    controller.abort();
+    blocking.interrupt();
+    const interrupted = await pending;
+    expect(interrupted.status).toBe("cancelled");
+    expect(blocking.calls).toContain("memory-extract");
+    await firstStorage.close();
 
-        return rows;
-      }),
-    );
-    expect(observations.filter((observation) => observation.kind === "citation")).toHaveLength(2);
-    expect(observations.filter((observation) => observation.kind === "citation_defect")).toEqual([
-      expect.objectContaining({
-        payload: { token: "" },
-      }),
-      expect.objectContaining({
-        payload: { token: "bad-token" },
-      }),
-      expect.objectContaining({
-        payload: { token: "b999" },
-      }),
-    ]);
-    expect((await eventTypes(fixture.aiRunId)).at(-1)).toBe("done");
-  });
+    const resumedStorage = await createSmithersStorage(aiChatSchemas, {
+      connectionString: databaseUrl!,
+    });
+    const resumedOperations = new ScriptedOperations("single");
+    try {
+      const resumedWorkflow = buildAiChatWorkflow(resumedStorage, {
+        operations: resumedOperations,
+        config: {
+          aiFastTaskTimeoutMs: 30_000,
+          aiAnswerTimeoutMs: 30_000,
+          aiTopicResearchMaxConcurrency: 6,
+          aiTopicAnswerMaxConcurrency: 3,
+          aiContextReductionMaxIterations: 2,
+        },
+      });
+      const resumed = await runSmithersWorkflow(resumedWorkflow, {
+        runId,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: true,
+      });
+      expect(resumed.status).toBe("finished");
+      expect(resumedOperations.calls).toEqual(["single-answer", "finalize:single"]);
+    } finally {
+      await resumedStorage.close();
+    }
+  }, 60_000);
 
-  it("marks fatal answer output failed without storing an assistant message", async () => {
-    const fixture = await runDb(isolatedDatabaseUrl(), createChatRun());
-    await runWorkflowFor(
-      fixture.aiRunId,
-      new ScriptedAiClient([preflightFor("workflow-doc-1")], [answerFatal()]),
-    );
+  it.each([
+    {
+      checkpoint: "after-plan",
+      durableNodes: ["memory-extract", "normalize-execution-plan", "fanout-allocate"],
+      completedCalls: [
+        "load-turn",
+        "memory-extract",
+        "resolve-conversation",
+        "plan-execution",
+        "normalize-execution-plan",
+        "fanout-allocate",
+      ],
+    },
+    {
+      checkpoint: "after-research",
+      durableNodes: [
+        "memory-extract",
+        "topic-t1-retrieve-internal",
+        "topic-t1-select-memories",
+        "topic-t1-retrieve-web",
+        "topic-t2-retrieve-internal",
+        "topic-t2-select-memories",
+        "topic-t2-retrieve-web",
+      ],
+      completedCalls: [
+        "load-turn",
+        "memory-extract",
+        "resolve-conversation",
+        "plan-execution",
+        "normalize-execution-plan",
+        "fanout-allocate",
+        "topic-t1-retrieve-internal",
+        "topic-t1-select-memories",
+        "topic-t1-retrieve-web",
+        "topic-t2-retrieve-internal",
+        "topic-t2-select-memories",
+        "topic-t2-retrieve-web",
+      ],
+    },
+    {
+      checkpoint: "after-merge",
+      durableNodes: ["memory-extract", "fanout-merge-sources"],
+      completedCalls: [
+        "load-turn",
+        "memory-extract",
+        "resolve-conversation",
+        "plan-execution",
+        "normalize-execution-plan",
+        "fanout-allocate",
+        "topic-t1-retrieve-internal",
+        "topic-t1-select-memories",
+        "topic-t1-retrieve-web",
+        "topic-t2-retrieve-internal",
+        "topic-t2-select-memories",
+        "topic-t2-retrieve-web",
+        "fanout-merge-sources",
+      ],
+    },
+    {
+      checkpoint: "after-topic-answers",
+      durableNodes: ["memory-extract", "fanout-synthesis-measure"],
+      completedCalls: [
+        "load-turn",
+        "memory-extract",
+        "resolve-conversation",
+        "plan-execution",
+        "normalize-execution-plan",
+        "fanout-allocate",
+        "topic-t1-retrieve-internal",
+        "topic-t1-select-memories",
+        "topic-t1-retrieve-web",
+        "topic-t2-retrieve-internal",
+        "topic-t2-select-memories",
+        "topic-t2-retrieve-web",
+        "fanout-merge-sources",
+        "topic-t1-assemble",
+        "topic-t1-measure",
+        "topic-t1-context-select",
+        "topic-t1-answer",
+        "topic-t2-assemble",
+        "topic-t2-measure",
+        "topic-t2-context-select",
+        "topic-t2-answer",
+        "fanout-collect",
+        "fanout-synthesis-measure",
+      ],
+    },
+    {
+      checkpoint: "after-synthesis",
+      durableNodes: ["memory-extract", "fanout-synthesis"],
+      completedCalls: [
+        "load-turn",
+        "memory-extract",
+        "resolve-conversation",
+        "plan-execution",
+        "normalize-execution-plan",
+        "fanout-allocate",
+        "topic-t1-retrieve-internal",
+        "topic-t1-select-memories",
+        "topic-t1-retrieve-web",
+        "topic-t2-retrieve-internal",
+        "topic-t2-select-memories",
+        "topic-t2-retrieve-web",
+        "fanout-merge-sources",
+        "topic-t1-assemble",
+        "topic-t1-measure",
+        "topic-t1-context-select",
+        "topic-t1-answer",
+        "topic-t2-assemble",
+        "topic-t2-measure",
+        "topic-t2-context-select",
+        "topic-t2-answer",
+        "fanout-collect",
+        "fanout-synthesis-measure",
+        "fanout-synthesis",
+      ],
+    },
+  ] as const)(
+    "resumes after the $checkpoint fanout checkpoint without replaying completed phases",
+    async ({ checkpoint, durableNodes, completedCalls }) => {
+      const runId = `canonical-ai-chat-resume-${checkpoint}-${crypto.randomUUID()}`;
+      const firstStorage = await createSmithersStorage(aiChatSchemas, {
+        connectionString: databaseUrl!,
+      });
+      const blocking = new BlockingFanoutCheckpointOperations(checkpoint);
+      const controller = new AbortController();
+      try {
+        const firstWorkflow = buildAiChatWorkflow(firstStorage, {
+          operations: blocking,
+          config: workflowConfig,
+        });
+        const pending = runSmithersWorkflow(firstWorkflow, {
+          runId,
+          input: { aiRunId: load.aiRunId },
+          logDir: null,
+          resume: false,
+          signal: controller.signal,
+        });
+        await blocking.checkpointStarted;
+        await waitForFinishedNodes(runId, durableNodes);
+        expect(await normalizedTopicIds(runId)).toEqual(["t1", "t2"]);
+        controller.abort();
+        blocking.interrupt();
+        await expect(pending).resolves.toMatchObject({ status: "cancelled" });
+      } finally {
+        controller.abort();
+        blocking.interrupt();
+        await firstStorage.close();
+      }
 
-    const state = await runDb(
-      isolatedDatabaseUrl(),
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const [run] = yield* sql<{
-          readonly failedAt: Date | null;
-          readonly assistantMessageId: string | null;
-        }>`
-          select failed_at as "failedAt", assistant_message_id::text as "assistantMessageId"
-          from ai_runs
-          where id = ${fixture.aiRunId}
-        `;
+      const resumedStorage = await createSmithersStorage(aiChatSchemas, {
+        connectionString: databaseUrl!,
+      });
+      const resumedOperations = new ScriptedOperations("fanout");
+      try {
+        const resumedWorkflow = buildAiChatWorkflow(resumedStorage, {
+          operations: resumedOperations,
+          config: workflowConfig,
+        });
+        const resumed = await runSmithersWorkflow(resumedWorkflow, {
+          runId,
+          input: { aiRunId: load.aiRunId },
+          logDir: null,
+          resume: true,
+        });
+        expect(resumed.status).toBe("finished");
+        for (const call of completedCalls) {
+          expect(
+            resumedOperations.calls,
+            `${call} must not replay after ${checkpoint}`,
+          ).not.toContain(call);
+        }
+        expect(resumedOperations.calls.at(-1)).toBe("finalize:synthesis");
+        expect(await normalizedTopicIds(runId)).toEqual(["t1", "t2"]);
+      } finally {
+        await resumedStorage.close();
+      }
+    },
+    90_000,
+  );
 
-        return run;
-      }),
-    );
+  it("preserves a typed topic failure through fanout collection without scheduling synthesis", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new ScriptedOperations("fanout", "none", "web_policy_revoked");
+    try {
+      const workflow = buildAiChatWorkflow(api, {
+        operations,
+        config: {
+          aiFastTaskTimeoutMs: 30_000,
+          aiAnswerTimeoutMs: 30_000,
+          aiTopicResearchMaxConcurrency: 6,
+          aiTopicAnswerMaxConcurrency: 3,
+          aiContextReductionMaxIterations: 2,
+        },
+      });
+      const result = await runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-topic-failure-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("finished");
+      expect(operations.calls).not.toContain("fanout-synthesis");
+      expect(operations.finalAnswers).toEqual([
+        { status: "failed", code: "web_policy_revoked", retryable: true },
+      ]);
+      expect(operations.calls.at(-1)).toBe("finalize:failed");
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
 
-    expect(state?.failedAt).toBeInstanceOf(Date);
-    expect(state?.assistantMessageId).toBeNull();
-    expect((await eventTypes(fixture.aiRunId)).at(-1)).toBe("error");
-  });
+  it("converts only a non-retryable topic AiRuntimeError into the controlled failed union", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new NonRetryableTopicAnswerOperations();
+    try {
+      const workflow = buildAiChatWorkflow(api, { operations, config: workflowConfig });
+      const result = await runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-topic-nonretryable-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("finished");
+      expect(operations.topicAttempts).toBe(1);
+      expect(operations.calls).not.toContain("fanout-synthesis");
+      expect(operations.finalAnswers).toEqual([
+        { status: "failed", code: "agent_context_budget_exceeded", retryable: false },
+      ]);
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
+
+  it("rethrows retryable topic AiRuntimeError values for Smithers bounded retries", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new RetryableTopicAnswerOperations();
+    try {
+      const workflow = buildAiChatWorkflow(api, { operations, config: workflowConfig });
+      const result = await runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-topic-retryable-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("finished");
+      expect(operations.topicAttempts).toBe(3);
+      expect(operations.calls).toContain("fanout-synthesis");
+      expect(operations.calls.at(-1)).toBe("finalize:synthesis");
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
+
+  it("rethrows AbortError from a topic answer without fabricating a partial packet", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new AbortedTopicAnswerOperations();
+    try {
+      const workflow = buildAiChatWorkflow(api, { operations, config: workflowConfig });
+      const result = await runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-topic-abort-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("cancelled");
+      expect(operations.topicAttempts).toBe(1);
+      expect(operations.calls).not.toContain("fanout-synthesis");
+      expect(operations.finalAnswers).toEqual([]);
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
+
+  it("routes a failed synthesis measurement without mounting or streaming synthesis", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new SynthesisMismatchOperations();
+    try {
+      const workflow = buildAiChatWorkflow(api, { operations, config: workflowConfig });
+      const result = await runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-synthesis-mismatch-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("finished");
+      expect(operations.calls.filter((call) => call === "fanout-synthesis-measure")).toHaveLength(
+        1,
+      );
+      expect(operations.calls).not.toContain("fanout-synthesis");
+      expect(operations.streamedTaskIds).toEqual([]);
+      expect(operations.finalAnswers).toEqual([
+        { status: "failed", code: "synthesis_budget_mismatch", retryable: false },
+      ]);
+      expect(operations.calls.at(-1)).toBe("finalize:failed");
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
+
+  it("starts memory and answer concurrently and never finalizes before both lanes join", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new ParallelJoinOperations();
+    try {
+      const workflow = buildAiChatWorkflow(api, {
+        operations,
+        config: {
+          aiFastTaskTimeoutMs: 30_000,
+          aiAnswerTimeoutMs: 30_000,
+          aiTopicResearchMaxConcurrency: 6,
+          aiTopicAnswerMaxConcurrency: 3,
+          aiContextReductionMaxIterations: 2,
+        },
+      });
+      const pending = runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-parallel-join-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      await Promise.all([operations.memoryStarted, operations.answerStarted]);
+      operations.releaseAnswer();
+      await Promise.resolve();
+      expect(operations.calls).not.toContain("finalize:single");
+      operations.releaseMemory();
+      await expect(pending).resolves.toMatchObject({ status: "finished" });
+      expect(operations.calls.at(-1)).toBe("finalize:single");
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
+
+  it.each([
+    ["single", ["single-retrieve-internal", "single-retrieve-web", "single-select-memories"]],
+    [
+      "fanout",
+      [
+        "topic-t1-retrieve-internal",
+        "topic-t1-retrieve-web",
+        "topic-t1-select-memories",
+        "topic-t2-retrieve-internal",
+        "topic-t2-retrieve-web",
+        "topic-t2-select-memories",
+      ],
+    ],
+  ] as const)(
+    "mounts the %s A/B/W selector set as one bounded parallel join",
+    async (route, expected) => {
+      const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+      const operations = new SelectorParallelOperations(route);
+      let pending: ReturnType<typeof runSmithersWorkflow> | undefined;
+      let startDeadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const workflow = buildAiChatWorkflow(api, {
+          operations,
+          config: {
+            aiFastTaskTimeoutMs: 30_000,
+            aiAnswerTimeoutMs: 30_000,
+            aiTopicResearchMaxConcurrency: 6,
+            aiTopicAnswerMaxConcurrency: 3,
+            aiContextReductionMaxIterations: 2,
+          },
+        });
+        pending = runSmithersWorkflow(workflow, {
+          runId: `canonical-ai-chat-${route}-selector-parallel-${crypto.randomUUID()}`,
+          input: { aiRunId: load.aiRunId },
+          logDir: null,
+          resume: false,
+        });
+        const allStartedBeforeTimeout = await Promise.race([
+          operations.allSelectorsStarted.then(() => true),
+          new Promise<false>((resolve) => {
+            startDeadline = setTimeout(() => resolve(false), 10_000);
+          }),
+        ]);
+        if (startDeadline !== undefined) clearTimeout(startDeadline);
+        expect(allStartedBeforeTimeout).toBe(true);
+        expect([...operations.selectorTaskIds].sort()).toEqual([...expected].sort());
+        expect([...operations.selectorCallCounts.values()]).toEqual(
+          Array.from({ length: expected.length }, () => 1),
+        );
+        operations.releaseSelectors();
+        await expect(pending).resolves.toMatchObject({ status: "finished" });
+      } finally {
+        if (startDeadline !== undefined) clearTimeout(startDeadline);
+        operations.releaseSelectors();
+        await pending?.catch(() => undefined);
+        await api.close();
+      }
+    },
+    60_000,
+  );
+
+  it("runs sibling topic answers in the configured bounded parallel group", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new TopicAnswerParallelOperations();
+    try {
+      const workflow = buildAiChatWorkflow(api, {
+        operations,
+        config: {
+          aiFastTaskTimeoutMs: 30_000,
+          aiAnswerTimeoutMs: 30_000,
+          aiTopicResearchMaxConcurrency: 6,
+          aiTopicAnswerMaxConcurrency: 2,
+          aiContextReductionMaxIterations: 2,
+        },
+      });
+      const pending = runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-topic-answer-parallel-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      await operations.allTopicAnswersStarted;
+      expect([...operations.topicAnswerTaskIds].sort()).toEqual([
+        "topic-t1-answer",
+        "topic-t2-answer",
+      ]);
+      operations.releaseTopicAnswers();
+      await expect(pending).resolves.toMatchObject({ status: "finished" });
+      expect(operations.calls.at(-1)).toBe("finalize:synthesis");
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
+
+  it("uses one initial answer attempt plus exactly two bounded retries", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new RetryingAnswerOperations(2);
+    try {
+      const workflow = buildAiChatWorkflow(api, {
+        operations,
+        config: {
+          aiFastTaskTimeoutMs: 30_000,
+          aiAnswerTimeoutMs: 30_000,
+          aiTopicResearchMaxConcurrency: 6,
+          aiTopicAnswerMaxConcurrency: 3,
+          aiContextReductionMaxIterations: 2,
+        },
+      });
+      const result = await runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-answer-retries-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("finished");
+      expect(operations.answerAttempts).toBe(3);
+      expect(operations.calls.at(-1)).toBe("finalize:single");
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
+
+  it("rejects a malformed selected source map at answer-select before finalization", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new MalformedSourceMapOperations();
+    try {
+      const workflow = buildAiChatWorkflow(api, { operations, config: workflowConfig });
+      const result = await runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-answer-select-source-map-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("failed");
+      expect(operations.finalAnswers).toEqual([]);
+      expect(operations.calls.some((call) => call.startsWith("finalize:"))).toBe(false);
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
+
+  it("never finalizes or emits done when memory extraction exhausts its two retries", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new FailingMemoryOperations();
+    try {
+      const workflow = buildAiChatWorkflow(api, {
+        operations,
+        config: {
+          aiFastTaskTimeoutMs: 30_000,
+          aiAnswerTimeoutMs: 30_000,
+          aiTopicResearchMaxConcurrency: 6,
+          aiTopicAnswerMaxConcurrency: 3,
+          aiContextReductionMaxIterations: 2,
+        },
+      });
+      const result = await runSmithersWorkflow(workflow, {
+        runId: `canonical-ai-chat-memory-retries-${crypto.randomUUID()}`,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("failed");
+      expect(operations.memoryAttempts).toBe(3);
+      expect(operations.calls.some((call) => call.startsWith("finalize:"))).toBe(false);
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
 });

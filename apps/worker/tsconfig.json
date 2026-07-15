@@ -7,6 +7,10 @@
   "include": [
     "src/**/*.ts",
     "src/**/*.tsx",
+    "../../packages/config/src/**/*.ts",
+    "../../packages/i18n/src/catalogs.ts",
+    "../../packages/i18n/src/locales/*.json",
+    "../../packages/i18n/src/types.ts",
     "../../packages/shared/src/**/*.ts",
     "../../packages/source-ingestion/src/**/*.ts"
   ]

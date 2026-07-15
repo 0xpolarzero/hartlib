@@ -1,126 +1,80 @@
+import type { ChatMessage } from "@brief/shared";
 import { describe, expect, it } from "vitest";
 
-import { mapApiMessagesToTranscript, type ChatApiMessage } from "./chat-api";
-
-const labels = {
-  memoryBlockLabel: "Localized memories",
-  memoryCitation: "Localized memory",
-};
+import { mapApiMessagesToTranscript } from "./chat-api";
 
 describe("mapApiMessagesToTranscript", () => {
-  it("maps API payload messages to transcript messages", () => {
-    const messages: readonly ChatApiMessage[] = [
+  it("preserves the durable user run outcome and immutable assistant public records", () => {
+    const messages: readonly ChatMessage[] = [
       {
         id: "m1",
         author: "user",
         content: "Question",
         createdAt: "2026-07-09T05:00:00.000Z",
+        run: {
+          id: "r1",
+          status: "failed",
+          errorCode: "context_plan_unfit",
+          retryable: true,
+          failedAt: "2026-07-09T05:00:01.000Z",
+        },
       },
       {
         id: "m2",
         author: "assistant",
-        content: "Réponse [[cite:b1]]",
+        content: "Answer [[cite:k_nonce_1]]",
         createdAt: "2026-07-09T05:01:00.000Z",
         citations: [
           {
-            blockId: "b1",
-            kind: "document",
-            label: "Journal officiel",
-            sourceDisplayName: "Journal officiel",
-            title: "Décret",
-            canonicalUrl: "https://example.test/decret",
-            publishedAt: "2026-07-01T00:00:00.000Z",
+            sourceKey: "k_nonce_1",
+            label: "Official source",
+            kind: "web",
+            title: "Page",
+            domain: "example.com",
+            url: "https://example.com/page",
+            capturedAt: "2026-07-09T05:00:30.000Z",
+            quote: "Evidence",
+            ranges: [],
           },
         ],
-        contextBlocks: [
+        sourcesRead: [
           {
-            blockId: "b1",
-            kind: "document",
-            label: "Journal officiel: Décret",
-            tokenEstimate: 128,
+            sourceKey: "k_nonce_1",
+            label: "Official source",
+            tokenCount: 12,
+            topicIds: [],
+            kind: "web",
+            title: "Page",
+            domain: "example.com",
+            url: "https://example.com/page",
+            capturedAt: "2026-07-09T05:00:30.000Z",
+            quote: "Evidence",
+            ranges: [],
           },
         ],
       },
     ];
 
-    expect(mapApiMessagesToTranscript(messages, labels)).toEqual([
+    expect(mapApiMessagesToTranscript(messages)).toEqual([
       {
         id: "m1",
         author: "user",
         content: "Question",
-        citations: [],
-        contextBlocks: [],
+        run: {
+          id: "r1",
+          status: "failed",
+          errorCode: "context_plan_unfit",
+          retryable: true,
+          failedAt: "2026-07-09T05:00:01.000Z",
+        },
       },
       {
         id: "m2",
         author: "assistant",
-        content: "Réponse [[cite:b1]]",
-        citations: [
-          {
-            id: "b1",
-            label: "Journal officiel",
-            url: "https://example.test/decret",
-            publishedAt: "2026-07-01T00:00:00.000Z",
-            title: "Décret",
-            sourceDisplayName: "Journal officiel",
-          },
-        ],
-        contextBlocks: [
-          {
-            blockId: "b1",
-            kind: "document",
-            label: "Journal officiel: Décret",
-            tokenEstimate: 128,
-          },
-        ],
+        content: "Answer [[cite:k_nonce_1]]",
+        citations: messages[1]?.author === "assistant" ? messages[1].citations : [],
+        sourcesRead: messages[1]?.author === "assistant" ? messages[1].sourcesRead : [],
       },
     ]);
-  });
-
-  it("maps memory citations with null urls", () => {
-    const messages: readonly ChatApiMessage[] = [
-      {
-        id: "m1",
-        author: "assistant",
-        content: "Préférence mémorisée [[cite:b2]]",
-        createdAt: "2026-07-09T05:01:00.000Z",
-        citations: [
-          {
-            blockId: "b2",
-            kind: "memory",
-            label: null,
-            sourceDisplayName: null,
-            title: null,
-            canonicalUrl: null,
-            publishedAt: null,
-          },
-        ],
-        contextBlocks: [
-          {
-            blockId: "b2",
-            kind: "memory",
-            label: null,
-            tokenEstimate: 24,
-          },
-        ],
-      },
-    ];
-
-    const transcript = mapApiMessagesToTranscript(messages, labels);
-
-    expect(transcript[0]?.citations?.[0]).toEqual({
-      id: "b2",
-      label: "Localized memory",
-      url: null,
-      publishedAt: null,
-      title: "Localized memory",
-      sourceDisplayName: null,
-    });
-    expect(transcript[0]?.contextBlocks?.[0]).toEqual({
-      blockId: "b2",
-      kind: "memory",
-      label: "Localized memories",
-      tokenEstimate: 24,
-    });
   });
 });

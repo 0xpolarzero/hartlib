@@ -107,7 +107,6 @@ type HtmlSelector =
 
 const contentSelectors = {
   service_public: ["main", "article", '[class*="contenu"]', '[class*="content"]'],
-  tresor: ["main", "article", '[class*="article"]', '[class*="content"]'],
   assemblee_nationale: ["main", "article", '[class*="contenu"]', '[class*="content"]'],
   bofip_impots: ["main", "article", "section", '[class*="content"]'],
 } as const satisfies Record<PublicSourceId, readonly HtmlSelector[]>;

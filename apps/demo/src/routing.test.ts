@@ -5,6 +5,7 @@ import { demoDataset, type BriefPublication, type BriefSource } from "@brief/dem
 import {
   buildDemoPath,
   buildLocalePath,
+  getDemoLocalePrefixFromPath,
   getDemoRouteFromPath,
   resolveDemoRoute,
   type DemoRoute,
@@ -27,10 +28,10 @@ const publicSources: readonly BriefSource[] = [
     language: "fr-FR",
     subscribed: true,
     subscribedSince: "2026-06-28T06:00:00.000Z",
-    subscriberCount: 0,
+    subscriberCount: null,
     latestPublicationId: publicPublicationId,
     latestPublicationDate: "2026-06-28T06:00:00.000Z",
-    metrics: { opens: 0, downloads: 0, aiContextPulls: 0 },
+    metrics: { opens: null, downloads: null, aiContextPulls: null },
   },
 ];
 const publicPublications: readonly BriefPublication[] = [
@@ -58,10 +59,10 @@ const publicPublications: readonly BriefPublication[] = [
         fileName: null,
         pageCount: null,
         storagePath: null,
-        metrics: { opens: 0, downloads: 0, aiContextPulls: 0 },
+        metrics: { opens: null, downloads: null, aiContextPulls: null },
       },
     ],
-    metrics: { opens: 0, downloads: 0, aiContextPulls: 0 },
+    metrics: { opens: null, downloads: null, aiContextPulls: null },
   },
 ];
 
@@ -133,15 +134,6 @@ describe("getDemoRouteFromPath", () => {
     });
   });
 
-  it("parses legacy /client/publications/:issueId path", () => {
-    expect(getDemoRouteFromPath("/client/publications/issue_regfin_2026_06_24")).toEqual({
-      locale: null,
-      role: "client",
-      sourceId: null,
-      issueId: "issue_regfin_2026_06_24",
-    });
-  });
-
   it("parses /publisher as publisher root", () => {
     expect(getDemoRouteFromPath("/publisher")).toEqual({
       locale: null,
@@ -161,6 +153,30 @@ describe("getDemoRouteFromPath", () => {
       role: "publisher",
       sourceId: "source_regulation_financiere",
       issueId: "issue_regfin_2026_06_24",
+    });
+  });
+});
+
+describe("getDemoLocalePrefixFromPath", () => {
+  it("retains the market forced by pretty aliases", () => {
+    expect(getDemoLocalePrefixFromPath("/fr/client")).toEqual({
+      locale: "fr-FR",
+      forcedMarket: "FR",
+    });
+    expect(getDemoLocalePrefixFromPath("/us/client")).toEqual({
+      locale: "en-US",
+      forcedMarket: "US",
+    });
+  });
+
+  it("does not force a market for canonical locale routes", () => {
+    expect(getDemoLocalePrefixFromPath("/fr-FR/client")).toEqual({
+      locale: "fr-FR",
+      forcedMarket: null,
+    });
+    expect(getDemoLocalePrefixFromPath("/en-US/client")).toEqual({
+      locale: "en-US",
+      forcedMarket: null,
     });
   });
 });
@@ -305,18 +321,6 @@ describe("resolveDemoRoute", () => {
     expect(resolveDemoRoute(route, publisherIssues)).toEqual(route);
   });
 
-  it("redirects legacy /client/publications/:issueId to feed route", () => {
-    const legacyRoute: DemoRoute = {
-      locale: null,
-      role: "client",
-      sourceId: null,
-      issueId: "issue_regfin_2026_06_24",
-    };
-    const resolved = resolveDemoRoute(legacyRoute, publisherIssues);
-    expect(resolved.sourceId).toBe("source_regulation_financiere");
-    expect(resolved.issueId).toBe("issue_regfin_2026_06_24");
-  });
-
   it("falls back to client root for unknown sourceId", () => {
     const route: DemoRoute = {
       locale: null,
@@ -343,21 +347,6 @@ describe("resolveDemoRoute", () => {
       locale: null,
       role: "client",
       sourceId: "service_public",
-      issueId: null,
-    });
-  });
-
-  it("falls back to client root for invalid legacy issueId", () => {
-    const route: DemoRoute = {
-      locale: null,
-      role: "client",
-      sourceId: null,
-      issueId: "nonexistent_issue",
-    };
-    expect(resolveDemoRoute(route, publisherIssues)).toEqual({
-      locale: null,
-      role: "client",
-      sourceId: null,
       issueId: null,
     });
   });

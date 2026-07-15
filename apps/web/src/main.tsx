@@ -1,10 +1,16 @@
 import { RouterProvider } from "@tanstack/react-router";
+import { ClerkProvider } from "@clerk/clerk-react";
 import { DEFAULT_LOCALE, htmlLang } from "@brief/i18n";
 import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { queryClient } from "@/lib/query-client";
+import { loadWebAuthConfig } from "@/auth-config";
+import { ApiAuthBridge } from "@/components/auth/api-auth-bridge";
+import { WebAuthModeProvider } from "@/components/auth/auth-boundary";
+import { ApplicationErrorBoundary } from "@/components/errors/application-error-boundary";
 import { ensureLocalePrefix, parseLocaleFromPath } from "@/locale-bootstrap";
+import { initializeWebObservability, loadWebObservabilityConfig } from "@/observability";
 import { router } from "@/router";
 import "@/styles.css";
 
@@ -28,8 +34,25 @@ document.documentElement.lang = htmlLang(
   parseLocaleFromPath(window.location.pathname) ?? DEFAULT_LOCALE,
 );
 
+const auth = loadWebAuthConfig(import.meta.env);
+initializeWebObservability(loadWebObservabilityConfig(import.meta.env));
+
+const application = (
+  <WebAuthModeProvider value={auth}>
+    <RouterProvider router={router} context={{ queryClient }} />
+  </WebAuthModeProvider>
+);
+
 ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
-    <RouterProvider router={router} context={{ queryClient }} />
+    <ApplicationErrorBoundary>
+      {auth.mode === "demo" ? (
+        application
+      ) : (
+        <ClerkProvider publishableKey={auth.publishableKey}>
+          <ApiAuthBridge>{application}</ApiAuthBridge>
+        </ClerkProvider>
+      )}
+    </ApplicationErrorBoundary>
   </React.StrictMode>,
 );

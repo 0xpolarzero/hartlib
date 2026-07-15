@@ -1,3 +1,5 @@
+import type { PublicCitationRecord, PublicSourceRecord } from "@brief/shared";
+
 export type CitationTextSegment = {
   readonly type: "text";
   readonly text: string;
@@ -86,3 +88,29 @@ export function parseCitationTags(
   appendText(segments, visible.slice(cursor));
   return { segments, pendingTail };
 }
+
+/**
+ * Resolve only complete, known citation tags from a streaming answer into the
+ * public citation shape used by the transcript. Unknown or partial tags stay
+ * in the rendered text and never fabricate a source record.
+ */
+export const citationRecordsFromText = (
+  text: string,
+  sources: readonly PublicSourceRecord[],
+): readonly PublicCitationRecord[] => {
+  const byKey = new Map(sources.map((source) => [source.sourceKey, source]));
+  const parsed = parseCitationTags(text, [...byKey.keys()]);
+  const ordered: PublicCitationRecord[] = [];
+
+  for (const segment of parsed.segments) {
+    if (segment.type !== "citations") continue;
+    for (const key of segment.citationIds) {
+      const source = byKey.get(key);
+      if (source !== undefined && !ordered.some((citation) => citation.sourceKey === key)) {
+        const { tokenCount: _tokenCount, topicIds: _topicIds, ...citation } = source;
+        ordered.push(citation);
+      }
+    }
+  }
+  return ordered;
+};

@@ -104,19 +104,6 @@ export type DemoChat = {
   messages: readonly DemoChatMessage[];
 };
 
-export type DemoArtifact = {
-  id: string;
-  chatId: string;
-  title: string;
-  kind: "briefing-table";
-  createdAt: string;
-  files: readonly {
-    path: string;
-    contentType: string;
-    content: string;
-  }[];
-};
-
 export type DemoDataset = {
   generatedAt: string;
   companies: {
@@ -132,7 +119,6 @@ export type DemoDataset = {
   issues: readonly BriefPublication[];
   archiveSnippets: readonly DemoArchiveSnippet[];
   chats: readonly DemoChat[];
-  artifacts: readonly DemoArtifact[];
 };
 
 export const demoPublisherCompany: DemoCompany = {
@@ -697,24 +683,6 @@ export const demoChats: readonly DemoChat[] = [
   },
 ] as const;
 
-export const demoArtifacts: readonly DemoArtifact[] = [
-  {
-    id: "artifact_regfin_action_table",
-    chatId: "chat_montclair_regfin_priorites",
-    title: "Tableau des priorités conformité",
-    kind: "briefing-table",
-    createdAt: "2026-06-26T08:46:10.000Z",
-    files: [
-      {
-        path: "priorites-conformite.md",
-        contentType: "text/markdown",
-        content:
-          "| Priorité | Échéance | Source |\n| --- | --- | --- |\n| Plan DORA interne | 30 septembre 2026 | Annexes du 24 juin, p. 3 |\n| Traçabilité du conseil | T3 2026 | Note du 24 juin, p. 5 |\n| Revue conventions distributeurs | T4 2026 | Annexes du 24 juin, p. 4 |\n",
-      },
-    ],
-  },
-] as const;
-
 export const demoDataset: DemoDataset = {
   generatedAt: "2026-06-29T00:00:00.000Z",
   companies: {
@@ -730,7 +698,6 @@ export const demoDataset: DemoDataset = {
   issues: demoIssues,
   archiveSnippets: demoArchiveSnippets,
   chats: demoChats,
-  artifacts: demoArtifacts,
 };
 
 export function getPublicationsBySourceId(

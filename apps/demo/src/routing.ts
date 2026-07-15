@@ -4,7 +4,7 @@ import {
   type BriefSource,
   type DemoRole,
 } from "@brief/demo-data";
-import { LOCALE_MARKET_ALIASES, isLocale, type Locale } from "@brief/i18n";
+import { LOCALE_MARKET_ALIASES, isLocale, type Locale, type Market } from "@brief/i18n";
 
 export type DemoRoute = {
   locale: Locale | null;
@@ -14,16 +14,30 @@ export type DemoRoute = {
 };
 
 /**
- * Try to consume the first path segment as a locale (canonical `fr-FR`/`en-US`
- * or a pretty alias `fr`/`us`). Returns the resolved locale and the remaining
- * segments, or `null` when the segment is a role/unknown.
+ * A canonical locale prefix carries no market override. A pretty alias retains
+ * its canonical locale/market pair so bootstrap cannot lose the alias market.
  */
-function consumeLocale(segment: string | undefined): Locale | null {
-  if (segment === undefined) return null;
-  if (isLocale(segment)) return segment;
+export type DemoLocalePrefix = {
+  readonly locale: Locale | null;
+  readonly forcedMarket: Market | null;
+};
+
+function consumeLocale(segment: string | undefined): DemoLocalePrefix {
+  if (segment === undefined) return { locale: null, forcedMarket: null };
+  if (isLocale(segment)) return { locale: segment, forcedMarket: null };
   const alias = LOCALE_MARKET_ALIASES[segment];
-  if (alias) return alias.locale;
-  return null;
+  if (alias) return { locale: alias.locale, forcedMarket: alias.market };
+  return { locale: null, forcedMarket: null };
+}
+
+export function getDemoLocalePrefixFromPath(pathname: string): DemoLocalePrefix {
+  const first = pathname.split("/").filter(Boolean)[0];
+  if (first === undefined) return { locale: null, forcedMarket: null };
+  try {
+    return consumeLocale(decodeURIComponent(first));
+  } catch {
+    return { locale: null, forcedMarket: null };
+  }
 }
 
 export function getDemoRouteFromPath(pathname: string): DemoRoute {
@@ -33,9 +47,9 @@ export function getDemoRouteFromPath(pathname: string): DemoRoute {
   let rest = segments;
 
   const first = segments[0];
-  const resolvedLocale = consumeLocale(first);
-  if (resolvedLocale) {
-    locale = resolvedLocale;
+  const prefix = consumeLocale(first);
+  if (prefix.locale !== null) {
+    locale = prefix.locale;
     rest = segments.slice(1);
   }
 
@@ -48,14 +62,6 @@ export function getDemoRouteFromPath(pathname: string): DemoRoute {
         role: "client",
         sourceId: sourceId ?? null,
         issueId: nestedSegment === "publications" ? (issueId ?? null) : null,
-      };
-    }
-    if (segment === "publications") {
-      return {
-        locale,
-        role: "client",
-        sourceId: null,
-        issueId: sourceId ?? null,
       };
     }
     return { locale, role: "client", sourceId: null, issueId: null };
@@ -127,21 +133,6 @@ export function resolveDemoRoute(
   if (route.role === "client") {
     if (!route.sourceId && !route.issueId) {
       return { locale: route.locale, role: "client", sourceId: null, issueId: null };
-    }
-
-    if (!route.sourceId && route.issueId) {
-      const publication = publications.find(
-        (candidate) => candidate.id === route.issueId && routePublicationIsVisible(candidate),
-      );
-      if (!publication) {
-        return { locale: route.locale, role: "client", sourceId: null, issueId: null };
-      }
-      return {
-        locale: route.locale,
-        role: "client",
-        sourceId: publication.sourceId,
-        issueId: publication.id,
-      };
     }
 
     if (route.sourceId && !sourceById.has(route.sourceId)) {

@@ -5,6 +5,10 @@
     "tsBuildInfoFile": "./tsconfig.tsbuildinfo",
     "baseUrl": ".",
     "paths": {
+      "@brief/api-client": ["../../packages/api-client/src/index.ts"],
+      "@brief/api-client/*": ["../../packages/api-client/src/*"],
+      "@brief/config": ["../../packages/config/src/index.ts"],
+      "@brief/config/*": ["../../packages/config/src/*"],
       "@brief/demo-data": ["../../packages/demo-data/src/index.ts"],
       "@brief/i18n": ["../../packages/i18n/src/index.ts"],
       "@brief/shared": ["../../packages/shared/src/index.ts"],
@@ -16,6 +20,8 @@
   },
   "include": [
     "src",
+    "../../packages/api-client/src",
+    "../../packages/config/src",
     "../../packages/demo-data/src",
     "../../packages/i18n/src",
     "../../packages/shared/src",

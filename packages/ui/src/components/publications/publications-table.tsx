@@ -21,9 +21,9 @@ export type PublicationTableIssue = {
   title: string;
   sourceName?: string | undefined;
   publicationDate: string | null;
-  opens: number;
-  downloads: number;
-  contextPulls: number;
+  opens: number | null;
+  downloads: number | null;
+  contextPulls: number | null;
   status: "published" | "scheduled";
 };
 
@@ -160,13 +160,19 @@ export function PublicationsTable({
               key={cell.id}
               className="whitespace-nowrap tabular-nums font-medium text-accent"
             >
-              {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
+              {row.original.contextPulls === null
+                ? "-"
+                : renderTableContent(cell.column.columnDef.cell, cell.getContext())}
             </TableCell>
           );
         }
         return (
           <TableCell key={cell.id} className="whitespace-nowrap tabular-nums text-ink">
-            {renderTableContent(cell.column.columnDef.cell, cell.getContext())}
+            {cell.column.id === "opens" && row.original.opens === null
+              ? "-"
+              : cell.column.id === "downloads" && row.original.downloads === null
+                ? "-"
+                : renderTableContent(cell.column.columnDef.cell, cell.getContext())}
           </TableCell>
         );
       }}

@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MARKET_FOR_LOCALE,
   type Locale,
   type LocaleMarketPair,
   type Market,
@@ -93,7 +94,20 @@ export function detectLocale(): LocaleMarketPair {
 
   return resolveRedirectTarget({
     ...(storedLocale !== null ? { storedLocale } : {}),
-    ...(storedMarket !== null ? { countrySignal: storedMarket } : {}),
+    ...(storedMarket !== null ? { storedMarket } : {}),
     ...(acceptLanguage !== undefined ? { acceptLanguage } : {}),
   });
 }
+
+export const resolveDemoLocaleMarket = (
+  explicitLocale: Locale | null,
+  storedMarket: Market | null,
+  detected: LocaleMarketPair,
+  forcedMarket: Market | null = null,
+): LocaleMarketPair =>
+  explicitLocale === null
+    ? detected
+    : {
+        locale: explicitLocale,
+        market: forcedMarket ?? storedMarket ?? DEFAULT_MARKET_FOR_LOCALE[explicitLocale],
+      };

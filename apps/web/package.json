@@ -10,10 +10,12 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@brief/api-client": "workspace:*",
+    "@brief/config": "workspace:*",
     "@brief/i18n": "workspace:*",
     "@brief/shared": "workspace:*",
     "@brief/ui": "workspace:*",
-    "@clerk/clerk-react": "5.61.3",
+    "@clerk/clerk-react": "5.61.8",
     "@sentry/react": "10.62.0",
     "@tanstack/db": "0.6.12",
     "@tanstack/query-core": "5.101.2",
@@ -25,6 +27,7 @@
     "@tanstack/react-table": "8.21.3",
     "@tanstack/react-virtual": "3.14.4",
     "echarts": "6.1.0",
+    "effect": "4.0.0-beta.92",
     "lucide-react": "1.21.0",
     "react": "19.2.7",
     "react-dom": "19.2.7"

@@ -1,6 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
-import { Config, Context, Effect, Layer, Redacted } from "effect";
+import { Config, Context, Effect, Layer } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
+import {
+  databaseUrlRedactedConfig,
+  loadJobRepositoryConfig,
+  WORKER_JOB_LOCK_TIMEOUT_MS_DEFAULT,
+} from "@brief/config";
+import { persistedJobFailureCode } from "./failure";
 import { jobSql } from "./sql";
 import type { EnqueueJobInput, JobRecord } from "./types";
 
@@ -17,13 +23,8 @@ export class JobRepository extends Context.Service<JobRepository, JobRepositoryS
   "brief/worker/JobRepository",
 ) {}
 
-const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
-
 const retryDelayMs = (attempts: number): number =>
   Math.min(60_000, 1_000 * 2 ** Math.max(0, attempts - 1));
-
-const defaultJobLockTimeoutMs = 15 * 60 * 1000;
 
 const lockRenewalIntervalMs = (jobLockTimeoutMs: number): number =>
   Math.max(1_000, Math.floor(jobLockTimeoutMs / 3));
@@ -46,7 +47,7 @@ const requireOwnedJobUpdate = (
       );
 
 export const makePgJobRepository = (
-  jobLockTimeoutMs = defaultJobLockTimeoutMs,
+  jobLockTimeoutMs = WORKER_JOB_LOCK_TIMEOUT_MS_DEFAULT,
 ): Effect.Effect<JobRepositoryShape, never, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
@@ -57,13 +58,14 @@ export const makePgJobRepository = (
 
       enqueue: (input) =>
         Effect.gen(function* () {
+          const reviveTerminal = input.reviveTerminal ?? true;
           const rows = yield* sql<JobRecord>`
               insert into jobs (kind, payload, unique_key, available_at, priority, max_attempts)
               values (
                 ${input.kind},
                 ${sql.json(input.payload)},
                 ${input.uniqueKey ?? null},
-                ${input.availableAt ?? new Date()},
+                coalesce(${input.availableAt ?? null}::timestamptz, now()),
                 ${input.priority ?? 0},
                 ${input.maxAttempts ?? 5}
               )
@@ -104,9 +106,18 @@ export const makePgJobRepository = (
                   else jobs.last_error
                 end,
                 updated_at = now()
-            returning id, kind, payload, attempts, locked_by as "lockedBy"
+              where ${reviveTerminal}
+                 or jobs.status not in ('completed', 'failed')
+            returning id, kind, payload, attempts, max_attempts as "maxAttempts", locked_by as "lockedBy"
             `;
-          return rows[0]!;
+          if (rows[0] !== undefined) return rows[0];
+          const existing = yield* sql<JobRecord>`
+            select id, kind, payload, attempts, max_attempts as "maxAttempts",
+                   locked_by as "lockedBy"
+            from jobs
+            where unique_key = ${input.uniqueKey ?? null}
+          `;
+          return existing[0]!;
         }).pipe(
           Effect.annotateLogs({
             sqlName: "enqueue",
@@ -121,16 +132,20 @@ export const makePgJobRepository = (
             yield* sql`
                 update jobs
                 set status = case
-                      when attempts < max_attempts then 'retrying'
+                      -- Queue attempts are not the AI turn's terminal boundary. A
+                      -- crashed worker must keep the same durable Smithers/product
+                      -- run recoverable until the AI handler commits its terminal
+                      -- product transition.
+                      when kind = 'ai_chat_run' or attempts < max_attempts then 'retrying'
                       else 'failed'
                     end,
                     available_at = case
-                      when attempts < max_attempts then now()
+                      when kind = 'ai_chat_run' or attempts < max_attempts then now()
                       else available_at
                     end,
                     locked_at = null,
                     locked_by = null,
-                    last_error = 'Job lock expired before completion',
+                    last_error = 'job_lock_expired',
                     updated_at = now()
                 where status = 'running'
                   and locked_at < now() - (${jobLockTimeoutMs} * interval '1 millisecond')
@@ -159,7 +174,7 @@ export const makePgJobRepository = (
                   for update skip locked
                   limit 1
                 )
-                returning id, kind, payload, attempts, locked_by as "lockedBy"
+                returning id, kind, payload, attempts, max_attempts as "maxAttempts", locked_by as "lockedBy"
               `;
           }),
         );
@@ -213,20 +228,25 @@ export const makePgJobRepository = (
           ),
         ),
 
-      markFailed: (job, error) =>
-        sql<UpdatedJobRow>`
+      markFailed: (job, error) => {
+        const errorCode = persistedJobFailureCode(error);
+        return sql<UpdatedJobRow>`
             update jobs
             set status = case
-                  when attempts < max_attempts then 'retrying'
+                  -- Infrastructure/transport failure before the AI handler can
+                  -- read and commit durable terminal metadata must never strand
+                  -- an unterminated ai_runs row behind a terminal queue job.
+                  when kind = 'ai_chat_run' or attempts < max_attempts then 'retrying'
                   else 'failed'
                 end,
                 available_at = case
-                  when attempts < max_attempts then now() + (${retryDelayMs(job.attempts)} * interval '1 millisecond')
+                  when kind = 'ai_chat_run' or attempts < max_attempts
+                    then now() + (${retryDelayMs(job.attempts)} * interval '1 millisecond')
                   else available_at
                 end,
                 locked_at = null,
                 locked_by = null,
-                last_error = ${errorMessage(error)},
+                last_error = ${errorCode},
                 updated_at = now()
             where id = ${job.id}
               and status = 'running'
@@ -239,11 +259,12 @@ export const makePgJobRepository = (
               Effect.annotateLogs({
                 jobId: job.id,
                 jobKind: job.kind,
-                error: errorMessage(error),
+                errorCode,
               }),
             ),
           ),
-        ),
+        );
+      },
     });
   }).pipe(
     Effect.catch((error: SqlError) =>
@@ -253,17 +274,13 @@ export const makePgJobRepository = (
 
 export const JobRepositoryPgLayer = Layer.effect(
   JobRepository,
-  Config.number("WORKER_JOB_LOCK_TIMEOUT_MS").pipe(
-    Config.withDefault(defaultJobLockTimeoutMs),
-    Effect.flatMap((jobLockTimeoutMs) => makePgJobRepository(jobLockTimeoutMs)),
+  loadJobRepositoryConfig.pipe(
+    Effect.flatMap(({ jobLockTimeoutMs }) => makePgJobRepository(jobLockTimeoutMs)),
   ),
 ).pipe(
   Layer.provide(
     PgClient.layerConfig({
-      url: Config.string("DATABASE_URL").pipe(
-        Config.withDefault("postgres://brief:brief@localhost:5432/brief"),
-        Config.map(Redacted.make),
-      ),
+      url: databaseUrlRedactedConfig,
       applicationName: Config.succeed("brief-worker"),
     }),
   ),

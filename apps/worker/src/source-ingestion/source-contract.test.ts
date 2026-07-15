@@ -31,6 +31,12 @@ const response = (url: string, body: string, mediaType: string): FetchResponse =
   ok: true,
   headers: new Headers({ "content-type": mediaType }),
   text: async () => body,
+  body: new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(body));
+      controller.close();
+    },
+  }),
 });
 
 const ingestAndStore = async (
@@ -48,7 +54,7 @@ const ingestAndStore = async (
 
   const ingested: IngestedSourceItem[] = [];
   for (const item of discovery.items) {
-    await Effect.runPromise(repository.recordDiscoveredItem(item));
+    await Effect.runPromise(repository.recordDiscoveredItem(item, true));
     const result = await Effect.runPromise(ingestDiscoveredItem(adapter, item));
     expect(result.status).toBe("ingested");
     if (result.status !== "ingested") {
@@ -207,7 +213,9 @@ describe("public source storage contracts", () => {
       sourceId: contract.sourceId,
       body: contract.expectedRawBody,
     });
-    expect(storedRawArtifacts(state)[0]?.mediaType.toLowerCase()).toMatch(/html|pdf/u);
+    expect(storedRawArtifacts(state)[0]?.mediaType.split(";", 1)[0]?.trim().toLowerCase()).toMatch(
+      /^(?:text\/html|application\/pdf)$/u,
+    );
     expect(storedDocuments(state)[0]).toMatchObject({
       sourceId: contract.sourceId,
       text: contract.expectedText,

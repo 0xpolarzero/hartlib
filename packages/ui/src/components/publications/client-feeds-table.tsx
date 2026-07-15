@@ -34,7 +34,7 @@ export function ClientFeedsTable({
 }: {
   rows: readonly ClientFeedTableRow[];
   onSelectFeed: (id: string) => void;
-  onToggleSubscribed: (id: string) => void;
+  onToggleSubscribed?: (id: string) => void;
 }) {
   const intl = useIntl();
   const [sorting, setSorting] = useState<SortingState>([{ id: "lastPublishedAt", desc: true }]);
@@ -130,13 +130,14 @@ export function ClientFeedsTable({
               <input
                 type="checkbox"
                 checked={row.original.subscribed}
+                disabled={onToggleSubscribed === undefined}
                 onClick={(event) => event.stopPropagation()}
-                onChange={() => onToggleSubscribed(row.original.id)}
+                onChange={() => onToggleSubscribed?.(row.original.id)}
                 aria-label={intl.formatMessage(
                   { id: "action.subscribeTo" },
                   { name: row.original.name },
                 )}
-                className="size-4 cursor-pointer accent-accent"
+                className="size-4 accent-accent enabled:cursor-pointer disabled:opacity-60"
               />
             </TableCell>
           );

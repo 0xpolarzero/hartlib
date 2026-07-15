@@ -1,6 +1,7 @@
 import { BunRuntime } from "@effect/platform-bun";
 import { PgClient } from "@effect/sql-pg";
-import { Config, Effect, Redacted } from "effect";
+import { databaseUrlRedactedConfig } from "@brief/config";
+import { Config, Effect } from "effect";
 
 const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
 
@@ -47,10 +48,7 @@ export const runMigrations = Effect.gen(function* () {
 });
 
 const PgLayer = PgClient.layerConfig({
-  url: Config.string("DATABASE_URL").pipe(
-    Config.withDefault("postgres://brief:brief@localhost:5432/brief"),
-    Config.map(Redacted.make),
-  ),
+  url: databaseUrlRedactedConfig,
   applicationName: Config.succeed("brief-worker-migrations"),
 });
 

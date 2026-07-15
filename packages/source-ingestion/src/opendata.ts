@@ -1,5 +1,7 @@
 import { Effect } from "effect";
 import { sha256Hex } from "./hash";
+import { fetchPublicSourceText } from "./http";
+import { canonicalizeSourceCanonicalUrl, makeSourcePolicyFetcher } from "./source-url-policy";
 import { stableDocumentId, stripHtml } from "./text";
 import type {
   CanonicalDocument,
@@ -119,9 +121,10 @@ export const parseBofipDataset = (
 ): readonly DiscoveredItem[] => {
   const parsed = readJson(body);
   return (parsed.results ?? []).flatMap((record): DiscoveredItem[] => {
-    const canonicalUrl = recordUrl(record);
+    const candidateUrl = recordUrl(record);
+    const canonicalUrl = candidateUrl ? canonicalizeSourceCanonicalUrl(source, candidateUrl) : null;
     const title = recordTitle(record);
-    if (!canonicalUrl || !title) {
+    if (canonicalUrl === null || !title) {
       return [];
     }
 
@@ -147,7 +150,7 @@ export const makeBofipDatasetAdapter = (
   definition: PublicSourceDefinition,
   options: { readonly fetcher?: Fetcher } = {},
 ): SourceAdapter => {
-  const fetcher = options.fetcher ?? fetch;
+  const fetcher = makeSourcePolicyFetcher(definition, options.fetcher ?? fetch);
   const datasetUrl = definition.contentUrl ?? definition.discoveryUrl;
 
   return {
@@ -160,7 +163,9 @@ export const makeBofipDatasetAdapter = (
             limit: "50",
           });
           const discoveryUrl = `${datasetUrl}?${params.toString()}`;
-          const response = await fetcher(
+          const { response, body } = await fetchPublicSourceText(
+            fetcher,
+            definition.id,
             discoveryUrl,
             discoveryRequestInit(discoveryUrl, discoverOptions),
           );
@@ -181,10 +186,9 @@ export const makeBofipDatasetAdapter = (
               },
             );
           }
-          const body = await response.text();
           return {
             status: "fetched",
-            items: parseBofipDataset(definition, body),
+            items: parseBofipDataset(definition, body ?? ""),
             discoveredAt: new Date(),
             metadata: [await responseMetadata(discoveryUrl, response, body)],
           } satisfies SourceDiscoveryResult;
@@ -204,7 +208,9 @@ export const makeBofipDatasetAdapter = (
             where: `identifiant_juridique="${item.externalId}"`,
             limit: "1",
           });
-          const response = await fetcher(
+          const { response, body } = await fetchPublicSourceText(
+            fetcher,
+            definition.id,
             `${datasetUrl}?${params.toString()}`,
             conditionalRequestInit(fetchOptions),
           );
@@ -231,8 +237,7 @@ export const makeBofipDatasetAdapter = (
               },
             );
           }
-          const body = await response.text();
-          const record = firstRecord(body, definition);
+          const record = firstRecord(body ?? "", definition);
           if (!recordMatchesExternalId(record, item.externalId)) {
             throw new SourceIngestionError(
               "Dataset record fetch skipped: fetched record does not match requested item",

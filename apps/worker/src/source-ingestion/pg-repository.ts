@@ -1,17 +1,19 @@
 import { PgClient } from "@effect/sql-pg";
+import { databaseUrlRedactedConfig } from "@brief/config";
 import {
   sha256Hex,
   type ConditionalRequestValidators,
   type DiscoveredItem,
   type PublicSourceDefinition,
 } from "@brief/source-ingestion";
-import { Config, Effect, Layer, Redacted } from "effect";
+import { Config, Effect, Layer } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 import type {
   PublicSourceIngestionOptions,
   PublicSourceIngestionRepositoryShape,
   PublicSourceIngestionRun,
 } from "./types";
+import { durablePublicSourceItemMetadata } from "./types";
 import { PublicSourceIngestionRepository } from "./repository";
 
 type DiscoveryRow = {
@@ -36,6 +38,8 @@ type ItemRow = {
   readonly last_fetched_at: Date | null;
   readonly last_successful_fetch_at: Date | null;
   readonly consecutive_failures: number;
+  readonly poll_eligible: boolean;
+  readonly retry_eligible: boolean;
 };
 
 type DiscoveredItemRow = {
@@ -48,6 +52,10 @@ type DiscoveredItemRow = {
   readonly source_updated_at: Date | null;
   readonly summary: string | null;
   readonly metadata: Record<string, unknown>;
+};
+
+type RetryItemRow = DiscoveredItemRow & {
+  readonly last_fetched_at: Date | null;
 };
 
 type RawArtifactRow = {
@@ -72,13 +80,6 @@ const validators = (
 
 const metadataValue = (metadata: Record<string, unknown> | undefined, key: string): string | null =>
   typeof metadata?.[key] === "string" ? metadata[key] : null;
-
-const persistedItemMetadata = (
-  metadata: Record<string, unknown> | undefined,
-): Record<string, unknown> => {
-  const { contentHtml: _contentHtml, xmlBody: _xmlBody, ...persisted } = metadata ?? {};
-  return persisted;
-};
 
 export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
   PublicSourceIngestionRepositoryShape,
@@ -184,11 +185,12 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
             return requestValidators ? { url, validators: requestValidators } : { url };
           });
         }),
-      recordDiscoveryResult: (source, result) =>
-        Effect.gen(function* () {
-          yield* upsertSource(source);
-          for (const metadata of result.metadata) {
-            yield* sql`
+      recordDiscoveryResult: (source, result, options) =>
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* upsertSource(source);
+            for (const metadata of result.metadata) {
+              yield* sql`
                 insert into public_source_discovery_requests (
                   source_id,
                   url,
@@ -220,9 +222,67 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
                   last_fetched_at = excluded.last_fetched_at,
                   updated_at = now()
               `;
-          }
-          yield* sql`
-              update public_sources set
+            }
+
+            // Discovery metadata and every newly discovered candidate share
+            // one transaction.  A crash or candidate-write failure therefore
+            // rolls back validators/health as well, so a later 304 cannot hide
+            // a partially persisted discovery list.
+            for (const item of options?.items ?? []) {
+              yield* sql`
+                insert into public_source_candidates (
+                  source_id,
+                  canonical_url,
+                  external_id,
+                  title,
+                  published_at,
+                  discovered_at,
+                  source_updated_at,
+                  summary,
+                  metadata,
+                  poll_eligible,
+                  updated_at
+                )
+                values (
+                  ${item.sourceId},
+                  ${item.canonicalUrl},
+                  ${item.externalId ?? null},
+                  ${item.title},
+                  ${item.publishedAt ?? null},
+                  ${item.discoveredAt ?? result.discoveredAt},
+                  ${item.updatedAt ?? null},
+                  ${item.summary ?? null},
+                  ${sql.json(durablePublicSourceItemMetadata(item.metadata))},
+                  ${options?.pollEligible ?? false},
+                  now()
+                )
+                on conflict (source_id, canonical_url) do update set
+                  external_id = coalesce(excluded.external_id, public_source_candidates.external_id),
+                  title = excluded.title,
+                  published_at = coalesce(excluded.published_at, public_source_candidates.published_at),
+                  discovered_at = least(public_source_candidates.discovered_at, excluded.discovered_at),
+                  source_updated_at = coalesce(
+                    excluded.source_updated_at,
+                    public_source_candidates.source_updated_at
+                  ),
+                  summary = coalesce(excluded.summary, public_source_candidates.summary),
+                  metadata = public_source_candidates.metadata || excluded.metadata,
+                  updated_at = now()
+              `;
+              // Stored items remain authoritative and must not leave a shadow
+              // candidate that would be loaded by a later 304 retry.
+              yield* sql`
+                delete from public_source_candidates c
+                using public_source_items i
+                where c.source_id = ${item.sourceId}
+                  and c.canonical_url = ${item.canonicalUrl}
+                  and i.source_id = c.source_id
+                  and i.canonical_url = c.canonical_url
+              `;
+            }
+
+            yield* sql`
+                update public_sources set
                 health_status = 'healthy',
                 latest_attempted_fetch_at = ${result.discoveredAt},
                 latest_successful_fetch_at = ${result.discoveredAt},
@@ -231,7 +291,8 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
                 updated_at = now()
               where source_id = ${source.id}
             `;
-        }).pipe(Effect.asVoid),
+          }).pipe(Effect.asVoid),
+        ),
       recordDiscoveryFailure: (source, error) =>
         Effect.gen(function* () {
           yield* upsertSource(source);
@@ -263,7 +324,14 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
                 latest_raw_artifact_id,
                 last_fetched_at,
                 last_successful_fetch_at,
-                consecutive_failures
+                consecutive_failures,
+                true as poll_eligible,
+                (
+                  consecutive_failures = 0
+                  or last_fetched_at is null
+                  or now() >= last_fetched_at +
+                    least(3600, 60 * power(2, least(consecutive_failures - 1, 31))) * interval '1 second'
+                ) as retry_eligible
               from public_source_items
               where source_id = ${sourceId} and canonical_url = ${canonicalUrl}
               union all
@@ -282,7 +350,14 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
                 null as latest_raw_artifact_id,
                 last_fetched_at,
                 last_successful_fetch_at,
-                consecutive_failures
+                consecutive_failures,
+                poll_eligible,
+                (
+                  consecutive_failures = 0
+                  or last_fetched_at is null
+                  or now() >= last_fetched_at +
+                    least(3600, 60 * power(2, least(consecutive_failures - 1, 31))) * interval '1 second'
+                ) as retry_eligible
               from public_source_candidates
               where source_id = ${sourceId}
                 and canonical_url = ${canonicalUrl}
@@ -315,6 +390,8 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
             lastFetchedAt: row.last_fetched_at ?? undefined,
             lastSuccessfulFetchAt: row.last_successful_fetch_at ?? undefined,
             consecutiveFailures: row.consecutive_failures,
+            pollEligible: row.poll_eligible,
+            retryEligible: row.retry_eligible,
             stored: row.stored,
           };
         }),
@@ -386,7 +463,71 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
             metadata: row.metadata,
           }));
         }),
-      recordDiscoveredItem: (item) =>
+      getRetryEligibleItems: (source, _now) =>
+        Effect.gen(function* () {
+          yield* upsertSource(source);
+          const rows = yield* sql<RetryItemRow>`
+              select
+                source_id,
+                canonical_url,
+                external_id,
+                title,
+                published_at,
+                discovered_at,
+                source_updated_at,
+                summary,
+                metadata,
+                last_fetched_at
+              from public_source_items
+              where source_id = ${source.id}
+                and consecutive_failures > 0
+                and (
+                  last_fetched_at is null
+                  or now() >= last_fetched_at +
+                    least(3600, 60 * power(2, least(consecutive_failures - 1, 31))) * interval '1 second'
+                )
+              union all
+              select
+                source_id,
+                canonical_url,
+                external_id,
+                title,
+                published_at,
+                discovered_at,
+                source_updated_at,
+                summary,
+                metadata,
+                last_fetched_at
+              from public_source_candidates
+              where source_id = ${source.id}
+                and poll_eligible
+                and (
+                  (consecutive_failures = 0 and last_fetched_at is null)
+                  or (
+                    consecutive_failures > 0
+                    and (
+                      last_fetched_at is null
+                      or now() >= last_fetched_at +
+                        least(3600, 60 * power(2, least(consecutive_failures - 1, 31))) * interval '1 second'
+                    )
+                  )
+                )
+              order by last_fetched_at asc nulls first, discovered_at asc, canonical_url asc
+              limit 1000
+            `;
+          return rows.map((row) => ({
+            sourceId: row.source_id,
+            externalId: row.external_id,
+            canonicalUrl: row.canonical_url,
+            title: row.title,
+            publishedAt: row.published_at,
+            discoveredAt: row.discovered_at,
+            ...(row.source_updated_at ? { updatedAt: row.source_updated_at } : {}),
+            ...(row.summary ? { summary: row.summary } : {}),
+            metadata: row.metadata,
+          }));
+        }),
+      recordDiscoveredItem: (item, pollEligible) =>
         sql`
             insert into public_source_candidates (
               source_id,
@@ -398,6 +539,7 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
               source_updated_at,
               summary,
               metadata,
+              poll_eligible,
               updated_at
             )
             values (
@@ -409,7 +551,8 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
               ${item.discoveredAt ?? new Date()},
               ${item.updatedAt ?? null},
               ${item.summary ?? null},
-              ${sql.json(persistedItemMetadata(item.metadata))},
+              ${sql.json(durablePublicSourceItemMetadata(item.metadata))},
+              ${pollEligible},
               now()
             )
             on conflict (source_id, canonical_url) do update set
@@ -427,10 +570,22 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
           `.pipe(Effect.asVoid),
       storeIngestedItem: (result) =>
         Effect.gen(function* () {
-          const rawMediaType = result.raw.mediaType.toLowerCase();
-          if (!rawMediaType.includes("html") && !rawMediaType.includes("pdf")) {
+          const rawMediaType = result.raw.mediaType.split(";", 1)[0]?.trim().toLowerCase();
+          const isHtml = rawMediaType === "text/html";
+          const isPdf = rawMediaType === "application/pdf";
+          if (!isHtml && !isPdf) {
             return yield* Effect.fail(
               new Error(`public source artifact is not readable HTML/PDF: ${result.raw.mediaType}`),
+            );
+          }
+          if (isPdf && (!result.raw.bodyBytes || result.raw.bodyBytes.byteLength === 0)) {
+            return yield* Effect.fail(
+              new Error("public source PDF artifact is missing exact source bytes"),
+            );
+          }
+          if (isHtml && (result.raw.body.length === 0 || result.raw.bodyBytes !== undefined)) {
+            return yield* Effect.fail(
+              new Error("public source HTML artifact has an invalid body representation"),
             );
           }
           if (result.document.textCharCount < 100) {
@@ -443,7 +598,9 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
 
           return yield* sql.withTransaction(
             Effect.gen(function* () {
-              const bodyHash = yield* Effect.promise(() => sha256Hex(result.raw.body));
+              const bodyHash = yield* Effect.promise(() =>
+                sha256Hex(isPdf ? result.raw.bodyBytes! : result.raw.body),
+              );
               const rawRows = yield* sql<RawArtifactRow>`
               insert into public_source_raw_artifacts (
                 source_id,
@@ -451,6 +608,7 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
                 fetched_at,
                 media_type,
                 body,
+                body_bytes,
                 body_hash,
                 metadata
               )
@@ -460,6 +618,7 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
                 ${result.raw.fetchedAt},
                 ${result.raw.mediaType},
                 ${result.raw.body},
+                ${result.raw.bodyBytes ?? null},
                 ${bodyHash},
                 ${sql.json(result.raw.metadata ?? {})}
               )
@@ -467,6 +626,7 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
                 fetched_at = least(public_source_raw_artifacts.fetched_at, excluded.fetched_at),
                 media_type = excluded.media_type,
                 body = excluded.body,
+                body_bytes = excluded.body_bytes,
                 metadata = public_source_raw_artifacts.metadata || excluded.metadata
               returning id
             `;
@@ -551,7 +711,7 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
                 ${result.item.discoveredAt ?? result.document.discoveredAt},
                 ${result.item.updatedAt ?? null},
                 ${result.item.summary ?? null},
-                ${sql.json(persistedItemMetadata(result.item.metadata))},
+                ${sql.json(durablePublicSourceItemMetadata(result.item.metadata))},
                 ${metadataValue(result.raw.metadata, "etag")},
                 ${metadataValue(result.raw.metadata, "lastModified")},
                 ${result.document.contentHash},
@@ -599,6 +759,12 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
           Effect.gen(function* () {
             yield* sql`
             update public_source_candidates set
+              external_id = coalesce(${result.item.externalId ?? null}, external_id),
+              title = ${result.item.title},
+              published_at = coalesce(${result.item.publishedAt ?? null}, published_at),
+              source_updated_at = coalesce(${result.item.updatedAt ?? null}, source_updated_at),
+              summary = coalesce(${result.item.summary ?? null}, summary),
+              metadata = metadata || ${sql.json(durablePublicSourceItemMetadata(result.item.metadata))},
               etag = coalesce(${metadataValue(result.result.metadata, "etag")}, etag),
               last_modified = coalesce(
                 ${metadataValue(result.result.metadata, "lastModified")},
@@ -614,6 +780,12 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
           `;
             yield* sql`
             update public_source_items set
+              external_id = coalesce(${result.item.externalId ?? null}, external_id),
+              title = ${result.item.title},
+              published_at = coalesce(${result.item.publishedAt ?? null}, published_at),
+              source_updated_at = coalesce(${result.item.updatedAt ?? null}, source_updated_at),
+              summary = coalesce(${result.item.summary ?? null}, summary),
+              metadata = metadata || ${sql.json(durablePublicSourceItemMetadata(result.item.metadata))},
               etag = coalesce(${metadataValue(result.result.metadata, "etag")}, etag),
               last_modified = coalesce(
                 ${metadataValue(result.result.metadata, "lastModified")},
@@ -629,11 +801,12 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
           `;
           }).pipe(Effect.asVoid),
         ),
-      recordItemFailure: (result) =>
+      recordItemFailure: (result, _attemptedAt) =>
         sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
             update public_source_candidates set
+              last_fetched_at = now(),
               consecutive_failures = consecutive_failures + 1,
               last_error = ${errorMessage(result.error)},
               updated_at = now()
@@ -642,6 +815,7 @@ export const makePgPublicSourceIngestionRepository = (): Effect.Effect<
           `;
             yield* sql`
             update public_source_items set
+              last_fetched_at = now(),
               consecutive_failures = consecutive_failures + 1,
               last_error = ${errorMessage(result.error)},
               updated_at = now()
@@ -665,10 +839,7 @@ export const PublicSourceIngestionRepositoryPgLayer = Layer.effect(
 ).pipe(
   Layer.provide(
     PgClient.layerConfig({
-      url: Config.string("DATABASE_URL").pipe(
-        Config.withDefault("postgres://brief:brief@localhost:5432/brief"),
-        Config.map(Redacted.make),
-      ),
+      url: databaseUrlRedactedConfig,
       applicationName: Config.succeed("brief-worker"),
     }),
   ),

@@ -1,72 +1,187 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Bot, ChevronDown, ChevronRight, Users } from "lucide-react";
-import type { CSSProperties } from "react";
+import { Bot, ChevronDown, ChevronRight, Globe2, Users } from "lucide-react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { FormattedMessage, useIntl } from "@brief/i18n";
+import type {
+  EffectiveWebPolicy,
+  PublicCitationRecord,
+  PublicSourceRecord,
+  UserMessageRunOutcome,
+} from "@brief/shared";
 
-import { parseCitationTags } from "./citation-tags";
 import { cn } from "../../lib/utils";
+import { parseCitationTags } from "./citation-tags";
+import {
+  publisherDocumentCitationTarget,
+  type AuthenticatedDocumentOpener,
+} from "./authenticated-document";
+import { memoryRevisionFragment } from "./memory-provenance";
 
-export type ChatTranscriptCitation = {
-  id: string;
-  label: string;
-  url: string | null;
-  publishedAt: string | null;
-  title?: string | null;
-  sourceDisplayName?: string | null;
-  page?: number | undefined;
-};
-
-export type ChatTranscriptContextBlock = {
-  blockId: string;
-  kind: "document" | "memory";
-  label: string;
-  tokenEstimate: number;
-};
-
-export type ChatTranscriptMessage = {
-  id: string;
-  author: "user" | "assistant";
-  content: string;
-  citations?: readonly ChatTranscriptCitation[] | undefined;
-  contextBlocks?: readonly ChatTranscriptContextBlock[] | undefined;
-  streaming?: boolean | undefined;
-};
+export type ChatTranscriptMessage =
+  | {
+      readonly id: string;
+      readonly author: "user";
+      readonly content: string;
+      readonly run: UserMessageRunOutcome;
+    }
+  | {
+      readonly id: string;
+      readonly author: "assistant";
+      readonly content: string;
+      readonly citations: readonly PublicCitationRecord[];
+      readonly sourcesRead: readonly PublicSourceRecord[];
+      readonly streaming?: boolean;
+    };
 
 export type ChatTranscriptAuthorLabels = {
   readonly assistant: string;
   readonly client: string;
 };
 
+const localizedFailureCodes = new Set([
+  "agent_context_budget_exceeded",
+  "context_mandatory_too_large",
+  "context_plan_unfit",
+  "context_reducer_failed",
+  "context_assembly_failed",
+  "context_budget_mismatch",
+  "synthesis_budget_mismatch",
+  "source_access_revoked",
+  "web_policy_revoked",
+  "memory_conflict",
+  "workflow_resume_incompatible",
+]);
+
+export const chatFailureMessageId = (code: string): string =>
+  localizedFailureCodes.has(code) ? `chat.failure.${code}` : "chat.failure.generic";
+
+const sourceLabel = (source: PublicCitationRecord | PublicSourceRecord): string => {
+  if (source.label !== null) return source.label;
+  switch (source.kind) {
+    case "document":
+      return source.documentTitle;
+    case "chat_message":
+      return source.messageId;
+    case "memory":
+      return source.memoryId;
+    case "web":
+      return source.title;
+  }
+};
+
+const sourceHref = (source: PublicCitationRecord | PublicSourceRecord): string => {
+  switch (source.kind) {
+    case "document":
+    case "web":
+      return source.url;
+    case "chat_message":
+      return `#message-${source.messageId}`;
+    case "memory":
+      return memoryRevisionFragment(source.memoryId, source.memoryRevisionId);
+  }
+};
+
+const externalSourceLinkProps = (source: PublicCitationRecord | PublicSourceRecord) =>
+  source.kind === "document" || source.kind === "web"
+    ? ({
+        target: "_blank",
+        rel: "noopener noreferrer",
+        referrerPolicy: "no-referrer",
+      } as const)
+    : {};
+
+export function ChatRunOutcome({
+  run,
+  onResubmit,
+}: {
+  readonly run: UserMessageRunOutcome;
+  readonly onResubmit?: () => void;
+}) {
+  if (run.status === "succeeded") return null;
+
+  if (run.status === "queued" || run.status === "running") {
+    return (
+      <p className="mt-2 font-mono text-[11px] text-muted" data-testid="chat-run-active">
+        <FormattedMessage id={run.status === "queued" ? "chat.runQueued" : "chat.runRunning"} />
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-2 border-t border-rule pt-2" data-testid="chat-run-failed">
+      <p className="font-mono text-[11px] text-danger">
+        <FormattedMessage
+          id={chatFailureMessageId(run.errorCode)}
+          values={{ code: run.errorCode }}
+        />
+      </p>
+      {run.retryable && onResubmit ? (
+        <button
+          type="button"
+          className="mt-1 font-mono text-[11px] text-accent underline underline-offset-2"
+          onClick={onResubmit}
+          data-testid="chat-run-resubmit"
+        >
+          <FormattedMessage id="chat.resubmit" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function ChatBubble({
   message,
   authorLabels,
+  onResubmit,
+  onOpenAuthenticatedDocument,
 }: {
-  message: ChatTranscriptMessage;
-  authorLabels: ChatTranscriptAuthorLabels;
+  readonly message: ChatTranscriptMessage;
+  readonly authorLabels: ChatTranscriptAuthorLabels;
+  readonly onResubmit?: (message: Extract<ChatTranscriptMessage, { author: "user" }>) => void;
+  readonly onOpenAuthenticatedDocument?: AuthenticatedDocumentOpener;
 }) {
   const isAssistant = message.author === "assistant";
   const intl = useIntl();
+  const citations = isAssistant ? message.citations : [];
   const citationsById = useMemo(
-    () => new Map((message.citations ?? []).map((citation) => [citation.id, citation])),
-    [message.citations],
+    () => new Map(citations.map((citation) => [citation.sourceKey, citation])),
+    [citations],
   );
   const parsed = useMemo(
     () =>
       parseCitationTags(
         message.content,
         [...citationsById.keys()],
-        message.streaming === true ? "streaming" : "final",
+        isAssistant && message.streaming === true ? "streaming" : "final",
       ),
-    [citationsById, message.content, message.streaming],
+    [citationsById, isAssistant, message],
   );
   const content = isAssistant
     ? parsed.segments
     : [{ type: "text" as const, text: message.content }];
+  const [documentOpenFailed, setDocumentOpenFailed] = useState(false);
+
+  const handleSourceClick = (
+    source: PublicCitationRecord | PublicSourceRecord,
+    event: ReactMouseEvent<HTMLAnchorElement>,
+  ) => {
+    if (source.kind !== "document") return;
+    const target = publisherDocumentCitationTarget(source.url);
+    if (target === null) return;
+    event.preventDefault();
+    setDocumentOpenFailed(false);
+    if (onOpenAuthenticatedDocument === undefined) {
+      setDocumentOpenFailed(true);
+      return;
+    }
+    void onOpenAuthenticatedDocument(target).catch(() => setDocumentOpenFailed(true));
+  };
 
   return (
     <div
+      id={`message-${message.id}`}
       className={cn("brief-chat-row flex", isAssistant ? "justify-start" : "justify-end")}
       data-author={message.author}
       data-testid={`chat-message-${message.author}`}
@@ -76,67 +191,80 @@ export function ChatBubble({
           "brief-chat-bubble max-w-[86%] rounded-sm border px-3 py-2",
           isAssistant ? "border-rule bg-paper text-ink" : "border-accent/25 bg-accent/10 text-ink",
         )}
-        data-author={message.author}
       >
         <div
           className={cn(
-            "brief-chat-meta mb-1.5 flex items-center gap-1.5 font-mono text-[11px] font-medium uppercase tracking-wider",
+            "mb-1.5 flex items-center gap-1.5 font-mono text-[11px] font-medium uppercase tracking-wider",
             isAssistant ? "text-muted" : "text-accent",
           )}
         >
           {isAssistant ? (
-            <Bot className="brief-chat-meta-icon size-3" aria-hidden="true" />
+            <Bot className="size-3" aria-hidden="true" />
           ) : (
-            <Users className="brief-chat-meta-icon size-3" aria-hidden="true" />
+            <Users className="size-3" aria-hidden="true" />
           )}
           {isAssistant ? authorLabels.assistant : authorLabels.client}
         </div>
         <div
-          className="brief-chat-content whitespace-pre-wrap font-serif text-sm leading-6"
+          className="whitespace-pre-wrap font-serif text-sm leading-6"
           data-testid="chat-message-content"
         >
           {content.map((segment, index) => {
-            if (segment.type === "text") {
-              return <span key={`text:${index}`}>{segment.text}</span>;
-            }
-
+            if (segment.type === "text") return <span key={`text:${index}`}>{segment.text}</span>;
             return (
-              <span key={`cite:${index}`} className="brief-chat-inline-citations whitespace-nowrap">
-                {segment.citationIds.map((citationId, citationIndex) => {
-                  const citation = citationsById.get(citationId);
-                  if (citation === undefined) return citationId;
+              <span key={`cite:${index}`} className="whitespace-nowrap">
+                {segment.citationIds.map((sourceKey, citationIndex) => {
+                  const citation = citationsById.get(sourceKey);
+                  if (citation === undefined) return sourceKey;
                   return (
                     <CitationMarker
-                      key={`${citationId}:${citationIndex}`}
+                      key={`${sourceKey}:${citationIndex}`}
                       citation={citation}
                       ariaLabel={intl.formatMessage(
                         { id: "chat.citationMarker" },
-                        { label: citation.label },
+                        { label: sourceLabel(citation) },
                       )}
+                      onClick={handleSourceClick}
                     />
                   );
                 })}
               </span>
             );
           })}
-          {message.streaming ? (
-            <span className="brief-chat-streaming-indicator ml-1 align-baseline font-mono text-[11px] text-muted">
-              <FormattedMessage id="chat.streaming" />
-            </span>
-          ) : null}
         </div>
-        {message.citations && message.citations.length > 0 ? (
+        {isAssistant && message.streaming ? (
           <div
-            className="brief-chat-citations mt-2 flex flex-wrap gap-x-2 gap-y-1"
-            data-testid="chat-citations"
+            className="mt-1 font-mono text-[11px] text-muted"
+            data-testid="chat-provisional-draft"
+            role="status"
           >
+            <FormattedMessage id="chat.provisionalDraft" />
+          </div>
+        ) : null}
+        {isAssistant && message.citations.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1" data-testid="chat-citations">
             {message.citations.map((citation) => (
-              <CitationReference key={citation.id} citation={citation} />
+              <CitationReference
+                key={citation.sourceKey}
+                citation={citation}
+                onClick={handleSourceClick}
+              />
             ))}
           </div>
         ) : null}
-        {isAssistant && message.contextBlocks && message.contextBlocks.length > 0 ? (
-          <SourcesRead contextBlocks={message.contextBlocks} />
+        {isAssistant ? (
+          <ChatSourcesRead sources={message.sourcesRead} onSourceClick={handleSourceClick} />
+        ) : null}
+        {documentOpenFailed ? (
+          <p className="mt-2 font-mono text-[11px] text-danger" role="alert">
+            <FormattedMessage id="chat.documentOpenFailed" />
+          </p>
+        ) : null}
+        {!isAssistant ? (
+          <ChatRunOutcome
+            run={message.run}
+            {...(onResubmit === undefined ? {} : { onResubmit: () => onResubmit(message) })}
+          />
         ) : null}
       </div>
     </div>
@@ -146,131 +274,173 @@ export function ChatBubble({
 function CitationMarker({
   citation,
   ariaLabel,
+  onClick,
 }: {
-  citation: ChatTranscriptCitation;
-  ariaLabel: string;
+  readonly citation: PublicCitationRecord;
+  readonly ariaLabel: string;
+  readonly onClick: (
+    source: PublicCitationRecord | PublicSourceRecord,
+    event: ReactMouseEvent<HTMLAnchorElement>,
+  ) => void;
 }) {
-  const className =
-    "brief-chat-citation-marker mx-0.5 inline-flex translate-y-[-0.28em] items-center rounded-sm border border-accent/25 px-1 font-mono text-[10px] font-medium leading-4 text-accent no-underline";
-  const label = citation.id;
-
-  if (citation.url) {
-    return (
-      <a
-        href={citation.url}
-        target="_blank"
-        rel="noopener"
-        className={className}
-        aria-label={ariaLabel}
-        title={citation.title ?? citation.label}
-        data-testid="citation-marker"
-      >
-        {label}
-      </a>
-    );
-  }
-
   return (
-    <span
-      className={className}
+    <a
+      href={sourceHref(citation)}
+      {...externalSourceLinkProps(citation)}
+      onClick={(event) => onClick(citation, event)}
+      className="mx-0.5 inline-flex translate-y-[-0.28em] items-center rounded-sm border border-accent/25 px-1 font-mono text-[10px] font-medium leading-4 text-accent no-underline"
       aria-label={ariaLabel}
-      title={citation.title ?? citation.label}
+      title={sourceLabel(citation)}
       data-testid="citation-marker"
     >
-      {label}
-    </span>
+      {sourceLabel(citation)}
+    </a>
   );
 }
 
-function CitationReference({ citation }: { citation: ChatTranscriptCitation }) {
-  const className =
-    "brief-chat-citation font-mono text-[11px] text-accent underline decoration-accent/30 underline-offset-2 transition-transform duration-fast ease-snappy active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 [@media(hover:hover)_and_(pointer:fine)]:hover:decoration-accent";
-  const content = (
-    <>
-      {citation.label}
-      {citation.page ? `, p. ${citation.page}` : null}
-      {citation.publishedAt ? ` · ${citation.publishedAt.slice(0, 10)}` : null}
-    </>
-  );
-
-  if (citation.url) {
-    return (
-      <a
-        href={citation.url}
-        target="_blank"
-        rel="noopener"
-        className={className}
-        data-testid="citation-reference"
-      >
-        {content}
-      </a>
-    );
-  }
-
+function CitationReference({
+  citation,
+  onClick,
+}: {
+  readonly citation: PublicCitationRecord;
+  readonly onClick: (
+    source: PublicCitationRecord | PublicSourceRecord,
+    event: ReactMouseEvent<HTMLAnchorElement>,
+  ) => void;
+}) {
   return (
-    <span className={cn(className, "no-underline")} data-testid="citation-reference">
-      {content}
-    </span>
+    <a
+      href={sourceHref(citation)}
+      {...externalSourceLinkProps(citation)}
+      onClick={(event) => onClick(citation, event)}
+      className="font-mono text-[11px] text-accent underline decoration-accent/30 underline-offset-2"
+      data-testid="citation-reference"
+    >
+      {sourceLabel(citation)}
+      {"publishedAt" in citation && citation.publishedAt
+        ? ` · ${citation.publishedAt.slice(0, 10)}`
+        : null}
+    </a>
   );
 }
 
-function SourcesRead({ contextBlocks }: { contextBlocks: readonly ChatTranscriptContextBlock[] }) {
+export function ChatSourcesRead({
+  sources,
+  onSourceClick,
+}: {
+  readonly sources: readonly PublicSourceRecord[];
+  readonly onSourceClick?: (
+    source: PublicCitationRecord | PublicSourceRecord,
+    event: ReactMouseEvent<HTMLAnchorElement>,
+  ) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="brief-chat-sources-read mt-2 border-t border-rule pt-2">
+    <div className="mt-2 border-t border-rule pt-2">
       <button
         type="button"
-        className="inline-flex items-center gap-1 font-mono text-[11px] font-medium text-muted transition-colors duration-fast hover:text-accent"
+        className="inline-flex items-center gap-1 font-mono text-[11px] font-medium text-muted hover:text-accent"
         onClick={() => setExpanded((current) => !current)}
         aria-expanded={expanded}
         data-testid="sources-read-toggle"
       >
-        {expanded ? (
-          <ChevronDown className="size-3" aria-hidden="true" />
-        ) : (
-          <ChevronRight className="size-3" aria-hidden="true" />
-        )}
-        <FormattedMessage id="chat.sourcesRead" values={{ count: contextBlocks.length }} />
+        {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        <FormattedMessage id="chat.sourcesRead" values={{ count: sources.length }} />
       </button>
       {expanded ? (
-        <ul className="mt-1.5 space-y-1 border-l border-rule pl-2" data-testid="sources-read-list">
-          {contextBlocks.map((block) => (
-            <li
-              key={block.blockId}
-              className="text-xs leading-5 text-muted"
-              data-testid="source-read-item"
-            >
-              <span className="font-mono text-[11px] text-faint">{block.blockId}</span>{" "}
-              <span className="text-ink">{block.label}</span>{" "}
-              <span className="font-mono text-[11px] text-faint">
-                <FormattedMessage id={`chat.contextKind.${block.kind}`} /> ·{" "}
-                <FormattedMessage id="chat.tokenEstimate" values={{ count: block.tokenEstimate }} />
-              </span>
-            </li>
-          ))}
-        </ul>
+        sources.length > 0 ? (
+          <ul
+            className="mt-1.5 space-y-1 border-l border-rule pl-2"
+            data-testid="sources-read-list"
+          >
+            {sources.map((source) => (
+              <li
+                key={source.sourceKey}
+                className="text-xs leading-5 text-muted"
+                data-testid="source-read-item"
+              >
+                <a
+                  href={sourceHref(source)}
+                  {...externalSourceLinkProps(source)}
+                  onClick={(event) => onSourceClick?.(source, event)}
+                  className="text-ink underline decoration-rule underline-offset-2"
+                >
+                  {sourceLabel(source)}
+                </a>{" "}
+                <span className="font-mono text-[11px] text-faint">
+                  <FormattedMessage id={`chat.contextKind.${source.kind}`} /> ·{" "}
+                  <FormattedMessage id="chat.tokenCount" values={{ count: source.tokenCount }} />
+                  {source.topicIds.length > 0 ? ` · ${source.topicIds.join(", ")}` : null}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1.5 text-xs text-muted" data-testid="sources-read-empty">
+            <FormattedMessage id="chat.sourcesReadEmpty" />
+          </p>
+        )
       ) : null}
     </div>
+  );
+}
+
+export function ChatWebSearchToggle({
+  policy,
+  checked,
+  disabled = false,
+  onChange,
+}: {
+  readonly policy: EffectiveWebPolicy;
+  readonly checked: boolean;
+  readonly disabled?: boolean;
+  readonly onChange: (checked: boolean) => void;
+}) {
+  const unavailable = !policy.enabled;
+  return (
+    <label className="inline-flex items-center gap-2 font-mono text-[11px] text-muted">
+      <input
+        type="checkbox"
+        checked={checked && !unavailable}
+        disabled={disabled || unavailable}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+        className="size-4 accent-accent"
+        data-testid="chat-web-search-toggle"
+      />
+      <Globe2 className="size-3" aria-hidden="true" />
+      <span>
+        <FormattedMessage id="chat.webSearch" />
+      </span>
+      {unavailable ? (
+        <span className="text-faint" data-testid="chat-web-search-disabled-reason">
+          <FormattedMessage id={`chat.webPolicy.${policy.reason}`} />
+        </span>
+      ) : null}
+    </label>
   );
 }
 
 export function VirtualizedChatTranscript({
   messages,
   authorLabels,
+  onResubmit,
+  onOpenAuthenticatedDocument,
   className,
   height = 544,
   estimateSize = 148,
   overscan = 6,
   scrollToLatest = true,
 }: {
-  messages: readonly ChatTranscriptMessage[];
-  authorLabels: ChatTranscriptAuthorLabels;
-  className?: string | undefined;
-  height?: CSSProperties["height"] | undefined;
-  estimateSize?: number | undefined;
-  overscan?: number | undefined;
-  scrollToLatest?: boolean | undefined;
+  readonly messages: readonly ChatTranscriptMessage[];
+  readonly authorLabels: ChatTranscriptAuthorLabels;
+  readonly onResubmit?: (message: Extract<ChatTranscriptMessage, { author: "user" }>) => void;
+  readonly onOpenAuthenticatedDocument?: AuthenticatedDocumentOpener;
+  readonly className?: string;
+  readonly height?: CSSProperties["height"];
+  readonly estimateSize?: number;
+  readonly overscan?: number;
+  readonly scrollToLatest?: boolean;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -284,7 +454,6 @@ export function VirtualizedChatTranscript({
     if (!scrollToLatest || messages.length === 0) return;
     const scrollElement = parentRef.current;
     if (!scrollElement) return;
-
     const frame = window.requestAnimationFrame(() => {
       scrollElement.scrollTop = scrollElement.scrollHeight;
       virtualizer.scrollToIndex(messages.length - 1, { align: "end" });
@@ -295,29 +464,30 @@ export function VirtualizedChatTranscript({
   return (
     <div
       ref={parentRef}
-      className={cn("brief-chat-transcript rounded-sm border border-rule bg-canvas", className)}
+      className={cn("rounded-sm border border-rule bg-canvas", className)}
       style={{ height, overflowY: "auto" }}
       data-testid="chat-transcript"
     >
-      <div
-        className="brief-chat-virtual-canvas relative"
-        style={{ height: `${virtualizer.getTotalSize()}px` }}
-      >
+      <div className="relative" style={{ height: `${virtualizer.getTotalSize()}px` }}>
         {virtualizer.getVirtualItems().map((virtualItem) => {
           const message = messages[virtualItem.index];
           if (!message) return null;
-
           return (
             <div
               key={message.id}
               ref={virtualizer.measureElement}
               data-index={virtualItem.index}
-              className="brief-chat-virtual-item absolute left-0 top-0 w-full px-3 py-2"
-              style={{
-                transform: `translateY(${virtualItem.start}px)`,
-              }}
+              className="absolute left-0 top-0 w-full px-3 py-2"
+              style={{ transform: `translateY(${virtualItem.start}px)` }}
             >
-              <ChatBubble message={message} authorLabels={authorLabels} />
+              <ChatBubble
+                message={message}
+                authorLabels={authorLabels}
+                {...(onResubmit === undefined ? {} : { onResubmit })}
+                {...(onOpenAuthenticatedDocument === undefined
+                  ? {}
+                  : { onOpenAuthenticatedDocument })}
+              />
             </div>
           );
         })}

@@ -1,4 +1,3 @@
-export { ArtifactFrame } from "./components/artifacts/artifact-frame";
 export {
   Breadcrumbs,
   type BreadcrumbItem,
@@ -40,13 +39,16 @@ export {
 } from "./components/subscribers/subscribers-table";
 export {
   ChatBubble,
+  ChatRunOutcome,
+  ChatSourcesRead,
+  ChatWebSearchToggle,
   VirtualizedChatTranscript,
+  chatFailureMessageId,
   type ChatTranscriptAuthorLabels,
-  type ChatTranscriptContextBlock,
-  type ChatTranscriptCitation,
   type ChatTranscriptMessage,
 } from "./components/chat/virtualized-chat-transcript";
 export {
+  citationRecordsFromText,
   parseCitationTags,
   type CitationParseMode,
   type CitationMarkerSegment,
@@ -54,6 +56,20 @@ export {
   type CitationTextSegment,
   type ParsedCitationTags,
 } from "./components/chat/citation-tags";
+export {
+  memoryRevisionFragment,
+  parseMemoryRevisionFragment,
+  type MemoryRevisionFragment,
+} from "./components/chat/memory-provenance";
+export {
+  createAuthenticatedDocumentOpener,
+  publisherDocumentCitationTarget,
+  type AuthenticatedPublisherDocument,
+  type AuthenticatedDocumentBrowser,
+  type AuthenticatedDocumentOpener,
+  type PublisherDocumentCitationTarget,
+  type PublisherDocumentLoader,
+} from "./components/chat/authenticated-document";
 export { Badge, type BadgeProps } from "./components/ui/badge";
 export { Button, type ButtonProps } from "./components/ui/button";
 export {
@@ -76,7 +92,7 @@ export {
 } from "./components/ui/inline-editable-field";
 export { Input, type InputProps } from "./components/ui/input";
 export { Label } from "./components/ui/label";
-export { Rule, Separator } from "./components/ui/separator";
+export { Separator } from "./components/ui/separator";
 export { SectionHeader, type SectionHeaderProps } from "./components/ui/section-header";
 export { DataTable, SortableTableHead } from "./components/ui/data-table";
 export {
