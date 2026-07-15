@@ -278,6 +278,22 @@ export const executeGeneralPlannerProviderTurn = async (
         (left, right) => right.score - left.score || left.sourceId.localeCompare(right.sourceId),
       );
   };
+  const parseSearchEvidenceArguments = (value: unknown) =>
+    z
+      .object({
+        query: z.string().trim().min(1),
+        cursor: z.number().int().nonnegative().optional(),
+      })
+      .strict()
+      .parse(value);
+  const parseInspectEvidenceArguments = (value: unknown) =>
+    z
+      .object({
+        sourceId: z.string(),
+        range: RangeSchema.optional(),
+      })
+      .strict()
+      .parse(value);
   return agent.toolLoop({
     requestClass: "main",
     model: "glm-5-turbo",
@@ -311,14 +327,9 @@ export const executeGeneralPlannerProviderTurn = async (
               .strict(),
           ),
         },
+        parseArguments: parseSearchEvidenceArguments,
         execute: async (arguments_, coordinates) => {
-          const parsed = z
-            .object({
-              query: z.string().trim().min(1),
-              cursor: z.number().int().nonnegative().optional(),
-            })
-            .strict()
-            .parse(arguments_);
+          const parsed = parseSearchEvidenceArguments(arguments_);
           const all = searchMatches(parsed.query);
           const offset = parsed.cursor ?? 0;
           const matches = all.slice(offset, offset + 16);
@@ -364,11 +375,9 @@ export const executeGeneralPlannerProviderTurn = async (
               .strict(),
           ),
         },
+        parseArguments: parseInspectEvidenceArguments,
         execute: async (arguments_, coordinates) => {
-          const parsed = z
-            .object({ sourceId: z.string(), range: RangeSchema.optional() })
-            .strict()
-            .parse(arguments_);
+          const parsed = parseInspectEvidenceArguments(arguments_);
           const source = fixture.evidence.find(
             (candidate) => candidate.sourceId === parsed.sourceId,
           );

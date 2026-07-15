@@ -422,6 +422,51 @@ describe("offline single-general-planner evaluation workflow", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it("preflights malformed baseline siblings before exposing search results", async () => {
+    const fixture = CanonicalGoldenEvaluationSet.cases.find(
+      (candidate) => candidate.id === "cross-cutting-separable-energy-question",
+    );
+    const source = fixture?.evidence[0];
+    if (fixture === undefined || source === undefined) {
+      throw new Error("cross-cutting evidence fixture is missing");
+    }
+    const requests: ProviderRequest[] = [];
+    const onEvidenceVisible = vi.fn();
+    const boundary: PiRuntimeBoundary = {
+      complete: async (request) => {
+        requests.push(request);
+        return parallelCompletion([
+          { name: "search_evidence", arguments: { query: "solar" } },
+          {
+            name: "inspect_evidence",
+            arguments: { sourceId: source.sourceId, forged: true },
+          },
+        ]);
+      },
+      stream: async () => {
+        throw new Error("general-planner baseline must not stream");
+      },
+    };
+
+    await expect(
+      withTaskRuntime(
+        {
+          runId: "ai-evaluation-general-planner:malformed-sibling",
+          stepId: "evaluation-general-planner",
+          attempt: 1,
+          iteration: 0,
+          signal: new AbortController().signal,
+          db: {},
+          heartbeat: () => undefined,
+          lastHeartbeat: null,
+        },
+        () => executeGeneralPlannerProviderTurn(boundary, fixture, { onEvidenceVisible }),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_workflow_output" });
+    expect(onEvidenceVisible).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+  });
+
   it("fails oversized non-document inspection without clipping or exposing text", async () => {
     const fixture = CanonicalGoldenEvaluationSet.cases.find((candidate) =>
       candidate.dimensions.includes("oversized_evidence"),
