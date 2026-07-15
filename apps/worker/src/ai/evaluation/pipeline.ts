@@ -4519,6 +4519,27 @@ interface StoredEvaluationDocument {
 type StoredEvaluationDocuments = ReadonlyMap<string, StoredEvaluationDocument>;
 
 /**
+ * Reconstructs the token-counting fixture with the exact current durable
+ * document bodies. Capture may encounter a legacy provider turn whose
+ * durable range includes storage padding; the persisted document, rather
+ * than the shorter seed fixture, is the authority for that request.
+ */
+const fixtureWithStoredDocumentText = (
+  fixture: GoldenEvaluationCase,
+  storedDocuments: StoredEvaluationDocuments,
+): GoldenEvaluationCase => ({
+  ...fixture,
+  evidence: fixture.evidence.map((source) => {
+    if (source.kind !== "document") return source;
+    const stored = storedDocuments.get(source.sourceId);
+    if (stored === undefined) {
+      throw new Error(`${fixture.id}/${source.sourceId} lacks current stored document text`);
+    }
+    return { ...source, content: stored.text };
+  }),
+});
+
+/**
  * Reads the exact current text for every namespaced evaluation document. The
  * fixture is not a substitute for the persisted public/publisher document:
  * trusted capture must independently hash the row that the runtime exposed.
@@ -5692,6 +5713,7 @@ const commonCapturedResult = async (
   await assertLiveEvaluationAuthorization(connectionString, manifest);
   const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
   const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
+  const measurementFixture = fixtureWithStoredDocumentText(fixture, storedDocuments);
   const currentDigest = evaluationRunEvidenceDigest(row, evidence, storedDocuments);
   if (row.runEvidenceSha256Hex !== currentDigest)
     throw new Error(`${row.topology}/${row.caseId} evidence attestation mismatch`);
@@ -5784,7 +5806,7 @@ const commonCapturedResult = async (
     };
   });
   const serializedContextTokens = measureCanonicalEvaluationRequestTokens(
-    fixture,
+    measurementFixture,
     row.topology === "general_planner"
       ? serializedSourceIds.map((sourceId) => ({
           sourceId,
@@ -7881,6 +7903,7 @@ const captureSpecialized = async (
 ): Promise<SpecializedEvaluationResult> => {
   const captured = await commonCapturedResult(connectionString, row, annotations, annotationDigest);
   const { fixture, manifest, evidence, selections } = captured;
+  const measurementFixture = fixtureWithStoredDocumentText(fixture, captured.storedDocuments);
   const routing = canonicalResolutionAndPlan(row, evidence, manifest);
   const turnMap = new Map(
     manifest.turnBindings.map((binding) => [binding.aiRunId, binding.turnId]),
@@ -7950,10 +7973,13 @@ const captureSpecialized = async (
     sourceId,
     ranges: semanticRanges(sourceId, pulledSelections.get(sourceId)!.ranges),
   }));
-  const candidateTokens = measureCanonicalEvaluationRequestTokens(fixture, candidateSelections);
-  const serializedTokens = measureCanonicalEvaluationRequestTokens(fixture, selections);
+  const candidateTokens = measureCanonicalEvaluationRequestTokens(
+    measurementFixture,
+    candidateSelections,
+  );
+  const serializedTokens = measureCanonicalEvaluationRequestTokens(measurementFixture, selections);
   const productionContext = captureProductionTopology(
-    fixture,
+    measurementFixture,
     manifest,
     evidence,
     captured.common.promptMeasurements,
