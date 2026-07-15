@@ -1,5 +1,5 @@
 import * as SmithersTaskRuntimeModule from "@smithers-orchestrator/driver/task-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { PiRuntimeBoundary } from "../e2e/deterministic-provider";
 import { resolveRegisteredModel } from "../runtime/model-registry";
@@ -378,5 +378,88 @@ describe("offline single-general-planner evaluation workflow", () => {
       { sourceId: source.sourceId, ranges: [{ charStart: 0, charEnd: 100 }] },
     ]);
     expect(requests).toHaveLength(3);
+  });
+
+  it("rejects non-document ranges before exposing any source text", async () => {
+    const fixture = CanonicalGoldenEvaluationSet.cases.find(
+      (candidate) => candidate.id === "cross-cutting-separable-energy-question",
+    );
+    const source = fixture?.evidence.find((candidate) => candidate.kind === "web");
+    if (fixture === undefined || source === undefined) {
+      throw new Error("cross-cutting web fixture is missing");
+    }
+    const requests: ProviderRequest[] = [];
+    const onEvidenceVisible = vi.fn();
+    const boundary: PiRuntimeBoundary = {
+      complete: async (request) => {
+        requests.push(request);
+        return completion("inspect_evidence", {
+          sourceId: source.sourceId,
+          range: { charStart: 0, charEnd: 10 },
+        });
+      },
+      stream: async () => {
+        throw new Error("general-planner baseline must not stream");
+      },
+    };
+
+    await expect(
+      withTaskRuntime(
+        {
+          runId: "ai-evaluation-general-planner:non-document-range",
+          stepId: "evaluation-general-planner",
+          attempt: 1,
+          iteration: 0,
+          signal: new AbortController().signal,
+          db: {},
+          heartbeat: () => undefined,
+          lastHeartbeat: null,
+        },
+        () => executeGeneralPlannerProviderTurn(boundary, fixture, { onEvidenceVisible }),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_workflow_output" });
+    expect(onEvidenceVisible).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+  });
+
+  it("fails oversized non-document inspection without clipping or exposing text", async () => {
+    const fixture = CanonicalGoldenEvaluationSet.cases.find((candidate) =>
+      candidate.dimensions.includes("oversized_evidence"),
+    );
+    const source = fixture?.evidence.find(
+      (candidate) => candidate.kind !== "document" && candidate.content.length > 8_000,
+    );
+    if (fixture === undefined || source === undefined) {
+      throw new Error("oversized non-document fixture is missing");
+    }
+    const requests: ProviderRequest[] = [];
+    const onEvidenceVisible = vi.fn();
+    const boundary: PiRuntimeBoundary = {
+      complete: async (request) => {
+        requests.push(request);
+        return completion("inspect_evidence", { sourceId: source.sourceId });
+      },
+      stream: async () => {
+        throw new Error("general-planner baseline must not stream");
+      },
+    };
+
+    await expect(
+      withTaskRuntime(
+        {
+          runId: "ai-evaluation-general-planner:oversized-non-document",
+          stepId: "evaluation-general-planner",
+          attempt: 1,
+          iteration: 0,
+          signal: new AbortController().signal,
+          db: {},
+          heartbeat: () => undefined,
+          lastHeartbeat: null,
+        },
+        () => executeGeneralPlannerProviderTurn(boundary, fixture, { onEvidenceVisible }),
+      ),
+    ).rejects.toMatchObject({ code: "invalid_workflow_output" });
+    expect(onEvidenceVisible).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
   });
 });

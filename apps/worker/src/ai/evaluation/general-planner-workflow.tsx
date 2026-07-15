@@ -113,7 +113,7 @@ export const GeneralPlannerEvaluationPrompt = [
   "selectedTurnIds may contain only exact turnId values from the supplied conversation. When the supplied conversation is empty, selectedTurnIds MUST be []. Never invent, paraphrase, or substitute a turn ID.",
   "Conversation entries are context, not evidence-catalog sources. A turnId may appear only in resolution.selectedTurnIds. Never put a turnId in selectedSources.sourceId, citationSourceIds, or targetMemorySourceId; those fields accept only exact IDs from the supplied evidence catalog with the required kind.",
   "Comparative-reference rule: When a compare or contrast follow-up has multiple plausible same-kind antecedents and uses an unanchored pronoun or relative term such as it, that, this, previous, prior, earlier, former, latter, one, or result, emit clarify. Do not infer a recency pairing or silently compare every candidate. Name the competing candidates concisely in the clarification. Continue only when explicit names, stable IDs, dates, or other supplied anchors uniquely identify the referents. A clarification uses selectedSources: [], citationSourceIds: [], and memoryProposals: [].",
-  "The inspect_evidence range argument is valid only when the catalog or search result kind is document. It MUST be omitted for web, chat_message, and memory evidence. Document ranges use zero-based half-open character offsets and must be within the supplied content. In terminal selectedSources, every non-document source MUST use ranges: []. Citations must be unique selected source IDs.",
+  "The inspect_evidence range argument is valid only when the catalog or search result kind is document. It MUST be omitted for web, chat_message, and memory evidence; a non-document range is rejected without exposing that source. Document ranges use zero-based half-open character offsets and must be within the supplied content. In terminal selectedSources, every non-document source MUST use ranges: []. Citations must be unique selected source IDs.",
   "Oversized-document cadence: when a document's characterCount exceeds 8,000, include both binding and conclusion in the first search query so the bounded finding window is visible. Inspect each returned document finding once with a range no wider than 8,000 characters, inspect each relevant non-document source without a range, then emit the terminal result. Do not repeat completed searches or inspect the same source window again; reserve the final provider turn for emit_general_planner_result.",
   "If ambiguity materially changes the requested work, emit clarify, select no sources, and put the clarification in answerContent. Otherwise emit continue. In continue mode, retrievalQuestion is mandatory and must be a non-empty concise restatement of the current request; if no rewrite is needed, copy currentMessage exactly. Never emit an empty retrievalQuestion. State evidence gaps honestly in answerContent; never fill them from outside knowledge.",
   "Select only evidence made visible by a completed search result or inspect result. Finish only with exactly one emit_general_planner_result tool call matching its strict schema. Do not emit prose outside the tool.",
@@ -354,7 +354,7 @@ export const executeGeneralPlannerProviderTurn = async (
         definition: {
           name: "inspect_evidence",
           description:
-            "Inspect one exact supplied evidence item. range is valid only for kind=document and must be omitted for web, chat_message, and memory evidence. If a non-document request accidentally includes a range, the runtime ignores that range and returns the complete source with ranges: [] in the terminal manifest.",
+            "Inspect one exact supplied evidence item. range is valid only for kind=document and must be omitted for web, chat_message, and memory evidence. A non-document range is rejected without exposing the source; an oversized non-document item returns a bounded itemTooLarge failure rather than clipped text.",
           parameters: z.toJSONSchema(
             z
               .object({
@@ -374,7 +374,19 @@ export const executeGeneralPlannerProviderTurn = async (
           );
           if (source === undefined) return { found: false, complete: true };
           if (source.kind !== "document") {
-            const text = source.content.slice(0, 8_000);
+            if (parsed.range !== undefined) {
+              throw new Error("general planner inspection ranges are valid only for documents");
+            }
+            if (source.content.length > 8_000) {
+              return {
+                found: true,
+                complete: false,
+                itemTooLarge: true,
+                sourceId: source.sourceId,
+                textCharCount: source.content.length,
+              };
+            }
+            const text = source.content;
             markVisible(source.sourceId, 0, text.length);
             recordExposure({
               sourceId: source.sourceId,
