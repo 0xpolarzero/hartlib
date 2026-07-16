@@ -87,6 +87,42 @@ describe("canonical agent tool loop", () => {
     expect(complete).toHaveBeenCalledTimes(2);
   });
 
+  it("recovers a malformed tool call without executing it", async () => {
+    const execute = vi.fn(async () => ({}));
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(completion([{ id: "bad", name: "emit", arguments: null } as never]))
+      .mockResolvedValueOnce(
+        completion([{ id: "terminal", name: "emit", arguments: { ok: true } }]),
+      );
+    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
+
+    await expect(
+      inTask(() =>
+        client.toolLoop({
+          requestClass: "fast",
+          model: "glm-5-turbo",
+          system: "system",
+          user: "user",
+          tools: [
+            {
+              definition: { name: "emit", description: "Emit", parameters: {} },
+              execute,
+            },
+          ],
+          terminalToolName: "emit",
+          validateTerminal: (value) => value,
+          maximumTurns: 2,
+          requestedOutputTokens: 64,
+          reasoning: "medium",
+          coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
+        }),
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(execute).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
   it("maps malformed post-boundary structured output to the exact role code", async () => {
     const client = new CanonicalAgentClient({
       complete: vi.fn(async () => completion([])),

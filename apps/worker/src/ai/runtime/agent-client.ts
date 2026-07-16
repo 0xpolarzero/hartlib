@@ -434,7 +434,19 @@ export class CanonicalAgentClient {
       try {
         toolCalls = parseToolCalls(completion.toolCalls, tools);
       } catch (error) {
-        throw providerOutputError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
+        // Do not execute a malformed provider call. Preserve it in the exact
+        // bounded conversation and spend a remaining turn on a code-owned
+        // schema correction; the loop still fails closed if no turn remains.
+        messages.push({
+          role: "assistant",
+          content: completion.text,
+          toolCalls: completion.toolCalls,
+        });
+        messages.push({
+          role: "user",
+          content: `The prior tool call was rejected because it did not match an advertised tool schema. Call exactly one advertised tool using its exact JSON object schema. The required terminal tool is ${input.terminalToolName}.`,
+        });
+        continue;
       }
       if (toolCalls.length === 0) {
         // GLM occasionally returns a prose-only turn while it is deciding
