@@ -382,6 +382,21 @@ describe("production request attestation", () => {
       }
     }
   });
+
+  it("fails the trusted parity gate for the observed five-token provider mismatch", () => {
+    const { specialized, baseline } = syntheticResults();
+    const brokenBaseline = structuredClone(baseline);
+    const measurement = brokenBaseline[0]!.promptMeasurements[0]!;
+    measurement.providerInputTokens = measurement.localInputTokens - 5;
+
+    const report = evaluateSuite(CanonicalGoldenEvaluationSet, specialized, brokenBaseline, {
+      allowSyntheticCaptures: true,
+    });
+    expect(report.gates.find((gate) => gate.metric === "prompt.exact_count_parity")).toMatchObject({
+      passed: false,
+    });
+    expect(measurement.localInputTokens - measurement.providerInputTokens).toBe(5);
+  });
 });
 
 const syntheticResults = () => {

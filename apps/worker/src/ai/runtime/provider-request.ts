@@ -718,6 +718,17 @@ export const normalizeProviderRequest = (request: ProviderRequest): ProviderRequ
       : [{ role: "system" as const, content: systemParts.join("\n\n") }]),
     ...request.messages.flatMap((message): ProviderMessage[] => {
       if (message.role === "system") return [];
+      // Pi's OpenAI-completions adapter drops assistant messages that contain
+      // neither visible text nor tool calls before transport. Keep the local
+      // GLM template and the provider request byte-for-byte equivalent for
+      // prose-only correction turns that produced an empty assistant body.
+      if (
+        message.role === "assistant" &&
+        message.content.trim() === "" &&
+        (message.toolCalls === undefined || message.toolCalls.length === 0)
+      ) {
+        return [];
+      }
       if (message.role !== "assistant" || message.toolCalls === undefined) return [message];
       return [
         {

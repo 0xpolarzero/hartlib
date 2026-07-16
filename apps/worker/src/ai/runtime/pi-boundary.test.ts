@@ -205,6 +205,50 @@ describe("exact Pi boundary", () => {
     );
   });
 
+  it("passes Pi's empty-assistant omission through the measured boundary", async () => {
+    const emptyAssistantRequest: LiveProviderRequest = {
+      ...request,
+      messages: [
+        { role: "system", content: "System" },
+        { role: "user", content: "Question" },
+        { role: "assistant", content: "", toolCalls: [] },
+        { role: "assistant", content: " \n", toolCalls: [] },
+      ],
+      tools: undefined,
+    };
+    const complete = vi.fn(async (_model, context) => {
+      expect(context.messages).toHaveLength(1);
+      expect(context.messages[0]).toMatchObject({ role: "user", content: "Question" });
+      return assistant("done");
+    });
+    const onMeasurement = vi.fn();
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      complete: complete as never,
+      hooks: { onMeasurement },
+    });
+
+    await expect(
+      inTask(
+        new AbortController(),
+        coordinates.attempt,
+        () => boundary.complete(emptyAssistantRequest, coordinates),
+        coordinates.loopIteration,
+      ),
+    ).resolves.toMatchObject({ text: "done" });
+    expect(onMeasurement).toHaveBeenCalledWith(
+      coordinates,
+      expect.objectContaining({ passed: true }),
+      expect.objectContaining({
+        messages: [
+          { role: "system", content: "System" },
+          { role: "user", content: "Question" },
+        ],
+      }),
+      [],
+    );
+  });
+
   it.each([
     [
       "negative input",

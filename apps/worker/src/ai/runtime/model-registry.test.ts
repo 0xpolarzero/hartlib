@@ -161,6 +161,31 @@ describe("exact provider-shaped request gate", () => {
     );
   });
 
+  it("omits empty assistant correction turns exactly as Pi omits them before transport", () => {
+    const withoutEmptyTurns = {
+      ...request,
+      messages: [
+        { role: "system" as const, content: "Be exact." },
+        { role: "user" as const, content: "Bonjour" },
+      ],
+    } satisfies ProviderRequest;
+    const withEmptyTurns = {
+      ...withoutEmptyTurns,
+      messages: [
+        ...withoutEmptyTurns.messages,
+        { role: "assistant" as const, content: "", toolCalls: [] },
+        { role: "assistant" as const, content: "  \n", toolCalls: [] },
+      ],
+    } satisfies ProviderRequest;
+
+    expect(normalizeProviderRequest(withEmptyTurns).messages).toEqual(
+      normalizeProviderRequest(withoutEmptyTurns).messages,
+    );
+    expect(resolveRegisteredModel("glm-5-turbo").countRequestTokens(withEmptyTurns)).toBe(
+      resolveRegisteredModel("glm-5-turbo").countRequestTokens(withoutEmptyTurns),
+    );
+  });
+
   it("gates input plus explicit requested output against both limits", () => {
     const model = resolveRegisteredModel("glm-5.2");
     const modelRequest = { ...request, model: "glm-5.2" } satisfies ProviderRequest;
