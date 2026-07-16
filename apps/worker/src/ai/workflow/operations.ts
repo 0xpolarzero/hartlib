@@ -3091,6 +3091,27 @@ export class CanonicalWorkflowOperations {
     const providerExposures = new Map<string, InternalProviderExposure>();
     const inspectedDocumentRanges = new Set<string>();
     let protocolErrorReturned = false;
+    const exactRecoveryReferences = (): readonly InternalReference[] => {
+      const references = new Map<string, InternalReference>();
+      for (const exposure of providerExposures.values()) {
+        const reference = exposure.reference;
+        const identity =
+          reference.kind === "document"
+            ? documentDiscoveryKey(reference)
+            : `chat_message:${reference.messageId}`;
+        const previous = references.get(identity);
+        if (
+          previous === undefined ||
+          (reference.kind === "document" &&
+            previous.kind === "document" &&
+            previous.ranges === undefined &&
+            reference.ranges !== undefined)
+        ) {
+          references.set(identity, reference);
+        }
+      }
+      return [...references.values()];
+    };
     const parseSearchInternalArguments = (value: unknown) =>
       z
         .object({ query: InternalQuerySchema, cursor: z.number().int().min(0).optional() })
@@ -3142,7 +3163,13 @@ export class CanonicalWorkflowOperations {
       },
       terminalToolName: "emit_internal_manifest",
       validateTerminal: (value) => {
-        const entries = InternalManifestOutputSchema.parse(value).entries;
+        let entries = InternalManifestOutputSchema.parse(value).entries;
+        if (protocolErrorReturned && entries.length === 0 && providerExposures.size > 0) {
+          // A final provider turn may ignore the recoveryReferences echo.
+          // Reuse only immutable references already exposed by successful
+          // search/inspection results; ordinary empty manifests remain empty.
+          entries = InternalManifestOutputSchema.parse({ entries: exactRecoveryReferences() }).entries;
+        }
         const identities = entries.map((entry) => {
           const discovered = entry.kind === "document" ? discoveredDocuments : discoveredMessages;
           const discoveryIdentity =
@@ -3194,7 +3221,7 @@ export class CanonicalWorkflowOperations {
         return {
           complete: true,
           protocolError: `${toolName} is disabled after the complete retrieval phase`,
-          recoveryReferences: [...providerExposures.values()].map((exposure) => exposure.reference),
+          recoveryReferences: exactRecoveryReferences(),
         };
       },
       tools: [
@@ -3243,9 +3270,7 @@ export class CanonicalWorkflowOperations {
                   truncated: false,
                   cursor: null,
                   protocolError: error.message,
-                  recoveryReferences: [...providerExposures.values()].map(
-                    (exposure) => exposure.reference,
-                  ),
+                  recoveryReferences: exactRecoveryReferences(),
                 };
               }
               throw error;
