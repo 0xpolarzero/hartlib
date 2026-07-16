@@ -556,6 +556,20 @@ describe("internal retrieval search protocol", () => {
     );
   });
 
+  it("does not allow an empty manifest until a rejected query is corrected", () => {
+    const protocol = new InternalRetrievalSearchProtocol();
+
+    protocol.recordRejectedQuery();
+    expect(() => protocol.assertEmptyManifestAllowed()).toThrow(
+      "internal manifest cannot be empty until a rejected query is corrected",
+    );
+
+    protocol.beforeSearch(documentQuery, undefined, 0);
+    protocol.afterSearch(documentQuery, true, 0, null, 0);
+    protocol.recordCompletedSearch();
+    expect(() => protocol.assertEmptyManifestAllowed()).not.toThrow();
+  });
+
   it("allows one empty-result refinement and rejects a third ordinary search turn", () => {
     const protocol = new InternalRetrievalSearchProtocol();
 

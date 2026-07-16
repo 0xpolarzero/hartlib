@@ -1569,23 +1569,25 @@ const executeSpecialized = async (
       }
     }),
   );
-  const storage = await createSmithersStorage(aiChatSchemas, { connectionString });
-  try {
-    const disposition = evaluationSmithersRunDisposition(
-      await smithersRunSummary(storage, smithersRunId),
-    );
-    if (disposition === "active") {
-      throw new EvaluationSmithersExecutionActiveError(smithersRunId);
+  await runWithAiChatSmithersProducerFence(connectionString, async () => {
+    const storage = await createSmithersStorage(aiChatSchemas, { connectionString });
+    try {
+      const disposition = evaluationSmithersRunDisposition(
+        await smithersRunSummary(storage, smithersRunId),
+      );
+      if (disposition === "active") {
+        throw new EvaluationSmithersExecutionActiveError(smithersRunId);
+      }
+      if (
+        disposition === "missing" &&
+        (await evaluationCaseHasProviderWork(connectionString, row.aiRunId))
+      ) {
+        throw new Error(`specialized Smithers run ${smithersRunId} is missing after provider work`);
+      }
+    } finally {
+      await storage.close();
     }
-    if (
-      disposition === "missing" &&
-      (await evaluationCaseHasProviderWork(connectionString, row.aiRunId))
-    ) {
-      throw new Error(`specialized Smithers run ${smithersRunId} is missing after provider work`);
-    }
-  } finally {
-    await storage.close();
-  }
+  });
   const job = {
     id: deterministicUuid(`evaluation-job:${row.aiRunId}`),
     kind: "ai_chat_run",

@@ -1164,6 +1164,23 @@ export class InternalRetrievalSearchProtocol {
   >();
   private readonly cursorContinuationTurns = new Set<number>();
   private readonly completedNonEmptySearchQueries = new Set<string>();
+  private queryCorrectionRequired = false;
+
+  recordRejectedQuery(): void {
+    this.queryCorrectionRequired = true;
+  }
+
+  recordCompletedSearch(): void {
+    this.queryCorrectionRequired = false;
+  }
+
+  assertEmptyManifestAllowed(): void {
+    if (this.queryCorrectionRequired) {
+      throw new InternalRetrievalProtocolError(
+        "internal manifest cannot be empty until a rejected query is corrected",
+      );
+    }
+  }
 
   ordinarySearchTurnsExhausted(): boolean {
     return this.ordinarySearchTurns.size >= 2;
@@ -3176,6 +3193,7 @@ export class CanonicalWorkflowOperations {
       terminalOnlyForTurn: () => terminalRecoveryReady,
       validateTerminal: (value) => {
         let entries = InternalManifestOutputSchema.parse(value).entries;
+        if (entries.length === 0) searchProtocol.assertEmptyManifestAllowed();
         if (protocolErrorReturned && entries.length === 0 && providerExposures.size > 0) {
           // A final provider turn may ignore the recoveryReferences echo.
           // Reuse only immutable references already exposed by successful
@@ -3259,6 +3277,7 @@ export class CanonicalWorkflowOperations {
             const query: InternalQuery = parsed.query;
             const queryIssue = internalSearchQueryIssue(query.terms);
             if (queryIssue !== undefined) {
+              searchProtocol.recordRejectedQuery();
               return {
                 items: [],
                 complete: true,
@@ -3426,6 +3445,7 @@ export class CanonicalWorkflowOperations {
                 bounded.cursor,
                 coordinates.providerRequestIndex,
               );
+              searchProtocol.recordCompletedSearch();
               return {
                 ...bounded,
                 __briefSourceExposures: bounded.items.map((item) =>
@@ -3487,6 +3507,7 @@ export class CanonicalWorkflowOperations {
               bounded.cursor,
               coordinates.providerRequestIndex,
             );
+            searchProtocol.recordCompletedSearch();
             return {
               ...bounded,
               __briefSourceExposures: bounded.items.map((item) =>
