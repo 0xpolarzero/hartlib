@@ -1413,7 +1413,7 @@ The worker loader accepts every non-fixed numeric setting below only as a safe i
 - `AI_FANOUT_MAX_TOPICS`, fixed default and maximum `3`
 - `AI_TOPIC_RESEARCH_MAX_CONCURRENCY`, default `6`, code-owned hard maximum `32`; it caps the one flat A/B/W task group across every topic
 - `AI_TOPIC_ANSWER_MAX_CONCURRENCY`, default `3`, code-owned hard maximum `32`; it caps parallel topic answer flows
-- `AI_RETRIEVAL_MAX_TURNS`, default `7`, code-owned hard maximum `16`; the bound preserves correction turns for two rejected searches, one deletion-only empty-result refinement, and one rejected terminal reference
+- `AI_RETRIEVAL_MAX_TURNS`, default `7`, code-owned hard maximum `16`; the ordinary retrieval agents use the configured bound, while the context reducer raises its local bound to at least `12` (still no more than `16`) so an oversized multi-document context can complete inspection, measurement correction, and its reserved terminal turn. The ordinary bound preserves correction turns for two rejected searches, one deletion-only empty-result refinement, and one rejected terminal reference
 - `AI_INTERNAL_MAX_SEARCHES`, default `8`, code-owned hard maximum `64`
 - `AI_INTERNAL_MAX_INSPECTIONS`, default `8`, code-owned hard maximum `64`
 - `AI_WEB_MAX_SEARCHES`, default `4`, code-owned hard maximum `32`

@@ -3168,7 +3168,9 @@ export class CanonicalWorkflowOperations {
           // A final provider turn may ignore the recoveryReferences echo.
           // Reuse only immutable references already exposed by successful
           // search/inspection results; ordinary empty manifests remain empty.
-          entries = InternalManifestOutputSchema.parse({ entries: exactRecoveryReferences() }).entries;
+          entries = InternalManifestOutputSchema.parse({
+            entries: exactRecoveryReferences(),
+          }).entries;
         }
         const identities = entries.map((entry) => {
           const discovered = entry.kind === "document" ? discoveredDocuments : discoveredMessages;
@@ -5477,6 +5479,11 @@ export class CanonicalWorkflowOperations {
     // small enough that inspecting several candidates cannot push the next
     // provider request beyond the exact fast-input gate.
     const inspectionResponseAllowanceTokens = Math.min(this.config.aiFastOutputMaxTokens, 2_048);
+    // The live oversized fixture has six independently relevant documents and
+    // needs more correction/measurement turns than the shared retrieval bound
+    // allows. Keep O bounded by the same code-owned hard maximum while giving
+    // it enough turns to finish its required measured terminal phase.
+    const reductionMaximumTurns = Math.min(16, Math.max(this.config.aiRetrievalMaxTurns, 12));
     const compact = reductionCandidates.map((candidate) => ({
       id: candidate.id,
       kind: candidate.kind,
@@ -5537,12 +5544,12 @@ export class CanonicalWorkflowOperations {
         candidates: compact,
         priorValidationFeedback: state.reductionFeedback,
         toolBounds: {
-          maximumTurns: this.config.aiRetrievalMaxTurns,
+          maximumTurns: reductionMaximumTurns,
           maximumCandidates: reductionCandidates.length,
           maximumReductionIterations: this.config.aiContextReductionMaxIterations,
         },
       }),
-      maximumTurns: this.config.aiRetrievalMaxTurns,
+      maximumTurns: reductionMaximumTurns,
       requestedOutputTokens: this.config.aiFastOutputMaxTokens,
       reasoning: "medium",
       coordinates: { taskId, attempt: execution.attempt, agentRole: "context_reducer" },
