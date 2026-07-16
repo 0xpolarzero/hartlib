@@ -173,7 +173,9 @@ export const CanonicalEvaluationExecutionConfig = Object.freeze({
   aiFanoutMaxTopics: 3,
   aiTopicResearchMaxConcurrency: 6,
   aiTopicAnswerMaxConcurrency: 3,
-  aiRetrievalMaxTurns: 7,
+  // Keep one provider turn available for the terminal manifest after a
+  // bounded prose-only correction from GLM.
+  aiRetrievalMaxTurns: 8,
   aiInternalMaxSearches: 8,
   aiInternalMaxInspections: 8,
   aiWebMaxSearches: 4,
