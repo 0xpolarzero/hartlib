@@ -51,7 +51,9 @@ describe("canonical AI role prompts", () => {
     expect(ConversationResolverPrompt).toContain("selectedTurnIds: []");
     expect(ConversationResolverPrompt).toContain("A bounded retry means");
     expect(ConversationResolverPrompt).toContain("multiple plausible same-kind antecedents");
-    expect(ConversationResolverPrompt).toContain("exactly one supplied whole entry matches the modifier");
+    expect(ConversationResolverPrompt).toContain(
+      "exactly one supplied whole entry matches the modifier",
+    );
     expect(ConversationResolverPrompt).toContain("Do not infer a recency pairing");
     expect(ConversationResolverPrompt).toContain("Name the competing candidates");
   });
@@ -114,7 +116,9 @@ describe("canonical AI role prompts", () => {
       "If any tool result contains protocolError, stop all search and inspection immediately",
     );
     expect(InternalRetrievalPrompt).toContain("retrieve each distinct named subject");
-    expect(InternalRetrievalPrompt).toContain("emit an empty manifest without calling search_internal");
+    expect(InternalRetrievalPrompt).toContain(
+      "emit an empty manifest without calling search_internal",
+    );
     expect(InternalRetrievalPrompt).toContain("or its exact recoveryReferences echo");
     expect(InternalRetrievalPrompt).toContain(
       "Reserve the final provider turn for emit_internal_manifest",
@@ -132,7 +136,9 @@ describe("canonical AI role prompts", () => {
     expect(WebResearchPrompt).toContain("Search snippets are discovery hints only");
     expect(WebResearchPrompt).toContain("only the smallest set of directly relevant pages");
     expect(WebResearchPrompt).toContain("Use web tools only when this topic explicitly asks");
-    expect(WebResearchPrompt).toContain("A conceptual comparison such as how two internal energy subjects work remains non-web");
+    expect(WebResearchPrompt).toContain(
+      "A conceptual comparison such as how two internal energy subjects work remains non-web",
+    );
     expect(WebResearchPrompt).toContain(
       "If any web_fetch succeeds, emit at least one exact quotation from the fetched page",
     );
@@ -209,7 +215,9 @@ describe("canonical AI role prompts", () => {
       expect(prompt).toContain("exact-token-gate failure");
     }
     expect(DirectAnswerPrompt).toContain('"evidence"');
-    expect(DirectAnswerPrompt).toContain("If evidence is empty, emit only an explicit insufficiency statement");
+    expect(DirectAnswerPrompt).toContain(
+      "If evidence is empty, emit only an explicit insufficiency statement",
+    );
     expect(SynthesisPrompt).toContain('"packets"');
     expect(SynthesisPrompt).toContain("facts absent from those packets");
     expect(SynthesisPrompt).toContain("Every factual sentence must be a direct restatement");
@@ -236,6 +244,8 @@ describe("canonical AI role prompts", () => {
     expect(MemoryExtractorPrompt).toContain('"targetMemoryId"?:string');
     expect(MemoryExtractorPrompt).toContain("no application-level item maximum");
     expect(MemoryExtractorPrompt).toContain("Never turn an invalid update into a create");
-    expect(MemoryExtractorPrompt).toContain("A one-turn request for an exact date, language, format, or answer style is not durable memory");
+    expect(MemoryExtractorPrompt).toContain(
+      "A one-turn request for an exact date, language, format, or answer style is not durable memory",
+    );
   });
 });
