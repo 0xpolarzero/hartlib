@@ -3090,6 +3090,7 @@ export class CanonicalWorkflowOperations {
     const boundPublisherDocumentVersions = new Map<string, string>();
     const providerExposures = new Map<string, InternalProviderExposure>();
     const inspectedDocumentRanges = new Set<string>();
+    const completedInspectionKeys = new Set<string>();
     let protocolErrorReturned = false;
     const exactRecoveryReferences = (): readonly InternalReference[] => {
       const references = new Map<string, InternalReference>();
@@ -3499,7 +3500,20 @@ export class CanonicalWorkflowOperations {
             if (++inspections > this.config.aiInternalMaxInspections)
               throw new Error("internal inspection limit exceeded");
             const reference = parseInspectInternalArguments(args).reference;
-            return this.inspectInternal(
+            const inspectionKey =
+              reference.kind === "document"
+                ? documentReferenceSelectionKey(reference)
+                : `chat_message:${reference.messageId}`;
+            if (completedInspectionKeys.has(inspectionKey)) {
+              protocolErrorReturned = true;
+              return {
+                found: true,
+                complete: true,
+                protocolError: "internal inspection repeated a completed reference",
+                recoveryReferences: exactRecoveryReferences(),
+              };
+            }
+            const result = await this.inspectInternal(
               load,
               reference,
               discoveredDocuments,
@@ -3522,6 +3536,8 @@ export class CanonicalWorkflowOperations {
                 }
               },
             );
+            if (result.complete === true) completedInspectionKeys.add(inspectionKey);
+            return result;
           },
         },
         {

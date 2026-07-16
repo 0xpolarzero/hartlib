@@ -393,6 +393,7 @@ const createFixture = createFixtureWithCanonicalText(
 
 class PublisherRetrievalAgent extends CanonicalAgentClient {
   onAfterFirstSearch?: () => Promise<void>;
+  repeatInspection = false;
 
   constructor() {
     super({} as ExactPiBoundary);
@@ -473,6 +474,14 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
       inspection.__briefSourceExposures.length !== 1
     ) {
       throw new Error("publisher inspection did not include its bounded provider-visible marker");
+    }
+    if (this.repeatInspection) {
+      const repeatedInspection = await inspect.execute({ reference }, coordinates);
+      if (
+        repeatedInspection.protocolError !== "internal inspection repeated a completed reference"
+      ) {
+        throw new Error("repeated publisher inspection was not closed by protocol recovery");
+      }
     }
     await invokeToolLoopProviderHook(input, { ...coordinates, providerRequestIndex: 1 });
     return (this.duplicateManifest ? [reference, reference] : [reference]) as unknown as Output;
@@ -2630,6 +2639,18 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         ).retrieveInternal(load, "What changed?", "internal-duplicate", []),
       ),
     ).rejects.toThrow("internal manifest contains duplicate references");
+    const repeatedInternal = new PublisherRetrievalAgent();
+    repeatedInternal.sourceId = `publisher:${fixture.subscriptionId}`;
+    repeatedInternal.repeatInspection = true;
+    await expect(
+      inTask("internal-repeated-inspection", () =>
+        new CanonicalWorkflowOperations(
+          databaseUrlFor(databaseName),
+          workflowConfig,
+          repeatedInternal,
+        ).retrieveInternal(load, "What changed?", "internal-repeated-inspection", []),
+      ),
+    ).resolves.toHaveLength(1);
   }, 120_000);
 
   it.each(["invalid", "oversized"] as const)(
