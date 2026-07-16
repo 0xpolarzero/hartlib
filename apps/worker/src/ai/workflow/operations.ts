@@ -3255,8 +3255,6 @@ export class CanonicalWorkflowOperations {
           },
           parseArguments: parseSearchInternalArguments,
           execute: async (args, coordinates) => {
-            if (++searches > this.config.aiInternalMaxSearches)
-              throw new Error("internal search limit exceeded");
             const parsed = parseSearchInternalArguments(args);
             const query: InternalQuery = parsed.query;
             const queryIssue = internalSearchQueryIssue(query.terms);
@@ -3267,9 +3265,12 @@ export class CanonicalWorkflowOperations {
                 truncated: false,
                 cursor: null,
                 queryRejected: true,
+                correctionRequired: true,
                 message: `${queryIssue}; retry with a sparse lexical query`,
               };
             }
+            if (++searches > this.config.aiInternalMaxSearches)
+              throw new Error("internal search limit exceeded");
             if (query.target === "documents") {
               await this.assertBoundPublisherDocumentVersions(boundPublisherDocumentVersions);
             }

@@ -3822,8 +3822,8 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       }
       expect(captured.capture.origin).toBe("real_provider_turn");
       expect(captured.capture.modelIds).toEqual(["glm-5-turbo"]);
-      expect(captured.pulledSourceIds).toEqual([document.sourceId]);
-      expect(captured.serializedSourceIds).toEqual([document.sourceId]);
+      expect(captured.pulledSourceIds).toEqual([document.goldenSourceId]);
+      expect(captured.serializedSourceIds).toEqual([document.goldenSourceId]);
       if (
         captured.productionContext.mode !== "single_fit" &&
         captured.productionContext.mode !== "single_reduced"
@@ -3837,7 +3837,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       expect(captured.productionContext.terminal.ledger.sources).toEqual([
         expect.objectContaining({
           candidateId: namespacedDocumentEvidenceIdentity(document.source, document.documentId),
-          sourceId: document.sourceId,
+          sourceId: document.goldenSourceId,
         }),
       ]);
     },

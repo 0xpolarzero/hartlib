@@ -394,6 +394,7 @@ const createFixture = createFixtureWithCanonicalText(
 class PublisherRetrievalAgent extends CanonicalAgentClient {
   onAfterFirstSearch?: () => Promise<void>;
   repeatInspection = false;
+  malformedFirstSearch = false;
 
   constructor() {
     super({} as ExactPiBoundary);
@@ -409,6 +410,25 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
       providerRequestIndex: 0,
     };
     await invokeToolLoopProviderHook(input, coordinates);
+    let searchCoordinates = coordinates;
+    if (this.malformedFirstSearch) {
+      const rejected = await search.execute(
+        {
+          query: {
+            target: "documents",
+            terms: "liquidity conditions remained anchored",
+            purpose: "answer the liquidity question",
+            sourceIds: [this.sourceId],
+          },
+        },
+        coordinates,
+      );
+      if (rejected.queryRejected !== true || rejected.correctionRequired !== true) {
+        throw new Error("malformed first search was not returned as correction-only");
+      }
+      searchCoordinates = { ...coordinates, providerRequestIndex: 1 };
+      await invokeToolLoopProviderHook(input, searchCoordinates);
+    }
     const searchResult = await search.execute(
       {
         query: {
@@ -418,7 +438,7 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
           sourceIds: [this.sourceId],
         },
       },
-      coordinates,
+      searchCoordinates,
     );
     const items = searchResult.items;
     if (!Array.isArray(items) || items.length !== 1) throw new Error("publisher search failed");
@@ -465,7 +485,14 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
       ranges: [{ charStart: 0, charEnd: 20 }],
       purpose: "answer the liquidity question",
     };
-    const inspection = await inspect.execute({ reference }, coordinates);
+    const inspectionCoordinates = {
+      ...coordinates,
+      providerRequestIndex: this.malformedFirstSearch ? 2 : coordinates.providerRequestIndex,
+    };
+    if (this.malformedFirstSearch) {
+      await invokeToolLoopProviderHook(input, inspectionCoordinates);
+    }
+    const inspection = await inspect.execute({ reference }, inspectionCoordinates);
     if (inspection.found !== true || inspection.complete !== true) {
       throw new Error("publisher inspection failed");
     }
@@ -483,7 +510,10 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
         throw new Error("repeated publisher inspection was not closed by protocol recovery");
       }
     }
-    await invokeToolLoopProviderHook(input, { ...coordinates, providerRequestIndex: 1 });
+    await invokeToolLoopProviderHook(input, {
+      ...coordinates,
+      providerRequestIndex: this.malformedFirstSearch ? 3 : 1,
+    });
     return (this.duplicateManifest ? [reference, reference] : [reference]) as unknown as Output;
   }
 
@@ -2649,6 +2679,19 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           workflowConfig,
           repeatedInternal,
         ).retrieveInternal(load, "What changed?", "internal-repeated-inspection", []),
+      ),
+    ).resolves.toHaveLength(1);
+
+    const malformedFirstSearch = new PublisherRetrievalAgent();
+    malformedFirstSearch.sourceId = `publisher:${fixture.subscriptionId}`;
+    malformedFirstSearch.malformedFirstSearch = true;
+    await expect(
+      inTask("internal-malformed-first-search", () =>
+        new CanonicalWorkflowOperations(
+          databaseUrlFor(databaseName),
+          { ...workflowConfig, aiInternalMaxSearches: 1 },
+          malformedFirstSearch,
+        ).retrieveInternal(load, "What changed?", "internal-malformed-first-search", []),
       ),
     ).resolves.toHaveLength(1);
   }, 120_000);

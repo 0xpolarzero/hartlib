@@ -115,6 +115,10 @@ describe("canonical AI role prompts", () => {
     expect(InternalRetrievalPrompt).toContain(
       "If any tool result contains protocolError, stop all search and inspection immediately",
     );
+    expect(InternalRetrievalPrompt).toContain(
+      "A queryRejected result is correction-only, is not an empty search result",
+    );
+    expect(InternalRetrievalPrompt).toContain("cannot justify an empty manifest");
     expect(InternalRetrievalPrompt).toContain("retrieve each distinct named subject");
     expect(InternalRetrievalPrompt).toContain(
       "emit an empty manifest without calling search_internal",
