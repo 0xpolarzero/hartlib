@@ -191,6 +191,11 @@ const parseToolCalls = (
   if (!Array.isArray(value)) {
     throw new Error("assistant tool calls must be an array");
   }
+  // A correction turn is supported only for the explicitly supported
+  // single-call transport shape. Once a provider has authored siblings, a
+  // malformed argument invalidates the complete turn; recovering it could
+  // otherwise make a valid sibling look executable on a later turn.
+  const allowArgumentRecovery = value.length === 1;
   const ids = new Set<string>();
   return value.map((candidate, index) => {
     if (!isJsonRecord(candidate)) {
@@ -220,17 +225,24 @@ const parseToolCalls = (
       arguments_ = parseArguments(candidate.arguments);
     } catch (error) {
       // A tool-specific schema failure is still rejected before any sibling
-      // executes, but it is recoverable within the same bounded tool loop.
+      // executes. It is recoverable within the same bounded tool loop only
+      // for the single-call transport shape; a malformed sibling array is a
+      // terminal provider-output failure.
       // Provider tool arguments are commonly emitted one turn too early or
       // with a stale field; asking for the exact advertised schema preserves
       // fail-closed execution without burning the owning task retry.
-      if (tool.parseArguments !== undefined) {
+      if (allowArgumentRecovery && tool.parseArguments !== undefined) {
         throw new RecoverableToolCallError(
           `tool call ${candidate.name} arguments failed its strict schema`,
           { cause: error },
         );
       }
-      throw error;
+      if (allowArgumentRecovery && error instanceof RecoverableToolCallError) {
+        throw error;
+      }
+      throw new Error(`tool call ${candidate.name} arguments failed its strict schema`, {
+        cause: error,
+      });
     }
     if (!isJsonRecord(arguments_)) {
       throw new Error(`tool call ${candidate.name} arguments did not produce an object`);

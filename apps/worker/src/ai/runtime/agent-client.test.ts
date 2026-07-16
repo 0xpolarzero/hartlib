@@ -909,7 +909,7 @@ describe("canonical agent tool loop", () => {
           ],
           terminalToolName: "emit",
           validateTerminal: (value) => value,
-          maximumTurns: 1,
+          maximumTurns: 12,
           requestedOutputTokens: 64,
           reasoning: "medium",
           coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
@@ -917,6 +917,7 @@ describe("canonical agent tool loop", () => {
       ),
     ).rejects.toMatchObject({ code: "internal_retrieval_failed" });
     expect(first).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(1);
   });
 
   it("recovers a strict non-terminal argument failure without executing the call", async () => {
