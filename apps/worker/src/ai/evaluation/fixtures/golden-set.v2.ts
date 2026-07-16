@@ -7,13 +7,14 @@ const followUpDocument =
 const oldChatEvidence =
   "The earlier comparison found that storage reduced the evening solar ramp by 18 percent in the cited pilot.";
 const memoryEvidence = "Prefer concise answers in French and report energy quantities in GWh.";
-const webEvidence =
-  "The official operator update reports that the interconnector returned to full service on 14 March 2026.";
 const oversizedEvidenceDocuments = Array.from({ length: 6 }, (_, regionIndex) => {
   const region = regionIndex + 1;
   const bindingResult =
     `Region ${region} binding conclusion: coordinated storage dispatch reduced curtailment ` +
     `by ${12 + regionIndex} percent.`;
+  const searchableHeader =
+    `Regional storage-dispatch trial ${region}: audit rules cover curtailment results across ` +
+    `the six regional storage-dispatch trials. ${bindingResult}`;
   const auditRows = Array.from(
     { length: 380 },
     (_, rowIndex) =>
@@ -22,9 +23,12 @@ const oversizedEvidenceDocuments = Array.from({ length: 6 }, (_, regionIndex) =>
       `and independent checksum R${region}-${rowIndex + 1}. `,
   );
   const firstHalf = auditRows.slice(0, 190).join("");
-  const content = `${firstHalf}${bindingResult} ${auditRows.slice(190).join("")}`;
-  const bindingStart = firstHalf.length;
-  const acceptableRange = { charStart: bindingStart - 1_050, charEnd: bindingStart + 1_150 };
+  const content = `${searchableHeader} ${firstHalf}${auditRows.slice(190).join("")}`;
+  const bindingStart = searchableHeader.length - bindingResult.length;
+  const acceptableRange = {
+    charStart: Math.max(0, bindingStart - 1_050),
+    charEnd: bindingStart + 1_150,
+  };
   return {
     sourceId: `doc:oversized-grid-study-region-${region}`,
     content,
@@ -54,7 +58,7 @@ const solarEvidence =
 const storageEvidence =
   "Storage projects supplied 1.2 GW during the evening peak and reduced local congestion.";
 const marketWebEvidence =
-  "Day-ahead prices were negative for 47 hours in the first quarter according to the market operator.";
+  "This graph shows the 1/4 hourly prices and volumes on the Epex Spot hub and Nord Pool in France.";
 
 const longConversation = Array.from({ length: 13 }, (_, index) => ({
   turnId: index === 0 ? "turn-old-storage" : `turn-${index + 1}`,
@@ -307,8 +311,11 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
           sourceId: "web:operator-interconnector-2026-03-14",
           selector: "W",
           kind: "web",
-          content: webEvidence,
+          content: "The project’s commissioning date is expected for Q4 2028.",
           ranges: [],
+          url: "https://www.eirgrid.ie/celticinterconnector",
+          title: "Celtic Interconnector | Projects",
+          domain: "www.eirgrid.ie",
         },
       ],
       webRequested: true,
@@ -460,7 +467,7 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       locale: "en-US",
       market: "FR",
       currentMessage:
-        "Compare solar connections and storage operations, then explain the current market-price signal.",
+        "Compare solar connections and storage operations, then explain the current market-price signal from the official France Spot Electricity Exchange.",
       conversation: [],
       evidence: [
         {
@@ -483,6 +490,9 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
           kind: "web",
           content: marketWebEvidence,
           ranges: [],
+          url: "https://www.services-rte.com/en/view-data-published-by-rte/france-spot-electricity-exchange.html",
+          title: "France Spot Electricity Exchange - RTE Services Portal",
+          domain: "www.services-rte.com",
         },
         {
           sourceId: "doc:optional-grid-background",

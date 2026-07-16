@@ -4,7 +4,12 @@ import { isIP } from "node:net";
 import { Readable } from "node:stream";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 
-import { extractHtmlPublishedAt, extractHtmlTitle, stripHtml } from "@brief/source-ingestion";
+import {
+  extractHtmlPublishedAt,
+  extractHtmlTitle,
+  extractPdfPagesIsolated,
+  stripHtml,
+} from "@brief/source-ingestion";
 
 import type { EffectiveWebPolicy } from "../runtime/types";
 import { canonicalizeWebUrl } from "../runtime/canonicalization";
@@ -55,6 +60,7 @@ const supportedMediaTypes = new Set([
   "text/markdown",
   "application/json",
   "application/ld+json",
+  "application/pdf",
 ]);
 
 const defaultResolve = (
@@ -562,7 +568,7 @@ export const safeFetchPage = async (
             signal: controller.signal,
             headers: {
               accept:
-                "text/html,application/xhtml+xml,text/plain,text/markdown,application/json;q=0.8",
+                "text/html,application/xhtml+xml,text/plain,text/markdown,application/pdf,application/json;q=0.8",
               "accept-encoding": "gzip, deflate, br",
               "user-agent": "BriefWebResearch/1.0",
             },
@@ -625,27 +631,48 @@ export const safeFetchPage = async (
 
       const body = await readCappedBody(response, maxBytes, controller.signal, deadlineAt);
       responseBytes = body.byteCount;
-      let raw: string;
-      try {
-        // Page bytes are evidence.  Replacement decoding would turn a
-        // malformed response into apparently valid quotation text, so the
-        // boundary rejects invalid UTF-8 before title/text extraction.
-        raw = new TextDecoder("utf-8", { fatal: true }).decode(body.bytes);
-      } catch (cause) {
-        throw new WebBoundaryError(
-          "invalid_response_encoding",
-          "web response body is not valid UTF-8",
-          false,
-          cause,
-        );
-      }
       const canonicalUrl = canonicalizeWebUrl(currentUrl);
       const finalHost = new URL(canonicalUrl).hostname;
       assertDomainAllowed(finalHost, accepted.allowedDomains);
-      const isHtml = mediaType === "text/html" || mediaType === "application/xhtml+xml";
-      const title = isHtml ? (extractHtmlTitle(raw) ?? finalHost) : finalHost;
-      const publishedAt = isHtml ? extractHtmlPublishedAt(raw)?.toISOString() : undefined;
-      const text = isHtml ? stripHtml(raw) : raw.normalize("NFC").trim();
+      let title = finalHost;
+      let publishedAt: string | undefined;
+      let text: string;
+      if (mediaType === "application/pdf") {
+        try {
+          const pages = await extractPdfPagesIsolated(body.bytes);
+          text = pages
+            .map((page) => page.text)
+            .join("\n\n")
+            .normalize("NFC")
+            .trim();
+        } catch (cause) {
+          throw new WebBoundaryError(
+            "pdf_extraction_failed",
+            "web PDF text extraction failed",
+            false,
+            cause,
+          );
+        }
+      } else {
+        let raw: string;
+        try {
+          // Page bytes are evidence. Replacement decoding would turn a
+          // malformed response into apparently valid quotation text, so the
+          // boundary rejects invalid UTF-8 before title/text extraction.
+          raw = new TextDecoder("utf-8", { fatal: true }).decode(body.bytes);
+        } catch (cause) {
+          throw new WebBoundaryError(
+            "invalid_response_encoding",
+            "web response body is not valid UTF-8",
+            false,
+            cause,
+          );
+        }
+        const isHtml = mediaType === "text/html" || mediaType === "application/xhtml+xml";
+        title = isHtml ? (extractHtmlTitle(raw) ?? finalHost) : finalHost;
+        publishedAt = isHtml ? extractHtmlPublishedAt(raw)?.toISOString() : undefined;
+        text = isHtml ? stripHtml(raw) : raw.normalize("NFC").trim();
+      }
       throwIfAborted(options.signal);
       return {
         canonicalUrl,

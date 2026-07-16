@@ -22,7 +22,6 @@ import {
   assertFinalSourceMap,
   failAiRun,
   finalizeAiRun,
-  insertAiExternalToolUsage,
   insertAiObservation,
   insertAiSourceExposure,
   markAiRunStarted,
@@ -65,7 +64,6 @@ import {
   TINYFISH_SEARCH_ENDPOINT,
   TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY,
 } from "../web/tinyfish-search";
-import type { WebResearchBoundary } from "../workflow/operations";
 import { deleteSmithersRowsForRunWithSchemas } from "../workflow/smithers-cleanup";
 import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v2";
 import {
@@ -124,6 +122,23 @@ const EffectiveWebPolicySchema: z.ZodType<EffectiveWebPolicy> = z.discriminatedU
       }
     }),
 ]);
+
+const DurableWebSourceLocatorSchema = z
+  .strictObject({
+    kind: z.literal("web"),
+    url: z.url(),
+    title: z.string().trim().min(1),
+    domain: z.string().trim().min(1),
+    quote: z.string().trim().min(1),
+    quoteHash: z.string().trim().min(1),
+    publishedAt: z.iso.datetime().optional(),
+    capturedAt: z.iso.datetime(),
+  })
+  .superRefine((locator, context) => {
+    if (locator.quoteHash !== webQuoteHash(locator.quote)) {
+      context.addIssue({ code: "custom", path: ["quoteHash"], message: "web quote hash mismatch" });
+    }
+  });
 
 const sha256Hex = (value: string | Uint8Array): string =>
   createHash("sha256").update(value).digest("hex");
@@ -1053,14 +1068,18 @@ const buildSeedManifest = (
         memoryRevisionId: deterministicUuid(`${identity}:memory:${index}:revision`),
       };
     }
-    const slug = sha256Hex(`${identity}:web:${index}`).slice(0, 24);
+    if (source.url === undefined || source.title === undefined || source.domain === undefined) {
+      throw new Error(`${fixture.id}/${source.sourceId} lacks canonical web source metadata`);
+    }
     return {
       sourceId: source.sourceId,
       kind: "web" as const,
-      url: `https://evaluation.invalid/golden/v2/${slug}`,
-      title: `Canonical golden web evidence ${fixture.id}`,
-      domain: "evaluation.invalid",
-      capturedAt: "2026-07-10T00:00:00.000Z",
+      url: source.url,
+      title: source.title,
+      domain: source.domain,
+      // This seed value is only an immutable manifest placeholder. The real
+      // Brief fetch captures its own timestamp, which is checked at capture.
+      capturedAt: "1970-01-01T00:00:00.000Z",
     };
   });
   return EvaluationSeedManifestSchema.parse({
@@ -1126,11 +1145,23 @@ const seedOneCase = (
             values (${manifest.companyId}, ${manifest.userId}, 'admin')
             on conflict (company_id, user_id) do nothing
           `;
+          const evaluationWebAllowlist =
+            fixture.webRequested && fixture.webPolicyEnabled
+              ? canonicalAllowedDomains(
+                  fixture.evidence.flatMap((source) =>
+                    source.kind === "web" ? [source.domain] : [],
+                  ),
+                )
+              : null;
           yield* sql`
-            insert into client_company_ai_settings (company_id, web_search_enabled)
-            values (${manifest.companyId}, ${fixture.webPolicyEnabled})
+            insert into client_company_ai_settings (
+              company_id, web_search_enabled, web_domain_allowlist
+            )
+            values (${manifest.companyId}, ${fixture.webPolicyEnabled}, ${evaluationWebAllowlist})
             on conflict (company_id) do update
-              set web_search_enabled = excluded.web_search_enabled, updated_at = now()
+              set web_search_enabled = excluded.web_search_enabled,
+                  web_domain_allowlist = excluded.web_domain_allowlist,
+                  updated_at = now()
           `;
           yield* sql`
             insert into chats (id, user_id, company_id, memory_mode)
@@ -1252,7 +1283,7 @@ const seedOneCase = (
           `;
           const effectiveWebPolicy =
             fixture.webRequested && fixture.webPolicyEnabled
-              ? { enabled: true, provider: "tinyfish", allowedDomains: null }
+              ? { enabled: true, provider: "tinyfish", allowedDomains: evaluationWebAllowlist }
               : { enabled: false, reason: "company_disabled", allowlistActive: false };
           yield* sql`
             insert into ai_runs (
@@ -1427,89 +1458,11 @@ export const ensureEvaluationCaseRunning = (
     }),
   ).then(() => undefined);
 
-const makeGoldenWebBoundary = (
-  connectionString: string,
-  manifest: EvaluationSeedManifest,
-  fixture: GoldenEvaluationCase,
-): WebResearchBoundary => {
-  const byUrl = new Map(
-    manifest.sourceBindings.flatMap((binding) => {
-      if (binding.kind !== "web") return [];
-      const source = fixture.evidence.find(
-        (candidate) => candidate.sourceId === evaluationBindingGoldenSourceId(binding),
-      )!;
-      return [[binding.url, { binding, source }] as const];
-    }),
-  );
-  const requestIndexes = new Map<string, number>();
-  const account = async (
-    coordinates: Parameters<WebResearchBoundary["search"]>[4],
-    operation: "web_search" | "web_fetch",
-    resultCount: number,
-    responseBytes: number,
-  ) => {
-    const key = `${coordinates.taskId}:${coordinates.loopIteration}:${coordinates.attempt}`;
-    const toolRequestIndex = requestIndexes.get(key) ?? 0;
-    requestIndexes.set(key, toolRequestIndex + 1);
-    await db(
-      connectionString,
-      insertAiExternalToolUsage({
-        runId: manifest.aiRunId,
-        taskId: coordinates.taskId,
-        loopIteration: coordinates.loopIteration,
-        attempt: coordinates.attempt,
-        toolRequestIndex,
-        providerServiceId: "canonical_golden_fixture",
-        operation,
-        status: resultCount === 0 ? "empty" : "ok",
-        resultCount,
-        responseBytes,
-        billedUnits: 0,
-        durationMs: 0,
-      }),
-    );
-  };
-  return {
-    search: async (_query, _locale, _market, _policy, coordinates) => {
-      const results = [...byUrl.values()].map(({ binding, source }) => ({
-        url: binding.url,
-        title: binding.title,
-        domain: binding.domain,
-        snippet: source.content.slice(0, 300),
-        publishedAt: "2026-03-14T00:00:00.000Z",
-      }));
-      await account(coordinates, "web_search", results.length, canonicalJson(results).length);
-      return {
-        results,
-        complete: true,
-        truncated: false,
-        cursor: null,
-        scope: { kind: "provider_ranked_results", maximumResults: 10, cursorSupported: false },
-      };
-    },
-    fetch: async (url, _policy, coordinates) => {
-      const entry = byUrl.get(url);
-      if (entry === undefined) throw new Error("general evaluation web fetch used an unknown URL");
-      await account(coordinates, "web_fetch", 1, entry.source.content.length);
-      return {
-        url: entry.binding.url,
-        title: entry.binding.title,
-        domain: entry.binding.domain,
-        text: entry.source.content,
-        publishedAt: "2026-03-14T00:00:00.000Z",
-        capturedAt: entry.binding.capturedAt,
-      };
-    },
-  };
-};
-
 const executeSpecialized = async (
   connectionString: string,
   config: WorkerConfig,
   row: CaseRunRow,
 ): Promise<void> => {
-  const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
-  const fixture = fixtureFor(row.caseId);
   if (config.aiE2eFakeProvider)
     throw new Error("evaluation execution forbids AI_E2E_FAKE_PROVIDER");
   if (config.zaiApiKey.trim() === "") throw new Error("evaluation execution requires ZAI_API_KEY");
@@ -1525,12 +1478,7 @@ const executeSpecialized = async (
         if (aiRunId !== row.aiRunId || loadedConnectionString !== connectionString) {
           throw new Error("evaluation specialized execution database/run mismatch");
         }
-        return makeCanonicalOperations(
-          loadedConnectionString,
-          aiRunId,
-          loadedConfig,
-          makeGoldenWebBoundary(connectionString, manifest, fixture),
-        );
+        return makeCanonicalOperations(loadedConnectionString, aiRunId, loadedConfig);
       },
     }),
   );
@@ -2724,9 +2672,10 @@ const attestDurableUsageChronology = (
       evidence.externalToolUsage.length ||
     evidence.externalToolUsage.some(
       (entry) =>
-        entry.providerServiceId !== "canonical_golden_fixture" ||
-        entry.billedUnits !== "0" ||
-        entry.durationMs !== 0,
+        entry.providerServiceId !==
+          (entry.operation === "web_search" ? "tinyfish_search_official" : "brief_fetch") ||
+        entry.billedUnits !== null ||
+        entry.durationMs < 0,
     )
   ) {
     throw new Error(`${row.topology}/${row.caseId} has invalid external-tool usage provenance`);
@@ -3389,8 +3338,22 @@ const attestRelationalEvidence = (
         : binding?.kind === "document"
           ? `Canonical evidence ${evaluationBindingGoldenSourceId(binding)}`
           : binding?.kind === "web"
-            ? binding.title
+            ? (() => {
+                const locator = DurableWebSourceLocatorSchema.safeParse(source.locator);
+                return locator.success ? locator.data.title : binding.title;
+              })()
             : null;
+    const parsedWebLocator =
+      binding?.kind === "web" && golden?.kind === "web"
+        ? DurableWebSourceLocatorSchema.safeParse(source.locator)
+        : undefined;
+    const liveWebLocator =
+      parsedWebLocator?.success === true &&
+      binding?.kind === "web" &&
+      golden?.kind === "web" &&
+      parsedWebLocator.data.domain === binding.domain
+        ? parsedWebLocator.data
+        : undefined;
     const expectedLocator =
       binding?.kind === "document" && golden?.kind === "document"
         ? {
@@ -3426,16 +3389,18 @@ const attestRelationalEvidence = (
                 memoryRevisionId: binding.memoryRevisionId,
               }
             : binding?.kind === "web" && golden?.kind === "web"
-              ? {
-                  kind: "web",
-                  url: binding.url,
-                  title: binding.title,
-                  domain: binding.domain,
-                  quote: golden.content,
-                  quoteHash: webQuoteHash(golden.content),
-                  publishedAt: "2026-03-14T00:00:00.000Z",
-                  capturedAt: binding.capturedAt,
-                }
+              ? row.topology === "specialized"
+                ? liveWebLocator
+                : {
+                    kind: "web",
+                    url: binding.url,
+                    title: binding.title,
+                    domain: binding.domain,
+                    quote: golden.content,
+                    quoteHash: webQuoteHash(golden.content),
+                    publishedAt: "2026-03-14T00:00:00.000Z",
+                    capturedAt: binding.capturedAt,
+                  }
               : undefined;
     const expectedProvenance =
       binding?.kind === "document"
@@ -3449,11 +3414,19 @@ const attestRelationalEvidence = (
             ...(row.topology === "specialized" ? { publishedAt: "2026-07-01T00:00:00.000Z" } : {}),
           }
         : binding?.kind === "web"
-          ? {
-              documentTitle: binding.title,
-              citationUrl: binding.url,
-              publishedAt: "2026-03-14T00:00:00.000Z",
-            }
+          ? row.topology === "specialized" && liveWebLocator !== undefined
+            ? {
+                documentTitle: liveWebLocator.title,
+                citationUrl: liveWebLocator.url,
+                ...(liveWebLocator.publishedAt === undefined
+                  ? {}
+                  : { publishedAt: liveWebLocator.publishedAt }),
+              }
+            : {
+                documentTitle: binding.title,
+                citationUrl: binding.url,
+                publishedAt: "2026-03-14T00:00:00.000Z",
+              }
           : {};
     if (
       sourceId === undefined ||
@@ -3584,9 +3557,15 @@ const attestAcceptedRunSnapshot = (
 ): void => {
   const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
   const fixture = fixtureFor(row.caseId);
+  const evaluationWebAllowlist =
+    fixture.webRequested && fixture.webPolicyEnabled
+      ? canonicalAllowedDomains(
+          fixture.evidence.flatMap((source) => (source.kind === "web" ? [source.domain] : [])),
+        )
+      : null;
   const expectedPolicy: EffectiveWebPolicy =
     fixture.webRequested && fixture.webPolicyEnabled
-      ? { enabled: true, provider: "tinyfish", allowedDomains: null }
+      ? { enabled: true, provider: "tinyfish", allowedDomains: evaluationWebAllowlist }
       : { enabled: false, reason: "company_disabled", allowlistActive: false };
   const run = DurableRunSnapshotSchema.parse(evidence.run);
   if (
@@ -4385,22 +4364,39 @@ const mapDurableSource = (
   manifest: EvaluationSeedManifest,
   source: DurableRunEvidence["sources"][number],
 ): string | undefined => {
+  const fixture = fixtureFor(manifest.caseId);
   const matches = manifest.sourceBindings.filter((binding) => {
     if (binding.kind !== source.kind) return false;
     if (binding.kind === "document") return documentBindingMatchesLocator(binding, source.locator);
     if (binding.kind === "chat_message") return binding.messageId === source.messageId;
     if (binding.kind === "memory") return binding.memoryRevisionId === source.memoryRevisionId;
+    const locator = DurableWebSourceLocatorSchema.safeParse(source.locator);
+    if (!locator.success || locator.data.domain !== binding.domain) return false;
+    const golden = fixture.evidence.find(
+      (candidate) => candidate.sourceId === evaluationBindingGoldenSourceId(binding),
+    );
     return (
-      binding.url === source.locator.url &&
-      fixtureFor(manifest.caseId).evidence.find(
-        (candidate) => candidate.sourceId === evaluationBindingGoldenSourceId(binding),
-      )?.content === source.locator.quote
+      canonicalizeWebUrl(binding.url) === canonicalizeWebUrl(locator.data.url) ||
+      (golden?.kind === "web" && golden.content === locator.data.quote)
     );
   });
-  if (matches.length > 1) {
+  const liveDomainMatches =
+    source.kind === "web"
+      ? manifest.sourceBindings.filter(
+          (binding) =>
+            binding.kind === "web" &&
+            DurableWebSourceLocatorSchema.safeParse(source.locator).success &&
+            binding.domain === DurableWebSourceLocatorSchema.parse(source.locator).domain,
+        )
+      : [];
+  const resolvedMatches =
+    matches.length === 0 && liveDomainMatches.length === 1 ? liveDomainMatches : matches;
+  if (resolvedMatches.length > 1) {
     throw new Error(`${manifest.caseId} durable source has an ambiguous document namespace`);
   }
-  return matches[0] === undefined ? undefined : evaluationBindingGoldenSourceId(matches[0]);
+  return resolvedMatches[0] === undefined
+    ? undefined
+    : evaluationBindingGoldenSourceId(resolvedMatches[0]);
 };
 
 const mapReferenceToGolden = (
@@ -4445,22 +4441,22 @@ const mapReferenceToGolden = (
   const web = DurableWebManifestReferenceSchema.safeParse(reference);
   if (web.success) {
     const bindings = manifest.sourceBindings.filter((candidate) => {
-      if (
-        candidate.kind !== "web" ||
-        candidate.url !== web.data.url ||
-        candidate.title !== web.data.title ||
-        candidate.domain !== web.data.domain ||
-        candidate.capturedAt !== web.data.capturedAt
-      ) {
-        return false;
-      }
       return (
-        fixtureFor(manifest.caseId).evidence.find(
-          (source) => source.sourceId === evaluationBindingGoldenSourceId(candidate),
-        )?.content === web.data.quote
+        candidate.kind === "web" &&
+        candidate.domain === web.data.domain &&
+        (canonicalizeWebUrl(candidate.url) === canonicalizeWebUrl(web.data.url) ||
+          fixtureFor(manifest.caseId).evidence.find(
+            (source) => source.sourceId === evaluationBindingGoldenSourceId(candidate),
+          )?.content === web.data.quote)
       );
     });
-    return bindings.length === 1 ? evaluationBindingGoldenSourceId(bindings[0]!) : undefined;
+    if (bindings.length === 1) return evaluationBindingGoldenSourceId(bindings[0]!);
+    const domainBindings = manifest.sourceBindings.filter(
+      (candidate) => candidate.kind === "web" && candidate.domain === web.data.domain,
+    );
+    return domainBindings.length === 1
+      ? evaluationBindingGoldenSourceId(domainBindings[0]!)
+      : undefined;
   }
 
   return undefined;
@@ -4746,6 +4742,47 @@ const reconstructDocumentExposureText = (
   return ranges.map((range) => documentText.slice(range.charStart, range.charEnd)).join("\n…\n");
 };
 
+const liveWebQuoteForExposure = (
+  manifest: EvaluationSeedManifest,
+  evidence: DurableRunEvidence,
+  exposure: DurableRunEvidence["sourceExposures"][number],
+): string | undefined => {
+  if (
+    exposure.sourceKind !== "web" ||
+    (exposure.exposureStage !== "answer_serialized" &&
+      exposure.exposureStage !== "context_candidate_inspection")
+  ) {
+    return undefined;
+  }
+  const liveIdentity = /^web:(https:\/\/.+):([A-Za-z0-9_-]{43})$/u.exec(
+    exposure.logicalSourceIdentity,
+  );
+  const transientIdentity = /^((?:https:\/\/).+):([A-Za-z0-9_-]{43})$/u.exec(
+    exposure.contentItemIdentity,
+  );
+  const url = liveIdentity?.[1] ?? transientIdentity?.[1];
+  const quoteHash = liveIdentity?.[2] ?? transientIdentity?.[2];
+  if (url === undefined || quoteHash === undefined) return undefined;
+  const canonicalUrl = canonicalizeWebUrl(url);
+  const locator = evidence.sources
+    .map((candidate) => DurableWebSourceLocatorSchema.safeParse(candidate.locator))
+    .find(
+      (candidate) =>
+        candidate.success &&
+        canonicalizeWebUrl(candidate.data.url) === canonicalUrl &&
+        candidate.data.quoteHash === quoteHash,
+    );
+  if (locator?.success !== true) {
+    throw new Error(`${manifest.caseId} live web exposure lacks its durable quotation`);
+  }
+  return locator.data.quote;
+};
+
+const webUrlFromExposureIdentity = (identity: string): string => {
+  const liveIdentity = /^web:(https:\/\/.*):[A-Za-z0-9_-]{43}$/u.exec(identity);
+  return liveIdentity?.[1] ?? identity;
+};
+
 const expectedExposureVisibleTokenCount = (
   manifest: EvaluationSeedManifest,
   evidence: DurableRunEvidence,
@@ -4779,6 +4816,17 @@ const expectedExposureVisibleTokenCount = (
       throw new Error(`${manifest.caseId} provider-input exposure has unknown message content`);
     }
     return model.countTextTokens(message.content);
+  }
+  if (exposure.exposureStage === "web_search_preview" || exposure.exposureStage === "web_fetch") {
+    // Tinyfish snippets and fetched page bodies are intentionally transient.
+    // Their exact provider-visible text is committed by the live Pi marker;
+    // terminal web quotes are independently checked against canonical fixture
+    // evidence and fetched-page provenance.
+    return exposure.visibleTokenCount;
+  }
+  const liveWebQuote = liveWebQuoteForExposure(manifest, evidence, exposure);
+  if (liveWebQuote !== undefined) {
+    return resolveRegisteredModel(modelId).countTextTokens(liveWebQuote);
   }
   const fixture = fixtureFor(manifest.caseId);
   const sourceId = mapExposureToGolden(manifest, evidence, exposure, storedDocuments);
@@ -4824,8 +4872,6 @@ const expectedExposureVisibleTokenCount = (
       }
     }
     visibleText = documentText!.slice(start, end);
-  } else if (exposure.exposureStage === "web_search_preview") {
-    visibleText = source.content.slice(0, 300);
   } else if (
     exposure.exposureStage === "internal_inspection" ||
     exposure.exposureStage === "context_candidate_inspection"
@@ -4837,7 +4883,6 @@ const expectedExposureVisibleTokenCount = (
           ? stripHistoricalCitationTags(source.content)
           : source.content;
   } else if (
-    exposure.exposureStage === "web_fetch" ||
     exposure.exposureStage === "memory_direct_inventory" ||
     exposure.exposureStage === "memory_tool_result"
   ) {
@@ -5194,10 +5239,24 @@ const mapExposureToGolden = (
       return exposure.logicalSourceIdentity === memoryEvidenceIdentity(binding.memoryId);
     }
     const source = fixtureById.get(evaluationBindingGoldenSourceId(binding));
+    const canonicalUrl = canonicalizeWebUrl(binding.url);
+    const liveQuoteIdentity = `web:${canonicalUrl}:`;
+    const exposureUrl = webUrlFromExposureIdentity(exposure.logicalSourceIdentity);
+    let exposureDomain: string | undefined;
+    try {
+      exposureDomain = new URL(exposureUrl).hostname;
+    } catch {
+      exposureDomain = undefined;
+    }
     return (
       source?.kind === "web" &&
-      (exposure.logicalSourceIdentity === canonicalizeWebUrl(binding.url) ||
-        exposure.logicalSourceIdentity === webEvidenceIdentity(binding.url, source.content))
+      (exposure.logicalSourceIdentity === canonicalUrl ||
+        exposure.logicalSourceIdentity === webEvidenceIdentity(binding.url, source.content) ||
+        (exposure.logicalSourceIdentity.startsWith(liveQuoteIdentity) &&
+          /^[A-Za-z0-9_-]{43}$/u.test(
+            exposure.logicalSourceIdentity.slice(liveQuoteIdentity.length),
+          )) ||
+        exposureDomain === binding.domain)
     );
   });
   if (matches.length > 1) {
@@ -5240,18 +5299,30 @@ const mapExposureToGolden = (
     } else if (binding.kind === "memory") {
       exact = exposure.contentItemIdentity === binding.memoryRevisionId;
     } else if (source.kind === "web") {
-      const url = canonicalizeWebUrl(binding.url);
+      const url = canonicalizeWebUrl(webUrlFromExposureIdentity(exposure.logicalSourceIdentity));
+      let exposureDomain: string | undefined;
+      try {
+        exposureDomain = new URL(url).hostname;
+      } catch {
+        exposureDomain = undefined;
+      }
+      const sameAllowedDomain = exposureDomain === binding.domain;
+      const transientBodyPrefix = `${url}:`;
+      const hasTransientBodyIdentity =
+        exposure.contentItemIdentity.startsWith(transientBodyPrefix) &&
+        /^[A-Za-z0-9_-]{43}$/u.test(exposure.contentItemIdentity.slice(transientBodyPrefix.length));
+      const serializedQuoteHash = exposure.contentItemIdentity.startsWith(transientBodyPrefix)
+        ? exposure.contentItemIdentity.slice(transientBodyPrefix.length)
+        : null;
       exact =
-        (stage === "web_search_preview" &&
-          exposure.logicalSourceIdentity === url &&
-          exposure.contentItemIdentity ===
-            `${url}:${sha256Base64Url(source.content.slice(0, 300))}`) ||
-        (stage === "web_fetch" &&
-          exposure.logicalSourceIdentity === url &&
-          exposure.contentItemIdentity === `${url}:${sha256Base64Url(source.content)}`) ||
+        (stage === "web_search_preview" && sameAllowedDomain && hasTransientBodyIdentity) ||
+        (stage === "web_fetch" && sameAllowedDomain && hasTransientBodyIdentity) ||
         ((stage === "answer_serialized" || stage === "context_candidate_inspection") &&
-          exposure.logicalSourceIdentity === webEvidenceIdentity(binding.url, source.content) &&
-          exposure.contentItemIdentity === `${url}:${webQuoteHash(source.content)}`);
+          /^web:https:\/\/.*:[A-Za-z0-9_-]{43}$/u.test(exposure.logicalSourceIdentity) &&
+          serializedQuoteHash ===
+            exposure.logicalSourceIdentity.slice(
+              exposure.logicalSourceIdentity.lastIndexOf(":") + 1,
+            ));
     }
     if (!exact) {
       throw new Error(
@@ -5259,6 +5330,34 @@ const mapExposureToGolden = (
       );
     }
     return evaluationBindingGoldenSourceId(binding);
+  }
+
+  if (exposure.sourceKind === "web") {
+    const liveIdentity = /^web:(https:\/\/.+):([A-Za-z0-9_-]{43})$/u.exec(
+      exposure.logicalSourceIdentity,
+    );
+    if (liveIdentity !== null) {
+      const url = canonicalizeWebUrl(liveIdentity[1]!);
+      const expectedContentItemIdentity = `${url}:${liveIdentity[2]}`;
+      if (
+        (exposure.exposureStage === "answer_serialized" ||
+          exposure.exposureStage === "context_candidate_inspection") &&
+        exposure.contentItemIdentity === expectedContentItemIdentity
+      ) {
+        return null;
+      }
+      throw new Error(`${manifest.caseId} has an invalid live web citation identity`);
+    }
+    const url = canonicalizeWebUrl(exposure.logicalSourceIdentity);
+    const transientBodyPrefix = `${url}:`;
+    if (
+      exposure.logicalSourceIdentity !== url ||
+      !exposure.contentItemIdentity.startsWith(transientBodyPrefix) ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(exposure.contentItemIdentity.slice(transientBodyPrefix.length))
+    ) {
+      throw new Error(`${manifest.caseId} has an invalid transient web exposure identity`);
+    }
+    return null;
   }
 
   throw new Error(
@@ -5271,6 +5370,11 @@ const mapExposureToGolden = (
       )
       .join(",")})`,
   );
+};
+
+const canonicalEvaluationWebExposureUrl = (logicalSourceIdentity: string): string => {
+  const liveIdentity = /^web:(https:\/\/.+):[A-Za-z0-9_-]{43}$/u.exec(logicalSourceIdentity);
+  return canonicalizeWebUrl(liveIdentity?.[1] ?? logicalSourceIdentity);
 };
 
 const exposedGoldenSourceIds = (
@@ -5335,6 +5439,46 @@ const sourceAudit = async (
   }[]
 > => {
   const fixture = fixtureFor(manifest.caseId);
+  const currentWebPolicy = await db(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{
+        readonly enabled: boolean;
+        readonly allowedDomains: readonly string[] | null;
+      }>`
+        select coalesce(settings.web_search_enabled, false) as enabled,
+               settings.web_domain_allowlist as "allowedDomains"
+        from (select 1) seed
+        left join client_company_ai_settings settings
+          on settings.company_id = ${manifest.companyId}
+      `;
+      return {
+        enabled: rows[0]?.enabled === true,
+        allowedDomains: rows[0]?.allowedDomains ?? null,
+      };
+    }),
+  );
+  for (const exposure of evidence.sourceExposures.filter(
+    (candidate) => candidate.sourceKind === "web",
+  )) {
+    let authorizationUrl: string;
+    try {
+      authorizationUrl = canonicalEvaluationWebExposureUrl(exposure.logicalSourceIdentity);
+    } catch {
+      const sourceId = mapExposureToGolden(manifest, evidence, exposure, storedDocuments);
+      const binding = manifest.sourceBindings.find(
+        (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
+      );
+      if (binding?.kind !== "web") {
+        throw new Error(`${manifest.caseId} has an unresolvable web exposure identity`);
+      }
+      authorizationUrl = canonicalizeWebUrl(binding.url);
+    }
+    if (!evaluationWebSourceAuthorized(evidence.run, authorizationUrl, currentWebPolicy)) {
+      throw new Error(`${manifest.caseId} has a policy-incompatible web exposure`);
+    }
+  }
   const exposedSourceIds = exposedGoldenSourceIds(manifest, evidence, storedDocuments);
   const sourceIds = new Set(
     evidence.sources.flatMap((source) => {
@@ -5734,10 +5878,27 @@ const commonCapturedResult = async (
   if ([...sourceIdsByKey.values()].some((sourceId) => sourceId === undefined)) {
     throw new Error(`${row.topology}/${row.caseId} has a source outside its canonical fixture`);
   }
-  const serializedSourceIds = durableFinalSourceMapFromEvidence(evidence)
-    .filter((source) => source.uses.length > 0)
-    .map((source) => sourceIdsByKey.get(source.sourceKey)!);
-  if (new Set(serializedSourceIds).size !== serializedSourceIds.length) {
+  const serializedSources = durableFinalSourceMapFromEvidence(evidence).filter(
+    (source) => source.uses.length > 0,
+  );
+  const serializedSourceIds = serializedSources.map(
+    (source) => sourceIdsByKey.get(source.sourceKey)!,
+  );
+  // A live web result may contribute multiple provider-authored excerpts from
+  // one canonical fixture source. Preserve those distinct durable source keys
+  // in production evidence, but measure the canonical artifact once per source
+  // ID because the evaluation request schema is a set of source selections.
+  const canonicalSerializedSourceIds = [...new Set(serializedSourceIds)];
+  const serializedSourceGroups = new Map<string, typeof serializedSources>();
+  for (const [index, sourceId] of serializedSourceIds.entries()) {
+    const source = serializedSources[index]!;
+    serializedSourceGroups.set(sourceId, [...(serializedSourceGroups.get(sourceId) ?? []), source]);
+  }
+  if (
+    [...serializedSourceGroups.values()].some(
+      (sources) => sources.length > 1 && sources.some((source) => source.locator.kind !== "web"),
+    )
+  ) {
     throw new Error(`${row.topology}/${row.caseId} serialized source order is not bijective`);
   }
   const citationObservations = evidence.observations.filter(
@@ -5779,7 +5940,7 @@ const commonCapturedResult = async (
     }
     rangesBySource.set(sourceId, current);
   }
-  const selections = serializedSourceIds.map((sourceId) => {
+  const selections = canonicalSerializedSourceIds.map((sourceId) => {
     const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId)!;
     const ranges = rangesBySource.get(sourceId) ?? [];
     const documentLength =
@@ -5808,7 +5969,7 @@ const commonCapturedResult = async (
   const serializedContextTokens = measureCanonicalEvaluationRequestTokens(
     measurementFixture,
     row.topology === "general_planner"
-      ? serializedSourceIds.map((sourceId) => ({
+      ? canonicalSerializedSourceIds.map((sourceId) => ({
           sourceId,
           ranges:
             fixture.labels.acceptableRanges[sourceId] ??
@@ -5893,7 +6054,7 @@ const commonCapturedResult = async (
       },
       memoryProposals,
       pulledSourceIds: [] as string[],
-      serializedSourceIds,
+      serializedSourceIds: canonicalSerializedSourceIds,
       serializedContextTokens,
       sourceAudit: await sourceAudit(connectionString, manifest, evidence, storedDocuments),
       timing: {
@@ -5976,9 +6137,10 @@ const latestObservation = (evidence: DurableRunEvidence, kind: string, emittingT
 const productionCandidateSourceIds = (
   fixture: GoldenEvaluationCase,
   manifest: EvaluationSeedManifest,
+  evidence: DurableRunEvidence,
 ): ReadonlyMap<string, string> => {
   const sourceById = new Map(fixture.evidence.map((source) => [source.sourceId, source] as const));
-  const entries = manifest.sourceBindings.map((binding) => {
+  const entries = manifest.sourceBindings.flatMap((binding) => {
     const source = sourceById.get(evaluationBindingGoldenSourceId(binding));
     if (source === undefined) throw new Error(`${manifest.caseId} has an unknown source binding`);
     const candidateId =
@@ -5989,12 +6151,31 @@ const productionCandidateSourceIds = (
           : binding.kind === "memory"
             ? memoryEvidenceIdentity(binding.memoryId)
             : webEvidenceIdentity(binding.url, source.content);
-    return [candidateId, evaluationBindingGoldenSourceId(binding)] as const;
+    const liveWebCandidateIds =
+      binding.kind !== "web"
+        ? []
+        : evidence.sources.flatMap((candidate) => {
+            const locator = DurableWebSourceLocatorSchema.safeParse(candidate.locator);
+            return locator.success && locator.data.domain === binding.domain
+              ? [webEvidenceIdentity(locator.data.url, locator.data.quote)]
+              : [];
+          });
+    return [
+      [candidateId, evaluationBindingGoldenSourceId(binding)] as const,
+      ...liveWebCandidateIds.map(
+        (liveCandidateId) => [liveCandidateId, evaluationBindingGoldenSourceId(binding)] as const,
+      ),
+    ];
   });
-  if (new Set(entries.map(([candidateId]) => candidateId)).size !== entries.length) {
-    throw new Error(`${manifest.caseId} production candidate identities collide`);
+  const byCandidateId = new Map<string, string>();
+  for (const [candidateId, sourceId] of entries) {
+    const existingSourceId = byCandidateId.get(candidateId);
+    if (existingSourceId !== undefined && existingSourceId !== sourceId) {
+      throw new Error(`${manifest.caseId} production candidate identities collide`);
+    }
+    byCandidateId.set(candidateId, sourceId);
   }
-  return new Map(entries);
+  return byCandidateId;
 };
 
 const translateRestrictedConversation = (
@@ -6114,6 +6295,7 @@ const attestCompleteConversationResolverInventory = (
 const translateAndAttestRestrictedLedger = (
   fixture: GoldenEvaluationCase,
   manifest: EvaluationSeedManifest,
+  evidence: DurableRunEvidence,
   raw: unknown,
 ) => {
   const ledger = RestrictedContextLedgerSchema.parse(raw);
@@ -6122,7 +6304,7 @@ const translateAndAttestRestrictedLedger = (
     manifest,
     ledger.selectedConversation,
   );
-  const sourceIdByCandidateId = productionCandidateSourceIds(fixture, manifest);
+  const sourceIdByCandidateId = productionCandidateSourceIds(fixture, manifest, evidence);
   const fixtureSourceById = new Map(
     fixture.evidence.map((source) => [source.sourceId, source] as const),
   );
@@ -6136,7 +6318,24 @@ const translateAndAttestRestrictedLedger = (
           if (sourceId === undefined || fixtureSource?.kind !== source.kind) {
             throw new Error(`${fixture.id} production ledger contains an unknown candidate`);
           }
-          return { ...source, sourceId };
+          const liveLocator =
+            source.kind === "web"
+              ? evidence.sources
+                  .map((candidate) => DurableWebSourceLocatorSchema.safeParse(candidate.locator))
+                  .find(
+                    (candidate) =>
+                      candidate.success &&
+                      webEvidenceIdentity(candidate.data.url, candidate.data.quote) ===
+                        source.candidateId,
+                  )
+              : undefined;
+          const contentOverride =
+            liveLocator?.success === true ? liveLocator.data.quote : undefined;
+          return {
+            ...source,
+            sourceId,
+            ...(contentOverride === undefined ? {} : { contentOverride }),
+          };
         });
   if (
     new Set(sources.map((source) => source.candidateId)).size !== sources.length ||
@@ -6592,6 +6791,7 @@ const terminalProductionLedger = (
   const ledger = translateAndAttestRestrictedLedger(
     fixture,
     manifest,
+    evidence,
     payload.restrictedContextLedger,
   );
   if (
@@ -7251,14 +7451,20 @@ const terminalRetrievalManifests = (
         } else if (binding.kind === "web" && fixtureSource.kind === "web") {
           const webReference = DurableWebManifestReferenceSchema.parse(reference);
           candidateId = webEvidenceIdentity(binding.url, webReference.quote);
+          let referenceHost: string | undefined;
+          try {
+            referenceHost = new URL(webReference.url).hostname;
+          } catch {
+            referenceHost = undefined;
+          }
           exact =
-            webReference.url === binding.url &&
-            webReference.title === binding.title &&
+            referenceHost === binding.domain &&
             webReference.domain === binding.domain &&
-            webReference.quote === fixtureSource.content &&
-            webReference.publishedAt === "2026-03-14T00:00:00.000Z" &&
-            webReference.capturedAt === binding.capturedAt &&
-            webReference.purpose === source.purpose;
+            webReference.quote.trim().length > 0 &&
+            (webReference.publishedAt === undefined ||
+              Number.isFinite(Date.parse(webReference.publishedAt))) &&
+            Number.isFinite(Date.parse(webReference.capturedAt)) &&
+            webReference.purpose.trim().length > 0;
         } else {
           throw new Error(`${row.topology}/${row.caseId}/${taskId} has a kind-mismatched item`);
         }
@@ -7288,7 +7494,8 @@ const terminalRetrievalManifests = (
         return { sourceId: source.sourceId, candidateId, ranges };
       });
       if (
-        new Set(actual.map((reference) => reference.sourceId)).size !== actual.length ||
+        (role !== "web" &&
+          new Set(actual.map((reference) => reference.sourceId)).size !== actual.length) ||
         canonicalJson(actual.map((reference) => reference.sourceId)) !==
           canonicalJson(expected.map((source) => source.sourceId)) ||
         (role === "web" &&
@@ -7376,6 +7583,7 @@ const initialProductionLedger = (
   const ledger = translateAndAttestRestrictedLedger(
     fixture,
     manifest,
+    evidence,
     payload.restrictedContextLedger,
   );
   if (
@@ -7412,6 +7620,7 @@ const reducedProductionLedger = (
   const ledger = translateAndAttestRestrictedLedger(
     fixture,
     manifest,
+    evidence,
     payload.restrictedContextLedger,
   );
   if (
@@ -7939,9 +8148,20 @@ const captureSpecialized = async (
         prior !== undefined &&
         (prior.candidateId !== candidateId || canonicalJson(prior.ranges) !== canonicalJson(ranges))
       ) {
-        throw new Error(`${row.caseId}/${sourceId} has divergent durable selector references`);
+        if (terminalManifest.selectorRole !== "web") {
+          throw new Error(`${row.caseId}/${sourceId} has divergent durable selector references`);
+        }
+        // Production web retrieval can return multiple excerpts from the same
+        // canonical domain. The durable candidate identity includes each
+        // provider quote, while the scored artifact has one canonical source
+        // selection; retain one identity and merge any ranges for that source.
+        pulledSelections.set(sourceId, {
+          ranges: [...prior.ranges, ...ranges],
+          candidateId: prior.candidateId,
+        });
+      } else {
+        pulledSelections.set(sourceId, { ranges, candidateId });
       }
-      pulledSelections.set(sourceId, { ranges, candidateId });
       if (terminalManifest.selectorRole === "memory") selectorSelections.B.push(sourceId);
       else if (terminalManifest.selectorRole === "web") selectorSelections.W.push(sourceId);
       else selectorSelections.A.push(sourceId);

@@ -62,6 +62,7 @@ import {
 import {
   safeFetchPage,
   searchTinyfishWeb,
+  TINYFISH_SEARCH_PROVIDER_SERVICE_ID,
   WebBoundaryError,
   type WebOperationAccounting,
 } from "../ai/web";
@@ -571,7 +572,10 @@ const makeWebResearchBoundary = (
         loopIteration: coordinates.loopIteration,
         attempt: coordinates.attempt,
         toolRequestIndex,
-        providerServiceId: operation.provider,
+        providerServiceId:
+          operation.provider === "tinyfish"
+            ? TINYFISH_SEARCH_PROVIDER_SERVICE_ID
+            : operation.provider,
         operation: operation.kind === "search" ? "web_search" : "web_fetch",
         status:
           operation.outcome === "succeeded"
@@ -695,9 +699,9 @@ const makeWebResearchBoundary = (
         }
         throwIfAborted(signal);
         // Tinyfish exposes a fixed page-0 boundary with no cursor. Preserve
-        // the adapter's pre-dedup cap decision; deriving this from the unique
-        // URL list would let ten provider rows collapse to one and silently
-        // bypass the hard-cap fail-closed rule.
+        // the adapter's pre-dedup completeness decision; deriving this from
+        // the unique URL list would let an incomplete provider page collapse
+        // to fewer rows and silently bypass the continuation requirement.
         const truncated = response.truncated;
         return {
           results: response.results,
@@ -765,9 +769,9 @@ export const persistWebBoundaryErrorOperations = async (
 };
 
 /**
- * Canonical production operations factory. Evaluation may replace only the
- * seeded web corpus boundary; model requests still cross the exact real Pi/Z.AI
- * boundary and retain the same durable measurement/usage hooks.
+ * Canonical production operations factory. Evaluation uses this same real
+ * Tinyfish search and Brief-owned fetch boundary; model requests cross the
+ * exact real Pi/Z.AI boundary and retain the same durable measurement hooks.
  */
 export const providerServiceIdForConfig = (
   config: WorkerConfig,

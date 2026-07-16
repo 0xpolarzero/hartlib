@@ -59,15 +59,47 @@ const GoldenConversationEntrySchema = z
   })
   .strict();
 
-const GoldenEvidenceSchema = z
-  .object({
-    sourceId: nonEmpty,
-    selector: SelectorRoleSchema,
-    kind: z.enum(["document", "chat_message", "memory", "web"]),
-    content: nonBlankText,
-    ranges: z.array(EvaluationRangeSchema),
-  })
-  .strict();
+const GoldenEvidenceSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      sourceId: nonEmpty,
+      selector: z.literal("A"),
+      kind: z.literal("document"),
+      content: nonBlankText,
+      ranges: z.array(EvaluationRangeSchema),
+    })
+    .strict(),
+  z
+    .object({
+      sourceId: nonEmpty,
+      selector: z.literal("A"),
+      kind: z.literal("chat_message"),
+      content: nonBlankText,
+      ranges: z.array(EvaluationRangeSchema),
+    })
+    .strict(),
+  z
+    .object({
+      sourceId: nonEmpty,
+      selector: z.literal("B"),
+      kind: z.literal("memory"),
+      content: nonBlankText,
+      ranges: z.array(EvaluationRangeSchema),
+    })
+    .strict(),
+  z
+    .object({
+      sourceId: nonEmpty,
+      selector: z.literal("W"),
+      kind: z.literal("web"),
+      content: nonBlankText,
+      ranges: z.array(EvaluationRangeSchema),
+      url: z.url(),
+      title: nonBlankText,
+      domain: nonEmpty,
+    })
+    .strict(),
+]);
 
 const GoldenMemoryProposalSchema = z
   .object({
@@ -199,17 +231,6 @@ export const GoldenEvaluationCaseSchema = z
     }
     const evidenceSet = new Set(evidenceIds);
     for (const source of fixture.evidence) {
-      const validRole =
-        (source.selector === "A" &&
-          (source.kind === "document" || source.kind === "chat_message")) ||
-        (source.selector === "B" && source.kind === "memory") ||
-        (source.selector === "W" && source.kind === "web");
-      if (!validRole) {
-        context.addIssue({
-          code: "custom",
-          message: `source ${source.sourceId} has an invalid selector/kind pairing`,
-        });
-      }
       if (source.ranges.some((range) => range.charEnd > source.content.length)) {
         context.addIssue({
           code: "custom",
@@ -528,6 +549,7 @@ const ProductionSourceBindingSchema = z
     purpose: nonEmpty,
     label: z.string().nullable(),
     ranges: z.array(EvaluationRangeSchema),
+    contentOverride: z.string().optional(),
   })
   .strict();
 

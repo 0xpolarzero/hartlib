@@ -1338,7 +1338,7 @@ describe("structured Tinyfish discovery adapter", () => {
     expect(response.operations).toEqual([
       expect.objectContaining({ resultCount: 10, outcome: "succeeded" }),
     ]);
-    expect(response).toMatchObject({ complete: false, truncated: true });
+    expect(response).toMatchObject({ complete: true, truncated: false });
   });
 
   it("enforces each fanout domain independently, including exact/subdomain boundaries", async () => {

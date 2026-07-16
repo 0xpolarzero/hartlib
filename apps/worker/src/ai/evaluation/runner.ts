@@ -56,6 +56,8 @@ export interface ExactProductionSourceBinding extends CanonicalEvaluationSourceS
   readonly sourceKey: string;
   readonly purpose: string;
   readonly label: string | null;
+  /** Live web quotations are bound by their durable hash during capture. */
+  readonly contentOverride?: string | undefined;
 }
 
 export interface ExactProductionTopicPacket {
@@ -195,12 +197,19 @@ const canonicalEvaluationRequest = (
         `${fixture.id}/${source.sourceId} gives ranges to non-document evidence`,
       );
     }
+    // The production transport pads short document bodies to its minimum
+    // evidence width. Apply the same canonicalization when validating a live
+    // capture so storage-backed ranges and fixture-backed scoring agree.
+    const canonicalSourceContent =
+      source.kind === "document" && source.content.length < 100
+        ? source.content.padEnd(100, " ")
+        : source.content;
     if (
       ranges.some(
         (range) =>
           range.charStart < 0 ||
           range.charEnd <= range.charStart ||
-          range.charEnd > source.content.length,
+          range.charEnd > canonicalSourceContent.length,
       )
     ) {
       throw new EvaluationInputError(
@@ -209,8 +218,10 @@ const canonicalEvaluationRequest = (
     }
     const content =
       source.kind === "document" && ranges.length > 0
-        ? ranges.map((range) => source.content.slice(range.charStart, range.charEnd)).join("\n…\n")
-        : source.content;
+        ? ranges
+            .map((range) => canonicalSourceContent.slice(range.charStart, range.charEnd))
+            .join("\n…\n")
+        : canonicalSourceContent;
     const productionSourceKey = options.productionSourceKeys?.get(source.sourceId);
     if (options.productionSourceKeys !== undefined && productionSourceKey === undefined) {
       throw new EvaluationInputError(
@@ -316,11 +327,22 @@ const exactProductionEvidence = (
   bindings: readonly ExactProductionSourceBinding[],
 ): string => {
   const fixtureById = new Map(fixture.evidence.map((source) => [source.sourceId, source] as const));
-  if (
-    new Set(bindings.map((binding) => binding.sourceId)).size !== bindings.length ||
-    new Set(bindings.map((binding) => binding.sourceKey)).size !== bindings.length
-  ) {
-    throw new EvaluationInputError(`${fixture.id} production source bindings are not bijective`);
+  const sourceIds = new Set<string>();
+  const sourceKeys = new Set<string>();
+  for (const binding of bindings) {
+    if (sourceKeys.has(binding.sourceKey)) {
+      throw new EvaluationInputError(`${fixture.id} production source bindings are not bijective`);
+    }
+    sourceKeys.add(binding.sourceKey);
+    if (sourceIds.has(binding.sourceId)) {
+      const source = fixtureById.get(binding.sourceId);
+      if (source?.kind !== "web" || binding.contentOverride === undefined) {
+        throw new EvaluationInputError(
+          `${fixture.id} production source bindings are not bijective`,
+        );
+      }
+    }
+    sourceIds.add(binding.sourceId);
   }
   return bindings
     .map((binding) => {
@@ -341,9 +363,10 @@ const exactProductionEvidence = (
         );
       }
       const sourceContent =
-        source.kind === "document" && source.content.length < 100
+        binding.contentOverride ??
+        (source.kind === "document" && source.content.length < 100
           ? source.content.padEnd(100, " ")
-          : source.content;
+          : source.content);
       if (
         binding.ranges.some(
           (range) =>
@@ -1110,14 +1133,17 @@ const exactInputForProductionLedger = (
         question: ledger.question,
         selectedConversation: ledger.selectedConversation,
         gaps: ledger.gaps,
-        sources: ledger.sources.map(({ sourceId, sourceKey, kind, purpose, label, ranges }) => ({
-          sourceId,
-          sourceKey,
-          kind,
-          purpose,
-          label,
-          ranges,
-        })),
+        sources: ledger.sources.map(
+          ({ sourceId, sourceKey, kind, purpose, label, ranges, contentOverride }) => ({
+            sourceId,
+            sourceKey,
+            kind,
+            purpose,
+            label,
+            ranges,
+            contentOverride,
+          }),
+        ),
         requestedOutputTokens: ledger.requestedOutputTokens,
       }
     : {
@@ -1125,14 +1151,17 @@ const exactInputForProductionLedger = (
         question: ledger.question,
         selectedConversation: ledger.selectedConversation,
         gaps: ledger.gaps,
-        sources: ledger.sources.map(({ sourceId, sourceKey, kind, purpose, label, ranges }) => ({
-          sourceId,
-          sourceKey,
-          kind,
-          purpose,
-          label,
-          ranges,
-        })),
+        sources: ledger.sources.map(
+          ({ sourceId, sourceKey, kind, purpose, label, ranges, contentOverride }) => ({
+            sourceId,
+            sourceKey,
+            kind,
+            purpose,
+            label,
+            ranges,
+            contentOverride,
+          }),
+        ),
         requestedOutputTokens: ledger.requestedOutputTokens,
       };
 };

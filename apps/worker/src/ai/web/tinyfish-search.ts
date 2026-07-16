@@ -270,7 +270,7 @@ const decodeProviderResponse = (
   expectedQuery: string,
   allowedDomains: readonly string[] | null,
   requestedDomain: string | undefined,
-): readonly WebSearchResult[] => {
+): { readonly results: readonly WebSearchResult[]; readonly totalResults: number } => {
   let decoded: Schema.Schema.Type<typeof TinyfishSearchResponse>;
   try {
     const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
@@ -344,7 +344,10 @@ const decodeProviderResponse = (
     };
   });
 
-  return results.sort((left, right) => left.providerRank - right.providerRank);
+  return {
+    results: results.sort((left, right) => left.providerRank - right.providerRank),
+    totalResults: decoded.total_results,
+  };
 };
 
 const searchOneDomain = async (
@@ -355,6 +358,7 @@ const searchOneDomain = async (
   options: TinyfishSearchOptions,
 ): Promise<{
   readonly results: readonly WebSearchResult[];
+  readonly totalResults: number;
   readonly operation: WebOperationAccounting;
 }> => {
   const startedAt = Date.now();
@@ -445,15 +449,16 @@ const searchOneDomain = async (
     const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
     if (mediaType !== "application/json") throw invalidProviderResponse();
 
-    const results = decodeProviderResponse(bytes, query, current.allowedDomains, domain);
+    const decoded = decodeProviderResponse(bytes, query, current.allowedDomains, domain);
     throwIfAborted(options.signal);
     return {
-      results,
+      results: decoded.results,
+      totalResults: decoded.totalResults,
       operation: {
         kind: "search",
         provider: "tinyfish",
-        outcome: results.length === 0 ? "empty" : "succeeded",
-        resultCount: results.length,
+        outcome: decoded.results.length === 0 ? "empty" : "succeeded",
+        resultCount: decoded.results.length,
         responseBytes,
         durationMs: Math.max(0, Date.now() - startedAt),
       },
@@ -579,10 +584,10 @@ export const searchTinyfishWeb = async (
     }
   }
   // The cap is evaluated against each provider operation before URL
-  // de-duplication. A page-0 operation that returns the full ten-result
-  // boundary has no safe continuation cursor, so W must fail closed instead
-  // of treating a deduplicated one-row list as complete.
-  const truncated = responses.some(({ results }) => results.length >= 10);
+  // de-duplication. Tinyfish's fixed page-0 response is complete when its
+  // declared total equals the returned count; only a provider total beyond
+  // the returned page creates an unresolvable continuation obligation.
+  const truncated = responses.some(({ results, totalResults }) => totalResults > results.length);
   throwIfAborted(options.signal);
   return {
     results: [...unique.values()].slice(0, count),

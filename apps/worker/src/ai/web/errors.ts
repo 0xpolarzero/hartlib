@@ -7,6 +7,7 @@ export type WebBoundaryErrorCode =
   | "too_many_redirects"
   | "redirect_without_location"
   | "unsupported_content_type"
+  | "pdf_extraction_failed"
   | "unsupported_content_encoding"
   | "invalid_response_encoding"
   | "response_too_large"
