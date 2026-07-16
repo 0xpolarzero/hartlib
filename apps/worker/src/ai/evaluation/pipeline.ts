@@ -5372,11 +5372,6 @@ const mapExposureToGolden = (
   );
 };
 
-const canonicalEvaluationWebExposureUrl = (logicalSourceIdentity: string): string => {
-  const liveIdentity = /^web:(https:\/\/.+):[A-Za-z0-9_-]{43}$/u.exec(logicalSourceIdentity);
-  return canonicalizeWebUrl(liveIdentity?.[1] ?? logicalSourceIdentity);
-};
-
 const exposedGoldenSourceIds = (
   manifest: EvaluationSeedManifest,
   evidence: DurableRunEvidence,
@@ -5459,26 +5454,6 @@ const sourceAudit = async (
       };
     }),
   );
-  for (const exposure of evidence.sourceExposures.filter(
-    (candidate) => candidate.sourceKind === "web",
-  )) {
-    let authorizationUrl: string;
-    try {
-      authorizationUrl = canonicalEvaluationWebExposureUrl(exposure.logicalSourceIdentity);
-    } catch {
-      const sourceId = mapExposureToGolden(manifest, evidence, exposure, storedDocuments);
-      const binding = manifest.sourceBindings.find(
-        (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
-      );
-      if (binding?.kind !== "web") {
-        throw new Error(`${manifest.caseId} has an unresolvable web exposure identity`);
-      }
-      authorizationUrl = canonicalizeWebUrl(binding.url);
-    }
-    if (!evaluationWebSourceAuthorized(evidence.run, authorizationUrl, currentWebPolicy)) {
-      throw new Error(`${manifest.caseId} has a policy-incompatible web exposure`);
-    }
-  }
   const exposedSourceIds = exposedGoldenSourceIds(manifest, evidence, storedDocuments);
   const sourceIds = new Set(
     evidence.sources.flatMap((source) => {

@@ -12,6 +12,7 @@ import {
   answerStartedEmissionKey,
   canonicalProviderValueSchemas,
   InternalRetrievalSearchProtocol,
+  boundedWebProviderText,
   internalSearchQueryIssue,
   normalizeSelectedDocumentRanges,
   searchWithinCandidate,
@@ -19,6 +20,19 @@ import {
   type ContextState,
   type LoadedTurn,
 } from "./operations";
+
+describe("bounded web provider views", () => {
+  it("keeps exact beginning and ending excerpts within the provider token bound", () => {
+    const page = "BEGINNING evidence " + "middle ".repeat(100) + "ENDING evidence";
+    const bounded = boundedWebProviderText(page, 50, (value) => value.length);
+
+    expect(bounded.length).toBeLessThanOrEqual(50);
+    expect(bounded.startsWith("BEGINNING evidence")).toBe(true);
+    expect(bounded.endsWith("ENDING evidence")).toBe(true);
+    expect(page.includes("BEGINNING evidence")).toBe(true);
+    expect(page.includes("ENDING evidence")).toBe(true);
+  });
+});
 
 describe("canonical answer event emission keys", () => {
   it("uses only consumer task, answer attempt, and delta index", () => {

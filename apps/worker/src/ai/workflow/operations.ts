@@ -147,6 +147,70 @@ export interface WebFetchedPage {
   readonly capturedAt: string;
 }
 
+/**
+ * Keeps the provider-facing web result bounded while retaining exact excerpts
+ * from both ends of a fetched page. Quotes remain valid only when they are
+ * verbatim substrings of this bounded view; the external fetch accounting
+ * continues to record the complete response bytes.
+ */
+export const boundedWebProviderText = (
+  text: string,
+  maxTokens: number,
+  countTokens: (value: string) => number,
+): string => {
+  if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || countTokens(text) <= maxTokens) {
+    return text;
+  }
+  const budget = Math.max(1, maxTokens - 8);
+  const prefixBudget = Math.max(1, Math.floor(budget / 2));
+  const suffixBudget = Math.max(1, budget - prefixBudget);
+  const prefixEnd = largestPrefixWithinTokenBudget(text, prefixBudget, countTokens);
+  const suffixStart = smallestSuffixWithinTokenBudget(text, suffixBudget, countTokens);
+  const prefix = text.slice(0, prefixEnd).trimEnd();
+  const suffix = text.slice(suffixStart).trimStart();
+  const combined = prefix === "" || suffix === "" ? `${prefix}${suffix}` : `${prefix}\n\n${suffix}`;
+  if (countTokens(combined) <= maxTokens || suffix === "") return combined;
+  let low = 0;
+  let high = suffix.length;
+  while (low < high) {
+    const midpoint = Math.ceil((low + high) / 2);
+    const candidate = suffix.slice(suffix.length - midpoint);
+    if (countTokens(`${prefix}\n\n${candidate}`) <= maxTokens) low = midpoint;
+    else high = midpoint - 1;
+  }
+  return low === 0 ? prefix : `${prefix}\n\n${suffix.slice(suffix.length - low)}`;
+};
+
+const largestPrefixWithinTokenBudget = (
+  text: string,
+  maxTokens: number,
+  countTokens: (value: string) => number,
+): number => {
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const midpoint = Math.ceil((low + high) / 2);
+    if (countTokens(text.slice(0, midpoint)) <= maxTokens) low = midpoint;
+    else high = midpoint - 1;
+  }
+  return low;
+};
+
+const smallestSuffixWithinTokenBudget = (
+  text: string,
+  maxTokens: number,
+  countTokens: (value: string) => number,
+): number => {
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const midpoint = Math.floor((low + high) / 2);
+    if (countTokens(text.slice(midpoint)) <= maxTokens) high = midpoint;
+    else low = midpoint + 1;
+  }
+  return low;
+};
+
 /** Safe transport boundary. The web module owns DNS, redirects, bytes, content type, and policy checks. */
 export interface WebResearchBoundary {
   readonly search: (
@@ -4333,8 +4397,16 @@ export class CanonicalWorkflowOperations {
                 "web fetch requires a canonical URL discovered by an earlier complete search turn",
               );
             }
-            const page = await this.web!.fetch(url, load.webPolicy, coordinates, signal);
+            const fetchedPage = await this.web!.fetch(url, load.webPolicy, coordinates, signal);
             throwIfAborted(signal);
+            const page = {
+              ...fetchedPage,
+              text: boundedWebProviderText(
+                fetchedPage.text,
+                Math.max(1, this.config.aiFastOutputMaxTokens - 1_024),
+                (value) => this.visibleTokenCount(value, this.config.aiFastModel),
+              ),
+            } satisfies WebFetchedPage;
             fetched.set(canonicalizeWebUrl(page.url), page);
             const logicalSourceIdentity = canonicalizeWebUrl(page.url);
             const contentItemIdentity = `${logicalSourceIdentity}:${sha256Base64Url(page.text)}`;
