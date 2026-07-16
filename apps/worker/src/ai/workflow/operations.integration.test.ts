@@ -2180,7 +2180,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           workflowConfig,
           new WebManifestAgent("An invented quote that is absent."),
           web,
-        ).retrieveWeb(load, "What changed?", "topic-t1-retrieve-web"),
+        ).retrieveWeb(load, "What is the current official update?", "topic-t1-retrieve-web"),
       ),
     ).rejects.toThrow("web terminal evidence must use a verbatim quote from a fetched page");
     await expect(
@@ -2190,7 +2190,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           workflowConfig,
           new WebManifestAgent(officialQuote, "duplicate"),
           web,
-        ).retrieveWeb(load, "What changed?", "duplicate-web-selector"),
+        ).retrieveWeb(load, "What is the current official update?", "duplicate-web-selector"),
       ),
     ).rejects.toThrow("web evidence manifest contains duplicate references");
     await expect(
@@ -2200,7 +2200,11 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           workflowConfig,
           new WebManifestAgent(officialQuote, "empty-after-fetch"),
           web,
-        ).retrieveWeb(load, "What changed?", "empty-after-fetch-web-selector"),
+        ).retrieveWeb(
+          load,
+          "What is the current official update?",
+          "empty-after-fetch-web-selector",
+        ),
       ),
     ).rejects.toThrow("web terminal evidence cannot be empty after a fetched page");
 
@@ -2217,10 +2221,19 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             workflowConfig,
             new WebManifestAgent(officialQuote, mode),
             web,
-          ).retrieveWeb(load, "What changed?", `adversarial-${mode}`),
+          ).retrieveWeb(load, "What is the current official update?", `adversarial-${mode}`),
         ),
       ).rejects.toThrow(expected);
     }
+    await expect(
+      inTask("topic-t1-no-web-need", () =>
+        webOperations.retrieveWeb(
+          load,
+          "Compare two internal energy subjects conceptually.",
+          "topic-t1-retrieve-web",
+        ),
+      ),
+    ).resolves.toEqual({ status: "enabled", entries: [] });
   }, 120_000);
 
   it("rechecks requested web policy at finalization even when W returned no evidence", async () => {

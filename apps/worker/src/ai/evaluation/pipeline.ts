@@ -65,6 +65,7 @@ import {
   TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY,
 } from "../web/tinyfish-search";
 import { deleteSmithersRowsForRunWithSchemas } from "../workflow/smithers-cleanup";
+import { topicRequestsWebEvidence } from "../workflow/operations";
 import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v2";
 import {
   aiEvaluationGeneralPlannerSchemas,
@@ -7336,7 +7337,18 @@ const terminalRetrievalManifests = (
         role === "internal" ||
         (role === "memory" &&
           manifest.sourceBindings.some((binding) => binding.kind === "memory")) ||
-        (role === "web" && fixture.webRequested && fixture.webPolicyEnabled);
+        (role === "web" &&
+          fixture.webRequested &&
+          fixture.webPolicyEnabled &&
+          (taskId.startsWith("topic-")
+            ? topicRequestsWebEvidence(
+                routing.plan?.mode === "fanout"
+                  ? (routing.plan.topics.find(
+                      (topic) => `topic-${topic.topicId}-retrieve-web` === taskId,
+                    )?.question ?? "")
+                  : "",
+              )
+            : true));
       if (!providerRequired && owned.length !== 1) {
         throw new Error(
           `${row.topology}/${row.caseId}/${taskId} deterministic manifest is not unique`,
