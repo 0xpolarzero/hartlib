@@ -168,6 +168,7 @@ const transcriptReconstructionSessionId = "50000000-0000-4000-8000-000000000116"
 const documentMetadataTamperSessionId = "50000000-0000-4000-8000-000000000117";
 const focusedProductionCaseId = "first-message-document-fr";
 const focusedClarificationCaseId = "ambiguous-reference-needs-clarification";
+const multiWebQuoteSessionId = "50000000-0000-4000-8000-000000000118";
 const fixtureProviderRequestSha256Hex = "a".repeat(64);
 const liveCaptureApiKey = process.env.ZAI_API_KEY?.trim();
 const liveCaptureEnabled =
@@ -734,6 +735,7 @@ const completeDurableCaptureSession = async (
     | "oversized_duplicate_internal_inspection"
     | "oversized_wrong_coordinate_internal_inspection"
     | "manifest_purpose",
+  multiWebQuotes = false,
 ): Promise<void> => {
   await createEvaluationSession(isolatedDatabaseUrl(), targetSessionId);
   await seedEvaluationSession(isolatedDatabaseUrl(), targetSessionId);
@@ -1994,6 +1996,23 @@ const completeDurableCaptureSession = async (
                       ? "forged manifest purpose"
                       : "canonical evaluation evidence",
                 });
+                if (
+                  multiWebQuotes &&
+                  row.topology === "specialized" &&
+                  fixture.id === "cross-cutting-separable-energy-question" &&
+                  prefix === "topic-t1" &&
+                  selector === "W"
+                ) {
+                  references.push({
+                    url: binding.url,
+                    title: binding.title,
+                    domain: binding.domain,
+                    quote: source.content.slice(0, 24),
+                    publishedAt: "2026-03-14T00:00:00.000Z",
+                    capturedAt: binding.capturedAt,
+                    purpose: "canonical evaluation evidence excerpt",
+                  });
+                }
               }
               yield* insertAiObservation({
                 runId: row.runId,
@@ -2469,33 +2488,43 @@ const completeDurableCaptureSession = async (
               fixture.evidence.find((source) => source.sourceId === sourceId)!.selector === "W",
           );
           for (const taskId of webTasks) {
+            const extraFetch =
+              multiWebQuotes &&
+              row.topology === "specialized" &&
+              fixture.id === "cross-cutting-separable-energy-question" &&
+              taskId === "topic-t1-retrieve-web"
+                ? 1
+                : 0;
             yield* insertAiExternalToolUsage({
               runId: row.runId,
               taskId,
               loopIteration: 0,
               attempt: 0,
               toolRequestIndex: 0,
-              providerServiceId: "canonical_golden_fixture",
+              providerServiceId: "tinyfish_search_official",
               operation: "web_search",
               status: "ok",
               resultCount: webSources.length,
               responseBytes: 128,
-              billedUnits: 0,
+              billedUnits: null,
               durationMs: 0,
             });
-            for (const [index] of webSources.entries()) {
+            for (const index of Array.from(
+              { length: webSources.length + extraFetch },
+              (_, i) => i,
+            )) {
               yield* insertAiExternalToolUsage({
                 runId: row.runId,
                 taskId,
                 loopIteration: 0,
                 attempt: 0,
                 toolRequestIndex: index + 1,
-                providerServiceId: "canonical_golden_fixture",
+                providerServiceId: "brief_fetch",
                 operation: "web_fetch",
                 status: "ok",
                 resultCount: 1,
                 responseBytes: 128,
-                billedUnits: 0,
+                billedUnits: null,
                 durationMs: 0,
               });
             }
@@ -4283,6 +4312,25 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     await expect(
       completeDurableCaptureSession(preSealMemoryRetrySessionId, "preseal_stale_memory_retry"),
     ).resolves.toBeUndefined();
+  }, 120_000);
+
+  it("accepts multiple durable web quotations for one canonical golden source", async () => {
+    await completeDurableCaptureSession(multiWebQuoteSessionId, undefined, true);
+    await bindEvaluationAnnotations(
+      isolatedDatabaseUrl(),
+      multiWebQuoteSessionId,
+      labeledAnnotations(multiWebQuoteSessionId),
+    );
+    const suite = await captureEvaluationSession(isolatedDatabaseUrl(), multiWebQuoteSessionId);
+    const result = suite.specialized.find(
+      (candidate) => candidate.caseId === "cross-cutting-separable-energy-question",
+    );
+    expect(result?.selectorSelections.W).toEqual(["web:market-price-signal"]);
+    expect(result?.pulledSourceIds).toEqual([
+      "doc:solar-connections",
+      "doc:storage-operations",
+      "web:market-price-signal",
+    ]);
   }, 120_000);
 
   it("captures and revalidates the exact durable suite and rejects provenance or annotation tampering", async () => {

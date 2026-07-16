@@ -7493,11 +7493,15 @@ const terminalRetrievalManifests = (
         }
         return { sourceId: source.sourceId, candidateId, ranges };
       });
+      const actualSourceIds = actual.map((reference) => reference.sourceId);
+      const expectedSourceIds = expected.map((source) => source.sourceId);
+      const sourceIdsMatch =
+        role === "web"
+          ? canonicalJson([...new Set(actualSourceIds)]) === canonicalJson(expectedSourceIds)
+          : canonicalJson(actualSourceIds) === canonicalJson(expectedSourceIds);
       if (
-        (role !== "web" &&
-          new Set(actual.map((reference) => reference.sourceId)).size !== actual.length) ||
-        canonicalJson(actual.map((reference) => reference.sourceId)) !==
-          canonicalJson(expected.map((source) => source.sourceId)) ||
+        (role !== "web" && new Set(actualSourceIds).size !== actual.length) ||
+        !sourceIdsMatch ||
         (role === "web" &&
           payload.references.length > 0 &&
           (!externalUsage.some((usage) => usage.operation === "web_search") ||
