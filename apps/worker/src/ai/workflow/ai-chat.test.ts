@@ -48,6 +48,7 @@ const databaseName = `brief_ai_chat_graph_test_${process.pid}_${crypto
   .replaceAll("-", "")
   .slice(0, 8)}`;
 const migrationIsolationDatabaseName = `${databaseName}_migration`;
+const fenceIsolationDatabaseName = `${databaseName}_fence`;
 const workflowConfig = {
   aiFastTaskTimeoutMs: 30_000,
   aiAnswerTimeoutMs: 30_000,
@@ -1522,6 +1523,15 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
   });
 
   it("releases startup fencing before cleanup while retaining per-workflow fencing", async () => {
+    const fenceDatabaseUrl = databaseUrlFor(fenceIsolationDatabaseName);
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql.unsafe(`create database ${quoteIdentifier(fenceIsolationDatabaseName)}`).raw;
+      }),
+      adminDatabaseUrl(),
+    );
+
     let releaseExclusiveStartupLock!: () => void;
     const startupLockReleased = new Promise<void>((resolve) => {
       releaseExclusiveStartupLock = resolve;
@@ -1545,7 +1555,7 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
           }),
         );
       }),
-      workflowDatabaseUrl(),
+      fenceDatabaseUrl,
     );
     await startupLockReady;
 
@@ -1556,26 +1566,91 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
     let exclusiveCleanup: Promise<void> | undefined;
     try {
       let startupProvisioningSettled = false;
-      storagePromise = createAiChatSmithersStorage(aiChatSchemas, workflowDatabaseUrl()).then(
+      storagePromise = createAiChatSmithersStorage(aiChatSchemas, fenceDatabaseUrl).then(
         (createdStorage) => {
           startupProvisioningSettled = true;
           return createdStorage;
         },
       );
-      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      let startupFenceWaitObserved = false;
+      for (let attempt = 0; attempt < 100 && !startupFenceWaitObserved; attempt += 1) {
+        startupFenceWaitObserved = await runDb(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            const rows = yield* sql<{ readonly waiting: boolean }>`
+              select exists (
+                select 1
+                from pg_stat_activity
+                where datname = current_database()
+                  and application_name = 'brief-ai-chat-smithers-fence'
+                  and state <> 'idle'
+                  and query like '%pg_advisory_lock_shared%'
+              ) as waiting
+            `;
+            return rows[0]?.waiting === true;
+          }),
+          fenceDatabaseUrl,
+        );
+        if (!startupFenceWaitObserved && !startupProvisioningSettled) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        }
+      }
+      expect(startupFenceWaitObserved).toBe(true);
       expect(startupProvisioningSettled).toBe(false);
+      const tablesBeforeStartupFenceRelease = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return (yield* sql<{
+            readonly smithersRuns: string | null;
+            readonly loadTurn: string | null;
+          }>`
+            select
+              to_regclass('public._smithers_runs')::text as "smithersRuns",
+              to_regclass('public.ai_chat_load_turn')::text as "loadTurn"
+          `)[0]!;
+        }),
+        fenceDatabaseUrl,
+      );
+      expect(tablesBeforeStartupFenceRelease).toEqual({ smithersRuns: null, loadTurn: null });
 
       releaseExclusiveStartupLock();
       await exclusiveStartupLock;
       storage = await storagePromise;
+      const tablesAfterStartupFenceRelease = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return (yield* sql<{
+            readonly smithersRuns: string | null;
+            readonly loadTurn: string | null;
+          }>`
+            select
+              to_regclass('public._smithers_runs')::text as "smithersRuns",
+              to_regclass('public.ai_chat_load_turn')::text as "loadTurn"
+          `)[0]!;
+        }),
+        fenceDatabaseUrl,
+      );
+      expect(tablesAfterStartupFenceRelease.smithersRuns).toBe("_smithers_runs");
+      expect(tablesAfterStartupFenceRelease.loadTurn).toBe("ai_chat_load_turn");
       await expect(
         smithersRunExists(storage, `ai-chat:startup-fence-${crypto.randomUUID()}`),
       ).resolves.toBe(false);
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            create table ai_smithers_orphan_candidates (
+              smithers_run_id text primary key
+            )
+          `;
+        }),
+        fenceDatabaseUrl,
+      );
 
       await expect(
         runDb(
           deleteSmithersRowsForRun(`ai-chat:startup-fence-${crypto.randomUUID()}`),
-          workflowDatabaseUrl(),
+          fenceDatabaseUrl,
         ),
       ).resolves.toBeUndefined();
 
@@ -1587,7 +1662,7 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
         workflowOperationEntered = resolve;
       });
       let workflowProducerSettled = false;
-      workflowProducer = runWithAiChatSmithersProducerFence(workflowDatabaseUrl(), async () => {
+      workflowProducer = runWithAiChatSmithersProducerFence(fenceDatabaseUrl, async () => {
         workflowOperationEntered();
         await workflowOperationReleased;
       }).finally(() => {
@@ -1607,7 +1682,7 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
             `.pipe(Effect.asVoid),
           );
         }),
-        workflowDatabaseUrl(),
+        fenceDatabaseUrl,
       ).then(() => {
         exclusiveCleanupSettled = true;
       });
@@ -1628,6 +1703,21 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
         storage = await storagePromise?.catch(() => undefined);
       }
       await storage?.close();
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            select pg_terminate_backend(pid)
+            from pg_stat_activity
+            where datname = ${fenceIsolationDatabaseName}
+              and pid <> pg_backend_pid()
+          `;
+          yield* sql.unsafe(
+            `drop database if exists ${quoteIdentifier(fenceIsolationDatabaseName)}`,
+          ).raw;
+        }),
+        adminDatabaseUrl(),
+      );
     }
   }, 30_000);
 
