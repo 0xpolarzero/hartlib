@@ -5521,11 +5521,11 @@ export class CanonicalWorkflowOperations {
     // small enough that inspecting several candidates cannot push the next
     // provider request beyond the exact fast-input gate.
     const inspectionResponseAllowanceTokens = Math.min(this.config.aiFastOutputMaxTokens, 2_048);
-    // The live oversized fixture has six independently relevant documents and
-    // needs more correction/measurement turns than the shared retrieval bound
-    // allows. Keep O bounded by the same code-owned hard maximum while giving
-    // it enough turns to finish its required measured terminal phase.
-    const reductionMaximumTurns = Math.min(16, Math.max(this.config.aiRetrievalMaxTurns, 12));
+    // The live oversized fixture has six independently relevant documents. A
+    // provider may serialize each search and inspection into its own turn, so
+    // reserve enough of the code-owned hard maximum for six of each, a
+    // measurement turn, and a later terminal turn.
+    const reductionMaximumTurns = Math.min(16, Math.max(this.config.aiRetrievalMaxTurns, 16));
     const compact = reductionCandidates.map((candidate) => ({
       id: candidate.id,
       kind: candidate.kind,

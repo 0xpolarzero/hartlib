@@ -415,43 +415,48 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
         (decision): decision is Extract<ContextDecision, { action: "range" }> =>
           decision.action === "range",
       );
-      if (coordinates.providerRequestIndex === 0) {
+      const searches = request.messages.filter(
+        (message) => message.role === "tool" && message.name === "search_within_candidate",
+      );
+      if (searches.length < rangeDecisions.length) {
+        const decision = rangeDecisions[searches.length];
+        if (decision === undefined) throw new Error("oversized O search candidate is missing");
         return {
           text: "",
-          toolCalls: rangeDecisions.map((decision, index) => ({
-            id: `oversized-o-search-${index + 1}`,
-            name: "search_within_candidate",
-            arguments: { id: decision.id, terms: "binding conclusion" },
-          })),
+          toolCalls: [
+            {
+              id: `oversized-o-search-${searches.length + 1}`,
+              name: "search_within_candidate",
+              arguments: { id: decision.id, terms: "binding conclusion" },
+            },
+          ],
           usage,
           stopReason: "toolUse",
         };
       }
-      if (coordinates.providerRequestIndex === 1) {
-        const searches = request.messages.filter(
-          (message) => message.role === "tool" && message.name === "search_within_candidate",
-        );
-        if (searches.length !== rangeDecisions.length) {
-          throw new Error("oversized O did not search every document candidate");
-        }
+      const inspections = request.messages.filter(
+        (message) => message.role === "tool" && message.name === "inspect_candidate",
+      );
+      if (inspections.length < rangeDecisions.length) {
+        const decision = rangeDecisions[inspections.length];
+        if (decision === undefined) throw new Error("oversized O inspection candidate is missing");
         return {
           text: "",
-          toolCalls: rangeDecisions.map((decision, index) => ({
-            id: `oversized-o-inspect-${index + 1}`,
-            name: "inspect_candidate",
-            arguments: { id: decision.id, range: decision.ranges[0] },
-          })),
+          toolCalls: [
+            {
+              id: `oversized-o-inspect-${inspections.length + 1}`,
+              name: "inspect_candidate",
+              arguments: { id: decision.id, range: decision.ranges[0] },
+            },
+          ],
           usage,
           stopReason: "toolUse",
         };
       }
-      if (coordinates.providerRequestIndex === 2) {
-        const inspections = request.messages.filter(
-          (message) => message.role === "tool" && message.name === "inspect_candidate",
-        );
-        if (inspections.length !== rangeDecisions.length) {
-          throw new Error("oversized O did not inspect every selected document window");
-        }
+      const measurementMessage = [...request.messages]
+        .reverse()
+        .find((message) => message.role === "tool" && message.name === "measure_plan");
+      if (measurementMessage?.role !== "tool") {
         return {
           text: "",
           toolCalls: [
@@ -464,12 +469,6 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
           usage,
           stopReason: "toolUse",
         };
-      }
-      const measurementMessage = [...request.messages]
-        .reverse()
-        .find((message) => message.role === "tool" && message.name === "measure_plan");
-      if (measurementMessage?.role !== "tool") {
-        throw new Error("oversized O terminal request lacks its exact measurement");
       }
       const planMeasurement = JSON.parse(measurementMessage.content) as {
         readonly valid: boolean;
@@ -4140,8 +4139,32 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       operations.planReduction(load, oversized, "single-reduce-plan", 1),
     );
     expect(plan.decisions).toEqual(decisions);
+    const reducerTerminal = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{ readonly payload: unknown }>`
+          select payload
+          from ai_observations
+          where run_id = ${row.runId}
+            and emitting_task = 'single-reduce-plan'
+            and kind = 'context_reducer_terminal'
+          order by created_at desc, id desc
+          limit 1
+        `;
+        return rows[0]?.payload;
+      }),
+    );
+    expect(reducerTerminal).toMatchObject({
+      terminalUsageCoordinate: {
+        taskId: "single-reduce-plan",
+        loopIteration: 0,
+        attempt: 1,
+        providerRequestIndex: 13,
+      },
+    });
     const reducerMeasurements = boundary.requestInputTokens.get("context_reducer") ?? [];
-    expect(reducerMeasurements).toHaveLength(4);
+    expect(reducerMeasurements).toHaveLength(14);
     expect(Math.max(...reducerMeasurements)).toBeLessThanOrEqual(100_000);
     const reduced = await inAiTask(
       row.runId,
