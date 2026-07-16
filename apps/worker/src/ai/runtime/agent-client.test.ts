@@ -53,6 +53,40 @@ const inTask = <Value>(execute: () => Value, attempt = 1, iteration = 0): Value 
   );
 
 describe("canonical agent tool loop", () => {
+  it("recovers a prose-only turn within the existing bounded loop", async () => {
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(completion([]))
+      .mockResolvedValueOnce(
+        completion([{ id: "terminal", name: "emit", arguments: { ok: true } }]),
+      );
+    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
+
+    await expect(
+      inTask(() =>
+        client.toolLoop({
+          requestClass: "fast",
+          model: "glm-5-turbo",
+          system: "system",
+          user: "user",
+          tools: [
+            {
+              definition: { name: "emit", description: "Emit", parameters: {} },
+              execute: async () => ({}),
+            },
+          ],
+          terminalToolName: "emit",
+          validateTerminal: (value) => value,
+          maximumTurns: 2,
+          requestedOutputTokens: 64,
+          reasoning: "medium",
+          coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
+        }),
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
   it("maps malformed post-boundary structured output to the exact role code", async () => {
     const client = new CanonicalAgentClient({
       complete: vi.fn(async () => completion([])),

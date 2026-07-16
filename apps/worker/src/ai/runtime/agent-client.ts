@@ -437,10 +437,20 @@ export class CanonicalAgentClient {
         throw providerOutputError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
       }
       if (toolCalls.length === 0) {
-        throw providerOutputError(
-          new Error("tool loop assistant returned no tool call"),
-          aiRunErrorCodeForRole(input.coordinates.agentRole),
-        );
+        // GLM occasionally returns a prose-only turn while it is deciding
+        // which bounded tool phase to enter. Preserve that response in the
+        // exact conversation and spend the existing loop budget on a
+        // code-owned correction instead of failing the whole retrieval task.
+        messages.push({
+          role: "assistant",
+          content: completion.text,
+          toolCalls: completion.toolCalls,
+        });
+        messages.push({
+          role: "user",
+          content: `Call exactly one advertised tool. The required terminal tool is ${input.terminalToolName}; otherwise use one advertised retrieval tool before terminalizing.`,
+        });
+        continue;
       }
       const priorContinuationObligations = new Map(continuationObligations);
       const exclusiveToolNames = new Set(input.exclusiveToolNames ?? []);
