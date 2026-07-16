@@ -197,6 +197,25 @@ export const withAiChatSmithersProducerFenceEffect = <A, E, R>(
 ): Effect4.Effect<A, E | unknown, R> =>
   withAiChatSmithersProducerFence(connectionString, operation);
 
+/**
+ * Provision a Smithers store while holding the shared schema fence only for
+ * the provisioning operation. The returned store owns a separate connection
+ * and remains usable after the fence scope has been released.
+ */
+export const createAiChatSmithersStorage = <Schemas extends Record<string, z.ZodObject<any>>>(
+  schemas: Schemas,
+  connectionString: string,
+): Promise<SmithersStorage<Schemas>> =>
+  Effect4.runPromise(
+    withAiChatSmithersProducerFenceEffect(
+      connectionString,
+      Effect4.tryPromise({
+        try: () => createSmithersStorage(schemas, { connectionString }),
+        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      }),
+    ),
+  );
+
 export async function smithersRunExists<Schemas extends Record<string, z.ZodObject<any>>>(
   storage: Pick<CreateSmithersApi<Schemas>, "db">,
   runId: string,

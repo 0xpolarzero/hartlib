@@ -13,7 +13,16 @@ import type {
   NormalizedExecutionPlan,
   TopicPacket,
 } from "../runtime/types";
-import { createSmithersStorage, runSmithersWorkflow } from "../smithers-interop";
+import {
+  AI_CHAT_SMITHERS_SCHEMA_FENCE,
+  createAiChatSmithersStorage,
+  createSmithersStorage,
+  runSmithersWorkflow,
+  runWithAiChatSmithersProducerFence,
+  smithersRunExists,
+  type SmithersStorage,
+} from "../smithers-interop";
+import { deleteSmithersRowsForRun } from "./smithers-cleanup";
 import {
   aiChatRetryPolicy,
   aiChatRuntimeInputSchema,
@@ -1511,6 +1520,116 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
       );
     }
   });
+
+  it("releases startup fencing before cleanup while retaining per-workflow fencing", async () => {
+    let releaseExclusiveStartupLock!: () => void;
+    const startupLockReleased = new Promise<void>((resolve) => {
+      releaseExclusiveStartupLock = resolve;
+    });
+    let exclusiveStartupLockReady!: () => void;
+    const startupLockReady = new Promise<void>((resolve) => {
+      exclusiveStartupLockReady = resolve;
+    });
+    const exclusiveStartupLock = runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              select pg_advisory_xact_lock(
+                hashtextextended(${AI_CHAT_SMITHERS_SCHEMA_FENCE}, 0)
+              )
+            `;
+            yield* Effect.sync(exclusiveStartupLockReady);
+            yield* Effect.promise(() => startupLockReleased);
+          }),
+        );
+      }),
+      workflowDatabaseUrl(),
+    );
+    await startupLockReady;
+
+    let storage: SmithersStorage<typeof aiChatSchemas> | undefined;
+    let storagePromise: Promise<SmithersStorage<typeof aiChatSchemas>> | undefined;
+    let releaseWorkflowOperation: (() => void) | undefined;
+    let workflowProducer: Promise<void> | undefined;
+    let exclusiveCleanup: Promise<void> | undefined;
+    try {
+      let startupProvisioningSettled = false;
+      storagePromise = createAiChatSmithersStorage(aiChatSchemas, workflowDatabaseUrl()).then(
+        (createdStorage) => {
+          startupProvisioningSettled = true;
+          return createdStorage;
+        },
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(startupProvisioningSettled).toBe(false);
+
+      releaseExclusiveStartupLock();
+      await exclusiveStartupLock;
+      storage = await storagePromise;
+      await expect(
+        smithersRunExists(storage, `ai-chat:startup-fence-${crypto.randomUUID()}`),
+      ).resolves.toBe(false);
+
+      await expect(
+        runDb(
+          deleteSmithersRowsForRun(`ai-chat:startup-fence-${crypto.randomUUID()}`),
+          workflowDatabaseUrl(),
+        ),
+      ).resolves.toBeUndefined();
+
+      const workflowOperationReleased = new Promise<void>((resolve) => {
+        releaseWorkflowOperation = resolve;
+      });
+      let workflowOperationEntered!: () => void;
+      const workflowOperationReady = new Promise<void>((resolve) => {
+        workflowOperationEntered = resolve;
+      });
+      let workflowProducerSettled = false;
+      workflowProducer = runWithAiChatSmithersProducerFence(workflowDatabaseUrl(), async () => {
+        workflowOperationEntered();
+        await workflowOperationReleased;
+      }).finally(() => {
+        workflowProducerSettled = true;
+      });
+      await workflowOperationReady;
+
+      let exclusiveCleanupSettled = false;
+      exclusiveCleanup = runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.withTransaction(
+            sql`
+              select pg_advisory_xact_lock(
+                hashtextextended(${AI_CHAT_SMITHERS_SCHEMA_FENCE}, 0)
+              )
+            `.pipe(Effect.asVoid),
+          );
+        }),
+        workflowDatabaseUrl(),
+      ).then(() => {
+        exclusiveCleanupSettled = true;
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(exclusiveCleanupSettled).toBe(false);
+      expect(workflowProducerSettled).toBe(false);
+
+      releaseWorkflowOperation?.();
+      await expect(workflowProducer).resolves.toBeUndefined();
+      await expect(exclusiveCleanup).resolves.toBeUndefined();
+    } finally {
+      releaseWorkflowOperation?.();
+      await workflowProducer?.catch(() => undefined);
+      await exclusiveCleanup?.catch(() => undefined);
+      releaseExclusiveStartupLock();
+      await exclusiveStartupLock.catch(() => undefined);
+      if (storage === undefined) {
+        storage = await storagePromise?.catch(() => undefined);
+      }
+      await storage?.close();
+    }
+  }, 30_000);
 
   it.each([
     ["clarify", "finalize:clarification"],

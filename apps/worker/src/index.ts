@@ -12,10 +12,7 @@ import { PlatformFileStoreLive } from "./platform/file-store";
 import { PdfTextExtractorLive } from "./platform/pdf-text";
 import { ExportObjectStoreServiceLive, NotificationEmailServiceLive } from "./platform/adapters";
 import { initializeWorkerTelemetry } from "./telemetry";
-import {
-  createSmithersStorage,
-  withAiChatSmithersProducerFenceEffect,
-} from "./ai/smithers-interop";
+import { createAiChatSmithersStorage } from "./ai/smithers-interop";
 import { aiChatSchemas } from "./ai/workflow/ai-chat";
 
 const program = Effect.gen(function* () {
@@ -68,13 +65,10 @@ const program = Effect.gen(function* () {
   // Schema provisioning is the only startup operation that needs the shared
   // fence. Per-workflow producer operations acquire the same fence in their
   // handler, while cleanup and retention take its exclusive side.
-  const smithersStorage = yield* withAiChatSmithersProducerFenceEffect(
-    config.databaseUrl,
-    Effect.tryPromise({
-      try: () => createSmithersStorage(aiChatSchemas, { connectionString: config.databaseUrl }),
-      catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-    }),
-  );
+  const smithersStorage = yield* Effect.tryPromise({
+    try: () => createAiChatSmithersStorage(aiChatSchemas, config.databaseUrl),
+    catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+  });
 
   const workerLoops = Array.from({ length: Math.max(1, config.workerConcurrency) }, () =>
     runWorker(config.jobPollIntervalMs, { smithersStorage }),
