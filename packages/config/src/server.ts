@@ -438,7 +438,7 @@ const WorkerEnvironment = Schema.Struct({
   AI_FANOUT_MAX_TOPICS: Schema.optional(Schema.Number),
   AI_TOPIC_RESEARCH_MAX_CONCURRENCY: NumberWithDefault(6),
   AI_TOPIC_ANSWER_MAX_CONCURRENCY: NumberWithDefault(3),
-  AI_RETRIEVAL_MAX_TURNS: NumberWithDefault(7),
+  AI_RETRIEVAL_MAX_TURNS: NumberWithDefault(8),
   AI_INTERNAL_MAX_SEARCHES: NumberWithDefault(8),
   AI_INTERNAL_MAX_INSPECTIONS: NumberWithDefault(8),
   AI_WEB_MAX_SEARCHES: NumberWithDefault(4),

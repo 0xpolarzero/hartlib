@@ -39,7 +39,7 @@ describe("worker config", () => {
     ["aiFanoutMaxTopics", 3],
     ["aiTopicResearchMaxConcurrency", 6],
     ["aiTopicAnswerMaxConcurrency", 3],
-    ["aiRetrievalMaxTurns", 7],
+    ["aiRetrievalMaxTurns", 8],
     ["aiInternalMaxSearches", 8],
     ["aiInternalMaxInspections", 8],
     ["aiWebMaxSearches", 4],
