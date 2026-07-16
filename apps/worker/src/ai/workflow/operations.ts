@@ -849,8 +849,22 @@ const searchWithinCandidatePage = (
       reordered.push(entry);
     }
 
-    const isCanonicalStarter = (text: string): boolean => {
-      return !/\p{Mark}/u.test(text);
+    const isCombiningMark = (text: string): boolean => /\p{Mark}/u.test(text);
+    const canComposeHangul = (starter: string, entry: string): boolean => {
+      const starterCodePoint = starter.codePointAt(0);
+      const entryCodePoint = entry.codePointAt(0);
+      if (starterCodePoint === undefined || entryCodePoint === undefined) return false;
+      return (
+        (starterCodePoint >= 0x1100 &&
+          starterCodePoint <= 0x1112 &&
+          entryCodePoint >= 0x1161 &&
+          entryCodePoint <= 0x1175) ||
+        (starterCodePoint >= 0xac00 &&
+          starterCodePoint <= 0xd7a3 &&
+          (starterCodePoint - 0xac00) % 28 === 0 &&
+          entryCodePoint >= 0x11a8 &&
+          entryCodePoint <= 0x11c2)
+      );
     };
     const hasStrictlyGreaterCombiningClass = (current: string, previous: string): boolean => {
       const normalized = Array.from((current + previous).normalize("NFD"));
@@ -860,19 +874,19 @@ const searchWithinCandidatePage = (
     let starterIndex = -1;
     let previousCombiningMark: string | undefined;
     for (const entry of reordered) {
-      if (isCanonicalStarter(entry.text)) {
-        composed.push(entry);
-        starterIndex = composed.length - 1;
-        previousCombiningMark = undefined;
-        continue;
-      }
-
+      const combiningMark = isCombiningMark(entry.text);
       const starter = starterIndex < 0 ? undefined : composed[starterIndex];
       const blocked =
+        combiningMark &&
         previousCombiningMark !== undefined &&
         !hasStrictlyGreaterCombiningClass(entry.text, previousCombiningMark);
       const candidate = starter?.text ? (starter.text + entry.text).normalize("NFC") : entry.text;
-      if (starter !== undefined && !blocked && Array.from(candidate).length === 1) {
+      const canCompose =
+        starter !== undefined &&
+        !blocked &&
+        Array.from(candidate).length === 1 &&
+        (combiningMark || canComposeHangul(starter.text, entry.text));
+      if (canCompose) {
         const charStart = Math.min(starter.span.charStart, entry.span.charStart);
         const charEnd = Math.max(starter.span.charEnd, entry.span.charEnd);
         composed[starterIndex] = {
@@ -882,7 +896,12 @@ const searchWithinCandidatePage = (
         previousCombiningMark = undefined;
       } else {
         composed.push(entry);
-        previousCombiningMark = entry.text;
+        if (combiningMark) {
+          previousCombiningMark = entry.text;
+        } else {
+          starterIndex = composed.length - 1;
+          previousCombiningMark = undefined;
+        }
       }
     }
     const foldedParts: string[] = [];

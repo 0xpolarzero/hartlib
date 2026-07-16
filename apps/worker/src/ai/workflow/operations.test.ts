@@ -372,6 +372,35 @@ describe("document selection range semantics", () => {
     ]);
   });
 
+  it("matches Hangul syllables through decomposed Jamo with exact UTF-16 spans", () => {
+    const text = "가 가";
+    const candidate: AnswerCandidate = {
+      id: "document:hangul-normalization",
+      kind: "document",
+      rank: 0,
+      purpose: "test Hangul normalization spans",
+      sourceId: "source-hangul-normalization",
+      documentId: "document-hangul-normalization",
+      documentVersionId: "version-hangul-normalization",
+      contentHash: "0".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Hangul normalization",
+      publicProvenance: {
+        documentTitle: "Hangul normalization",
+        citationUrl: "https://example.test/hangul-normalization",
+      },
+      renderedTokenCount: 0,
+    };
+
+    const expected = [
+      { charStart: 0, charEnd: 1 },
+      { charStart: 2, charEnd: 4 },
+    ];
+    expect(searchWithinCandidate(candidate, "가")).toEqual(expected);
+    expect(searchWithinCandidate(candidate, "가")).toEqual(expected);
+  });
+
   it("surfaces structurally distinct verbatim match previews with exact document ranges", () => {
     const text =
       "Region 1 signed row 1: curtailment baseline. " +
