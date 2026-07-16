@@ -1142,8 +1142,9 @@ export class InternalRetrievalProtocolError extends Error {
 
 /**
  * Enforces A's two ordinary search/refinement turns while preserving required
- * cursor continuations. Each provider turn may contain one search call, and a
- * completed non-empty result closes further searching for that target.
+ * cursor continuations. Each provider turn may contain one search call. A
+ * complete result may close one exact query, but a second distinct query is
+ * still allowed so a comparison can cover its other named subject.
  */
 export class InternalRetrievalSearchProtocol {
   private readonly ordinarySearchTurns = new Set<number>();
@@ -1153,7 +1154,7 @@ export class InternalRetrievalSearchProtocol {
     { readonly cursor: number; readonly providerRequestIndex: number }
   >();
   private readonly cursorContinuationTurns = new Set<number>();
-  private completeNonEmptySearchTurn: number | undefined;
+  private readonly completedNonEmptySearchQueries = new Set<string>();
 
   beforeSearch(
     query: InternalQuery,
@@ -1195,14 +1196,9 @@ export class InternalRetrievalSearchProtocol {
         "internal search has an unresolved cursor continuation",
       );
     }
-    const hasPendingCurrentTurn = this.pendingCursors.size > 0;
-    if (
-      this.completeNonEmptySearchTurn !== undefined &&
-      this.completeNonEmptySearchTurn !== providerRequestIndex &&
-      !hasPendingCurrentTurn
-    ) {
+    if (this.completedNonEmptySearchQueries.has(key)) {
       throw new InternalRetrievalProtocolError(
-        "internal search cannot continue after a complete non-empty result",
+        "internal search cannot repeat a completed query without its returned cursor",
       );
     }
     if (!this.ordinarySearchTurns.has(providerRequestIndex)) {
@@ -1224,7 +1220,7 @@ export class InternalRetrievalSearchProtocol {
     const key = canonicalInternalSearchQueryKey(query);
     if (complete) {
       this.pendingCursors.delete(key);
-      if (itemCount > 0) this.completeNonEmptySearchTurn = providerRequestIndex;
+      if (itemCount > 0) this.completedNonEmptySearchQueries.add(key);
       return;
     }
     if (cursor !== null) this.pendingCursors.set(key, { cursor, providerRequestIndex });
@@ -3091,7 +3087,6 @@ export class CanonicalWorkflowOperations {
     const providerExposures = new Map<string, InternalProviderExposure>();
     const inspectedDocumentRanges = new Set<string>();
     let protocolErrorReturned = false;
-    let completeNonEmptySearch = false;
     const parseSearchInternalArguments = (value: unknown) =>
       z
         .object({ query: InternalQuerySchema, cursor: z.number().int().min(0).optional() })
@@ -3188,11 +3183,6 @@ export class CanonicalWorkflowOperations {
       // an oversized result and leave a successful search without a manifest.
       reserveFinalTurnForTerminal: true,
       enforceTerminalTurn: true,
-      disabledToolsForTurn: () =>
-        completeNonEmptySearch
-          ? ["search_internal", ...(inspections > 0 ? ["inspect_internal"] : [])]
-          : [],
-      terminalOnlyForTurn: () => completeNonEmptySearch && inspections > 0,
       disabledToolResult: (toolName) => {
         protocolErrorReturned = true;
         return {
@@ -3390,7 +3380,6 @@ export class CanonicalWorkflowOperations {
                 bounded.cursor,
                 coordinates.providerRequestIndex,
               );
-              completeNonEmptySearch ||= bounded.complete && bounded.items.length > 0;
               return {
                 ...bounded,
                 __briefSourceExposures: bounded.items.map((item) =>
@@ -3452,7 +3441,6 @@ export class CanonicalWorkflowOperations {
               bounded.cursor,
               coordinates.providerRequestIndex,
             );
-            completeNonEmptySearch ||= bounded.complete && bounded.items.length > 0;
             return {
               ...bounded,
               __briefSourceExposures: bounded.items.map((item) =>

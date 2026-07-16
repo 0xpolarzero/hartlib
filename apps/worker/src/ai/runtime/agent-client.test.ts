@@ -919,6 +919,51 @@ describe("canonical agent tool loop", () => {
     expect(first).not.toHaveBeenCalled();
   });
 
+  it("recovers a strict non-terminal argument failure without executing the call", async () => {
+    const execute = vi.fn(async () => ({ complete: true }));
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completion([{ id: "search-1", name: "search", arguments: { stale: true } }]),
+      )
+      .mockResolvedValueOnce(
+        completion([{ id: "terminal-1", name: "emit", arguments: { ok: true } }]),
+      );
+    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
+
+    await expect(
+      inTask(() =>
+        client.toolLoop({
+          requestClass: "fast",
+          model: "glm-5-turbo",
+          system: "system",
+          user: "user",
+          tools: [
+            {
+              definition: { name: "search", description: "Search", parameters: {} },
+              parseArguments: () => {
+                throw new Error("stale argument");
+              },
+              execute,
+            },
+            {
+              definition: { name: "emit", description: "Emit", parameters: {} },
+              execute: async () => ({ complete: true }),
+            },
+          ],
+          terminalToolName: "emit",
+          validateTerminal: (value) => value,
+          maximumTurns: 2,
+          requestedOutputTokens: 64,
+          reasoning: "medium",
+          coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
+        }),
+      ),
+    ).resolves.toEqual({ ok: true });
+    expect(execute).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
   it("strictly parses stale disabled siblings before executing visible calls", async () => {
     const complete = vi.fn(async () =>
       completion([

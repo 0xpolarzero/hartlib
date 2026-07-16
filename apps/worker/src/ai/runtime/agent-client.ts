@@ -35,8 +35,8 @@ export interface ToolLoopTool {
   readonly definition: ProviderToolDefinition;
   /**
    * Validate provider-authored arguments before any sibling tool call runs.
-   * Production tools provide their strict Zod parser; the fallback still
-   * rejects malformed non-object call arguments at the protocol boundary.
+   * Production tools provide their strict Zod parser; a schema rejection is
+   * recoverable within the bounded loop and never executes the call.
    */
   readonly parseArguments?: (value: unknown) => Readonly<Record<string, unknown>>;
   readonly execute: (
@@ -215,7 +215,23 @@ const parseToolCalls = (
       throw new Error(`unknown tool call ${candidate.name}`);
     }
     const parseArguments = tool.parseArguments ?? parseToolArguments;
-    const arguments_ = parseArguments(candidate.arguments);
+    let arguments_: Readonly<Record<string, unknown>>;
+    try {
+      arguments_ = parseArguments(candidate.arguments);
+    } catch (error) {
+      // A tool-specific schema failure is still rejected before any sibling
+      // executes, but it is recoverable within the same bounded tool loop.
+      // Provider tool arguments are commonly emitted one turn too early or
+      // with a stale field; asking for the exact advertised schema preserves
+      // fail-closed execution without burning the owning task retry.
+      if (tool.parseArguments !== undefined) {
+        throw new RecoverableToolCallError(
+          `tool call ${candidate.name} arguments failed its strict schema`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
     if (!isJsonRecord(arguments_)) {
       throw new Error(`tool call ${candidate.name} arguments did not produce an object`);
     }

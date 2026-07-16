@@ -570,16 +570,15 @@ describe("internal retrieval search protocol", () => {
     );
   });
 
-  it("closes every later target search after a non-empty result", () => {
+  it("allows a distinct subject search after a non-empty result", () => {
     const protocol = new InternalRetrievalSearchProtocol();
 
     protocol.beforeSearch(documentQuery, undefined, 0);
     protocol.afterSearch(documentQuery, true, 1, null, 0);
-    expect(() => protocol.beforeSearch(documentQuery, undefined, 1)).toThrow(
-      "internal search cannot continue after a complete non-empty result",
-    );
-    expect(() => protocol.beforeSearch(chatQuery, undefined, 1)).toThrow(
-      "internal search cannot continue after a complete non-empty result",
+    protocol.beforeSearch(chatQuery, undefined, 1);
+    protocol.afterSearch(chatQuery, true, 1, null, 1);
+    expect(() => protocol.beforeSearch(documentQuery, undefined, 2)).toThrow(
+      "internal search cannot repeat a completed query without its returned cursor",
     );
   });
 
@@ -608,7 +607,7 @@ describe("internal retrieval search protocol", () => {
     );
   });
 
-  it("requires cursor continuation and closes repeated target searching after non-empty completion", () => {
+  it("requires cursor continuation and rejects repeating a completed query", () => {
     const protocol = new InternalRetrievalSearchProtocol();
 
     protocol.beforeSearch(documentQuery, undefined, 0);
@@ -626,11 +625,9 @@ describe("internal retrieval search protocol", () => {
     );
 
     expect(() => protocol.beforeSearch(documentQuery, undefined, 2)).toThrow(
-      "internal search cannot continue after a complete non-empty result",
+      "internal search cannot repeat a completed query without its returned cursor",
     );
-    expect(() => protocol.beforeSearch(chatQuery, undefined, 2)).toThrow(
-      "internal search cannot continue after a complete non-empty result",
-    );
+    protocol.beforeSearch(chatQuery, undefined, 2);
   });
 });
 
