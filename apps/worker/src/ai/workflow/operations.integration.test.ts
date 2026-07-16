@@ -605,6 +605,7 @@ class WebManifestAgent extends CanonicalAgentClient {
       | "undiscovered-fetch"
       | "same-turn-fetch"
       | "duplicate"
+      | "duplicate-url"
       | "terminal-first"
       | "empty-after-fetch" = "valid",
   ) {
@@ -679,7 +680,12 @@ class WebManifestAgent extends CanonicalAgentClient {
       purpose: "answer from the official report",
     };
     const output = input.validateTerminal({
-      entries: this.mode === "duplicate" ? [entry, entry] : [entry],
+      entries:
+        this.mode === "duplicate"
+          ? [entry, entry]
+          : this.mode === "duplicate-url"
+            ? [entry, { ...entry, quote: "Published findings." }]
+            : [entry],
     });
     await input.onTerminal?.(output, terminalCoordinates, {
       text: "",
@@ -2193,6 +2199,16 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         ).retrieveWeb(load, "What is the current official update?", "duplicate-web-selector"),
       ),
     ).rejects.toThrow("web evidence manifest contains duplicate references");
+    await expect(
+      inTask("duplicate-web-url-selector", () =>
+        new CanonicalWorkflowOperations(
+          databaseUrlFor(databaseName),
+          workflowConfig,
+          new WebManifestAgent(officialQuote, "duplicate-url"),
+          web,
+        ).retrieveWeb(load, "What is the current official update?", "duplicate-web-url-selector"),
+      ),
+    ).rejects.toThrow("web evidence manifest contains duplicate URLs");
     await expect(
       inTask("empty-after-fetch-web-selector", () =>
         new CanonicalWorkflowOperations(

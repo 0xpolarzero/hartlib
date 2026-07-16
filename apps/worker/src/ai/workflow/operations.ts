@@ -4260,6 +4260,10 @@ export class CanonicalWorkflowOperations {
         if (new Set(identities).size !== identities.length) {
           throw new Error("web evidence manifest contains duplicate references");
         }
+        const urls = entries.map((entry) => canonicalizeWebUrl(entry.url));
+        if (new Set(urls).size !== urls.length) {
+          throw new Error("web evidence manifest contains duplicate URLs");
+        }
         return entries;
       },
       recoverTerminal: (_value, error) => {
@@ -4268,7 +4272,7 @@ export class CanonicalWorkflowOperations {
           complete: true,
           terminalRejected: true,
           message:
-            "The terminal evidence was rejected because every selected URL must be fetched first, every quote must be verbatim, and references must be unique. Fetch one exact discovered URL, or emit an empty manifest if no discovered page is relevant.",
+            "The terminal evidence was rejected because every selected URL must be fetched first, every quote must be verbatim, each fetched URL may appear at most once, and references must be unique. Fetch one exact discovered URL, or emit an empty manifest if no discovered page is relevant.",
           discoveredUrls: [...discoveredUrls.keys()],
           fetchedUrls: [...fetched.keys()],
         };
