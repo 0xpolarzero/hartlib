@@ -114,6 +114,7 @@ describe("canonical AI role prompts", () => {
       "If any tool result contains protocolError, stop all search and inspection immediately",
     );
     expect(InternalRetrievalPrompt).toContain("retrieve each distinct named subject");
+    expect(InternalRetrievalPrompt).toContain("emit an empty manifest without calling search_internal");
     expect(InternalRetrievalPrompt).toContain("or its exact recoveryReferences echo");
     expect(InternalRetrievalPrompt).toContain(
       "Reserve the final provider turn for emit_internal_manifest",
@@ -131,6 +132,7 @@ describe("canonical AI role prompts", () => {
     expect(WebResearchPrompt).toContain("Search snippets are discovery hints only");
     expect(WebResearchPrompt).toContain("only the smallest set of directly relevant pages");
     expect(WebResearchPrompt).toContain("Use web tools only when this topic explicitly asks");
+    expect(WebResearchPrompt).toContain("A conceptual comparison such as how two internal energy subjects work remains non-web");
     expect(WebResearchPrompt).toContain(
       "If any web_fetch succeeds, emit at least one exact quotation from the fetched page",
     );
