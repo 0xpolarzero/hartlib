@@ -4166,6 +4166,9 @@ export class CanonicalWorkflowOperations {
           );
         }
         const entries = WebManifestOutputSchema.parse(value).entries;
+        if (fetched.size > 0 && entries.length === 0) {
+          throw new Error("web terminal evidence cannot be empty after a fetched page");
+        }
         for (const entry of entries) {
           const normalizedUrl = canonicalizeWebUrl(entry.url);
           const page = fetched.get(normalizedUrl);

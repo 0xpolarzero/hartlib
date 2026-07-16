@@ -605,7 +605,8 @@ class WebManifestAgent extends CanonicalAgentClient {
       | "undiscovered-fetch"
       | "same-turn-fetch"
       | "duplicate"
-      | "terminal-first" = "valid",
+      | "terminal-first"
+      | "empty-after-fetch" = "valid",
   ) {
     super({} as ExactPiBoundary);
   }
@@ -665,6 +666,9 @@ class WebManifestAgent extends CanonicalAgentClient {
       readonly url: string;
     };
     await invokeToolLoopProviderHook(input, terminalCoordinates);
+    if (this.mode === "empty-after-fetch") {
+      return input.validateTerminal({ entries: [] });
+    }
     const entry = {
       url: page.url,
       title: "Fabricated model title",
@@ -2189,6 +2193,16 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         ).retrieveWeb(load, "What changed?", "duplicate-web-selector"),
       ),
     ).rejects.toThrow("web evidence manifest contains duplicate references");
+    await expect(
+      inTask("empty-after-fetch-web-selector", () =>
+        new CanonicalWorkflowOperations(
+          databaseUrlFor(databaseName),
+          workflowConfig,
+          new WebManifestAgent(officialQuote, "empty-after-fetch"),
+          web,
+        ).retrieveWeb(load, "What changed?", "empty-after-fetch-web-selector"),
+      ),
+    ).rejects.toThrow("web terminal evidence cannot be empty after a fetched page");
 
     for (const [mode, expected] of [
       ["direct-fetch", "canonical URL discovered by an earlier complete search turn"],
