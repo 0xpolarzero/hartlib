@@ -169,10 +169,14 @@ const isJsonRecord = (value: unknown): value is Readonly<Record<string, unknown>
 
 const parseToolArguments = (value: unknown): Readonly<Record<string, unknown>> => {
   if (!isJsonRecord(value)) {
-    throw new Error("tool call arguments must be a JSON object");
+    throw new RecoverableToolCallError("tool call arguments must be a JSON object");
   }
   return value;
 };
+
+class RecoverableToolCallError extends Error {
+  readonly _tag = "RecoverableToolCallError";
+}
 
 interface ParsedToolCall {
   readonly id: string;
@@ -434,6 +438,9 @@ export class CanonicalAgentClient {
       try {
         toolCalls = parseToolCalls(completion.toolCalls, tools);
       } catch (error) {
+        if (!(error instanceof RecoverableToolCallError)) {
+          throw providerOutputError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
+        }
         // Do not execute a malformed provider call. Preserve it in the exact
         // bounded conversation and spend a remaining turn on a code-owned
         // schema correction; the loop still fails closed if no turn remains.

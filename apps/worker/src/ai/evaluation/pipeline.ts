@@ -5435,26 +5435,6 @@ const sourceAudit = async (
   }[]
 > => {
   const fixture = fixtureFor(manifest.caseId);
-  const currentWebPolicy = await db(
-    connectionString,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
-      const rows = yield* sql<{
-        readonly enabled: boolean;
-        readonly allowedDomains: readonly string[] | null;
-      }>`
-        select coalesce(settings.web_search_enabled, false) as enabled,
-               settings.web_domain_allowlist as "allowedDomains"
-        from (select 1) seed
-        left join client_company_ai_settings settings
-          on settings.company_id = ${manifest.companyId}
-      `;
-      return {
-        enabled: rows[0]?.enabled === true,
-        allowedDomains: rows[0]?.allowedDomains ?? null,
-      };
-    }),
-  );
   const exposedSourceIds = exposedGoldenSourceIds(manifest, evidence, storedDocuments);
   const sourceIds = new Set(
     evidence.sources.flatMap((source) => {
