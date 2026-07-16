@@ -161,7 +161,7 @@ const sourceExposureAttestationKey = (input: AiSourceExposureInput): string =>
     input.providerRequestIndex,
     createHash("sha256")
       .update(
-        JSON.stringify([
+        stableJson([
           input.sourceKind,
           input.logicalSourceIdentity,
           input.contentItemIdentity,

@@ -241,33 +241,79 @@ export const executeGeneralPlannerProviderTurn = async (
     windows.push({ charStart, charEnd });
     visible.set(sourceId, windows);
   };
+  type OriginalSpan = { readonly charStart: number; readonly charEnd: number };
+  const normalizeWithOriginalSpans = (
+    value: string,
+    originalOffset = 0,
+  ): { readonly text: string; readonly spans: readonly OriginalSpan[] } => {
+    const normalizedParts: string[] = [];
+    const spans: OriginalSpan[] = [];
+    for (let index = 0; index < value.length; ) {
+      const codePoint = value.codePointAt(index);
+      if (codePoint === undefined) break;
+      const source = String.fromCodePoint(codePoint);
+      const span = {
+        charStart: originalOffset + index,
+        charEnd: originalOffset + index + source.length,
+      };
+      const normalized = source
+        .normalize("NFKD")
+        .replace(/\p{Mark}/gu, "")
+        .toLocaleLowerCase("en-US");
+      for (const normalizedCodePoint of Array.from(normalized)) {
+        normalizedParts.push(normalizedCodePoint);
+        spans.push(span);
+      }
+      index += source.length;
+    }
+    return { text: normalizedParts.join(""), spans };
+  };
   const normalizedTokens = (value: string): readonly string[] =>
-    value
-      .normalize("NFKD")
-      .replace(/\p{Mark}/gu, "")
-      .toLocaleLowerCase("en-US")
-      .split(/[^\p{Letter}\p{Number}]+/u)
+    normalizeWithOriginalSpans(value)
+      .text.split(/[^\p{Letter}\p{Number}]+/u)
       .filter((token) => token.length >= 3);
   const searchMatches = (query: string) => {
     const terms = [...new Set(normalizedTokens(query))];
     return fixture.evidence
       .flatMap((source) => {
-        const normalized = source.content
-          .normalize("NFKD")
-          .replace(/\p{Mark}/gu, "")
-          .toLocaleLowerCase("en-US");
-        const positions = terms
-          .map((term) => normalized.indexOf(term))
-          .filter((position) => position >= 0);
-        if (positions.length === 0) return [];
-        const anchor = Math.min(...positions);
+        const normalized = normalizeWithOriginalSpans(source.content);
+        const matchesByTerm = terms.map((term) => {
+          const normalizedCodePoints = Array.from(normalized.text);
+          const termCodePoints = Array.from(term);
+          const positions: number[] = [];
+          for (
+            let position = 0;
+            position <= normalizedCodePoints.length - termCodePoints.length;
+            position += 1
+          ) {
+            if (
+              normalizedCodePoints.slice(position, position + termCodePoints.length).join("") ===
+              term
+            ) {
+              positions.push(position);
+            }
+          }
+          return positions.map((position) => {
+            const start = normalized.spans[position];
+            const end = normalized.spans[position + termCodePoints.length - 1];
+            if (start === undefined || end === undefined) {
+              throw new Error("general planner search lost an original UTF-16 span");
+            }
+            return { charStart: start.charStart, charEnd: end.charEnd };
+          });
+        });
+        const matches = matchesByTerm.flat();
+        if (matches.length === 0) return [];
+        const anchor = Math.min(...matches.map((match) => match.charStart));
         const charStart = Math.max(0, anchor - 500);
         const charEnd = Math.min(source.content.length, anchor + 1_500);
         return [
           {
             sourceId: source.sourceId,
             kind: source.kind,
-            score: positions.length / Math.max(1, terms.length),
+            score:
+              matchesByTerm.filter((termMatches) => termMatches.length > 0).length /
+              Math.max(1, terms.length),
             charStart,
             charEnd,
             text: source.content.slice(charStart, charEnd),

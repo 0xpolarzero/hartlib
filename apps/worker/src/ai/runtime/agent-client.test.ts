@@ -849,6 +849,106 @@ describe("canonical agent tool loop", () => {
     expect(first).not.toHaveBeenCalled();
   });
 
+  it("strictly parses stale disabled siblings before executing visible calls", async () => {
+    const complete = vi.fn(async () =>
+      completion([
+        { id: "first-1", name: "first", arguments: {} },
+        { id: "disabled-1", name: "disabled", arguments: { forged: true } },
+      ]),
+    );
+    const first = vi.fn(async () => ({ complete: true }));
+    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
+
+    await expect(
+      inTask(() =>
+        client.toolLoop({
+          requestClass: "main",
+          model: "glm-5-turbo",
+          system: "system",
+          user: "user",
+          tools: [
+            {
+              definition: { name: "first", description: "First", parameters: {} },
+              execute: first,
+            },
+            {
+              definition: { name: "disabled", description: "Disabled", parameters: {} },
+              parseArguments: (value) => {
+                if (
+                  value === null ||
+                  typeof value !== "object" ||
+                  Array.isArray(value) ||
+                  Object.keys(value).length !== 0
+                ) {
+                  throw new Error("disabled arguments are malformed");
+                }
+                return value as Readonly<Record<string, unknown>>;
+              },
+              execute: async () => ({ complete: true }),
+            },
+            {
+              definition: { name: "emit", description: "Emit", parameters: {} },
+              execute: async () => ({ complete: true }),
+            },
+          ],
+          disabledToolsForTurn: () => ["disabled"],
+          terminalToolName: "emit",
+          validateTerminal: (value) => value,
+          maximumTurns: 1,
+          requestedOutputTokens: 64,
+          reasoning: "medium",
+          coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "internal_retrieval_failed" });
+    expect(first).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate sibling tool-call IDs before executing any tool", async () => {
+    const complete = vi.fn(async () =>
+      completion([
+        { id: "duplicate", name: "first", arguments: {} },
+        { id: "duplicate", name: "second", arguments: {} },
+      ]),
+    );
+    const first = vi.fn(async () => ({ complete: true }));
+    const second = vi.fn(async () => ({ complete: true }));
+    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
+
+    await expect(
+      inTask(() =>
+        client.toolLoop({
+          requestClass: "main",
+          model: "glm-5-turbo",
+          system: "system",
+          user: "user",
+          tools: [
+            {
+              definition: { name: "first", description: "First", parameters: {} },
+              execute: first,
+            },
+            {
+              definition: { name: "second", description: "Second", parameters: {} },
+              execute: second,
+            },
+            {
+              definition: { name: "emit", description: "Emit", parameters: {} },
+              execute: async () => ({ complete: true }),
+            },
+          ],
+          terminalToolName: "emit",
+          validateTerminal: (value) => value,
+          maximumTurns: 1,
+          requestedOutputTokens: 64,
+          reasoning: "medium",
+          coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "internal_retrieval_failed" });
+    expect(first).not.toHaveBeenCalled();
+    expect(second).not.toHaveBeenCalled();
+  });
+
   it("suppresses every later non-disabled sibling after an incomplete result", async () => {
     const complete = vi
       .fn()

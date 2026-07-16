@@ -183,11 +183,11 @@ interface ParsedToolCall {
 const parseToolCalls = (
   value: unknown,
   tools: ReadonlyMap<string, ToolLoopTool>,
-  skipStrictArgumentParsing: ReadonlySet<string>,
 ): readonly ParsedToolCall[] => {
   if (!Array.isArray(value)) {
     throw new Error("assistant tool calls must be an array");
   }
+  const ids = new Set<string>();
   return value.map((candidate, index) => {
     if (!isJsonRecord(candidate)) {
       throw new Error(`tool call ${index} must be an object`);
@@ -202,13 +202,15 @@ const parseToolCalls = (
     ) {
       throw new Error(`tool call ${index} has an invalid shape`);
     }
+    if (ids.has(candidate.id)) {
+      throw new Error(`tool call ${index} reuses id ${candidate.id}`);
+    }
+    ids.add(candidate.id);
     const tool = tools.get(candidate.name);
     if (tool === undefined) {
       throw new Error(`unknown tool call ${candidate.name}`);
     }
-    const parseArguments = skipStrictArgumentParsing.has(candidate.name)
-      ? parseToolArguments
-      : (tool.parseArguments ?? parseToolArguments);
+    const parseArguments = tool.parseArguments ?? parseToolArguments;
     const arguments_ = parseArguments(candidate.arguments);
     if (!isJsonRecord(arguments_)) {
       throw new Error(`tool call ${candidate.name} arguments did not produce an object`);
@@ -430,11 +432,7 @@ export class CanonicalAgentClient {
       }
       let toolCalls: readonly ParsedToolCall[];
       try {
-        toolCalls = parseToolCalls(
-          completion.toolCalls,
-          tools,
-          new Set([...disabledTools, input.terminalToolName]),
-        );
+        toolCalls = parseToolCalls(completion.toolCalls, tools);
       } catch (error) {
         throw providerOutputError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
       }

@@ -849,43 +849,42 @@ const searchWithinCandidatePage = (
       reordered.push(entry);
     }
 
-    const composedText = reorderedText.normalize("NFC");
-    const composed = [] as NormalizationEntry[];
-    let reorderedOffset = 0;
-    for (const normalized of Array.from(composedText)) {
-      let end = reorderedOffset + 1;
-      let contributors: NormalizationEntry[] | undefined;
-      while (end <= reordered.length) {
-        const candidate = reordered
-          .slice(reorderedOffset, end)
-          .map((entry) => entry.text)
-          .join("")
-          .normalize("NFC");
-        if (Array.from(candidate).length !== 1) break;
-        if (candidate === normalized) {
-          contributors = reordered.slice(reorderedOffset, end);
-        }
-        end += 1;
+    const isCanonicalStarter = (text: string): boolean => {
+      return !/\p{Mark}/u.test(text);
+    };
+    const hasStrictlyGreaterCombiningClass = (current: string, previous: string): boolean => {
+      const normalized = Array.from((current + previous).normalize("NFD"));
+      return normalized[0] === previous && normalized[1] === current;
+    };
+    const composed: NormalizationEntry[] = [];
+    let starterIndex = -1;
+    let previousCombiningMark: string | undefined;
+    for (const entry of reordered) {
+      if (isCanonicalStarter(entry.text)) {
+        composed.push(entry);
+        starterIndex = composed.length - 1;
+        previousCombiningMark = undefined;
+        continue;
       }
-      if (contributors === undefined || contributors.length === 0) {
-        throw new Error("candidate search lost a composed contributor");
-      }
-      let charStart = Number.POSITIVE_INFINITY;
-      let charEnd = 0;
-      for (const contributor of contributors) {
-        charStart = Math.min(charStart, contributor.span.charStart);
-        charEnd = Math.max(charEnd, contributor.span.charEnd);
-      }
-      composed.push({
-        text: normalized,
-        span: { charStart, charEnd },
-      });
-      reorderedOffset += contributors.length;
-    }
-    if (reorderedOffset !== reordered.length) {
-      throw new Error("candidate search left normalized contributors unmapped");
-    }
 
+      const starter = starterIndex < 0 ? undefined : composed[starterIndex];
+      const blocked =
+        previousCombiningMark !== undefined &&
+        !hasStrictlyGreaterCombiningClass(entry.text, previousCombiningMark);
+      const candidate = starter?.text ? (starter.text + entry.text).normalize("NFC") : entry.text;
+      if (starter !== undefined && !blocked && Array.from(candidate).length === 1) {
+        const charStart = Math.min(starter.span.charStart, entry.span.charStart);
+        const charEnd = Math.max(starter.span.charEnd, entry.span.charEnd);
+        composed[starterIndex] = {
+          text: candidate,
+          span: { charStart, charEnd },
+        };
+        previousCombiningMark = undefined;
+      } else {
+        composed.push(entry);
+        previousCombiningMark = entry.text;
+      }
+    }
     const foldedParts: string[] = [];
     const spans: OriginalSpan[] = [];
     for (const entry of composed) {

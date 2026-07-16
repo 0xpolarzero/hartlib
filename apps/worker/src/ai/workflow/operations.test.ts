@@ -263,6 +263,31 @@ describe("document selection range semantics", () => {
     expect(searchWithinCandidate(candidate, "\u0301")).toEqual([{ charStart: 1, charEnd: 2 }]);
   });
 
+  it("composes across a lower-class combining mark without losing contributors", () => {
+    const text = "a\u0334\u0301";
+    const candidate: AnswerCandidate = {
+      id: "document:blocked-composition",
+      kind: "document",
+      rank: 0,
+      purpose: "test composition across a lower-class mark",
+      sourceId: "source-blocked-composition",
+      documentId: "document-blocked-composition",
+      documentVersionId: "version-blocked-composition",
+      contentHash: "5".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Blocked composition",
+      publicProvenance: {
+        documentTitle: "Blocked composition",
+        citationUrl: "https://example.test/blocked-composition",
+      },
+      renderedTokenCount: 0,
+    };
+
+    expect(searchWithinCandidate(candidate, "á")).toEqual([{ charStart: 0, charEnd: 3 }]);
+    expect(searchWithinCandidate(candidate, "\u0334")).toEqual([{ charStart: 1, charEnd: 2 }]);
+  });
+
   it("keeps supplementary and following combining contributors distinct", () => {
     const text = "😀\u0301";
     const candidate: AnswerCandidate = {
