@@ -31,6 +31,7 @@ import {
 import {
   createSmithersStorage,
   runSmithersWorkflow,
+  runWithAiChatSmithersProducerFence,
   smithersRunSummary,
   type SmithersRunSummary,
 } from "../smithers-interop";
@@ -2115,134 +2116,136 @@ const executeBaseline = async (
   );
   await db(connectionString, markAiRunStarted(row.aiRunId));
   try {
-    const storage = await createSmithersStorage(aiEvaluationGeneralPlannerSchemas, {
-      connectionString,
-    });
-    let output: GeneralPlannerProviderOutput;
-    try {
-      const workflow = buildGeneralPlannerEvaluationWorkflow(
-        storage,
-        row.caseId,
-        async (caseId, aiRunId) => {
-          if (caseId !== row.caseId || aiRunId !== row.aiRunId) {
-            throw new Error("baseline Smithers input does not match its bound evaluation run");
-          }
-          return executeGeneralPlannerProviderTurn(
-            makeDurableProviderBoundary(connectionString, aiRunId, config),
-            fixtureFor(caseId),
-            {
-              onProviderRequest: async (exposures, _request, coordinates) => {
-                const fixture = fixtureFor(caseId);
-                await Promise.all(
-                  exposures.map(async (exposure) => {
-                    const source = fixture.evidence.find(
-                      (candidate) => candidate.sourceId === exposure.sourceId,
-                    );
-                    const binding = EvaluationSeedManifestSchema.parse(
-                      row.seedManifest,
-                    ).sourceBindings.find(
-                      (candidate) =>
-                        evaluationBindingGoldenSourceId(candidate) === exposure.sourceId,
-                    );
-                    if (source === undefined) {
-                      throw new Error("baseline exposed an unknown golden source");
-                    }
-                    if (binding === undefined) {
-                      throw new Error("baseline exposed an unbound golden source");
-                    }
-                    if (source.kind === "document" && binding.kind !== "document") {
-                      throw new Error(
-                        `baseline document source ${source.sourceId} resolved to ${binding.kind} binding`,
+    await runWithAiChatSmithersProducerFence(connectionString, async () => {
+      const storage = await createSmithersStorage(aiEvaluationGeneralPlannerSchemas, {
+        connectionString,
+      });
+      let output: GeneralPlannerProviderOutput;
+      try {
+        const workflow = buildGeneralPlannerEvaluationWorkflow(
+          storage,
+          row.caseId,
+          async (caseId, aiRunId) => {
+            if (caseId !== row.caseId || aiRunId !== row.aiRunId) {
+              throw new Error("baseline Smithers input does not match its bound evaluation run");
+            }
+            return executeGeneralPlannerProviderTurn(
+              makeDurableProviderBoundary(connectionString, aiRunId, config),
+              fixtureFor(caseId),
+              {
+                onProviderRequest: async (exposures, _request, coordinates) => {
+                  const fixture = fixtureFor(caseId);
+                  await Promise.all(
+                    exposures.map(async (exposure) => {
+                      const source = fixture.evidence.find(
+                        (candidate) => candidate.sourceId === exposure.sourceId,
                       );
-                    }
-                    const visibleText =
-                      source.kind === "document"
-                        ? storedDocuments
-                            .get(exposure.sourceId)!
-                            .text.slice(exposure.charStart, exposure.charEnd)
-                        : source.content.slice(exposure.charStart, exposure.charEnd);
-                    const logicalSourceIdentity =
-                      binding.kind === "document"
-                        ? documentBindingIdentity(binding)
-                        : source.sourceId;
-                    await db(
-                      connectionString,
-                      insertAiSourceExposure({
-                        runId: aiRunId,
-                        taskId: coordinates.taskId,
-                        loopIteration: coordinates.loopIteration,
-                        attempt: coordinates.attempt,
-                        providerRequestIndex: coordinates.providerRequestIndex,
-                        providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
-                        sourceKind: source.kind,
-                        logicalSourceIdentity,
-                        contentItemIdentity: `${logicalSourceIdentity}:${exposure.charStart}:${exposure.charEnd}:${sha256Hex(visibleText)}`,
-                        exposureStage: `evaluation_general_planner_${exposure.stage}`,
-                        visibleTokenCount:
-                          resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
-                        ...(source.kind === "document" && binding.kind === "document"
-                          ? {
-                              documentReconstruction: {
-                                sourceId: binding.sourceId,
-                                documentId: binding.documentId,
-                                documentVersionId: binding.documentVersionId,
-                                contentHash: binding.contentHash,
-                                ranges: [
-                                  {
-                                    charStart: exposure.charStart,
-                                    charEnd: exposure.charEnd,
-                                  },
-                                ],
-                              },
-                            }
-                          : {}),
-                      }),
-                    );
-                  }),
-                );
+                      const binding = EvaluationSeedManifestSchema.parse(
+                        row.seedManifest,
+                      ).sourceBindings.find(
+                        (candidate) =>
+                          evaluationBindingGoldenSourceId(candidate) === exposure.sourceId,
+                      );
+                      if (source === undefined) {
+                        throw new Error("baseline exposed an unknown golden source");
+                      }
+                      if (binding === undefined) {
+                        throw new Error("baseline exposed an unbound golden source");
+                      }
+                      if (source.kind === "document" && binding.kind !== "document") {
+                        throw new Error(
+                          `baseline document source ${source.sourceId} resolved to ${binding.kind} binding`,
+                        );
+                      }
+                      const visibleText =
+                        source.kind === "document"
+                          ? storedDocuments
+                              .get(exposure.sourceId)!
+                              .text.slice(exposure.charStart, exposure.charEnd)
+                          : source.content.slice(exposure.charStart, exposure.charEnd);
+                      const logicalSourceIdentity =
+                        binding.kind === "document"
+                          ? documentBindingIdentity(binding)
+                          : source.sourceId;
+                      await db(
+                        connectionString,
+                        insertAiSourceExposure({
+                          runId: aiRunId,
+                          taskId: coordinates.taskId,
+                          loopIteration: coordinates.loopIteration,
+                          attempt: coordinates.attempt,
+                          providerRequestIndex: coordinates.providerRequestIndex,
+                          providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
+                          sourceKind: source.kind,
+                          logicalSourceIdentity,
+                          contentItemIdentity: `${logicalSourceIdentity}:${exposure.charStart}:${exposure.charEnd}:${sha256Hex(visibleText)}`,
+                          exposureStage: `evaluation_general_planner_${exposure.stage}`,
+                          visibleTokenCount:
+                            resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
+                          ...(source.kind === "document" && binding.kind === "document"
+                            ? {
+                                documentReconstruction: {
+                                  sourceId: binding.sourceId,
+                                  documentId: binding.documentId,
+                                  documentVersionId: binding.documentVersionId,
+                                  contentHash: binding.contentHash,
+                                  ranges: [
+                                    {
+                                      charStart: exposure.charStart,
+                                      charEnd: exposure.charEnd,
+                                    },
+                                  ],
+                                },
+                              }
+                            : {}),
+                        }),
+                      );
+                    }),
+                  );
+                },
               },
-            },
-          );
-        },
-      );
-      const smithersRun = await smithersRunSummary(storage, smithersRunId);
-      const disposition = evaluationSmithersRunDisposition(smithersRun);
-      if (disposition === "active") {
-        throw new EvaluationSmithersExecutionActiveError(smithersRunId);
-      }
-      if (disposition === "irrecoverable") {
-        throw new Error(`general-planner Smithers run ${smithersRunId} is irrecoverable`);
-      }
-      if (
-        disposition === "missing" &&
-        (await evaluationCaseHasProviderWork(connectionString, row.aiRunId))
-      ) {
-        throw new Error(
-          `general-planner Smithers run ${smithersRunId} is missing after provider work`,
+            );
+          },
         );
-      }
-      if (disposition === "terminal") {
-        // A finished Smithers run already owns all completed task outputs. Do
-        // not reactivate it merely to discover the terminal output; doing so
-        // would widen the ownership window and can replay a final boundary.
-        output = await loadBaselineSmithersOutput(connectionString, smithersRunId);
-      } else {
-        const result = await runSmithersWorkflow(workflow, {
-          runId: smithersRunId,
-          input: { aiRunId: row.aiRunId },
-          resume: disposition === "resumable",
-          logDir: null,
-          maxConcurrency: 1,
-        });
-        if (result.status !== "finished") {
-          throw new Error(`general-planner Smithers run ended ${result.status}`);
+        const smithersRun = await smithersRunSummary(storage, smithersRunId);
+        const disposition = evaluationSmithersRunDisposition(smithersRun);
+        if (disposition === "active") {
+          throw new EvaluationSmithersExecutionActiveError(smithersRunId);
         }
-        output = await loadBaselineSmithersOutput(connectionString, smithersRunId);
+        if (disposition === "irrecoverable") {
+          throw new Error(`general-planner Smithers run ${smithersRunId} is irrecoverable`);
+        }
+        if (
+          disposition === "missing" &&
+          (await evaluationCaseHasProviderWork(connectionString, row.aiRunId))
+        ) {
+          throw new Error(
+            `general-planner Smithers run ${smithersRunId} is missing after provider work`,
+          );
+        }
+        if (disposition === "terminal") {
+          // A finished Smithers run already owns all completed task outputs. Do
+          // not reactivate it merely to discover the terminal output; doing so
+          // would widen the ownership window and can replay a final boundary.
+          output = await loadBaselineSmithersOutput(connectionString, smithersRunId);
+        } else {
+          const result = await runSmithersWorkflow(workflow, {
+            runId: smithersRunId,
+            input: { aiRunId: row.aiRunId },
+            resume: disposition === "resumable",
+            logDir: null,
+            maxConcurrency: 1,
+          });
+          if (result.status !== "finished") {
+            throw new Error(`general-planner Smithers run ended ${result.status}`);
+          }
+          output = await loadBaselineSmithersOutput(connectionString, smithersRunId);
+        }
+      } finally {
+        await storage.close();
       }
-    } finally {
-      await storage.close();
-    }
-    await persistBaselineOutput(connectionString, row, output);
+      await persistBaselineOutput(connectionString, row, output);
+    });
   } catch (error) {
     if (isEvaluationSmithersExecutionActiveError(error)) throw error;
     await terminalizeFailedBaselineRun(connectionString, row.aiRunId, smithersRunId);

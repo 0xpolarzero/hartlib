@@ -903,7 +903,7 @@ Smithers repeatedly renders the workflow from persisted outputs. `Sequence` wait
 
 Post-branch normalizers follow their `Branch` structurally and read mutually exclusive outputs with `ctx.outputMaybe`. They never declare `dependsOn` edges to every possible branch node: a non-selected Smithers branch is not mounted, so such a dependency could never resolve. `finalize` follows the outer `Parallel` structurally and consumes only the normalized `answer-select` output and the completed `memory-extract` output.
 
-The run ID is derived from `aiRunId`, so a stale queue job resumes the same workflow. Completed tasks do not re-execute on ordinary resume.
+The run ID is derived from `aiRunId`, so a stale queue job resumes the same workflow. Completed tasks do not re-execute on ordinary resume. Retention takes the transaction-level exclusive side of the Smithers schema fence before discovering candidates, checking heartbeat ownership, recording orphan maturity, or deleting rows; producers hold the shared side across their complete workflow operation, so cleanup cannot delete between an ownership check and a resume/write.
 
 All external and product side effects are idempotent:
 

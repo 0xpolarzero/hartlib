@@ -5,6 +5,7 @@ import { camelToSnake } from "smithers-orchestrator";
 
 import { AI_RUN_EVENT_RETENTION_MS } from "../product-state/events";
 import { SMITHERS_TERMINAL_ORPHAN_RETENTION_MS } from "../product-state/retention";
+import { AI_CHAT_SMITHERS_SCHEMA_FENCE } from "../smithers-interop";
 import { aiChatSchemas } from "./ai-chat";
 
 /**
@@ -86,6 +87,16 @@ const deleteSmithersRowsForRunInTables = (
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
 
+    // Smithers producers hold the shared side of this fence for the complete
+    // workflow operation. Keep the ownership check and every delete in one
+    // transaction-level exclusive fence so a producer cannot resume or write
+    // the run between the heartbeat check and cleanup.
+    yield* sql`
+      select pg_advisory_xact_lock(
+        hashtextextended(${AI_CHAT_SMITHERS_SCHEMA_FENCE}, 0)
+      )
+    `;
+
     for (const tableName of tableNames) {
       yield* sql`
         delete from ${sql(tableName)}
@@ -161,17 +172,26 @@ export const sweepAiChatSmithersRows = (
 ): Effect.Effect<SmithersSweepResult, SqlError, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
-    const tableNames = [...(yield* loadSmithersRunIdTables)].sort();
-    const smithersRunIds = new Set<string>();
-    const limit = boundedRetentionCandidateLimit(candidateLimit);
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        // The fence must cover candidate discovery, heartbeat ownership
+        // checks, orphan maturation, and deletion as one atomic decision.
+        yield* sql`
+          select pg_advisory_xact_lock(
+            hashtextextended(${AI_CHAT_SMITHERS_SCHEMA_FENCE}, 0)
+          )
+        `;
+        const tableNames = [...(yield* loadSmithersRunIdTables)].sort();
+        const smithersRunIds = new Set<string>();
+        const limit = boundedRetentionCandidateLimit(candidateLimit);
 
-    if (limit === 0) return { deletedRuns: 0, selectedCandidates: 0 };
+        if (limit === 0) return { deletedRuns: 0, selectedCandidates: 0 };
 
-    for (const tableName of tableNames) {
-      const remaining = limit - smithersRunIds.size;
-      if (remaining === 0) break;
-      const alreadySelected = [...smithersRunIds];
-      const rows = yield* sql<SmithersRunIdRow>`
+        for (const tableName of tableNames) {
+          const remaining = limit - smithersRunIds.size;
+          if (remaining === 0) break;
+          const alreadySelected = [...smithersRunIds];
+          const rows = yield* sql<SmithersRunIdRow>`
         select distinct state.run_id as "smithersRunId"
         from ${sql(tableName)} state
         where (
@@ -200,14 +220,14 @@ export const sweepAiChatSmithersRows = (
         limit ${remaining}
       `;
 
-      for (const row of rows) {
-        smithersRunIds.add(row.smithersRunId);
-      }
-    }
+          for (const row of rows) {
+            smithersRunIds.add(row.smithersRunId);
+          }
+        }
 
-    let deletedRuns = 0;
-    for (const smithersRunId of smithersRunIds) {
-      const rows = yield* sql<SmithersRunIdRow>`
+        let deletedRuns = 0;
+        for (const smithersRunId of smithersRunIds) {
+          const rows = yield* sql<SmithersRunIdRow>`
         select smithers_run_id as "smithersRunId"
         from ai_runs
         where smithers_run_id = ${smithersRunId}
@@ -215,7 +235,7 @@ export const sweepAiChatSmithersRows = (
           and coalesce(finished_at, failed_at) <
             now() - (${SMITHERS_TERMINAL_ORPHAN_RETENTION_MS} * interval '1 millisecond')
       `;
-      const absentRows = yield* sql<SmithersRunIdRow>`
+          const absentRows = yield* sql<SmithersRunIdRow>`
         select ${smithersRunId}::text as "smithersRunId"
         where not exists (
           select 1
@@ -224,45 +244,45 @@ export const sweepAiChatSmithersRows = (
         )
       `;
 
-      if (rows.length === 0 && absentRows.length === 0) {
-        yield* sql`
+          if (rows.length === 0 && absentRows.length === 0) {
+            yield* sql`
           delete from ai_smithers_orphan_candidates
           where smithers_run_id = ${smithersRunId}
         `;
-        continue;
-      }
+            continue;
+          }
 
-      // A terminal product row is not enough to prove that Smithers is safe
-      // to remove. A live Smithers owner wins this race; the next sweep can
-      // reconsider it after the heartbeat disappears.
-      if (yield* smithersRunIsActivelyOwned(tableNames, smithersRunId)) continue;
+          // A terminal product row is not enough to prove that Smithers is safe
+          // to remove. A live Smithers owner wins this race; the next sweep can
+          // reconsider it after the heartbeat disappears.
+          if (yield* smithersRunIsActivelyOwned(tableNames, smithersRunId)) continue;
 
-      if (absentRows.length > 0) {
-        yield* sql`
+          if (absentRows.length > 0) {
+            yield* sql`
           insert into ai_smithers_orphan_candidates (smithers_run_id)
           values (${smithersRunId})
           on conflict (smithers_run_id) do nothing
         `;
-        const mature = yield* sql<SmithersRunIdRow>`
+            const mature = yield* sql<SmithersRunIdRow>`
           select smithers_run_id as "smithersRunId"
           from ai_smithers_orphan_candidates
           where smithers_run_id = ${smithersRunId}
             and first_seen_at <
               now() - (${SMITHERS_TERMINAL_ORPHAN_RETENTION_MS} * interval '1 millisecond')
         `;
-        if (mature.length === 0) continue;
-      }
+            if (mature.length === 0) continue;
+          }
 
-      yield* deleteSmithersRowsForRunInTables(tableNames, smithersRunId);
-      deletedRuns += 1;
-    }
+          yield* deleteSmithersRowsForRunInTables(tableNames, smithersRunId);
+          deletedRuns += 1;
+        }
 
-    const remaining = limit - smithersRunIds.size;
-    const selectedIds = [...smithersRunIds];
-    const candidates =
-      remaining === 0
-        ? []
-        : yield* sql<SmithersRunIdRow>`
+        const remaining = limit - smithersRunIds.size;
+        const selectedIds = [...smithersRunIds];
+        const candidates =
+          remaining === 0
+            ? []
+            : yield* sql<SmithersRunIdRow>`
       select smithers_run_id as "smithersRunId"
       from ai_smithers_orphan_candidates
       ${
@@ -279,27 +299,29 @@ export const sweepAiChatSmithersRows = (
       order by first_seen_at, smithers_run_id
       limit ${remaining}
     `;
-    for (const candidate of candidates) {
-      smithersRunIds.add(candidate.smithersRunId);
-      if (yield* smithersRunIsActivelyOwned(tableNames, candidate.smithersRunId)) continue;
-      const presentInSmithers = yield* smithersRunExistsInTables(
-        tableNames,
-        candidate.smithersRunId,
-      );
-      const runs = yield* sql<{ readonly present: boolean }>`
+        for (const candidate of candidates) {
+          smithersRunIds.add(candidate.smithersRunId);
+          if (yield* smithersRunIsActivelyOwned(tableNames, candidate.smithersRunId)) continue;
+          const presentInSmithers = yield* smithersRunExistsInTables(
+            tableNames,
+            candidate.smithersRunId,
+          );
+          const runs = yield* sql<{ readonly present: boolean }>`
         select exists (
           select 1 from ai_runs where smithers_run_id = ${candidate.smithersRunId}
         ) as present
       `;
-      if (!presentInSmithers || runs[0]?.present === true) {
-        yield* sql`
+          if (!presentInSmithers || runs[0]?.present === true) {
+            yield* sql`
           delete from ai_smithers_orphan_candidates
           where smithers_run_id = ${candidate.smithersRunId}
         `;
-      }
-    }
+          }
+        }
 
-    return { deletedRuns, selectedCandidates: smithersRunIds.size };
+        return { deletedRuns, selectedCandidates: smithersRunIds.size };
+      }),
+    );
   });
 
 export const pruneFinishedAiRunEvents = (

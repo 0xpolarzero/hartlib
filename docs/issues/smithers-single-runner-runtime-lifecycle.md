@@ -56,3 +56,6 @@ origin and all unfinished siblings are terminalized before schema-owned cleanup.
 Missing state with no paid work is safe to start under the already-bound ID.
 Retention preserves active heartbeating runs and deletes only terminal owned
 runs or absent-product orphan candidates after the 24-hour retention window.
+The retention decision and deletion run in one transaction-level exclusive
+Smithers schema fence; active producers hold the compatible shared fence across
+their complete operation, so a heartbeat check cannot race a resume or write.

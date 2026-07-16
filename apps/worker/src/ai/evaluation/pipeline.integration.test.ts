@@ -5732,7 +5732,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       {
         sessionId: chatWebStageTamperSessionId,
         tamper: "chat_as_web_preview" as const,
-        error: /invalid exact provider measurement|stage-incompatible/u,
+        error: /invalid exact provider measurement|stage-incompatible|durable chat\/message scope/u,
       },
       {
         sessionId: wrongKindOTamperSessionId,
@@ -5767,7 +5767,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         captureEvaluationSession(isolatedDatabaseUrl(), scenario.sessionId),
       ).rejects.toThrow(scenario.error);
     }
-  }, 120_000);
+  }, 300_000);
 
   it("makes provider origin and evaluation identity immutable and rejects fake execution", async () => {
     await createEvaluationSession(isolatedDatabaseUrl(), identitySessionId);

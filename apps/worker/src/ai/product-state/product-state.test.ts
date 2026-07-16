@@ -34,6 +34,7 @@ import {
   purgeAiRuntimeRetention,
   sweepAiChatSmithersRows,
 } from "../workflow/smithers-cleanup";
+import { AI_CHAT_SMITHERS_SCHEMA_FENCE } from "../smithers-interop";
 import { TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY } from "../web/tinyfish-search";
 
 const isBun = typeof process.versions.bun === "string";
@@ -2754,6 +2755,76 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       activeSmithersId,
       freshSmithersId,
     ]);
+  });
+
+  it("holds the Smithers ownership fence from heartbeat check through deletion", async () => {
+    const fixture = await runDb(createFixture("smithers-retention-fence"));
+    const smithersRunId = `ai-chat:${fixture.runId}`;
+    await runDb(failAiRun(fixture.runId, "answer_failed"));
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update ai_runs
+          set smithers_run_id = ${smithersRunId},
+              failed_at = now() - interval '24 hours 1 second'
+          where id = ${fixture.runId}
+        `;
+        yield* sql`create table _smithers_retention_fence_test (run_id text primary key)`;
+        yield* sql`
+          insert into _smithers_retention_fence_test (run_id) values (${smithersRunId})
+        `;
+      }),
+    );
+
+    let releaseFence!: () => void;
+    let signalReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      signalReady = resolve;
+    });
+    const producerFence = runDb(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const connection = yield* sql.reserve;
+          yield* connection.executeRaw(
+            "select pg_advisory_lock_shared(hashtextextended($1::text, 0))",
+            [AI_CHAT_SMITHERS_SCHEMA_FENCE],
+          );
+          const released = new Promise<void>((resolve) => {
+            releaseFence = resolve;
+          });
+          signalReady();
+          yield* Effect.tryPromise({
+            try: () => released,
+            catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+          });
+          yield* connection.executeRaw(
+            "select pg_advisory_unlock_shared(hashtextextended($1::text, 0))",
+            [AI_CHAT_SMITHERS_SCHEMA_FENCE],
+          );
+        }),
+      ),
+    );
+    await ready;
+
+    const sweep = runDb(sweepAiChatSmithersRows());
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    const whileFenced = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly count: number }>`
+          select count(*)::int as count
+          from _smithers_retention_fence_test
+          where run_id = ${smithersRunId}
+        `;
+      }),
+    );
+    expect(whileFenced[0]?.count).toBe(1);
+
+    releaseFence();
+    await producerFence;
+    await expect(sweep).resolves.toMatchObject({ deletedRuns: 1 });
   });
 
   it("shares one exact 500-candidate budget across Smithers and stream-event retention", async () => {
