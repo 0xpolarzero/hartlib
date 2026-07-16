@@ -34,7 +34,12 @@ import {
 import { CanonicalAgentClient, type ToolLoopInput } from "../runtime/agent-client";
 import { measureProviderRequest, resolveRegisteredModel } from "../runtime/model-registry";
 import { TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY } from "../web/tinyfish-search";
-import { deleteSmithersRowsForRunWithSchemas } from "../workflow/smithers-cleanup";
+import { createSmithersStorage } from "../smithers-interop";
+import {
+  deleteSmithersRowsForRunWithSchemas,
+  sweepAiChatSmithersRows,
+} from "../workflow/smithers-cleanup";
+import { aiEvaluationGeneralPlannerSchemas } from "./general-planner-workflow";
 import type {
   BeforeProviderRequest,
   ExactPiBoundary,
@@ -166,6 +171,7 @@ const focusedAbortSessionId = "50000000-0000-4000-8000-000000000114";
 const invertedEventTimestampSessionId = "50000000-0000-4000-8000-000000000115";
 const transcriptReconstructionSessionId = "50000000-0000-4000-8000-000000000116";
 const documentMetadataTamperSessionId = "50000000-0000-4000-8000-000000000117";
+const baselineRetentionSessionId = "50000000-0000-4000-8000-000000000119";
 const focusedProductionCaseId = "first-message-document-fr";
 const focusedClarificationCaseId = "ambiguous-reference-needs-clarification";
 const multiWebQuoteSessionId = "50000000-0000-4000-8000-000000000118";
@@ -3414,6 +3420,66 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       deterministicGeneralPlannerSessionId,
     );
   }, 180_000);
+
+  it("sweeps aged baseline input and output rows from the default retention inventory", async () => {
+    const manifest = await beginFocusedGeneralPlannerCase(
+      baselineRetentionSessionId,
+      focusedClarificationCaseId,
+    );
+    const smithersRunId = `ai-evaluation-general-planner:${baselineRetentionSessionId}:${focusedClarificationCaseId}`;
+    const storage = await createSmithersStorage(aiEvaluationGeneralPlannerSchemas, {
+      connectionString: isolatedDatabaseUrl(),
+    });
+    try {
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update ai_runs
+            set smithers_run_id = ${smithersRunId},
+                started_at = now() - interval '2 days',
+                failed_at = now() - interval '2 days',
+                error_code = 'finalization_failed',
+                retryable = true
+            where id = ${manifest.aiRunId}
+          `;
+          yield* sql`
+            insert into input (run_id, ai_run_id)
+            values (${smithersRunId}, ${manifest.aiRunId})
+          `;
+          yield* sql`
+            insert into ai_evaluation_general_planner (run_id, node_id, iteration, value)
+            values (
+              ${smithersRunId},
+              'evaluation-general-planner',
+              0,
+              ${JSON.stringify({
+                resolution: { mode: "clarify", question: "test" },
+                selectedSources: [],
+                answerContent: "test",
+                citationSourceIds: [],
+                memoryProposals: [],
+              })}::jsonb
+            )
+          `;
+        }),
+      );
+    } finally {
+      await storage.close();
+    }
+
+    expect(await smithersRowsForRun(smithersRunId)).toEqual([
+      "ai_evaluation_general_planner",
+      "input",
+    ]);
+
+    await expect(runDb(isolatedDatabaseUrl(), sweepAiChatSmithersRows(10))).resolves.toMatchObject({
+      deletedRuns: 1,
+      selectedCandidates: 1,
+    });
+    expect(await smithersRowsForRun(smithersRunId)).toEqual([]);
+  }, 120_000);
 
   it("aborts a focused success without changing it or leaving active siblings", async () => {
     const manifest = await beginFocusedGeneralPlannerCase(

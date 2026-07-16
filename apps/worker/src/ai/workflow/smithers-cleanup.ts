@@ -6,12 +6,13 @@ import { camelToSnake } from "smithers-orchestrator";
 import { AI_RUN_EVENT_RETENTION_MS } from "../product-state/events";
 import { SMITHERS_TERMINAL_ORPHAN_RETENTION_MS } from "../product-state/retention";
 import { AI_CHAT_SMITHERS_SCHEMA_FENCE } from "../smithers-interop";
+import { aiEvaluationGeneralPlannerSchemas } from "../evaluation/general-planner-workflow";
 import { aiChatSchemas } from "./ai-chat";
 
 /**
- * Derive cleanup ownership from the exact workflow schema registered at
- * startup. A graph output added or removed in `aiChatSchemas` therefore changes
- * GC in the same deploy and cannot leave a stale compatibility inventory.
+ * Derive cleanup ownership from the exact workflow schemas registered at
+ * startup. An output added or removed in either retained workflow therefore
+ * changes GC in the same deploy and cannot leave a stale compatibility inventory.
  */
 export const AI_CHAT_OUTPUT_SCHEMA_KEYS = Object.freeze(
   Object.keys(aiChatSchemas).filter((schemaKey) => schemaKey !== "input"),
@@ -19,7 +20,21 @@ export const AI_CHAT_OUTPUT_SCHEMA_KEYS = Object.freeze(
 
 export const AI_CHAT_OUTPUT_TABLES = Object.freeze(AI_CHAT_OUTPUT_SCHEMA_KEYS.map(camelToSnake));
 
-const smithersOwnedTables = new Set<string>(["input", ...AI_CHAT_OUTPUT_TABLES]);
+export const AI_EVALUATION_GENERAL_PLANNER_OUTPUT_SCHEMA_KEYS = Object.freeze(
+  Object.keys(aiEvaluationGeneralPlannerSchemas).filter((schemaKey) => schemaKey !== "input"),
+);
+
+export const AI_EVALUATION_GENERAL_PLANNER_OUTPUT_TABLES = Object.freeze(
+  AI_EVALUATION_GENERAL_PLANNER_OUTPUT_SCHEMA_KEYS.map(camelToSnake),
+);
+
+/** Output tables owned by every Brief AI Smithers workflow retained by this sweep. */
+export const AI_RUNTIME_OUTPUT_TABLES = Object.freeze([
+  ...AI_CHAT_OUTPUT_TABLES,
+  ...AI_EVALUATION_GENERAL_PLANNER_OUTPUT_TABLES,
+]);
+
+const smithersOwnedTables = new Set<string>(["input", ...AI_RUNTIME_OUTPUT_TABLES]);
 
 interface RunIdTableRow {
   readonly tableName: string;
