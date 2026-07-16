@@ -65,28 +65,25 @@ const program = Effect.gen(function* () {
 
   yield* runPublicSourceStartupBackfill(publicSourceWatcherConfig);
 
-  yield* withAiChatSmithersProducerFenceEffect(
+  // Schema provisioning is the only startup operation that needs the shared
+  // fence. Per-workflow producer operations acquire the same fence in their
+  // handler, while cleanup and retention take its exclusive side.
+  const smithersStorage = yield* withAiChatSmithersProducerFenceEffect(
     config.databaseUrl,
-    Effect.gen(function* () {
-      const smithersStorage = yield* Effect.tryPromise({
-        try: () => createSmithersStorage(aiChatSchemas, { connectionString: config.databaseUrl }),
-        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-      });
-
-      const workerLoops = Array.from({ length: Math.max(1, config.workerConcurrency) }, () =>
-        runWorker(config.jobPollIntervalMs, { smithersStorage }),
-      );
-
-      yield* Effect.all(
-        [
-          ...workerLoops,
-          runPublicSourcePolling(publicSourceWatcherConfig),
-          runMaintenanceScheduler,
-        ],
-        { concurrency: "unbounded" },
-      ).pipe(Effect.ensuring(Effect.promise(() => smithersStorage.close())));
+    Effect.tryPromise({
+      try: () => createSmithersStorage(aiChatSchemas, { connectionString: config.databaseUrl }),
+      catch: (error) => (error instanceof Error ? error : new Error(String(error))),
     }),
   );
+
+  const workerLoops = Array.from({ length: Math.max(1, config.workerConcurrency) }, () =>
+    runWorker(config.jobPollIntervalMs, { smithersStorage }),
+  );
+
+  yield* Effect.all(
+    [...workerLoops, runPublicSourcePolling(publicSourceWatcherConfig), runMaintenanceScheduler],
+    { concurrency: "unbounded" },
+  ).pipe(Effect.ensuring(Effect.promise(() => smithersStorage.close())));
 });
 
 BunRuntime.runMain(

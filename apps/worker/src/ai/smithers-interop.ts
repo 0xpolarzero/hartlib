@@ -190,7 +190,7 @@ export const runWithAiChatSmithersProducerFence = <A>(
     ),
   );
 
-/** Hold the shared fence across worker lifetime and initial Smithers table creation. */
+/** Scope the shared fence to initial Smithers table creation. */
 export const withAiChatSmithersProducerFenceEffect = <A, E, R>(
   connectionString: string,
   operation: Effect4.Effect<A, E, R>,
