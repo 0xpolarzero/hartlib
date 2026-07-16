@@ -577,6 +577,7 @@ describe("internal retrieval search protocol", () => {
     protocol.afterSearch(documentQuery, true, 1, null, 0);
     protocol.beforeSearch(chatQuery, undefined, 1);
     protocol.afterSearch(chatQuery, true, 1, null, 1);
+    expect(protocol.ordinarySearchTurnsExhausted()).toBe(true);
     expect(() => protocol.beforeSearch(documentQuery, undefined, 2)).toThrow(
       "internal search cannot repeat a completed query without its returned cursor",
     );

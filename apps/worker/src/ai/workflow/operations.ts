@@ -1156,6 +1156,10 @@ export class InternalRetrievalSearchProtocol {
   private readonly cursorContinuationTurns = new Set<number>();
   private readonly completedNonEmptySearchQueries = new Set<string>();
 
+  ordinarySearchTurnsExhausted(): boolean {
+    return this.ordinarySearchTurns.size >= 2;
+  }
+
   beforeSearch(
     query: InternalQuery,
     cursor: number | undefined,
@@ -3183,6 +3187,8 @@ export class CanonicalWorkflowOperations {
       // an oversized result and leave a successful search without a manifest.
       reserveFinalTurnForTerminal: true,
       enforceTerminalTurn: true,
+      disabledToolsForTurn: () =>
+        searchProtocol.ordinarySearchTurnsExhausted() ? ["search_internal"] : [],
       disabledToolResult: (toolName) => {
         protocolErrorReturned = true;
         return {
