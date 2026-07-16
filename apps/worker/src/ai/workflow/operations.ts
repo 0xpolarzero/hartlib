@@ -3100,6 +3100,7 @@ export class CanonicalWorkflowOperations {
     const providerExposures = new Map<string, InternalProviderExposure>();
     const inspectedDocumentRanges = new Set<string>();
     const completedInspectionKeys = new Set<string>();
+    let terminalRecoveryReady = false;
     let protocolErrorReturned = false;
     const exactRecoveryReferences = (): readonly InternalReference[] => {
       const references = new Map<string, InternalReference>();
@@ -3172,6 +3173,7 @@ export class CanonicalWorkflowOperations {
         await this.recordInternalProviderExposures(load, taskId, exposures, requestCoordinates);
       },
       terminalToolName: "emit_internal_manifest",
+      terminalOnlyForTurn: () => terminalRecoveryReady,
       validateTerminal: (value) => {
         let entries = InternalManifestOutputSchema.parse(value).entries;
         if (protocolErrorReturned && entries.length === 0 && providerExposures.size > 0) {
@@ -3545,7 +3547,20 @@ export class CanonicalWorkflowOperations {
                 }
               },
             );
-            if (result.complete === true) completedInspectionKeys.add(inspectionKey);
+            if (
+              result.complete === true &&
+              result.found === true &&
+              typeof result.protocolError !== "string"
+            ) {
+              completedInspectionKeys.add(inspectionKey);
+              // Once every discovered candidate has a complete inspection, the
+              // next provider turn is reserved for the manifest. This prevents
+              // a prose-only correction from consuming the final retrieval
+              // turn while preserving multi-document inspection routes.
+              const discoveredCount = discoveredDocuments.size + discoveredMessages.size;
+              terminalRecoveryReady =
+                discoveredCount > 0 && completedInspectionKeys.size >= discoveredCount;
+            }
             return result;
           },
         },
