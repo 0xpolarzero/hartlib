@@ -129,6 +129,7 @@ describe("canonical AI role prompts", () => {
       expect(WebResearchPrompt).toContain(field);
     }
     expect(WebResearchPrompt).toContain("Search snippets are discovery hints only");
+    expect(WebResearchPrompt).toContain("only the smallest set of directly relevant pages");
     expect(WebResearchPrompt).toContain(
       "If any web_fetch succeeds, emit at least one exact quotation from the fetched page",
     );
