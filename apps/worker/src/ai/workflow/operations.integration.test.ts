@@ -2229,7 +2229,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       inTask("topic-t1-no-web-need", () =>
         webOperations.retrieveWeb(
           load,
-          "Compare two internal energy subjects conceptually.",
+          "Compare two internal energy subjects conceptually, including their market roles.",
           "topic-t1-retrieve-web",
         ),
       ),

@@ -182,7 +182,7 @@ export const boundedWebProviderText = (
 };
 
 const webEvidenceMarkers =
-  /\b(current|latest|official|public|market|web|online|today|recent|status|update|live|price|actual)\b|\b(actuel(?:le|s)?|dernier(?:e|s)?|officiel(?:le|s)?|public(?:s)?|marché|prix|récent(?:e|s)?|mise à jour|en ligne)\b/iu;
+  /\b(current|latest|official|public|web|online|today|recent|status|update|live|price|actual)\b|\b(actuel(?:le|s)?|dernier(?:e|s)?|officiel(?:le|s)?|public(?:s)?|marché|prix|récent(?:e|s)?|mise à jour|en ligne)\b/iu;
 
 export const topicRequestsWebEvidence = (question: string): boolean =>
   webEvidenceMarkers.test(question.normalize("NFC"));
