@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { aiChatSchemas } from "./ai-chat";
-import { AI_CHAT_OUTPUT_SCHEMA_KEYS, AI_CHAT_OUTPUT_TABLES } from "./smithers-cleanup";
+import {
+  AI_CHAT_OUTPUT_SCHEMA_KEYS,
+  AI_CHAT_OUTPUT_TABLES,
+  AI_RUNTIME_SMITHERS_RUN_PREFIXES,
+} from "./smithers-cleanup";
 
 describe("canonical Smithers cleanup inventory", () => {
   it("owns every current workflow output and contains no removed preflight/hydrate tables", () => {
@@ -32,5 +36,13 @@ describe("canonical Smithers cleanup inventory", () => {
     expect(AI_CHAT_OUTPUT_TABLES).not.toContain("ai_chat_selectors");
     expect(AI_CHAT_OUTPUT_TABLES).not.toContain("ai_chat_fanout_contexts");
     expect(new Set(AI_CHAT_OUTPUT_TABLES).size).toBe(AI_CHAT_OUTPUT_TABLES.length);
+  });
+
+  it("retains only Brief-owned chat and evaluation Smithers identities", () => {
+    expect(AI_RUNTIME_SMITHERS_RUN_PREFIXES).toEqual([
+      "ai-chat:",
+      "ai-evaluation-general-planner:",
+    ]);
+    expect(AI_RUNTIME_SMITHERS_RUN_PREFIXES).not.toContain("smithers:");
   });
 });

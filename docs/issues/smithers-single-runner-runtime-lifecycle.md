@@ -42,3 +42,17 @@ Brief carries the lifecycle implementation and facade export as Bun dependency p
 `apps/worker/src/ai/smithers-interop.ts` owns the application boundary. The evaluation CLI closes the runtime in finalization and reports cleanup failure as exit `2`; it does not call `process.exit`.
 
 Remove the patches only after an upstream release exposes equivalent lifecycle semantics and the finite CLI lifecycle tests pass against the unpatched package.
+
+## Evaluation ownership and recovery
+
+Finite evaluation execution holds one PostgreSQL advisory lease per session. The
+evaluation pipeline reads each bound Smithers run through the public run-summary
+surface before resuming it. A fresh `running` heartbeat belongs to an active
+owner and is left untouched; a stale run, durable wait state, `failed` run, or
+`cancelled` run resumes the same Smithers ID; a `finished` run is consumed from
+its persisted output without reactivation. If Smithers state is missing after product-owned provider or
+external-tool usage, the case is an irrecoverable orphan: the immutable failure
+origin and all unfinished siblings are terminalized before schema-owned cleanup.
+Missing state with no paid work is safe to start under the already-bound ID.
+Retention preserves active heartbeating runs and deletes only terminal owned
+runs or absent-product orphan candidates after the 24-hour retention window.

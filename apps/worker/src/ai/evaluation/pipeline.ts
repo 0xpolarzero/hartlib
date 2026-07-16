@@ -28,7 +28,12 @@ import {
   parseCurrentTurnCitations,
   runAiProductState,
 } from "../product-state/repository";
-import { createSmithersStorage, runSmithersWorkflow, smithersRunExists } from "../smithers-interop";
+import {
+  createSmithersStorage,
+  runSmithersWorkflow,
+  smithersRunSummary,
+  type SmithersRunSummary,
+} from "../smithers-interop";
 import {
   canonicalizeWebUrl,
   chatMessageEvidenceIdentity,
@@ -64,6 +69,7 @@ import {
   TINYFISH_SEARCH_ENDPOINT,
   TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY,
 } from "../web/tinyfish-search";
+import { aiChatSchemas } from "../workflow/ai-chat";
 import { deleteSmithersRowsForRunWithSchemas } from "../workflow/smithers-cleanup";
 import { topicRequestsWebEvidence } from "../workflow/operations";
 import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v2";
@@ -699,6 +705,57 @@ interface EvaluationSessionRow {
   readonly evaluationConfigSha256Hex: string | null;
   readonly providerEndpointIdentity: string | null;
 }
+
+/** Smithers' public run states as they apply to a product-owned evaluation. */
+export type EvaluationSmithersRunDisposition =
+  | "missing"
+  | "active"
+  | "resumable"
+  | "terminal"
+  | "irrecoverable";
+
+/** Smithers 0.27's public heartbeat freshness boundary. */
+export const EVALUATION_SMITHERS_HEARTBEAT_STALE_MS = 30_000;
+
+export const evaluationSmithersRunDisposition = (
+  run: SmithersRunSummary | null,
+  now = Date.now(),
+): EvaluationSmithersRunDisposition => {
+  if (run === null) return "missing";
+  if (
+    run.status === "running" &&
+    run.heartbeatAtMs !== null &&
+    now - run.heartbeatAtMs <= EVALUATION_SMITHERS_HEARTBEAT_STALE_MS
+  ) {
+    return "active";
+  }
+  if (
+    run.status === "running" ||
+    run.status === "waiting-approval" ||
+    run.status === "waiting-event" ||
+    run.status === "waiting-timer" ||
+    run.status === "waiting-quota" ||
+    run.status === "failed" ||
+    run.status === "cancelled"
+  ) {
+    return "resumable";
+  }
+  if (run.status === "finished") return "terminal";
+  return "irrecoverable";
+};
+
+/** A second caller must not turn another live Smithers owner into a failure. */
+export class EvaluationSmithersExecutionActiveError extends Error {
+  constructor(readonly smithersRunId: string) {
+    super(`evaluation Smithers run is actively owned: ${smithersRunId}`);
+    this.name = "EvaluationSmithersExecutionActiveError";
+  }
+}
+
+export const isEvaluationSmithersExecutionActiveError = (
+  error: unknown,
+): error is EvaluationSmithersExecutionActiveError =>
+  error instanceof EvaluationSmithersExecutionActiveError;
 
 const DurableRunSnapshotSchema = z
   .object({
@@ -1416,6 +1473,30 @@ const loadEvaluationSession = (
     }),
   );
 
+/**
+ * Provider or external-tool rows are the product-owned proof that paid work
+ * may already have happened. If Smithers state has disappeared after one of
+ * these rows exists, starting a fresh task under the same ID could repeat a
+ * paid request, so the evaluation must fail and cascade instead.
+ */
+const evaluationCaseHasProviderWork = (
+  connectionString: string,
+  aiRunId: string,
+): Promise<boolean> =>
+  db(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{ readonly present: boolean }>`
+        select (
+          exists (select 1 from ai_run_usage where run_id = ${aiRunId})
+          or exists (select 1 from ai_external_tool_usage where run_id = ${aiRunId})
+        ) as present
+      `;
+      return rows[0]?.present === true;
+    }),
+  );
+
 export interface EvaluationCaseIdentity {
   readonly sessionId: string;
   readonly caseId: string;
@@ -1470,6 +1551,40 @@ const executeSpecialized = async (
     throw new Error("evaluation execution forbids AI_E2E_FAKE_PROVIDER");
   if (config.zaiApiKey.trim() === "") throw new Error("evaluation execution requires ZAI_API_KEY");
   await ensureEvaluationCaseRunning(connectionString, row);
+  const smithersRunId = deriveAiChatSmithersRunId(row.aiRunId);
+  await db(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const bound = yield* sql<{ readonly id: string }>`
+        update ai_runs
+        set smithers_run_id = coalesce(smithers_run_id, ${smithersRunId})
+        where id = ${row.aiRunId}
+          and (smithers_run_id is null or smithers_run_id = ${smithersRunId})
+        returning id::text
+      `;
+      if (bound.length !== 1) {
+        return yield* Effect.fail(new Error("specialized run has a different Smithers identity"));
+      }
+    }),
+  );
+  const storage = await createSmithersStorage(aiChatSchemas, { connectionString });
+  try {
+    const disposition = evaluationSmithersRunDisposition(
+      await smithersRunSummary(storage, smithersRunId),
+    );
+    if (disposition === "active") {
+      throw new EvaluationSmithersExecutionActiveError(smithersRunId);
+    }
+    if (
+      disposition === "missing" &&
+      (await evaluationCaseHasProviderWork(connectionString, row.aiRunId))
+    ) {
+      throw new Error(`specialized Smithers run ${smithersRunId} is missing after provider work`);
+    }
+  } finally {
+    await storage.close();
+  }
   const job = {
     id: deterministicUuid(`evaluation-job:${row.aiRunId}`),
     kind: "ai_chat_run",
@@ -2090,23 +2205,46 @@ const executeBaseline = async (
           );
         },
       );
-      const resume = await smithersRunExists(storage, smithersRunId);
-      const result = await runSmithersWorkflow(workflow, {
-        runId: smithersRunId,
-        input: { aiRunId: row.aiRunId },
-        resume,
-        logDir: null,
-        maxConcurrency: 1,
-      });
-      if (result.status !== "finished") {
-        throw new Error(`general-planner Smithers run ended ${result.status}`);
+      const smithersRun = await smithersRunSummary(storage, smithersRunId);
+      const disposition = evaluationSmithersRunDisposition(smithersRun);
+      if (disposition === "active") {
+        throw new EvaluationSmithersExecutionActiveError(smithersRunId);
       }
-      output = await loadBaselineSmithersOutput(connectionString, smithersRunId);
+      if (disposition === "irrecoverable") {
+        throw new Error(`general-planner Smithers run ${smithersRunId} is irrecoverable`);
+      }
+      if (
+        disposition === "missing" &&
+        (await evaluationCaseHasProviderWork(connectionString, row.aiRunId))
+      ) {
+        throw new Error(
+          `general-planner Smithers run ${smithersRunId} is missing after provider work`,
+        );
+      }
+      if (disposition === "terminal") {
+        // A finished Smithers run already owns all completed task outputs. Do
+        // not reactivate it merely to discover the terminal output; doing so
+        // would widen the ownership window and can replay a final boundary.
+        output = await loadBaselineSmithersOutput(connectionString, smithersRunId);
+      } else {
+        const result = await runSmithersWorkflow(workflow, {
+          runId: smithersRunId,
+          input: { aiRunId: row.aiRunId },
+          resume: disposition === "resumable",
+          logDir: null,
+          maxConcurrency: 1,
+        });
+        if (result.status !== "finished") {
+          throw new Error(`general-planner Smithers run ended ${result.status}`);
+        }
+        output = await loadBaselineSmithersOutput(connectionString, smithersRunId);
+      }
     } finally {
       await storage.close();
     }
     await persistBaselineOutput(connectionString, row, output);
   } catch (error) {
+    if (isEvaluationSmithersExecutionActiveError(error)) throw error;
     await terminalizeFailedBaselineRun(connectionString, row.aiRunId, smithersRunId);
     throw error;
   }
@@ -2129,6 +2267,7 @@ export const executeGeneralPlannerEvaluationCase = async (
     try {
       await executeBaseline(connectionString, config, row, options);
     } catch (error) {
+      if (isEvaluationSmithersExecutionActiveError(error)) throw error;
       await failCaseRun(connectionString, row, error);
       throw error;
     }
@@ -3765,6 +3904,7 @@ export const executeSpecializedEvaluationCase = (
       if (completed === undefined) throw new Error("specialized evaluation case disappeared");
       digest = await finalizeCaseEvidence(connectionString, completed);
     } catch (error) {
+      if (isEvaluationSmithersExecutionActiveError(error)) throw error;
       await failCaseRun(connectionString, row, error);
       throw error;
     }
@@ -4169,6 +4309,7 @@ const executeEvaluationSessionWithLeaseHeld = async (
       )!;
       await finalizeCaseEvidence(connectionString, row);
     } catch (error) {
+      if (isEvaluationSmithersExecutionActiveError(error)) throw error;
       await failCaseRun(connectionString, row, error);
       throw error;
     }

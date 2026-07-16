@@ -30,6 +30,12 @@ interface SmithersRunIdRow {
 
 export const AI_RUNTIME_RETENTION_CANDIDATE_LIMIT = 500;
 
+/** Smithers run IDs owned by Brief's AI runtime retention sweep. */
+export const AI_RUNTIME_SMITHERS_RUN_PREFIXES = Object.freeze([
+  "ai-chat:",
+  "ai-evaluation-general-planner:",
+]);
+
 export interface SmithersSweepResult {
   readonly deletedRuns: number;
   readonly selectedCandidates: number;
@@ -129,6 +135,27 @@ const smithersRunExistsInTables = (
     return false;
   });
 
+const smithersRunIsActivelyOwned = (
+  tableNames: readonly string[],
+  smithersRunId: string,
+): Effect.Effect<boolean, SqlError, PgClient.PgClient> =>
+  Effect.gen(function* () {
+    if (!tableNames.includes("_smithers_runs")) return false;
+    const sql = yield* PgClient.PgClient;
+    const rows = yield* sql<{ readonly active: boolean }>`
+      select exists (
+        select 1
+        from _smithers_runs runs
+        where runs.run_id = ${smithersRunId}
+          and runs.status = 'running'
+          and runs.heartbeat_at_ms is not null
+          and runs.heartbeat_at_ms >=
+            extract(epoch from clock_timestamp()) * 1000 - 30000
+      ) as active
+    `;
+    return rows[0]?.active === true;
+  });
+
 export const sweepAiChatSmithersRows = (
   candidateLimit = AI_RUNTIME_RETENTION_CANDIDATE_LIMIT,
 ): Effect.Effect<SmithersSweepResult, SqlError, PgClient.PgClient> =>
@@ -147,7 +174,10 @@ export const sweepAiChatSmithersRows = (
       const rows = yield* sql<SmithersRunIdRow>`
         select distinct state.run_id as "smithersRunId"
         from ${sql(tableName)} state
-        where state.run_id like 'ai-chat:%'
+        where (
+            state.run_id like 'ai-chat:%'
+            or state.run_id like 'ai-evaluation-general-planner:%'
+          )
           ${
             alreadySelected.length === 0
               ? sql``
@@ -202,6 +232,11 @@ export const sweepAiChatSmithersRows = (
         continue;
       }
 
+      // A terminal product row is not enough to prove that Smithers is safe
+      // to remove. A live Smithers owner wins this race; the next sweep can
+      // reconsider it after the heartbeat disappears.
+      if (yield* smithersRunIsActivelyOwned(tableNames, smithersRunId)) continue;
+
       if (absentRows.length > 0) {
         yield* sql`
           insert into ai_smithers_orphan_candidates (smithers_run_id)
@@ -232,14 +267,21 @@ export const sweepAiChatSmithersRows = (
       from ai_smithers_orphan_candidates
       ${
         selectedIds.length === 0
-          ? sql``
-          : sql`where not (${sql.in("smithers_run_id", selectedIds)})`
+          ? sql`where (
+              smithers_run_id like 'ai-chat:%'
+              or smithers_run_id like 'ai-evaluation-general-planner:%'
+            )`
+          : sql`where (
+              smithers_run_id like 'ai-chat:%'
+              or smithers_run_id like 'ai-evaluation-general-planner:%'
+            ) and not (${sql.in("smithers_run_id", selectedIds)})`
       }
       order by first_seen_at, smithers_run_id
       limit ${remaining}
     `;
     for (const candidate of candidates) {
       smithersRunIds.add(candidate.smithersRunId);
+      if (yield* smithersRunIsActivelyOwned(tableNames, candidate.smithersRunId)) continue;
       const presentInSmithers = yield* smithersRunExistsInTables(
         tableNames,
         candidate.smithersRunId,

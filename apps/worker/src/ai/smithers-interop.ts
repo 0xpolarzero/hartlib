@@ -13,6 +13,19 @@ import type { z } from "zod";
 export type { CreateSmithersApi, RunOptions, RunResult, RunStatus } from "smithers-orchestrator";
 
 /**
+ * The public Smithers run summary used by ownership/recovery decisions. Keep
+ * this projection deliberately small: evaluation code must not depend on
+ * Smithers' private tables or mutate durable orchestration state itself.
+ */
+export interface SmithersRunSummary {
+  readonly runId: string;
+  readonly status: string;
+  readonly heartbeatAtMs: number | null;
+  readonly runtimeOwnerId: string | null;
+  readonly finishedAtMs: number | null;
+}
+
+/**
  * Close Smithers' process-local Effect Cluster runtime for finite callers such
  * as the evaluation CLI. Long-lived worker startup intentionally leaves this
  * runtime open until process shutdown.
@@ -188,10 +201,24 @@ export async function smithersRunExists<Schemas extends Record<string, z.ZodObje
   storage: Pick<CreateSmithersApi<Schemas>, "db">,
   runId: string,
 ): Promise<boolean> {
+  return (await smithersRunSummary(storage, runId)) !== null;
+}
+
+/** Read one run through Smithers' public storage adapter without changing it. */
+export async function smithersRunSummary<Schemas extends Record<string, z.ZodObject<any>>>(
+  storage: Pick<CreateSmithersApi<Schemas>, "db">,
+  runId: string,
+): Promise<SmithersRunSummary | null> {
   const adapter = new SmithersDb(storage.db);
   const row = await Effect.runPromise(adapter.getRun(runId));
-
-  return row !== undefined;
+  if (row === undefined) return null;
+  return {
+    runId: row.runId,
+    status: row.status,
+    heartbeatAtMs: row.heartbeatAtMs,
+    runtimeOwnerId: row.runtimeOwnerId,
+    finishedAtMs: row.finishedAtMs,
+  };
 }
 
 export type BriefRunOptions = Pick<RunOptions, "input"> &

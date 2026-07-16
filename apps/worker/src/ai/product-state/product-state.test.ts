@@ -2654,11 +2654,14 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
 
   it("sweeps terminal and absent Smithers state only after 24 hours", async () => {
     const terminal = await runDb(createFixture("smithers-terminal"));
+    const active = await runDb(createFixture("smithers-active"));
     const fresh = await runDb(createFixture("smithers-fresh"));
     const terminalSmithersId = `ai-chat:${terminal.runId}`;
+    const activeSmithersId = `ai-chat:${active.runId}`;
     const freshSmithersId = `ai-chat:${fresh.runId}`;
     const orphanSmithersId = `ai-chat:${crypto.randomUUID()}`;
     await runDb(failAiRun(terminal.runId, "answer_failed"));
+    await runDb(failAiRun(active.runId, "answer_failed"));
     await runDb(failAiRun(fresh.runId, "answer_failed"));
     await runDb(
       Effect.gen(function* () {
@@ -2671,26 +2674,51 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         `;
         yield* sql`
           update ai_runs
+          set smithers_run_id = ${activeSmithersId},
+              failed_at = now() - interval '24 hours 1 second'
+          where id = ${active.runId}
+        `;
+        yield* sql`
+          update ai_runs
           set smithers_run_id = ${freshSmithersId},
-              failed_at = now() - interval '23 hours 59 minutes 59 seconds'
+              failed_at = now() - interval '23 hours 55 minutes'
           where id = ${fresh.runId}
+        `;
+        yield* sql`
+          create table if not exists _smithers_runs (
+            run_id text primary key,
+            status text not null,
+            heartbeat_at_ms bigint
+          )
+        `;
+        yield* sql`alter table _smithers_runs add column if not exists status text`;
+        yield* sql`alter table _smithers_runs add column if not exists heartbeat_at_ms bigint`;
+        yield* sql`
+          insert into _smithers_runs (run_id, status, heartbeat_at_ms)
+          values (${activeSmithersId}, 'running', ${Date.now()})
+          on conflict (run_id) do update
+            set status = excluded.status, heartbeat_at_ms = excluded.heartbeat_at_ms
         `;
         yield* sql`create table _smithers_retention_test (run_id text primary key)`;
         yield* sql`create table ai_chat_answer (run_id text primary key)`;
         yield* sql`
           insert into _smithers_retention_test (run_id)
-          values (${terminalSmithersId}), (${freshSmithersId}), (${orphanSmithersId})
+          values
+            (${terminalSmithersId}), (${activeSmithersId}),
+            (${freshSmithersId}), (${orphanSmithersId})
         `;
         yield* sql`
           insert into ai_chat_answer (run_id)
-          values (${terminalSmithersId}), (${freshSmithersId}), (${orphanSmithersId})
+          values
+            (${terminalSmithersId}), (${activeSmithersId}),
+            (${freshSmithersId}), (${orphanSmithersId})
         `;
       }),
     );
 
     expect(await runDb(sweepAiChatSmithersRows())).toEqual({
       deletedRuns: 1,
-      selectedCandidates: 2,
+      selectedCandidates: 3,
     });
     await runDb(
       Effect.gen(function* () {
@@ -2704,7 +2732,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     );
     expect(await runDb(sweepAiChatSmithersRows())).toEqual({
       deletedRuns: 1,
-      selectedCandidates: 1,
+      selectedCandidates: 2,
     });
     const remaining = await runDb(
       Effect.gen(function* () {
@@ -2718,8 +2746,14 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         return { canonical, synthetic };
       }),
     );
-    expect(remaining.synthetic.map((row) => row.runId)).toEqual([freshSmithersId]);
-    expect(remaining.canonical.map((row) => row.runId)).toEqual([freshSmithersId]);
+    expect(remaining.synthetic.map((row) => row.runId)).toEqual([
+      activeSmithersId,
+      freshSmithersId,
+    ]);
+    expect(remaining.canonical.map((row) => row.runId)).toEqual([
+      activeSmithersId,
+      freshSmithersId,
+    ]);
   });
 
   it("shares one exact 500-candidate budget across Smithers and stream-event retention", async () => {
