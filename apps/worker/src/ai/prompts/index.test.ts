@@ -135,6 +135,7 @@ describe("canonical AI role prompts", () => {
     }
     expect(WebResearchPrompt).toContain("Search snippets are discovery hints only");
     expect(WebResearchPrompt).toContain("only the smallest set of directly relevant pages");
+    expect(WebResearchPrompt).toContain("emit exactly one quotation from that page");
     expect(WebResearchPrompt).toContain("Use web tools only when this topic explicitly asks");
     expect(WebResearchPrompt).toContain(
       "A conceptual comparison such as how two internal energy subjects work remains non-web",
