@@ -14,6 +14,7 @@ import {
   InternalRetrievalSearchProtocol,
   boundedWebProviderText,
   internalSearchQueryIssue,
+  normalizeInternalChatSearchTerms,
   normalizeSelectedDocumentRanges,
   searchWithinCandidate,
   searchWithinCandidateWindow,
@@ -31,6 +32,14 @@ describe("bounded web provider views", () => {
     expect(bounded.endsWith("ENDING evidence")).toBe(true);
     expect(page.includes("BEGINNING evidence")).toBe(true);
     expect(page.includes("ENDING evidence")).toBe(true);
+  });
+});
+
+describe("older chat search terms", () => {
+  it("removes temporal scope modifiers without losing the requested subject", () => {
+    expect(normalizeInternalChatSearchTerms("old storage pilot")).toBe("storage pilot");
+    expect(normalizeInternalChatSearchTerms("earlier prior storage")).toBe("storage");
+    expect(normalizeInternalChatSearchTerms("old")).toBe("old");
   });
 });
 

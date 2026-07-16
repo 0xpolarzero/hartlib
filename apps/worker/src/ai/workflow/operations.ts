@@ -1133,6 +1133,15 @@ export const internalSearchQueryIssue = (terms: string): string | undefined => {
   return undefined;
 };
 
+const internalChatTemporalModifiers = /\b(?:old|older|earlier|prior|previous|recent|latest)\b/giu;
+
+export const normalizeInternalChatSearchTerms = (terms: string): string => {
+  const withoutTemporalModifiers = terms.replace(internalChatTemporalModifiers, " ").trim();
+  return withoutTemporalModifiers === ""
+    ? terms.trim()
+    : withoutTemporalModifiers.replace(/\s+/gu, " ");
+};
+
 export class InternalRetrievalProtocolError extends Error {
   constructor(message: string) {
     super(message);
@@ -3835,6 +3844,7 @@ export class CanonicalWorkflowOperations {
     resultLimit: number,
   ) {
     const beforeMessageId = query.beforeMessageId ?? null;
+    const searchTerms = normalizeInternalChatSearchTerms(query.terms);
     return this.db(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -3891,7 +3901,7 @@ export class CanonicalWorkflowOperations {
                 limit 1
               )
             )
-            and to_tsvector('simple', messages.content) @@ websearch_to_tsquery('simple', ${query.terms})
+            and to_tsvector('simple', messages.content) @@ websearch_to_tsquery('simple', ${searchTerms})
           order by messages.created_at desc, messages.id desc
           limit ${resultLimit}
         `;
