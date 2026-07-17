@@ -268,9 +268,9 @@ export default async function globalSetup(_config: FullConfig) {
     AI_STREAM_POLL_MS: "50",
     AI_STREAM_KEEPALIVE_MS: "1000",
     // A live tool-loop task can make several sequential network requests. The
-    // production default and its boundary tests remain 30 seconds; the opt-in
-    // network smoke uses the documented bounded override so provider latency
-    // does not turn the browser contract into a timing flake.
+    // production default is twenty minutes; this opt-in smoke uses a bounded
+    // two-minute override so provider latency does not turn the browser
+    // contract into a timing flake.
     AI_FAST_TASK_TIMEOUT_MS: useLiveProvider ? "120000" : "30000",
     // setup-cli has already invoked the real worker discovery/fetch/normalize/
     // Postgres pipeline with its deterministic local connector. Keep recurring

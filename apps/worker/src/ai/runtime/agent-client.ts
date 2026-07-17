@@ -76,6 +76,24 @@ export interface ToolLoopInput<Output> {
         coordinates: PiBoundaryCoordinates,
       ) => Readonly<Record<string, unknown>> | undefined)
     | undefined;
+  readonly recoverMalformedToolCall?:
+    | ((
+        toolName: string,
+        error: unknown,
+        coordinates: PiBoundaryCoordinates,
+      ) => Readonly<Record<string, unknown>> | undefined)
+    | undefined;
+  /**
+   * Optionally reject an entire malformed multi-call array without executing
+   * a valid sibling and let the provider retry the phase inside the loop.
+   */
+  readonly recoverMalformedToolCallArray?:
+    | ((
+        toolNames: readonly string[],
+        error: unknown,
+        coordinates: PiBoundaryCoordinates,
+      ) => Readonly<Record<string, unknown>> | undefined)
+    | undefined;
   /**
    * Optionally make a phase transition terminal-only before the final
    * configured turn once the owning operation has enough evidence.
@@ -87,6 +105,17 @@ export interface ToolLoopInput<Output> {
    * are separate protocol phases even when the provider emits parallel calls.
    */
   readonly exclusiveToolNames?: readonly string[] | undefined;
+  /**
+   * Optionally reject a mixed or repeated exclusive phase without executing
+   * any call and let the provider correct it inside the bounded loop.
+   */
+  readonly recoverConflictingToolCalls?:
+    | ((
+        toolNames: readonly string[],
+        error: unknown,
+        coordinates: PiBoundaryCoordinates,
+      ) => Readonly<Record<string, unknown>> | undefined)
+    | undefined;
   /**
    * Enforce the terminal reservation for providers that may replay a stale
    * terminal call even after it has been removed from the advertised tools.
@@ -138,6 +167,16 @@ const parseExactlyOneTerminal = <Output>(
 };
 
 const toolResultJson = (value: Readonly<Record<string, unknown>>): string => JSON.stringify(value);
+const emptyToolResultShape = (toolName: string): Readonly<Record<string, unknown>> => ({
+  ...(toolName === "search_internal" ? { items: [] } : {}),
+  ...(toolName === "search_within_candidate" ? { matchPreviews: [] } : {}),
+});
+
+const malformedToolResult = (toolName: string): Readonly<Record<string, unknown>> => ({
+  ...emptyToolResultShape(toolName),
+  complete: true,
+  protocolError: "tool arguments did not match the advertised schema",
+});
 
 const stableValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(stableValue);
@@ -414,7 +453,6 @@ export class CanonicalAgentClient {
     ];
     const tools = new Map(input.tools.map((tool) => [tool.definition.name, tool]));
     const continuationObligations = new Map<string, ToolContinuationObligation>();
-    let forceTerminalNextTurn = false;
 
     for (let turn = 0; turn < input.maximumTurns; turn += 1) {
       const coordinates = {
@@ -423,10 +461,9 @@ export class CanonicalAgentClient {
         providerRequestIndex: turn,
       } satisfies PiBoundaryCoordinates;
       const terminalTurn =
-        forceTerminalNextTurn ||
-        ((input.terminalOnlyForTurn?.(turn) === true ||
+        (input.terminalOnlyForTurn?.(turn) === true ||
           (input.reserveFinalTurnForTerminal === true && turn === input.maximumTurns - 1)) &&
-          continuationObligations.size === 0);
+        continuationObligations.size === 0;
       const enforceTerminalTurn = input.enforceTerminalTurn === true;
       const terminalTool = terminalTurn ? tools.get(input.terminalToolName) : undefined;
       if (terminalTurn && terminalTool === undefined) {
@@ -466,8 +503,55 @@ export class CanonicalAgentClient {
       try {
         toolCalls = parseToolCalls(completion.toolCalls, tools);
       } catch (error) {
+        const rejectedIds = new Set<string>();
+        const rejectedToolCalls = completion.toolCalls.map((call, index) => {
+          const id =
+            call.id.length > 0 && !rejectedIds.has(call.id)
+              ? call.id
+              : `brief_rejected_${coordinates.attempt}_${coordinates.providerRequestIndex}_${index}`;
+          rejectedIds.add(id);
+          return {
+            ...call,
+            id,
+            arguments: isJsonRecord(call.arguments) ? call.arguments : {},
+          };
+        });
         if (!(error instanceof RecoverableToolCallError)) {
-          throw providerOutputError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
+          const recoverableArray =
+            completion.toolCalls.length > 1 &&
+            completion.toolCalls.every((call) => call.name.length > 0 && tools.has(call.name));
+          const recovery = recoverableArray
+            ? input.recoverMalformedToolCallArray?.(
+                completion.toolCalls.map((call) => call.name),
+                error,
+                coordinates,
+              )
+            : undefined;
+          if (recovery === undefined) {
+            throw providerOutputError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
+          }
+          messages.push({
+            role: "assistant",
+            content: completion.text,
+            toolCalls: rejectedToolCalls,
+          });
+          for (const call of rejectedToolCalls) {
+            messages.push({
+              role: "tool",
+              toolCallId: call.id,
+              name: call.name,
+              content: toolResultJson({
+                ...recovery,
+                ...malformedToolResult(call.name),
+                noCallsExecuted: true,
+              }),
+            });
+          }
+          messages.push({
+            role: "user",
+            content: `No prior call was executed because the complete call array was malformed. Call only advertised tools with exact JSON object arguments; ${input.terminalToolName} must remain phase-separated.`,
+          });
+          continue;
         }
         // Do not execute a malformed provider call. Preserve it in the exact
         // bounded conversation and spend a remaining turn on a code-owned
@@ -475,8 +559,20 @@ export class CanonicalAgentClient {
         messages.push({
           role: "assistant",
           content: completion.text,
-          toolCalls: completion.toolCalls,
+          toolCalls: rejectedToolCalls,
         });
+        for (const call of rejectedToolCalls) {
+          const recovery = input.recoverMalformedToolCall?.(call.name, error, coordinates);
+          messages.push({
+            role: "tool",
+            toolCallId: call.id,
+            name: call.name,
+            content: toolResultJson({
+              ...recovery,
+              ...malformedToolResult(call.name),
+            }),
+          });
+        }
         messages.push({
           role: "user",
           content: `The prior tool call was rejected because it did not match an advertised tool schema. Call exactly one advertised tool using its exact JSON object schema. The required terminal tool is ${input.terminalToolName}.`,
@@ -503,20 +599,50 @@ export class CanonicalAgentClient {
       const exclusiveToolNames = new Set(input.exclusiveToolNames ?? []);
       const exclusiveCall = toolCalls.find((call) => exclusiveToolNames.has(call.name));
       const hasTerminalCall = toolCalls.some((call) => call.name === input.terminalToolName);
+      const disabledOnlyTurn = toolCalls.every((call) => disabledTools.has(call.name));
       if (
         (terminalTurn &&
+          !disabledOnlyTurn &&
           (toolCalls.length !== 1 || toolCalls[0]?.name !== input.terminalToolName)) ||
         (hasTerminalCall && toolCalls.length !== 1) ||
         (exclusiveCall !== undefined && toolCalls.length !== 1)
       ) {
-        throw providerOutputError(
-          new Error(
-            terminalTurn
-              ? "terminal tool call must be the sole call in its complete provider turn"
-              : `tool ${exclusiveCall?.name ?? ""} must be the sole call in its complete provider turn`,
-          ),
-          aiRunErrorCodeForRole(input.coordinates.agentRole),
+        const error = new Error(
+          terminalTurn
+            ? "terminal tool call must be the sole call in its complete provider turn"
+            : `tool ${exclusiveCall?.name ?? ""} must be the sole call in its complete provider turn`,
         );
+        const recovery = input.recoverConflictingToolCalls?.(
+          toolCalls.map((call) => call.name),
+          error,
+          coordinates,
+        );
+        if (recovery === undefined) {
+          throw providerOutputError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
+        }
+        messages.push({
+          role: "assistant",
+          content: completion.text,
+          toolCalls: completion.toolCalls,
+        });
+        for (const call of toolCalls) {
+          messages.push({
+            role: "tool",
+            toolCallId: call.id,
+            name: call.name,
+            content: toolResultJson({
+              ...emptyToolResultShape(call.name),
+              ...recovery,
+              complete: true,
+              protocolError: "exclusive tool phase contained conflicting calls",
+            }),
+          });
+        }
+        messages.push({
+          role: "user",
+          content: `No prior call was executed. Call exactly one advertised tool in the current phase; ${input.terminalToolName} must be the sole call on its reserved terminal turn.`,
+        });
+        continue;
       }
       const preflightContinuationKeys = new Set<string>();
       for (const call of toolCalls) {
@@ -585,7 +711,7 @@ export class CanonicalAgentClient {
               aiRunErrorCodeForRole(input.coordinates.agentRole),
             );
           }
-          if (continuationObligations.size > 0 && !forceTerminalNextTurn) {
+          if (continuationObligations.size > 0) {
             throw providerOutputError(
               new Error("terminal tool called with unresolved incomplete tool results"),
               aiRunErrorCodeForRole(input.coordinates.agentRole),
@@ -595,9 +721,6 @@ export class CanonicalAgentClient {
           try {
             output = input.validateTerminal(call.arguments);
           } catch (error) {
-            if (input.coordinates.agentRole === "context_reducer") {
-              console.error("context reducer terminal rejected", error);
-            }
             const recovery = input.recoverTerminal?.(call.arguments, error, coordinates);
             if (recovery !== undefined) {
               messages.push({
@@ -630,6 +753,11 @@ export class CanonicalAgentClient {
         const tool = visibleToolsByName.get(call.name);
         if (tool === undefined) {
           if (disabledTools.has(call.name)) {
+            const disabledResult = input.disabledToolResult?.(call.name) ?? {
+              complete: true,
+              toolDisabled: true,
+              message: `tool ${call.name} is disabled in the current retrieval phase; use an advertised tool`,
+            };
             // Some providers occasionally replay a stale tool name even after
             // the next-phase request removed it from the advertised schema.
             // Keep the phase transition code-owned without turning that stale
@@ -639,13 +767,10 @@ export class CanonicalAgentClient {
               role: "tool",
               toolCallId: call.id,
               name: call.name,
-              content: toolResultJson(
-                input.disabledToolResult?.(call.name) ?? {
-                  complete: true,
-                  toolDisabled: true,
-                  message: `tool ${call.name} is disabled in the current retrieval phase; use an advertised tool`,
-                },
-              ),
+              content: toolResultJson({
+                ...emptyToolResultShape(call.name),
+                ...disabledResult,
+              }),
             });
             continue;
           }
@@ -665,6 +790,7 @@ export class CanonicalAgentClient {
             toolCallId: call.id,
             name: call.name,
             content: toolResultJson({
+              ...emptyToolResultShape(call.name),
               complete: true,
               continuationRequired: true,
               message:
@@ -674,39 +800,14 @@ export class CanonicalAgentClient {
           continue;
         }
         let result: Readonly<Record<string, unknown>>;
-        if (forceTerminalNextTurn) {
-          result = {
-            complete: true,
-            protocolError: "protocol recovery is terminal-only",
-          };
-        } else {
-          try {
-            result = await tool.execute(call.arguments, coordinates);
-          } catch (error) {
-            if (input.coordinates.agentRole === "context_reducer") {
-              console.error("context reducer tool rejected", call.name, error);
-            }
-            const recovery = input.recoverToolError?.(
-              call.name,
-              call.arguments,
-              error,
-              coordinates,
-            );
-            if (recovery === undefined) {
-              throw toAiRuntimeError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
-            }
-            result = recovery;
+        try {
+          result = await tool.execute(call.arguments, coordinates);
+        } catch (error) {
+          const recovery = input.recoverToolError?.(call.name, call.arguments, error, coordinates);
+          if (recovery === undefined) {
+            throw toAiRuntimeError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
           }
-        }
-        if (input.coordinates.agentRole === "internal_retrieval") {
-          console.error("internal retrieval tool result", call.name, result);
-        }
-        if (typeof result.protocolError === "string" && result.protocolError.trim() !== "") {
-          // Protocol errors are code-owned results. They close all outstanding
-          // cursor obligations and force the very next provider turn to emit
-          // the terminal manifest; no further search/inspection can run.
-          forceTerminalNextTurn = true;
-          continuationObligations.clear();
+          result = { ...emptyToolResultShape(call.name), ...recovery };
         }
         if (resultIsIncomplete(result)) {
           const expectedCursor = result.cursor;

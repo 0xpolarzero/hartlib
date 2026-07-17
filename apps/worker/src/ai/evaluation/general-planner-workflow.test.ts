@@ -471,12 +471,23 @@ describe("offline single-general-planner evaluation workflow", () => {
     const fixture = CanonicalGoldenEvaluationSet.cases.find((candidate) =>
       candidate.dimensions.includes("oversized_evidence"),
     );
-    const source = fixture?.evidence.find(
-      (candidate) => candidate.kind !== "document" && candidate.content.length > 8_000,
-    );
-    if (fixture === undefined || source === undefined) {
-      throw new Error("oversized non-document fixture is missing");
+    if (fixture === undefined) {
+      throw new Error("oversized fixture is missing");
     }
+    const source = {
+      sourceId: "web:oversized-non-document-test",
+      selector: "W" as const,
+      kind: "web" as const,
+      content: "oversized non-document evidence ".repeat(400),
+      ranges: [],
+      url: "https://example.com/oversized-non-document-test",
+      title: "Oversized non-document test source",
+      domain: "example.com",
+    };
+    const oversizedFixture = {
+      ...fixture,
+      evidence: [...fixture.evidence, source],
+    };
     const requests: ProviderRequest[] = [];
     const onEvidenceVisible = vi.fn();
     const boundary: PiRuntimeBoundary = {
@@ -501,7 +512,7 @@ describe("offline single-general-planner evaluation workflow", () => {
           heartbeat: () => undefined,
           lastHeartbeat: null,
         },
-        () => executeGeneralPlannerProviderTurn(boundary, fixture, { onEvidenceVisible }),
+        () => executeGeneralPlannerProviderTurn(boundary, oversizedFixture, { onEvidenceVisible }),
       ),
     ).rejects.toMatchObject({ code: "invalid_workflow_output" });
     expect(onEvidenceVisible).not.toHaveBeenCalled();

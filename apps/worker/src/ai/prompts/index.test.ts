@@ -56,6 +56,8 @@ describe("canonical AI role prompts", () => {
     );
     expect(ConversationResolverPrompt).toContain("Do not infer a recency pairing");
     expect(ConversationResolverPrompt).toContain("Name the competing candidates");
+    expect(ConversationResolverPrompt).toContain("Shared generic terms");
+    expect(ConversationResolverPrompt).toContain("Ignore unrelated later entries");
   });
 
   it("pins semantic execution planning without workflow-owned IDs", () => {
@@ -107,10 +109,26 @@ describe("canonical AI role prompts", () => {
     );
     expect(InternalRetrievalPrompt).toContain("replace every hyphen joining words with a space");
     expect(InternalRetrievalPrompt).toContain(
+      "search the stable subject identity first: use storage pilot, not storage pilot reduction",
+    );
+    expect(InternalRetrievalPrompt).toContain("target chat_messages before documents");
+    expect(InternalRetrievalPrompt).toContain(
+      "Saved memories are owned by the separate memory selector B",
+    );
+    expect(InternalRetrievalPrompt).toContain(
+      "target documents and search only the factual document subject",
+    );
+    expect(InternalRetrievalPrompt).toContain(
+      "select the answer message that contains the requested information",
+    );
+    expect(InternalRetrievalPrompt).toContain(
       "Spend at most two ordinary provider turns on search and refinement",
     );
     expect(InternalRetrievalPrompt).toContain(
       "Issue at most one search_internal call per provider turn",
+    );
+    expect(InternalRetrievalPrompt).toContain(
+      "issue multiple distinct inspect_internal calls together in the same provider turn",
     );
     expect(InternalRetrievalPrompt).toContain(
       "If any tool result contains protocolError, stop all search and inspection immediately",
@@ -144,8 +162,12 @@ describe("canonical AI role prompts", () => {
     expect(WebResearchPrompt).toContain(
       "A conceptual comparison such as how two internal energy subjects work remains non-web",
     );
+    expect(WebResearchPrompt).toContain("A named source is a hard lexical anchor");
     expect(WebResearchPrompt).toContain(
       "If any web_fetch succeeds, emit at least one exact quotation from the fetched page",
+    );
+    expect(WebResearchPrompt).toContain(
+      "A URL-specific fetchFailed result may be followed only by another discovered URL",
     );
     for (const prompt of [InternalRetrievalPrompt, MemorySelectorPrompt, WebResearchPrompt]) {
       expect(prompt).toContain('"toolBounds"');
@@ -176,7 +198,10 @@ describe("canonical AI role prompts", () => {
       );
     }
     expect(WebResearchPrompt).toContain(
-      "After a fetch result, do not fetch again or combine fetch with emit_web_evidence; emit_web_evidence must be the sole call in its own later turn",
+      "After a successful fetch, emit_web_evidence must be the sole tool call in the next turn",
+    );
+    expect(WebResearchPrompt).toContain(
+      "A fetchFailed result is not a successful fetch: choose another exact discovered URL",
     );
     expect(WebResearchPrompt).toContain("Request at most one web_search call per provider turn");
     expect(WebResearchPrompt).toContain(
@@ -221,7 +246,7 @@ describe("canonical AI role prompts", () => {
     }
     expect(DirectAnswerPrompt).toContain('"evidence"');
     expect(DirectAnswerPrompt).toContain(
-      "If evidence is empty, emit only an explicit insufficiency statement",
+      "A user-authored preference, instruction, or memory request",
     );
     expect(SynthesisPrompt).toContain('"packets"');
     expect(SynthesisPrompt).toContain("facts absent from those packets");

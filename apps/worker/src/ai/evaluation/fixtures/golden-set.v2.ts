@@ -16,7 +16,7 @@ const oversizedEvidenceDocuments = Array.from({ length: 6 }, (_, regionIndex) =>
     `Regional storage-dispatch trial ${region}: audit rules cover curtailment results across ` +
     `the six regional storage-dispatch trials. ${bindingResult}`;
   const auditRows = Array.from(
-    { length: 380 },
+    { length: 500 },
     (_, rowIndex) =>
       `Region ${region} signed audit row ${rowIndex + 1}: dispatch telemetry confirmed reserve ` +
       "activation, transformer loading, the curtailment baseline, settlement interval integrity, " +
@@ -46,7 +46,7 @@ const oversizedMemoryEvidence = [
   content:
     `Saved preference audit-rule set ${setIndex + 1}: apply ${preference} to every regional trial summary. ` +
     Array.from(
-      { length: 280 },
+      { length: 4 },
       (_, ruleIndex) =>
         `Saved audit rule ${setIndex + 1}.${ruleIndex + 1}: when presenting regional storage ` +
         `trials, enforce ${preference}, retain the signed percentage, keep source classes ` +

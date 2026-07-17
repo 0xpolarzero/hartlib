@@ -7,6 +7,7 @@ import { Template } from "@huggingface/jinja";
 
 import { AiRuntimeError } from "./errors";
 import {
+  normalizeProviderRequest,
   toGlmTemplateInput,
   type LiveProviderRequest,
   type ProviderRequest,
@@ -117,28 +118,37 @@ export const renderOfficialGlmProviderRequest = (
   return template.render({
     messages: input.messages,
     tools: input.tools,
-    add_generation_prompt: true,
+    add_generation_prompt: input.messages.at(-1)?.role !== "assistant",
     ...templateReasoningOptions(request, modelId),
   });
 };
 
-const turboProviderAccountingOverhead = (request: ProviderRequest): number =>
-  request.messages.filter(
-    (message) =>
-      message.role === "assistant" &&
-      message.toolCalls !== undefined &&
-      message.toolCalls.length > 0,
-  ).length;
+const turboProviderAccountingOverhead = (request: ProviderRequest): number => {
+  const messages = normalizeProviderRequest(request).messages;
+  let lastAssistantProseIndex = -1;
+  for (const [index, message] of messages.entries()) {
+    if (message.role === "assistant" && message.content.trim() !== "") {
+      lastAssistantProseIndex = index;
+    }
+  }
+  const toolTurnsAfterProse = messages
+    .slice(Math.max(0, lastAssistantProseIndex))
+    .filter(
+      (message) =>
+        message.role === "assistant" &&
+        message.toolCalls !== undefined &&
+        message.toolCalls.length > 0,
+    ).length;
+  return messages.at(-1)?.role === "assistant" ? toolTurnsAfterProse + 1 : toolTurnsAfterProse;
+};
 
 const exactCount = (request: ProviderRequest, modelId: RegisteredModel["id"]): number => {
   const templateTokens = (modelId === "glm-5.2" ? exactTokenizer : exactTurboTokenizer).encode(
     renderOfficialGlmProviderRequest(request, modelId),
     { add_special_tokens: false },
   ).length;
-  // Live Z.AI usage contracts show Turbo accounts one additional prompt token
-  // per historical assistant tool-call turn. This is provider accounting
-  // overhead outside the rendered template (one turn with parallel results is
-  // still +1); the opt-in contract suite guards the invariant.
+  // Z.AI Turbo accounts one out-of-template token for a trailing assistant
+  // continuation and for each tool-call turn at or after the latest assistant prose.
   return modelId === "glm-5-turbo"
     ? templateTokens + turboProviderAccountingOverhead(request)
     : templateTokens;
@@ -150,9 +160,9 @@ const exactCount = (request: ProviderRequest, modelId: RegisteredModel["id"]): n
 // Loading here makes a missing, corrupt, or incompatible asset a startup-time
 // failure for every worker process that imports the runtime registry.
 const tokenizerIdentity = `zai-org/GLM-5.2@f6142f127a14b58dc602592e996cd7d8ff139351:${expectedTokenizerSha256}`;
-const chatTemplateIdentity = `zai-org/GLM-5.2@f6142f127a14b58dc602592e996cd7d8ff139351:${expectedChatTemplateSha256}:pi-tools-strict-false-v1`;
+const chatTemplateIdentity = `zai-org/GLM-5.2@f6142f127a14b58dc602592e996cd7d8ff139351:${expectedChatTemplateSha256}:pi-tools-strict-false-v1:assistant-continuation-v1`;
 const turboTokenizerIdentity = `zai-org/GLM-5@f4c624070fb778e07ad16fb04c34dad055be3fce:shared-vocabulary:${expectedTurboTokenizerSha256}`;
-const turboChatTemplateIdentity = `zai-org/GLM-5@f4c624070fb778e07ad16fb04c34dad055be3fce:${expectedTurboChatTemplateSha256}:pi-tools-strict-false-v1:tool-turn-overhead-v1`;
+const turboChatTemplateIdentity = `zai-org/GLM-5@f4c624070fb778e07ad16fb04c34dad055be3fce:shared-vocabulary:${expectedTurboChatTemplateSha256}:pi-tools-strict-false-v1:tool-turn-overhead-v4:assistant-continuation-v1`;
 
 const registry = new Map<string, RegisteredModel>([
   [

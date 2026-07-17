@@ -2747,14 +2747,29 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         return { canonical, synthetic };
       }),
     );
-    expect(remaining.synthetic.map((row) => row.runId)).toEqual([
-      activeSmithersId,
-      freshSmithersId,
-    ]);
-    expect(remaining.canonical.map((row) => row.runId)).toEqual([
-      activeSmithersId,
-      freshSmithersId,
-    ]);
+    expect(remaining.synthetic.map((row) => row.runId)).toEqual(
+      [activeSmithersId, freshSmithersId].sort(),
+    );
+    expect(remaining.canonical.map((row) => row.runId)).toEqual(
+      [activeSmithersId, freshSmithersId].sort(),
+    );
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          delete from _smithers_runs
+          where run_id in (${activeSmithersId}, ${freshSmithersId})
+        `;
+        yield* sql`
+          delete from _smithers_retention_test
+          where run_id in (${activeSmithersId}, ${freshSmithersId})
+        `;
+        yield* sql`
+          delete from ai_chat_answer
+          where run_id in (${activeSmithersId}, ${freshSmithersId})
+        `;
+      }),
+    );
   });
 
   it("holds the Smithers ownership fence from heartbeat check through deletion", async () => {

@@ -48,7 +48,7 @@ describe("worker config", () => {
     ["aiContextReductionMaxIterations", 2],
     ["aiMemoryDirectMaxItems", 200],
     ["aiMemoryToolResultMaxItems", 50],
-    ["aiFastTaskTimeoutMs", 300_000],
+    ["aiFastTaskTimeoutMs", 1_200_000],
     ["aiAnswerTimeoutMs", 120_000],
     ["aiStreamPollMs", 300],
     ["aiStreamKeepaliveMs", 15_000],

@@ -180,8 +180,8 @@ export const CanonicalEvaluationExecutionConfig = Object.freeze({
   aiFanoutMaxTopics: 3,
   aiTopicResearchMaxConcurrency: 6,
   aiTopicAnswerMaxConcurrency: 3,
-  // Keep one provider turn available for the terminal manifest after a
-  // bounded prose-only correction from GLM.
+  // Ordinary retrieval remains bounded at eight provider turns; internal
+  // retrieval locally raises its bound to preserve complete inspections.
   aiRetrievalMaxTurns: 8,
   aiInternalMaxSearches: 8,
   aiInternalMaxInspections: 8,
@@ -191,7 +191,7 @@ export const CanonicalEvaluationExecutionConfig = Object.freeze({
   aiContextReductionMaxIterations: 2,
   aiMemoryDirectMaxItems: 200,
   aiMemoryToolResultMaxItems: 50,
-  aiFastTaskTimeoutMs: 300_000,
+  aiFastTaskTimeoutMs: 1_200_000,
   aiAnswerTimeoutMs: 120_000,
   webResearchProvider: "tinyfish",
   webResearchEndpoint: TINYFISH_SEARCH_ENDPOINT,
@@ -4932,6 +4932,36 @@ const webUrlFromExposureIdentity = (identity: string): string => {
   return liveIdentity?.[1] ?? identity;
 };
 
+const eligibleNonSelectedConversationMessageId = (
+  manifest: EvaluationSeedManifest,
+  evidence: DurableRunEvidence,
+  exposure: DurableRunEvidence["sourceExposures"][number],
+): string | undefined => {
+  if (
+    exposure.sourceKind !== "chat_message" ||
+    exposure.contentItemIdentity === manifest.userMessageId
+  )
+    return undefined;
+  const resolutionObservation = evidence.observations
+    .filter((observation) => observation.kind === "conversation_resolution")
+    .sort(observationOrder)
+    .at(-1);
+  if (resolutionObservation === undefined) return undefined;
+  const parsed = DurableConversationResolutionSchema.safeParse(resolutionObservation.payload);
+  if (!parsed.success) return undefined;
+  const selectedTurnIds = new Set(
+    parsed.data.mode === "continue" ? parsed.data.selectedTurnIds : [],
+  );
+  return manifest.turnBindings
+    .filter((turn) => !selectedTurnIds.has(turn.aiRunId))
+    .flatMap((turn) => [turn.userMessageId, turn.assistantMessageId])
+    .find(
+      (messageId) =>
+        messageId === exposure.contentItemIdentity &&
+        chatMessageEvidenceIdentity(messageId) === exposure.logicalSourceIdentity,
+    );
+};
+
 const expectedExposureVisibleTokenCount = (
   manifest: EvaluationSeedManifest,
   evidence: DurableRunEvidence,
@@ -4979,6 +5009,24 @@ const expectedExposureVisibleTokenCount = (
   }
   const fixture = fixtureFor(manifest.caseId);
   const sourceId = mapExposureToGolden(manifest, evidence, exposure, storedDocuments);
+  if (
+    sourceId === null &&
+    exposure.exposureStage === "internal_inspection" &&
+    eligibleNonSelectedConversationMessageId(manifest, evidence, exposure) !== undefined
+  ) {
+    const message = evidence.conversationInventory
+      .flatMap((entry) => [
+        { id: entry.userMessageId, content: entry.userContent },
+        ...(entry.assistantMessageId === null || entry.assistantContent === null
+          ? []
+          : [{ id: entry.assistantMessageId, content: entry.assistantContent }]),
+      ])
+      .find((candidate) => candidate.id === exposure.contentItemIdentity);
+    if (message === undefined) {
+      throw new Error(`${manifest.caseId} conversation inspection lacks durable content`);
+    }
+    return model.countTextTokens(stripHistoricalCitationTags(message.content));
+  }
   const source =
     sourceId === null
       ? undefined
@@ -5479,6 +5527,16 @@ const mapExposureToGolden = (
       );
     }
     return evaluationBindingGoldenSourceId(binding);
+  }
+
+  if (
+    exposure.sourceKind === "chat_message" &&
+    (exposure.exposureStage === "internal_search_preview" ||
+      exposure.exposureStage === "internal_inspection")
+  ) {
+    const messageId = eligibleNonSelectedConversationMessageId(manifest, evidence, exposure);
+    if (messageId !== undefined) return null;
+    throw new Error(`${manifest.caseId} has an invalid non-selected conversation exposure`);
   }
 
   if (exposure.sourceKind === "web") {
@@ -7650,17 +7708,69 @@ const terminalRetrievalManifests = (
         );
         const exactStageRows = (stage: "internal_search_preview" | "internal_inspection") =>
           terminalExposures.filter((exposure) => exposure.exposureStage === stage);
-        const previewRows = exactStageRows("internal_search_preview");
-        const previewSourceIds = previewRows
-          .map((exposure) => mapExposureToGolden(manifest, evidence, exposure, storedDocuments))
-          .sort();
+        const previewSourceIds = [
+          ...new Set(
+            exactStageRows("internal_search_preview").map((exposure) =>
+              mapExposureToGolden(manifest, evidence, exposure, storedDocuments),
+            ),
+          ),
+        ].sort();
         if (
-          previewRows.length !== 6 ||
-          new Set(previewSourceIds).size !== 6 ||
+          previewSourceIds.length !== 6 ||
           canonicalJson(previewSourceIds) !== canonicalJson(canonicalSourceIds)
         ) {
           throw new Error(
             `${row.topology}/${row.caseId}/${taskId} oversized A preview exposure set is not exact`,
+          );
+        }
+        const inspectionRows = exactStageRows("internal_inspection");
+        const expectedInspectionPrefixes = new Map(
+          canonicalDocuments.map((source) => {
+            const binding = manifest.sourceBindings.find(
+              (
+                candidate,
+              ): candidate is Extract<
+                EvaluationSeedManifest["sourceBindings"][number],
+                { readonly kind: "document" }
+              > =>
+                candidate.kind === "document" &&
+                evaluationBindingGoldenSourceId(candidate) === source.sourceId,
+            );
+            if (binding === undefined) {
+              throw new Error(
+                `${row.topology}/${row.caseId}/${taskId} oversized document binding is missing`,
+              );
+            }
+            // Oversized documents force the provider to inspect a narrower range
+            // than the full document; the exact range is provider-determined, so
+            // the gate verifies the namespace+version prefix and a valid hash
+            // suffix rather than the golden set's full-range identity.
+            return [
+              source.sourceId,
+              `${documentBindingIdentity(binding)}:${binding.documentVersionId}:`,
+            ] as const;
+          }),
+        );
+        const inspectionSourceIds = inspectionRows.map((exposure) =>
+          mapExposureToGolden(manifest, evidence, exposure, storedDocuments),
+        );
+        if (
+          inspectionRows.length !== 6 ||
+          new Set(inspectionRows.map((exposure) => exposure.contentItemIdentity)).size !== 6 ||
+          canonicalJson([...inspectionSourceIds].sort()) !== canonicalJson(canonicalSourceIds) ||
+          inspectionRows.some((exposure, index) => {
+            const expectedPrefix = expectedInspectionPrefixes.get(inspectionSourceIds[index]!);
+            return (
+              expectedPrefix === undefined ||
+              !exposure.contentItemIdentity.startsWith(expectedPrefix) ||
+              !/^[A-Za-z0-9_-]{43}$/u.test(
+                exposure.contentItemIdentity.slice(expectedPrefix.length),
+              )
+            );
+          })
+        ) {
+          throw new Error(
+            `${row.topology}/${row.caseId}/${taskId} oversized inspection identity set differs`,
           );
         }
       }

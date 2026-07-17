@@ -106,6 +106,7 @@ import {
   validateMemoryProposals,
   validateTopicPacket,
 } from "../runtime/validators";
+import { WebBoundaryError } from "../web/errors";
 import { effectiveWebPolicy, recheckWebPolicy } from "../web/policy";
 
 export type CanonicalAiConfig = Pick<
@@ -1184,6 +1185,10 @@ export class InternalRetrievalSearchProtocol {
 
   ordinarySearchTurnsExhausted(): boolean {
     return this.ordinarySearchTurns.size >= 2;
+  }
+
+  hasPendingCursor(): boolean {
+    return this.pendingCursors.size > 0;
   }
 
   beforeSearch(
@@ -3105,6 +3110,7 @@ export class CanonicalWorkflowOperations {
   ): Promise<readonly InternalReference[]> {
     const selectedConversation = this.selectConversation(load, selectedTurnIds);
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
+    const internalMaximumTurns = Math.max(this.config.aiRetrievalMaxTurns, 12);
     let searches = 0;
     let inspections = 0;
     const searchProtocol = new InternalRetrievalSearchProtocol();
@@ -3117,6 +3123,8 @@ export class CanonicalWorkflowOperations {
     const providerExposures = new Map<string, InternalProviderExposure>();
     const inspectedDocumentRanges = new Set<string>();
     const completedInspectionKeys = new Set<string>();
+    const completedInspectionCandidateKeys = new Set<string>();
+    const pendingInspectionReferences = new Map<string, InternalReference>();
     let terminalRecoveryReady = false;
     let protocolErrorReturned = false;
     const exactRecoveryReferences = (): readonly InternalReference[] => {
@@ -3140,6 +3148,18 @@ export class CanonicalWorkflowOperations {
       }
       return [...references.values()];
     };
+    const inspectionRequirementKey = (reference: InternalReference): string =>
+      reference.kind === "chat_message"
+        ? `chat_message:${reference.messageId}`
+        : reference.ranges === undefined
+          ? documentDiscoveryKey(reference)
+          : documentReferenceSelectionKey(reference);
+    const inspectionComplete = (reference: InternalReference): boolean =>
+      reference.kind === "chat_message"
+        ? completedInspectionKeys.has(`chat_message:${reference.messageId}`)
+        : reference.ranges === undefined
+          ? completedInspectionCandidateKeys.has(documentDiscoveryKey(reference))
+          : completedInspectionKeys.has(documentReferenceSelectionKey(reference));
     const parseSearchInternalArguments = (value: unknown) =>
       z
         .object({ query: InternalQuerySchema, cursor: z.number().int().min(0).optional() })
@@ -3148,6 +3168,12 @@ export class CanonicalWorkflowOperations {
     const parseInspectInternalArguments = (value: unknown) =>
       z.object({ reference: InternalReferenceSchema }).strict().parse(value);
     const terminalSchema = z.toJSONSchema(InternalManifestOutputSchema);
+    const terminalPhaseReady = (): boolean =>
+      !searchProtocol.hasPendingCursor() &&
+      (terminalRecoveryReady ||
+        (protocolErrorReturned && providerExposures.size > 0) ||
+        (searchProtocol.ordinarySearchTurnsExhausted() &&
+          discoveredDocuments.size + discoveredMessages.size === 0));
     const references = await this.agents.toolLoop({
       requestClass: "fast",
       model: this.config.aiFastModel,
@@ -3160,13 +3186,13 @@ export class CanonicalWorkflowOperations {
         market: load.market,
         currentDate: load.currentDate,
         toolBounds: {
-          maximumTurns: this.config.aiRetrievalMaxTurns,
+          maximumTurns: internalMaximumTurns,
           maximumSearches: this.config.aiInternalMaxSearches,
           maximumInspections: this.config.aiInternalMaxInspections,
           maximumResultsPerSearch: 50,
         },
       }),
-      maximumTurns: this.config.aiRetrievalMaxTurns,
+      maximumTurns: internalMaximumTurns,
       requestedOutputTokens: this.config.aiFastOutputMaxTokens,
       reasoning: "medium",
       coordinates: { taskId, attempt: execution.attempt, agentRole: "internal_retrieval" },
@@ -3190,7 +3216,21 @@ export class CanonicalWorkflowOperations {
         await this.recordInternalProviderExposures(load, taskId, exposures, requestCoordinates);
       },
       terminalToolName: "emit_internal_manifest",
-      terminalOnlyForTurn: () => terminalRecoveryReady,
+      recoverMalformedToolCall: (toolName) => {
+        const recoveryReferences = exactRecoveryReferences();
+        if (toolName === "search_internal") {
+          searchProtocol.recordRejectedQuery();
+        } else if (toolName === "inspect_internal") {
+          protocolErrorReturned = true;
+          if (recoveryReferences.length > 0) terminalRecoveryReady = true;
+          else searchProtocol.recordRejectedQuery();
+        } else {
+          protocolErrorReturned = true;
+          terminalRecoveryReady = true;
+        }
+        return { recoveryReferences };
+      },
+      terminalOnlyForTurn: terminalPhaseReady,
       validateTerminal: (value) => {
         let entries = InternalManifestOutputSchema.parse(value).entries;
         if (entries.length === 0) searchProtocol.assertEmptyManifestAllowed();
@@ -3216,6 +3256,14 @@ export class CanonicalWorkflowOperations {
         if (new Set(identities).size !== identities.length) {
           throw new Error("internal manifest contains duplicate references");
         }
+        if (!protocolErrorReturned) {
+          const uninspectedEntry = entries.some((entry) => !inspectionComplete(entry));
+          if (uninspectedEntry) {
+            throw new Error(
+              "every selected internal reference must have a complete bound inspection",
+            );
+          }
+        }
         const uninspectedRange = entries.some(
           (entry) =>
             entry.kind === "document" &&
@@ -3231,23 +3279,48 @@ export class CanonicalWorkflowOperations {
         }
         return entries;
       },
-      recoverTerminal: (_value, error) => ({
-        complete: false,
-        terminalRejected: true,
-        message:
-          error instanceof Error
-            ? error.message
-            : "The internal manifest was rejected; complete the bounded search and inspection tools before terminalizing.",
-        instruction:
-          "Use the advertised search_internal and inspect_internal tools, then emit the terminal manifest on the reserved terminal turn.",
-      }),
+      recoverTerminal: (value, error) => {
+        const parsed = InternalManifestOutputSchema.safeParse(value);
+        if (parsed.success) {
+          pendingInspectionReferences.clear();
+          for (const reference of parsed.data.entries) {
+            const discovered =
+              reference.kind === "document"
+                ? discoveredDocuments.has(documentDiscoveryKey(reference))
+                : discoveredMessages.has(reference.messageId);
+            if (discovered && !inspectionComplete(reference)) {
+              pendingInspectionReferences.set(inspectionRequirementKey(reference), reference);
+            }
+          }
+          if (pendingInspectionReferences.size > 0) terminalRecoveryReady = false;
+        }
+        return {
+          complete: false,
+          terminalRejected: true,
+          message:
+            error instanceof Error
+              ? error.message
+              : "The internal manifest was rejected; complete the bounded search and inspection tools before terminalizing.",
+          instruction:
+            pendingInspectionReferences.size > 0
+              ? "Inspect every reference in inspectionRequired together in the next provider turn, then emit the same complete manifest."
+              : "Use the advertised search_internal and inspect_internal tools, then emit the terminal manifest on the reserved terminal turn.",
+          inspectionRequired: [...pendingInspectionReferences.values()],
+        };
+      },
       // A has the same bounded-loop terminal reservation as web retrieval.
       // Without this, the provider can spend the final allowed turn inspecting
       // an oversized result and leave a successful search without a manifest.
       reserveFinalTurnForTerminal: true,
       enforceTerminalTurn: true,
       disabledToolsForTurn: () =>
-        searchProtocol.ordinarySearchTurnsExhausted() ? ["search_internal"] : [],
+        pendingInspectionReferences.size > 0
+          ? ["search_internal"]
+          : terminalPhaseReady()
+            ? ["search_internal", "inspect_internal"]
+            : searchProtocol.ordinarySearchTurnsExhausted() && !searchProtocol.hasPendingCursor()
+              ? ["search_internal"]
+              : [],
       disabledToolResult: (toolName) => {
         protocolErrorReturned = true;
         return {
@@ -3575,13 +3648,16 @@ export class CanonicalWorkflowOperations {
               typeof result.protocolError !== "string"
             ) {
               completedInspectionKeys.add(inspectionKey);
-              // Once every discovered candidate has a complete inspection, the
-              // next provider turn is reserved for the manifest. This prevents
-              // a prose-only correction from consuming the final retrieval
-              // turn while preserving multi-document inspection routes.
-              const discoveredCount = discoveredDocuments.size + discoveredMessages.size;
-              terminalRecoveryReady =
-                discoveredCount > 0 && completedInspectionKeys.size >= discoveredCount;
+              completedInspectionCandidateKeys.add(
+                reference.kind === "document"
+                  ? documentDiscoveryKey(reference)
+                  : reference.messageId,
+              );
+              pendingInspectionReferences.delete(inspectionKey);
+              if (reference.kind === "document") {
+                pendingInspectionReferences.delete(documentDiscoveryKey(reference));
+              }
+              terminalRecoveryReady = pendingInspectionReferences.size === 0;
             }
             return result;
           },
@@ -3626,6 +3702,11 @@ export class CanonicalWorkflowOperations {
     });
     if (new Set(identities).size !== identities.length) {
       throw new Error("internal manifest contains duplicate references");
+    }
+    if (!protocolErrorReturned && references.some((reference) => !inspectionComplete(reference))) {
+      throw new Error(
+        "every selected internal reference must repeat an exact complete inspect_internal result",
+      );
     }
     await this.observe(
       load,
@@ -4259,6 +4340,7 @@ export class CanonicalWorkflowOperations {
     let completeNonEmptySearch: boolean = false;
     const discoveredUrls = new Map<string, number>();
     const fetched = new Map<string, WebFetchedPage>();
+    const failedFetchUrls = new Set<string>();
     const providerExposures = new Map<
       string,
       {
@@ -4321,9 +4403,11 @@ export class CanonicalWorkflowOperations {
       },
       terminalToolName: "emit_web_evidence",
       validateTerminal: (value) => {
-        if (invalidFetchReturned && fetched.size === 0) {
+        if ((invalidFetchReturned || failedFetchUrls.size > 0) && fetched.size === 0) {
           throw new Error(
-            "web fetch requires a canonical URL discovered by an earlier complete search turn",
+            invalidFetchReturned
+              ? "web fetch requires a canonical URL discovered by an earlier complete search turn"
+              : "web terminal evidence cannot be empty after a discovered URL failed to fetch",
           );
         }
         const entries = WebManifestOutputSchema.parse(value).entries;
@@ -4355,27 +4439,57 @@ export class CanonicalWorkflowOperations {
         return {
           complete: true,
           terminalRejected: true,
-          message:
-            "The terminal evidence was rejected because every selected URL must be fetched first, every quote must be verbatim, each fetched URL may appear at most once, and references must be unique. Fetch one exact discovered URL, or emit an empty manifest if no discovered page is relevant.",
+          message: error.message,
+          instruction:
+            fetched.size > 0
+              ? "Retry emit_web_evidence with one exact fetchedPages URL and a verbatimExcerpt substring. Each fetched URL may appear at most once and references must be unique."
+              : "Call web_fetch with another exact discoveredUrls URL not listed in failedFetchUrls; do not emit an empty manifest after a fetch failure.",
           discoveredUrls: [...discoveredUrls.keys()],
-          fetchedUrls: [...fetched.keys()],
+          fetchedPages: [...fetched.values()].map((page) => ({
+            url: page.url,
+            title: page.title,
+            domain: page.domain,
+            publishedAt: page.publishedAt,
+            capturedAt: page.capturedAt,
+            verbatimExcerpt: page.text.slice(0, 2_000),
+          })),
+          failedFetchUrls: [...failedFetchUrls],
         };
       },
-      recoverToolError: (toolName, _arguments, error) => {
+      recoverToolError: (toolName, arguments_, error) => {
+        if (toolName !== "web_fetch") return undefined;
         if (
-          toolName !== "web_fetch" ||
-          !(error instanceof Error) ||
-          error.message !==
+          error instanceof Error &&
+          error.message ===
             "web fetch requires a canonical URL discovered by an earlier complete search turn"
+        ) {
+          invalidFetchReturned = true;
+          return {
+            complete: true,
+            toolRejected: true,
+            message: "web_fetch requires one exact URL from discoveredUrls",
+            discoveredUrls: [...discoveredUrls.keys()],
+          };
+        }
+        if (
+          !(error instanceof WebBoundaryError) ||
+          error.code === "unsupported_policy" ||
+          error.code === "web_policy_revoked"
         ) {
           return undefined;
         }
-        invalidFetchReturned = true;
+        const parsed = z.object({ url: z.string().url() }).strict().safeParse(arguments_);
+        if (!parsed.success) return undefined;
+        const failedUrl = canonicalizeWebUrl(parsed.data.url);
+        failedFetchUrls.add(failedUrl);
         return {
           complete: true,
-          toolRejected: true,
-          message: "web_fetch requires one exact URL from discoveredUrls",
+          fetchFailed: true,
+          errorCode: error.code,
+          failedUrl,
+          message: "web_fetch could not use this URL; choose another exact discovered URL",
           discoveredUrls: [...discoveredUrls.keys()],
+          failedFetchUrls: [...failedFetchUrls],
         };
       },
       // W has the same bounded-loop terminal reservation as internal
@@ -4394,6 +4508,9 @@ export class CanonicalWorkflowOperations {
       disabledToolResult: (toolName) => ({
         complete: true,
         toolDisabled: true,
+        ...(toolName === "web_fetch"
+          ? { protocolError: "web fetch cannot continue after a fetched page" }
+          : {}),
         message:
           toolName === "web_search"
             ? "web_search is disabled after the complete search; call web_fetch for one exact discovered URL or emit_web_evidence when no fetched page is relevant"
@@ -4481,6 +4598,14 @@ export class CanonicalWorkflowOperations {
           },
           parseArguments: parseWebFetchArguments,
           execute: async (args, coordinates) => {
+            if (fetched.size > 0) {
+              protocolErrorReturned = true;
+              return {
+                complete: true,
+                protocolError: "web fetch cannot continue after a fetched page",
+                fetchedUrls: [...fetched.keys()],
+              };
+            }
             if (++fetches > this.config.aiWebMaxFetches) {
               protocolErrorReturned = true;
               return { complete: true, protocolError: "web fetch limit exceeded" };
@@ -5692,6 +5817,18 @@ export class CanonicalWorkflowOperations {
       },
       terminalOnlyForTurn: () => measurementResolved,
       exclusiveToolNames: ["measure_plan", "emit_context_plan"],
+      recoverMalformedToolCallArray: (toolNames) => ({
+        malformedPhase: true,
+        rejectedTools: toolNames,
+        instruction:
+          "No call was executed. Retry only advertised inspection/search tools with exact arguments; call measure_plan alone only after inspection.",
+      }),
+      recoverConflictingToolCalls: (toolNames) => ({
+        phaseConflict: true,
+        rejectedTools: toolNames,
+        instruction:
+          "No call was executed. Inspect or search without measure_plan, or call measure_plan alone after inspection. emit_context_plan is terminal-only.",
+      }),
       onTerminal: async (output, terminalCoordinates, completion) => {
         if (
           !measurementResolved ||

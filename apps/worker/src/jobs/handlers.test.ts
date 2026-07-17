@@ -19,6 +19,7 @@ const runWithAiChatSmithersProducerFenceMock = vi.hoisted(() =>
 );
 
 vi.mock("../ai/smithers-interop", () => ({
+  AI_CHAT_SMITHERS_SCHEMA_FENCE: "brief:ai-chat:smithers-schema",
   createSmithersStorage: vi.fn(async () => ({ close: closeSmithersStorageMock })),
   runSmithersWorkflow: runSmithersWorkflowMock,
   smithersRunExists: vi.fn(async () => false),

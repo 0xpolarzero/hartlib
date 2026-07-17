@@ -159,6 +159,9 @@ const preSealManifestSessionId = "50000000-0000-4000-8000-000000000099";
 const preSealResolutionSessionId = "50000000-0000-4000-8000-000000000100";
 const postSealUsageTamperSessionId = "50000000-0000-4000-8000-000000000101";
 const preSealMemoryTerminalMismatchSessionId = "50000000-0000-4000-8000-000000000102";
+const oversizedMissingInspectionSessionId = "50000000-0000-4000-8000-000000000103";
+const oversizedDuplicateInspectionSessionId = "50000000-0000-4000-8000-000000000104";
+const oversizedWrongCoordinateInspectionSessionId = "50000000-0000-4000-8000-000000000105";
 const manifestPurposeTamperSessionId = "50000000-0000-4000-8000-000000000106";
 const deterministicProductionGraphSessionId = "50000000-0000-4000-8000-000000000107";
 const liveProductionCaptureSessionId = "50000000-0000-4000-8000-000000000108";
@@ -172,6 +175,10 @@ const invertedEventTimestampSessionId = "50000000-0000-4000-8000-000000000115";
 const transcriptReconstructionSessionId = "50000000-0000-4000-8000-000000000116";
 const documentMetadataTamperSessionId = "50000000-0000-4000-8000-000000000117";
 const baselineRetentionSessionId = "50000000-0000-4000-8000-000000000119";
+const nonselectedChatInspectionSessionId = "50000000-0000-4000-8000-000000000120";
+const nonselectedChatSerializedSessionId = "50000000-0000-4000-8000-000000000121";
+const currentChatPreviewSessionId = "50000000-0000-4000-8000-000000000122";
+const selectedChatPreviewSessionId = "50000000-0000-4000-8000-000000000123";
 const focusedProductionCaseId = "first-message-document-fr";
 const focusedClarificationCaseId = "ambiguous-reference-needs-clarification";
 const multiWebQuoteSessionId = "50000000-0000-4000-8000-000000000118";
@@ -567,6 +574,7 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
           readonly issueId?: string;
           readonly documentId: string;
           readonly documentVersionId: string;
+          readonly textCharCount: number;
         }[];
       };
       if (!searchResult.complete || searchResult.truncated || searchResult.items.length !== 6) {
@@ -596,6 +604,7 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
                         issueId: item.issueId,
                         documentId: item.documentId,
                       },
+              ranges: [{ charStart: 0, charEnd: Math.min(2_048, item.textCharCount) }],
               purpose: "answer every regional curtailment result",
             },
           },
@@ -634,6 +643,9 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
                 (call) => (call.arguments as { readonly reference: InternalReference }).reference,
               )
           : [],
+      )
+      .map((reference) =>
+        reference.kind === "document" ? { ...reference, ranges: undefined } : reference,
       );
     return {
       text: "",
@@ -739,6 +751,10 @@ const completeDurableCaptureSession = async (
     | "oversized_missing_internal_inspection"
     | "oversized_duplicate_internal_inspection"
     | "oversized_wrong_coordinate_internal_inspection"
+    | "nonselected_chat_inspection"
+    | "nonselected_chat_serialized"
+    | "current_chat_preview"
+    | "selected_chat_preview"
     | "manifest_purpose",
   multiWebQuotes = false,
 ): Promise<void> => {
@@ -1042,6 +1058,57 @@ const completeDurableCaptureSession = async (
             ? memoryEvidenceIdentity(binding.memoryId)
             : webEvidenceIdentity(binding.url, source.content);
     };
+    const extraConversationExposure = (() => {
+      if (row.topology !== "specialized") return undefined;
+      let messageId: string | undefined;
+      let content: string | undefined;
+      if (tamper === "current_chat_preview" && fixture.id === "first-message-document-fr") {
+        messageId = manifest.userMessageId;
+        content = fixture.currentMessage;
+      } else if (
+        tamper === "selected_chat_preview" &&
+        fixture.id === "follow-up-with-irrelevant-recent-turn"
+      ) {
+        const selected = exactSelectedConversation[0];
+        const turn = fixture.conversation.find(
+          (candidate) => candidate.turnId === selected?.fixtureTurnId,
+        );
+        messageId = selected?.userMessageId;
+        content = turn?.userContent;
+      } else if (
+        (tamper === "nonselected_chat_inspection" || tamper === "nonselected_chat_serialized") &&
+        fixture.id === "long-history-older-chat-evidence"
+      ) {
+        const boundMessageIds = new Set(
+          manifest.sourceBindings.flatMap((binding) =>
+            binding.kind === "chat_message" ? [binding.messageId] : [],
+          ),
+        );
+        const turn = manifest.turnBindings.find(
+          (candidate) =>
+            !boundMessageIds.has(candidate.userMessageId) &&
+            !boundMessageIds.has(candidate.assistantMessageId),
+        );
+        const fixtureTurn = fixture.conversation.find(
+          (candidate) => candidate.turnId === turn?.turnId,
+        );
+        messageId = turn?.assistantMessageId;
+        content = fixtureTurn?.assistantContent;
+      }
+      if (messageId === undefined || content === undefined) return undefined;
+      return {
+        sourceKind: "chat_message" as const,
+        logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
+        contentItemIdentity: messageId,
+        exposureStage:
+          tamper === "nonselected_chat_serialized"
+            ? ("answer_serialized" as const)
+            : tamper === "nonselected_chat_inspection"
+              ? ("internal_inspection" as const)
+              : ("internal_search_preview" as const),
+        visibleTokenCount: model.countTextTokens(content),
+      };
+    })();
     const productionSourcesFor = (
       sourceSelections: readonly {
         readonly sourceId: string;
@@ -1476,7 +1543,14 @@ const completeDurableCaptureSession = async (
         : taskId === "single-reduce-plan"
           ? selectedIds.map(exposedReductionMarkerFor)
           : [];
-      return [...new Set(markers.map(proofFor))].sort();
+      const requestMarkers =
+        extraConversationExposure !== undefined &&
+        extraConversationExposure.exposureStage !== "answer_serialized" &&
+        taskId === "single-retrieve-internal" &&
+        providerRequestIndex === 0
+          ? [...markers, extraConversationExposure]
+          : markers;
+      return [...new Set(requestMarkers.map(proofFor))].sort();
     };
     const specializedMemoryRequest = {
       taskId: "memory-extract",
@@ -2402,6 +2476,24 @@ const completeDurableCaptureSession = async (
                 : {}),
             });
           }
+        }
+        if (extraConversationExposure !== undefined) {
+          const serialized = extraConversationExposure.exposureStage === "answer_serialized";
+          yield* insertAiSourceExposure({
+            runId: row.runId,
+            taskId: serialized ? "single-answer" : "single-retrieve-internal",
+            loopIteration: 0,
+            attempt: 0,
+            providerRequestIndex: 0,
+            providerRequestSha256Hex: serialized
+              ? providerRequestDigestForTask("single-answer")
+              : fixtureProviderRequestSha256Hex,
+            sourceKind: extraConversationExposure.sourceKind,
+            logicalSourceIdentity: extraConversationExposure.logicalSourceIdentity,
+            contentItemIdentity: extraConversationExposure.contentItemIdentity,
+            exposureStage: extraConversationExposure.exposureStage,
+            visibleTokenCount: extraConversationExposure.visibleTokenCount,
+          });
         }
         if (row.topology === "specialized") {
           const conversationTaskId =
@@ -4313,6 +4405,26 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       ),
     ).resolves.toBeUndefined();
   }, 120_000);
+  it("attests only eligible non-selected conversation retrieval exposures", async () => {
+    await expect(
+      completeDurableCaptureSession(
+        nonselectedChatInspectionSessionId,
+        "nonselected_chat_inspection",
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      completeDurableCaptureSession(
+        nonselectedChatSerializedSessionId,
+        "nonselected_chat_serialized",
+      ),
+    ).rejects.toThrow(/unmapped chat_message\/answer_serialized source exposure/u);
+    await expect(
+      completeDurableCaptureSession(currentChatPreviewSessionId, "current_chat_preview"),
+    ).rejects.toThrow(/invalid non-selected conversation exposure/u);
+    await expect(
+      completeDurableCaptureSession(selectedChatPreviewSessionId, "selected_chat_preview"),
+    ).rejects.toThrow(/invalid non-selected conversation exposure/u);
+  }, 180_000);
 
   it("rejects coordinated pre-seal event, source, memory, citation, exposure, routing, and authorization forgeries", async () => {
     const rejectionCases = [
@@ -4386,6 +4498,21 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         preSealMemoryTerminalMismatchSessionId,
         "preseal_terminal_memory_mismatch",
         /Failed to execute statement|append-only|memory event is not exactly reconstructable/u,
+      ],
+      [
+        oversizedMissingInspectionSessionId,
+        "oversized_missing_internal_inspection",
+        /oversized inspection identity set differs/u,
+      ],
+      [
+        oversizedDuplicateInspectionSessionId,
+        "oversized_duplicate_internal_inspection",
+        /oversized inspection identity set differs/u,
+      ],
+      [
+        oversizedWrongCoordinateInspectionSessionId,
+        "oversized_wrong_coordinate_internal_inspection",
+        /oversized inspection identity set differs/u,
       ],
     ] as const;
     for (const [targetSessionId, tamper, expectedError] of rejectionCases) {

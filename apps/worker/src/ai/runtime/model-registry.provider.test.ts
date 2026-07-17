@@ -140,6 +140,140 @@ const vectors = {
       },
     ],
   },
+  consecutive_user_turns: {
+    messages: [
+      { role: "user", content: "First request." },
+      { role: "user", content: "Call exactly one advertised tool." },
+    ],
+  },
+  consecutive_user_turns_with_tools: {
+    messages: [
+      { role: "user", content: "First request." },
+      { role: "user", content: "Call exactly one advertised tool." },
+    ],
+    tools: [
+      {
+        name: "inspect",
+        description: "Inspect.",
+        parameters: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+      },
+    ],
+  },
+  assistant_text_correction_with_tools: {
+    messages: [
+      { role: "user", content: "First request." },
+      { role: "assistant", content: "I should inspect the source." },
+      { role: "user", content: "Call exactly one advertised tool." },
+    ],
+    tools: [
+      {
+        name: "inspect",
+        description: "Inspect.",
+        parameters: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+      },
+    ],
+  },
+  assistant_prose_with_tool_call: {
+    messages: [
+      { role: "user", content: "Inspect one item." },
+      {
+        role: "assistant",
+        content: "I will inspect it.",
+        toolCalls: [{ id: "call_with_prose", name: "inspect", arguments: { id: "one" } }],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_with_prose",
+        name: "inspect",
+        content: '{"text":"one"}',
+      },
+    ],
+    tools: [
+      {
+        name: "inspect",
+        description: "Inspect.",
+        parameters: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+      },
+    ],
+  },
+  assistant_text_before_tool_transcript: {
+    messages: [
+      { role: "user", content: "Prepare to inspect." },
+      { role: "assistant", content: "I will inspect next." },
+      { role: "user", content: "Inspect now." },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_after_prose", name: "inspect", arguments: { id: "one" } }],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_after_prose",
+        name: "inspect",
+        content: '{"text":"one"}',
+      },
+    ],
+    tools: [
+      {
+        name: "inspect",
+        description: "Inspect.",
+        parameters: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+      },
+    ],
+  },
+  assistant_text_transcript: {
+    messages: [
+      { role: "user", content: "First question." },
+      { role: "assistant", content: "First answer." },
+      { role: "user", content: "Second question." },
+    ],
+  },
+  trailing_assistant_text: {
+    messages: [
+      { role: "user", content: "First question." },
+      { role: "assistant", content: "First answer." },
+    ],
+  },
+  mixed_assistant_transcript: {
+    messages: [
+      { role: "user", content: "Inspect and answer." },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_mixed", name: "inspect", arguments: { id: "one" } }],
+      },
+      { role: "tool", toolCallId: "call_mixed", name: "inspect", content: "One" },
+      { role: "assistant", content: "Inspection complete." },
+      { role: "user", content: "Continue." },
+    ],
+    tools: [
+      {
+        name: "inspect",
+        description: "Inspect.",
+        parameters: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+      },
+    ],
+  },
   two_tool_turns: {
     messages: [
       { role: "user", content: "Inspect twice." },
@@ -250,22 +384,35 @@ const toApiPayload = (request: ProviderRequest): Record<string, unknown> => {
 };
 
 const providerPromptTokens = async (request: ProviderRequest): Promise<number> => {
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-    body: JSON.stringify(toApiPayload(request)),
-    signal: AbortSignal.timeout(60_000),
-  });
-  const payload = (await response.json()) as {
-    readonly usage?: { readonly prompt_tokens?: number | undefined } | undefined;
-    readonly error?: { readonly message?: string | undefined } | undefined;
-  };
-  if (!response.ok || payload.usage?.prompt_tokens === undefined) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(toApiPayload(request)),
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch (error) {
+      if (attempt === 0 && error instanceof Error && error.name === "TimeoutError") continue;
+      throw error;
+    }
+    const payload = (await response.json()) as {
+      readonly usage?: { readonly prompt_tokens?: number | undefined } | undefined;
+      readonly error?: { readonly message?: string | undefined } | undefined;
+    };
+    if (response.ok && payload.usage?.prompt_tokens !== undefined) {
+      return payload.usage.prompt_tokens;
+    }
+    if (attempt === 0 && (response.status === 429 || response.status >= 500)) continue;
     throw new Error(
       `Z.AI tokenizer contract request failed (${response.status}): ${payload.error?.message ?? "missing usage"}`,
     );
   }
-  return payload.usage.prompt_tokens;
+  throw new Error("Z.AI tokenizer contract retry loop exhausted");
 };
 
 describe.skipIf(!runLive)("Z.AI exact tokenizer/provider-template parity", () => {
@@ -276,7 +423,7 @@ describe.skipIf(!runLive)("Z.AI exact tokenizer/provider-template parity", () =>
         expect(await providerPromptTokens(request)).toBe(
           resolveUnverifiedModelForProviderContract(modelId).countRequestTokens(request),
         );
-      }, 70_000);
+      }, 130_000);
     }
   }
 });

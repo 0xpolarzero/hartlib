@@ -46,7 +46,7 @@ describe("exact provider-shaped request gate", () => {
   it.each([
     ["system", [{ role: "system", content: "System policy." }], 15, 8],
     ["user", [{ role: "user", content: "Bonjour le monde." }], 16, 9],
-    ["assistant", [{ role: "assistant", content: "A complete answer." }], 18, 10],
+    ["assistant", [{ role: "assistant", content: "A complete answer." }], 16, 9],
     [
       "tool observation",
       [

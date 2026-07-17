@@ -27,6 +27,7 @@ import type {
   MemoryReference,
   LiveProviderRequestMeasurement,
 } from "../runtime/types";
+import { WebBoundaryError } from "../web/errors";
 import {
   type CanonicalAiConfig,
   CanonicalWorkflowOperations,
@@ -88,6 +89,24 @@ const inTask = <Value>(
     execute,
   );
 };
+
+const providerToolCompletion = (
+  name: string,
+  arguments_: Readonly<Record<string, unknown>>,
+  id: string,
+): PiCompletion => ({
+  text: "",
+  toolCalls: [{ id, name, arguments: arguments_ }],
+  usage: {
+    inputTokens: 1,
+    outputTokens: 1,
+    cachedTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 2,
+    stopReason: "toolUse",
+  },
+  stopReason: "toolUse",
+});
 const assembleAndMeasureContext = async (
   operations: CanonicalWorkflowOperations,
   load: LoadedTurn,
@@ -395,6 +414,8 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
   onAfterFirstSearch?: () => Promise<void>;
   repeatInspection = false;
   malformedFirstSearch = false;
+  skipInspection = false;
+  selectWholeAfterInspection = false;
 
   constructor() {
     super({} as ExactPiBoundary);
@@ -472,7 +493,7 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
     if (item.sourceId !== this.sourceId || !item.sourceId.startsWith("publisher:")) {
       throw new Error("publisher search returned a non-canonical source namespace");
     }
-    const reference: InternalReference = {
+    const inspectionReference: InternalReference = {
       kind: "document",
       documentId: item.documentId,
       documentVersionId: item.documentVersionId,
@@ -485,6 +506,10 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
       ranges: [{ charStart: 0, charEnd: 20 }],
       purpose: "answer the liquidity question",
     };
+    const reference: InternalReference =
+      this.skipInspection || this.selectWholeAfterInspection
+        ? { ...inspectionReference, ranges: undefined }
+        : inspectionReference;
     const inspectionCoordinates = {
       ...coordinates,
       providerRequestIndex: this.malformedFirstSearch ? 2 : coordinates.providerRequestIndex,
@@ -492,18 +517,26 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
     if (this.malformedFirstSearch) {
       await invokeToolLoopProviderHook(input, inspectionCoordinates);
     }
-    const inspection = await inspect.execute({ reference }, inspectionCoordinates);
-    if (inspection.found !== true || inspection.complete !== true) {
-      throw new Error("publisher inspection failed");
-    }
-    if (
-      !Array.isArray(inspection.__briefSourceExposures) ||
-      inspection.__briefSourceExposures.length !== 1
-    ) {
-      throw new Error("publisher inspection did not include its bounded provider-visible marker");
+    if (!this.skipInspection) {
+      const inspection = await inspect.execute(
+        { reference: inspectionReference },
+        inspectionCoordinates,
+      );
+      if (inspection.found !== true || inspection.complete !== true) {
+        throw new Error("publisher inspection failed");
+      }
+      if (
+        !Array.isArray(inspection.__briefSourceExposures) ||
+        inspection.__briefSourceExposures.length !== 1
+      ) {
+        throw new Error("publisher inspection did not include its bounded provider-visible marker");
+      }
     }
     if (this.repeatInspection) {
-      const repeatedInspection = await inspect.execute({ reference }, coordinates);
+      const repeatedInspection = await inspect.execute(
+        { reference: inspectionReference },
+        coordinates,
+      );
       if (
         repeatedInspection.protocolError !== "internal inspection repeated a completed reference"
       ) {
@@ -643,9 +676,11 @@ class WebManifestAgent extends CanonicalAgentClient {
       | "direct-fetch"
       | "undiscovered-fetch"
       | "same-turn-fetch"
+      | "repeat-fetch"
       | "duplicate"
       | "duplicate-url"
       | "terminal-first"
+      | "fetch-fallback"
       | "empty-after-fetch" = "valid",
   ) {
     super({} as ExactPiBoundary);
@@ -667,7 +702,7 @@ class WebManifestAgent extends CanonicalAgentClient {
       providerRequestIndex: 0,
     };
     await invokeToolLoopProviderHook(input, coordinates);
-    const terminalCoordinates = { ...coordinates, providerRequestIndex: 2 };
+    let terminalCoordinates = { ...coordinates, providerRequestIndex: 2 };
     if (this.mode === "terminal-first") {
       const output = input.validateTerminal({ entries: [] });
       await input.onTerminal?.(output, coordinates, {
@@ -693,7 +728,10 @@ class WebManifestAgent extends CanonicalAgentClient {
     if (searchResult.complete !== true || searchResult.truncated === true) {
       throw new Error("web search fixture did not complete");
     }
-    const discovered = (searchResult.results as readonly { readonly url: string }[])[0]?.url;
+    const discoveredUrls = (searchResult.results as readonly { readonly url: string }[]).map(
+      (result) => result.url,
+    );
+    const discovered = discoveredUrls[0];
     if (discovered === undefined) throw new Error("web search fixture returned no URL");
     const fetchCoordinates = {
       ...coordinates,
@@ -702,13 +740,42 @@ class WebManifestAgent extends CanonicalAgentClient {
     await invokeToolLoopProviderHook(input, fetchCoordinates);
     const fetchUrl =
       this.mode === "undiscovered-fetch" ? "https://official.example/not-discovered" : discovered;
-    const page = (await fetch.execute({ url: fetchUrl }, fetchCoordinates)) as {
-      readonly url: string;
-    };
+    let page: { readonly url?: string; readonly fetchFailed?: boolean };
+    try {
+      page = (await fetch.execute({ url: fetchUrl }, fetchCoordinates)) as typeof page;
+    } catch (error) {
+      if (this.mode !== "fetch-fallback") throw error;
+      const recovered = input.recoverToolError?.(
+        "web_fetch",
+        { url: fetchUrl },
+        error,
+        fetchCoordinates,
+      );
+      if (recovered === undefined) throw error;
+      page = recovered as typeof page;
+    }
+    if (this.mode === "fetch-fallback") {
+      if (page.fetchFailed !== true) throw new Error("first web fetch did not fail recoverably");
+      const fallbackUrl = discoveredUrls[1];
+      if (fallbackUrl === undefined) throw new Error("web search fixture returned no fallback URL");
+      const fallbackCoordinates = { ...coordinates, providerRequestIndex: 2 };
+      await invokeToolLoopProviderHook(input, fallbackCoordinates);
+      page = (await fetch.execute({ url: fallbackUrl }, fallbackCoordinates)) as {
+        readonly url?: string;
+      };
+      terminalCoordinates = { ...coordinates, providerRequestIndex: 3 };
+    }
+    if (this.mode === "repeat-fetch") {
+      const repeated = await fetch.execute({ url: fetchUrl }, fetchCoordinates);
+      if (repeated.protocolError !== "web fetch cannot continue after a fetched page") {
+        throw new Error("repeat web fetch was not closed by protocol recovery");
+      }
+    }
     await invokeToolLoopProviderHook(input, terminalCoordinates);
     if (this.mode === "empty-after-fetch") {
       return input.validateTerminal({ entries: [] });
     }
+    if (page.url === undefined) throw new Error("web fetch fixture returned no page URL");
     const entry = {
       url: page.url,
       title: "Fabricated model title",
@@ -899,6 +966,270 @@ class ChatRetrievalAgent extends CanonicalAgentClient {
     }
     this.inspectedContent = inspected.message.content;
     await invokeToolLoopProviderHook(input, { ...coordinates, providerRequestIndex: 1 });
+    return input.validateTerminal({ entries: [reference] });
+  }
+}
+
+class ExhaustedInternalSearchAgent extends CanonicalAgentClient {
+  terminalReady = false;
+
+  constructor() {
+    super({} as ExactPiBoundary);
+  }
+
+  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
+    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
+    if (search === undefined) throw new Error("missing internal search tool");
+    const firstCoordinates: PiBoundaryCoordinates = {
+      ...input.coordinates,
+      loopIteration: 0,
+      providerRequestIndex: 0,
+    };
+    await invokeToolLoopProviderHook(input, firstCoordinates);
+    const first = await search.execute(
+      {
+        query: {
+          target: "chat_messages",
+          terms: "absent missing",
+          purpose: "establish that no older message matches",
+        },
+      },
+      firstCoordinates,
+    );
+    if (!Array.isArray(first.items) || first.items.length !== 0) {
+      throw new Error("first empty search unexpectedly found a message");
+    }
+    const secondCoordinates = { ...firstCoordinates, providerRequestIndex: 1 };
+    await invokeToolLoopProviderHook(input, secondCoordinates);
+    const second = await search.execute(
+      {
+        query: {
+          target: "chat_messages",
+          terms: "absent",
+          purpose: "refine the empty older-message search",
+        },
+      },
+      secondCoordinates,
+    );
+    if (!Array.isArray(second.items) || second.items.length !== 0) {
+      throw new Error("refined empty search unexpectedly found a message");
+    }
+    this.terminalReady = input.terminalOnlyForTurn?.(2) === true;
+    return input.validateTerminal({ entries: [] });
+  }
+}
+
+class ExhaustedNonEmptyInternalSearchAgent extends CanonicalAgentClient {
+  inspectionAvailable = false;
+  terminalReady = false;
+
+  constructor() {
+    super({} as ExactPiBoundary);
+  }
+
+  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
+    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
+    const inspect = input.tools.find((tool) => tool.definition.name === "inspect_internal");
+    if (search === undefined || inspect === undefined) throw new Error("missing internal tools");
+    const coordinates: PiBoundaryCoordinates = {
+      ...input.coordinates,
+      loopIteration: 0,
+      providerRequestIndex: 0,
+    };
+    await invokeToolLoopProviderHook(input, coordinates);
+    const first = await search.execute(
+      {
+        query: {
+          target: "chat_messages",
+          terms: "needle",
+          purpose: "find the first comparison subject",
+        },
+      },
+      coordinates,
+    );
+    const firstItems = first.items;
+    if (!Array.isArray(firstItems)) {
+      throw new Error("first non-empty search returned no result array");
+    }
+    const firstItem = firstItems[0];
+    if (
+      firstItem === null ||
+      typeof firstItem !== "object" ||
+      !("messageId" in firstItem) ||
+      typeof firstItem.messageId !== "string"
+    ) {
+      throw new Error("first non-empty search returned no message");
+    }
+
+    const secondCoordinates = { ...coordinates, providerRequestIndex: 1 };
+    await invokeToolLoopProviderHook(input, secondCoordinates);
+    const second = await search.execute(
+      {
+        query: {
+          target: "chat_messages",
+          terms: "statement",
+          purpose: "find the second comparison subject",
+        },
+      },
+      secondCoordinates,
+    );
+    if (!Array.isArray(second.items) || second.items.length === 0) {
+      throw new Error("second non-empty search returned no message");
+    }
+
+    this.inspectionAvailable =
+      input.terminalOnlyForTurn?.(2) !== true &&
+      input.disabledToolsForTurn?.(2)?.includes("search_internal") === true;
+    const inspectionCoordinates = { ...coordinates, providerRequestIndex: 2 };
+    await invokeToolLoopProviderHook(input, inspectionCoordinates);
+    const reference: InternalReference = {
+      kind: "chat_message",
+      messageId: firstItem.messageId,
+      purpose: "recover the comparison evidence",
+    };
+    const inspection = await inspect.execute({ reference }, inspectionCoordinates);
+    if (inspection.found !== true || inspection.complete !== true) {
+      throw new Error("post-search inspection failed");
+    }
+
+    await invokeToolLoopProviderHook(input, { ...coordinates, providerRequestIndex: 3 });
+    this.terminalReady = input.terminalOnlyForTurn?.(3) === true;
+    return input.validateTerminal({ entries: [reference] });
+  }
+}
+
+class MalformedInspectionRecoveryAgent extends CanonicalAgentClient {
+  recoveredReferenceCount = 0;
+
+  constructor() {
+    super({} as ExactPiBoundary);
+  }
+
+  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
+    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
+    if (search === undefined) throw new Error("missing internal search tool");
+    const coordinates: PiBoundaryCoordinates = {
+      ...input.coordinates,
+      loopIteration: 0,
+      providerRequestIndex: 0,
+    };
+    await invokeToolLoopProviderHook(input, coordinates);
+    const result = await search.execute(
+      {
+        query: {
+          target: "chat_messages",
+          terms: "firstsubject",
+          purpose: "find evidence before malformed inspection",
+        },
+      },
+      coordinates,
+    );
+    if (!Array.isArray(result.items) || result.items.length === 0) {
+      throw new Error("recovery search returned no message");
+    }
+    const malformedCoordinates = { ...coordinates, providerRequestIndex: 1 };
+    await invokeToolLoopProviderHook(input, malformedCoordinates);
+    const recovery = input.recoverMalformedToolCall?.(
+      "inspect_internal",
+      new Error("tool call inspect_internal arguments failed its strict schema"),
+      malformedCoordinates,
+    );
+    if (recovery === undefined || !Array.isArray(recovery.recoveryReferences)) {
+      throw new Error("malformed inspection did not expose recovery references");
+    }
+    this.recoveredReferenceCount = recovery.recoveryReferences.length;
+    await invokeToolLoopProviderHook(input, { ...coordinates, providerRequestIndex: 2 });
+    return input.validateTerminal({ entries: [] });
+  }
+}
+
+class SecondSearchCursorContinuationAgent extends CanonicalAgentClient {
+  continuationCalls = 0;
+  searchVisibleDuringContinuation = true;
+  searchDisabledAfterContinuation = false;
+
+  constructor() {
+    super({} as ExactPiBoundary);
+  }
+
+  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
+    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
+    const inspect = input.tools.find((tool) => tool.definition.name === "inspect_internal");
+    if (search === undefined || inspect === undefined) throw new Error("missing internal tools");
+    const baseCoordinates: PiBoundaryCoordinates = {
+      ...input.coordinates,
+      loopIteration: 0,
+      providerRequestIndex: 0,
+    };
+    await invokeToolLoopProviderHook(input, baseCoordinates);
+    const first = await search.execute(
+      {
+        query: {
+          target: "chat_messages",
+          terms: "firstsubject",
+          purpose: "find the first comparison subject",
+        },
+      },
+      baseCoordinates,
+    );
+    const firstItems = first.items;
+    if (!Array.isArray(firstItems)) throw new Error("first search returned no result array");
+    const firstItem = firstItems[0];
+    if (
+      firstItem === null ||
+      typeof firstItem !== "object" ||
+      !("messageId" in firstItem) ||
+      typeof firstItem.messageId !== "string"
+    ) {
+      throw new Error("first search returned no message");
+    }
+
+    const pagedQuery = {
+      target: "chat_messages" as const,
+      terms: "cursorpage marker",
+      purpose: "find the second comparison subject",
+    };
+    let providerRequestIndex = 1;
+    let coordinates = { ...baseCoordinates, providerRequestIndex };
+    await invokeToolLoopProviderHook(input, coordinates);
+    let page = await search.execute({ query: pagedQuery }, coordinates);
+    if (page.complete !== false || typeof page.cursor !== "number") {
+      throw new Error("second ordinary search did not create a cursor obligation");
+    }
+    while (page.complete !== true) {
+      this.searchVisibleDuringContinuation &&=
+        input.disabledToolsForTurn?.(providerRequestIndex + 1)?.includes("search_internal") !==
+        true;
+      const cursor = page.cursor;
+      if (typeof cursor !== "number") {
+        throw new Error("incomplete search page omitted its cursor");
+      }
+      providerRequestIndex += 1;
+      coordinates = { ...baseCoordinates, providerRequestIndex };
+      await invokeToolLoopProviderHook(input, coordinates);
+      page = await search.execute({ query: pagedQuery, cursor }, coordinates);
+      this.continuationCalls += 1;
+      if (this.continuationCalls > 20) throw new Error("cursor continuation did not terminate");
+    }
+    this.searchDisabledAfterContinuation =
+      input.disabledToolsForTurn?.(providerRequestIndex + 1)?.includes("search_internal") === true;
+
+    providerRequestIndex += 1;
+    coordinates = { ...baseCoordinates, providerRequestIndex };
+    await invokeToolLoopProviderHook(input, coordinates);
+    const reference: InternalReference = {
+      kind: "chat_message",
+      messageId: firstItem.messageId,
+      purpose: "recover the first comparison subject",
+    };
+    const inspection = await inspect.execute({ reference }, coordinates);
+    if (inspection.found !== true || inspection.complete !== true) {
+      throw new Error("cursor test inspection failed");
+    }
+    await invokeToolLoopProviderHook(input, {
+      ...baseCoordinates,
+      providerRequestIndex: providerRequestIndex + 1,
+    });
     return input.validateTerminal({ entries: [reference] });
   }
 }
@@ -1694,6 +2025,359 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       ),
     ).resolves.toEqual([]);
     expect(inventedCursorAgent.seenMessageIds).toEqual([]);
+
+    const exhaustedAgent = new ExhaustedInternalSearchAgent();
+    const exhaustedOperations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      config,
+      exhaustedAgent,
+    );
+    await expect(
+      inTask("single-retrieve-internal-exhausted", () =>
+        exhaustedOperations.retrieveInternal(
+          load,
+          "find an absent older statement",
+          "single-retrieve-internal-exhausted",
+          [],
+        ),
+      ),
+    ).resolves.toEqual([]);
+    expect(exhaustedAgent.terminalReady).toBe(true);
+
+    const inspectableAgent = new ExhaustedNonEmptyInternalSearchAgent();
+    const inspectableOperations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      config,
+      inspectableAgent,
+    );
+    await expect(
+      inTask("single-retrieve-internal-exhausted-non-empty", () =>
+        inspectableOperations.retrieveInternal(
+          load,
+          "compare the older needle statement",
+          "single-retrieve-internal-exhausted-non-empty",
+          [],
+        ),
+      ),
+    ).resolves.toEqual([
+      {
+        kind: "chat_message",
+        messageId: seeded.retainedId,
+        purpose: "recover the comparison evidence",
+      },
+    ]);
+    expect(inspectableAgent.inspectionAvailable).toBe(true);
+    expect(inspectableAgent.terminalReady).toBe(true);
+  });
+
+  it("preserves discovered evidence after malformed inspection recovery", async () => {
+    const fixture = await runDb(createFixture);
+    const messageId = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content, created_at)
+          select chat_id, 'assistant', 'firstsubject retained evidence', now() - interval '2 days'
+          from ai_runs where id = ${fixture.runId}
+          returning id::text
+        `;
+        return rows[0]!.id;
+      }),
+    );
+    const agent = new MalformedInspectionRecoveryAgent();
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryDirectMaxItems: 50,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "",
+      },
+      agent,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    await expect(
+      inTask("retrieve-malformed-inspection", () =>
+        operations.retrieveInternal(
+          load,
+          "recover firstsubject evidence",
+          "retrieve-malformed-inspection",
+          [],
+        ),
+      ),
+    ).resolves.toEqual([
+      {
+        kind: "chat_message",
+        messageId,
+        purpose: "authorized search preview",
+      },
+    ]);
+    expect(agent.recoveredReferenceCount).toBe(1);
+  });
+
+  it("recovers a stale repeated inspection through the production tool loop", async () => {
+    const fixture = await runDb(createFixture);
+    const messageId = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content, created_at)
+          select chat_id, 'assistant', 'repeatinspection retained evidence', now() - interval '2 days'
+          from ai_runs where id = ${fixture.runId}
+          returning id::text
+        `;
+        return rows[0]!.id;
+      }),
+    );
+    const reference = {
+      kind: "chat_message" as const,
+      messageId,
+      purpose: "recover repeatinspection evidence",
+    };
+    const providerRequests: LiveProviderRequest[] = [];
+    let providerTurn = 0;
+    const client = new CanonicalAgentClient({
+      complete: async (request: LiveProviderRequest) => {
+        providerRequests.push(request);
+        const completion =
+          providerTurn === 0
+            ? providerToolCompletion(
+                "search_internal",
+                {
+                  query: {
+                    target: "chat_messages",
+                    terms: "repeatinspection",
+                    purpose: reference.purpose,
+                  },
+                },
+                "repeat-search",
+              )
+            : providerTurn === 1
+              ? providerToolCompletion("inspect_internal", { reference }, "repeat-inspect-first")
+              : providerTurn === 2
+                ? providerToolCompletion("inspect_internal", { reference }, "repeat-inspect-stale")
+                : providerToolCompletion(
+                    "emit_internal_manifest",
+                    { entries: [reference] },
+                    "repeat-terminal",
+                  );
+        providerTurn += 1;
+        return completion;
+      },
+    } as unknown as ExactPiBoundary);
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryDirectMaxItems: 50,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "",
+      },
+      client,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    await expect(
+      inTask("retrieve-stale-repeated-inspection", () =>
+        operations.retrieveInternal(
+          load,
+          "recover repeatinspection evidence",
+          "retrieve-stale-repeated-inspection",
+          [],
+        ),
+      ),
+    ).resolves.toEqual([reference]);
+    expect((providerRequests[2]?.tools ?? []).map((tool) => tool.name)).toEqual([
+      "emit_internal_manifest",
+    ]);
+    const recovery = providerRequests[3]?.messages.find(
+      (message) => message.role === "tool" && message.toolCallId === "repeat-inspect-stale",
+    );
+    expect(recovery?.content).toBe(
+      JSON.stringify({
+        complete: true,
+        protocolError: "inspect_internal is disabled after the complete retrieval phase",
+        recoveryReferences: [{ ...reference, purpose: "authorized search preview" }],
+      }),
+    );
+  });
+
+  it("requires a completed search after malformed initial search arguments", async () => {
+    const fixture = await runDb(createFixture);
+    const providerRequests: LiveProviderRequest[] = [];
+    let providerTurn = 0;
+    const client = new CanonicalAgentClient({
+      complete: async (request: LiveProviderRequest) => {
+        providerRequests.push(request);
+        const completion =
+          providerTurn === 0
+            ? providerToolCompletion(
+                "search_internal",
+                { query: { target: "documents", purpose: "find absent evidence" } },
+                "search-malformed",
+              )
+            : providerTurn === 1
+              ? providerToolCompletion(
+                  "emit_internal_manifest",
+                  { entries: [] },
+                  "terminal-premature",
+                )
+              : providerTurn === 2
+                ? providerToolCompletion(
+                    "search_internal",
+                    {
+                      query: {
+                        target: "documents",
+                        terms: "unfindablelexeme",
+                        purpose: "confirm the corpus has no matching evidence",
+                      },
+                    },
+                    "search-corrected",
+                  )
+                : providerToolCompletion(
+                    "emit_internal_manifest",
+                    { entries: [] },
+                    "terminal-corrected",
+                  );
+        providerTurn += 1;
+        return completion;
+      },
+    } as unknown as ExactPiBoundary);
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 12,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryDirectMaxItems: 50,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "",
+      },
+      client,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    await expect(
+      inTask("retrieve-malformed-initial-search", () =>
+        operations.retrieveInternal(
+          load,
+          "find absent evidence",
+          "retrieve-malformed-initial-search",
+          [],
+        ),
+      ),
+    ).resolves.toEqual([]);
+    expect((providerRequests[2]?.tools ?? []).map((tool) => tool.name)).toContain(
+      "search_internal",
+    );
+    expect(providerRequests).toHaveLength(12);
+  });
+
+  it("keeps an incomplete second search available until exact cursor completion", async () => {
+    const fixture = await runDb(createFixture);
+    const messageId = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const first = yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content, created_at)
+          select chat_id, 'assistant', 'firstsubject retained evidence', now() - interval '3 days'
+          from ai_runs where id = ${fixture.runId}
+          returning id::text
+        `;
+        yield* sql`
+          insert into chat_messages (chat_id, author, content, created_at)
+          select ai_runs.chat_id, 'assistant',
+                 'cursorpage marker ' || page::text || repeat(' bounded cursor content', 80),
+                 now() - interval '2 days' - (page * interval '1 minute')
+          from ai_runs cross join generate_series(1, 20) as page
+          where ai_runs.id = ${fixture.runId}
+        `;
+        return first[0]!.id;
+      }),
+    );
+    const agent = new SecondSearchCursorContinuationAgent();
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 512,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 32,
+        aiInternalMaxSearches: 32,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryDirectMaxItems: 50,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "",
+      },
+      agent,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    await expect(
+      inTask("retrieve-second-search-cursor", () =>
+        operations.retrieveInternal(
+          load,
+          "compare firstsubject with cursorpage marker",
+          "retrieve-second-search-cursor",
+          [],
+        ),
+      ),
+    ).resolves.toEqual([
+      {
+        kind: "chat_message",
+        messageId,
+        purpose: "recover the first comparison subject",
+      },
+    ]);
+    expect(agent.continuationCalls).toBeGreaterThan(0);
+    expect(agent.searchVisibleDuringContinuation).toBe(true);
+    expect(agent.searchDisabledAfterContinuation).toBe(true);
   });
 
   it("persists a fanout document range union with exact per-topic consumer subsets", async () => {
@@ -2192,6 +2876,199 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         },
       ],
     });
+    const fallbackWeb: WebResearchBoundary = {
+      search: async () => ({
+        results: [
+          {
+            title: "Unreadable report",
+            url: "https://official.example/report.pdf",
+            domain: "official.example",
+            snippet: "Official PDF.",
+            providerRank: 1,
+          },
+          {
+            title: "Official report result",
+            url: "https://official.example/report.html",
+            domain: "official.example",
+            snippet: "Official HTML report.",
+            providerRank: 2,
+          },
+        ],
+        complete: true,
+        truncated: false,
+        cursor: null,
+        scope: {
+          kind: "provider_ranked_results",
+          maximumResults: 10,
+          cursorSupported: false,
+        },
+      }),
+      fetch: async (url) => {
+        if (url.endsWith(".pdf")) {
+          throw new WebBoundaryError(
+            "unsupported_content_type",
+            "web fetch content type is unsupported",
+            false,
+          );
+        }
+        return {
+          url: "https://official.example/final-report",
+          title: "Official report title",
+          domain: "official.example",
+          text: `Published findings. ${officialQuote} Methodology follows.`,
+          publishedAt: "2026-07-09T08:00:00.000Z",
+          capturedAt: "2026-07-10T12:00:00.000Z",
+        };
+      },
+    };
+    await expect(
+      inTask("fetch-fallback-web-selector", () =>
+        new CanonicalWorkflowOperations(
+          databaseUrlFor(databaseName),
+          workflowConfig,
+          new WebManifestAgent(officialQuote, "fetch-fallback"),
+          fallbackWeb,
+        ).retrieveWeb(load, "What changed?", "fetch-fallback-web-selector"),
+      ),
+    ).resolves.toEqual(evidence);
+    await expect(
+      inTask("repeat-fetch-web-selector", () =>
+        new CanonicalWorkflowOperations(
+          databaseUrlFor(databaseName),
+          workflowConfig,
+          new WebManifestAgent(officialQuote, "repeat-fetch"),
+          web,
+        ).retrieveWeb(load, "What changed?", "repeat-fetch-web-selector"),
+      ),
+    ).resolves.toEqual(evidence);
+    const providerRequests: LiveProviderRequest[] = [];
+    let providerTurn = 0;
+    const staleFetchClient = new CanonicalAgentClient({
+      complete: async (request: LiveProviderRequest) => {
+        providerRequests.push(request);
+        const completion =
+          providerTurn === 0
+            ? providerToolCompletion("web_search", { query: "official report" }, "web-search")
+            : providerTurn === 1
+              ? providerToolCompletion(
+                  "web_fetch",
+                  { url: "https://official.example/start" },
+                  "web-fetch",
+                )
+              : providerTurn === 2
+                ? providerToolCompletion(
+                    "web_fetch",
+                    { url: "https://official.example/final-report" },
+                    "web-fetch-stale",
+                  )
+                : providerToolCompletion(
+                    "emit_web_evidence",
+                    {
+                      entries: [
+                        {
+                          url: "https://official.example/final-report",
+                          title: "Official report title",
+                          domain: "official.example",
+                          quote: officialQuote,
+                          publishedAt: "2026-07-09T08:00:00.000Z",
+                          capturedAt: "2026-07-10T12:00:00.000Z",
+                          purpose: "answer from the official report",
+                        },
+                      ],
+                    },
+                    "web-terminal",
+                  );
+        providerTurn += 1;
+        return completion;
+      },
+    } as unknown as ExactPiBoundary);
+    await expect(
+      inTask("stale-fetch-web-selector", () =>
+        new CanonicalWorkflowOperations(
+          databaseUrlFor(databaseName),
+          workflowConfig,
+          staleFetchClient,
+          web,
+        ).retrieveWeb(load, "What changed?", "stale-fetch-web-selector"),
+      ),
+    ).resolves.toEqual(evidence);
+    expect((providerRequests[2]?.tools ?? []).map((tool) => tool.name)).toEqual([
+      "emit_web_evidence",
+    ]);
+    const staleFetchRecovery = providerRequests[3]?.messages.find(
+      (message) => message.role === "tool" && message.toolCallId === "web-fetch-stale",
+    );
+    expect(staleFetchRecovery?.content).toBe(
+      JSON.stringify({
+        complete: true,
+        toolDisabled: true,
+        protocolError: "web fetch cannot continue after a fetched page",
+        message:
+          "web_fetch is disabled after a fetched page; call emit_web_evidence with verbatim evidence",
+        discoveredUrls: ["https://official.example/start"],
+        fetchedUrls: ["https://official.example/final-report"],
+      }),
+    );
+    const terminalRecoveryRequests: LiveProviderRequest[] = [];
+    let terminalRecoveryTurn = 0;
+    const terminalRecoveryClient = new CanonicalAgentClient({
+      complete: async (request: LiveProviderRequest) => {
+        terminalRecoveryRequests.push(request);
+        const completion =
+          terminalRecoveryTurn === 0
+            ? providerToolCompletion("web_search", { query: "official report" }, "web-search")
+            : terminalRecoveryTurn === 1
+              ? providerToolCompletion(
+                  "web_fetch",
+                  { url: "https://official.example/start" },
+                  "web-fetch",
+                )
+              : providerToolCompletion(
+                  "emit_web_evidence",
+                  {
+                    entries: [
+                      {
+                        url: "https://official.example/final-report",
+                        title: "Official report title",
+                        domain: "official.example",
+                        quote: terminalRecoveryTurn === 2 ? "paraphrased evidence" : officialQuote,
+                        publishedAt: "2026-07-09T08:00:00.000Z",
+                        capturedAt: "2026-07-10T12:00:00.000Z",
+                        purpose: "answer from the official report",
+                      },
+                    ],
+                  },
+                  terminalRecoveryTurn === 2 ? "web-terminal-invalid" : "web-terminal-recovered",
+                );
+        terminalRecoveryTurn += 1;
+        return completion;
+      },
+    } as unknown as ExactPiBoundary);
+    await expect(
+      inTask("terminal-recovery-web-selector", () =>
+        new CanonicalWorkflowOperations(
+          databaseUrlFor(databaseName),
+          workflowConfig,
+          terminalRecoveryClient,
+          web,
+        ).retrieveWeb(load, "What changed?", "terminal-recovery-web-selector"),
+      ),
+    ).resolves.toEqual(evidence);
+    const terminalRecovery = terminalRecoveryRequests[3]?.messages.find(
+      (message) => message.role === "tool" && message.toolCallId === "web-terminal-invalid",
+    );
+    expect(JSON.parse(terminalRecovery?.content ?? "{}")).toMatchObject({
+      complete: true,
+      terminalRejected: true,
+      message: "web terminal evidence must use a verbatim quote from a fetched page",
+      instruction: expect.stringContaining("verbatimExcerpt substring"),
+      fetchedPages: [
+        {
+          url: "https://official.example/final-report",
+          verbatimExcerpt: expect.stringContaining(officialQuote),
+        },
+      ],
+    });
     await expect(
       inTask("disabled-web-selector", () =>
         webOperations.retrieveWeb(
@@ -2669,6 +3546,38 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         ).retrieveInternal(load, "What changed?", "internal-duplicate", []),
       ),
     ).rejects.toThrow("internal manifest contains duplicate references");
+    const uninspectedInternal = new PublisherRetrievalAgent();
+    uninspectedInternal.sourceId = `publisher:${fixture.subscriptionId}`;
+    uninspectedInternal.skipInspection = true;
+    await expect(
+      inTask("internal-uninspected", () =>
+        new CanonicalWorkflowOperations(
+          databaseUrlFor(databaseName),
+          workflowConfig,
+          uninspectedInternal,
+        ).retrieveInternal(load, "What changed?", "internal-uninspected", []),
+      ),
+    ).rejects.toThrow(
+      "every selected internal reference must repeat an exact complete inspect_internal result",
+    );
+    const wholeAfterInspection = new PublisherRetrievalAgent();
+    wholeAfterInspection.sourceId = `publisher:${fixture.subscriptionId}`;
+    wholeAfterInspection.selectWholeAfterInspection = true;
+    await expect(
+      inTask("internal-whole-after-bounded-inspection", () =>
+        new CanonicalWorkflowOperations(
+          databaseUrlFor(databaseName),
+          workflowConfig,
+          wholeAfterInspection,
+        ).retrieveInternal(load, "What changed?", "internal-whole-after-bounded-inspection", []),
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        documentId: fixture.documentId,
+        documentVersionId: fixture.documentVersionId,
+        ranges: undefined,
+      }),
+    ]);
     const repeatedInternal = new PublisherRetrievalAgent();
     repeatedInternal.sourceId = `publisher:${fixture.subscriptionId}`;
     repeatedInternal.repeatInspection = true;
@@ -2906,6 +3815,128 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     },
     120_000,
   );
+
+  it("keeps reducer inspection and measurement available after malformed search arguments", async () => {
+    const longText = "Liquidity evidence remains verbatim and immutable. ".repeat(8_000);
+    const fixture = await runDb(createFixtureWithCanonicalText(longText));
+    const providerRequests: LiveProviderRequest[] = [];
+    let providerTurn = 0;
+    const client = new CanonicalAgentClient({
+      complete: async (
+        request: LiveProviderRequest,
+        coordinates: PiBoundaryCoordinates,
+        beforeProviderRequest?: BeforeProviderRequest,
+      ) => {
+        providerRequests.push(request);
+        await beforeProviderRequest?.(
+          request,
+          {
+            ...coordinates,
+            providerRequestSha256Hex: providerRequestSha256Hex(request),
+          },
+          {} as LiveProviderRequestMeasurement,
+        );
+        const initialUser = request.messages.find((message) => message.role === "user");
+        if (initialUser === undefined) throw new Error("missing reducer input");
+        const candidates = (
+          JSON.parse(initialUser.content) as {
+            readonly candidates: readonly { readonly id: string }[];
+          }
+        ).candidates;
+        const candidateId = candidates[0]?.id;
+        if (candidateId === undefined) throw new Error("missing reducer candidate");
+        const decisions = candidates.map((candidate) => ({
+          id: candidate.id,
+          action: "omit",
+          reason: "omit evidence to satisfy the exact allowance",
+        }));
+        const completion =
+          providerTurn === 0
+            ? providerToolCompletion(
+                "search_within_candidate",
+                { id: candidateId },
+                "reducer-search-malformed",
+              )
+            : providerTurn === 1
+              ? providerToolCompletion(
+                  "inspect_candidate",
+                  { id: candidateId, range: { charStart: 0, charEnd: 100 } },
+                  "reducer-inspect",
+                )
+              : providerTurn === 2
+                ? providerToolCompletion("measure_plan", { decisions }, "reducer-measure")
+                : providerToolCompletion("emit_context_plan", { decisions }, "reducer-terminal");
+        providerTurn += 1;
+        return completion;
+      },
+    } as unknown as ExactPiBoundary);
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 2_000,
+        aiMainOutputMaxTokens: 128,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryDirectMaxItems: 50,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "",
+      },
+      client,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    const initial = await assembleAndMeasureContext(
+      operations,
+      load,
+      "What changed in liquidity?",
+      {
+        internal: [
+          {
+            kind: "document",
+            documentId: fixture.documentId,
+            documentVersionId: fixture.documentVersionId,
+            source: {
+              kind: "publisher",
+              sourceId: `publisher:${fixture.subscriptionId}`,
+              issueId: fixture.issueId,
+              documentId: fixture.documentId,
+            },
+            ranges: [{ charStart: 0, charEnd: longText.length }],
+            purpose: "answer with the complete liquidity evidence",
+          },
+        ],
+        memories: [],
+        memorySelection: "enabled",
+        web: [],
+        webSelection: "enabled",
+      },
+      "single-answer",
+      undefined,
+      [],
+    );
+    expect(initial.status).toBe("needs_reduction");
+    await expect(
+      inTask("malformed-reducer-plan", () =>
+        operations.planReduction(load, initial, "malformed-reducer-plan", 0),
+      ),
+    ).resolves.toMatchObject({ decisions: expect.any(Array) });
+    expect((providerRequests[1]?.tools ?? []).map((tool) => tool.name)).toEqual([
+      "inspect_candidate",
+      "search_within_candidate",
+    ]);
+    expect((providerRequests[2]?.tools ?? []).map((tool) => tool.name)).toContain("measure_plan");
+    expect(providerRequests).toHaveLength(4);
+  }, 120_000);
 
   it("calls C for a token-bounded empty prior inventory and lets O omit selected history", async () => {
     const fixture = await runDb(createFixture);

@@ -25,6 +25,7 @@ const gotoDemoChat = async (page: Page): Promise<void> => {
   await page.goto("/fr-FR/client");
   await expect(page.getByTestId("chat-transcript")).toBeVisible();
   await expect(page.getByTestId("chat-composer-input")).toBeEnabled();
+  await expect.poll(() => readE2eRuntimeState().chats.length).toBeGreaterThan(0);
 };
 
 const latestAssistant = (page: Page): Locator => page.getByTestId("chat-message-assistant").last();
