@@ -33,6 +33,7 @@ describe("canonical path parameter policy", () => {
         "POST /v1/client-companies/:companyId/members/:userId/subscription-grants userId",
         "PUT /v1/client-companies/:companyId/members/:userId/ai-limit userId",
         "PUT /v1/client-companies/:companyId/public-sources/:sourceId sourceId",
+        "PUT /v1/public-sources/:sourceId sourceId",
       ],
       positiveInteger: ["POST /v1/platform/support/access/:accessId/review accessId"],
     });

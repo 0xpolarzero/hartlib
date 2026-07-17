@@ -257,6 +257,15 @@ function App() {
     applyDemoRoute({ locale, role: "client", sourceId: null, issueId: null }, "replace");
     setResetVersion((version) => version + 1);
   }
+  function handleToggleSubscribed(sourceId: string) {
+    const source = sources.find((candidate) => candidate.id === sourceId);
+    if (!source) return;
+    void demoApi
+      .setPublicSourceEnabled(sourceId, !source.subscribed, market)
+      .then(() => fetchPublicContent(market))
+      .then((content) => setLoadedPublicContent({ market, status: "ready", content }))
+      .catch(() => {});
+  }
 
   const selectedFeed = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
   const selectedClientIssue =
@@ -341,6 +350,7 @@ function App() {
               onSelectFeed={(feedId) =>
                 applyDemoRoute({ locale, role: "client", sourceId: feedId, issueId: null })
               }
+              onToggleSubscribed={handleToggleSubscribed}
             />
           )}
         </div>
@@ -434,12 +444,14 @@ function ClientFeedsList({
   publications,
   publicContentStatus,
   onSelectFeed,
+  onToggleSubscribed,
 }: {
   market: Market;
   sources: readonly BriefSource[];
   publications: readonly BriefPublication[];
   publicContentStatus: "loading" | "ready" | "error";
   onSelectFeed: (feedId: string) => void;
+  onToggleSubscribed: (feedId: string) => void;
 }) {
   const intl = useIntl();
   const locale = useLocale();
@@ -952,7 +964,11 @@ function ClientFeedsList({
           </div>
         ) : null}
         <div className="mt-3">
-          <ClientFeedsTable rows={rows} onSelectFeed={onSelectFeed} />
+          <ClientFeedsTable
+            rows={rows}
+            onSelectFeed={onSelectFeed}
+            onToggleSubscribed={onToggleSubscribed}
+          />
         </div>
       </section>
     </div>

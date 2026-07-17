@@ -11,6 +11,7 @@ export type PathParameterKind = "uuid" | "opaque" | "positive_integer";
 
 const opaqueParameters = new Set([
   "PUT /v1/client-companies/:companyId/public-sources/:sourceId sourceId",
+  "PUT /v1/public-sources/:sourceId sourceId",
   "GET /public-source-documents/:documentId/content documentId",
   "PUT /v1/client-companies/:companyId/members/:userId/ai-limit userId",
   "PATCH /v1/publisher-companies/:companyId/members/:userId userId",

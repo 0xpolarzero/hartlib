@@ -37,6 +37,11 @@ export interface CreatedChat {
 
 export interface ProductApiClient {
   readonly fetchPublicSources: (market?: Market) => Promise<PublicSources>;
+  readonly setPublicSourceEnabled: (
+    sourceId: string,
+    enabled: boolean,
+    market?: Market,
+  ) => Promise<PublicSources>;
   readonly fetchPublisherDocument: (
     issueId: string,
     documentId: string,
@@ -73,6 +78,15 @@ export const createProductApiClient = (options: ApiTransportOptions): ProductApi
         "GET /v1/public-sources",
         `/v1/public-sources${query}`,
         PublicSourcesResponse,
+      );
+    },
+    setPublicSourceEnabled: (sourceId, enabled, market) => {
+      const query = market === undefined ? "" : `?market=${encodeURIComponent(market)}`;
+      return transport.json(
+        "PUT /v1/public-sources/:sourceId",
+        `/v1/public-sources/${encodeURIComponent(sourceId)}${query}`,
+        PublicSourcesResponse,
+        { json: { enabled } },
       );
     },
     fetchPublisherDocument: async (issueId, documentId) => {
