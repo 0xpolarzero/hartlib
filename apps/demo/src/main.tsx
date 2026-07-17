@@ -12,7 +12,6 @@ import {
   demoDataset,
   type BriefPublication,
   type BriefSource,
-  type DemoRole,
 } from "@brief/demo-data";
 import {
   I18nProvider,
@@ -57,14 +56,7 @@ import {
   ClientFeedsTable,
   ClientPublicationsTable,
   PublicationDetail,
-  PublicationsTable,
   SectionHeader,
-  SourcesTable,
-  SubscribersTable,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -78,15 +70,9 @@ import {
   type BreadcrumbItem,
   type ChatTranscriptMessage,
   type ClientFeedTableRow,
-  type DraftSubscriber,
-  type DraftSubscriberErrors,
   type OpenStoredPdfResult,
   type PublicationDetailIssue,
   type PublicationDocument,
-  type PublicationTableIssue,
-  type SourceTableRow,
-  type SubscriberStatus,
-  type SubscriberTableRow,
 } from "@brief/ui";
 
 import {
@@ -112,8 +98,6 @@ import { buildTranscriptMessages } from "./chat-transcript";
 import {
   DemoPublications,
   readStoredOr,
-  SubscriberSession,
-  type SubscriberSessionState,
 } from "./demo-state";
 import "./styles.css";
 import { loadDemoBrowserConfig } from "./config";
@@ -129,23 +113,6 @@ const demoApi = createProductApiClient({
   fetch: (input, init) => globalThis.fetch(input, init),
   ...(publicApiBaseUrl === "" ? {} : { baseUrl: publicApiBaseUrl }),
 });
-const demoSubscriberProfiles = [
-  {
-    id: demoDataset.companies.client.id,
-    company: demoDataset.companies.client.name,
-    email: demoDataset.users.client.email,
-  },
-  {
-    id: "client_saint_honore_capital",
-    company: "Saint-Honore Capital",
-    email: "operations@saint-honore-capital.example",
-  },
-  {
-    id: "client_lutetia_risk_advisory",
-    company: "Lutetia Risk Advisory",
-    email: "veille@lutetia-risk.example",
-  },
-];
 
 function isDemoPdfPath(pathname: string) {
   return pathname.startsWith("/demo/pdfs/") && pathname.endsWith(".pdf");
@@ -198,7 +165,6 @@ function App() {
     () => resolveDemoRoute(getDemoRouteFromPath(window.location.pathname), initialPublications),
     [initialPublications],
   );
-  const [role, setRole] = useState<DemoRole>(() => initialRoute.role);
   const [issues, setIssues, resetIssues] = useSessionState<readonly BriefPublication[]>(
     "brief:demo:issues:v1",
     initialPublications,
@@ -236,7 +202,6 @@ function App() {
     routeSources: readonly BriefSource[] = sources,
   ) {
     const nextRoute = resolveDemoRoute(route, routePublications, routeSources);
-    setRole(nextRoute.role);
     setSelectedSourceId(nextRoute.sourceId);
     setSelectedIssueId(nextRoute.issueId);
 
@@ -285,49 +250,14 @@ function App() {
     };
   }, [market]);
 
-  function handleRoleChange(next: DemoRole) {
-    if (next === role) return;
-    applyDemoRoute({ locale, role: next, sourceId: null, issueId: null });
-  }
-
-  function handleSelectSource(id: string | null) {
-    applyDemoRoute({ locale, role: "publisher", sourceId: id, issueId: null });
-  }
-
-  function handleCreateIssue(sourceId: string) {
-    const issue = createDraftPublication(sourceId);
-    setIssues((current) => [issue, ...current]);
-    applyDemoRoute({ locale, role: "publisher", sourceId, issueId: issue.id }, "push", [
-      issue,
-      ...publications,
-    ]);
-  }
-
-  function handleUpdateIssue(nextIssue: BriefPublication) {
-    setIssues((current) => current.map((issue) => (issue.id === nextIssue.id ? nextIssue : issue)));
-  }
-
-  function handleDeleteIssue(issueId: string) {
-    setIssues((current) => current.filter((issue) => issue.id !== issueId));
-    if (selectedIssueId === issueId) {
-      applyDemoRoute({ locale, role, sourceId: selectedSourceId, issueId: null }, "replace");
-    }
-  }
 
   function handleResetDemoStorage() {
     resetDemoStorage();
     resetIssues(demoDataset.issues.map(clonePublication));
-    applyDemoRoute({ locale, role, sourceId: null, issueId: null }, "replace");
+    applyDemoRoute({ locale, role: "client", sourceId: null, issueId: null }, "replace");
     setResetVersion((version) => version + 1);
   }
 
-  const selectedSource = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
-  const selectedIssue =
-    selectedSource?.kind === "publisher" && selectedIssueId
-      ? ((publicationsBySourceId.get(selectedSource.id) ?? []).find(
-          (issue) => issue.id === selectedIssueId,
-        ) ?? null)
-      : null;
   const selectedFeed = selectedSourceId ? (sourceById.get(selectedSourceId) ?? null) : null;
   const selectedClientIssue =
     selectedSourceId && selectedIssueId
@@ -341,312 +271,81 @@ function App() {
 
   return (
     <TooltipProvider>
-      <Tabs
-        value={role}
-        onValueChange={(value) => {
-          if (value === "publisher" || value === "client") handleRoleChange(value);
-        }}
-      >
-        <main className="min-h-screen bg-canvas text-ink">
-          <header className="border-b border-rule bg-paper/90">
-            <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 sm:px-6 lg:px-8">
-              <div className="flex min-w-0 items-baseline gap-1.5">
-                <h1 className="shrink-0 font-display text-xl font-medium text-ink">
-                  brief<span className="text-accent">.</span>
-                </h1>
-                <span className="truncate font-mono text-[11px] font-medium text-faint">
-                  <FormattedMessage id="demo.badge" />
-                </span>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <TabsList className="h-7 rounded-sm bg-canvas p-px">
-                  <TabsTrigger
-                    value="publisher"
-                    className="h-6 rounded-sm px-2 !text-[12px] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
-                  >
-                    <FormattedMessage id="role.publisher" />
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="client"
-                    className="h-6 rounded-sm px-2 !text-[12px] font-medium leading-none tracking-normal data-[state=active]:bg-paper data-[state=active]:text-ink data-[state=active]:shadow-none data-[state=inactive]:text-faint data-[state=inactive]:hover:bg-paper/70 data-[state=inactive]:hover:text-muted"
-                  >
-                    <FormattedMessage id="role.client" />
-                  </TabsTrigger>
-                </TabsList>
-                <LocaleMarketSwitcher />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-7 text-faint/70 hover:bg-rule/45 hover:text-muted"
-                      onClick={handleResetDemoStorage}
-                      aria-label={intl.formatMessage({ id: "action.reset" })}
-                    >
-                      <RotateCcw className="size-3" aria-hidden="true" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" align="end" sideOffset={8}>
-                    <FormattedMessage id="action.reset.tooltip" />
-                  </TooltipContent>
-                </Tooltip>
-              </div>
+      <main className="min-h-screen bg-canvas text-ink">
+        <header className="border-b border-rule bg-paper/90">
+          <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 sm:px-6 lg:px-8">
+            <div className="flex min-w-0 items-baseline gap-1.5">
+              <h1 className="shrink-0 font-display text-xl font-medium text-ink">
+                brief<span className="text-accent">.</span>
+              </h1>
+              <span className="truncate font-mono text-[11px] font-medium text-faint">
+                <FormattedMessage id="demo.badge" />
+              </span>
             </div>
-          </header>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <LocaleMarketSwitcher />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-7 text-faint/70 hover:bg-rule/45 hover:text-muted"
+                    onClick={handleResetDemoStorage}
+                    aria-label={intl.formatMessage({ id: "action.reset" })}
+                  >
+                    <RotateCcw className="size-3" aria-hidden="true" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" align="end" sideOffset={8}>
+                  <FormattedMessage id="action.reset.tooltip" />
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          </div>
+        </header>
 
-          <div className="mx-auto max-w-7xl px-4 py-5 sm:px-6 sm:py-6 lg:px-8">
-            <div className="mb-6">
-              <Breadcrumbs
-                items={buildBreadcrumbs({
-                  role,
-                  selectedIssue,
-                  selectedSource,
-                  selectedFeed,
-                  selectedClientIssue,
+        <div className="mx-auto max-w-7xl px-4 py-5 sm:px-6 sm:py-6 lg:px-8">
+          <div className="mb-6">
+            <Breadcrumbs
+              items={buildBreadcrumbs({
+                selectedFeed,
+                selectedClientIssue,
+                locale,
+                intl,
+                applyDemoRoute,
+              })}
+            />
+          </div>
+          {selectedFeed && selectedClientIssue ? (
+            <ClientPublicationDetail issue={selectedClientIssue} sourceById={sourceById} />
+          ) : selectedFeed ? (
+            <ClientFeedDetail
+              feed={selectedFeed}
+              publications={publications}
+              onSelectIssue={(issueId) =>
+                applyDemoRoute({
                   locale,
-                  intl,
-                  applyDemoRoute,
-                  handleSelectSource,
-                })}
-              />
-            </div>
-            <TabsContent value="publisher" className="mt-0">
-              {selectedSource && selectedIssue ? (
-                <PublisherPublicationDetail
-                  issue={selectedIssue}
-                  sourceById={sourceById}
-                  onDeleteIssue={handleDeleteIssue}
-                  onUpdateIssue={handleUpdateIssue}
-                />
-              ) : selectedSource ? (
-                <PublisherSourceDetail
-                  key={`${selectedSource.id}:${resetVersion}`}
-                  source={selectedSource}
-                  issues={publicationsBySourceId.get(selectedSource.id) ?? []}
-                  onCreateIssue={handleCreateIssue}
-                  onDeleteIssue={handleDeleteIssue}
-                  onSelectIssue={(issueId) =>
-                    applyDemoRoute({
-                      locale,
-                      role: "publisher",
-                      sourceId: selectedSource.id,
-                      issueId,
-                    })
-                  }
-                />
-              ) : (
-                <PublisherSourcesList
-                  publicationsBySourceId={publicationsBySourceId}
-                  onSelect={handleSelectSource}
-                />
-              )}
-            </TabsContent>
-            <TabsContent value="client" className="mt-0">
-              {selectedFeed && selectedClientIssue ? (
-                <ClientPublicationDetail issue={selectedClientIssue} sourceById={sourceById} />
-              ) : selectedFeed ? (
-                <ClientFeedDetail
-                  feed={selectedFeed}
-                  publications={publications}
-                  onSelectIssue={(issueId) =>
-                    applyDemoRoute({
-                      locale,
-                      role: "client",
-                      sourceId: selectedFeed.id,
-                      issueId,
-                    })
-                  }
-                />
-              ) : (
-                <ClientFeedsList
-                  market={market}
-                  sources={sources}
-                  publications={publications}
-                  publicContentStatus={publicContentStatus}
-                  onSelectFeed={(feedId) =>
-                    applyDemoRoute({ locale, role: "client", sourceId: feedId, issueId: null })
-                  }
-                />
-              )}
-            </TabsContent>
-          </div>
-        </main>
-      </Tabs>
+                  role: "client",
+                  sourceId: selectedFeed.id,
+                  issueId,
+                })
+              }
+            />
+          ) : (
+            <ClientFeedsList
+              market={market}
+              sources={sources}
+              publications={publications}
+              publicContentStatus={publicContentStatus}
+              onSelectFeed={(feedId) =>
+                applyDemoRoute({ locale, role: "client", sourceId: feedId, issueId: null })
+              }
+            />
+          )}
+        </div>
+      </main>
     </TooltipProvider>
-  );
-}
-
-function PublisherSourcesList({
-  publicationsBySourceId,
-  onSelect,
-}: {
-  publicationsBySourceId: ReadonlyMap<string, readonly BriefPublication[]>;
-  onSelect: (id: string) => void;
-}) {
-  const rows = useMemo<SourceTableRow[]>(
-    () =>
-      demoDataset.sources.map((source) => {
-        const issues = publicationsBySourceId.get(source.id) ?? [];
-        const latestPublishedIssue =
-          issues.find((issue) => issue.status === "published") ?? issues[0];
-        return {
-          id: source.id,
-          name: source.name,
-          issueCount: issues.length,
-          lastPublishedAt: latestPublishedIssue?.publicationDate ?? null,
-          subscriberCount: source.subscriberCount,
-        };
-      }),
-    [publicationsBySourceId],
-  );
-
-  return (
-    <section className="animate-in stagger-1">
-      <SourcesTable rows={rows} onSelectSource={onSelect} />
-    </section>
-  );
-}
-
-function PublisherSourceDetail({
-  source,
-  issues,
-  onCreateIssue,
-  onDeleteIssue,
-  onSelectIssue,
-}: {
-  source: BriefSource;
-  issues: readonly BriefPublication[];
-  onCreateIssue: (sourceId: string) => void;
-  onDeleteIssue: (id: string) => void;
-  onSelectIssue: (id: string) => void;
-}) {
-  const intl = useIntl();
-  const [subscriberState, setSubscriberState] = useSessionState<SubscriberSessionState>(
-    `brief:demo:publisher-subscribers:${source.id}`,
-    { statuses: {}, deletedIds: [] },
-    SubscriberSession,
-  );
-  const [draftSubscriber, setDraftSubscriber] = useState<DraftSubscriber | null>(null);
-  const [draftErrors, setDraftErrors] = useState<DraftSubscriberErrors>({});
-  const subscribers = useMemo(
-    () => buildSubscriberRows(source, subscriberState),
-    [source, subscriberState],
-  );
-  const subscriberCompanies = useMemo(
-    () =>
-      Array.from(
-        new Set([
-          ...subscribers.map((row) => row.company),
-          ...demoSubscriberProfiles.map((profile) => profile.company),
-        ]),
-      ).sort((a, b) => a.localeCompare(b)),
-    [subscribers],
-  );
-
-  function handleToggleSubscriberStatus(id: string) {
-    setSubscriberState((current) => ({
-      ...current,
-      statuses: {
-        ...current.statuses,
-        [id]: current.statuses[id] === "paused" ? "active" : "paused",
-      },
-    }));
-  }
-
-  function handleDeleteSubscriber(id: string) {
-    setSubscriberState((current) => ({
-      ...current,
-      deletedIds: current.deletedIds.includes(id)
-        ? current.deletedIds
-        : [...current.deletedIds, id],
-    }));
-  }
-
-  function handleCreateSubscriber() {
-    if (!draftSubscriber) return;
-
-    const errors = validateDraftSubscriber(draftSubscriber, subscribers, intl);
-    setDraftErrors(errors);
-    if (Object.keys(errors).length > 0) return;
-
-    const subscriber: CreatedSubscriberRow = {
-      id: `subscriber_demo_${Date.now()}`,
-      company: draftSubscriber.company.trim(),
-      email: draftSubscriber.email.trim(),
-      subscribedSince: new Date().toISOString(),
-      status: "active",
-    };
-
-    setSubscriberState((current) => ({
-      ...current,
-      created: [...(current.created ?? []), subscriber],
-    }));
-    setDraftSubscriber(null);
-    setDraftErrors({});
-  }
-
-  function handleCancelSubscriberDraft() {
-    setDraftErrors({});
-    setDraftSubscriber(null);
-  }
-
-  return (
-    <div className="space-y-8">
-      <p className="font-serif text-sm leading-6 text-muted">{source.description}</p>
-
-      <div
-        className={`animate-in stagger-1 grid gap-8 ${
-          source.kind === "publisher" ? "xl:grid-cols-[1.3fr_0.7fr]" : ""
-        }`}
-      >
-        <section>
-          <SectionHeader
-            title={intl.formatMessage({ id: "section.publications" })}
-            count={issues.length}
-            actionLabel={intl.formatMessage({ id: "action.createPublication" })}
-            onAdd={() => onCreateIssue(source.id)}
-          />
-          <div className="mt-4">
-            <PublicationsTable
-              issues={toPublicationTableIssues(issues)}
-              compact
-              onDeleteScheduledIssue={onDeleteIssue}
-              onSelectIssue={onSelectIssue}
-            />
-          </div>
-        </section>
-
-        {source.kind === "publisher" ? (
-          <section>
-            <SectionHeader
-              title={intl.formatMessage({ id: "section.subscribers" })}
-              count={subscribers.length}
-              actionLabel={intl.formatMessage({ id: "action.addSubscriber" })}
-              onAdd={() => setDraftSubscriber((current) => current ?? { company: "", email: "" })}
-            />
-            <div className="mt-4">
-              <SubscribersTable
-                rows={subscribers}
-                draft={draftSubscriber}
-                draftErrors={draftErrors}
-                companyOptions={subscriberCompanies}
-                onCancelDraft={handleCancelSubscriberDraft}
-                onConfirmDraft={handleCreateSubscriber}
-                onDelete={handleDeleteSubscriber}
-                onToggleStatus={handleToggleSubscriberStatus}
-                onUpdateDraft={(nextDraft) => {
-                  setDraftErrors((current) =>
-                    clearResolvedDraftErrors(current, nextDraft, subscribers, intl),
-                  );
-                  setDraftSubscriber(nextDraft);
-                }}
-              />
-            </div>
-          </section>
-        ) : null}
-      </div>
-    </div>
   );
 }
 
@@ -1578,115 +1277,56 @@ function ClientPublicationDetail({
 }
 
 function buildBreadcrumbs({
-  role,
-  selectedIssue,
-  selectedSource,
   selectedFeed,
   selectedClientIssue,
   locale,
   intl,
   applyDemoRoute,
-  handleSelectSource,
 }: {
-  role: DemoRole;
-  selectedIssue: BriefPublication | null;
-  selectedSource: BriefSource | null;
   selectedFeed: BriefSource | null;
   selectedClientIssue: BriefPublication | null;
   locale: Locale;
   intl: ReturnType<typeof useIntl>;
   applyDemoRoute: (route: DemoRoute) => void;
-  handleSelectSource: (id: string | null) => void;
 }): readonly BreadcrumbItem[] {
   const chatLabel = intl.formatMessage({ id: "section.chat" });
-  const feedsLabel = intl.formatMessage({ id: "section.feeds" });
 
-  if (role === "client") {
-    if (selectedFeed && selectedClientIssue) {
-      return [
-        {
-          label: chatLabel,
-          href: buildDemoPath({ locale, role: "client", sourceId: null, issueId: null }),
-          onClick: () => applyDemoRoute({ locale, role: "client", sourceId: null, issueId: null }),
-        },
-        {
-          label: selectedFeed.name,
-          href: buildDemoPath({
-            locale,
-            role: "client",
-            sourceId: selectedFeed.id,
-            issueId: null,
-          }),
-          onClick: () =>
-            applyDemoRoute({ locale, role: "client", sourceId: selectedFeed.id, issueId: null }),
-        },
-        { label: selectedClientIssue.title, truncate: true },
-      ];
-    }
-
-    if (selectedFeed) {
-      return [
-        {
-          label: chatLabel,
-          href: buildDemoPath({ locale, role: "client", sourceId: null, issueId: null }),
-          onClick: () => applyDemoRoute({ locale, role: "client", sourceId: null, issueId: null }),
-        },
-        { label: selectedFeed.name },
-      ];
-    }
-
-    return [{ label: chatLabel }];
+  if (selectedFeed && selectedClientIssue) {
+    return [
+      {
+        label: chatLabel,
+        href: buildDemoPath({ locale, role: "client", sourceId: null, issueId: null }),
+        onClick: () => applyDemoRoute({ locale, role: "client", sourceId: null, issueId: null }),
+      },
+      {
+        label: selectedFeed.name,
+        href: buildDemoPath({
+          locale,
+          role: "client",
+          sourceId: selectedFeed.id,
+          issueId: null,
+        }),
+        onClick: () =>
+          applyDemoRoute({ locale, role: "client", sourceId: selectedFeed.id, issueId: null }),
+      },
+      { label: selectedClientIssue.title, truncate: true },
+    ];
   }
 
-  if (!selectedSource) return [{ label: feedsLabel }];
+  if (selectedFeed) {
+    return [
+      {
+        label: chatLabel,
+        href: buildDemoPath({ locale, role: "client", sourceId: null, issueId: null }),
+        onClick: () => applyDemoRoute({ locale, role: "client", sourceId: null, issueId: null }),
+      },
+      { label: selectedFeed.name },
+    ];
+  }
 
-  const sourceCrumb = selectedIssue
-    ? [
-        {
-          label: selectedSource.name,
-          href: buildDemoPath({
-            locale,
-            role: "publisher",
-            sourceId: selectedSource.id,
-            issueId: null,
-          }),
-          onClick: () =>
-            applyDemoRoute({
-              locale,
-              role: "publisher",
-              sourceId: selectedSource.id,
-              issueId: null,
-            }),
-        },
-        { label: selectedIssue.title, truncate: true },
-      ]
-    : [{ label: selectedSource.name }];
-
-  return [
-    {
-      label: feedsLabel,
-      href: buildDemoPath({ locale, role: "publisher", sourceId: null, issueId: null }),
-      onClick: () => handleSelectSource(null),
-    },
-    ...sourceCrumb,
-  ];
+  return [{ label: chatLabel }];
 }
 
-function toPublicationTableIssues(
-  issues: readonly BriefPublication[],
-  sourceById?: ReadonlyMap<string, BriefSource>,
-): PublicationTableIssue[] {
-  return issues.map((issue) => ({
-    id: issue.id,
-    title: issue.title,
-    sourceName: sourceById?.get(issue.sourceId)?.name ?? "",
-    publicationDate: issue.publicationDate,
-    opens: issue.metrics.opens,
-    downloads: issue.metrics.downloads,
-    contextPulls: issue.metrics.aiContextPulls,
-    status: issue.status,
-  }));
-}
 
 function computeSourceLastDate(
   source: BriefSource,
@@ -1722,84 +1362,6 @@ function toPublicationDetailIssue(
   };
 }
 
-type CreatedSubscriberRow = SubscriberTableRow;
-
-function buildSubscriberRows(
-  source: BriefSource,
-  state: SubscriberSessionState,
-): SubscriberTableRow[] {
-  if (source.kind !== "publisher") return [];
-  if (source.subscribedSince === null) return [];
-  const baseDate = new Date(source.subscribedSince).getTime();
-  const seededRows = demoSubscriberProfiles
-    .slice(0, Math.max(1, source.subscriberCount ?? 0))
-    .map((profile, index) => {
-      const status: SubscriberStatus =
-        state.statuses[profile.id] === "paused" ? "paused" : "active";
-      return {
-        id: profile.id,
-        company: profile.company,
-        email: profile.email,
-        subscribedSince: new Date(baseDate - index * 86_400_000 * 12).toISOString(),
-        status,
-      };
-    })
-    .filter((row) => !state.deletedIds.includes(row.id));
-
-  const createdRows = (state.created ?? [])
-    .filter((row) => !state.deletedIds.includes(row.id))
-    .map((row) => ({
-      ...row,
-      status: state.statuses[row.id] === "paused" ? "paused" : row.status,
-    }));
-
-  return [...seededRows, ...createdRows];
-}
-
-function validateDraftSubscriber(
-  draft: DraftSubscriber,
-  rows: readonly SubscriberTableRow[],
-  intl: ReturnType<typeof useIntl>,
-): DraftSubscriberErrors {
-  const errors: DraftSubscriberErrors = {};
-  const company = draft.company.trim();
-  const email = draft.email.trim();
-
-  if (!company) {
-    errors.company = intl.formatMessage({ id: "error.companyRequired" });
-  }
-
-  if (!email) {
-    errors.email = intl.formatMessage({ id: "error.emailRequired" });
-  } else if (!isValidEmail(email)) {
-    errors.email = intl.formatMessage({ id: "error.emailInvalid" });
-  } else if (
-    rows.some(
-      (row) => row.email.toLocaleLowerCase(intl.locale) === email.toLocaleLowerCase(intl.locale),
-    )
-  ) {
-    errors.email = intl.formatMessage({ id: "error.emailDuplicate" });
-  }
-
-  return errors;
-}
-
-function clearResolvedDraftErrors(
-  errors: DraftSubscriberErrors,
-  draft: DraftSubscriber,
-  rows: readonly SubscriberTableRow[],
-  intl: ReturnType<typeof useIntl>,
-): DraftSubscriberErrors {
-  if (Object.keys(errors).length === 0) return errors;
-  const nextErrors = validateDraftSubscriber(draft, rows, intl);
-  return Object.fromEntries(
-    Object.entries(errors).filter(([field]) => nextErrors[field as keyof DraftSubscriber]),
-  );
-}
-
-function isValidEmail(email: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
 
 function isEditableIssue(issue: BriefPublication) {
   return (
@@ -1832,26 +1394,6 @@ function clonePublication(issue: BriefPublication): BriefPublication {
   };
 }
 
-function createDraftPublication(sourceId: string): BriefPublication {
-  const id = `publication_local_${Date.now()}`;
-  const publicationDate = new Date(Date.now() + 86_400_000 * 7).toISOString();
-  return {
-    id,
-    sourceId,
-    sourceKind: "publisher",
-    title: "Nouvelle publication",
-    publicationDate,
-    status: "scheduled",
-    summary: "Résumé éditable de la publication planifiée.",
-    canonicalUrl: null,
-    documents: [createDraftDocument(id, sourceId, 1)],
-    metrics: {
-      opens: 0,
-      downloads: 0,
-      aiContextPulls: 0,
-    },
-  };
-}
 
 function createDraftDocument(
   issueId: string,

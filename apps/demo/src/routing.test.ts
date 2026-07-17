@@ -94,10 +94,10 @@ describe("getDemoRouteFromPath", () => {
     });
   });
 
-  it("parses the /us pretty alias as a publisher route with en-US locale", () => {
+  it("normalizes the /us pretty alias publisher path to client root", () => {
     expect(getDemoRouteFromPath("/us/publisher")).toEqual({
       locale: "en-US",
-      role: "publisher",
+      role: "client",
       sourceId: null,
       issueId: null,
     });
@@ -134,25 +134,25 @@ describe("getDemoRouteFromPath", () => {
     });
   });
 
-  it("parses /publisher as publisher root", () => {
+  it("normalizes /publisher to client root", () => {
     expect(getDemoRouteFromPath("/publisher")).toEqual({
       locale: null,
-      role: "publisher",
+      role: "client",
       sourceId: null,
       issueId: null,
     });
   });
 
-  it("parses /publisher/sources/:sourceId/publications/:issueId", () => {
+  it("normalizes publisher source paths to client root", () => {
     expect(
       getDemoRouteFromPath(
         "/publisher/sources/source_regulation_financiere/publications/issue_regfin_2026_06_24",
       ),
     ).toEqual({
       locale: null,
-      role: "publisher",
-      sourceId: "source_regulation_financiere",
-      issueId: "issue_regfin_2026_06_24",
+      role: "client",
+      sourceId: null,
+      issueId: null,
     });
   });
 });
@@ -263,16 +263,6 @@ describe("resolveDemoRoute", () => {
     expect(resolveDemoRoute(route, publicPublications, publicSources)).toEqual(route);
   });
 
-  it("resolves client publisher feed detail", () => {
-    const route: DemoRoute = {
-      locale: null,
-      role: "client",
-      sourceId: "source_regulation_financiere",
-      issueId: null,
-    };
-    expect(resolveDemoRoute(route, publisherIssues)).toEqual(route);
-  });
-
   it("resolves client publication within a public feed", () => {
     const route: DemoRoute = {
       locale: null,
@@ -311,16 +301,6 @@ describe("resolveDemoRoute", () => {
     });
   });
 
-  it("resolves client publication within a publisher feed", () => {
-    const route: DemoRoute = {
-      locale: null,
-      role: "client",
-      sourceId: "source_regulation_financiere",
-      issueId: "issue_regfin_2026_06_24",
-    };
-    expect(resolveDemoRoute(route, publisherIssues)).toEqual(route);
-  });
-
   it("falls back to client root for unknown sourceId", () => {
     const route: DemoRoute = {
       locale: null,
@@ -349,23 +329,5 @@ describe("resolveDemoRoute", () => {
       sourceId: "service_public",
       issueId: null,
     });
-  });
-
-  it("publisher routes remain unchanged", () => {
-    const rootRoute: DemoRoute = {
-      locale: null,
-      role: "publisher",
-      sourceId: null,
-      issueId: null,
-    };
-    expect(resolveDemoRoute(rootRoute, publisherIssues)).toEqual(rootRoute);
-
-    const sourceRoute: DemoRoute = {
-      locale: null,
-      role: "publisher",
-      sourceId: "source_regulation_financiere",
-      issueId: null,
-    };
-    expect(resolveDemoRoute(sourceRoute, publisherIssues)).toEqual(sourceRoute);
   });
 });

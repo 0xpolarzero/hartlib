@@ -67,21 +67,7 @@ export function getDemoRouteFromPath(pathname: string): DemoRoute {
     return { locale, role: "client", sourceId: null, issueId: null };
   }
 
-  if (scope === "publisher" && segment === "sources") {
-    return {
-      locale,
-      role: "publisher",
-      sourceId: sourceId ?? null,
-      issueId: nestedSegment === "publications" ? (issueId ?? null) : null,
-    };
-  }
-
-  return {
-    locale,
-    role: "publisher",
-    sourceId: null,
-    issueId: null,
-  };
+  return { locale, role: "client", sourceId: null, issueId: null };
 }
 
 /**
