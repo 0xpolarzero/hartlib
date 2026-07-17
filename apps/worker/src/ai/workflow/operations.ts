@@ -593,7 +593,7 @@ const InternalQuerySchema = z.discriminatedUnion("target", [
   z
     .object({
       target: z.literal("documents"),
-      terms: z.string().trim().min(1),
+      terms: z.string().trim().optional(),
       purpose: z.string().trim().min(1),
       sourceIds: z.array(z.string()).optional(),
       countries: z.array(z.string()).optional(),
@@ -3334,7 +3334,7 @@ export class CanonicalWorkflowOperations {
           definition: {
             name: "search_internal",
             description:
-              "Search authorized documents or older messages from this chat. Query terms use PostgreSQL web-search syntax: whitespace is AND and uppercase OR expresses alternatives. Use at most three required terms. A non-English document question's first search must include sparse English content lexemes, alone or OR-paired with user-language lexemes. Make at most one search call per provider turn and never repeat the exact same query without its returned cursor.",
+              "Search authorized documents or older messages from this chat. Query terms use PostgreSQL web-search syntax: whitespace is AND and uppercase OR expresses alternatives. Use at most three required terms. A non-English document question's first search must include sparse English content lexemes, alone or OR-paired with user-language lexemes. Make at most one search call per provider turn and never repeat the exact same query without its returned cursor. A documents query also accepts optional publishedAfter, publishedBefore, orderBy (\"relevance\" | \"recency\"), and sourceIds filters. For a recap, summary, overview, digest, or list of the user's feeds/sources/publications since a date, between dates, recently, or latest, issue one documents query with orderBy \"recency\" and publishedAfter set to that date, adding sourceIds for specific feeds and omitting terms; this bounded recency listing returns the most recent authorized documents without a lexical match.",
             parameters: z.toJSONSchema(
               z
                 .object({
@@ -3348,18 +3348,42 @@ export class CanonicalWorkflowOperations {
           execute: async (args, coordinates) => {
             const parsed = parseSearchInternalArguments(args);
             const query: InternalQuery = parsed.query;
-            const queryIssue = internalSearchQueryIssue(query.terms);
-            if (queryIssue !== undefined) {
-              searchProtocol.recordRejectedQuery();
-              return {
-                items: [],
-                complete: true,
-                truncated: false,
-                cursor: null,
-                queryRejected: true,
-                correctionRequired: true,
-                message: `${queryIssue}; retry with a sparse lexical query`,
-              };
+            const queryTerms = query.terms ?? "";
+            const hasTerms = queryTerms.trim().length > 0;
+            if (hasTerms) {
+              const queryIssue = internalSearchQueryIssue(queryTerms);
+              if (queryIssue !== undefined) {
+                searchProtocol.recordRejectedQuery();
+                return {
+                  items: [],
+                  complete: true,
+                  truncated: false,
+                  cursor: null,
+                  queryRejected: true,
+                  correctionRequired: true,
+                  message: `${queryIssue}; retry with a sparse lexical query`,
+                };
+              }
+            } else {
+              const isBoundedRecencyListing =
+                query.target === "documents" &&
+                query.orderBy === "recency" &&
+                (Boolean(query.publishedAfter) ||
+                  Boolean(query.publishedBefore) ||
+                  (query.sourceIds ? query.sourceIds.length > 0 : false));
+              if (!isBoundedRecencyListing) {
+                searchProtocol.recordRejectedQuery();
+                return {
+                  items: [],
+                  complete: true,
+                  truncated: false,
+                  cursor: null,
+                  queryRejected: true,
+                  correctionRequired: true,
+                  message:
+                    "a term-less search requires orderBy recency with a date or source filter",
+                };
+              }
             }
             if (++searches > this.config.aiInternalMaxSearches)
               throw new Error("internal search limit exceeded");
@@ -3725,6 +3749,7 @@ export class CanonicalWorkflowOperations {
     resultLimit: number,
     boundPublisherDocumentVersions: Map<string, string>,
   ): Promise<readonly DocumentPreview[]> {
+    if ((query.terms ?? "").trim().length === 0) return Promise.resolve([]);
     const selectedSubscriptions = new Set(
       selectedSourceIds
         .filter((sourceId) => isCanonicalPublisherDocumentSourceId(sourceId))

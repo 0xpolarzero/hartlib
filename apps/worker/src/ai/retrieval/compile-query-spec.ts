@@ -115,17 +115,25 @@ export const compileQuerySpec = (
   spec: QuerySpec,
   options: CompileQuerySpecOptions,
 ): Statement.Fragment => {
-  const terms = spec.terms.trim();
-  if (terms.length === 0) {
-    throw new InvalidQuerySpecError("terms must not be empty");
-  }
-
   const sourceIds = normalizeList(spec.sourceIds);
   const countries = normalizeCountries(spec.countries);
   const languages = normalizeLanguages(spec.languages);
   const documentTypes = normalizeList(spec.documentTypes);
   const publishedAfter = parseDate(spec.publishedAfter, "publishedAfter");
   const publishedBefore = parseDate(spec.publishedBefore, "publishedBefore");
+  const terms = spec.terms?.trim() ?? "";
+  const hasTerms = terms.length > 0;
+  if (
+    !hasTerms &&
+    !(
+      spec.orderBy === "recency" &&
+      (publishedAfter !== undefined || publishedBefore !== undefined || sourceIds.length > 0)
+    )
+  ) {
+    throw new InvalidQuerySpecError(
+      "terms are required unless the query is a bounded recency listing (orderBy recency with a date or source filter)",
+    );
+  }
   const limit = normalizeLimit(spec.limit, options.maxLimit);
   const snippetMaxChars = options.snippetMaxChars ?? SNIPPET_MAX_CHARS;
   const halfLifeDays = options.recencyHalfLifeDays;
@@ -141,8 +149,8 @@ export const compileQuerySpec = (
     throw new InvalidQuerySpecError("snippetMaxChars must be a positive finite number");
   }
 
-  const matchFragment =
-    languages.length === 0
+  const matchFragment = hasTerms
+    ? languages.length === 0
       ? Statement.or([
           frag`d.search_vector @@ websearch_to_tsquery('french', ${terms})`,
           frag`d.search_vector @@ websearch_to_tsquery('english', ${terms})`,
@@ -152,7 +160,8 @@ export const compileQuerySpec = (
             (primary) =>
               frag`(lower(split_part(d.language, '-', 1)) = ${primary} and d.search_vector @@ websearch_to_tsquery(language_to_regconfig(${primary}), ${terms}))`,
           ),
-        );
+        )
+    : null;
 
   const filterFragments: Array<Statement.Fragment> = [];
   if (sourceIds.length > 0) {
@@ -172,7 +181,7 @@ export const compileQuerySpec = (
   }
 
   const whereFragment = Statement.and([
-    matchFragment,
+    ...(matchFragment !== null ? [matchFragment] : []),
     ...filterFragments,
     buildSourceAccessClause(options.access),
   ]);

@@ -1,7 +1,7 @@
 export type SearchOrderBy = "relevance" | "recency";
 
 export interface QuerySpec {
-  readonly terms: string;
+  readonly terms?: string | undefined;
   readonly sourceIds?: readonly string[] | undefined;
   readonly countries?: readonly string[] | undefined;
   readonly languages?: readonly string[] | undefined;

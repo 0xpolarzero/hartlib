@@ -61,7 +61,7 @@ export type NormalizedExecutionPlan =
 export type InternalQuery =
   | {
       readonly target: "documents";
-      readonly terms: string;
+      readonly terms?: string | undefined;
       readonly purpose: string;
       readonly sourceIds?: readonly string[] | undefined;
       readonly countries?: readonly string[] | undefined;

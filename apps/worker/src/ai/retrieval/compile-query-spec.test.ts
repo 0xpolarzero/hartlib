@@ -182,6 +182,36 @@ describe("compileQuerySpec", () => {
     );
   });
 
+  it("compiles a term-less bounded recency listing without a full-text match clause", () => {
+    const [text, params] = compile({
+      orderBy: "recency",
+      publishedAfter: "2026-07-01T00:00:00.000Z",
+    });
+
+    expect(text).not.toContain("@@ websearch_to_tsquery");
+    expect(text).toContain("d.published_at >= $");
+    expect(text).toContain("order by recency_at desc");
+    expect(
+      params.some(
+        (param) => param instanceof Date && param.toISOString() === "2026-07-01T00:00:00.000Z",
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a term-less recency listing bounded by sourceIds", () => {
+    const [text] = compile({ orderBy: "recency", sourceIds: ["a"] });
+    expect(text).not.toContain("@@ websearch_to_tsquery");
+    expect(text).toContain("d.source_id in");
+  });
+
+  it("rejects a term-less unbounded query and a non-recency term-less listing", () => {
+    expect(() => compile({ orderBy: "recency" })).toThrow(InvalidQuerySpecError);
+    expect(() => compile({})).toThrow(InvalidQuerySpecError);
+    expect(() =>
+      compile({ orderBy: "relevance", publishedAfter: "2026-07-01T00:00:00.000Z" }),
+    ).toThrow(InvalidQuerySpecError);
+  });
+
   it("builds source access clauses", () => {
     const [sourceIdsText, sourceIdsParams] = compiler.compile(
       buildSourceAccessClause({ kind: "sourceIds", sourceIds: ["s1", "s2"] }),

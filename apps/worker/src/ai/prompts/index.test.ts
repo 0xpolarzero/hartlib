@@ -141,6 +141,8 @@ describe("canonical AI role prompts", () => {
     expect(InternalRetrievalPrompt).toContain(
       "emit an empty manifest without calling search_internal",
     );
+    expect(InternalRetrievalPrompt).toContain("Feed-recap rule");
+    expect(InternalRetrievalPrompt).toContain("bounded recency listing");
     expect(InternalRetrievalPrompt).toContain("or its exact recoveryReferences echo");
     expect(InternalRetrievalPrompt).toContain(
       "Reserve the final provider turn for emit_internal_manifest",
