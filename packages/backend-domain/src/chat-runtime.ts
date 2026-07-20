@@ -159,6 +159,8 @@ const ensureDemoChatInTransaction = (userId: string) =>
         )
         select ${existing[0].company_id}, source.source_id, true, ${userId}
         from public_sources source
+        where source.source_id not like 'eval-%'
+          and source.discovery_url not like 'https://evaluation.invalid/%'
         on conflict (client_company_id, source_id) do nothing
       `;
       return existing[0];
@@ -201,14 +203,18 @@ const ensureDemoChatInTransaction = (userId: string) =>
     // The demo has a fixed, server-authorized public-source set. Materialize
     // missing rows from the globally ingested catalog so the feed and chat
     // retrieval share one durable authorization boundary. Existing settings
-    // are preserved so a deliberate opt-out remains effective.
+    // are preserved so a deliberate opt-out remains effective. Canonical
+    // evaluation fixtures (eval-* sources on evaluation.invalid URLs) are
+    // excluded so the golden eval harness cannot pollute the demo feed.
     yield* sql`
       insert into client_company_public_source_settings (
         client_company_id, source_id, enabled, updated_by_user_id
       )
-      select ${companyId}, source.source_id, true, ${userId}
-      from public_sources source
-      on conflict (client_company_id, source_id) do nothing
+        select ${companyId}, source.source_id, true, ${userId}
+        from public_sources source
+        where source.source_id not like 'eval-%'
+          and source.discovery_url not like 'https://evaluation.invalid/%'
+        on conflict (client_company_id, source_id) do nothing
     `;
     const inserted = yield* sql<ChatRow>`
       insert into chats (user_id, company_id, memory_mode)
