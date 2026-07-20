@@ -55,7 +55,13 @@ type RouterContext = {
 };
 
 const rootRoute = createRootRouteWithContext<RouterContext>()({
-  component: RootLayout,
+  component: Outlet,
+});
+
+const docsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "docs",
+  component: DocsDocument,
 });
 
 /**
@@ -66,6 +72,7 @@ const rootRoute = createRootRouteWithContext<RouterContext>()({
 const localeLayoutRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "$locale",
+  component: RootLayout,
   beforeLoad: ({ params }) => {
     const segment = params.locale;
 
@@ -218,6 +225,7 @@ const dataProcessingRoute = createRoute({
 });
 
 const routeTree = rootRoute.addChildren([
+  docsRoute,
   localeLayoutRoute.addChildren([
     indexRoute,
     chatRoute,
@@ -252,6 +260,36 @@ declare module "@tanstack/react-router" {
   interface Register {
     router: typeof router;
   }
+}
+
+export function DocsDocument() {
+  const [docsHtml, setDocsHtml] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const previousTitle = document.title;
+    const previousLang = document.documentElement.lang;
+    document.title = "Brief — How chat works";
+    document.documentElement.lang = "en";
+    void import("../docs-html").then(({ DOCS_HTML }) => {
+      if (active) setDocsHtml(DOCS_HTML);
+    });
+    return () => {
+      active = false;
+      document.title = previousTitle;
+      document.documentElement.lang = previousLang;
+    };
+  }, []);
+
+  if (docsHtml === null) return null;
+
+  return (
+    <iframe
+      srcDoc={docsHtml}
+      title="Brief — How chat works"
+      style={{ border: 0, display: "block", height: "100dvh", width: "100%" }}
+    />
+  );
 }
 
 function RootLayout() {

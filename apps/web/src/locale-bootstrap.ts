@@ -13,6 +13,11 @@ import {
 const LOCALE_STORAGE_KEY = "brief:web:locale";
 const MARKET_STORAGE_KEY = "brief:web:market";
 
+export const LOCALE_INDEPENDENT_PATH_LANGUAGES: Readonly<Record<string, string>> = {
+  "/docs": "en",
+  "/docs/": "en",
+};
+
 /**
  * Read a previously stored locale choice from localStorage. Returns `null` when
  * nothing is stored or the value is not a valid locale.
@@ -107,13 +112,19 @@ export function parseLocaleFromPath(pathname: string): Locale | null {
 }
 
 /**
- * Ensure a pathname has a locale prefix. If it already does, it is returned
- * unchanged; otherwise the detected (or default) locale is prepended.
+ * Ensure a pathname has a locale prefix. Locale-independent paths and paths
+ * that already have a locale are returned unchanged; every other path receives
+ * the detected (or default) locale.
  */
 export function ensureLocalePrefix(pathname: string): string {
-  if (parseLocaleFromPath(pathname)) return pathname;
+  const normalized = pathname.startsWith("/") ? pathname : `/${pathname}`;
+  if (
+    LOCALE_INDEPENDENT_PATH_LANGUAGES[normalized] !== undefined ||
+    parseLocaleFromPath(normalized)
+  ) {
+    return normalized;
+  }
 
   const { locale } = detectLocale();
-  const normalized = pathname.startsWith("/") ? pathname : `/${pathname}`;
   return `/${locale}${normalized}`;
 }

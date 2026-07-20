@@ -66,19 +66,21 @@ export const jsonFromSchema = <A, I>(
 
 export const corsHeaders = (init?: HeadersInit): Headers => new Headers(init);
 
-export const notFound = json(
-  {
-    error: "not_found",
-  },
-  { status: 404 },
-);
+const notFound = (): Response =>
+  json(
+    {
+      error: "not_found",
+    },
+    { status: 404 },
+  );
 
-export const methodNotAllowed = json(
-  {
-    error: "method_not_allowed",
-  },
-  { status: 405 },
-);
+const methodNotAllowed = (): Response =>
+  json(
+    {
+      error: "method_not_allowed",
+    },
+    { status: 405 },
+  );
 
 const configuredCorsOrigins = loadApiConfig.pipe(
   Effect.map((config) => config.corsAllowedOrigins),
@@ -406,7 +408,7 @@ const effectRoute = (route: Route): HttpRouter.Route<never, never> =>
     Effect.gen(function* () {
       const web = webRequest(effectRequest);
       const pathParameters = decodePathParameters(route, yield* HttpRouter.params);
-      if (pathParameters === null) return HttpServerResponse.fromWeb(notFound);
+      if (pathParameters === null) return HttpServerResponse.fromWeb(notFound());
       const request = withCanonicalAuditRequestId(route, web);
       const contract = route.contract ?? httpRouteContract(route.method, route.path);
       if (contract === undefined) {
@@ -479,7 +481,7 @@ const routesLayer = (routes: ReadonlyArray<Route>) => {
           const valid = decodePathParameters(route, yield* HttpRouter.params) !== null;
           return yield* valid
             ? preflight(webRequest(effectRequest), methods)
-            : Effect.succeed(notFound);
+            : Effect.succeed(notFound());
         }).pipe(Effect.map(HttpServerResponse.fromWeb), Effect.provide(JsonLoggerLayer)),
       ),
       ...httpMethods
@@ -488,7 +490,7 @@ const routesLayer = (routes: ReadonlyArray<Route>) => {
           HttpRouter.route(method, path as `/${string}`, (_effectRequest) =>
             Effect.map(HttpRouter.params, (captured) =>
               HttpServerResponse.fromWeb(
-                decodePathParameters(route, captured) === null ? notFound : methodNotAllowed,
+                decodePathParameters(route, captured) === null ? notFound() : methodNotAllowed(),
               ),
             ),
           ),
@@ -499,7 +501,7 @@ const routesLayer = (routes: ReadonlyArray<Route>) => {
   return HttpRouter.addAll([
     ...registered,
     ...boundaries,
-    HttpRouter.route("*", "*", HttpServerResponse.fromWeb(notFound)),
+    HttpRouter.route("*", "*", () => Effect.succeed(HttpServerResponse.fromWeb(notFound()))),
   ]);
 };
 

@@ -1,7 +1,7 @@
 // @brief/web — static English-only chat reference served at /docs.
-// This HTML is the single source of truth for the public /docs page. It is
-// served verbatim by the docs() Vite plugin (see vite.config.ts) outside the
-// TanStack Router locale layout, so it has no fr/en locale switch.
+// served verbatim by the docs() Vite plugin and by the web bootstrap/router
+// fallback. Every path stays outside the localized application layout, so the
+// page has no fr/en locale switch.
 //
 // Keep in sync with the code paths in:
 //   packages/backend-domain/src/chat-runtime.ts

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { PreviewServer, ViteDevServer } from "vite";
+import type { Plugin, PreviewServer, ViteDevServer } from "vite";
 
 import { DOCS_HTML } from "./docs-html";
 
@@ -14,9 +14,9 @@ const DOCS_CACHE = "public, max-age=300, stale-while-revalidate=600";
  * layout (no `/$locale` prefix, no fr/en switch) and returns it with a strict
  * Content-Security-Policy.
  *
- * Applies to both `vite dev` (`configureServer`) and `vite preview`
- * (`configurePreviewServer`). Production static hosts need an equivalent
- * `/docs` → content rule since Vite does not emit a virtual file for it.
+ * Applies to `vite dev` and `vite preview`. Production builds also emit
+ * `docs/index.html`; the web bootstrap renders the same document when a static
+ * host rewrites the extensionless path to the application shell.
  */
 const serveDocs = (
   req: IncomingMessage,
@@ -37,8 +37,15 @@ const serveDocs = (
   res.end(Buffer.from(DOCS_HTML, "utf8"));
 };
 
-export const docs = () => ({
+export const docs = (): Plugin => ({
   name: "brief:docs",
+  generateBundle() {
+    this.emitFile({
+      type: "asset",
+      fileName: "docs/index.html",
+      source: DOCS_HTML,
+    });
+  },
   configureServer: (server: ViteDevServer) => {
     server.middlewares.use(serveDocs);
   },

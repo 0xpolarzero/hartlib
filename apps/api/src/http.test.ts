@@ -13,6 +13,7 @@ import { json, routeRequest, type Route } from "./http";
 import { chatRoutes } from "./domain/chat";
 
 const uuid = "11111111-1111-4111-8111-111111111111";
+const uuidV6 = "f498ef45-d58a-6ebe-bece-6d5c83bbee05";
 
 const testContract = (schema: HttpRouteContract["error"]): HttpRouteContract => ({
   requestBody: { kind: "none" },
@@ -90,11 +91,18 @@ describe("routeRequest", () => {
     expect(get.status).toBe(200);
     expect(await get.json()).toEqual({ widgetId: uuid });
 
+    const getV6 = await Effect.runPromise(
+      routeRequest(dynamicRoutes, new Request(`http://brief.test/v1/widgets/${uuidV6}`)),
+    );
+    expect(getV6.status).toBe(200);
+    expect(await getV6.json()).toEqual({ widgetId: uuidV6 });
+
     for (const alias of [`/V1/WIDGETS/${uuid}`, `/v1/widgets/${uuid}/`]) {
       const response = await Effect.runPromise(
         routeRequest(dynamicRoutes, new Request(`http://brief.test${alias}`)),
       );
       expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "not_found" });
     }
 
     const preflight = await Effect.runPromise(
@@ -108,14 +116,16 @@ describe("routeRequest", () => {
     );
     expect(preflight.headers.get("access-control-allow-methods")).toBe("GET, PATCH");
 
-    const unsupported = await Effect.runPromise(
-      routeRequest(
-        dynamicRoutes,
-        new Request(`http://brief.test/v1/widgets/${uuid}`, { method: "DELETE" }),
-      ),
-    );
-    expect(unsupported.status).toBe(405);
-    expect(await unsupported.json()).toEqual({ error: "method_not_allowed" });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const unsupported = await Effect.runPromise(
+        routeRequest(
+          dynamicRoutes,
+          new Request(`http://brief.test/v1/widgets/${uuid}`, { method: "DELETE" }),
+        ),
+      );
+      expect(unsupported.status).toBe(405);
+      expect(await unsupported.json()).toEqual({ error: "method_not_allowed" });
+    }
   });
 
   it("turns endpoint defects into the bounded operational response", async () => {

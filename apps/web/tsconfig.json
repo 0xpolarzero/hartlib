@@ -23,6 +23,7 @@
     }
   },
   "include": [
+    "docs-html.ts",
     "src",
     "../../packages/api-client/src",
     "../../packages/config/src",

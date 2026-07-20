@@ -8,7 +8,7 @@ export type HealthResponse = Schema.Schema.Type<typeof HealthResponse>;
 
 export const UuidPathParameter = Schema.String.pipe(
   Schema.check(
-    Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu),
+    Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu),
   ),
 );
 export type UuidPathParameter = Schema.Schema.Type<typeof UuidPathParameter>;
