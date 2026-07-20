@@ -250,6 +250,7 @@ describe("canonical AI role prompts", () => {
     expect(DirectAnswerPrompt).toContain(
       "A user-authored preference, instruction, or memory request",
     );
+    expect(DirectAnswerPrompt).toContain("Feed-recap answers");
     expect(SynthesisPrompt).toContain('"packets"');
     expect(SynthesisPrompt).toContain("facts absent from those packets");
     expect(SynthesisPrompt).toContain("Every factual sentence must be a direct restatement");
