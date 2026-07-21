@@ -9,6 +9,19 @@
 - For every repository agent delegation, including directly spawned subagents and every nested Smithers task agent, use Codex `gpt-5.6-luna` at high-to-xhigh reasoning for implementation, debugging, test authoring, and other intensive execution work.
 - Use Codex `gpt-5.6-sol` at high-to-xhigh reasoning for planning, orchestration, delegation, synthesis, and independent review. Sol agents should delegate intensive execution work to Luna agents and remain independently responsible for reconciling and reviewing the result.
 
+## Prose style
+
+Apply these rules to all prose: documentation, pull requests, commit messages, user-facing text, and agent-to-agent communication. They do not apply to code, identifiers, commands, quotations, API names, or established technical terms. Replace technical language with everyday words only when precision survives.
+
+1. Never use a metaphor, simile, or other figure of speech that you are used to seeing in print.
+2. Never use a long word where a short one will do.
+3. If it is possible to cut a word out, always cut it out.
+4. Never use the passive where you can use the active.
+5. Never use a foreign phrase, scientific word, or jargon word if you can think of an everyday English equivalent.
+6. Break any of these rules sooner than say anything outright barbarous.
+
+Review every prose output against these rules before delivering it. Favor accuracy, clarity, and natural prose over rigid compliance.
+
 <!-- smithers:prefer-workflows START -->
 
 ## Smithers workflows
