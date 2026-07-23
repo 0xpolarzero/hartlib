@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import {
   isCanonicalPublicDocumentSourceId,
@@ -12,9 +12,8 @@ import { z } from "zod";
 import type { WorkerConfig } from "../../config";
 import {
   ContextReductionPrompt,
-  ConversationResolverPrompt,
+  PlanTurnPrompt,
   DirectAnswerPrompt,
-  ExecutionPlannerPrompt,
   InternalRetrievalPrompt,
   MemoryExtractorPrompt,
   MemorySelectorPrompt,
@@ -31,10 +30,12 @@ import {
   runAiProductState,
 } from "../product-state/repository";
 import type { AiDocumentExposureReconstruction } from "../product-state/observability";
-import { searchDocuments } from "../retrieval/retrieval";
+import { previewFromImmutableText, searchDocuments } from "../retrieval/retrieval";
+import { findNormalizedSubstringRanges, normalizeAndCaseFold } from "../retrieval/exact-text";
 import type { DocumentPreview } from "../retrieval/query-spec";
 import {
   canonicalizeWebUrl,
+  type CharacterRange,
   chatMessageEvidenceIdentity,
   compareSourceKeys,
   compareRankedCandidates,
@@ -45,7 +46,7 @@ import {
   memoryExtractionSha256Hex,
   requiresExplicitInspectionRange,
   sha256Base64Url,
-  sourceKeyForOrdinal,
+  sourceKeyForNamespace,
   stripHistoricalCitationTags,
   webEvidenceIdentity,
   webQuoteHash,
@@ -64,8 +65,10 @@ import type { PiBoundaryCoordinates } from "../runtime/pi-boundary";
 import {
   providerRequestSha256Hex,
   stableJson,
+  type CodeOwnedSourceExposureProof,
   type LiveProviderRequest,
   type ProviderRequest,
+  type SourceExposureProof,
 } from "../runtime/provider-request";
 import { publicSourceRecordFromFinalSource } from "../runtime/public-source";
 import { PublicProvenanceSchema } from "../runtime/source-schemas";
@@ -81,7 +84,7 @@ import type {
   CandidateRejection,
   ContextDecision,
   ConversationEntry,
-  ConversationResolution,
+  PlanTurnResult,
   EffectiveWebPolicy,
   FinalSourceRecord,
   InternalQuery,
@@ -89,20 +92,17 @@ import type {
   Locale,
   Market,
   MemoryExtractionArtifact,
-  MemoryProposal,
   MemoryReference,
   MemorySnapshot,
-  NormalizedExecutionPlan,
   SerializedSourceUse,
   TopicPacket,
   WebEvidence,
 } from "../runtime/types";
 import {
-  ConversationResolutionSchema,
-  ConversationResolutionProviderSchema,
-  validateAndNormalizeExecutionPlan,
+  PlanTurnSchema,
+  PlanTurnProviderSchema,
+  validatePlanTurn,
   validateContextDecisions,
-  validateConversationResolution,
   validateMemoryProposals,
   validateTopicPacket,
 } from "../runtime/validators";
@@ -126,7 +126,6 @@ export type CanonicalAiConfig = Pick<
   | "aiWebMaxFetches"
   | "aiWebMaxDomainFilters"
   | "aiContextReductionMaxIterations"
-  | "aiMemoryDirectMaxItems"
   | "aiMemoryToolResultMaxItems"
   | "webResearchProvider"
 >;
@@ -256,19 +255,10 @@ export interface LoadedTurn {
   readonly locale: Locale;
   readonly market: Market;
   readonly currentDate: string;
-  readonly citationNonce: number[];
-  readonly priorTerminalTurnCount: number;
-  readonly conversation: readonly ConversationEntry[];
-  readonly memories: readonly MemorySnapshot[];
+  readonly citationNamespace: string;
   readonly memoryMode: "private_owner" | "disabled";
-  readonly sourceCatalog: ReadonlyArray<{
-    readonly sourceId: string;
-    readonly displayName: string;
-    readonly country: string;
-    readonly language: string;
-    readonly ingestionType: string;
-  }>;
   readonly webRequested: boolean;
+  /** Immutable policy accepted with the ai_runs row. */
   readonly webPolicy: EffectiveWebPolicy;
 }
 
@@ -374,6 +364,15 @@ interface InternalProviderExposure {
   readonly visibleTokenCount: number;
 }
 
+interface NamedSourceLookup {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly loopIteration: number;
+  readonly attempt: number;
+  readonly sourceIds: readonly string[];
+  consumed: boolean;
+}
+
 /** Stable namespace-aware identity used for every document exposure and citation. */
 export const documentReferenceIdentity = (
   reference: Extract<InternalReference, { kind: "document" }>,
@@ -413,18 +412,18 @@ const documentContentItemIdentity = (
 const documentDiscoveryKey = (
   reference: Extract<InternalReference, { kind: "document" }>,
 ): string =>
-  `${reference.source.kind}:${reference.source.sourceId}:${reference.source.kind === "publisher" ? reference.source.issueId : ""}:${reference.documentId}:${reference.documentVersionId}`;
+  `${reference.source.kind}:${reference.source.sourceId}:${reference.source.kind === "publisher" ? reference.source.issueId : ""}:${reference.documentId}:${reference.versionId}`;
 
 const documentReferenceSelectionKey = (
   reference: Extract<InternalReference, { kind: "document" }>,
 ): string =>
-  `${documentReferenceIdentity(reference)}:${reference.documentVersionId}:${JSON.stringify(reference.ranges ?? [])}`;
+  `${documentReferenceIdentity(reference)}:${reference.versionId}:${JSON.stringify(reference.ranges ?? [])}`;
 
 const documentReferenceRangeKey = (
   reference: Extract<InternalReference, { kind: "document" }>,
   range: { readonly charStart: number; readonly charEnd: number },
 ): string =>
-  `${documentReferenceIdentity(reference)}:${reference.documentVersionId}:${JSON.stringify(range)}`;
+  `${documentReferenceIdentity(reference)}:${reference.versionId}:${JSON.stringify(range)}`;
 
 const documentPreviewIdentity = (item: DocumentPreview): string =>
   item.kind === "publisher"
@@ -460,6 +459,33 @@ const providerVisibleExposureMarker = (exposure: {
   visibleTokenCount: exposure.visibleTokenCount,
 });
 
+const codeOwnedExposureProof = (
+  exposure: Parameters<typeof providerVisibleExposureMarker>[0],
+  visibleText: string,
+): CodeOwnedSourceExposureProof => ({
+  ...providerVisibleExposureMarker(exposure),
+  visibleText,
+});
+
+const exactPreviewRanges = (item: DocumentPreview): readonly CharacterRange[] => {
+  if (item.previewRanges.length === 0 || item.text.length === 0) {
+    throw new Error("document search preview is not reconstructable from immutable text");
+  }
+  const ranges = normalizeCharacterRanges(item.previewRanges, item.text.length);
+  const reconstructed = ranges
+    .map((range) => item.text.slice(range.charStart, range.charEnd))
+    .join("\n…\n");
+  if (reconstructed !== item.snippet) {
+    throw new Error("document search preview does not match immutable source ranges");
+  }
+  return ranges;
+};
+
+const exactPreviewContentHash = (item: DocumentPreview): string => {
+  exactPreviewRanges(item);
+  return sha256Base64Url(item.snippet);
+};
+
 export const normalizeSelectedDocumentRanges = (
   ranges: readonly { readonly charStart: number; readonly charEnd: number }[] | undefined,
   textLength: number,
@@ -486,11 +512,28 @@ interface LoadRow {
   readonly userMessage: string;
   readonly locale: Locale;
   readonly market: Market;
-  readonly citationNonceHex: string;
+  readonly citationNamespace: string;
   readonly memoryMode: "private_owner" | "disabled";
   readonly webRequested: boolean;
   readonly webPolicy: EffectiveWebPolicy;
 }
+
+const EffectiveWebPolicySchema = z.discriminatedUnion("enabled", [
+  z
+    .object({
+      enabled: z.literal(false),
+      reason: z.enum(["deployment_unavailable", "company_disabled", "allowlist_unsupported"]),
+      allowlistActive: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      enabled: z.literal(true),
+      provider: z.literal("tinyfish"),
+      allowedDomains: z.array(z.string().min(1)).nullable(),
+    })
+    .strict(),
+]);
 
 interface ConversationRow {
   readonly turnId: string;
@@ -503,49 +546,14 @@ interface ConversationRow {
   readonly totalCount: number;
 }
 
-const ExecutionPlanSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("single"), reason: z.string().trim().min(1) }).strict(),
-  z
-    .object({
-      mode: z.literal("fanout"),
-      reason: z.string().trim().min(1),
-      topics: z
-        .array(
-          z
-            .object({ question: z.string().trim().min(1), relevantTurnIds: z.array(z.string()) })
-            .strict(),
-        )
-        .min(2)
-        .max(3),
-    })
-    .strict(),
-]);
-// Z.AI documents function parameters as a root object and currently supports
-// only automatic tool selection. Keep the provider-facing shape flat while
-// validating the exact discriminated union before any output is accepted.
-const ExecutionPlanProviderSchema = z
-  .object({
-    mode: z.enum(["single", "fanout"]),
-    reason: z.string().trim().min(1),
-    topics: z
-      .array(
-        z
-          .object({ question: z.string().trim().min(1), relevantTurnIds: z.array(z.string()) })
-          .strict(),
-      )
-      .min(2)
-      .max(3)
-      .optional(),
-  })
-  .strict();
-
-const InternalReferenceSchema = z
+const BoundInternalReferenceSchema = z
   .discriminatedUnion("kind", [
     z
       .object({
         kind: z.literal("document"),
         documentId: z.string(),
-        documentVersionId: z.string(),
+        versionId: z.string(),
+        publisherExtractionId: z.string().optional(),
         source: z.discriminatedUnion("kind", [
           z
             .object({
@@ -580,14 +588,69 @@ const InternalReferenceSchema = z
     if (
       reference.kind === "document" &&
       reference.source.kind === "publisher" &&
-      reference.source.documentId !== reference.documentId
+      (reference.source.documentId !== reference.documentId ||
+        reference.publisherExtractionId === undefined)
     ) {
       context.addIssue({
         code: "custom",
-        message: "publisher source documentId must equal the outer documentId",
+        message: "publisher source must carry its exact extraction binding",
+      });
+    }
+    if (
+      reference.kind === "document" &&
+      reference.source.kind === "public" &&
+      reference.publisherExtractionId !== undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "public source cannot carry extraction binding",
       });
     }
   });
+const InternalReferenceSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("document"),
+      documentId: z.string().trim().min(1),
+      ranges: z
+        .array(
+          z
+            .object({ charStart: z.number().int().min(0), charEnd: z.number().int().positive() })
+            .strict(),
+        )
+        .optional(),
+      purpose: z.string().trim().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("chat_message"),
+      messageId: z.string().trim().min(1),
+      purpose: z.string().trim().min(1),
+    })
+    .strict(),
+]);
+
+const InspectInternalReferenceSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("document"),
+      documentId: z.string().trim().min(1),
+      range: z
+        .object({ charStart: z.number().int().min(0), charEnd: z.number().int().positive() })
+        .strict()
+        .optional(),
+      purpose: z.string().trim().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("chat_message"),
+      messageId: z.string().trim().min(1),
+      purpose: z.string().trim().min(1),
+    })
+    .strict(),
+]);
 
 const InternalQuerySchema = z.discriminatedUnion("target", [
   z
@@ -595,7 +658,10 @@ const InternalQuerySchema = z.discriminatedUnion("target", [
       target: z.literal("documents"),
       terms: z.string().trim().optional(),
       purpose: z.string().trim().min(1),
-      sourceIds: z.array(z.string()).optional(),
+      lookupRef: z
+        .string()
+        .regex(/^lr_[A-Za-z0-9_-]{32}$/u)
+        .optional(),
       countries: z.array(z.string()).optional(),
       languages: z.array(z.string()).optional(),
       documentTypes: z.array(z.string()).optional(),
@@ -685,11 +751,10 @@ const canonicalContextDecisionSet = (
 
 /** Provider-authored value contracts; exported for exhaustive boundary tests. */
 export const canonicalProviderValueSchemas = {
-  conversationResolution: ConversationResolutionSchema,
-  conversationResolutionProvider: ConversationResolutionProviderSchema,
-  executionPlan: ExecutionPlanSchema,
-  executionPlanProvider: ExecutionPlanProviderSchema,
+  planTurn: PlanTurnSchema,
+  planTurnProvider: PlanTurnProviderSchema,
   internalReference: InternalReferenceSchema,
+  inspectInternalReference: InspectInternalReferenceSchema,
   internalQuery: InternalQuerySchema,
   memoryReference: MemoryReferenceSchema,
   webEvidence: WebEvidenceSchema,
@@ -807,7 +872,7 @@ interface ConversationReductionCandidate {
   readonly id: string;
   readonly kind: "conversation_entry";
   readonly rank: number;
-  readonly purpose: "Conversation Resolver-selected recent turn";
+  readonly purpose: "plan-turn-selected recent turn";
   readonly label: null;
   readonly renderedTokenCount: number;
   readonly entry: ConversationEntry;
@@ -847,149 +912,8 @@ const searchWithinCandidatePage = (
     throw new Error("candidate search bounds must be positive and the query must be non-empty");
   }
 
-  type OriginalSpan = { readonly charStart: number; readonly charEnd: number };
-  type FoldedText = { readonly text: string; readonly spans: ReadonlyArray<OriginalSpan> };
-
-  // JavaScript has no full case-fold primitive. The default Unicode
-  // upper/lower mapping supplies full-fold expansions (for example, ß -> ss);
-  // these explicit exceptions cover code points where that composition differs.
-  const caseFoldCodePoint = (value: string): string => {
-    const codePoint = value.codePointAt(0);
-    if (codePoint === undefined) return "";
-    if (codePoint === 0x0131) return "ı";
-    if (codePoint === 0x1e9e) return "ss";
-    if (codePoint >= 0x13a0 && codePoint <= 0x13f5) return value;
-    if (codePoint >= 0x13f8 && codePoint <= 0x13fd) {
-      return String.fromCodePoint(codePoint - 8);
-    }
-    if (codePoint >= 0xab70 && codePoint <= 0xabbf) {
-      return String.fromCodePoint(codePoint - 0x97d0);
-    }
-    return value.toUpperCase().toLowerCase();
-  };
-  const normalizeAndCaseFold = (value: string): string =>
-    // Keep the prescribed NFKC-then-case-fold order. A second normalization
-    // pass would recompose case-folded Greek combining sequences and no longer
-    // be equivalent to default Unicode case folding.
-    Array.from(value.normalize("NFKC"), caseFoldCodePoint).join("");
-  const normalizeWithOriginalSpans = (value: string, originalOffset: number): FoldedText => {
-    type NormalizationEntry = { readonly text: string; readonly span: OriginalSpan };
-
-    // NFKC is NFKD followed by canonical composition. Decomposing one source
-    // code point at a time retains its exact UTF-16 span; the normalization of
-    // the concatenated decomposed text then only reorders and composes those
-    // entries. This keeps combining marks and supplementary code points
-    // separate instead of widening every folded unit to a grapheme cluster.
-    const decomposed: NormalizationEntry[] = [];
-    for (let index = 0; index < value.length; ) {
-      const codePoint = value.codePointAt(index);
-      if (codePoint === undefined) break;
-      const source = String.fromCodePoint(codePoint);
-      const span = {
-        charStart: originalOffset + index,
-        charEnd: originalOffset + index + source.length,
-      };
-      for (const normalized of Array.from(source.normalize("NFKD"))) {
-        decomposed.push({ text: normalized, span });
-      }
-      index += source.length;
-    }
-
-    const decomposedText = decomposed.map((entry) => entry.text).join("");
-    const reorderedText = decomposedText.normalize("NFD");
-    const reordered: NormalizationEntry[] = [];
-    const indicesByText = new Map<string, number[]>();
-    for (let index = 0; index < decomposed.length; index += 1) {
-      const entry = decomposed[index];
-      if (entry === undefined) throw new Error("candidate search lost a decomposed contributor");
-      const indices = indicesByText.get(entry.text);
-      if (indices === undefined) indicesByText.set(entry.text, [index]);
-      else indices.push(index);
-    }
-    const nextIndexByText = new Map<string, number>();
-    for (const normalized of Array.from(reorderedText)) {
-      const indices = indicesByText.get(normalized);
-      const occurrence = nextIndexByText.get(normalized) ?? 0;
-      const index = indices?.[occurrence];
-      if (index === undefined) {
-        throw new Error("candidate search lost a normalized contributor");
-      }
-      nextIndexByText.set(normalized, occurrence + 1);
-      const entry = decomposed[index];
-      if (entry === undefined) throw new Error("candidate search lost a reordered contributor");
-      reordered.push(entry);
-    }
-
-    const isCombiningMark = (text: string): boolean => /\p{Mark}/u.test(text);
-    const canComposeHangul = (starter: string, entry: string): boolean => {
-      const starterCodePoint = starter.codePointAt(0);
-      const entryCodePoint = entry.codePointAt(0);
-      if (starterCodePoint === undefined || entryCodePoint === undefined) return false;
-      return (
-        (starterCodePoint >= 0x1100 &&
-          starterCodePoint <= 0x1112 &&
-          entryCodePoint >= 0x1161 &&
-          entryCodePoint <= 0x1175) ||
-        (starterCodePoint >= 0xac00 &&
-          starterCodePoint <= 0xd7a3 &&
-          (starterCodePoint - 0xac00) % 28 === 0 &&
-          entryCodePoint >= 0x11a8 &&
-          entryCodePoint <= 0x11c2)
-      );
-    };
-    const hasStrictlyGreaterCombiningClass = (current: string, previous: string): boolean => {
-      const normalized = Array.from((current + previous).normalize("NFD"));
-      return normalized[0] === previous && normalized[1] === current;
-    };
-    const composed: NormalizationEntry[] = [];
-    let starterIndex = -1;
-    let previousCombiningMark: string | undefined;
-    for (const entry of reordered) {
-      const combiningMark = isCombiningMark(entry.text);
-      const starter = starterIndex < 0 ? undefined : composed[starterIndex];
-      const blocked =
-        combiningMark &&
-        previousCombiningMark !== undefined &&
-        !hasStrictlyGreaterCombiningClass(entry.text, previousCombiningMark);
-      const candidate = starter?.text ? (starter.text + entry.text).normalize("NFC") : entry.text;
-      const canCompose =
-        starter !== undefined &&
-        !blocked &&
-        Array.from(candidate).length === 1 &&
-        (combiningMark || canComposeHangul(starter.text, entry.text));
-      if (canCompose) {
-        const charStart = Math.min(starter.span.charStart, entry.span.charStart);
-        const charEnd = Math.max(starter.span.charEnd, entry.span.charEnd);
-        composed[starterIndex] = {
-          text: candidate,
-          span: { charStart, charEnd },
-        };
-        previousCombiningMark = undefined;
-      } else {
-        composed.push(entry);
-        if (combiningMark) {
-          previousCombiningMark = entry.text;
-        } else {
-          starterIndex = composed.length - 1;
-          previousCombiningMark = undefined;
-        }
-      }
-    }
-    const foldedParts: string[] = [];
-    const spans: OriginalSpan[] = [];
-    for (const entry of composed) {
-      const folded = caseFoldCodePoint(entry.text);
-      for (let index = 0; index < folded.length; index += 1) {
-        foldedParts.push(folded[index] ?? "");
-        spans.push(entry.span);
-      }
-    }
-    return { text: foldedParts.join(""), spans };
-  };
-
   const candidateText = reductionCandidateText(candidate);
-  const normalizedTerms = normalizeAndCaseFold(terms);
-  if (normalizedTerms === "") {
+  if (normalizeAndCaseFold(terms) === "") {
     throw new Error("candidate search query must contain a normalized character");
   }
   const matches: Array<{ readonly charStart: number; readonly charEnd: number }> = [];
@@ -1003,31 +927,17 @@ const searchWithinCandidatePage = (
       candidate.kind === "document"
         ? candidate.text.slice(range.charStart, range.charEnd)
         : candidateText;
-    const folded = normalizeWithOriginalSpans(text, range.charStart);
-    let foldedOffset = 0;
-    while (foldedOffset < folded.text.length) {
-      const index = folded.text.indexOf(normalizedTerms, foldedOffset);
-      if (index < 0) break;
-      const end = index + normalizedTerms.length;
-      let charStart = Number.POSITIVE_INFINITY;
-      let charEnd = 0;
-      for (let spanIndex = index; spanIndex < end; spanIndex += 1) {
-        const span = folded.spans[spanIndex];
-        if (span === undefined) {
-          throw new Error("candidate search lost an original UTF-16 span");
-        }
-        charStart = Math.min(charStart, span.charStart);
-        charEnd = Math.max(charEnd, span.charEnd);
-      }
-      if (!Number.isFinite(charStart) || charStart >= charEnd) {
-        throw new Error("candidate search produced an empty original UTF-16 span");
-      }
+    const ranges = findNormalizedSubstringRanges(
+      text,
+      [terms],
+      candidate.kind === "document" ? range.charStart : 0,
+    );
+    for (const match of ranges) {
       if (matchedBeforePage >= cursor) {
-        matches.push({ charStart, charEnd });
+        matches.push(match);
         if (matches.length > maximumMatches) break;
       }
       matchedBeforePage += 1;
-      foldedOffset = end;
     }
     if (matches.length > maximumMatches) break;
   }
@@ -1270,8 +1180,9 @@ const immutableSourceIdentity = (source: FinalSourceRecord): string => {
           kind: locator.kind,
           sourceId: locator.sourceId,
           documentId: locator.documentId,
-          documentVersionId: locator.documentVersionId,
+          versionId: locator.versionId,
           contentHash: locator.contentHash,
+          publisherExtractionId: locator.publisherExtractionId,
           publisherIssueId: locator.publisherIssueId,
           publisherDocumentId: locator.publisherDocumentId,
         }
@@ -1460,6 +1371,158 @@ export class CanonicalWorkflowOperations {
     });
   }
 
+  private async liveWebPolicy(load: LoadedTurn): Promise<EffectiveWebPolicy> {
+    const rows = await this.db(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{
+          readonly enabled: boolean;
+          readonly domains: readonly string[] | null;
+        }>`
+          select settings.web_search_enabled as enabled,
+                 settings.web_domain_allowlist as domains
+          from ai_runs runs
+          join chats on chats.id = runs.chat_id
+          join client_company_ai_settings settings on settings.company_id = chats.company_id
+          where runs.id = ${load.aiRunId}
+          limit 1
+        `;
+      }),
+    );
+    const row = rows[0];
+    const current = this.currentEffectiveWebPolicy(row?.enabled === true, row?.domains ?? null);
+    try {
+      return recheckWebPolicy(load.webPolicy, current);
+    } catch {
+      throw controlledRuntimeFailure("web_policy_revoked");
+    }
+  }
+
+  private async currentAuthorizedSourceIds(load: LoadedTurn): Promise<readonly string[]> {
+    const rows = await this.db(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly sourceId: string }>`
+          with base as (
+            select runs.id, runs.chat_id, runs.initiating_user_id, chats.company_id
+            from ai_runs runs
+            join chats on chats.id = runs.chat_id and chats.deleted_at is null
+            join client_companies companies
+              on companies.id = chats.company_id
+             and companies.recovery_deleted_at is null
+             and companies.purged_at is null
+            join client_company_memberships memberships
+              on memberships.company_id = chats.company_id
+             and memberships.user_id = runs.initiating_user_id
+             and memberships.revoked_at is null
+            join platform_users users
+              on users.id = runs.initiating_user_id
+             and users.recovery_deleted_at is null
+             and users.purged_at is null
+            where runs.id = ${load.aiRunId}
+              and runs.chat_id = ${load.chatId}
+              and runs.initiating_user_id = ${load.initiatingUserId}
+              and runs.finished_at is null
+              and runs.failed_at is null
+              and (
+                (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
+                or chats.shared_at is not null
+              )
+          )
+          select 'public:' || settings.source_id as "sourceId"
+          from base
+          join client_company_public_source_settings settings
+            on settings.client_company_id = base.company_id and settings.enabled
+          union
+          select 'publisher:' || selected.subscription_id::text as "sourceId"
+          from base
+          join chat_subscription_sources selected on selected.chat_id = base.chat_id
+           and selected.client_company_id = base.company_id
+          join client_employee_subscription_grants grants
+            on grants.access_id = selected.access_id
+           and grants.client_company_id = selected.client_company_id
+           and grants.user_id = base.initiating_user_id
+           and grants.revoked_at is null
+          join client_subscription_accesses accesses
+            on accesses.id = selected.access_id
+           and accesses.client_company_id = selected.client_company_id
+           and accesses.subscription_id = selected.subscription_id
+           and accesses.state in ('active', 'ending', 'paused')
+        `;
+      }),
+    );
+    return rows.map((row) => row.sourceId);
+  }
+
+  private async resolveAuthorizedSourceIds(
+    load: LoadedTurn,
+    namedSource: string | undefined,
+  ): Promise<readonly string[]> {
+    if (namedSource === undefined) return this.currentAuthorizedSourceIds(load);
+    const normalizedName = namedSource.trim().toLocaleLowerCase();
+    if (normalizedName === "") return [];
+    const rows = await this.db(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly sourceId: string }>`
+          with base as (
+            select runs.id, runs.chat_id, runs.initiating_user_id, chats.company_id
+            from ai_runs runs
+            join chats on chats.id = runs.chat_id and chats.deleted_at is null
+            join client_companies companies
+              on companies.id = chats.company_id
+             and companies.recovery_deleted_at is null
+             and companies.purged_at is null
+            join client_company_memberships memberships
+              on memberships.company_id = chats.company_id
+             and memberships.user_id = runs.initiating_user_id
+             and memberships.revoked_at is null
+            join platform_users users
+              on users.id = runs.initiating_user_id
+             and users.recovery_deleted_at is null
+             and users.purged_at is null
+            where runs.id = ${load.aiRunId}
+              and runs.chat_id = ${load.chatId}
+              and runs.initiating_user_id = ${load.initiatingUserId}
+              and runs.finished_at is null
+              and runs.failed_at is null
+              and (
+                (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
+                or chats.shared_at is not null
+              )
+          )
+          select 'public:' || settings.source_id as "sourceId"
+          from base
+          join client_company_public_source_settings settings
+            on settings.client_company_id = base.company_id and settings.enabled
+          join public_sources sources on sources.source_id = settings.source_id
+          where lower(btrim(sources.display_name)) = ${normalizedName}
+          union
+          select 'publisher:' || selected.subscription_id::text as "sourceId"
+          from base
+          join chat_subscription_sources selected on selected.chat_id = base.chat_id
+           and selected.client_company_id = base.company_id
+          join client_subscription_accesses accesses
+            on accesses.id = selected.access_id
+           and accesses.client_company_id = selected.client_company_id
+           and accesses.subscription_id = selected.subscription_id
+           and accesses.state in ('active', 'ending', 'paused')
+          join client_employee_subscription_grants grants
+            on grants.access_id = accesses.id
+           and grants.client_company_id = accesses.client_company_id
+           and grants.user_id = base.initiating_user_id
+           and grants.revoked_at is null
+          join publisher_subscriptions subscriptions
+            on subscriptions.id = selected.subscription_id
+          join publisher_companies companies
+            on companies.id = subscriptions.publisher_company_id
+          where lower(btrim(companies.name)) = ${normalizedName}
+        `;
+      }),
+    );
+    return rows.map((row) => row.sourceId);
+  }
+
   private async assertLiveAuthorization(
     load: LoadedTurn,
     options: LiveAuthorizationOptions = {},
@@ -1469,8 +1532,8 @@ export class CanonicalWorkflowOperations {
       ...("assistantMessageId" in entry ? [entry.assistantMessageId] : []),
     ]);
     const memorySnapshots = options.memories ?? [];
-    const sourceCatalogIds = options.requireSourceCatalog
-      ? load.sourceCatalog.map((source) => source.sourceId)
+    const authorizedSourceIds = options.requireSourceCatalog
+      ? await this.currentAuthorizedSourceIds(load)
       : [];
     const currentEffectiveWebPolicy = (
       enabled: boolean,
@@ -1527,7 +1590,7 @@ export class CanonicalWorkflowOperations {
             from jsonb_array_elements(${JSON.stringify(memorySnapshots)}::jsonb)
           ), requested_catalog as (
             select value as source_id
-            from jsonb_array_elements_text(${JSON.stringify(sourceCatalogIds)}::jsonb)
+            from jsonb_array_elements_text(${JSON.stringify(authorizedSourceIds)}::jsonb)
           )
           select
             exists(select 1 from base) as "baseAllowed",
@@ -1624,8 +1687,7 @@ export class CanonicalWorkflowOperations {
         row.webAllowedDomains ?? null,
       );
       try {
-        const valid = recheckWebPolicy(load.webPolicy, current);
-        if (!valid.enabled) throw controlledRuntimeFailure("web_policy_revoked");
+        recheckWebPolicy(load.webPolicy, current);
       } catch {
         throw controlledRuntimeFailure("web_policy_revoked");
       }
@@ -1724,7 +1786,7 @@ export class CanonicalWorkflowOperations {
                      and documents.deleted_at is null
                     join brief_document_versions versions
                               on versions.brief_document_id = documents.id
-                              and versions.id::text = requested.source->>'documentVersionId'
+                              and versions.id::text = requested.source->>'versionId'
                               and versions.content_hash = requested.source->>'contentHash'
                               and requested.provenance->>'citationUrl' =
                                 ('/v1/issues/' || issues.id::text || '/documents/' || documents.id::text || '/content')
@@ -1733,7 +1795,7 @@ export class CanonicalWorkflowOperations {
                     select 1 from base
                     join public_source_documents documents
                               on documents.document_id = requested.source->>'documentId'
-                              and documents.document_id = requested.source->>'documentVersionId'
+                              and documents.document_id = requested.source->>'versionId'
                               and documents.content_hash = requested.source->>'contentHash'
                               and ('public:' || documents.source_id) = requested.source->>'sourceId'
                               and requested.provenance->>'citationUrl' = documents.canonical_url
@@ -1796,7 +1858,8 @@ export class CanonicalWorkflowOperations {
         row?.webAllowedDomains ?? null,
       );
       try {
-        return recheckWebPolicy(load.webPolicy, current).enabled;
+        recheckWebPolicy(load.webPolicy, current);
+        return true;
       } catch {
         return false;
       }
@@ -1816,14 +1879,6 @@ export class CanonicalWorkflowOperations {
   }
 
   async loadTurn(aiRunId: string): Promise<LoadedTurn> {
-    const execution = requireCurrentTaskCoordinates("load-turn");
-    const conversationRecentTurns = this.config.aiConversationRecentTurns;
-    const boundConversationInventory = (
-      run: Pick<LoadRow, "userMessage" | "locale" | "market"> & {
-        readonly currentDate: string;
-      },
-      entries: readonly ConversationEntry[],
-    ) => this.boundConversationInventory(run, entries);
     const now = this.now;
     return this.db(
       Effect.gen(function* () {
@@ -1837,7 +1892,7 @@ export class CanonicalWorkflowOperations {
             messages.content as "userMessage",
             runs.locale,
             runs.market,
-            encode(runs.citation_nonce, 'hex') as "citationNonceHex",
+            runs.citation_namespace as "citationNamespace",
             chats.memory_mode as "memoryMode",
             runs.web_search_enabled as "webRequested",
             runs.effective_web_policy as "webPolicy"
@@ -1870,138 +1925,8 @@ export class CanonicalWorkflowOperations {
         const run = rows[0];
         if (run === undefined) return yield* Effect.fail(new Error(`ai run not found: ${aiRunId}`));
         yield* markAiRunStarted(aiRunId);
-        const conversationRows = yield* sql<ConversationRow>`
-          with eligible as (
-            select
-              prior.id::text as "turnId",
-              prior.user_message_id::text as "userMessageId",
-              users.content as "userContent",
-              assistants.id::text as "assistantMessageId",
-              assistants.content as "assistantContent",
-              prior.error_code as "errorCode",
-              prior.retryable,
-              prior.created_at as "createdAt",
-              count(*) over ()::int as "totalCount"
-            from ai_runs prior
-            join chat_messages users on users.id = prior.user_message_id
-            left join chat_messages assistants on assistants.id = prior.assistant_message_id
-            where prior.chat_id = ${run.chatId}
-              and prior.id <> ${run.aiRunId}
-              and (prior.finished_at is not null or prior.failed_at is not null)
-          )
-          select "turnId", "userMessageId", "userContent", "assistantMessageId",
-                 "assistantContent", "errorCode", retryable, "totalCount"
-          from eligible
-          order by "createdAt" desc, "turnId" desc
-          limit ${conversationRecentTurns}
-        `;
-        const conversation = [...conversationRows].reverse().map(
-          (row): ConversationEntry =>
-            row.assistantMessageId !== null && row.assistantContent !== null
-              ? {
-                  turnId: row.turnId,
-                  userMessageId: row.userMessageId,
-                  userContent: row.userContent,
-                  assistantMessageId: row.assistantMessageId,
-                  assistantContent: stripHistoricalCitationTags(row.assistantContent),
-                }
-              : {
-                  turnId: row.turnId,
-                  userMessageId: row.userMessageId,
-                  userContent: row.userContent,
-                  errorCode: row.errorCode ?? "finalization_failed",
-                  retryable: row.retryable ?? false,
-                },
-        );
         const currentDate = now().toISOString().slice(0, 10);
-        const boundedConversation = boundConversationInventory(
-          { ...run, currentDate },
-          conversation,
-        );
-        const totalConversationCount = conversationRows[0]?.totalCount ?? 0;
-        const countBoundaryExcludedCount = Math.max(
-          0,
-          totalConversationCount - conversation.length,
-        );
-        const tokenBoundaryExcludedCount = conversation.length - boundedConversation.length;
-        yield* insertAiObservation({
-          runId: run.aiRunId,
-          chatId: run.chatId,
-          emittingTask: "load-turn",
-          loopIteration: execution.loopIteration,
-          attempt: execution.attempt,
-          observationKey: [
-            "load-turn",
-            execution.loopIteration,
-            execution.attempt,
-            "conversation_inventory_boundary",
-          ].join(":"),
-          kind: "conversation_inventory_boundary",
-          payload: {
-            consideredCount: totalConversationCount,
-            includedCount: boundedConversation.length,
-            countBoundaryExcludedCount,
-            tokenBoundaryExcludedCount,
-          },
-        });
-        const memoryRows = yield* sql<{
-          readonly memoryId: string;
-          readonly memoryRevisionId: string;
-          readonly kind: MemorySnapshot["kind"];
-          readonly content: string;
-        }>`
-          select id::text as "memoryId", head_revision_id::text as "memoryRevisionId", kind, content
-          from user_memories
-          where user_id = ${run.initiatingUserId}
-            and deleted_at is null
-            and provenance_only_at is null
-          order by created_at, id
-        `;
-        const sources = yield* sql<{
-          readonly sourceId: string;
-          readonly displayName: string;
-          readonly country: string;
-          readonly language: string;
-          readonly ingestionType: string;
-        }>`
-          select 'public:' || sources.source_id as "sourceId",
-                 sources.display_name as "displayName",
-                 coalesce(sources.country, '') as country,
-                 coalesce(sources.language, '') as language,
-                 sources.ingestion_method as "ingestionType"
-          from public_sources sources
-          join client_company_public_source_settings public_settings
-            on public_settings.source_id = sources.source_id
-           and public_settings.enabled
-          join chats public_chat
-            on public_chat.id = ${run.chatId}
-           and public_chat.company_id = public_settings.client_company_id
-          union all
-          select 'publisher:' || subscriptions.id::text as "sourceId",
-                 companies.name as "displayName", '' as country, '' as language,
-                 'publisher_subscription' as "ingestionType"
-          from chat_subscription_sources selected
-          join client_subscription_accesses accesses
-            on accesses.id = selected.access_id
-           and accesses.client_company_id = selected.client_company_id
-           and accesses.subscription_id = selected.subscription_id
-           and accesses.state in ('active', 'ending', 'paused')
-          join client_employee_subscription_grants grants
-            on grants.access_id = accesses.id
-           and grants.client_company_id = accesses.client_company_id
-           and grants.user_id = ${run.initiatingUserId}
-           and grants.revoked_at is null
-          join publisher_subscriptions subscriptions on subscriptions.id = accesses.subscription_id
-          join publisher_companies companies
-            on companies.id = subscriptions.publisher_company_id
-          where selected.chat_id = ${run.chatId}
-            and exists (
-              select 1 from issue_deliveries deliveries
-              where deliveries.access_id = accesses.id
-                and deliveries.client_company_id = selected.client_company_id
-            )
-          order by "sourceId"
-        `;
+        const webPolicy = EffectiveWebPolicySchema.parse(run.webPolicy);
         return {
           aiRunId: run.aiRunId,
           chatId: run.chatId,
@@ -2011,14 +1936,10 @@ export class CanonicalWorkflowOperations {
           locale: run.locale,
           market: run.market,
           currentDate,
-          citationNonce: [...Buffer.from(run.citationNonceHex, "hex")],
-          priorTerminalTurnCount: totalConversationCount,
-          conversation: boundedConversation,
-          memories: memoryRows,
+          citationNamespace: run.citationNamespace,
           memoryMode: run.memoryMode,
-          sourceCatalog: sources,
           webRequested: run.webRequested,
-          webPolicy: run.webPolicy,
+          webPolicy,
         };
       }),
     );
@@ -2040,7 +1961,7 @@ export class CanonicalWorkflowOperations {
         requestClass: "fast",
         model: this.config.aiFastModel,
         messages: [
-          { role: "system", content: ConversationResolverPrompt },
+          { role: "system", content: PlanTurnPrompt },
           {
             role: "user",
             content: JSON.stringify({
@@ -2054,9 +1975,9 @@ export class CanonicalWorkflowOperations {
         ],
         tools: [
           {
-            name: "emit_conversation_resolution",
-            description: "Emit the validated conversation resolution.",
-            parameters: z.toJSONSchema(ConversationResolutionProviderSchema),
+            name: "emit_plan_turn",
+            description: "Emit one strict plan-turn result.",
+            parameters: z.toJSONSchema(PlanTurnProviderSchema),
           },
         ],
         toolChoice: "auto",
@@ -2100,253 +2021,193 @@ export class CanonicalWorkflowOperations {
     );
   }
 
-  async resolveConversation(load: LoadedTurn): Promise<ConversationResolution> {
-    if (load.priorTerminalTurnCount === 0) {
-      const resolution = {
-        mode: "continue" as const,
-        retrievalQuestion: load.userMessage,
-        selectedTurnIds: [] as readonly string[],
-      };
-      await this.observe(load, "resolve-conversation", "conversation_resolution", resolution);
-      return resolution;
-    }
-    const taskId = "resolve-conversation";
+  private async currentPriorTurns(load: LoadedTurn): Promise<readonly ConversationEntry[]> {
+    const recentLimit = this.config.aiConversationRecentTurns;
+    const rows = await this.db(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<ConversationRow>`
+          with eligible as (
+            select prior.id::text as "turnId",
+                   prior.user_message_id::text as "userMessageId",
+                   users.content as "userContent",
+                   assistants.id::text as "assistantMessageId",
+                   assistants.content as "assistantContent",
+                   prior.error_code as "errorCode",
+                   prior.retryable,
+                   prior.created_at as "createdAt",
+                   count(*) over ()::int as "totalCount"
+            from ai_runs prior
+            join chat_messages users on users.id = prior.user_message_id
+            left join chat_messages assistants on assistants.id = prior.assistant_message_id
+            where prior.chat_id = ${load.chatId}
+              and prior.id <> ${load.aiRunId}
+              and (prior.finished_at is not null or prior.failed_at is not null)
+          )
+          select "turnId", "userMessageId", "userContent", "assistantMessageId",
+                 "assistantContent", "errorCode", retryable, "totalCount"
+          from eligible
+          order by "createdAt" desc, "turnId" desc
+            limit ${recentLimit}
+        `;
+      }),
+    );
+    const entries = [...rows].reverse().map(
+      (row): ConversationEntry =>
+        row.assistantMessageId !== null && row.assistantContent !== null
+          ? {
+              turnId: row.turnId,
+              userMessageId: row.userMessageId,
+              userContent: row.userContent,
+              assistantMessageId: row.assistantMessageId,
+              assistantContent: stripHistoricalCitationTags(row.assistantContent),
+            }
+          : {
+              turnId: row.turnId,
+              userMessageId: row.userMessageId,
+              userContent: row.userContent,
+              errorCode: row.errorCode ?? "finalization_failed",
+              retryable: row.retryable ?? false,
+            },
+    );
+    return this.boundConversationInventory(
+      {
+        userMessage: load.userMessage,
+        locale: load.locale,
+        market: load.market,
+        currentDate: load.currentDate,
+      },
+      entries,
+    );
+  }
+
+  async planTurn(load: LoadedTurn): Promise<PlanTurnResult> {
+    const taskId = "plan-turn";
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
-    const coordinates = taskCoordinates(taskId, "conversation_resolver", execution);
+    const coordinates = taskCoordinates(taskId, "plan_turn", execution);
+    const conversation = await this.currentPriorTurns(load);
     const output = await this.agents.structured({
       requestClass: "fast",
       model: this.config.aiFastModel,
-      system: ConversationResolverPrompt,
+      system: PlanTurnPrompt,
       user: JSON.stringify({
         currentMessage: load.userMessage,
-        entries: load.conversation,
+        entries: conversation,
         locale: load.locale,
         market: load.market,
         currentDate: load.currentDate,
       }),
-      outputToolName: "emit_conversation_resolution",
-      outputToolDescription: "Emit the validated conversation resolution.",
-      outputSchema: z.toJSONSchema(ConversationResolutionProviderSchema),
-      validate: (value) =>
-        ConversationResolutionSchema.parse(ConversationResolutionProviderSchema.parse(value)),
+      outputToolName: "emit_plan_turn",
+      outputToolDescription: "Emit exactly one strict plan-turn result.",
+      outputSchema: z.toJSONSchema(PlanTurnProviderSchema),
+      validate: (value) => PlanTurnSchema.parse(PlanTurnProviderSchema.parse(value)),
       requestedOutputTokens: Math.min(2048, this.config.aiFastOutputMaxTokens),
       reasoning: "medium",
       coordinates,
-      onBeforeRequest: async (request, requestCoordinates) => {
-        await this.assertLiveAuthorization(load, { conversation: load.conversation });
-        await this.recordConversationExposures(load, taskId, load.conversation, requestCoordinates);
-        const model = resolveRuntimeModel(request.model);
-        await this.observe(
-          load,
-          taskId,
-          "provider_request_attestation",
-          {
-            requestKind: "conversation_resolution",
-            modelId: request.model,
-            requestSha256Hex: requestSha256Hex(request),
-            inputTokens: model.countRequestTokens(request),
-            usableInputTokens: Math.min(
-              this.config.aiFastInputMaxTokens,
-              model.contextWindow - request.requestedOutputTokens,
-            ),
-            requestedOutputTokens: request.requestedOutputTokens,
-            currentUserMessageId: load.userMessageId,
-            currentDate: load.currentDate,
-            conversation: load.conversation.map((entry) =>
-              "assistantMessageId" in entry
-                ? {
-                    kind: "complete",
-                    turnId: entry.turnId,
-                    userMessageId: entry.userMessageId,
-                    assistantMessageId: entry.assistantMessageId,
-                  }
-                : {
-                    kind: "failed",
-                    turnId: entry.turnId,
-                    userMessageId: entry.userMessageId,
-                    errorCode: entry.errorCode,
-                    retryable: entry.retryable,
-                  },
-            ),
-            terminalUsageCoordinate: {
-              taskId,
-              loopIteration: requestCoordinates.loopIteration,
-              attempt: requestCoordinates.attempt,
-              providerRequestIndex: requestCoordinates.providerRequestIndex,
-            },
-          },
-          requestCoordinates,
-        );
-      },
-    });
-    const resolution = validateConversationResolution(
-      output,
-      load.conversation.map((entry) => entry.turnId),
-    );
-    await this.observe(load, taskId, "conversation_resolution", resolution, coordinates);
-    return resolution;
-  }
-
-  async planExecution(
-    load: LoadedTurn,
-    resolution: Extract<ConversationResolution, { mode: "continue" }>,
-  ) {
-    const taskId = "plan-execution";
-    const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
-    const coordinates = taskCoordinates(taskId, "execution_planner", execution);
-    const exactOutputContract = [
-      'The only valid atomic output is exactly {"mode":"single","reason":"non-empty"}.',
-      'The only valid fanout output is exactly {"mode":"fanout","reason":"non-empty","topics":[{"question":"first non-empty question","relevantTurnIds":[]},{"question":"second non-empty question","relevantTurnIds":[]}]} with exactly two or three topics.',
-      "Do not add topic IDs, route names, markdown, or any field not shown.",
-      execution.attempt > 1
-        ? `A prior schema attempt failed; this is bounded attempt ${execution.attempt}.`
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-    const selectedEntries = load.conversation.filter((entry) =>
-      resolution.selectedTurnIds.includes(entry.turnId),
-    );
-    const output = await this.agents.structured({
-      requestClass: "fast",
-      model: this.config.aiFastModel,
-      system: `${ExecutionPlannerPrompt}\n\n${exactOutputContract}`,
-      user: JSON.stringify({
-        originalMessage: load.userMessage,
-        resolvedQuestion: resolution.retrievalQuestion,
-        selectedEntries,
-        locale: load.locale,
-        market: load.market,
-        webRequested: load.webRequested,
-        maxFanoutTopicCount: this.config.aiFanoutMaxTopics,
-      }),
-      outputToolName: "emit_execution_plan",
-      outputToolDescription:
-        "Emit exactly one schema-valid atomic single plan or a fanout plan with exactly two or three topics.",
-      outputSchema: z.toJSONSchema(ExecutionPlanProviderSchema),
-      validate: (value) => ExecutionPlanSchema.parse(ExecutionPlanProviderSchema.parse(value)),
-      requestedOutputTokens: Math.min(1536, this.config.aiFastOutputMaxTokens),
-      reasoning: "medium",
-      coordinates,
+      sourceExposureProofs: this.conversationExposureProofMarkers(load, conversation, true),
       onBeforeRequest: async (_request, requestCoordinates) => {
-        await this.assertLiveAuthorization(load, {
-          conversation: selectedEntries,
-          requireWebPolicy: load.webRequested,
-        });
-        await this.recordConversationExposures(load, taskId, selectedEntries, requestCoordinates);
+        await this.assertLiveAuthorization(load, { conversation });
+        await this.recordConversationExposures(load, taskId, conversation, requestCoordinates);
       },
     });
-    const normalized = validateAndNormalizeExecutionPlan(
+    const result = validatePlanTurn(
       output,
-      resolution.selectedTurnIds,
+      conversation.map((entry) => entry.turnId),
       this.config.aiFanoutMaxTopics,
     );
-    await this.observe(load, taskId, "execution_plan", normalized, coordinates);
-    return output;
+    await this.observe(load, taskId, "turn_plan", result, coordinates);
+    return result;
   }
 
-  normalizePlan(
-    value: unknown,
-    resolution: Extract<ConversationResolution, { mode: "continue" }>,
-  ): NormalizedExecutionPlan {
-    return validateAndNormalizeExecutionPlan(
-      value,
-      resolution.selectedTurnIds,
-      this.config.aiFanoutMaxTopics,
+  private async loadActiveMemories(load: LoadedTurn): Promise<readonly MemorySnapshot[]> {
+    const rows = await this.db(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<MemorySnapshot>`
+          select memories.id::text as "memoryId",
+                 memories.head_revision_id::text as "memoryRevisionId",
+                 memories.kind,
+                 memories.content
+          from user_memories memories
+          join ai_runs runs on runs.id = ${load.aiRunId}
+          join chats on chats.id = runs.chat_id and chats.deleted_at is null
+          join client_company_memberships memberships
+            on memberships.company_id = chats.company_id
+           and memberships.user_id = runs.initiating_user_id
+           and memberships.revoked_at is null
+          where memories.user_id = runs.initiating_user_id
+            and memories.deleted_at is null
+            and memories.provenance_only_at is null
+          order by memories.created_at, memories.id
+        `;
+      }),
     );
+    return rows;
   }
 
   async extractMemory(load: LoadedTurn): Promise<MemoryExtractionArtifact> {
     const taskId = "memory-extract";
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
     const coordinates = taskCoordinates(taskId, "memory_extractor", execution);
-    const extractionSchema = z.toJSONSchema(MemoryProposalOutputSchema);
-    const extractionUser = JSON.stringify({
-      currentUserMessage: load.userMessage,
-      activeMemories: load.memories,
-    });
-    const direct =
-      load.memories.length <= this.config.aiMemoryDirectMaxItems &&
-      this.fastStructuredRequestFits(
-        MemoryExtractorPrompt,
-        extractionUser,
+    const activeMemories = await this.loadActiveMemories(load);
+    const visibleMemories = new Map<string, MemorySnapshot>();
+    const discoveredMemories = new Set<string>();
+    const proposals = await this.agents.toolLoop({
+      requestClass: "fast",
+      model: this.config.aiFastModel,
+      system: MemoryExtractorPrompt,
+      user: JSON.stringify({
+        currentUserMessage: load.userMessage,
+        activeMemoryCount: activeMemories.length,
+        toolBounds: {
+          maximumTurns: this.config.aiRetrievalMaxTurns,
+          maximumResultItems: this.config.aiMemoryToolResultMaxItems,
+        },
+      }),
+      maximumTurns: this.config.aiRetrievalMaxTurns,
+      requestedOutputTokens: this.config.aiFastOutputMaxTokens,
+      reasoning: "medium",
+      coordinates: { taskId, attempt: execution.attempt, agentRole: "memory_extractor" },
+      sourceExposureProofs: this.conversationExposureProofMarkers(load, [], true),
+      onBeforeRequest: async (_request, requestCoordinates) => {
+        const exposed = [...visibleMemories.values()];
+        await this.assertLiveAuthorization(load, { memories: exposed });
+        await this.recordConversationExposures(load, taskId, [], requestCoordinates);
+        await this.recordMemoryExposures(
+          load.aiRunId,
+          taskId,
+          exposed,
+          "memory_tool_result",
+          requestCoordinates,
+        );
+      },
+      terminalToolName: "emit_memory_proposals",
+      validateTerminal: (value) => MemoryProposalOutputSchema.parse(value).proposals,
+      tools: this.memoryTools(
+        load,
+        activeMemories,
         "emit_memory_proposals",
-        "Emit zero or more private memory proposals.",
-        extractionSchema,
-        this.config.aiFastOutputMaxTokens,
-      );
-    let proposals: readonly MemoryProposal[];
-    if (direct) {
-      const output = await this.agents.structured({
-        requestClass: "fast",
-        model: this.config.aiFastModel,
-        system: MemoryExtractorPrompt,
-        user: extractionUser,
-        outputToolName: "emit_memory_proposals",
-        outputToolDescription: "Emit zero or more private memory proposals.",
-        outputSchema: extractionSchema,
-        validate: zodValidator(MemoryProposalOutputSchema),
-        requestedOutputTokens: this.config.aiFastOutputMaxTokens,
-        reasoning: "medium",
-        coordinates,
-        onBeforeRequest: async (_request, requestCoordinates) => {
-          await this.assertLiveAuthorization(load, { memories: load.memories });
-          await this.recordConversationExposures(load, taskId, [], requestCoordinates);
-          await this.recordMemoryExposures(
-            load.aiRunId,
-            taskId,
-            load.memories,
-            "memory_direct_inventory",
-            requestCoordinates,
-          );
+        z.toJSONSchema(MemoryProposalOutputSchema),
+        (memories) => {
+          for (const memory of memories) {
+            visibleMemories.set(`${memory.memoryId}:${memory.memoryRevisionId}`, memory);
+          }
         },
-      });
-      proposals = output.proposals;
-    } else {
-      const visibleMemories = new Map<string, MemorySnapshot>();
-      proposals = await this.agents.toolLoop({
-        requestClass: "fast",
-        model: this.config.aiFastModel,
-        system: MemoryExtractorPrompt,
-        user: JSON.stringify({
-          currentUserMessage: load.userMessage,
-          activeMemoryCount: load.memories.length,
-          toolBounds: {
-            maximumTurns: this.config.aiRetrievalMaxTurns,
-            maximumResultItems: this.config.aiMemoryToolResultMaxItems,
-          },
-        }),
-        maximumTurns: this.config.aiRetrievalMaxTurns,
-        requestedOutputTokens: this.config.aiFastOutputMaxTokens,
-        reasoning: "medium",
-        coordinates: { taskId, attempt: execution.attempt, agentRole: "memory_extractor" },
-        onBeforeRequest: async (_request, requestCoordinates) => {
-          const exposed = [...visibleMemories.values()];
-          await this.assertLiveAuthorization(load, { memories: exposed });
-          await this.recordConversationExposures(load, taskId, [], requestCoordinates);
-          await this.recordMemoryExposures(
-            load.aiRunId,
-            taskId,
-            exposed,
-            "memory_tool_result",
-            requestCoordinates,
-          );
-        },
-        terminalToolName: "emit_memory_proposals",
-        validateTerminal: (value) => MemoryProposalOutputSchema.parse(value).proposals,
-        tools: this.memoryTools(
-          load,
-          "emit_memory_proposals",
-          z.toJSONSchema(MemoryProposalOutputSchema),
-          (memories) => {
-            for (const memory of memories) {
-              visibleMemories.set(`${memory.memoryId}:${memory.memoryRevisionId}`, memory);
-            }
-          },
-        ),
-      });
+        discoveredMemories,
+      ),
+    });
+    const liveMemories = await this.liveMemorySnapshots(load, activeMemories);
+    const liveMemoryById = new Map(liveMemories.map((memory) => [memory.memoryId, memory]));
+    for (const discovered of discoveredMemories) {
+      const separator = discovered.indexOf(":");
+      const memoryId = separator < 0 ? discovered : discovered.slice(0, separator);
+      const revisionId = separator < 0 ? "" : discovered.slice(separator + 1);
+      const live = liveMemoryById.get(memoryId);
+      if (live === undefined || live.memoryRevisionId !== revisionId) {
+        throw controlledRuntimeFailure("source_access_revoked");
+      }
     }
-    const result = validateMemoryProposals(proposals, load.memories);
+    const result = validateMemoryProposals(proposals, liveMemories, discoveredMemories);
     const extractionSha256Hex = memoryExtractionSha256Hex(result);
     const observationKey = `${taskId}:${coordinates.loopIteration}:${coordinates.attempt}:memory_extraction_result:result`;
     await this.observe(
@@ -2453,31 +2314,41 @@ export class CanonicalWorkflowOperations {
 
   private memoryTools(
     load: LoadedTurn,
+    activeMemories: readonly MemorySnapshot[],
     terminalName: string,
     terminalSchema: Readonly<Record<string, unknown>>,
     onVisible: (memories: readonly MemorySnapshot[]) => void,
+    discovered: Set<string>,
   ) {
     const parseSearchMemoriesArguments = (value: unknown) =>
       z
-        .object({ query: z.string(), cursor: z.number().int().min(0).optional() })
+        .object({ query: z.string().trim().min(1), cursor: z.number().int().min(0).optional() })
         .strict()
         .parse(value);
     const parseInspectMemoryArguments = (value: unknown) =>
-      z.object({ memoryId: z.string() }).strict().parse(value);
+      z
+        .object({ memoryId: z.string().trim().min(1) })
+        .strict()
+        .parse(value);
     return [
       {
         definition: {
           name: "search_memories",
-          description: "Search the complete active memory inventory with a cursor.",
+          description: "Search the bounded authorized memory scope with a cursor.",
           parameters: z.toJSONSchema(
-            z.object({ query: z.string(), cursor: z.number().int().min(0).optional() }).strict(),
+            z
+              .object({
+                query: z.string().trim().min(1),
+                cursor: z.number().int().min(0).optional(),
+              })
+              .strict(),
           ),
         },
         parseArguments: parseSearchMemoriesArguments,
         execute: async (args: Readonly<Record<string, unknown>>) => {
           const parsed = parseSearchMemoriesArguments(args);
-          const terms = parsed.query.toLocaleLowerCase();
-          const matches = await this.liveMemorySnapshots(load, load.memories, { terms });
+          const terms = parsed.query.trim().toLocaleLowerCase();
+          const matches = await this.liveMemorySnapshots(load, activeMemories, { terms });
           const offset = parsed.cursor ?? 0;
           const items: MemorySnapshot[] = [];
           for (
@@ -2495,6 +2366,8 @@ export class CanonicalWorkflowOperations {
             if (tokens > this.config.aiFastOutputMaxTokens) break;
             items.push(memory);
           }
+          for (const memory of items)
+            discovered.add(`${memory.memoryId}:${memory.memoryRevisionId}`);
           onVisible(items);
           const next = offset + items.length;
           return {
@@ -2503,10 +2376,19 @@ export class CanonicalWorkflowOperations {
             truncated: next < matches.length,
             cursor: next >= matches.length ? null : next,
             scope: {
-              kind: "complete_active_memory_inventory",
+              kind: "bounded_authorized_memory_scope",
               offset,
               maximumItems: this.config.aiMemoryToolResultMaxItems,
             },
+            __briefSourceExposures: items.map((memory) =>
+              providerVisibleExposureMarker({
+                sourceKind: "memory",
+                logicalSourceIdentity: memoryEvidenceIdentity(memory.memoryId),
+                contentItemIdentity: memory.memoryRevisionId,
+                stage: "memory_tool_result",
+                visibleTokenCount: this.visibleTokenCount(memory.content, this.config.aiFastModel),
+              }),
+            ),
             ...(items.length === 0 && next < matches.length ? { nextItemTooLarge: true } : {}),
           };
         },
@@ -2515,22 +2397,46 @@ export class CanonicalWorkflowOperations {
         definition: {
           name: "inspect_memory",
           description: "Inspect one complete active memory snapshot.",
-          parameters: z.toJSONSchema(z.object({ memoryId: z.string() }).strict()),
+          parameters: z.toJSONSchema(z.object({ memoryId: z.string().trim().min(1) }).strict()),
         },
         parseArguments: parseInspectMemoryArguments,
         execute: async (args: Readonly<Record<string, unknown>>) => {
           const { memoryId } = parseInspectMemoryArguments(args);
-          const memory = (await this.liveMemorySnapshots(load, load.memories, { memoryId }))[0];
+          const memory = activeMemories.find((candidate) => candidate.memoryId === memoryId);
+          if (
+            memory === undefined ||
+            ![...discovered].some((key) => key.startsWith(`${memoryId}:`))
+          ) {
+            return { found: false, complete: true };
+          }
+          const live = (await this.liveMemorySnapshots(load, activeMemories, { memoryId }))[0];
+          if (live === undefined || live.memoryRevisionId !== memory.memoryRevisionId) {
+            return { found: false, complete: true };
+          }
           if (memory === undefined) return { found: false, complete: true };
           const tokens = this.visibleTokenCount(
-            JSON.stringify({ found: true, complete: true, memory }),
+            JSON.stringify({ found: true, complete: true, memory: live }),
             this.config.aiFastModel,
           );
           if (tokens > this.config.aiFastOutputMaxTokens) {
             return { found: true, complete: false, itemTooLarge: true, memoryId };
           }
-          onVisible([memory]);
-          return { found: true, complete: true, memory };
+          discovered.add(`${live.memoryId}:${live.memoryRevisionId}`);
+          onVisible([live]);
+          return {
+            found: true,
+            complete: true,
+            memory: live,
+            __briefSourceExposures: [
+              providerVisibleExposureMarker({
+                sourceKind: "memory",
+                logicalSourceIdentity: memoryEvidenceIdentity(live.memoryId),
+                contentItemIdentity: live.memoryRevisionId,
+                stage: "memory_tool_result",
+                visibleTokenCount: this.visibleTokenCount(live.content, this.config.aiFastModel),
+              }),
+            ],
+          };
         },
       },
       {
@@ -2594,19 +2500,14 @@ export class CanonicalWorkflowOperations {
     } = {},
   ): Promise<void> {
     const execution = ownedProviderExecutionCoordinates(taskId, coordinates);
-    const messages = [
-      ...(options.includeCurrentUser === false
-        ? []
-        : [{ messageId: load.userMessageId, content: load.userMessage }]),
-      ...entries.flatMap((entry) => [
-        { messageId: entry.userMessageId, content: entry.userContent },
-        ...("assistantMessageId" in entry
-          ? [{ messageId: entry.assistantMessageId, content: entry.assistantContent }]
-          : []),
-      ]),
-    ];
+    const messages = this.conversationExposureProofMarkers(
+      load,
+      entries,
+      options.includeCurrentUser !== false,
+      options.modelId,
+    );
     await Promise.all(
-      messages.map(({ messageId, content }) =>
+      messages.map((marker) =>
         this.db(
           insertAiSourceExposure({
             runId: load.aiRunId,
@@ -2616,17 +2517,90 @@ export class CanonicalWorkflowOperations {
             providerRequestIndex: execution.providerRequestIndex,
             providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
             sourceKind: "chat_message",
-            logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
-            contentItemIdentity: messageId,
-            exposureStage: "provider_input",
-            visibleTokenCount: this.visibleTokenCount(
-              content,
-              options.modelId ?? this.config.aiFastModel,
-            ),
+            logicalSourceIdentity: marker.logicalSourceIdentity,
+            contentItemIdentity: marker.contentItemIdentity,
+            exposureStage: marker.exposureStage,
+            visibleTokenCount: marker.visibleTokenCount,
           }),
         ),
       ),
     );
+  }
+
+  private conversationExposureProofMarkers(
+    load: LoadedTurn,
+    entries: readonly ConversationEntry[],
+    includeCurrentUser: boolean,
+    modelId: string = this.config.aiFastModel,
+  ): readonly CodeOwnedSourceExposureProof[] {
+    const messages = [
+      ...(includeCurrentUser ? [{ messageId: load.userMessageId, content: load.userMessage }] : []),
+      ...entries.flatMap((entry) => [
+        { messageId: entry.userMessageId, content: entry.userContent },
+        ...("assistantMessageId" in entry
+          ? [{ messageId: entry.assistantMessageId, content: entry.assistantContent }]
+          : []),
+      ]),
+    ];
+    return messages.map(({ messageId, content }) =>
+      codeOwnedExposureProof(
+        {
+          sourceKind: "chat_message",
+          logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
+          contentItemIdentity: messageId,
+          stage: "provider_input",
+          visibleTokenCount: this.visibleTokenCount(content, modelId),
+        },
+        content,
+      ),
+    );
+  }
+
+  private contextExposureProofMarkers(
+    load: LoadedTurn,
+    context: ContextState,
+  ): readonly SourceExposureProof[] {
+    return [
+      ...this.conversationExposureProofMarkers(
+        load,
+        context.selectedConversation,
+        true,
+        this.config.aiMainModel,
+      ),
+      ...context.candidates.map((candidate) => {
+        const logicalSourceIdentity =
+          candidate.kind === "document"
+            ? documentCandidateIdentity(candidate)
+            : candidate.kind === "chat_message"
+              ? chatMessageEvidenceIdentity(candidate.messageId)
+              : candidate.kind === "memory"
+                ? memoryEvidenceIdentity(candidate.memoryId)
+                : webEvidenceIdentity(candidate.url, candidate.quote);
+        const contentItemIdentity =
+          candidate.kind === "document"
+            ? documentContentItemIdentity(
+                logicalSourceIdentity,
+                candidate.versionId,
+                sha256Base64Url(JSON.stringify(candidate.ranges)),
+              )
+            : candidate.kind === "chat_message"
+              ? candidate.messageId
+              : candidate.kind === "memory"
+                ? candidate.memoryRevisionId
+                : `${candidate.url}:${candidate.quoteHash}`;
+        const text = candidateText(candidate);
+        return codeOwnedExposureProof(
+          {
+            sourceKind: candidate.kind,
+            logicalSourceIdentity,
+            contentItemIdentity,
+            stage: "answer_serialized",
+            visibleTokenCount: this.visibleTokenCount(text, this.config.aiMainModel),
+          },
+          text,
+        );
+      }),
+    ];
   }
 
   private async assertLiveInternalReferences(
@@ -2683,8 +2657,8 @@ export class CanonicalWorkflowOperations {
                          select 1 from base
                          join public_source_documents documents
                            on documents.document_id = requested.reference->>'documentId'
-                          and documents.document_id = requested.reference->>'documentVersionId'
-                         and requested.reference->'source'->>'sourceId' = 'public:' || documents.source_id
+                          and documents.document_id = requested.reference->>'versionId'
+                          and requested.reference->'source'->>'sourceId' = 'public:' || documents.source_id
                          join client_company_public_source_settings settings
                            on settings.client_company_id = base.company_id
                           and settings.source_id = documents.source_id
@@ -2726,7 +2700,8 @@ export class CanonicalWorkflowOperations {
                           and documents.deleted_at is null
                          join brief_document_versions versions
                            on versions.brief_document_id = documents.id
-                          and versions.id::text = requested.reference->>'documentVersionId'
+                          and versions.id::text = requested.reference->>'versionId'
+                          and versions.publisher_extraction_id::text = requested.reference->>'publisherExtractionId'
                        ))
                      )
                      else true
@@ -2813,7 +2788,7 @@ export class CanonicalWorkflowOperations {
           candidate.kind === "document"
             ? documentContentItemIdentity(
                 logicalSourceIdentity,
-                candidate.documentVersionId,
+                candidate.versionId,
                 sha256Base64Url(JSON.stringify(candidate.ranges)),
               )
             : candidate.kind === "chat_message"
@@ -2845,8 +2820,11 @@ export class CanonicalWorkflowOperations {
                   documentReconstruction: {
                     sourceId: candidate.sourceId,
                     documentId: candidate.documentId,
-                    documentVersionId: candidate.documentVersionId,
+                    versionId: candidate.versionId,
                     contentHash: candidate.contentHash,
+                    ...(candidate.publisherExtractionId === undefined
+                      ? {}
+                      : { publisherExtractionId: candidate.publisherExtractionId }),
                     ranges: candidate.ranges,
                   },
                 }
@@ -2967,7 +2945,8 @@ export class CanonicalWorkflowOperations {
       });
       return { status: "disabled", reason: "memory_mode_disabled" };
     }
-    if (load.memories.length === 0) {
+    const activeMemories = await this.loadActiveMemories(load);
+    if (activeMemories.length === 0) {
       await this.observe(load, taskId, "retrieval_manifest", {
         selectorRole: "memory",
         references: [],
@@ -2975,75 +2954,15 @@ export class CanonicalWorkflowOperations {
       return { status: "enabled", entries: [] };
     }
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
-    const coordinates = taskCoordinates(taskId, "memory_selector", execution);
-    const selectionSchema = z.toJSONSchema(MemoryManifestOutputSchema);
-    const selectionUser = JSON.stringify({ question, memories: load.memories });
-    if (
-      load.memories.length <= this.config.aiMemoryDirectMaxItems &&
-      this.fastStructuredRequestFits(
-        MemorySelectorPrompt,
-        selectionUser,
-        "emit_memory_manifest",
-        "Emit selected exact memory snapshot references.",
-        selectionSchema,
-        Math.min(4096, this.config.aiFastOutputMaxTokens),
-      )
-    ) {
-      const output = await this.agents.structured({
-        requestClass: "fast",
-        model: this.config.aiFastModel,
-        system: MemorySelectorPrompt,
-        user: selectionUser,
-        outputToolName: "emit_memory_manifest",
-        outputToolDescription: "Emit selected exact memory snapshot references.",
-        outputSchema: selectionSchema,
-        validate: zodValidator(MemoryManifestOutputSchema),
-        requestedOutputTokens: Math.min(4096, this.config.aiFastOutputMaxTokens),
-        reasoning: "medium",
-        coordinates,
-        onBeforeRequest: async (_request, requestCoordinates) => {
-          await this.assertLiveAuthorization(load, { memories: load.memories });
-          await this.recordConversationExposures(load, taskId, [], requestCoordinates, {
-            includeCurrentUser: false,
-          });
-          await this.recordMemoryExposures(
-            load.aiRunId,
-            taskId,
-            load.memories,
-            "memory_direct_inventory",
-            requestCoordinates,
-          );
-        },
-      });
-      const allowed = new Set(
-        load.memories.map((memory) => `${memory.memoryId}:${memory.memoryRevisionId}`),
-      );
-      const seen = new Set<string>();
-      for (const entry of output.entries) {
-        const identity = `${entry.memoryId}:${entry.memoryRevisionId}`;
-        if (!allowed.has(identity)) {
-          throw new Error("memory selector invented an unavailable memory revision");
-        }
-        if (seen.has(identity)) throw new Error("memory selector emitted a duplicate reference");
-        seen.add(identity);
-      }
-      await this.observe(
-        load,
-        taskId,
-        "retrieval_manifest",
-        { selectorRole: "memory", references: output.entries },
-        coordinates,
-      );
-      return { status: "enabled", entries: output.entries };
-    }
     const visibleMemories = new Map<string, MemorySnapshot>();
+    const discoveredMemories = new Set<string>();
     const entries = await this.agents.toolLoop({
       requestClass: "fast",
       model: this.config.aiFastModel,
       system: MemorySelectorPrompt,
       user: JSON.stringify({
         question,
-        activeMemoryCount: load.memories.length,
+        activeMemoryCount: activeMemories.length,
         toolBounds: {
           maximumTurns: this.config.aiRetrievalMaxTurns,
           maximumResultItems: this.config.aiMemoryToolResultMaxItems,
@@ -3051,6 +2970,7 @@ export class CanonicalWorkflowOperations {
       }),
       tools: this.memoryTools(
         load,
+        activeMemories,
         "emit_memory_manifest",
         z.toJSONSchema(MemoryManifestOutputSchema),
         (memories) => {
@@ -3058,6 +2978,7 @@ export class CanonicalWorkflowOperations {
             visibleMemories.set(`${memory.memoryId}:${memory.memoryRevisionId}`, memory);
           }
         },
+        discoveredMemories,
       ),
       terminalToolName: "emit_memory_manifest",
       validateTerminal: (value) => MemoryManifestOutputSchema.parse(value).entries,
@@ -3065,6 +2986,7 @@ export class CanonicalWorkflowOperations {
       requestedOutputTokens: this.config.aiFastOutputMaxTokens,
       reasoning: "medium",
       coordinates: { taskId, attempt: execution.attempt, agentRole: "memory_selector" },
+      sourceExposureProofs: [],
       onBeforeRequest: async (_request, requestCoordinates) => {
         const exposed = [...visibleMemories.values()];
         await this.assertLiveAuthorization(load, { memories: exposed });
@@ -3081,16 +3003,24 @@ export class CanonicalWorkflowOperations {
       },
     });
     const allowed = new Set(
-      load.memories.map((memory) => `${memory.memoryId}:${memory.memoryRevisionId}`),
+      activeMemories.map((memory) => `${memory.memoryId}:${memory.memoryRevisionId}`),
     );
     const seen = new Set<string>();
     for (const entry of entries) {
       const identity = `${entry.memoryId}:${entry.memoryRevisionId}`;
-      if (!allowed.has(identity)) {
+      if (!allowed.has(identity) || !discoveredMemories.has(identity)) {
         throw new Error("memory selector invented an unavailable memory revision");
       }
       if (seen.has(identity)) throw new Error("memory selector emitted a duplicate reference");
       seen.add(identity);
+    }
+    const liveMemories = new Set(
+      (await this.loadActiveMemories(load)).map(
+        (memory) => memory.memoryId + ":" + memory.memoryRevisionId,
+      ),
+    );
+    if (entries.some((entry) => !liveMemories.has(entry.memoryId + ":" + entry.memoryRevisionId))) {
+      throw controlledRuntimeFailure("source_access_revoked");
     }
     await this.observe(
       load,
@@ -3106,9 +3036,12 @@ export class CanonicalWorkflowOperations {
     load: LoadedTurn,
     question: string,
     taskId: string,
-    selectedTurnIds: readonly string[] = load.conversation.map((entry) => entry.turnId),
+    selectedTurnIds: readonly string[] = [],
   ): Promise<readonly InternalReference[]> {
-    const selectedConversation = this.selectConversation(load, selectedTurnIds);
+    const selectedConversation = this.selectConversation(
+      await this.currentPriorTurns(load),
+      selectedTurnIds,
+    );
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
     const internalMaximumTurns = Math.max(this.config.aiRetrievalMaxTurns, 12);
     let searches = 0;
@@ -3121,12 +3054,51 @@ export class CanonicalWorkflowOperations {
     // fail closed if its mutable current pointer drifts underneath it.
     const boundPublisherDocumentVersions = new Map<string, string>();
     const providerExposures = new Map<string, InternalProviderExposure>();
+    const namedSourceLookups = new Map<string, NamedSourceLookup>();
     const inspectedDocumentRanges = new Set<string>();
     const completedInspectionKeys = new Set<string>();
     const completedInspectionCandidateKeys = new Set<string>();
     const pendingInspectionReferences = new Map<string, InternalReference>();
     let terminalRecoveryReady = false;
     let protocolErrorReturned = false;
+    const bindModelReference = (
+      reference:
+        | z.infer<typeof InternalReferenceSchema>
+        | z.infer<typeof InspectInternalReferenceSchema>,
+    ): InternalReference => {
+      if (reference.kind === "chat_message") return reference;
+      const candidates = [...providerExposures.values()]
+        .map((exposure) => exposure.reference)
+        .filter(
+          (candidate): candidate is Extract<InternalReference, { kind: "document" }> =>
+            candidate.kind === "document" && candidate.documentId === reference.documentId,
+        );
+      const identities = new Map(
+        candidates.map((candidate) => [documentDiscoveryKey(candidate), candidate]),
+      );
+      if (identities.size !== 1) {
+        throw new Error(
+          "internal manifest references undiscovered document (logical document ID is unknown or ambiguous)",
+        );
+      }
+      const candidate = [...identities.values()].sort(
+        (left, right) => Number(right.ranges !== undefined) - Number(left.ranges !== undefined),
+      )[0]!;
+      const requestedRanges =
+        "range" in reference
+          ? reference.range === undefined
+            ? undefined
+            : [reference.range]
+          : "ranges" in reference
+            ? reference.ranges
+            : undefined;
+      BoundInternalReferenceSchema.parse(candidate);
+      return {
+        ...candidate,
+        ...(requestedRanges === undefined ? {} : { ranges: requestedRanges }),
+        purpose: reference.purpose,
+      };
+    };
     const exactRecoveryReferences = (): readonly InternalReference[] => {
       const references = new Map<string, InternalReference>();
       for (const exposure of providerExposures.values()) {
@@ -3148,25 +3120,24 @@ export class CanonicalWorkflowOperations {
       }
       return [...references.values()];
     };
-    const inspectionRequirementKey = (reference: InternalReference): string =>
-      reference.kind === "chat_message"
-        ? `chat_message:${reference.messageId}`
-        : reference.ranges === undefined
-          ? documentDiscoveryKey(reference)
-          : documentReferenceSelectionKey(reference);
-    const inspectionComplete = (reference: InternalReference): boolean =>
-      reference.kind === "chat_message"
-        ? completedInspectionKeys.has(`chat_message:${reference.messageId}`)
-        : reference.ranges === undefined
-          ? completedInspectionCandidateKeys.has(documentDiscoveryKey(reference))
-          : completedInspectionKeys.has(documentReferenceSelectionKey(reference));
+    const inspectionComplete = (reference: InternalReference): boolean => {
+      if (reference.kind === "chat_message") {
+        return completedInspectionKeys.has(`chat_message:${reference.messageId}`);
+      }
+      if (reference.ranges === undefined) {
+        return completedInspectionCandidateKeys.has(documentDiscoveryKey(reference));
+      }
+      return reference.ranges.every((range) =>
+        inspectedDocumentRanges.has(documentReferenceRangeKey(reference, range)),
+      );
+    };
     const parseSearchInternalArguments = (value: unknown) =>
       z
         .object({ query: InternalQuerySchema, cursor: z.number().int().min(0).optional() })
         .strict()
         .parse(value);
     const parseInspectInternalArguments = (value: unknown) =>
-      z.object({ reference: InternalReferenceSchema }).strict().parse(value);
+      z.object({ reference: InspectInternalReferenceSchema }).strict().parse(value);
     const terminalSchema = z.toJSONSchema(InternalManifestOutputSchema);
     const terminalPhaseReady = (): boolean =>
       !searchProtocol.hasPendingCursor() &&
@@ -3174,14 +3145,13 @@ export class CanonicalWorkflowOperations {
         (protocolErrorReturned && providerExposures.size > 0) ||
         (searchProtocol.ordinarySearchTurnsExhausted() &&
           discoveredDocuments.size + discoveredMessages.size === 0));
-    const references = await this.agents.toolLoop({
+    const modelReferences = await this.agents.toolLoop({
       requestClass: "fast",
       model: this.config.aiFastModel,
       system: InternalRetrievalPrompt,
       user: JSON.stringify({
         question,
         selectedConversation,
-        sourceCatalog: load.sourceCatalog,
         locale: load.locale,
         market: load.market,
         currentDate: load.currentDate,
@@ -3196,6 +3166,11 @@ export class CanonicalWorkflowOperations {
       requestedOutputTokens: this.config.aiFastOutputMaxTokens,
       reasoning: "medium",
       coordinates: { taskId, attempt: execution.attempt, agentRole: "internal_retrieval" },
+      sourceExposureProofs: this.conversationExposureProofMarkers(
+        load,
+        selectedConversation,
+        false,
+      ),
       onBeforeRequest: async (_request, requestCoordinates) => {
         const exposures = [...providerExposures.values()];
         await this.assertLiveAuthorization(load, {
@@ -3239,60 +3214,32 @@ export class CanonicalWorkflowOperations {
           // Reuse only immutable references already exposed by successful
           // search/inspection results; ordinary empty manifests remain empty.
           entries = InternalManifestOutputSchema.parse({
-            entries: exactRecoveryReferences(),
+            entries: exactRecoveryReferences().map((reference) =>
+              reference.kind === "document"
+                ? {
+                    kind: "document",
+                    documentId: reference.documentId,
+                    ...(reference.ranges === undefined ? {} : { ranges: reference.ranges }),
+                    purpose: reference.purpose,
+                  }
+                : reference,
+            ),
           }).entries;
         }
-        const identities = entries.map((entry) => {
-          const discovered = entry.kind === "document" ? discoveredDocuments : discoveredMessages;
-          const discoveryIdentity =
-            entry.kind === "document" ? documentDiscoveryKey(entry) : entry.messageId;
-          if (!discovered.has(discoveryIdentity)) {
-            throw new Error(`internal manifest references undiscovered ${entry.kind}`);
-          }
-          return entry.kind === "document"
-            ? documentReferenceSelectionKey(entry)
-            : `chat_message:${entry.messageId}`;
-        });
+        const identities = entries.map((entry) =>
+          entry.kind === "document"
+            ? `document:${entry.documentId}`
+            : `chat_message:${entry.messageId}`,
+        );
         if (new Set(identities).size !== identities.length) {
           throw new Error("internal manifest contains duplicate references");
-        }
-        if (!protocolErrorReturned) {
-          const uninspectedEntry = entries.some((entry) => !inspectionComplete(entry));
-          if (uninspectedEntry) {
-            throw new Error(
-              "every selected internal reference must have a complete bound inspection",
-            );
-          }
-        }
-        const uninspectedRange = entries.some(
-          (entry) =>
-            entry.kind === "document" &&
-            entry.ranges !== undefined &&
-            entry.ranges.some(
-              (range) => !inspectedDocumentRanges.has(documentReferenceRangeKey(entry, range)),
-            ),
-        );
-        if (uninspectedRange) {
-          throw new Error(
-            "every selected document range must repeat an exact range from a complete inspect_internal result",
-          );
         }
         return entries;
       },
       recoverTerminal: (value, error) => {
         const parsed = InternalManifestOutputSchema.safeParse(value);
         if (parsed.success) {
-          pendingInspectionReferences.clear();
-          for (const reference of parsed.data.entries) {
-            const discovered =
-              reference.kind === "document"
-                ? discoveredDocuments.has(documentDiscoveryKey(reference))
-                : discoveredMessages.has(reference.messageId);
-            if (discovered && !inspectionComplete(reference)) {
-              pendingInspectionReferences.set(inspectionRequirementKey(reference), reference);
-            }
-          }
-          if (pendingInspectionReferences.size > 0) terminalRecoveryReady = false;
+          terminalRecoveryReady = pendingInspectionReferences.size === 0;
         }
         return {
           complete: false,
@@ -3332,9 +3279,46 @@ export class CanonicalWorkflowOperations {
       tools: [
         {
           definition: {
+            name: "lookup_named_source",
+            description:
+              "Look up one user-named source in the current authorized scope. The result is an opaque one-use lookupRef for a later search.",
+            parameters: z.toJSONSchema(
+              z.object({ name: z.string().trim().min(1).max(200) }).strict(),
+            ),
+          },
+          parseArguments: (value: unknown) =>
+            z
+              .object({ name: z.string().trim().min(1).max(200) })
+              .strict()
+              .parse(value),
+          execute: async (args, coordinates) => {
+            const parsed = z
+              .object({ name: z.string().trim().min(1).max(200) })
+              .strict()
+              .parse(args);
+            const sourceIds = await this.resolveAuthorizedSourceIds(load, parsed.name);
+            // Do not reveal whether an unauthorized name exists. An empty
+            // result has the same shape as an absent name.
+            if (sourceIds.length === 0) {
+              return { found: false, lookupRef: null };
+            }
+            const lookupRef = `lr_${randomBytes(24).toString("base64url")}`;
+            namedSourceLookups.set(lookupRef, {
+              runId: load.aiRunId,
+              taskId,
+              loopIteration: coordinates.loopIteration,
+              attempt: coordinates.attempt,
+              sourceIds: [...new Set(sourceIds)].sort(),
+              consumed: false,
+            });
+            return { found: true, lookupRef, matchCount: sourceIds.length };
+          },
+        },
+        {
+          definition: {
             name: "search_internal",
             description:
-              "Search authorized documents or older messages from this chat. Query terms use PostgreSQL web-search syntax: whitespace is AND and uppercase OR expresses alternatives. Use at most three required terms. A non-English document question's first search must include sparse English content lexemes, alone or OR-paired with user-language lexemes. Make at most one search call per provider turn and never repeat the exact same query without its returned cursor. A documents query also accepts optional publishedAfter, publishedBefore, orderBy (\"relevance\" | \"recency\"), and sourceIds filters. For a recap, summary, overview, digest, or list of the user's feeds/sources/publications since a date, between dates, recently, or latest, issue one documents query with orderBy \"recency\" and publishedAfter set to that date, adding sourceIds for specific feeds and omitting terms; this bounded recency listing returns the most recent authorized documents without a lexical match.",
+              'Search authorized documents or older messages from this chat. Query terms use PostgreSQL web-search syntax: whitespace is AND and uppercase OR expresses alternatives. Use at most three required terms. A non-English document question\'s first search must include sparse English content lexemes, alone or OR-paired with user-language lexemes. Make at most one search call per provider turn and never repeat the exact same query without its returned cursor. A documents query accepts an opaque lookupRef from lookup_named_source for one narrow source handoff. For a recap or recent list, use orderBy "recency" with a date or lookupRef.',
             parameters: z.toJSONSchema(
               z
                 .object({
@@ -3370,7 +3354,7 @@ export class CanonicalWorkflowOperations {
                 query.orderBy === "recency" &&
                 (Boolean(query.publishedAfter) ||
                   Boolean(query.publishedBefore) ||
-                  (query.sourceIds ? query.sourceIds.length > 0 : false));
+                  query.lookupRef !== undefined);
               if (!isBoundedRecencyListing) {
                 searchProtocol.recordRejectedQuery();
                 return {
@@ -3408,15 +3392,26 @@ export class CanonicalWorkflowOperations {
             }
             const cursor = parsed.cursor ?? 0;
             if (query.target === "documents") {
-              const authorizedSourceIds = new Set(
-                load.sourceCatalog.map((source) => source.sourceId),
-              );
-              if (
-                query.sourceIds?.some((sourceId) => !authorizedSourceIds.has(sourceId)) === true
-              ) {
-                throw new Error("internal query requested an unauthorized source");
+              let selectedSourceIds: readonly string[];
+              if (query.lookupRef !== undefined) {
+                const lookup = namedSourceLookups.get(query.lookupRef);
+                if (
+                  lookup === undefined ||
+                  lookup.consumed ||
+                  lookup.runId !== load.aiRunId ||
+                  lookup.taskId !== taskId ||
+                  lookup.loopIteration !== coordinates.loopIteration ||
+                  lookup.attempt !== coordinates.attempt
+                ) {
+                  throw new Error("named-source lookupRef is invalid, expired, or already used");
+                }
+                await this.assertLiveAuthorization(load, { requireSourceCatalog: true });
+                const current = new Set(await this.currentAuthorizedSourceIds(load));
+                selectedSourceIds = lookup.sourceIds.filter((sourceId) => current.has(sourceId));
+                lookup.consumed = true;
+              } else {
+                selectedSourceIds = await this.currentAuthorizedSourceIds(load);
               }
-              const selectedSourceIds = query.sourceIds ?? [...authorizedSourceIds];
               const publicSourceIds = selectedSourceIds
                 .filter((sourceId) => isCanonicalPublicDocumentSourceId(sourceId))
                 .map((sourceId) => sourceId.slice("public:".length));
@@ -3475,8 +3470,8 @@ export class CanonicalWorkflowOperations {
                     logicalSourceIdentity: documentPreviewIdentity(item),
                     contentItemIdentity: documentContentItemIdentity(
                       documentPreviewIdentity(item),
-                      item.documentVersionId,
-                      sha256Base64Url(item.snippet),
+                      item.versionId,
+                      exactPreviewContentHash(item),
                     ),
                     stage: "internal_search_preview",
                     visibleTokenCount: this.visibleTokenCount(
@@ -3487,7 +3482,7 @@ export class CanonicalWorkflowOperations {
               });
               for (const item of bounded.items) {
                 discoveredDocuments.add(
-                  `${item.kind === "publisher" ? "publisher" : "public"}:${item.sourceId}:${item.issueId ?? ""}:${item.documentId}:${item.documentVersionId}`,
+                  `${item.kind === "publisher" ? "publisher" : "public"}:${item.sourceId}:${item.issueId ?? ""}:${item.documentId}:${item.versionId}`,
                 );
               }
               for (const item of bounded.items) {
@@ -3507,20 +3502,33 @@ export class CanonicalWorkflowOperations {
                 const logicalSourceIdentity = documentPreviewIdentity(item);
                 const contentItemIdentity = documentContentItemIdentity(
                   logicalSourceIdentity,
-                  item.documentVersionId,
-                  sha256Base64Url(item.snippet),
+                  item.versionId,
+                  exactPreviewContentHash(item),
                 );
                 const exposure: InternalProviderExposure = {
                   reference: {
                     kind: "document",
                     documentId: item.documentId,
-                    documentVersionId: item.documentVersionId,
+                    versionId: item.versionId,
+                    ...(item.publisherExtractionId === undefined
+                      ? {}
+                      : { publisherExtractionId: item.publisherExtractionId }),
                     source,
                     purpose: "authorized search preview",
                   },
                   sourceKind: "document",
                   logicalSourceIdentity,
                   contentItemIdentity,
+                  documentReconstruction: {
+                    sourceId: item.sourceId,
+                    documentId: item.documentId,
+                    versionId: item.versionId,
+                    contentHash: item.contentHash,
+                    ...(item.publisherExtractionId === undefined
+                      ? {}
+                      : { publisherExtractionId: item.publisherExtractionId }),
+                    ranges: exactPreviewRanges(item),
+                  },
                   ...(item.kind === "publisher" && item.issueId !== undefined
                     ? {
                         publisherIssueId: item.issueId,
@@ -3543,16 +3551,24 @@ export class CanonicalWorkflowOperations {
                 coordinates.providerRequestIndex,
               );
               searchProtocol.recordCompletedSearch();
+              const visibleItems = bounded.items.map((item) => ({
+                kind: "document" as const,
+                documentId: item.documentId,
+                snippet: item.snippet,
+                title: item.title,
+                publishedAt: item.publishedAt?.toISOString() ?? null,
+              }));
               return {
                 ...bounded,
+                items: visibleItems,
                 __briefSourceExposures: bounded.items.map((item) =>
                   providerVisibleExposureMarker({
                     sourceKind: "document",
                     logicalSourceIdentity: documentPreviewIdentity(item),
                     contentItemIdentity: documentContentItemIdentity(
                       documentPreviewIdentity(item),
-                      item.documentVersionId,
-                      sha256Base64Url(item.snippet),
+                      item.versionId,
+                      exactPreviewContentHash(item),
                     ),
                     stage: "internal_search_preview",
                     visibleTokenCount: this.visibleTokenCount(
@@ -3577,7 +3593,7 @@ export class CanonicalWorkflowOperations {
                   sourceKind: "chat_message",
                   logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
                   contentItemIdentity: item.messageId,
-                  stage: "internal_search_preview",
+                  stage: "internal_inspection",
                   visibleTokenCount: this.visibleTokenCount(item.snippet, this.config.aiFastModel),
                 }),
             });
@@ -3592,7 +3608,7 @@ export class CanonicalWorkflowOperations {
                 sourceKind: "chat_message",
                 logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
                 contentItemIdentity: item.messageId,
-                stage: "internal_search_preview",
+                stage: "internal_inspection",
                 visibleTokenCount: this.visibleTokenCount(item.snippet, this.config.aiFastModel),
               };
               providerExposures.set(`${exposure.stage}:${exposure.contentItemIdentity}`, exposure);
@@ -3612,7 +3628,7 @@ export class CanonicalWorkflowOperations {
                   sourceKind: "chat_message",
                   logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
                   contentItemIdentity: item.messageId,
-                  stage: "internal_search_preview",
+                  stage: "internal_inspection",
                   visibleTokenCount: this.visibleTokenCount(item.snippet, this.config.aiFastModel),
                 }),
               ),
@@ -3623,13 +3639,16 @@ export class CanonicalWorkflowOperations {
           definition: {
             name: "inspect_internal",
             description: "Inspect a complete chat message or bounded verbatim document range.",
-            parameters: z.toJSONSchema(z.object({ reference: InternalReferenceSchema }).strict()),
+            parameters: z.toJSONSchema(
+              z.object({ reference: InspectInternalReferenceSchema }).strict(),
+            ),
           },
           parseArguments: parseInspectInternalArguments,
           execute: async (args) => {
             if (++inspections > this.config.aiInternalMaxInspections)
               throw new Error("internal inspection limit exceeded");
-            const reference = parseInspectInternalArguments(args).reference;
+            const modelReference = parseInspectInternalArguments(args).reference;
+            const reference = bindModelReference(modelReference);
             const inspectionKey =
               reference.kind === "document"
                 ? documentReferenceSelectionKey(reference)
@@ -3667,6 +3686,14 @@ export class CanonicalWorkflowOperations {
               },
             );
             if (
+              reference.kind === "document" &&
+              result.complete === false &&
+              result.narrowerRangeRequired === true
+            ) {
+              pendingInspectionReferences.set(documentDiscoveryKey(reference), reference);
+              terminalRecoveryReady = false;
+            }
+            if (
               result.complete === true &&
               result.found === true &&
               typeof result.protocolError !== "string"
@@ -3697,6 +3724,7 @@ export class CanonicalWorkflowOperations {
         },
       ],
     });
+    const references = modelReferences.map(bindModelReference);
     if (protocolErrorReturned && references.length === 0 && providerExposures.size > 0) {
       throw new Error(
         "internal protocol recovery requires the provider to select a discovered reference",
@@ -3714,12 +3742,12 @@ export class CanonicalWorkflowOperations {
       if (reference.kind === "document") {
         const identity = documentReferenceIdentity(reference);
         const previousVersion = boundManifestVersions.get(identity);
-        if (previousVersion !== undefined && previousVersion !== reference.documentVersionId) {
+        if (previousVersion !== undefined && previousVersion !== reference.versionId) {
           throw new Error(
             `publisher document ${reference.documentId} resolved to multiple immutable versions in one selector attempt`,
           );
         }
-        boundManifestVersions.set(identity, reference.documentVersionId);
+        boundManifestVersions.set(identity, reference.versionId);
         return documentReferenceSelectionKey(reference);
       }
       return `chat_message:${reference.messageId}`;
@@ -3749,7 +3777,6 @@ export class CanonicalWorkflowOperations {
     resultLimit: number,
     boundPublisherDocumentVersions: Map<string, string>,
   ): Promise<readonly DocumentPreview[]> {
-    if ((query.terms ?? "").trim().length === 0) return Promise.resolve([]);
     const selectedSubscriptions = new Set(
       selectedSourceIds
         .filter((sourceId) => isCanonicalPublisherDocumentSourceId(sourceId))
@@ -3786,9 +3813,9 @@ export class CanonicalWorkflowOperations {
         if (boundDocumentIds.length > 0) {
           const currentPointers = yield* sql<{
             readonly documentId: string;
-            readonly documentVersionId: string;
+            readonly versionId: string;
           }>`
-            select id::text as "documentId", current_version_id::text as "documentVersionId"
+            select id::text as "documentId", current_version_id::text as "versionId"
             from brief_documents
             where id::text in (
               select value from jsonb_array_elements_text(${JSON.stringify(boundDocumentIds)}::jsonb)
@@ -3796,7 +3823,7 @@ export class CanonicalWorkflowOperations {
           `;
           for (const pointer of currentPointers) {
             const boundVersion = boundPublisherDocumentVersions.get(pointer.documentId);
-            if (boundVersion !== undefined && boundVersion !== pointer.documentVersionId) {
+            if (boundVersion !== undefined && boundVersion !== pointer.versionId) {
               throw new Error(
                 `publisher document ${pointer.documentId} changed immutable version during selector attempt`,
               );
@@ -3806,7 +3833,10 @@ export class CanonicalWorkflowOperations {
         const rows = yield* sql<{
           readonly sourceId: string;
           readonly documentId: string;
-          readonly documentVersionId: string;
+          readonly versionId: string;
+          readonly contentHash: string;
+          readonly text: string;
+          readonly publisherExtractionId: string;
           readonly issueId: string;
           readonly title: string;
           readonly sourceDisplayName: string;
@@ -3814,12 +3844,13 @@ export class CanonicalWorkflowOperations {
           readonly language: string;
           readonly documentType: string;
           readonly textCharCount: number;
-          readonly snippet: string;
           readonly score: number;
         }>`
           select subscriptions.id::text as "sourceId",
                  documents.id::text as "documentId",
-                 versions.id::text as "documentVersionId",
+                 versions.id::text as "versionId",
+                 versions.content_hash as "contentHash",
+                 versions.publisher_extraction_id::text as "publisherExtractionId",
                  issues.id::text as "issueId",
                  documents.title,
                  companies.name as "sourceDisplayName",
@@ -3827,11 +3858,11 @@ export class CanonicalWorkflowOperations {
                  versions.language,
                  documents.media_type as "documentType",
                  versions.text_char_count as "textCharCount",
-                 left(versions.canonical_text, 300) as snippet,
-                 ts_rank_cd(
+                 versions.canonical_text as text,
+                 case when ${query.terms?.trim() ?? ""} <> '' then ts_rank_cd(
                    versions.search_vector,
-                   websearch_to_tsquery(language_to_regconfig(versions.language), ${query.terms})
-                 )::float8 as score
+                   websearch_to_tsquery(language_to_regconfig(versions.language), ${query.terms ?? ""})
+                 ) else 0 end::float8 as score
           from chat_subscription_sources selected
           join client_subscription_accesses accesses
             on accesses.id = selected.access_id
@@ -3908,44 +3939,60 @@ export class CanonicalWorkflowOperations {
             )
             and (${publishedAfter}::timestamptz is null or issues.published_at >= ${publishedAfter})
             and (${publishedBefore}::timestamptz is null or issues.published_at <= ${publishedBefore})
-            and versions.search_vector @@ websearch_to_tsquery(
-              language_to_regconfig(versions.language),
-              ${query.terms}
+            and (
+              ${query.terms?.trim() ?? ""} = ''
+              or versions.search_vector @@ websearch_to_tsquery(
+                language_to_regconfig(versions.language),
+                ${query.terms ?? ""}
+              )
             )
           order by
             case when ${orderByRecency} then issues.published_at end desc,
-            case when not ${orderByRecency} then ts_rank_cd(
+            case when not ${orderByRecency} and ${query.terms?.trim() ?? ""} <> '' then ts_rank_cd(
               versions.search_vector,
-              websearch_to_tsquery(language_to_regconfig(versions.language), ${query.terms})
+              websearch_to_tsquery(language_to_regconfig(versions.language), ${query.terms ?? ""})
             ) end desc,
             documents.id
           limit ${resultLimit}
         `;
         for (const row of rows) {
           const boundVersion = boundPublisherDocumentVersions.get(row.documentId);
-          if (boundVersion !== undefined && boundVersion !== row.documentVersionId) {
+          if (boundVersion !== undefined && boundVersion !== row.versionId) {
             throw new Error(
               `publisher document ${row.documentId} changed immutable version during selector attempt`,
             );
           }
-          boundPublisherDocumentVersions.set(row.documentId, row.documentVersionId);
+          boundPublisherDocumentVersions.set(row.documentId, row.versionId);
         }
-        return rows.map(
-          (row): DocumentPreview => ({
-            kind: "publisher",
+        return rows.flatMap((row): readonly DocumentPreview[] => {
+          const exactPreview = previewFromImmutableText(row.text, query.terms, 300);
+          if (exactPreview === null) return [];
+          const { snippet, ranges } = exactPreview;
+          const preview = {
+            kind: "publisher" as const,
             sourceId: `publisher:${row.sourceId}`,
             documentId: row.documentId,
-            documentVersionId: row.documentVersionId,
+            versionId: row.versionId,
+            contentHash: row.contentHash,
+            publisherExtractionId: row.publisherExtractionId,
             issueId: row.issueId,
             title: row.title,
             sourceDisplayName: row.sourceDisplayName,
             publishedAt: row.publishedAt,
             language: row.language,
             documentType: row.documentType,
-            textCharCount: row.textCharCount,
-            snippet: row.snippet,
-          }),
-        );
+            textCharCount: row.text.length,
+            snippet,
+          } as DocumentPreview;
+          Object.defineProperties(preview, {
+            text: { value: row.text, enumerable: false },
+            previewRanges: {
+              value: ranges,
+              enumerable: false,
+            },
+          });
+          return [preview];
+        });
       }),
     );
   }
@@ -3960,9 +4007,9 @@ export class CanonicalWorkflowOperations {
         const sql = yield* PgClient.PgClient;
         const currentPointers = yield* sql<{
           readonly documentId: string;
-          readonly documentVersionId: string;
+          readonly versionId: string;
         }>`
-          select id::text as "documentId", current_version_id::text as "documentVersionId"
+          select id::text as "documentId", current_version_id::text as "versionId"
           from brief_documents
           where id::text in (
             select value from jsonb_array_elements_text(${JSON.stringify(boundDocumentIds)}::jsonb)
@@ -3970,7 +4017,7 @@ export class CanonicalWorkflowOperations {
         `;
         for (const pointer of currentPointers) {
           const boundVersion = boundPublisherDocumentVersions.get(pointer.documentId);
-          if (boundVersion !== undefined && boundVersion !== pointer.documentVersionId) {
+          if (boundVersion !== undefined && boundVersion !== pointer.versionId) {
             throw new Error(
               `publisher document ${pointer.documentId} changed immutable version during selector attempt`,
             );
@@ -4151,7 +4198,7 @@ export class CanonicalWorkflowOperations {
           return { found: false, complete: true };
         }
         const boundVersion = boundPublisherDocumentVersions.get(reference.documentId);
-        if (boundVersion !== undefined && boundVersion !== reference.documentVersionId) {
+        if (boundVersion !== undefined && boundVersion !== reference.versionId) {
           throw new Error(
             `publisher document ${reference.documentId} changed immutable version during selector attempt`,
           );
@@ -4162,10 +4209,12 @@ export class CanonicalWorkflowOperations {
           readonly contentHash: string;
           readonly publisherIssueId: string | null;
           readonly publisherDocumentId: string | null;
+          readonly publisherExtractionId: string | null;
         }>`
           select text, text_char_count as "textCharCount", content_hash as "contentHash",
                  null::text as "publisherIssueId",
-                 null::text as "publisherDocumentId"
+                 null::text as "publisherDocumentId",
+                 null::text as "publisherExtractionId"
           from public_source_documents
           join chats public_chat on public_chat.id = ${load.chatId} and public_chat.deleted_at is null
           join ai_runs public_run
@@ -4193,7 +4242,7 @@ export class CanonicalWorkflowOperations {
           where ${reference.source.kind === "public"}
             and public_source_documents.source_id = ${reference.source.kind === "public" ? reference.source.sourceId.slice("public:".length) : ""}
             and public_source_documents.document_id = ${reference.documentId}
-            and public_source_documents.document_id = ${reference.documentVersionId}
+            and public_source_documents.document_id = ${reference.versionId}
             and (
               (public_chat.shared_at is null and public_chat.user_id = public_run.initiating_user_id)
               or public_chat.shared_at is not null
@@ -4203,7 +4252,8 @@ export class CanonicalWorkflowOperations {
                  versions.text_char_count as "textCharCount",
                  versions.content_hash as "contentHash",
                  issues.id::text as "publisherIssueId",
-                 documents.id::text as "publisherDocumentId"
+                 documents.id::text as "publisherDocumentId",
+                 versions.publisher_extraction_id::text as "publisherExtractionId"
           from chat_subscription_sources selected
           join client_subscription_accesses accesses
             on accesses.id = selected.access_id
@@ -4236,7 +4286,7 @@ export class CanonicalWorkflowOperations {
            and documents.deleted_at is null
           join brief_document_versions versions
             on versions.brief_document_id = documents.id
-           and versions.id::text = ${reference.documentVersionId}
+           and versions.id::text = ${reference.versionId}
           join chats publisher_chat
             on publisher_chat.id = selected.chat_id
            and publisher_chat.deleted_at is null
@@ -4269,6 +4319,9 @@ export class CanonicalWorkflowOperations {
         `;
         const row = rows[0];
         if (row === undefined) return { found: false, complete: true };
+        if (reference.source.kind === "publisher" && row.publisherExtractionId === null) {
+          throw new Error("publisher inspection resolved without its exact extraction binding");
+        }
         const ranges = normalizeSelectedDocumentRanges(reference.ranges, row.text.length);
         const text = ranges
           .map((range) => row.text.slice(range.charStart, range.charEnd))
@@ -4286,13 +4339,16 @@ export class CanonicalWorkflowOperations {
           documentReconstruction: {
             sourceId: reference.source.sourceId,
             documentId: reference.documentId,
-            documentVersionId: reference.documentVersionId,
+            versionId: reference.versionId,
             contentHash: row.contentHash,
+            ...(row.publisherExtractionId === null
+              ? {}
+              : { publisherExtractionId: row.publisherExtractionId }),
             ranges,
           },
           contentItemIdentity: documentContentItemIdentity(
             documentReferenceIdentity(reference),
-            reference.documentVersionId,
+            reference.versionId,
             sha256Base64Url(JSON.stringify(ranges)),
           ),
           stage: "internal_inspection",
@@ -4313,7 +4369,11 @@ export class CanonicalWorkflowOperations {
             found: true,
             complete: false,
             narrowerRangeRequired: true,
-            textCharCount: row.textCharCount,
+            documentId: reference.documentId,
+            ranges,
+            textCharCount: row.text.length,
+            message:
+              "This immutable document is too large for one inspection; continue with a strictly narrower UTF-16 range.",
           };
         }
         onVisible(exposure);
@@ -4322,7 +4382,7 @@ export class CanonicalWorkflowOperations {
           complete: true,
           text,
           ranges,
-          textCharCount: row.textCharCount,
+          textCharCount: row.text.length,
           __briefSourceExposures: [providerVisibleExposureMarker(exposure)],
         };
       }),
@@ -4343,7 +4403,8 @@ export class CanonicalWorkflowOperations {
       });
       return { status: "disabled", reason: "not_requested" };
     }
-    if (!load.webPolicy.enabled || this.web === undefined) {
+    const webPolicy = await this.liveWebPolicy(load);
+    if (!webPolicy.enabled || this.web === undefined) {
       await this.observe(load, taskId, "retrieval_manifest", {
         selectorRole: "web",
         references: [],
@@ -4389,7 +4450,7 @@ export class CanonicalWorkflowOperations {
         question,
         locale: load.locale,
         market: load.market,
-        policy: load.webPolicy,
+        policy: webPolicy,
         toolBounds: {
           maximumTurns: this.config.aiRetrievalMaxTurns,
           maximumSearches: this.config.aiWebMaxSearches,
@@ -4401,6 +4462,7 @@ export class CanonicalWorkflowOperations {
       requestedOutputTokens: this.config.aiFastOutputMaxTokens,
       reasoning: "medium",
       coordinates: { taskId, attempt: execution.attempt, agentRole: "web_research" },
+      sourceExposureProofs: [],
       onBeforeRequest: async (_request, requestCoordinates) => {
         await this.assertLiveAuthorization(load, { requireWebPolicy: true });
         await this.recordConversationExposures(load, taskId, [], requestCoordinates, {
@@ -4581,11 +4643,12 @@ export class CanonicalWorkflowOperations {
               };
             }
             await this.assertLiveAuthorization(load, { requireWebPolicy: true });
+            const operationPolicy = await this.liveWebPolicy(load);
             const result = await this.web!.search(
               parsed.query,
               load.locale,
               load.market,
-              load.webPolicy,
+              operationPolicy,
               coordinates,
               parsed.cursor,
               signal,
@@ -4612,7 +4675,19 @@ export class CanonicalWorkflowOperations {
             completeSearchTurn = coordinates.providerRequestIndex;
             completeNonEmptySearch ||= result.results.length > 0;
             throwIfAborted(signal);
-            return result;
+            return {
+              ...result,
+              __briefSourceExposures: result.results.map((item) => {
+                const logicalSourceIdentity = canonicalizeWebUrl(item.url);
+                return providerVisibleExposureMarker({
+                  sourceKind: "web",
+                  logicalSourceIdentity,
+                  contentItemIdentity: `${logicalSourceIdentity}:${sha256Base64Url(item.snippet)}`,
+                  stage: "web_search_preview",
+                  visibleTokenCount: this.visibleTokenCount(item.snippet, this.config.aiFastModel),
+                });
+              }),
+            };
           },
         },
         {
@@ -4637,6 +4712,7 @@ export class CanonicalWorkflowOperations {
             }
             const { url } = parseWebFetchArguments(args);
             await this.assertLiveAuthorization(load, { requireWebPolicy: true });
+            const operationPolicy = await this.liveWebPolicy(load);
             const normalizedRequestedUrl = canonicalizeWebUrl(url);
             const discoveredTurn = discoveredUrls.get(normalizedRequestedUrl);
             if (
@@ -4648,7 +4724,7 @@ export class CanonicalWorkflowOperations {
                 "web fetch requires a canonical URL discovered by an earlier complete search turn",
               );
             }
-            const fetchedPage = await this.web!.fetch(url, load.webPolicy, coordinates, signal);
+            const fetchedPage = await this.web!.fetch(url, operationPolicy, coordinates, signal);
             throwIfAborted(signal);
             const page = {
               ...fetchedPage,
@@ -4668,7 +4744,19 @@ export class CanonicalWorkflowOperations {
               visibleTokenCount: this.visibleTokenCount(page.text, this.config.aiFastModel),
             });
             throwIfAborted(signal);
-            return { ...page, complete: true };
+            return {
+              ...page,
+              complete: true,
+              __briefSourceExposures: [
+                providerVisibleExposureMarker({
+                  sourceKind: "web",
+                  logicalSourceIdentity,
+                  contentItemIdentity,
+                  stage: "web_fetch",
+                  visibleTokenCount: this.visibleTokenCount(page.text, this.config.aiFastModel),
+                }),
+              ],
+            };
           },
         },
         {
@@ -4736,11 +4824,14 @@ export class CanonicalWorkflowOperations {
     observationTaskId: string,
     consumerTaskId: string,
     topicId?: TopicId,
-    selectedTurnIds: readonly string[] = load.conversation.map((entry) => entry.turnId),
+    selectedTurnIds: readonly string[] = [],
     fanoutSourceKeys?: FanoutSourceKeySet | undefined,
     requestedOutputTokens: number = this.config.aiMainOutputMaxTokens,
   ): Promise<ContextAssembly> {
-    const selectedConversation = this.selectConversation(load, selectedTurnIds);
+    const selectedConversation = this.selectConversation(
+      await this.currentPriorTurns(load),
+      selectedTurnIds,
+    );
     const materialized = await this.materializeCandidates(load, selectors, observationTaskId);
     const conversationDeduplication = await this.rejectSelectedConversationDuplicates(
       load,
@@ -4755,7 +4846,6 @@ export class CanonicalWorkflowOperations {
         { topicId, domain: this.candidateDomain(right), rank: right.rank, identity: right.id },
       ),
     );
-    const nonce = new Uint8Array(load.citationNonce);
     const providedKeys = new Map(
       (fanoutSourceKeys?.sources ?? []).map(({ candidateId, sourceKey }) => [
         candidateId,
@@ -4773,7 +4863,7 @@ export class CanonicalWorkflowOperations {
     const sourceMap = ordered.map((candidate, index) => {
       const sourceKey =
         fanoutSourceKeys === undefined
-          ? sourceKeyForOrdinal(nonce, index + 1)
+          ? sourceKeyForNamespace(load.citationNamespace, index + 1)
           : providedKeys.get(candidate.id);
       if (sourceKey === undefined) {
         throw new Error("fanout candidate lacks a stable source key");
@@ -4791,7 +4881,7 @@ export class CanonicalWorkflowOperations {
           ? [WEB_EMPTY_RESULT_GAP]
           : []),
         ...[...materialized.rejections, ...conversationDeduplication.rejections].map(
-          (rejection) => `${rejection.candidateId} rejected: ${rejection.reason}`,
+          (rejection) => `an internal source was rejected: ${rejection.reason}`,
         ),
       ],
       consumerTaskId,
@@ -4828,7 +4918,7 @@ export class CanonicalWorkflowOperations {
 
   async mergeFanoutSources(
     load: LoadedTurn,
-    topics: Extract<NormalizedExecutionPlan, { mode: "fanout" }>["topics"],
+    topics: Extract<PlanTurnResult, { mode: "fanout" }>["topics"],
     selectors: Readonly<Record<TopicId, SelectorBundle>>,
   ): Promise<FanoutSourceKeySet> {
     const orderedIdentities = topics
@@ -4861,11 +4951,10 @@ export class CanonicalWorkflowOperations {
       })
       .sort(compareRankedCandidates);
     const uniqueIdentities = [...new Set(orderedIdentities.map((item) => item.identity))];
-    const nonce = new Uint8Array(load.citationNonce);
     return {
       sources: uniqueIdentities.map((candidateId, index) => ({
         candidateId,
-        sourceKey: sourceKeyForOrdinal(nonce, index + 1),
+        sourceKey: sourceKeyForNamespace(load.citationNamespace, index + 1),
       })),
     };
   }
@@ -4921,11 +5010,11 @@ export class CanonicalWorkflowOperations {
   }
 
   private selectConversation(
-    load: LoadedTurn,
+    entries: readonly ConversationEntry[],
     selectedTurnIds: readonly string[],
   ): readonly ConversationEntry[] {
     const selected = new Set(selectedTurnIds);
-    return load.conversation.filter((entry) => selected.has(entry.turnId));
+    return entries.filter((entry) => selected.has(entry.turnId));
   }
 
   private async rejectSelectedConversationDuplicates(
@@ -4987,7 +5076,7 @@ export class CanonicalWorkflowOperations {
           );
         }
         if (
-          previous.documentVersionId !== candidate.documentVersionId ||
+          previous.versionId !== candidate.versionId ||
           previous.contentHash !== candidate.contentHash
         ) {
           throw new Error(
@@ -5098,7 +5187,8 @@ export class CanonicalWorkflowOperations {
             const rows = yield* sql<{
               readonly sourceId: string;
               readonly documentId: string;
-              readonly documentVersionId: string;
+              readonly versionId: string;
+              readonly publisherExtractionId: string | null;
               readonly contentHash: string;
               readonly text: string;
               readonly title: string;
@@ -5108,7 +5198,8 @@ export class CanonicalWorkflowOperations {
               readonly issueTitle: string | null;
               readonly publishedAt: Date | null;
             }>`
-              select d.source_id as "sourceId", d.document_id as "documentId", d.document_id as "documentVersionId",
+              select d.source_id as "sourceId", d.document_id as "documentId", d.document_id as "versionId",
+                     null::text as "publisherExtractionId",
                      d.content_hash as "contentHash", d.text,
                      d.title, d.canonical_url as "canonicalUrl", s.display_name as "sourceName",
                      null::text as "issueId",
@@ -5143,7 +5234,7 @@ export class CanonicalWorkflowOperations {
               where ${reference.source.kind === "public"}
                 and d.source_id = ${reference.source.kind === "public" ? reference.source.sourceId.slice("public:".length) : ""}
                 and d.document_id = ${reference.documentId}
-                and d.document_id = ${reference.documentVersionId}
+                and d.document_id = ${reference.versionId}
                 and (
                   (public_chat.shared_at is null and public_chat.user_id = public_run.initiating_user_id)
                   or public_chat.shared_at is not null
@@ -5151,7 +5242,8 @@ export class CanonicalWorkflowOperations {
               union all
               select selected.subscription_id::text as "sourceId",
                      documents.id::text as "documentId",
-                     versions.id::text as "documentVersionId",
+                     versions.id::text as "versionId",
+                     versions.publisher_extraction_id::text as "publisherExtractionId",
                      versions.content_hash as "contentHash",
                      versions.canonical_text as text,
                      documents.title,
@@ -5190,7 +5282,7 @@ export class CanonicalWorkflowOperations {
                and documents.deleted_at is null
               join brief_document_versions versions
                 on versions.brief_document_id = documents.id
-               and versions.id::text = ${reference.documentVersionId}
+               and versions.id::text = ${reference.versionId}
               join chats publisher_chat
                 on publisher_chat.id = selected.chat_id
                and publisher_chat.deleted_at is null
@@ -5227,7 +5319,7 @@ export class CanonicalWorkflowOperations {
         );
         if (row === null) {
           rejections.push({
-            candidateId: `${documentReferenceIdentity(reference)}:${reference.documentVersionId}`,
+            candidateId: `${documentReferenceIdentity(reference)}:${reference.versionId}`,
             reason: "inaccessible",
           });
           continue;
@@ -5236,10 +5328,11 @@ export class CanonicalWorkflowOperations {
           (reference.source.kind === "public" && row.issueId !== null) ||
           (reference.source.kind === "publisher" &&
             (row.issueId !== reference.source.issueId ||
-              row.documentId !== reference.source.documentId))
+              row.documentId !== reference.source.documentId ||
+              row.publisherExtractionId !== reference.publisherExtractionId))
         ) {
           rejections.push({
-            candidateId: `${documentReferenceIdentity(reference)}:${reference.documentVersionId}`,
+            candidateId: `${documentReferenceIdentity(reference)}:${reference.versionId}`,
             reason: "ambiguous_provenance",
           });
           continue;
@@ -5249,7 +5342,7 @@ export class CanonicalWorkflowOperations {
           ranges = normalizeSelectedDocumentRanges(reference.ranges, row.text.length);
         } catch {
           rejections.push({
-            candidateId: `${documentReferenceIdentity(reference)}:${reference.documentVersionId}`,
+            candidateId: `${documentReferenceIdentity(reference)}:${reference.versionId}`,
             reason: "invalid_range",
           });
           continue;
@@ -5261,7 +5354,10 @@ export class CanonicalWorkflowOperations {
           purpose: reference.purpose,
           sourceId: reference.source.sourceId,
           documentId: row.documentId,
-          documentVersionId: row.documentVersionId,
+          versionId: row.versionId,
+          ...(row.publisherExtractionId === null
+            ? {}
+            : { publisherExtractionId: row.publisherExtractionId }),
           ...(row.issueId === null
             ? {}
             : { publisherIssueId: row.issueId, publisherDocumentId: row.documentId }),
@@ -5333,7 +5429,7 @@ export class CanonicalWorkflowOperations {
       }
     }
     for (const reference of selectors.memories) {
-      const requested = load.memories.find(
+      const requested = (await this.loadActiveMemories(load)).find(
         (item) =>
           item.memoryId === reference.memoryId &&
           item.memoryRevisionId === reference.memoryRevisionId,
@@ -5436,21 +5532,31 @@ export class CanonicalWorkflowOperations {
             } else if (!isCanonicalPublicDocumentSourceId(candidate.sourceId)) {
               throw new Error("document candidate has invalid public source identity");
             }
+            if (hasPublisherIssue) {
+              if (candidate.publisherExtractionId === undefined) {
+                throw new Error("publisher document candidate lacks extraction identity");
+              }
+              return {
+                kind: "document" as const,
+                sourceId: candidate.sourceId as `publisher:${string}`,
+                documentId: candidate.documentId,
+                versionId: candidate.versionId,
+                contentHash: candidate.contentHash,
+                ranges: candidate.ranges,
+                publisherExtractionId: candidate.publisherExtractionId,
+                publisherIssueId: candidate.publisherIssueId!,
+                publisherDocumentId: candidate.publisherDocumentId!,
+              };
+            }
             return {
               kind: "document" as const,
               // Candidate identities are already namespaced by retrieval;
               // never repair a raw or double-prefixed value at this boundary.
               sourceId: candidate.sourceId,
               documentId: candidate.documentId,
-              documentVersionId: candidate.documentVersionId,
+              versionId: candidate.versionId,
               contentHash: candidate.contentHash,
               ranges: candidate.ranges,
-              ...(hasPublisherIssue
-                ? {
-                    publisherIssueId: candidate.publisherIssueId,
-                    publisherDocumentId: candidate.publisherDocumentId,
-                  }
-                : {}),
             };
           })()
         : candidate.kind === "chat_message"
@@ -5501,7 +5607,7 @@ export class CanonicalWorkflowOperations {
     gaps: readonly string[],
     reductionRan: boolean,
     topicId?: TopicId,
-    selectedConversation: readonly ConversationEntry[] = load.conversation,
+    selectedConversation: readonly ConversationEntry[] = [],
     ledgerCandidates: readonly AnswerCandidate[] = candidates,
     ledgerSourceMap: readonly FinalSourceRecord[] = sourceMap,
     requestedOutputTokens: number = this.config.aiMainOutputMaxTokens,
@@ -5660,7 +5766,7 @@ export class CanonicalWorkflowOperations {
         id: conversationReductionCandidateId(entry),
         kind: "conversation_entry",
         rank: index,
-        purpose: "Conversation Resolver-selected recent turn",
+        purpose: "plan-turn-selected recent turn",
         label: null,
         renderedTokenCount:
           conversationTokenCounts[index] ??
@@ -5697,8 +5803,17 @@ export class CanonicalWorkflowOperations {
     // reserve enough of the code-owned hard maximum for six of each, a
     // measurement turn, and a later terminal turn.
     const reductionMaximumTurns = Math.min(16, Math.max(this.config.aiRetrievalMaxTurns, 16));
+    const candidateHandleById = new Map(
+      reductionCandidates.map((candidate, index) => [
+        candidate.id,
+        `opaque_candidate_${index + 1}`,
+      ]),
+    );
+    const candidateIdByHandle = new Map(
+      [...candidateHandleById.entries()].map(([candidateId, handle]) => [handle, candidateId]),
+    );
     const compact = reductionCandidates.map((candidate) => ({
-      id: candidate.id,
+      id: candidateHandleById.get(candidate.id)!,
       kind: candidate.kind,
       label: candidate.label,
       purpose: candidate.purpose,
@@ -5745,6 +5860,16 @@ export class CanonicalWorkflowOperations {
         .strict()
         .parse(value);
     const parseMeasurePlanArguments = (value: unknown) => ContextPlanOutputSchema.parse(value);
+    const decodeProviderDecisions = (value: unknown): readonly ContextDecision[] => {
+      const parsed = ContextPlanOutputSchema.parse(value);
+      return parsed.decisions.map((decision) => {
+        const candidateId = candidateIdByHandle.get(decision.id);
+        if (candidateId === undefined) {
+          throw new Error("context plan contains an unknown opaque candidate handle");
+        }
+        return { ...decision, id: candidateId };
+      });
+    };
     const raw = await this.agents.toolLoop({
       requestClass: "fast",
       model: this.config.aiFastModel,
@@ -5766,6 +5891,11 @@ export class CanonicalWorkflowOperations {
       requestedOutputTokens: this.config.aiFastOutputMaxTokens,
       reasoning: "medium",
       coordinates: { taskId, attempt: execution.attempt, agentRole: "context_reducer" },
+      sourceExposureProofs: this.conversationExposureProofMarkers(
+        load,
+        [...inspectedConversation.values()],
+        false,
+      ),
       onBeforeRequest: async (_request, requestCoordinates) => {
         providerRequestDigests.set(
           requestCoordinates.providerRequestIndex,
@@ -5819,7 +5949,7 @@ export class CanonicalWorkflowOperations {
         }
       },
       terminalToolName: "emit_context_plan",
-      validateTerminal: (value) => ContextPlanOutputSchema.parse(value).decisions,
+      validateTerminal: decodeProviderDecisions,
       recoverTerminal: (_value, error) => ({
         complete: false,
         terminalRejected: true,
@@ -5921,7 +6051,11 @@ export class CanonicalWorkflowOperations {
           parseArguments: parseInspectCandidateArguments,
           execute: async (args) => {
             const parsed = parseInspectCandidateArguments(args);
-            const item = reductionCandidates.find((candidate) => candidate.id === parsed.id);
+            const candidateId = candidateIdByHandle.get(parsed.id);
+            const item =
+              candidateId === undefined
+                ? undefined
+                : reductionCandidates.find((candidate) => candidate.id === candidateId);
             if (item === undefined)
               return {
                 found: false,
@@ -5971,7 +6105,7 @@ export class CanonicalWorkflowOperations {
                 : item.kind === "document"
                   ? documentContentItemIdentity(
                       documentCandidateIdentity(item),
-                      item.documentVersionId,
+                      item.versionId,
                       sha256Base64Url(
                         JSON.stringify(
                           parsed.range === undefined
@@ -6014,10 +6148,11 @@ export class CanonicalWorkflowOperations {
                 ? { conversationEntry: item.entry }
                 : {
                     text,
+                    kind: item.kind,
                     ...(item.kind === "document"
                       ? {
                           documentId: item.documentId,
-                          documentVersionId: item.documentVersionId,
+                          versionId: item.versionId,
                           source:
                             item.publisherIssueId !== undefined &&
                             item.publisherDocumentId !== undefined
@@ -6111,8 +6246,11 @@ export class CanonicalWorkflowOperations {
                     documentReconstruction: {
                       sourceId: item.sourceId,
                       documentId: item.documentId,
-                      documentVersionId: item.documentVersionId,
+                      versionId: item.versionId,
                       contentHash: item.contentHash,
+                      ...(item.publisherExtractionId === undefined
+                        ? {}
+                        : { publisherExtractionId: item.publisherExtractionId }),
                       ranges:
                         parsed.range === undefined
                           ? item.ranges
@@ -6147,7 +6285,11 @@ export class CanonicalWorkflowOperations {
           parseArguments: parseSearchWithinCandidateArguments,
           execute: async (args) => {
             const parsed = parseSearchWithinCandidateArguments(args);
-            const item = reductionCandidates.find((candidate) => candidate.id === parsed.id);
+            const candidateId = candidateIdByHandle.get(parsed.id);
+            const item =
+              candidateId === undefined
+                ? undefined
+                : reductionCandidates.find((candidate) => candidate.id === candidateId);
             if (item === undefined)
               return {
                 found: false,
@@ -6164,7 +6306,7 @@ export class CanonicalWorkflowOperations {
                 ? result.matchPreviews.map((preview) => {
                     const contentItemIdentity = documentContentItemIdentity(
                       documentCandidateIdentity(item),
-                      item.documentVersionId,
+                      item.versionId,
                       sha256Base64Url(JSON.stringify([preview.range])),
                     );
                     const visibleTokenCount = this.visibleTokenCount(
@@ -6178,8 +6320,11 @@ export class CanonicalWorkflowOperations {
                       documentReconstruction: {
                         sourceId: item.sourceId,
                         documentId: item.documentId,
-                        documentVersionId: item.documentVersionId,
+                        versionId: item.versionId,
                         contentHash: item.contentHash,
+                        ...(item.publisherExtractionId === undefined
+                          ? {}
+                          : { publisherExtractionId: item.publisherExtractionId }),
                         ranges: [preview.range],
                       },
                     });
@@ -6195,7 +6340,8 @@ export class CanonicalWorkflowOperations {
             if (result.complete) inspectionOrSearchCompleted = true;
             return {
               found: true,
-              ...(item.kind === "document" ? { documentVersionId: item.documentVersionId } : {}),
+              kind: item.kind,
+              ...(item.kind === "document" ? { versionId: item.versionId } : {}),
               ...result,
               ...(previewExposures.length === 0
                 ? {}
@@ -6217,7 +6363,7 @@ export class CanonicalWorkflowOperations {
             measuredDecisionProviderRequestIndex = undefined;
             try {
               const decisions = validateContextDecisions(
-                parseMeasurePlanArguments(args).decisions,
+                decodeProviderDecisions(args),
                 reductionCandidates,
               );
               const canonicalDecisions = canonicalContextDecisionSet(
@@ -6415,10 +6561,14 @@ export class CanonicalWorkflowOperations {
       };
     }
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
+    const request: LiveProviderRequest = {
+      ...context.request,
+      sourceExposureProofs: this.contextExposureProofMarkers(load, context),
+    };
     let resultText: string;
     try {
       const result = await this.agents.stream(
-        context.request,
+        request,
         taskCoordinates(taskId, "direct_answer", execution),
         async (delta, index) => {
           throwIfAborted(signal);
@@ -6535,13 +6685,13 @@ export class CanonicalWorkflowOperations {
     return { status: "ok", mode: "clarification", content: question, sourceMap: [] };
   }
 
-  allocateFanout(
+  async allocateFanout(
     load: LoadedTurn,
-    plan: Extract<NormalizedExecutionPlan, { mode: "fanout" }>,
-  ): FanoutAllocation {
+    plan: Extract<PlanTurnResult, { mode: "fanout" }>,
+  ): Promise<FanoutAllocation> {
     const model = resolveRuntimeModel(this.config.aiMainModel);
     const selectedTurnIds = new Set(plan.topics.flatMap((topic) => topic.relevantTurnIds));
-    const selectedConversation = load.conversation.filter((entry) =>
+    const selectedConversation = (await this.currentPriorTurns(load)).filter((entry) =>
       selectedTurnIds.has(entry.turnId),
     );
     const skeleton = fullRequestInput(
@@ -6597,6 +6747,7 @@ export class CanonicalWorkflowOperations {
       requestedOutputTokens: context.request.requestedOutputTokens,
       reasoning: "medium",
       coordinates: taskCoordinates(taskId, "topic_answer", execution),
+      sourceExposureProofs: this.contextExposureProofMarkers(load, context),
       onBeforeRequest: async (request, requestCoordinates) => {
         await this.authorizeFrozenContext(load, context);
         await this.recordContextExposures(load, context, taskId, requestCoordinates);
@@ -6644,17 +6795,17 @@ export class CanonicalWorkflowOperations {
     return packet;
   }
 
-  synthesisContext(
+  async synthesisContext(
     load: LoadedTurn,
     packets: readonly TopicPacket[],
     sourceMap: readonly FinalSourceRecord[],
     topicContexts: readonly ContextState[],
     allocation: FanoutAllocation,
-  ): ContextState {
+  ): Promise<ContextState> {
     const selectedTurnIds = new Set(
       topicContexts.flatMap((context) => context.selectedConversation.map((entry) => entry.turnId)),
     );
-    const selectedConversation = load.conversation.filter((entry) =>
+    const selectedConversation = (await this.currentPriorTurns(load)).filter((entry) =>
       selectedTurnIds.has(entry.turnId),
     );
     const request = fullRequestInput(
@@ -6751,10 +6902,14 @@ export class CanonicalWorkflowOperations {
         retryable: isRetryableAiRunError(context.failureCode ?? "synthesis_budget_mismatch"),
       };
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
+    const request: LiveProviderRequest = {
+      ...context.request,
+      sourceExposureProofs: this.contextExposureProofMarkers(load, context),
+    };
     let resultText: string;
     try {
       const result = await this.agents.stream(
-        context.request,
+        request,
         taskCoordinates(taskId, "synthesis", execution),
         async (delta, index) => {
           throwIfAborted(signal);
@@ -6820,22 +6975,22 @@ export class CanonicalWorkflowOperations {
     ) => this.currentEffectiveWebPolicy(enabled, allowedDomains);
     return this.db(
       finalizeAiRun({
-        runId: load.aiRunId,
-        expectedSmithersRunId,
-        coordinates: requireCurrentTaskCoordinates("finalize"),
-        answer,
-        memory,
-        authorize: ({ chatId, initiatingUserId, sourceMap }) =>
-          Effect.gen(function* () {
-            const sql = yield* PgClient.PgClient;
-            const rows = yield* sql<{
-              readonly baseAllowed: boolean;
-              readonly sourceAllowed: readonly boolean[];
-              readonly webSourceCount: number;
-              readonly acceptedWebPolicy: EffectiveWebPolicy | null;
-              readonly webEnabled: boolean | null;
-              readonly webAllowedDomains: readonly string[] | null;
-            }>`
+          runId: load.aiRunId,
+          expectedSmithersRunId,
+          coordinates: requireCurrentTaskCoordinates("finalize"),
+          answer,
+          memory,
+          authorize: ({ chatId, initiatingUserId, sourceMap }) =>
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              const rows = yield* sql<{
+                readonly baseAllowed: boolean;
+                readonly sourceAllowed: readonly boolean[];
+                readonly webSourceCount: number;
+                readonly acceptedWebPolicy: EffectiveWebPolicy | null;
+                readonly webEnabled: boolean | null;
+                readonly webAllowedDomains: readonly string[] | null;
+              }>`
               with base as (
                 select runs.chat_id, runs.initiating_user_id, runs.effective_web_policy,
                        chats.company_id
@@ -6913,14 +7068,14 @@ export class CanonicalWorkflowOperations {
                               and documents.deleted_at is null
                              join brief_document_versions versions
                                on versions.brief_document_id = documents.id
-                              and versions.id::text = requested.source->>'documentVersionId'
+                              and versions.id::text = requested.source->>'versionId'
                               and versions.content_hash = requested.source->>'contentHash'
                            )
                            else exists(
                              select 1 from base
                              join public_source_documents documents
                                on documents.document_id = requested.source->>'documentId'
-                              and documents.document_id = requested.source->>'documentVersionId'
+                              and documents.document_id = requested.source->>'versionId'
                               and documents.content_hash = requested.source->>'contentHash'
                               and ('public:' || documents.source_id) = requested.source->>'sourceId'
                              join client_company_public_source_settings settings
@@ -6971,36 +7126,40 @@ export class CanonicalWorkflowOperations {
                      ) as "webAllowedDomains"
               from evaluated
             `;
-            const row = rows[0];
-            if (
-              row?.baseAllowed !== true ||
-              row.sourceAllowed.length !== sourceMap.length ||
-              row.sourceAllowed.some((allowed) => !allowed)
-            ) {
-              return { authorized: false as const, code: "source_access_revoked" as const };
-            }
-            // A requested W path must retain its accepted policy snapshot and
-            // recheck it at finalization even when W validly returned no
-            // evidence. Checking only the final source map would let a later
-            // company disablement finalize an empty requested-web answer.
-            if (load.webRequested || row.webSourceCount > 0) {
-              if (row.acceptedWebPolicy === null) {
-                return { authorized: false as const, code: "web_policy_revoked" as const };
+              const row = rows[0];
+              if (
+                row?.baseAllowed !== true ||
+                row.sourceAllowed.length !== sourceMap.length ||
+                row.sourceAllowed.some((allowed) => !allowed)
+              ) {
+                return { authorized: false as const, code: "source_access_revoked" as const };
               }
-              const current = currentEffectiveWebPolicy(
-                row.webEnabled === true,
-                row.webAllowedDomains ?? null,
-              );
-              try {
-                if (!recheckWebPolicy(row.acceptedWebPolicy, current).enabled) {
+              // A requested W path must retain its accepted policy snapshot and
+              // recheck it at finalization even when W validly returned no
+              // evidence. Checking only the final source map would let a later
+              // company disablement finalize an empty requested-web answer.
+              if (load.webRequested || row.webSourceCount > 0) {
+                if (row.acceptedWebPolicy === null) {
                   return { authorized: false as const, code: "web_policy_revoked" as const };
                 }
-              } catch {
-                return { authorized: false as const, code: "web_policy_revoked" as const };
+                let accepted: EffectiveWebPolicy;
+                try {
+                  accepted = EffectiveWebPolicySchema.parse(row.acceptedWebPolicy);
+                } catch {
+                  return { authorized: false as const, code: "web_policy_revoked" as const };
+                }
+                const current = currentEffectiveWebPolicy(
+                  row.webEnabled === true,
+                  row.webAllowedDomains ?? null,
+                );
+                try {
+                  recheckWebPolicy(accepted, current);
+                } catch {
+                  return { authorized: false as const, code: "web_policy_revoked" as const };
+                }
               }
-            }
-            return { authorized: true as const };
-          }),
+              return { authorized: true as const };
+            }),
       }),
     );
   }

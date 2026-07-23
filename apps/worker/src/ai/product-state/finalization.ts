@@ -1321,6 +1321,10 @@ const validateDurableObservability = (
       (answerFailureCode === "topic_answer_failed" && /^topic-t[123]-answer$/u.test(taskId)) ||
       (answerFailureCode === "synthesis_failed" && taskId === "fanout-synthesis") ||
       (answerFailureCode === "memory_extraction_failed" && taskId === "memory-extract");
+    const topicRequestsWebEvidenceForFinalization = (question: string): boolean =>
+      /\b(current|latest|official|public|web|online|today|recent|status|update|live|price|actual)\b|\b(actuel(?:le|s)?|dernier(?:e|s)?|officiel(?:le|s)?|public(?:s)?|marché|prix|récent(?:e|s)?|mise à jour|en ligne)\b/iu.test(
+        question.normalize("NFC"),
+      );
     const documentedNoCallRetrieval = (row: (typeof observationRows)[number]): boolean => {
       if (row.kind !== "retrieval_manifest") return false;
       const parsed = RetrievalManifestSchema.safeParse(row.payload);
@@ -1331,6 +1335,16 @@ const validateDurableObservability = (
         return selectorState.memoryMode === "disabled" || selectorState.activeMemoryCount === 0;
       }
       if (row.emittingTask.endsWith("retrieve-web")) {
+        if (row.emittingTask.startsWith("topic-")) {
+          const topicId = row.emittingTask.slice("topic-".length, -"-retrieve-web".length);
+          const topic =
+            parsedPlan.data.mode === "fanout"
+              ? parsedPlan.data.topics.find((candidate) => candidate.topicId === topicId)
+              : undefined;
+          if (topic !== undefined && !topicRequestsWebEvidenceForFinalization(topic.question)) {
+            return true;
+          }
+        }
         return !selectorState.webRequested || !selectorState.webPolicyEnabled;
       }
       return false;
