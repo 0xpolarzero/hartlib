@@ -5245,11 +5245,11 @@ const attestExactSourceExposureRows = (
       );
     }
     if (
+      exposure.exposureStage === "provider_input" ||
       exposure.exposureStage === "internal_search_preview" ||
       exposure.exposureStage === "internal_inspection" ||
       exposure.exposureStage === "context_candidate_inspection" ||
-      (exposure.exposureStage === "provider_input" &&
-        isCanonicalSpecializedReducerTask(exposure.taskId))
+      isCanonicalSpecializedReducerTask(exposure.taskId)
     ) {
       const expected = expectedProofsByRequest.get(requestKey) ?? new Set<string>();
       expected.add(exactProof);
