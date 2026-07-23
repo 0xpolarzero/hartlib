@@ -89,14 +89,14 @@ describe("exact provider-shaped request gate", () => {
     const main = resolveRegisteredModel("glm-5.2");
     const fast = resolveRegisteredModel("glm-5-turbo");
     expect(main.countRequestTokens({ ...withSchema, model: "glm-5.2" })).toBe(195);
-    expect(fast.countRequestTokens(withSchema)).toBe(202);
+    expect(fast.countRequestTokens(withSchema)).toBe(197);
     expect(renderOfficialGlmProviderRequest(request, "glm-5.2")).toContain("<tool_call>");
     expect(renderOfficialGlmProviderRequest(request, "glm-5.2")).toContain("<|observation|>");
   });
 
   it.each([
     ["glm-5.2", [17, 156, 242]],
-    ["glm-5-turbo", [10, 163, 277]],
+    ["glm-5-turbo", [10, 159, 265]],
   ] as const)(
     "pins %s counts for zero, one, and three Pi function definitions",
     (modelId, expected) => {
@@ -205,7 +205,7 @@ describe("exact provider-shaped request gate", () => {
 
   it.each([
     ["glm-5.2", 169],
-    ["glm-5-turbo", 176],
+    ["glm-5-turbo", 171],
   ] as const)("gates %s exactly at limit - 1, limit, and limit + 1", (modelId, expected) => {
     const model = resolveRegisteredModel(modelId);
     const modelRequest = { ...request, model: modelId } satisfies ProviderRequest;

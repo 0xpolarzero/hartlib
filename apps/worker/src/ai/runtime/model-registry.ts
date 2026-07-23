@@ -123,34 +123,22 @@ export const renderOfficialGlmProviderRequest = (
   });
 };
 
-const turboProviderAccountingOverhead = (request: ProviderRequest): number => {
-  const messages = normalizeProviderRequest(request).messages;
-  let lastAssistantProseIndex = -1;
-  for (const [index, message] of messages.entries()) {
-    if (message.role === "assistant" && message.content.trim() !== "") {
-      lastAssistantProseIndex = index;
-    }
-  }
-  const toolTurnsAfterProse = messages
-    .slice(Math.max(0, lastAssistantProseIndex))
-    .filter(
-      (message) =>
-        message.role === "assistant" &&
-        message.toolCalls !== undefined &&
-        message.toolCalls.length > 0,
-    ).length;
-  return messages.at(-1)?.role === "assistant" ? toolTurnsAfterProse + 1 : toolTurnsAfterProse;
-};
+const turboProviderAccountingOverhead = (request: ProviderRequest): number =>
+  normalizeProviderRequest(request).messages.at(-1)?.role === "assistant" ? 1 : 0;
 
 const exactCount = (request: ProviderRequest, modelId: RegisteredModel["id"]): number => {
   const templateTokens = (modelId === "glm-5.2" ? exactTokenizer : exactTurboTokenizer).encode(
     renderOfficialGlmProviderRequest(request, modelId),
     { add_special_tokens: false },
   ).length;
-  // Z.AI Turbo accounts one out-of-template token for a trailing assistant
-  // continuation and for each tool-call turn at or after the latest assistant prose.
+  // Z.AI Turbo's prompt usage is four tokens lower per function definition
+  // than the pinned local template rendering. It also adds one out-of-template
+  // token only for a trailing assistant continuation. Historical tool-call
+  // turns are already represented in the provider's prompt count.
+  const toolDefinitionAdjustment =
+    (normalizeProviderRequest(request).tools?.length ?? 0) * 4;
   return modelId === "glm-5-turbo"
-    ? templateTokens + turboProviderAccountingOverhead(request)
+    ? templateTokens - toolDefinitionAdjustment + turboProviderAccountingOverhead(request)
     : templateTokens;
 };
 
@@ -162,7 +150,7 @@ const exactCount = (request: ProviderRequest, modelId: RegisteredModel["id"]): n
 const tokenizerIdentity = `zai-org/GLM-5.2@f6142f127a14b58dc602592e996cd7d8ff139351:${expectedTokenizerSha256}`;
 const chatTemplateIdentity = `zai-org/GLM-5.2@f6142f127a14b58dc602592e996cd7d8ff139351:${expectedChatTemplateSha256}:pi-tools-strict-false-v1:assistant-continuation-v1`;
 const turboTokenizerIdentity = `zai-org/GLM-5@f4c624070fb778e07ad16fb04c34dad055be3fce:shared-vocabulary:${expectedTurboTokenizerSha256}`;
-const turboChatTemplateIdentity = `zai-org/GLM-5@f4c624070fb778e07ad16fb04c34dad055be3fce:shared-vocabulary:${expectedTurboChatTemplateSha256}:pi-tools-strict-false-v1:tool-turn-overhead-v4:assistant-continuation-v1`;
+const turboChatTemplateIdentity = `zai-org/GLM-5@f4c624070fb778e07ad16fb04c34dad055be3fce:shared-vocabulary:${expectedTurboChatTemplateSha256}:pi-tools-strict-false-v1:tool-definition-adjustment-v1:assistant-continuation-v1`;
 
 const registry = new Map<string, RegisteredModel>([
   [
