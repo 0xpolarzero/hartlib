@@ -28,6 +28,7 @@ import {
   parseCurrentTurnCitations,
   runAiProductState,
 } from "../product-state/repository";
+import { insertAiRunUsage } from "../product-state/observability";
 import {
   createSmithersStorage,
   runSmithersWorkflow,
@@ -44,19 +45,23 @@ import {
   memoryExtractionSha256Hex,
   normalizeCharacterRanges,
   sha256Base64Url,
-  sourceKeyForOrdinal,
+  sourceKeyForNamespace,
   stripHistoricalCitationTags,
   webEvidenceIdentity,
   webQuoteHash,
   type DocumentEvidenceNamespace,
 } from "../runtime/canonicalization";
 import {
+  measureProviderRequest,
   resolveRegisteredModel,
   ZAI_CODING_PLAN_BASE_URL,
   ZAI_CODING_PLAN_PROVIDER_ENDPOINT_IDENTITY,
   ZAI_CODING_PLAN_PROVIDER_SERVICE_ID,
 } from "../runtime/model-registry";
-import { providerVisibleSourceExposureProofSha256Hex } from "../runtime/provider-request";
+import {
+  providerRequestSha256Hex,
+  providerVisibleSourceExposureProofSha256Hex,
+} from "../runtime/provider-request";
 import { publicSourceRecordFromFinalSource } from "../runtime/public-source";
 import { PublicProvenanceSchema } from "../runtime/source-schemas";
 import type {
@@ -73,7 +78,7 @@ import {
 import { aiChatSchemas } from "../workflow/ai-chat";
 import { deleteSmithersRowsForRunWithSchemas } from "../workflow/smithers-cleanup";
 import { topicRequestsWebEvidence } from "../workflow/operations";
-import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v2";
+import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v3";
 import {
   aiEvaluationGeneralPlannerSchemas,
   buildGeneralPlannerEvaluationWorkflow,
@@ -92,9 +97,10 @@ import {
   type SpecializedEvaluationResult,
 } from "./schema";
 import {
-  attestExactConversationResolverRequest,
+  attestExactPlanTurnRequest,
   attestExactProductionContext,
   canonicalEvaluationUsableInputTokens,
+  exactProductionContextRequest,
   measureCanonicalEvaluationRequestTokens,
   measureExactProductionContextMarginals,
   type ExactProductionContextInput,
@@ -266,6 +272,9 @@ const deterministicUuid = (identity: string): string => {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
+const citationNamespaceForRun = (runId: string): string =>
+  `cn_${createHash("sha256").update(`citation:${runId}`).digest().subarray(0, 16).toString("base64url")}`;
+
 // Public-source storage rejects sub-100-character documents. Padding is outside
 // every canonical labeled half-open range, so the exact fixture evidence and
 // content-item identity remain the labeled prefix rather than invented prose.
@@ -316,7 +325,7 @@ const RestrictedConversationBindingSchema = z.discriminatedUnion("kind", [
 const RestrictedSourceBindingSchema = z
   .object({
     candidateId: z.string().min(1),
-    sourceKey: z.string().regex(/^k_[A-Za-z0-9_-]{22}_[1-9][0-9]*$/u),
+    sourceKey: z.string().regex(/^k_cn_[A-Za-z0-9_-]{22}_[1-9][0-9]*$/u),
     kind: z.enum(["document", "chat_message", "memory", "web"]),
     purpose: z.string().trim().min(1),
     label: z.string().nullable(),
@@ -381,38 +390,26 @@ const TerminalUsageCoordinateSchema = z
   })
   .strict();
 
-const ConversationResolverRequestAttestationSchema = z
-  .object({
-    requestKind: z.literal("conversation_resolution"),
-    modelId: z.literal("glm-5-turbo"),
-    requestSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
-    inputTokens: z.number().int().nonnegative(),
-    usableInputTokens: z.number().int().positive(),
-    requestedOutputTokens: z.literal(2048),
-    currentUserMessageId: z.uuid(),
-    currentDate: z.iso.date(),
-    conversation: z.array(RestrictedConversationBindingSchema),
-    terminalUsageCoordinate: TerminalUsageCoordinateSchema,
-  })
-  .strict();
+const orderedDurableTopicIds = (topicIds: readonly string[], context: z.RefinementCtx): void => {
+  const expected = ["t1", "t2", "t3"].slice(0, topicIds.length);
+  if (topicIds.some((topicId, index) => topicId !== expected[index])) {
+    context.addIssue({ code: "custom", message: "fanout topic IDs must be ordered t1, t2, t3" });
+  }
+};
 
-const DurableConversationResolutionSchema = z.discriminatedUnion("mode", [
+const DurablePlanTurnResultSchema = z.discriminatedUnion("mode", [
   z
     .object({
-      mode: z.literal("continue"),
-      retrievalQuestion: z.string().min(1),
-      selectedTurnIds: z.array(z.uuid()),
+      mode: z.literal("single"),
+      question: z.string().min(1),
+      relevantTurnIds: z.array(z.uuid()),
     })
     .strict(),
   z.object({ mode: z.literal("clarify"), question: z.string().min(1) }).strict(),
-]);
-
-const DurableExecutionPlanSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("single"), reason: z.string().min(1) }).strict(),
   z
     .object({
       mode: z.literal("fanout"),
-      reason: z.string().min(1),
+      question: z.string().min(1),
       topics: z
         .array(
           z
@@ -424,7 +421,26 @@ const DurableExecutionPlanSchema = z.discriminatedUnion("mode", [
             .strict(),
         )
         .min(2)
-        .max(3),
+        .max(3)
+        .superRefine((topics, context) =>
+          orderedDurableTopicIds(
+            topics.map((topic) => topic.topicId),
+            context,
+          ),
+        )
+        .superRefine((topics, context) => {
+          const questions = topics.map((topic) => topic.question);
+          if (new Set(questions).size !== questions.length) {
+            context.addIssue({ code: "custom", message: "fanout topic questions must be unique" });
+          }
+          const turnIds = topics.flatMap((topic) => topic.relevantTurnIds);
+          if (new Set(turnIds).size !== turnIds.length) {
+            context.addIssue({
+              code: "custom",
+              message: "fanout relevant turn IDs must be unique",
+            });
+          }
+        }),
     })
     .strict(),
 ]);
@@ -447,7 +463,7 @@ const DurableInternalManifestReferenceSchema = z
       .object({
         kind: z.literal("document"),
         documentId: z.string().min(1),
-        documentVersionId: z.string().min(1),
+        versionId: z.string().min(1),
         source: DocumentSourceNamespaceSchema,
         ranges: z.array(BindingRangeSchema).optional(),
         purpose: z.string().trim().min(1),
@@ -515,7 +531,7 @@ const TerminalContextSerializedPayloadSchema = z
   .object({
     consumerTaskId: z.string().min(1),
     topicId: z.enum(["t1", "t2", "t3"]).optional(),
-    sourceKeys: z.array(z.string().regex(/^k_[A-Za-z0-9_-]{22}_[1-9][0-9]*$/u)),
+    sourceKeys: z.array(z.string().regex(/^k_cn_[A-Za-z0-9_-]{22}_[1-9][0-9]*$/u)),
     restrictedContextLedger: RestrictedContextLedgerSchema,
     terminalUsageCoordinate: TerminalUsageCoordinateSchema,
   })
@@ -532,8 +548,9 @@ const EvaluationSourceBindingSchema = z
         goldenSourceId: z.string().min(1),
         kind: z.literal("document"),
         documentId: z.string(),
-        documentVersionId: z.string(),
+        versionId: z.string(),
         contentHash: z.string(),
+        publisherExtractionId: z.uuid().nullable(),
         source: DocumentSourceNamespaceSchema,
       })
       .strict(),
@@ -572,6 +589,16 @@ const EvaluationSourceBindingSchema = z
     }
     if (
       binding.kind === "document" &&
+      ((binding.source.kind === "publisher" && binding.publisherExtractionId === null) ||
+        (binding.source.kind === "public" && binding.publisherExtractionId !== null))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "publisher extraction identity must match the document namespace",
+      });
+    }
+    if (
+      binding.kind === "document" &&
       binding.source.kind === "publisher" &&
       binding.source.documentId !== binding.documentId
     ) {
@@ -584,8 +611,8 @@ const EvaluationSourceBindingSchema = z
 
 export const EvaluationSeedManifestSchema = z
   .object({
-    artifactVersion: z.literal(2),
-    goldenSetVersion: z.literal(2),
+    artifactVersion: z.literal(3),
+    goldenSetVersion: z.literal(3),
     sessionId: z.string().uuid(),
     caseId: z.string(),
     topology: z.enum(["specialized", "general_planner"]),
@@ -637,8 +664,11 @@ const documentBindingMatchesLocator = (
     value.kind !== "document" ||
     value.sourceId !== documentBindingSourceId(binding) ||
     value.documentId !== binding.documentId ||
-    value.documentVersionId !== binding.documentVersionId ||
-    value.contentHash !== binding.contentHash
+    value.versionId !== binding.versionId ||
+    value.contentHash !== binding.contentHash ||
+    (binding.publisherExtractionId === null
+      ? value.publisherExtractionId !== undefined
+      : value.publisherExtractionId !== binding.publisherExtractionId)
   ) {
     return false;
   }
@@ -646,8 +676,9 @@ const documentBindingMatchesLocator = (
     "kind",
     "sourceId",
     "documentId",
-    "documentVersionId",
+    "versionId",
     "contentHash",
+    "publisherExtractionId",
     "ranges",
     ...(binding.source.kind === "publisher" ? ["publisherIssueId", "publisherDocumentId"] : []),
   ]);
@@ -675,8 +706,8 @@ export const EvaluationCaseAnnotationSchema = z
 
 export const EvaluationAnnotationFileSchema = z
   .object({
-    artifactVersion: z.literal(2),
-    goldenSetVersion: z.literal(2),
+    artifactVersion: z.literal(3),
+    goldenSetVersion: z.literal(3),
     sessionId: z.string().uuid(),
     annotations: z.array(EvaluationCaseAnnotationSchema),
   })
@@ -774,7 +805,7 @@ const DurableRunSnapshotSchema = z
     finishedAt: z.iso.datetime(),
     failedAt: z.null(),
     assistantMessageId: z.uuid(),
-    citationNonceHex: z.string().regex(/^[0-9a-f]{32}$/u),
+    citationNamespace: z.string().regex(/^cn_[A-Za-z0-9_-]{22}$/u),
     nextEventSeq: z.number().int().positive(),
     errorCode: z.null(),
     retryable: z.null(),
@@ -946,12 +977,13 @@ const DurableRunEvidenceSchema = z
             .regex(/^(?:public|publisher):[^:\s]+$/u)
             .nullable(),
           documentId: z.string().min(1).nullable(),
-          documentVersionId: z.string().min(1).nullable(),
+          versionId: z.string().min(1).nullable(),
           documentContentHash: z
             .string()
             .regex(/^[0-9a-f]{64}$/u)
             .nullable(),
           documentRanges: z.array(BindingRangeSchema).nullable(),
+          publisherExtractionId: z.uuid().nullable(),
           createdAt: z.iso.datetime(),
         })
         .strict(),
@@ -971,11 +1003,11 @@ const DurableRunEvidenceSchema = z
     sources: z.array(
       z
         .object({
-          sourceKey: z.string().regex(/^k_[A-Za-z0-9_-]{22}_[1-9][0-9]*$/u),
+          sourceKey: z.string().regex(/^k_cn_[A-Za-z0-9_-]{22}_[1-9][0-9]*$/u),
           kind: z.enum(["document", "chat_message", "memory", "web"]),
           locator: JsonObjectSchema,
-          documentVersionId: z.string().nullable(),
-          publisherDocumentVersionId: z.uuid().nullable(),
+          versionId: z.string().nullable(),
+          publisherExtractionId: z.uuid().nullable(),
           messageId: z.uuid().nullable(),
           memoryRevisionId: z.uuid().nullable(),
           displayLabel: z.string().nullable(),
@@ -987,7 +1019,7 @@ const DurableRunEvidenceSchema = z
     sourceUses: z.array(
       z
         .object({
-          sourceKey: z.string().regex(/^k_[A-Za-z0-9_-]{22}_[1-9][0-9]*$/u),
+          sourceKey: z.string().regex(/^k_cn_[A-Za-z0-9_-]{22}_[1-9][0-9]*$/u),
           consumerTaskId: z.string().min(1),
           topicId: z.enum(["t1", "t2", "t3"]).nullable(),
           renderedTokenCount: z.number().int().nonnegative(),
@@ -1045,7 +1077,7 @@ export const withEvaluationSessionExecutionLease = <Value>(
   sessionId: string,
   execute: () => Promise<Value>,
 ): Promise<Value> => {
-  const lockIdentity = `brief:ai-evaluation:v2:${sessionId}`;
+  const lockIdentity = `brief:ai-evaluation:v3:${sessionId}`;
   return db(
     connectionString,
     Effect.scoped(
@@ -1082,7 +1114,7 @@ const manifestIdentity = (
   sessionId: string,
   fixture: GoldenEvaluationCase,
   topology: EvaluationTopology,
-): string => `ai-evaluation:v2:${sessionId}:${topology}:${fixture.id}`;
+): string => `ai-evaluation:v3:${sessionId}:${topology}:${fixture.id}`;
 
 const buildSeedManifest = (
   sessionId: string,
@@ -1090,7 +1122,7 @@ const buildSeedManifest = (
   topology: EvaluationTopology,
 ): EvaluationSeedManifest => {
   const identity = manifestIdentity(sessionId, fixture, topology);
-  const evaluationSourceId = `eval-v2-${sha256Hex(`${identity}:source`).slice(0, 32)}`;
+  const evaluationSourceId = `eval-v3-${sha256Hex(`${identity}:source`).slice(0, 32)}`;
   const turnBindings = fixture.conversation.map((turn, index) => ({
     turnId: turn.turnId,
     aiRunId: deterministicUuid(`${identity}:turn:${index}:run`),
@@ -1100,15 +1132,27 @@ const buildSeedManifest = (
   const byTurn = new Map(turnBindings.map((binding) => [binding.turnId, binding] as const));
   const sourceBindings = fixture.evidence.map((source, index) => {
     if (source.kind === "document") {
-      const documentId = `eval-v2-${sha256Hex(`${identity}:document:${index}`).slice(0, 40)}`;
+      const documentId = `eval-v3-${sha256Hex(`${identity}:document:${index}`).slice(0, 40)}`;
+      const publisher = source.sourceId.startsWith("publisher:");
+      const sourceNamespace = publisher
+        ? {
+            kind: "publisher" as const,
+            sourceId: `publisher:${evaluationSourceId}`,
+            issueId: deterministicUuid(`${identity}:issue:${index}`),
+            documentId,
+          }
+        : { kind: "public" as const, sourceId: `public:${evaluationSourceId}` };
       return {
-        sourceId: `public:${evaluationSourceId}`,
+        sourceId: sourceNamespace.sourceId,
         goldenSourceId: source.sourceId,
         kind: "document" as const,
         documentId,
-        documentVersionId: documentId,
+        versionId: documentId,
         contentHash: sha256Hex(storedDocumentText(source.content)),
-        source: { kind: "public" as const, sourceId: `public:${evaluationSourceId}` },
+        publisherExtractionId: publisher
+          ? deterministicUuid(identity + ":document:" + index + ":extraction")
+          : null,
+        source: sourceNamespace,
       };
     }
     if (source.kind === "chat_message") {
@@ -1138,18 +1182,18 @@ const buildSeedManifest = (
       url: source.url,
       title: source.title,
       domain: source.domain,
-      // This seed value is only an immutable manifest placeholder. The real
-      // Brief fetch captures its own timestamp, which is checked at capture.
+      // This seed timestamp is replaced by the live fetch timestamp and checked
+      // against the captured evidence.
       capturedAt: "1970-01-01T00:00:00.000Z",
     };
   });
   return EvaluationSeedManifestSchema.parse({
-    artifactVersion: 2,
-    goldenSetVersion: 2,
+    artifactVersion: 3,
+    goldenSetVersion: 3,
     sessionId,
     caseId: fixture.id,
     topology,
-    userId: `eval-v2-${sha256Hex(`${identity}:user`).slice(0, 32)}`,
+    userId: `eval-v3-${sha256Hex(`${identity}:user`).slice(0, 32)}`,
     companyId: deterministicUuid(`${identity}:company`),
     chatId: deterministicUuid(`${identity}:chat`),
     userMessageId: deterministicUuid(`${identity}:current:user`),
@@ -1167,7 +1211,7 @@ const seedOneCase = (
 ): Promise<EvaluationSeedManifest> => {
   const manifest = buildSeedManifest(sessionId, fixture, topology);
   const sourceById = new Map(fixture.evidence.map((source) => [source.sourceId, source] as const));
-  const sourceId = `eval-v2-${sha256Hex(`${manifestIdentity(sessionId, fixture, topology)}:source`).slice(0, 32)}`;
+  const sourceId = `eval-v3-${sha256Hex(`${manifestIdentity(sessionId, fixture, topology)}:source`).slice(0, 32)}`;
   return db(
     connectionString,
     Effect.gen(function* () {
@@ -1239,13 +1283,13 @@ const seedOneCase = (
               on conflict (id) do nothing
             `;
             yield* sql`
-              insert into ai_runs (
-                id, chat_id, initiating_user_id, user_message_id, smithers_run_id,
-                locale, market, created_at, web_search_enabled, effective_web_policy
+            insert into ai_runs (
+              id, chat_id, initiating_user_id, user_message_id, smithers_run_id,
+                locale, market, citation_namespace, created_at, web_search_enabled, effective_web_policy
               ) values (
                 ${binding.aiRunId}, ${manifest.chatId}, ${manifest.userId},
                 ${binding.userMessageId}, ${deriveAiChatSmithersRunId(binding.aiRunId)},
-                ${fixture.locale}, ${fixture.market}, ${createdAt}, false,
+                ${fixture.locale}, ${fixture.market}, ${citationNamespaceForRun(binding.aiRunId)}, ${createdAt}, false,
                 ${JSON.stringify({ enabled: false, reason: "company_disabled", allowlistActive: false })}::jsonb
               ) on conflict (id) do nothing
             `;
@@ -1348,11 +1392,11 @@ const seedOneCase = (
               : { enabled: false, reason: "company_disabled", allowlistActive: false };
           yield* sql`
             insert into ai_runs (
-              id, chat_id, user_message_id, locale, market, created_at,
+              id, chat_id, user_message_id, locale, market, citation_namespace, created_at,
               web_search_enabled, effective_web_policy
             ) values (
               ${manifest.aiRunId}, ${manifest.chatId}, ${manifest.userMessageId},
-              ${fixture.locale}, ${fixture.market}, '2026-07-10T10:00:00.000Z',
+              ${fixture.locale}, ${fixture.market}, ${citationNamespaceForRun(manifest.aiRunId)}, '2026-07-10T10:00:00.000Z',
               ${fixture.webRequested}, ${JSON.stringify(effectiveWebPolicy)}::jsonb
             ) on conflict (id) do nothing
           `;
@@ -1383,7 +1427,7 @@ export const createEvaluationSession = async (
       yield* sql`
         insert into ai_evaluation_sessions (
           id, artifact_version, golden_set_version, fixture_sha256_hex
-        ) values (${sessionId}, 2, 2, ${CanonicalGoldenFixtureSha256Hex})
+        ) values (${sessionId}, 3, 3, ${CanonicalGoldenFixtureSha256Hex})
         on conflict (id) do nothing
       `;
       const rows = yield* sql<{
@@ -1398,8 +1442,8 @@ export const createEvaluationSession = async (
       const row = rows[0];
       if (
         row?.fixtureSha256Hex !== CanonicalGoldenFixtureSha256Hex ||
-        row.artifactVersion !== 2 ||
-        row.goldenSetVersion !== 2
+        row.artifactVersion !== 3 ||
+        row.goldenSetVersion !== 3
       ) {
         return yield* Effect.fail(new Error("evaluation session fixture/version mismatch"));
       }
@@ -1611,16 +1655,16 @@ const baselineSourceMap = async (
   manifest: EvaluationSeedManifest,
   output: GeneralPlannerProviderOutput,
 ): Promise<readonly FinalSourceRecord[]> => {
-  const nonceHex = await db(
+  const citationNamespace = await db(
     connectionString,
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
-      const rows = yield* sql<{ readonly nonceHex: string }>`
-        select encode(citation_nonce, 'hex') as "nonceHex" from ai_runs where id = ${manifest.aiRunId}
+      const rows = yield* sql<{ readonly citationNamespace: string }>`
+        select citation_namespace as "citationNamespace" from ai_runs where id = ${manifest.aiRunId}
       `;
-      const nonce = rows[0]?.nonceHex;
-      if (nonce === undefined) return yield* Effect.fail(new Error("baseline run not found"));
-      return nonce;
+      const namespace = rows[0]?.citationNamespace;
+      if (namespace === undefined) return yield* Effect.fail(new Error("baseline run not found"));
+      return namespace;
     }),
   );
   const bindings = new Map(
@@ -1632,7 +1676,7 @@ const baselineSourceMap = async (
   return output.selectedSources.map((selection, index) => {
     const binding = bindings.get(selection.sourceId)!;
     const source = evidence.get(selection.sourceId)!;
-    const sourceKey = sourceKeyForOrdinal(Buffer.from(nonceHex, "hex"), index + 1);
+    const sourceKey = sourceKeyForNamespace(citationNamespace, index + 1);
     const selectedText =
       source.kind === "document"
         ? (selection.ranges.length > 0
@@ -1645,28 +1689,40 @@ const baselineSourceMap = async (
             .join("\n…\n")
         : source.content;
     const use = {
-      consumerTaskId: "single-answer",
+      consumerTaskId: output.planTurn.mode === "fanout" ? "fanout-synthesis" : "single-answer",
       contextOrder: index,
       renderedTokenCount: model.countTextTokens(selectedText),
       ranges: selection.ranges,
     };
     if (binding.kind === "document") {
+      const locator: FinalSourceRecord["locator"] =
+        binding.source.kind === "publisher"
+          ? {
+              kind: "document" as const,
+              sourceId: documentBindingSourceId(binding) as `publisher:${string}`,
+              documentId: binding.documentId,
+              versionId: binding.versionId,
+              contentHash: binding.contentHash,
+              ranges: selection.ranges,
+              publisherIssueId: binding.source.issueId,
+              publisherDocumentId: binding.source.documentId,
+              publisherExtractionId:
+                binding.publisherExtractionId ??
+                (() => {
+                  throw new Error("publisher evaluation binding lacks its extraction identity");
+                })(),
+            }
+          : {
+              kind: "document" as const,
+              sourceId: documentBindingSourceId(binding),
+              documentId: binding.documentId,
+              versionId: binding.versionId,
+              contentHash: binding.contentHash,
+              ranges: selection.ranges,
+            };
       return {
         sourceKey,
-        locator: {
-          kind: "document" as const,
-          sourceId: documentBindingSourceId(binding),
-          documentId: binding.documentId,
-          documentVersionId: binding.documentVersionId,
-          contentHash: binding.contentHash,
-          ranges: selection.ranges,
-          ...(binding.source.kind === "publisher"
-            ? {
-                publisherIssueId: binding.source.issueId,
-                publisherDocumentId: binding.source.documentId,
-              }
-            : {}),
-        },
+        locator,
         label: evaluationBindingGoldenSourceId(binding),
         publicProvenance: {
           sourceName: "Brief canonical evaluation",
@@ -1731,6 +1787,13 @@ const persistBaselineOutput = async (
   const fixture = fixtureFor(row.caseId);
   const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
   const sourceMap = await baselineSourceMap(connectionString, fixture, manifest, output);
+  const answerMode =
+    output.planTurn.mode === "clarify"
+      ? ("clarification" as const)
+      : output.planTurn.mode === "fanout"
+        ? ("synthesis" as const)
+        : ("single" as const);
+  const answerTaskId = output.planTurn.mode === "fanout" ? "fanout-synthesis" : "single-answer";
   const sourceKeys = new Map(
     output.selectedSources.map((selection, index) => [
       selection.sourceId,
@@ -1745,13 +1808,21 @@ const persistBaselineOutput = async (
   const turnMap = new Map(
     manifest.turnBindings.map((binding) => [binding.turnId, binding.aiRunId]),
   );
-  const translatedResolution =
-    output.resolution.mode === "clarify"
-      ? output.resolution
-      : {
-          ...output.resolution,
-          selectedTurnIds: output.resolution.selectedTurnIds.map((turnId) => turnMap.get(turnId)!),
-        };
+  const translatedPlanTurn =
+    output.planTurn.mode === "clarify"
+      ? output.planTurn
+      : output.planTurn.mode === "single"
+        ? {
+            ...output.planTurn,
+            relevantTurnIds: output.planTurn.relevantTurnIds.map((turnId) => turnMap.get(turnId)!),
+          }
+        : {
+            ...output.planTurn,
+            topics: output.planTurn.topics.map((topic) => ({
+              ...topic,
+              relevantTurnIds: topic.relevantTurnIds.map((turnId) => turnMap.get(turnId)!),
+            })),
+          };
   const memoryBinding = new Map(
     manifest.sourceBindings.flatMap((binding) =>
       binding.kind === "memory"
@@ -1819,9 +1890,9 @@ const persistBaselineOutput = async (
         emittingTask: "evaluation-general-planner",
         loopIteration: producer.loopIteration,
         attempt: producer.attempt,
-        observationKey: "evaluation-general-planner:conversation-resolution",
-        kind: "conversation_resolution",
-        payload: translatedResolution,
+        observationKey: "evaluation-general-planner:turn-plan",
+        kind: "turn_plan",
+        payload: translatedPlanTurn,
       });
       yield* insertAiObservation({
         runId: row.aiRunId,
@@ -1837,17 +1908,7 @@ const persistBaselineOutput = async (
           extractionSha256Hex: memoryArtifact.producer.extractionSha256Hex,
         },
       });
-      if (output.resolution.mode === "continue") {
-        yield* insertAiObservation({
-          runId: row.aiRunId,
-          chatId: manifest.chatId,
-          emittingTask: "evaluation-general-planner",
-          loopIteration: producer.loopIteration,
-          attempt: producer.attempt,
-          observationKey: "evaluation-general-planner:execution-plan",
-          kind: "execution_plan",
-          payload: { mode: "single", reason: "offline evaluation-only general planner" },
-        });
+      if (output.planTurn.mode !== "clarify") {
         yield* insertAiObservation({
           runId: row.aiRunId,
           chatId: manifest.chatId,
@@ -1867,7 +1928,7 @@ const persistBaselineOutput = async (
           observationKey: "evaluation-general-planner:context-measurement",
           kind: "context_measurement",
           payload: {
-            consumerTaskId: "evaluation-general-planner",
+            consumerTaskId: answerTaskId,
             totalInputTokens: measureCanonicalEvaluationRequestTokens(
               fixture,
               output.selectedSources.map((selection) => ({ ...selection })),
@@ -1885,28 +1946,114 @@ const persistBaselineOutput = async (
           observationKey: "evaluation-general-planner:context-serialized",
           kind: "context_serialized",
           payload: {
-            consumerTaskId: "evaluation-general-planner",
+            consumerTaskId: answerTaskId,
             sourceKeys: sourceMap.map((source) => source.sourceKey),
           },
         });
+        if (output.planTurn.mode === "fanout") {
+          for (const topic of output.planTurn.topics) {
+            const topicRequest = exactProductionContextRequest(fixture, {
+              requestKind: "topic",
+              topicId: topic.topicId,
+              question: topic.question,
+              selectedConversation: [],
+              gaps: [],
+              sources: [],
+              requestedOutputTokens: CanonicalEvaluationExecutionConfig.aiMainOutputMaxTokens,
+            });
+            const topicMeasurement = measureProviderRequest(
+              topicRequest,
+              resolveRegisteredModel(topicRequest.model),
+              {
+                inputTokens: CanonicalEvaluationExecutionConfig.aiMainInputMaxTokens,
+                outputTokens: CanonicalEvaluationExecutionConfig.aiMainOutputMaxTokens,
+              },
+            );
+            const topicTaskId = `topic-${topic.topicId}-answer`;
+            yield* insertAiObservation({
+              runId: row.aiRunId,
+              chatId: manifest.chatId,
+              emittingTask: topicTaskId,
+              loopIteration: producer.loopIteration,
+              attempt: producer.attempt,
+              observationKey: `evaluation-general-planner:provider-request:${topic.topicId}`,
+              kind: "provider_request_measurement",
+              payload: {
+                providerRequestIndex: 0,
+                agentRole: "topic_answer",
+                modelId: topicMeasurement.modelId,
+                requestSha256Hex: providerRequestSha256Hex(topicRequest),
+                sourceExposureProofSha256Hexes: [],
+                sourceExposureProofBindings: [],
+                inputTokens: topicMeasurement.inputTokens,
+                requestedOutputTokens: topicMeasurement.requestedOutputTokens,
+                usableInputTokens: topicMeasurement.usableInputTokens,
+                contextWindow: topicMeasurement.contextWindow,
+                passed: topicMeasurement.passed,
+              },
+            });
+            yield* insertAiRunUsage({
+              runId: row.aiRunId,
+              taskId: topicTaskId,
+              loopIteration: producer.loopIteration,
+              attempt: producer.attempt,
+              providerRequestIndex: 0,
+              agentRole: "topic_answer",
+              modelId: topicMeasurement.modelId,
+              providerServiceId: "zai_coding_plan_official",
+              usage: {
+                inputTokens: topicMeasurement.inputTokens,
+                outputTokens: 2,
+                cachedTokens: 0,
+                reasoningTokens: 0,
+                totalTokens: topicMeasurement.inputTokens + 2,
+                stopReason: "toolUse",
+              },
+            });
+            yield* insertAiObservation({
+              runId: row.aiRunId,
+              chatId: manifest.chatId,
+              emittingTask: topicTaskId,
+              loopIteration: producer.loopIteration,
+              attempt: producer.attempt,
+              observationKey: `evaluation-general-planner:topic-packet:${topic.topicId}`,
+              kind: "topic_packet",
+              payload: {
+                topicId: topic.topicId,
+                status: "answered",
+                sourceKeys: [],
+                claimCount: 0,
+                gapCount: 0,
+                packetSha256Hex: sha256Hex(
+                  canonicalJson({
+                    topicId: topic.topicId,
+                    status: "answered",
+                    claims: [],
+                    gaps: [],
+                  }),
+                ),
+              },
+            });
+          }
+        }
       }
       yield* appendAiRunEvent({
         runId: row.aiRunId,
         emissionKey: "context_ready",
         event: {
           type: "context_ready",
-          mode: output.resolution.mode === "clarify" ? "clarification" : "single",
+          mode: answerMode,
           reductionRan: false,
           sourcesRead:
-            output.resolution.mode === "clarify"
+            output.planTurn.mode === "clarify"
               ? []
               : sourceMap.map(publicSourceRecordFromFinalSource),
           consumers:
-            output.resolution.mode === "clarify"
+            output.planTurn.mode === "clarify"
               ? []
               : [
                   {
-                    consumer: "direct",
+                    consumer: output.planTurn.mode === "fanout" ? "synthesis" : "direct",
                     inputTokens: measureCanonicalEvaluationRequestTokens(
                       fixture,
                       output.selectedSources.map((selection) => ({ ...selection })),
@@ -1923,7 +2070,7 @@ const persistBaselineOutput = async (
         emissionKey: `answer_started:evaluation-general-planner:${producer.attempt}`,
         event: {
           type: "answer_started",
-          mode: output.resolution.mode === "clarify" ? "clarification" : "single",
+          mode: answerMode,
           attempt: producer.attempt,
         },
         emittedByTask: "evaluation-general-planner",
@@ -1939,7 +2086,7 @@ const persistBaselineOutput = async (
         expectedSmithersRunId: smithersRunId,
         answer: {
           status: "ok",
-          mode: output.resolution.mode === "clarify" ? "clarification" : "single",
+          mode: answerMode,
           content,
           sourceMap,
         },
@@ -2081,6 +2228,8 @@ const terminalizeFailedBaselineRun = async (
 export interface GeneralPlannerEvaluationExecutionOptions {
   /** Explicitly test-only: preserves deterministic_test provider identity. */
   readonly testOnlyAllowDeterministicProvider?: boolean;
+  /** Explicitly test-only: exercises the documented terminal provider failure path. */
+  readonly testOnlyForceProviderFailure?: boolean;
 }
 
 const executeBaseline = async (
@@ -2133,8 +2282,30 @@ const executeBaseline = async (
             }
             return executeGeneralPlannerProviderTurn(
               makeDurableProviderBoundary(connectionString, aiRunId, config),
-              fixtureFor(caseId),
+              options.testOnlyForceProviderFailure === true
+                ? { ...fixtureFor(caseId), currentMessage: `${fixtureFor(caseId).currentMessage} [fail]` }
+                : fixtureFor(caseId),
               {
+                sourceExposureIdentity: ({
+                  sourceId,
+                  sourceKind,
+                  charStart,
+                  charEnd,
+                  visibleText,
+                }) => {
+                  const binding = EvaluationSeedManifestSchema.parse(row.seedManifest).sourceBindings.find(
+                    (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
+                  );
+                  if (binding === undefined || binding.kind !== sourceKind) {
+                    throw new Error("baseline exposed an unbound golden source");
+                  }
+                  const logicalSourceIdentity =
+                    binding.kind === "document" ? documentBindingIdentity(binding) : sourceId;
+                  return {
+                    logicalSourceIdentity,
+                    contentItemIdentity: `${logicalSourceIdentity}:${charStart}:${charEnd}:${sha256Hex(visibleText)}`,
+                  };
+                },
                 onProviderRequest: async (exposures, _request, coordinates) => {
                   const fixture = fixtureFor(caseId);
                   await Promise.all(
@@ -2189,7 +2360,7 @@ const executeBaseline = async (
                                 documentReconstruction: {
                                   sourceId: binding.sourceId,
                                   documentId: binding.documentId,
-                                  documentVersionId: binding.documentVersionId,
+                                  versionId: binding.versionId,
                                   contentHash: binding.contentHash,
                                   ranges: [
                                     {
@@ -2326,7 +2497,7 @@ const loadDurableRunEvidence = (
         readonly finishedAt: Date | null;
         readonly failedAt: Date | null;
         readonly assistantMessageId: string | null;
-        readonly citationNonceHex: string;
+        readonly citationNamespace: string;
         readonly nextEventSeq: number;
         readonly errorCode: string | null;
         readonly retryable: boolean | null;
@@ -2362,7 +2533,7 @@ const loadDurableRunEvidence = (
                runs.created_at as "createdAt", runs.started_at as "startedAt",
                runs.finished_at as "finishedAt", runs.failed_at as "failedAt",
                runs.assistant_message_id::text as "assistantMessageId",
-               encode(runs.citation_nonce, 'hex') as "citationNonceHex",
+               runs.citation_namespace as "citationNamespace",
                runs.next_event_seq as "nextEventSeq", runs.error_code as "errorCode",
                runs.retryable,
                chats.user_id as "chatUserId", chats.company_id::text as "chatCompanyId",
@@ -2525,7 +2696,7 @@ const loadDurableRunEvidence = (
         readonly visibleTokenCount: number;
         readonly documentSourceId: string | null;
         readonly documentId: string | null;
-        readonly documentVersionId: string | null;
+        readonly versionId: string | null;
         readonly documentContentHash: string | null;
         readonly documentRanges: EvaluationRange[] | null;
         readonly createdAt: Date;
@@ -2539,9 +2710,10 @@ const loadDurableRunEvidence = (
                exposure_stage as "exposureStage", visible_token_count as "visibleTokenCount",
                document_source_id as "documentSourceId",
                document_id as "documentId",
-               document_version_id as "documentVersionId",
-               document_content_hash as "documentContentHash",
+               version_id as "versionId",
+               content_hash as "documentContentHash",
                document_ranges as "documentRanges",
+               publisher_extraction_id::text as "publisherExtractionId",
                created_at as "createdAt"
         from ai_source_exposures where run_id = ${aiRunId}
         order by task_id, loop_iteration, attempt, provider_request_index,
@@ -2563,8 +2735,8 @@ const loadDurableRunEvidence = (
         Omit<DurableRunEvidence["sources"][number], "createdAt"> & { readonly createdAt: Date }
       >`
         select source_key as "sourceKey", kind, locator,
-               document_version_id as "documentVersionId",
-               publisher_document_version_id::text as "publisherDocumentVersionId",
+               version_id as "versionId",
+               publisher_extraction_id::text as "publisherExtractionId",
                message_id::text as "messageId",
                memory_revision_id::text as "memoryRevisionId",
                display_label as "displayLabel", public_provenance as "publicProvenance",
@@ -2647,7 +2819,7 @@ const loadDurableRunEvidence = (
           finishedAt: run.finishedAt.toISOString(),
           failedAt: run.failedAt === null ? null : run.failedAt.toISOString(),
           assistantMessageId: run.assistantMessageId,
-          citationNonceHex: run.citationNonceHex,
+          citationNamespace: run.citationNamespace,
           nextEventSeq: run.nextEventSeq,
           errorCode: run.errorCode,
           retryable: run.retryable,
@@ -3501,32 +3673,42 @@ const attestRelationalEvidence = (
       parsedWebLocator.data.domain === binding.domain
         ? parsedWebLocator.data
         : undefined;
+    const expectedDocumentRanges =
+      binding?.kind === "document" && golden?.kind === "document"
+        ? normalizeCharacterRanges(
+            evidence.sourceUses
+              .filter((use) => use.sourceKey === source.sourceKey)
+              .flatMap((use) => use.ranges),
+            storedDocuments.get(evaluationBindingGoldenSourceId(binding))?.text.length ??
+              (() => {
+                throw new Error(
+                  `${row.topology}/${row.caseId} document source lacks current stored text`,
+                );
+              })(),
+          )
+        : undefined;
     const expectedLocator =
       binding?.kind === "document" && golden?.kind === "document"
-        ? {
-            kind: "document",
-            sourceId: documentBindingSourceId(binding),
-            documentId: binding.documentId,
-            documentVersionId: binding.documentVersionId,
-            contentHash: binding.contentHash,
-            ranges: normalizeCharacterRanges(
-              evidence.sourceUses
-                .filter((use) => use.sourceKey === source.sourceKey)
-                .flatMap((use) => use.ranges),
-              storedDocuments.get(evaluationBindingGoldenSourceId(binding))?.text.length ??
-                (() => {
-                  throw new Error(
-                    `${row.topology}/${row.caseId} document source lacks current stored text`,
-                  );
-                })(),
-            ),
-            ...(binding.source.kind === "publisher"
-              ? {
-                  publisherIssueId: binding.source.issueId,
-                  publisherDocumentId: binding.source.documentId,
-                }
-              : {}),
-          }
+        ? binding.source.kind === "publisher"
+          ? {
+              kind: "document" as const,
+              sourceId: documentBindingSourceId(binding),
+              documentId: binding.documentId,
+              versionId: binding.versionId,
+              contentHash: binding.contentHash,
+              ranges: expectedDocumentRanges!,
+              publisherIssueId: binding.source.issueId,
+              publisherDocumentId: binding.source.documentId,
+              publisherExtractionId: binding.publisherExtractionId ?? undefined,
+            }
+          : {
+              kind: "document" as const,
+              sourceId: documentBindingSourceId(binding),
+              documentId: binding.documentId,
+              versionId: binding.versionId,
+              contentHash: binding.contentHash,
+              ranges: expectedDocumentRanges!,
+            }
         : binding?.kind === "chat_message"
           ? { kind: "chat_message", messageId: binding.messageId }
           : binding?.kind === "memory"
@@ -3582,7 +3764,10 @@ const attestRelationalEvidence = (
       expectedLabel === undefined ||
       (row.topology === "specialized" && terminalLabel !== expectedLabel) ||
       source.displayLabel !== expectedLabel ||
-      source.publisherDocumentVersionId !== null ||
+      source.publisherExtractionId !==
+        (binding.kind === "document" && binding.source.kind === "publisher"
+          ? binding.publisherExtractionId
+          : null) ||
       expectedLocator === undefined ||
       canonicalJson(source.locator) !== canonicalJson(expectedLocator) ||
       canonicalJson(source.publicProvenance) !== canonicalJson(expectedProvenance) ||
@@ -3631,7 +3816,7 @@ const attestRelationalEvidence = (
             })),
         })),
       },
-      evidence.run.citationNonceHex,
+      evidence.run.citationNamespace,
     );
   } catch (error) {
     throw new Error(`${row.topology}/${row.caseId} has an invalid final source map`, {
@@ -4562,7 +4747,7 @@ const mapReferenceToGolden = (
               (candidate) =>
                 candidate.kind === "document" &&
                 candidate.documentId === reference.documentId &&
-                candidate.documentVersionId === reference.documentVersionId &&
+                candidate.versionId === reference.versionId &&
                 canonicalJson(candidate.source) === canonicalJson(reference.source),
             );
           })()
@@ -4615,7 +4800,7 @@ const mapReferenceToGolden = (
  * Baseline selector observations deliberately retain the provider output's
  * golden source IDs and ranges rather than pretending to be production
  * retrieval manifests. Resolve that shape separately so capture can validate
- * the baseline artifact without weakening the namespaced production resolver.
+ * the baseline artifact without weakening the namespaced production plan-turn path.
  */
 const mapBaselineReferenceToGolden = (
   manifest: EvaluationSeedManifest,
@@ -4655,7 +4840,7 @@ const mapBaselineReferenceToGolden = (
 interface StoredEvaluationDocument {
   readonly sourceId: string;
   readonly documentId: string;
-  readonly documentVersionId: string;
+  readonly versionId: string;
   readonly text: string;
   readonly contentHash: string;
   readonly textCharCount: number;
@@ -4703,14 +4888,14 @@ const loadStoredEvaluationDocuments = (
         const rows = yield* sql<{
           readonly sourceId: string;
           readonly documentId: string;
-          readonly documentVersionId: string;
+          readonly versionId: string;
           readonly text: string;
           readonly contentHash: string;
           readonly textCharCount: number;
         }>`
           select source_id::text as "sourceId",
                  document_id::text as "documentId",
-                 document_id::text as "documentVersionId",
+                 document_id::text as "versionId",
                  text, content_hash as "contentHash", text_char_count as "textCharCount"
           from public_source_documents
           where ${binding.source.kind === "public"} = true
@@ -4719,7 +4904,7 @@ const loadStoredEvaluationDocuments = (
           union all
           select subscriptions.id::text as "sourceId",
                  documents.id::text as "documentId",
-                 versions.id::text as "documentVersionId",
+                 versions.id::text as "versionId",
                  versions.canonical_text as text, versions.content_hash as "contentHash",
                  versions.text_char_count as "textCharCount"
           from brief_document_versions versions
@@ -4730,7 +4915,7 @@ const loadStoredEvaluationDocuments = (
             and subscriptions.id::text = ${binding.source.kind === "publisher" ? binding.source.sourceId.slice("publisher:".length) : null}
             and issues.id::text = ${binding.source.kind === "publisher" ? binding.source.issueId : null}
             and documents.id::text = ${binding.documentId}
-            and versions.id::text = ${binding.documentVersionId}
+            and versions.id::text = ${binding.versionId}
         `;
         if (rows.length !== 1) {
           throw new Error(
@@ -4741,7 +4926,7 @@ const loadStoredEvaluationDocuments = (
         if (
           stored.sourceId !== binding.source.sourceId.slice(`${binding.source.kind}:`.length) ||
           stored.documentId !== binding.documentId ||
-          stored.documentVersionId !== binding.documentVersionId ||
+          stored.versionId !== binding.versionId ||
           stored.contentHash !== binding.contentHash ||
           sha256Hex(stored.text) !== stored.contentHash
         ) {
@@ -4752,7 +4937,7 @@ const loadStoredEvaluationDocuments = (
         documents.set(evaluationBindingGoldenSourceId(binding), {
           sourceId: stored.sourceId,
           documentId: stored.documentId,
-          documentVersionId: stored.documentVersionId,
+          versionId: stored.versionId,
           text: stored.text,
           contentHash: stored.contentHash,
           textCharCount: stored.textCharCount,
@@ -4788,7 +4973,7 @@ const SourceExposureAttestationSchema = z
       .regex(/^(?:public|publisher):[^:\s]+$/u)
       .optional(),
     documentId: z.string().min(1).optional(),
-    documentVersionId: z.string().min(1).optional(),
+    versionId: z.string().min(1).optional(),
     documentContentHash: z
       .string()
       .regex(/^[0-9a-f]{64}$/u)
@@ -4869,14 +5054,14 @@ const reconstructDocumentExposureText = (
   const metadata = {
     sourceId: exposure.documentSourceId,
     documentId: exposure.documentId,
-    documentVersionId: exposure.documentVersionId,
+    versionId: exposure.versionId,
     contentHash: exposure.documentContentHash,
     ranges: exposure.documentRanges,
   };
   if (
     metadata.sourceId === null ||
     metadata.documentId === null ||
-    metadata.documentVersionId === null ||
+    metadata.versionId === null ||
     metadata.contentHash === null ||
     metadata.ranges === null
   ) {
@@ -4890,7 +5075,7 @@ const reconstructDocumentExposureText = (
   if (
     metadata.sourceId !== binding.sourceId ||
     metadata.documentId !== binding.documentId ||
-    metadata.documentVersionId !== binding.documentVersionId ||
+    metadata.versionId !== binding.versionId ||
     metadata.contentHash !== binding.contentHash ||
     metadata.contentHash !== sha256Hex(documentText)
   ) {
@@ -4912,7 +5097,7 @@ const reconstructDocumentExposureText = (
   const rangeIdentityJson = JSON.stringify(
     metadata.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd })),
   );
-  const expectedIdentity = `${documentBindingIdentity(binding)}:${binding.documentVersionId}:${sha256Base64Url(rangeIdentityJson)}`;
+  const expectedIdentity = `${documentBindingIdentity(binding)}:${binding.versionId}:${sha256Base64Url(rangeIdentityJson)}`;
   if (exposure.logicalSourceIdentity !== documentBindingIdentity(binding)) {
     throw new Error(`${manifest.caseId} document exposure namespace is invalid`);
   }
@@ -4974,14 +5159,18 @@ const eligibleNonSelectedConversationMessageId = (
   )
     return undefined;
   const resolutionObservation = evidence.observations
-    .filter((observation) => observation.kind === "conversation_resolution")
+    .filter((observation) => observation.kind === "turn_plan")
     .sort(observationOrder)
     .at(-1);
   if (resolutionObservation === undefined) return undefined;
-  const parsed = DurableConversationResolutionSchema.safeParse(resolutionObservation.payload);
+  const parsed = DurablePlanTurnResultSchema.safeParse(resolutionObservation.payload);
   if (!parsed.success) return undefined;
   const selectedTurnIds = new Set(
-    parsed.data.mode === "continue" ? parsed.data.selectedTurnIds : [],
+    parsed.data.mode === "single"
+      ? parsed.data.relevantTurnIds
+      : parsed.data.mode === "fanout"
+        ? parsed.data.topics.flatMap((topic) => topic.relevantTurnIds)
+        : [],
   );
   return manifest.turnBindings
     .filter((turn) => !selectedTurnIds.has(turn.aiRunId))
@@ -5110,10 +5299,7 @@ const expectedExposureVisibleTokenCount = (
         : source.kind === "chat_message"
           ? stripHistoricalCitationTags(source.content)
           : source.content;
-  } else if (
-    exposure.exposureStage === "memory_direct_inventory" ||
-    exposure.exposureStage === "memory_tool_result"
-  ) {
+  } else if (exposure.exposureStage === "memory_tool_result") {
     visibleText = source.content;
   } else if (exposure.exposureStage === "answer_serialized") {
     visibleText =
@@ -5215,14 +5401,14 @@ const attestExactSourceExposureRows = (
     const attestedDocumentMetadata = {
       sourceId: payload.documentSourceId ?? null,
       documentId: payload.documentId ?? null,
-      documentVersionId: payload.documentVersionId ?? null,
+      versionId: payload.versionId ?? null,
       contentHash: payload.documentContentHash ?? null,
       ranges: payload.documentRanges ?? null,
     };
     const durableDocumentMetadata = {
       sourceId: exposure.documentSourceId,
       documentId: exposure.documentId,
-      documentVersionId: exposure.documentVersionId,
+      versionId: exposure.versionId,
       contentHash: exposure.documentContentHash,
       ranges: exposure.documentRanges,
     };
@@ -5249,6 +5435,8 @@ const attestExactSourceExposureRows = (
       exposure.exposureStage === "internal_search_preview" ||
       exposure.exposureStage === "internal_inspection" ||
       exposure.exposureStage === "context_candidate_inspection" ||
+      exposure.exposureStage === "evaluation_general_planner_search" ||
+      exposure.exposureStage === "evaluation_general_planner_inspect" ||
       isCanonicalSpecializedReducerTask(exposure.taskId)
     ) {
       const expected = expectedProofsByRequest.get(requestKey) ?? new Set<string>();
@@ -5260,6 +5448,7 @@ const attestExactSourceExposureRows = (
     const actual = [...new Set(requestAttestation.sourceProofs)].sort();
     const expected = [...(expectedProofsByRequest.get(requestKey) ?? new Set<string>())].sort();
     if (canonicalJson(actual) !== canonicalJson(expected)) {
+      console.error("evaluation source proof mismatch", manifest.caseId, requestKey, actual, expected);
       throw new Error(
         `${manifest.caseId} provider request has a missing or unbound source-serialization proof`,
       );
@@ -5290,13 +5479,13 @@ const validDocumentRangeIdentities = (
   add(fixture.labels.acceptableRanges[evaluationBindingGoldenSourceId(binding)]);
   add([{ charStart: 0, charEnd: stored.text.length }]);
   for (const durableSource of evidence.sources) {
-    if (durableSource.documentVersionId === binding.documentVersionId) {
+    if (durableSource.versionId === binding.versionId) {
       add(durableSource.locator.ranges);
     }
   }
   const sourceKeys = new Set(
     evidence.sources
-      .filter((durableSource) => durableSource.documentVersionId === binding.documentVersionId)
+      .filter((durableSource) => durableSource.versionId === binding.versionId)
       .map((durableSource) => durableSource.sourceKey),
   );
   for (const use of evidence.sourceUses) if (sourceKeys.has(use.sourceKey)) add(use.ranges);
@@ -5309,7 +5498,7 @@ const validDocumentRangeIdentities = (
     const record = value as Record<string, unknown>;
     if (
       record.candidateId === documentBindingIdentity(binding) ||
-      record.documentVersionId === binding.documentVersionId
+      record.versionId === binding.versionId
     ) {
       add(record.ranges);
     }
@@ -5319,7 +5508,7 @@ const validDocumentRangeIdentities = (
   return new Set(
     ranges.map(
       (value) =>
-        `${documentBindingIdentity(binding)}:${binding.documentVersionId}:${sha256Base64Url(JSON.stringify(value.map(({ charStart, charEnd }) => ({ charStart, charEnd }))))}`,
+        `${documentBindingIdentity(binding)}:${binding.versionId}:${sha256Base64Url(JSON.stringify(value.map(({ charStart, charEnd }) => ({ charStart, charEnd }))))}`,
     ),
   );
 };
@@ -5335,8 +5524,8 @@ const assertExposureStageTask = (
   > = {
     provider_input: {
       tasks: [
-        "resolve-conversation",
-        "plan-execution",
+        "plan-turn",
+        "plan-turn",
         "memory-extract",
         "single-retrieve-internal",
         ...topicTasks("retrieve-internal"),
@@ -5355,10 +5544,6 @@ const assertExposureStageTask = (
     internal_inspection: {
       tasks: ["single-retrieve-internal", ...topicTasks("retrieve-internal")],
       kinds: ["document", "chat_message"],
-    },
-    memory_direct_inventory: {
-      tasks: ["memory-extract", "single-select-memories", ...topicTasks("select-memories")],
-      kinds: ["memory"],
     },
     memory_tool_result: {
       tasks: ["memory-extract", "single-select-memories", ...topicTasks("select-memories")],
@@ -5508,7 +5693,7 @@ const mapExposureToGolden = (
         exposure.contentItemIdentity,
       );
     } else if (binding.kind === "document") {
-      const immutablePrefix = `${documentBindingIdentity(binding)}:${binding.documentVersionId}:`;
+      const immutablePrefix = `${documentBindingIdentity(binding)}:${binding.versionId}:`;
       const digest = exposure.contentItemIdentity.slice(immutablePrefix.length);
       const structurallyExact =
         exposure.contentItemIdentity.startsWith(immutablePrefix) &&
@@ -5731,7 +5916,7 @@ const sourceAudit = async (
                     join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
                     join publisher_companies companies
                       on companies.id = subscriptions.publisher_company_id
-                    where versions.id::text = ${binding.kind === "document" ? binding.documentVersionId : null}
+                    where versions.id::text = ${binding.kind === "document" ? binding.versionId : null}
                       and documents.id::text = ${binding.kind === "document" ? binding.documentId : null}
                       and issues.id::text = ${binding.kind === "document" && binding.source.kind === "publisher" ? binding.source.issueId : null}
                       and documents.id::text = ${binding.kind === "document" && binding.source.kind === "publisher" ? binding.source.documentId : null}
@@ -5741,7 +5926,7 @@ const sourceAudit = async (
                   else exists (
                     select 1 from public_source_documents documents
                     where documents.document_id = ${binding.kind === "document" ? binding.documentId : null}
-                      and documents.document_id = ${binding.kind === "document" ? binding.documentVersionId : null}
+                      and documents.document_id = ${binding.kind === "document" ? binding.versionId : null}
                       and documents.source_id = ${binding.kind === "document" && binding.source.kind === "public" ? binding.source.sourceId.slice("public:".length) : null}
                       and ('public:' || documents.source_id) = ${binding.kind === "document" ? binding.source.sourceId : null}
                       and documents.content_hash = ${binding.kind === "document" ? binding.contentHash : null}
@@ -5810,7 +5995,7 @@ const sourceAudit = async (
                      and documents.deleted_at is null
                     join brief_document_versions versions
                       on versions.brief_document_id = documents.id
-                     and versions.id::text = ${binding.kind === "document" ? binding.documentVersionId : null}
+                     and versions.id::text = ${binding.kind === "document" ? binding.versionId : null}
                      and versions.content_hash = ${binding.kind === "document" ? binding.contentHash : null}
                      and ('publisher:' || selected.subscription_id::text) = ${binding.kind === "document" ? binding.source.sourceId : null}
                     where chat.id = ${manifest.chatId}
@@ -5822,7 +6007,7 @@ const sourceAudit = async (
                     join client_company_public_source_settings settings
                       on settings.source_id = documents.source_id and settings.enabled
                     where documents.document_id = ${binding.kind === "document" ? binding.documentId : null}
-                      and documents.document_id = ${binding.kind === "document" ? binding.documentVersionId : null}
+                      and documents.document_id = ${binding.kind === "document" ? binding.versionId : null}
                       and documents.source_id = ${binding.kind === "document" && binding.source.kind === "public" ? binding.source.sourceId.slice("public:".length) : null}
                       and ('public:' || documents.source_id) = ${binding.kind === "document" ? binding.source.sourceId : null}
                       and documents.content_hash = ${binding.kind === "document" ? binding.contentHash : null}
@@ -5877,8 +6062,7 @@ interface TrustedPromptMeasurement {
 }
 
 const ProviderAuthoredOutputObservationKinds = new Set([
-  "conversation_resolution",
-  "execution_plan",
+  "turn_plan",
   "retrieval_manifest",
   "context_reducer_terminal",
   "context_decision",
@@ -6213,8 +6397,8 @@ const commonCapturedResult = async (
     selections,
     storedDocuments,
     common: {
-      artifactVersion: 2 as const,
-      goldenSetVersion: 2 as const,
+      artifactVersion: 3 as const,
+      goldenSetVersion: 3 as const,
       caseId: row.caseId,
       capture: {
         origin: "real_provider_turn" as const,
@@ -6411,80 +6595,6 @@ const translateRestrictedConversation = (
   return translated;
 };
 
-const attestCompleteConversationResolverInventory = (
-  fixture: GoldenEvaluationCase,
-  manifest: EvaluationSeedManifest,
-  evidence: DurableRunEvidence,
-  request: z.infer<typeof ConversationResolverRequestAttestationSchema>,
-) => {
-  if (
-    evidence.conversationInventory.length !== manifest.turnBindings.length ||
-    manifest.turnBindings.length !== fixture.conversation.length
-  ) {
-    throw new Error(`${fixture.id} durable conversation inventory is not complete`);
-  }
-  const complete = evidence.conversationInventory.map((entry, index) => {
-    const binding = manifest.turnBindings[index];
-    const golden = fixture.conversation[index];
-    if (
-      binding === undefined ||
-      golden === undefined ||
-      binding.turnId !== golden.turnId ||
-      entry.turnId !== binding.aiRunId ||
-      entry.userMessageId !== binding.userMessageId ||
-      entry.userContent !== golden.userContent ||
-      entry.assistantMessageId !== binding.assistantMessageId ||
-      entry.assistantContent === null ||
-      stripHistoricalCitationTags(entry.assistantContent) !== golden.assistantContent ||
-      entry.errorCode !== null
-    ) {
-      throw new Error(`${fixture.id} durable conversation inventory differs from its seed`);
-    }
-    return {
-      kind: "complete" as const,
-      fixtureTurnId: binding.turnId,
-      turnId: binding.aiRunId,
-      userMessageId: binding.userMessageId,
-      assistantMessageId: binding.assistantMessageId,
-    };
-  });
-  const recent = complete.slice(-CanonicalEvaluationExecutionConfig.aiConversationRecentTurns);
-  const bounded: typeof complete = [];
-  for (let index = recent.length - 1; index >= 0; index -= 1) {
-    const entry = recent[index];
-    if (entry === undefined) continue;
-    const candidate = [entry, ...bounded];
-    const exact = attestExactConversationResolverRequest(fixture, candidate, request.currentDate);
-    if (exact.inputTokens > exact.usableInputTokens) break;
-    bounded.unshift(entry);
-  }
-  const boundary = latestObservation(evidence, "conversation_inventory_boundary", "load-turn");
-  const counts = z
-    .object({
-      consideredCount: z.number().int().nonnegative(),
-      includedCount: z.number().int().nonnegative(),
-      countBoundaryExcludedCount: z.number().int().nonnegative(),
-      tokenBoundaryExcludedCount: z.number().int().nonnegative(),
-    })
-    .strict()
-    .parse(boundary?.payload);
-  if (
-    counts.consideredCount !== complete.length ||
-    counts.includedCount !== bounded.length ||
-    counts.countBoundaryExcludedCount !== complete.length - recent.length ||
-    counts.tokenBoundaryExcludedCount !== recent.length - bounded.length
-  ) {
-    throw new Error(`${fixture.id} conversation inventory boundary is not exact`);
-  }
-  const supplied = translateRestrictedConversation(fixture, manifest, request.conversation);
-  if (canonicalJson(supplied) !== canonicalJson(bounded)) {
-    throw new Error(
-      `${fixture.id} clarification conversation inventory is incomplete or out of order`,
-    );
-  }
-  return bounded;
-};
-
 const translateAndAttestRestrictedLedger = (
   fixture: GoldenEvaluationCase,
   manifest: EvaluationSeedManifest,
@@ -6641,8 +6751,7 @@ const providerPromptTokens = (usage: DurableRunEvidence["usage"][number]): numbe
   usage.inputTokens + usage.cachedTokens;
 
 const specializedProviderAgentRoles = new Map<string, string>([
-  ["resolve-conversation", "conversation_resolver"],
-  ["plan-execution", "execution_planner"],
+  ["plan-turn", "plan_turn"],
   ["single-retrieve-internal", "internal_retrieval"],
   ["single-select-memories", "memory_selector"],
   ["single-retrieve-web", "web_research"],
@@ -7071,7 +7180,7 @@ const expectedTerminalContextEvidence = (
   const durableSourceMap = durableFinalSourceMapFromEvidence(evidence);
   if (row.topology === "general_planner") {
     const output = GeneralPlannerProviderOutputSchema.parse(row.executionOutput);
-    if (output.resolution.mode === "clarify") {
+    if (output.planTurn.mode === "clarify") {
       compareExactSourceUses(row, evidence, []);
       if (durableSourceMap.length !== 0) {
         throw new Error(`${row.topology}/${row.caseId} clarification has durable sources`);
@@ -7090,6 +7199,7 @@ const expectedTerminalContextEvidence = (
         (candidate) => candidate.sourceKey === rawDurableSource?.sourceKey,
       );
       if (source === undefined || durableSource === undefined) {
+        console.error("baseline source debug", row.caseId, selection.sourceId, rawDurableSource, durableSource, evidence.sources.map((candidate) => ({ key: candidate.sourceKey, mapped: mapDurableSource(manifest, candidate), kind: candidate.kind })));
         throw new Error(`${row.topology}/${row.caseId} baseline source order is incomplete`);
       }
       const selectedText =
@@ -7100,7 +7210,7 @@ const expectedTerminalContextEvidence = (
           : source.content;
       return {
         sourceKey: durableSource.sourceKey,
-        consumerTaskId: "single-answer",
+        consumerTaskId: output.planTurn.mode === "fanout" ? "fanout-synthesis" : "single-answer",
         topicId: null,
         renderedTokenCount: model.countTextTokens(selectedText),
         contextOrder: index,
@@ -7109,12 +7219,12 @@ const expectedTerminalContextEvidence = (
     });
     compareExactSourceUses(row, evidence, expectedUses);
     return {
-      mode: "single",
+      mode: output.planTurn.mode === "fanout" ? "synthesis" : "single",
       reductionRan: false,
       sourcesRead: durableSourceMap.map(publicSourceRecordFromFinalSource),
       consumers: [
         {
-          consumer: "direct",
+          consumer: output.planTurn.mode === "fanout" ? "synthesis" : "direct",
           inputTokens: measureCanonicalEvaluationRequestTokens(fixture, output.selectedSources),
           requestedOutputTokens: CanonicalEvaluationExecutionConfig.aiMainOutputMaxTokens,
           usableInputTokens: canonicalEvaluationUsableInputTokens(),
@@ -7262,7 +7372,7 @@ const expectedTerminalContextEvidence = (
 const terminalOwnedObservation = (
   row: CaseRunRow,
   evidence: DurableRunEvidence,
-  kind: "conversation_resolution" | "execution_plan",
+  kind: "turn_plan",
   expectedOwner: string,
 ) => {
   const observations = evidence.observations
@@ -7292,175 +7402,83 @@ const canonicalResolutionAndPlan = (
   evidence: DurableRunEvidence,
   manifest: EvaluationSeedManifest,
 ): {
-  readonly resolution: z.infer<typeof DurableConversationResolutionSchema>;
-  readonly plan: z.infer<typeof DurableExecutionPlanSchema> | null;
+  readonly resolution: z.infer<typeof DurablePlanTurnResultSchema>;
+  readonly plan: z.infer<typeof DurablePlanTurnResultSchema> | null;
 } => {
   const resolutionOwner =
-    row.topology === "general_planner" ? "evaluation-general-planner" : "resolve-conversation";
+    row.topology === "general_planner" ? "evaluation-general-planner" : "plan-turn";
   const resolutionObservation = terminalOwnedObservation(
     row,
     evidence,
-    "conversation_resolution",
+    "turn_plan",
     resolutionOwner,
   );
-  const resolution = DurableConversationResolutionSchema.parse(resolutionObservation.payload);
-  const resolutionObservations = evidence.observations.filter(
-    (observation) => observation.kind === "conversation_resolution",
-  );
-  for (const observation of resolutionObservations) {
+  for (const observation of evidence.observations.filter(
+    (observation) => observation.kind === "turn_plan",
+  )) {
     providerUsageForObservation(row, evidence, observation, {
       allowNoUsage: row.topology === "specialized" && manifest.turnBindings.length === 0,
     });
   }
-  const resolutionUsage = terminalProviderUsage(row, evidence, resolutionObservation, {
+  terminalProviderUsage(row, evidence, resolutionObservation, {
     allowNoUsage: row.topology === "specialized" && manifest.turnBindings.length === 0,
   });
+  const resolution =
+    row.topology === "general_planner"
+      ? (() => {
+          const output = GeneralPlannerProviderOutputSchema.parse(row.executionOutput);
+          const turnIds = new Map(
+            manifest.turnBindings.map((binding) => [binding.turnId, binding.aiRunId] as const),
+          );
+          return output.planTurn.mode === "clarify"
+            ? output.planTurn
+            : output.planTurn.mode === "single"
+              ? {
+                  mode: "single" as const,
+                  question: output.planTurn.question,
+                  relevantTurnIds: output.planTurn.relevantTurnIds.map((turnId) => {
+                    const aiRunId = turnIds.get(turnId);
+                    if (aiRunId === undefined) {
+                      throw new Error(
+                        `${row.topology}/${row.caseId} plan-turn selects a foreign turn`,
+                      );
+                    }
+                    return aiRunId;
+                  }),
+                }
+              : {
+                  mode: "fanout" as const,
+                  question: output.planTurn.question,
+                  topics: output.planTurn.topics.map((topic) => ({
+                    topicId: topic.topicId,
+                    question: topic.question,
+                    relevantTurnIds: topic.relevantTurnIds.map((turnId) => {
+                      const aiRunId = turnIds.get(turnId);
+                      if (aiRunId === undefined) {
+                        throw new Error(
+                          `${row.topology}/${row.caseId} plan-turn selects a foreign turn`,
+                        );
+                      }
+                      return aiRunId;
+                    }),
+                  })),
+                };
+        })()
+      : DurablePlanTurnResultSchema.parse(resolutionObservation.payload);
+  const selectedTurnIds =
+    resolution.mode === "clarify"
+      ? []
+      : resolution.mode === "single"
+        ? resolution.relevantTurnIds
+        : resolution.topics.flatMap((topic) => topic.relevantTurnIds);
   const allowedTurns = new Set(manifest.turnBindings.map((binding) => binding.aiRunId));
   if (
-    resolution.mode === "continue" &&
-    (new Set(resolution.selectedTurnIds).size !== resolution.selectedTurnIds.length ||
-      resolution.selectedTurnIds.some((turnId) => !allowedTurns.has(turnId)))
+    new Set(selectedTurnIds).size !== selectedTurnIds.length ||
+    selectedTurnIds.some((turnId) => !allowedTurns.has(turnId))
   ) {
-    throw new Error(`${row.topology}/${row.caseId} resolution selects a foreign turn`);
+    throw new Error(`${row.topology}/${row.caseId} plan-turn selects a foreign turn`);
   }
-  if (row.topology === "general_planner") {
-    const output = GeneralPlannerProviderOutputSchema.parse(row.executionOutput);
-    const turnIds = new Map(
-      manifest.turnBindings.map((binding) => [binding.turnId, binding.aiRunId] as const),
-    );
-    const expectedResolution =
-      output.resolution.mode === "clarify"
-        ? output.resolution
-        : {
-            mode: "continue" as const,
-            retrievalQuestion: output.resolution.retrievalQuestion,
-            selectedTurnIds: output.resolution.selectedTurnIds.map((turnId) => turnIds.get(turnId)),
-          };
-    if (canonicalJson(resolution) !== canonicalJson(expectedResolution)) {
-      throw new Error(`${row.topology}/${row.caseId} resolution differs from provider output`);
-    }
-  } else {
-    if (
-      resolutionUsage === null &&
-      (resolutionObservations.length !== 1 ||
-        resolution.mode !== "continue" ||
-        resolution.retrievalQuestion !== fixtureFor(row.caseId).currentMessage ||
-        resolution.selectedTurnIds.length !== 0)
-    ) {
-      throw new Error(`${row.topology}/${row.caseId} deterministic resolution is not exact`);
-    }
-    const attestations = evidence.observations
-      .filter(
-        (observation) =>
-          observation.kind === "provider_request_attestation" &&
-          observation.emittingTask === "resolve-conversation",
-      )
-      .sort(observationOrder);
-    const terminalAttestation = attestations.at(-1);
-    if (
-      terminalAttestation !== undefined &&
-      (terminalAttestation.loopIteration !== resolutionObservation.loopIteration ||
-        terminalAttestation.attempt !== resolutionObservation.attempt)
-    ) {
-      throw new Error(`${row.topology}/${row.caseId} resolution output/request attempts differ`);
-    }
-  }
-  const planObservations = evidence.observations.filter(
-    (observation) => observation.kind === "execution_plan",
-  );
-  if (resolution.mode === "clarify") {
-    if (planObservations.length !== 0) {
-      throw new Error(`${row.topology}/${row.caseId} clarification has an execution plan`);
-    }
-    return { resolution, plan: null };
-  }
-  const planOwner =
-    row.topology === "general_planner" ? "evaluation-general-planner" : "plan-execution";
-  const planObservation = terminalOwnedObservation(row, evidence, "execution_plan", planOwner);
-  const plan = DurableExecutionPlanSchema.parse(planObservation.payload);
-  for (const observation of planObservations) {
-    providerUsageForObservation(row, evidence, observation);
-  }
-  terminalProviderUsage(row, evidence, planObservation);
-  if (plan.mode === "fanout") {
-    const expectedTopicIds = (["t1", "t2", "t3"] as const).slice(0, plan.topics.length);
-    if (
-      canonicalJson(plan.topics.map((topic) => topic.topicId)) !==
-        canonicalJson(expectedTopicIds) ||
-      plan.topics.some(
-        (topic) =>
-          new Set(topic.relevantTurnIds).size !== topic.relevantTurnIds.length ||
-          topic.relevantTurnIds.some((turnId) => !resolution.selectedTurnIds.includes(turnId)),
-      )
-    ) {
-      throw new Error(`${row.topology}/${row.caseId} execution plan topology is invalid`);
-    }
-  }
-  if (row.topology === "general_planner" && plan.mode !== "single") {
-    throw new Error(`${row.topology}/${row.caseId} baseline cannot fan out`);
-  }
-  if (row.topology === "specialized") {
-    const fixture = fixtureFor(row.caseId);
-    const measurements = deriveTrustedPromptMeasurements(
-      row.topology,
-      row.caseId,
-      evidence.usage,
-      evidence.observations,
-    );
-    if (plan.mode === "single") {
-      const terminal = terminalProductionLedger(
-        fixture,
-        manifest,
-        evidence,
-        measurements,
-        "single-answer",
-      );
-      if (
-        terminal.ledger.requestKind !== "direct" ||
-        terminal.ledger.question !== resolution.retrievalQuestion ||
-        canonicalJson(terminal.ledger.selectedConversation.map((entry) => entry.turnId)) !==
-          canonicalJson(resolution.selectedTurnIds)
-      ) {
-        throw new Error(`${row.topology}/${row.caseId} single ledger differs from routing outputs`);
-      }
-    } else {
-      for (const topic of plan.topics) {
-        const terminal = terminalProductionLedger(
-          fixture,
-          manifest,
-          evidence,
-          measurements,
-          `topic-${topic.topicId}-answer`,
-        );
-        if (
-          terminal.ledger.requestKind !== "topic" ||
-          terminal.ledger.topicId !== topic.topicId ||
-          terminal.ledger.question !== topic.question ||
-          canonicalJson(terminal.ledger.selectedConversation.map((entry) => entry.turnId)) !==
-            canonicalJson(topic.relevantTurnIds)
-        ) {
-          throw new Error(
-            `${row.topology}/${row.caseId}/${topic.topicId} ledger differs from routing outputs`,
-          );
-        }
-      }
-      const synthesis = terminalProductionLedger(
-        fixture,
-        manifest,
-        evidence,
-        measurements,
-        "fanout-synthesis",
-      );
-      if (
-        synthesis.ledger.requestKind !== "synthesis" ||
-        canonicalJson(synthesis.ledger.packets.map((packet) => packet.topicId)) !==
-          canonicalJson(plan.topics.map((topic) => topic.topicId))
-      ) {
-        throw new Error(`${row.topology}/${row.caseId} synthesis differs from execution plan`);
-      }
-    }
-  }
-  return { resolution, plan };
+  return { resolution, plan: resolution.mode === "clarify" ? null : resolution };
 };
 
 interface AttestedTerminalManifest {
@@ -7634,7 +7652,7 @@ const terminalRetrievalManifests = (
           candidateId = documentBindingIdentity(binding);
           exact =
             documentReference.documentId === binding.documentId &&
-            documentReference.documentVersionId === binding.documentVersionId &&
+            documentReference.versionId === binding.versionId &&
             canonicalJson(documentReference.source) === canonicalJson(binding.source) &&
             documentReference.purpose === source.purpose &&
             canonicalJson(ranges) === canonicalJson(source.ranges);
@@ -7679,7 +7697,7 @@ const terminalRetrievalManifests = (
           role === "internal"
             ? ["internal_search_preview"]
             : role === "memory"
-              ? ["memory_direct_inventory", "memory_tool_result"]
+              ? ["memory_tool_result"]
               : ["web_fetch"];
         const exposureMatches = evidence.sourceExposures.some(
           (exposure) =>
@@ -7778,7 +7796,7 @@ const terminalRetrievalManifests = (
             // suffix rather than the golden set's full-range identity.
             return [
               source.sourceId,
-              `${documentBindingIdentity(binding)}:${binding.documentVersionId}:`,
+              `${documentBindingIdentity(binding)}:${binding.versionId}:`,
             ] as const;
           }),
         );
@@ -8099,108 +8117,104 @@ const captureProductionTopology = (
   manifest: EvaluationSeedManifest,
   evidence: DurableRunEvidence,
   promptMeasurements: readonly TrustedPromptMeasurement[],
-  resolutionMode: "continue" | "clarify",
-  executionPlan:
-    | { readonly mode: "single" }
-    | { readonly mode: "fanout"; readonly topicCount: number },
+  resolutionMode: "single" | "clarify" | "fanout",
+  planTurn:
+    | { readonly mode: "clarify"; readonly question: string }
+    | {
+        readonly mode: "single";
+        readonly question: string;
+        readonly relevantTurnIds: readonly string[];
+      }
+    | {
+        readonly mode: "fanout";
+        readonly question: string;
+        readonly topics: readonly {
+          readonly topicId: "t1" | "t2" | "t3";
+          readonly question: string;
+          readonly relevantTurnIds: readonly string[];
+        }[];
+      },
 ) => {
   if (resolutionMode === "clarify") {
-    const observation = latestObservation(
-      evidence,
-      "provider_request_attestation",
-      "resolve-conversation",
-    );
-    const request = ConversationResolverRequestAttestationSchema.parse(observation?.payload);
-    const conversation = attestCompleteConversationResolverInventory(
-      fixture,
-      manifest,
-      evidence,
-      request,
-    );
-    const exact = attestExactConversationResolverRequest(
-      fixture,
-      conversation,
-      request.currentDate,
-    );
-    const usage = evidence.usage.find(
-      (candidate) =>
-        usageCoordinateKey(candidate) === usageCoordinateKey(request.terminalUsageCoordinate),
-    );
+    const observation = latestObservation(evidence, "turn_plan", "plan-turn");
+    const durablePlan = DurablePlanTurnResultSchema.parse(observation?.payload);
+    if (durablePlan.mode !== "clarify") {
+      throw new Error("clarification route lacks a clarify plan-turn result");
+    }
     const latestResolverUsage = evidence.usage
-      .filter((candidate) => candidate.taskId === "resolve-conversation")
+      .filter((candidate) => candidate.taskId === "plan-turn")
       .at(-1);
-    const latestResolverMeasurement = providerMeasurementsForTask(
-      evidence,
-      "resolve-conversation",
-    ).at(-1);
-    const providerMeasurementObservation = evidence.observations.find((candidate) => {
-      if (candidate.kind !== "provider_request_measurement") return false;
-      const payload = ProviderRequestMeasurementSchema.safeParse(candidate.payload);
-      return (
-        payload.success &&
-        usageCoordinateKey({
-          taskId: candidate.emittingTask,
-          loopIteration: candidate.loopIteration,
-          attempt: candidate.attempt,
-          providerRequestIndex: payload.data.providerRequestIndex,
-        }) === usageCoordinateKey(request.terminalUsageCoordinate)
-      );
+    const latestResolverMeasurement = providerMeasurementsForTask(evidence, "plan-turn").at(-1);
+    const providerMeasurement = latestResolverMeasurement;
+    const usage = latestResolverUsage;
+    const conversation = evidence.conversationInventory.map((entry) => {
+      const binding = manifest.turnBindings.find((candidate) => candidate.aiRunId === entry.turnId);
+      const golden = fixture.conversation.find((candidate) => candidate.turnId === binding?.turnId);
+      if (binding === undefined || golden === undefined || entry.assistantMessageId === null) {
+        throw new Error("plan-turn conversation inventory is not exact");
+      }
+      return {
+        kind: "complete" as const,
+        fixtureTurnId: binding.turnId,
+        turnId: binding.aiRunId,
+        userMessageId: binding.userMessageId,
+        assistantMessageId: entry.assistantMessageId,
+      };
     });
-    const providerMeasurement = ProviderRequestMeasurementSchema.parse(
-      providerMeasurementObservation?.payload,
-    );
+    const currentDate = evidence.run.createdAt.slice(0, 10);
+    const exact = attestExactPlanTurnRequest(fixture, conversation, currentDate);
+    const terminalUsageCoordinate =
+      latestResolverUsage === undefined
+        ? { taskId: "plan-turn", loopIteration: 0, attempt: 0, providerRequestIndex: 0 }
+        : {
+            taskId: latestResolverUsage.taskId,
+            loopIteration: latestResolverUsage.loopIteration,
+            attempt: latestResolverUsage.attempt,
+            providerRequestIndex: latestResolverUsage.providerRequestIndex,
+          };
+    if (providerMeasurement === undefined || usage === undefined) {
+      throw new Error(`${fixture.id} clarification lacks exact plan-turn provider usage`);
+    }
     if (
       observation === undefined ||
-      request.currentUserMessageId !== manifest.userMessageId ||
-      request.terminalUsageCoordinate.taskId !== "resolve-conversation" ||
-      request.terminalUsageCoordinate.loopIteration !== observation.loopIteration ||
-      request.terminalUsageCoordinate.attempt !== observation.attempt ||
-      request.inputTokens !== exact.inputTokens ||
-      request.usableInputTokens !== exact.usableInputTokens ||
-      request.requestSha256Hex !== exact.requestSha256Hex ||
-      usage === undefined ||
-      latestResolverUsage === undefined ||
-      latestResolverMeasurement === undefined ||
-      usageCoordinateKey(latestResolverUsage) !== usageCoordinateKey(usage) ||
-      usageCoordinateKey(latestResolverMeasurement) !== usageCoordinateKey(usage) ||
-      usage.agentRole !== "conversation_resolver" ||
+      usage.agentRole !== "plan_turn" ||
       usage.providerServiceId !== ZAI_CODING_PLAN_PROVIDER_SERVICE_ID ||
-      usage.modelId !== request.modelId ||
       !isSuccessfulProviderStopReason(usage.stopReason) ||
-      providerPromptTokens(usage) !== request.inputTokens ||
-      providerMeasurement.requestSha256Hex !== request.requestSha256Hex ||
-      providerMeasurement.modelId !== request.modelId ||
-      providerMeasurement.agentRole !== usage.agentRole ||
-      providerMeasurement.inputTokens !== request.inputTokens ||
-      !providerMeasurement.passed ||
+      providerMeasurement.payload.requestSha256Hex !== exact.requestSha256Hex ||
+      providerMeasurement.payload.modelId !== usage.modelId ||
+      providerMeasurement.payload.agentRole !== usage.agentRole ||
+      providerMeasurement.payload.inputTokens !== exact.inputTokens ||
+      providerMeasurement.payload.usableInputTokens !== exact.usableInputTokens ||
+      providerMeasurement.payload.requestedOutputTokens !== 2_048 ||
+      !providerMeasurement.payload.passed ||
       !promptMeasurements.some(
         (measurement) =>
           measurement.requestId === usageCoordinateKey(usage) &&
-          measurement.requestSha256Hex === request.requestSha256Hex &&
-          measurement.localInputTokens === request.inputTokens &&
-          measurement.providerInputTokens === request.inputTokens &&
+          measurement.requestSha256Hex === providerMeasurement.payload.requestSha256Hex &&
+          measurement.localInputTokens === providerMeasurement.payload.inputTokens &&
+          measurement.providerInputTokens === providerMeasurement.payload.inputTokens &&
           measurement.gatePassed,
       )
     ) {
-      throw new Error(`${fixture.id} clarification lacks exact resolver provider usage`);
+      throw new Error(`${fixture.id} clarification lacks exact plan-turn provider usage`);
     }
     return {
       mode: "clarification" as const,
-      resolverRequest: {
-        modelId: request.modelId,
-        requestSha256Hex: request.requestSha256Hex,
-        inputTokens: request.inputTokens,
-        usableInputTokens: request.usableInputTokens,
-        requestedOutputTokens: request.requestedOutputTokens,
-        currentUserMessageId: request.currentUserMessageId,
-        currentDate: request.currentDate,
+      planTurnRequest: {
+        modelId: usage.modelId,
+        requestSha256Hex: providerMeasurement.payload.requestSha256Hex,
+        inputTokens: providerMeasurement.payload.inputTokens,
+        usableInputTokens: providerMeasurement.payload.usableInputTokens,
+        requestedOutputTokens: providerMeasurement.payload.requestedOutputTokens,
+        currentUserMessageId: manifest.userMessageId,
+        currentDate,
         conversation,
-        terminalUsageCoordinate: request.terminalUsageCoordinate,
+        terminalUsageCoordinate,
       },
       providerInputTokens: providerPromptTokens(usage),
     };
   }
-  if (executionPlan.mode === "single") {
+  if (resolutionMode === "single" && planTurn.mode === "single") {
     const initial = initialProductionLedger(fixture, manifest, evidence, "single-measure");
     const terminal = terminalProductionLedger(
       fixture,
@@ -8253,7 +8267,10 @@ const captureProductionTopology = (
       ...reduction,
     };
   }
-  const topicIds = (["t1", "t2", "t3"] as const).slice(0, executionPlan.topicCount);
+  if (planTurn.mode !== "fanout") {
+    throw new Error(`${fixture.id} fanout route lacks a fanout plan-turn result`);
+  }
+  const topicIds = planTurn.topics.map((topic) => topic.topicId);
   const topics = topicIds.map((topicId) => {
     const initialTaskId = `topic-${topicId}-measure`;
     const answerTaskId = `topic-${topicId}-answer`;
@@ -8377,21 +8394,24 @@ const captureSpecialized = async (
   const turnMap = new Map(
     manifest.turnBindings.map((binding) => [binding.aiRunId, binding.turnId]),
   );
-  const resolution =
+  const planTurn =
     routing.resolution.mode === "clarify"
       ? { mode: "clarify" as const, question: routing.resolution.question }
-      : {
-          mode: "continue" as const,
-          retrievalQuestion: routing.resolution.retrievalQuestion,
-          selectedTurnIds: routing.resolution.selectedTurnIds.map((id) => turnMap.get(id) ?? id),
-        };
-  const executionPlan =
-    routing.plan?.mode !== "fanout"
-      ? { mode: "single" as const }
-      : {
-          mode: "fanout" as const,
-          topicCount: routing.plan.topics.length,
-        };
+      : routing.resolution.mode === "single"
+        ? {
+            mode: "single" as const,
+            question: routing.resolution.question,
+            relevantTurnIds: routing.resolution.relevantTurnIds.map((id) => turnMap.get(id) ?? id),
+          }
+        : {
+            mode: "fanout" as const,
+            question: routing.resolution.question,
+            topics: routing.resolution.topics.map((topic) => ({
+              topicId: topic.topicId,
+              question: topic.question,
+              relevantTurnIds: topic.relevantTurnIds.map((id) => turnMap.get(id) ?? id),
+            })),
+          };
   const selectorSelections = { A: [] as string[], B: [] as string[], W: [] as string[] };
   const pulledSelections = new Map<
     string,
@@ -8463,8 +8483,8 @@ const captureSpecialized = async (
     manifest,
     evidence,
     captured.common.promptMeasurements,
-    resolution.mode,
-    executionPlan,
+    planTurn.mode,
+    planTurn,
   );
   const reductionRequired =
     productionContext.mode === "single_reduced" ||
@@ -8498,8 +8518,7 @@ const captureSpecialized = async (
     ...captured.common,
     topology: "specialized",
     pulledSourceIds,
-    conversationResolution: resolution,
-    executionPlan,
+    planTurn,
     selectorSelections,
     reduction: {
       required: reductionRequired,
@@ -8523,10 +8542,11 @@ const captureBaseline = async (
   annotationDigest: string,
 ): Promise<GeneralPlannerEvaluationResult> => {
   const captured = await commonCapturedResult(connectionString, row, annotations, annotationDigest);
-  GeneralPlannerProviderOutputSchema.parse(row.executionOutput);
+  const output = GeneralPlannerProviderOutputSchema.parse(row.executionOutput);
   return GeneralPlannerEvaluationResultsSchema.element.parse({
     ...captured.common,
     topology: "general_planner",
+    planTurn: output.planTurn,
     pulledSourceIds: exposedGoldenSourceIds(
       captured.manifest,
       captured.evidence,
