@@ -4793,6 +4793,26 @@ const ProviderRequestMeasurementSchema = z
     modelId: z.string().min(1),
     requestSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
     sourceExposureProofSha256Hexes: z.array(z.string().regex(/^[0-9a-f]{64}$/u)),
+    sourceExposureProofBindings: z
+      .array(
+        z
+          .object({
+            providerSerializationProofSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
+            providerSerializationProofBinding: z
+              .object({
+                messageIndex: z.number().int().nonnegative(),
+                sourceOrdinal: z.number().int().nonnegative(),
+                serializedField: z.string().trim().min(1),
+                characterOffset: z.number().int().nonnegative().optional(),
+                orderedSourceDescriptor: z.string().trim().min(1),
+                publicDocumentId: z.string().trim().min(1).optional(),
+              })
+              .strict(),
+          })
+          .strict(),
+      )
+      .optional()
+      .default([]),
     inputTokens: z.number().int().nonnegative(),
     requestedOutputTokens: z.number().int().positive(),
     usableInputTokens: z.number().int().positive(),
