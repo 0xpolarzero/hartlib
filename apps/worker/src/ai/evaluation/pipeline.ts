@@ -4772,6 +4772,17 @@ const SourceExposureAttestationSchema = z
     exposureStage: z.string().min(1),
     visibleTokenCount: z.number().int().nonnegative(),
     providerSerializationProofSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
+    providerSerializationProofBinding: z
+      .object({
+        messageIndex: z.number().int().nonnegative(),
+        sourceOrdinal: z.number().int().nonnegative(),
+        serializedField: z.string().trim().min(1),
+        characterOffset: z.number().int().nonnegative().optional(),
+        orderedSourceDescriptor: z.string().trim().min(1),
+        publicDocumentId: z.string().trim().min(1).optional(),
+      })
+      .strict()
+      .optional(),
     documentSourceId: z
       .string()
       .regex(/^(?:public|publisher):[^:\s]+$/u)
@@ -5193,7 +5204,7 @@ const attestExactSourceExposureRows = (
       contentItemIdentity: payload.contentItemIdentity,
       exposureStage: payload.exposureStage,
       visibleTokenCount: payload.visibleTokenCount,
-    });
+    }, payload.providerSerializationProofBinding);
     const expectedVisibleTokenCount = expectedExposureVisibleTokenCount(
       manifest,
       evidence,
