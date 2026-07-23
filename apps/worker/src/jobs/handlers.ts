@@ -802,7 +802,13 @@ export const makeDurableProviderBoundary = (
     fastTimeoutMs: config.aiFastTaskTimeoutMs,
     answerTimeoutMs: config.aiAnswerTimeoutMs,
     hooks: {
-      onMeasurement: async (coordinates, measurement, request, sourceExposureProofSha256Hexes) => {
+      onMeasurement: async (
+        coordinates,
+        measurement,
+        request,
+        sourceExposureProofSha256Hexes,
+        sourceExposureProofBindings,
+      ) => {
         const signal = currentTaskAbortSignal();
         throwIfAborted(signal);
         await runAiWorkflowDb(
@@ -833,6 +839,12 @@ export const makeDurableProviderBoundary = (
                 modelId: measurement.modelId,
                 requestSha256Hex: providerRequestSha256Hex(request),
                 sourceExposureProofSha256Hexes,
+                sourceExposureProofBindings: sourceExposureProofBindings.map(
+                  ({ providerSerializationProofSha256Hex, binding }) => ({
+                    providerSerializationProofSha256Hex,
+                    providerSerializationProofBinding: binding,
+                  }),
+                ),
                 providerRequestIndex: coordinates.providerRequestIndex,
                 inputTokens: measurement.inputTokens,
                 requestedOutputTokens: measurement.requestedOutputTokens,

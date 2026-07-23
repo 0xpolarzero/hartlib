@@ -26,11 +26,13 @@ import {
 import {
   normalizeProviderRequest,
   providerRequestSha256Hex,
+  providerRequestSourceExposureProofBindings,
   providerRequestSourceExposureProofs,
   requireLiveProviderRequest,
   type ProviderMessage,
   type LiveProviderRequest,
   type ProviderRequest,
+  type ProviderRequestSourceExposureProofBinding,
   type ProviderToolCall,
 } from "./provider-request";
 import type { LiveProviderRequestMeasurement, ModelUsage } from "./types";
@@ -61,6 +63,7 @@ export interface PiBoundaryHooks {
     measurement: LiveProviderRequestMeasurement,
     request: LiveProviderRequest,
     sourceExposureProofSha256Hexes: readonly string[],
+    sourceExposureProofBindings: readonly ProviderRequestSourceExposureProofBinding[],
   ) => Promise<void> | void;
   readonly onUsage?: (
     coordinates: PiBoundaryCoordinates,
@@ -290,6 +293,10 @@ export class ExactPiBoundary {
       normalizedRequest,
       (text) => model.countTextTokens(text),
     );
+    const sourceExposureProofBindings = providerRequestSourceExposureProofBindings(
+      normalizedRequest,
+      (text) => model.countTextTokens(text),
+    );
     throwIfAborted(signal);
     // `passed` is computed before any durable observation, event, exposure, or
     // authorization callback can run. Failed gates retain their measurement but
@@ -299,6 +306,7 @@ export class ExactPiBoundary {
       measurement,
       normalizedRequest,
       sourceExposureProofSha256Hexes,
+      sourceExposureProofBindings,
     );
     throwIfAborted(signal);
     if (!measurement.passed) {
