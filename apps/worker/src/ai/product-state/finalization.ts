@@ -993,7 +993,14 @@ const validateDurableObservability = (
           : isEvaluationRun
             ? isGeneralPlannerEvaluationRun
               ? new Set(["evaluation-general-planner"])
-              : new Set(["single-answer"])
+              : answer.mode === "single"
+                ? new Set(["single-answer"])
+                : new Set([
+                    "fanout-synthesis",
+                    "topic-t1-answer",
+                    "topic-t2-answer",
+                    "topic-t3-answer",
+                  ])
             : answer.mode === "single"
               ? new Set(["single-answer"])
               : new Set([
