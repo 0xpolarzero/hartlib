@@ -318,7 +318,17 @@ Clerk user webhook delivery order is not trusted. The database stores the last d
 
 Client company membership removal is a retained revocation, not a hard delete. `revoked_at` and `revoked_by_user_id` are set atomically with revocation of the employee's subscription grants; the row remains for chat, notification, preferences, usage, and other durable foreign keys. Acceptance reads the membership once and saves its identity in the immutable run scope; later changes affect later runs only. Current reads still require a live user and company, and account purge, legal restriction, and deleted-workspace rules remain explicit denies. Direct membership deletion is database-rejected outside the account-purge transaction, and only unrevoked live admins satisfy the last-admin invariant.
 
-Chat lists acquire the exact sorted viewer lanes before their projection. A full chat read checks only the authenticated viewer against the chat and run, then reads messages, answers, citations, and events; it does not reauthorize each source or policy. Demo `GET /v1/chat` first idempotently ensures its demo workspace, then performs that same authorized projection. Every worker terminal transition loads and validates the immutable run scope before saving. Delivered issue detail and raw PDF routes use the exact durable delivery-recipient record for the authenticated user and issue/document. Ordinary unsubscribe, grant, source, or policy changes do not revoke a delivered publication; account purge and legal restriction remain explicit denies.
+Chat lists acquire the exact sorted viewer lanes before their projection. A full chat read checks only the authenticated viewer against the chat and run, then reads messages, answers, citations, and events; it does not reauthorize each source or policy. Demo `GET /v1/chat` first idempotently ensures its demo workspace, then performs that same authorized projection. Every worker terminal transition loads and validates the immutable run scope before saving.
+
+Issue delivery writes the immutable company delivery and one immutable recipient
+row for each then-entitled user in the same transaction. Delivered issue detail,
+archive, citation, and raw PDF routes require a live authenticated user plus the
+exact `(issue, client company, user)` recipient record and coherent document
+identity. A company delivery alone cannot authorize an employee. A later
+unsubscribe, grant, source setting, or policy change affects the current catalog
+and future delivery only. It cannot revoke a historical recipient or admit a
+user or company that never received the issue. Account deletion, content purge,
+retention expiry, and legal or security restriction remain explicit denies.
 
 Every authenticated administrative mutation, including platform-support actions and company-scoped export creation, writes an authorization audit outcome. Successful writes record `succeeded`; RBAC, MFA, tenant/scope, immutable-state, idempotency-conflict, and other business-rule rejections record `denied` with a bounded content-free reason code while preserving the route's canonical HTTP status. Unauthenticated request noise is not inserted. Audit rows are append-only and hash-chained in commit order so a later row commits the previous row hash; mutation and deletion of committed rows are database-rejected.
 

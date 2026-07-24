@@ -293,12 +293,17 @@ before launch.
 
 Approve the complete retention schedule, legal-hold handling, tombstones, export expiry, provider
 deletion, backup expiry, GC schedules, and deletion evidence. Run concurrency and recovery drills.
+The drills must prove that ordinary unsubscribe, grant, source-setting, and policy changes do not
+revoke raw delivered publications from exact historical recipients, while account purge, approved
+retention expiry, and legal or security restriction still deny them.
 
 #### PR-LEGAL-001 — Customer documents
 
 Approve terms, privacy notice/DPA, security page, subprocessor list, international-transfer
 language, retention disclosures, provider disclosures, and legal/security contacts. Every enabled
-production provider must appear consistently.
+production provider must appear consistently. The terms must distinguish current catalog and future
+delivery access from immutable delivery-time entitlement. They must deny every user and company that
+never received the publication, including after a later grant.
 
 #### PR-OPS-001 — Deployment and incidents
 

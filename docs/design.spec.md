@@ -221,7 +221,11 @@ The platform should make historical issue upload easy during onboarding.
 
 Published issues cannot be edited, archived, deleted, or removed from client access.
 
-Once an issue is published to a client company, that issue remains available to that client company while the client company account exists.
+Delivery freezes the exact client company and user recipients. A delivered issue
+remains available only to those authenticated historical recipients while their
+accounts and the content exist and no legal, security, or retention control
+restricts it. A later subscription, grant, source, or policy change neither revokes
+that raw issue nor grants it to a user or company that never received it.
 
 The client company's delivered issue archive is durable.
 
@@ -641,7 +645,8 @@ The client company admin can revoke an employee's subscription access.
 
 When an employee loses access to one subscription:
 
-- they lose access to that subscription's issues
+- they lose its current catalog and future issues
+- they keep raw issues delivered to them before the change
 - they lose access to their private chats for that subscription
 - their shared chats remain visible to company users with subscription access
 - their account remains active for other subscriptions
@@ -707,7 +712,8 @@ When a publisher pauses a client company's subscription, delivery continues unti
 The client company keeps access to issues already delivered to it. Delivery
 freezes exact user recipients in an immutable delivery-recipient record;
 ordinary unsubscribe, source, grant, or policy changes do not revoke those
-historical recipients.
+historical recipients. A user or company that never received the issue stays
+denied, including after a later grant.
 
 The client company keeps access to existing AI chats.
 

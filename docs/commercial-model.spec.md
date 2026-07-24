@@ -86,7 +86,9 @@ Credits are consumed by AI chats.
 
 AI chats can answer in text with summaries, comparisons, explicit web research, and Markdown tables. Generated graphs, visualizations, and executable artifacts are not part of the current runtime.
 
-Reading, downloading, and basic archive search are included with subscription access.
+Current catalog access and future delivery follow the subscription. Reading,
+downloading, and basic archive search for a delivered issue follow the exact
+delivery-time recipient record.
 
 Monthly credits renew each month.
 
@@ -178,7 +180,9 @@ The client company keeps access to issues already delivered to it. Delivery
 freezes the exact user recipients in an immutable delivery-recipient record;
 ordinary unsubscribe, source, grant, or policy changes do not revoke those
 historical recipients. A user added later is not a historical recipient, and
-current subscriptions govern only future delivery.
+neither that user nor a company that never received the issue gains historical
+access from a later grant. Current subscriptions govern only the catalog and
+future delivery.
 
 The client company's delivered issue archive is durable.
 
@@ -243,7 +247,9 @@ Users must know they are interacting with AI.
 
 ## Data Roles
 
-Publishers control their uploaded issue documents and client access.
+Publishers control their uploaded issue documents, current catalog access, and
+future delivery. They cannot revoke a historical recipient outside the specified
+legal, security, retention, deletion, and account-purge controls.
 
 Client companies control their employee accounts and chats.
 

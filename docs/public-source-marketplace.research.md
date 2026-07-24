@@ -164,6 +164,13 @@ The source catalog does not include cadence guesses.
 
 Public sources appear alongside publisher invitation sources as unified sources in the client UI. Both source types share the same source -> publications -> detail navigation. The UI marks invited publisher sources; public sources do not need a separate public badge.
 
+Current public-source settings govern current catalog listings and future AI
+acceptance. They do not create publisher delivery entitlement. A publisher issue
+content route instead uses its exact immutable delivery-recipient record, so a
+public-source toggle cannot grant a never-delivered issue or revoke one from its
+historical recipient. The exceptional deletion, retention, and legal or security
+controls still apply.
+
 Each production source row lets the client include or exclude it from AI context. The live demo presents read-only subscription state and uses all sources authorized for its demo user. The demo feed is projected from that same company-scoped setting set used by chat retrieval, so a source marked subscribed is retrievable by the demo company. Public-source subscriber, open, download, and AI-context-pull metrics are not part of the ingestion facts; APIs and UI use null for those unavailable values rather than zero placeholders. Results cite the original official source, and completeness is bounded by connector health and the official source surface.
 
 Public-source items use the internal AI-exposure funnel when their content becomes visible to a model, including previews shown to the internal retriever; SQL-only matches do not count. They do not enter any publisher's customer-facing pull totals. Publisher-facing issue/document pulls include only content owned by that publisher. Final sources read and final citations remain separate later stages.
