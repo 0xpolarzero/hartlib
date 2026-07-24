@@ -1,6 +1,5 @@
 /** @jsxImportSource smithers-orchestrator */
 import { z } from "zod";
-import { parseRunAcceptanceScope, type RunAcceptanceScope } from "@brief/shared";
 
 import type { WorkerConfig } from "../../config";
 import { assertFinalSourceMap } from "../product-state/finalization";
@@ -29,11 +28,11 @@ import type {
   ContextReductionPlan,
   ContextState,
   FanoutSourceKeySet,
-  LoadedTurn,
   MemorySelectorResult,
   SelectorBundle,
   WebSelectorResult,
 } from "./operations";
+import { RunAcceptanceScopeSchema, type LoadedTurn } from "./types";
 import { CanonicalWorkflowOperations } from "./operations";
 import { PublicProvenanceSchema } from "../runtime/source-schemas";
 
@@ -114,14 +113,7 @@ const LoadedTurnSchema = z.strictObject({
   citationNamespace: z.string().regex(/^cn_[A-Za-z0-9_-]{22}$/u),
   memoryMode: z.enum(["private_owner", "disabled"]),
   webRequested: z.boolean(),
-  acceptanceScope: z.custom<RunAcceptanceScope>((value) => {
-    try {
-      parseRunAcceptanceScope(value);
-      return true;
-    } catch (error) {
-      return false;
-    }
-  }),
+  acceptanceScope: RunAcceptanceScopeSchema,
 });
 // Provider output contains only logical document IDs.  Durable Smithers output
 // keeps the server-owned binding that retrieval resolved before the task ended.

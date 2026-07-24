@@ -4,7 +4,6 @@ import {
   type PublicSourceId,
 } from "@brief/source-ingestion";
 import { PgClient } from "@effect/sql-pg";
-import { parseRunAcceptanceScope } from "@brief/shared";
 import { Cause, Effect } from "effect";
 import { z } from "zod";
 import { loadDatabaseUrl } from "@brief/config";
@@ -45,6 +44,7 @@ import {
   buildAiChatWorkflow,
 } from "../ai/workflow/ai-chat";
 import { CanonicalWorkflowOperations, type WebResearchBoundary } from "../ai/workflow/operations";
+import { decodeRunAcceptanceScope } from "../ai/workflow/types";
 import {
   safeAiPhaseLogFields,
   withAiPhaseLogging,
@@ -869,7 +869,7 @@ export const makeDurableProviderBoundary = (
             const rows = yield* sql<{ readonly scope: unknown }>`
               select acceptance_scope as scope from ai_runs where id = ${aiRunId} for share
             `;
-            const scope = parseRunAcceptanceScope(rows[0]?.scope);
+            const scope = decodeRunAcceptanceScope(rows[0]?.scope);
             if (scope.provider !== providerServiceId) {
               return yield* Effect.fail(
                 new Error("ai run acceptance scope provider differs from worker provider"),

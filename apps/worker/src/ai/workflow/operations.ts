@@ -3,10 +3,8 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   isCanonicalPublicDocumentSourceId,
   isCanonicalPublisherDocumentSourceId,
-  parseRunAcceptanceScope,
   type AiProviderServiceId,
   type PublicContextConsumer,
-  type RunAcceptanceScope,
 } from "@brief/shared";
 import { PgClient } from "@effect/sql-pg";
 import { Effect } from "effect";
@@ -111,6 +109,9 @@ import {
   validateTopicPacket,
 } from "../runtime/validators";
 import { WebBoundaryError } from "../web/errors";
+import { decodeRunAcceptanceScope, type LoadedTurn } from "./types";
+
+export type { LoadedTurn } from "./types";
 
 export type CanonicalAiConfig = Pick<
   WorkerConfig,
@@ -253,21 +254,6 @@ export interface WebResearchBoundary {
     coordinates: PiBoundaryCoordinates,
     signal?: AbortSignal | undefined,
   ) => Promise<WebFetchedPage>;
-}
-
-export interface LoadedTurn {
-  readonly aiRunId: string;
-  readonly chatId: string;
-  readonly initiatingUserId: string;
-  readonly userMessageId: string;
-  readonly userMessage: string;
-  readonly locale: Locale;
-  readonly market: Market;
-  readonly currentDate: string;
-  readonly citationNamespace: string;
-  readonly memoryMode: "private_owner" | "disabled";
-  readonly webRequested: boolean;
-  readonly acceptanceScope: RunAcceptanceScope;
 }
 
 export interface SelectorBundle {
@@ -507,8 +493,6 @@ interface LoadRow {
   readonly market: Market;
   readonly currentDate: string;
   readonly citationNamespace: string;
-  readonly memoryMode: "private_owner" | "disabled";
-  readonly webRequested: boolean;
   readonly acceptanceScope: unknown;
 }
 
@@ -1407,7 +1391,7 @@ export class CanonicalWorkflowOperations {
     readonly sourceAllowed: readonly boolean[];
     readonly webPolicyAllowed: boolean;
   }> {
-    const scope = parseRunAcceptanceScope(load.acceptanceScope);
+    const scope = decodeRunAcceptanceScope(load.acceptanceScope);
     if (scope.provider !== this.providerServiceId) {
       throw new Error("ai run acceptance scope provider differs from worker provider");
     }
@@ -1483,9 +1467,7 @@ export class CanonicalWorkflowOperations {
             runs.market,
                 ((runs.created_at at time zone 'UTC')::date)::text as "currentDate",
             runs.citation_namespace as "citationNamespace",
-                runs.acceptance_scope as "acceptanceScope",
-                runs.acceptance_scope->>'memoryMode' as "memoryMode",
-                (runs.acceptance_scope->>'webRequested')::boolean as "webRequested"
+                runs.acceptance_scope as "acceptanceScope"
           from ai_runs runs
           join chats on chats.id = runs.chat_id and chats.deleted_at is null
           join chat_messages messages
@@ -1499,17 +1481,13 @@ export class CanonicalWorkflowOperations {
           where runs.id = ${aiRunId}
             and runs.finished_at is null
             and runs.failed_at is null
-            and (
-              (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
-              or chats.shared_at is not null
-            )
               for update of runs
         `;
             const run = rows[0];
             if (run === undefined) {
               return yield* Effect.fail(new Error(`ai run not found: ${aiRunId}`));
             }
-            const acceptanceScope = parseRunAcceptanceScope(run.acceptanceScope);
+            const acceptanceScope = decodeRunAcceptanceScope(run.acceptanceScope);
             if (
               acceptanceScope.userId !== run.initiatingUserId ||
               acceptanceScope.chatId !== run.chatId ||
@@ -1521,6 +1499,9 @@ export class CanonicalWorkflowOperations {
               return yield* Effect.fail(
                 new Error("ai run acceptance scope provider differs from worker provider"),
               );
+            }
+            if (!/^cn_[A-Za-z0-9_-]{22}$/u.test(run.citationNamespace)) {
+              return yield* Effect.fail(new Error("ai run citation namespace is invalid"));
             }
             yield* appendAiRunEventInTransaction({
               runId: aiRunId,
@@ -1537,8 +1518,8 @@ export class CanonicalWorkflowOperations {
               market: run.market,
               currentDate: run.currentDate,
               citationNamespace: run.citationNamespace,
-              memoryMode: run.memoryMode,
-              webRequested: run.webRequested,
+              memoryMode: acceptanceScope.memoryMode,
+              webRequested: acceptanceScope.webRequested,
               acceptanceScope,
             };
           }),
@@ -6428,7 +6409,7 @@ export class CanonicalWorkflowOperations {
                 and failed_at is null
               for update
             `;
-            const scope = parseRunAcceptanceScope(rows[0]?.scope);
+            const scope = decodeRunAcceptanceScope(rows[0]?.scope);
             if (
               scope.userId !== initiatingUserId ||
               scope.chatId !== chatId ||

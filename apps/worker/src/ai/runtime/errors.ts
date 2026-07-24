@@ -1,8 +1,7 @@
 import { z } from "zod";
 
 export const AI_RUN_ERROR_CODES = [
-  "conversation_resolution_failed",
-  "execution_planner_failed",
+  "plan_turn_failed",
   "internal_retrieval_failed",
   "memory_selector_failed",
   "web_research_failed",
@@ -16,8 +15,6 @@ export const AI_RUN_ERROR_CODES = [
   "context_plan_unfit",
   "synthesis_budget_mismatch",
   "context_budget_mismatch",
-  "source_access_revoked",
-  "web_policy_revoked",
   "memory_conflict",
   "context_assembly_failed",
   "workflow_resume_incompatible",
@@ -28,8 +25,7 @@ export const AI_RUN_ERROR_CODES = [
 export type AiRunErrorCode = (typeof AI_RUN_ERROR_CODES)[number];
 
 export type AiAgentRole =
-  | "conversation_resolver"
-  | "execution_planner"
+  | "plan_turn"
   | "internal_retrieval"
   | "memory_selector"
   | "web_research"
@@ -40,8 +36,7 @@ export type AiAgentRole =
   | "memory_extractor";
 
 const retryability = {
-  conversation_resolution_failed: true,
-  execution_planner_failed: true,
+  plan_turn_failed: true,
   internal_retrieval_failed: true,
   memory_selector_failed: true,
   web_research_failed: true,
@@ -55,8 +50,6 @@ const retryability = {
   context_plan_unfit: false,
   synthesis_budget_mismatch: false,
   context_budget_mismatch: false,
-  source_access_revoked: true,
-  web_policy_revoked: true,
   memory_conflict: true,
   context_assembly_failed: true,
   workflow_resume_incompatible: true,
@@ -71,10 +64,8 @@ export const isRetryableAiRunError = (code: AiRunErrorCode): boolean => retryabi
 
 export const aiRunErrorCodeForRole = (role: string): AiRunErrorCode => {
   switch (role as AiAgentRole) {
-    case "conversation_resolver":
-      return "conversation_resolution_failed";
-    case "execution_planner":
-      return "execution_planner_failed";
+    case "plan_turn":
+      return "plan_turn_failed";
     case "internal_retrieval":
       return "internal_retrieval_failed";
     case "memory_selector":
@@ -140,7 +131,7 @@ export const isAbortError = (error: unknown): error is Error =>
 export class AiRuntimeError extends Error {
   readonly retryable: boolean;
   readonly providerStatus: number | null;
-  /** Smithers 0.27.0 honors this structural flag without importing its Effect 3 errors. */
+  /** Smithers 0.30.0 honors this structural flag without importing its Effect 3 errors. */
   readonly details:
     | { readonly failureRetryable: false; readonly providerStatus?: number }
     | undefined;

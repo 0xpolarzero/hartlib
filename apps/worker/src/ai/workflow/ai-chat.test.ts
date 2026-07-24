@@ -1074,6 +1074,35 @@ describe("canonical ai-chat workflow source contract", () => {
     ).toBe(false);
   });
 
+  it("decodes one strict saved scope and rejects malformed scope data", () => {
+    const parsed = aiChatSchemas.aiChatLoadTurn.safeParse({ value: load });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.value.acceptanceScope).toEqual(load.acceptanceScope);
+      expect(parsed.data.value.memoryMode).toBe(load.acceptanceScope.memoryMode);
+      expect(parsed.data.value.webRequested).toBe(load.acceptanceScope.webRequested);
+    }
+
+    for (const acceptanceScope of [
+      { ...load.acceptanceScope, chatId: "not-a-uuid" },
+      { ...load.acceptanceScope, companyId: "not-a-uuid" },
+      {
+        ...load.acceptanceScope,
+        accessIds: [
+          "00000000-0000-4000-8000-000000000009",
+          "00000000-0000-4000-8000-000000000001",
+        ],
+      },
+      { ...load.acceptanceScope, forged: true },
+    ]) {
+      expect(
+        aiChatSchemas.aiChatLoadTurn.safeParse({
+          value: { ...load, acceptanceScope },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it("keeps disabled selectors distinct from enabled empty selections", () => {
     expect(
       aiChatSchemas.aiChatMemories.safeParse({
