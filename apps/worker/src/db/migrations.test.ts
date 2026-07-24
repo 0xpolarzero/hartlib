@@ -10165,8 +10165,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         const companyId = yield* provisionClientUser(userId);
 
         yield* sql`
-            insert into chats (id, company_id, user_id)
-            values ('bbbbbbbb-0000-0000-0000-000000000001', ${companyId}, ${userId})
+            insert into chats (id, company_id, user_id, memory_mode)
+            values ('bbbbbbbb-0000-0000-0000-000000000001', ${companyId}, ${userId}, 'disabled')
             on conflict (id) do nothing
           `;
         yield* sql`
@@ -10278,10 +10278,10 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           const firstChatId = crypto.randomUUID();
           const secondChatId = crypto.randomUUID();
           yield* sql`
-          insert into chats (id, company_id, user_id)
+          insert into chats (id, company_id, user_id, memory_mode)
           values
-            (${firstChatId}, ${initiatingCompanyId}, ${initiatingUserId}),
-            (${secondChatId}, ${otherCompanyId}, ${otherUserId})
+            (${firstChatId}, ${initiatingCompanyId}, ${initiatingUserId}, 'disabled'),
+            (${secondChatId}, ${otherCompanyId}, ${otherUserId}, 'disabled')
         `;
           const messages = yield* sql<{ readonly id: string }>`
           insert into chat_messages (chat_id, author, content)
@@ -10423,8 +10423,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           const revisionId = "dddddddd-0000-0000-0000-000000000005";
 
           yield* sql`
-          insert into chats (id, company_id, user_id)
-          values ('dddddddd-0000-0000-0000-000000000001', ${companyId}, ${userId})
+          insert into chats (id, company_id, user_id, memory_mode)
+          values ('dddddddd-0000-0000-0000-000000000001', ${companyId}, ${userId}, 'disabled')
         `;
           yield* sql`
           insert into chat_messages (id, chat_id, author, content)

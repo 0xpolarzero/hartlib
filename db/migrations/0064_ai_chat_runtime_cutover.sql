@@ -1581,6 +1581,13 @@ begin
         'owner', 'ownerId', 'owner_id', 'role', 'agent_role',
         'versionId', 'publisherDocumentVersionId'
       )
+        -- Bound retrieval references and document exposure attestations use
+        -- versionId as part of their canonical immutable identity. All other
+        -- observation kinds still reject it as a legacy payload field.
+        and not (
+          row_data.row_kind in ('retrieval_manifest', 'source_exposure_attestation')
+          and keys.key = 'versionId'
+        )
       limit 1;
       if legacy_key is not null then
         raise exception
