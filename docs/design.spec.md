@@ -315,7 +315,7 @@ Users can ask about a topic, entity, trend, or event across selected subscriptio
 
 Answers must cite the issue documents they use.
 
-The answer model has no search or read tools. Conversation resolver C first selects relevant original turns or asks a clarification. Execution planner D then chooses a single or semantically separable fanout route. Internal retriever A, memory selector B, and eligible web researcher W prepare each selected path in parallel. Brief code authorizes, deduplicates, renders, and exact-counts their outputs before any direct/topic answer or synthesis call.
+The answer model has no search or read tools. `plan-turn` first selects valid original turns, resolves references, and returns `clarify`, `single`, or `fanout`. After that valid result, internal retriever A, memory selector B, eligible web researcher W, and memory extraction run in their selected parallel lanes. A clarification schedules no retrieval or answer request. Brief code authorizes, deduplicates, renders, and exact-counts their outputs before any direct/topic answer or synthesis call.
 
 Fanout is chosen before retrieval when topics can be researched independently and safely recombined. Only the final synthesis is shown to the user. Oversized single/topic prompts use an explicit keep/range/omit context plan; code never silently truncates context.
 
@@ -331,7 +331,7 @@ When a client company has an allowlist, web research can fetch only from allowli
 
 When web research is enabled by both deployment and company policy, client users can opt into it per AI message.
 
-The user makes an explicit web-search choice for each message. Company policy and allowlists remain authoritative. Enabled web research runs in parallel with internal and memory retrieval and returns selected URL-backed verbatim quotations.
+The user makes an explicit web-search choice for each message. Company policy and allowlists remain authoritative. After a valid `plan-turn` result, enabled web research runs in parallel with internal and memory retrieval and returns selected URL-backed verbatim quotations.
 
 Web research answers must cite web sources.
 
@@ -399,6 +399,18 @@ Internal retriever A has controlled tools to search and inspect issue/public doc
 
 Retrieval results carry typed provenance. Agents emit references or selected quotations; Brief code performs authorization, content fetching, and turn-local source-key assignment.
 
+The turn starts with one server-derived immutable acceptance scope; no broad
+source list enters provider input. Model-visible internal references contain only
+`documentId`. For public evidence, Brief binds each returned ID to the exact
+public document row, immutable version identity, lowercase content hash, source
+scope, and normalized UTF-16 ranges, with no extraction ID. For publisher
+evidence, Brief additionally binds the ID to the exact extraction row through
+the required one-to-one version relation, with the same immutable version, hash,
+source scope, and ranges. Web evidence stores the canonical HTTPS URL, capture metadata,
+an integrity hash, and the exact normalized quotation that the model saw.
+Brief creates one random `citationNamespace` at request acceptance; it scopes
+local handles only and never proves claim support.
+
 For issue sources, citation metadata includes:
 
 - issue title
@@ -437,6 +449,12 @@ Client users see sources used for their own AI answers.
 Client users do not see aggregate AI context pull analytics.
 
 External factual claims without current document/web evidence must be phrased explicitly as inference or omitted. Recent or retrieved chat messages may ground statements about what participants previously said or requested, and saved memories may ground user-specific context, but neither prior assistant assertions nor memories become verified external-world evidence.
+
+The browser sees only the final answer and the documented SSE events. Code
+validates the saved run/chat viewer scope and exact document-version, memory
+revision, quotation, locator, and range identities before exposure, hydration,
+source-map serialization, stream replay, and finalization. Later source,
+subscription, memory, provider, and web-policy changes affect later runs only.
 
 ## Permissions
 
@@ -528,7 +546,8 @@ Shared chat links open the shared chat inside the platform.
 
 Shared chat viewers are read-only: only the creator can submit a new message or change the chat's sharing state.
 
-Shared chat viewers must belong to the same client company and have access to every subscription source selected in the chat.
+Shared chat viewers must belong to the same live client company and chat. The
+viewer check does not reauthorize every source in an accepted run.
 
 Saved memories are always user-private. Shared/`disabled` answers never receive or cite participant memories. Memory extraction may still save the initiating user's current message into that user's private memory store, but those memories cannot ground the shared answer.
 
@@ -546,7 +565,7 @@ The creator can delete shared chats.
 
 Deleted chats disappear immediately and are purged from active storage within 30 days.
 
-Conversation resolver C can select bounded recent complete user/assistant turns and terminal failed user-only turns from the current chat; provisional failed drafts never enter history. Internal retriever A can search older messages only in that same accessible chat. Deleted chats and messages are excluded immediately from both paths.
+`plan-turn` can select bounded recent complete user/assistant turns and terminal failed user-only turns from the current chat; provisional failed drafts never enter history. Internal retriever A can search older messages only in that same accessible chat. Deleted chats and messages are excluded immediately from both paths.
 
 Prompt membership is rebuilt on every turn. Prior sources, citations, memories, and messages enter a later prompt only when the current turn's selectors choose them.
 
@@ -685,7 +704,10 @@ See `docs/data-access.spec.md`.
 
 When a publisher pauses a client company's subscription, delivery continues until the delivery end date.
 
-The client company keeps access to issues already delivered to it.
+The client company keeps access to issues already delivered to it. Delivery
+freezes exact user recipients in an immutable delivery-recipient record;
+ordinary unsubscribe, source, grant, or policy changes do not revoke those
+historical recipients.
 
 The client company keeps access to existing AI chats.
 
@@ -715,7 +737,8 @@ Clients keep already delivered issues, delivered archive search, and AI access w
 
 ## Exports
 
-Client users can download brief documents while they have subscription access.
+Client users can download delivered brief documents when their authenticated
+identity has the exact historical delivery-recipient record.
 
 Client users can export their chats while they have subscription access.
 
@@ -725,7 +748,9 @@ Client company admins can export delivered issue documents, delivered issue meta
 
 The product treats visible content as exportable content.
 
-Downloads and exports require authenticated subscription access.
+Downloads and exports require authentication plus the applicable durable
+historical entitlement; current subscription state does not revoke a delivered
+publication.
 
 Client company deletion is handled through a support request in the MVP.
 

@@ -137,6 +137,14 @@ platforms for the first launch while keeping PostgreSQL and object storage priva
 
 ### AI and web providers
 
+At API acceptance, Brief freezes the exact provider service, fast and main
+model IDs, web transport, enabled state, and canonical domain allowlist in the
+run scope. Later deployment or company setting changes apply only to later
+runs. A queued or retried run must keep using its saved scope. Missing
+credentials, provider outages, unsafe redirects, and other transport failures
+remain operational errors; they never trigger a live authorization read or a
+fallback provider.
+
 #### PR-AI-001 — AI provider and commercial plan
 
 Compare the current GLM provider and at least one viable alternative, including Mistral when its EU
@@ -152,6 +160,16 @@ tokenizer artifact, chat template, tool-call behavior, and reasoning controls. P
 only after all values have code-owned registry entries and live tokenizer/tool-call parity tests.
 Recommendation: use one exact model for both roles initially unless measured quality or latency
 justifies two.
+
+The accepted chat boundary is direct Pi inside a Smithers compute task. One
+provider request has one exact measurement and finite Smithers retry ownership;
+Pi retries remain disabled. The provider decision must cover that exact
+transport, not a Smithers agent or workflow-authoring agent. The runtime creates
+the turn's random `citationNamespace` at request acceptance and binds every
+public document citation from its model-visible `documentId` to the exact public
+document row, immutable version identity, hash, source-scope, and range
+evidence, with no extraction ID; publisher evidence additionally binds the
+exact extraction row and required one-to-one version relation.
 
 #### PR-AI-003 — Customer-data terms
 
@@ -369,6 +387,7 @@ Production readiness is achieved only when:
 - every mandatory decision for enabled production capabilities is `accepted`
 - every external claim has current, appropriately scoped evidence
 - every technically testable provider/resource guarantee has a passing live probe
+- the AI provider probe proves one direct Pi request per model call, exact token accounting, strict nested output schemas, and no Smithers `agent=` execution
 - the posture artifact, runtime provider unions, model registry, secrets checklist, customer
   disclosures, translations, and canonical specifications agree exactly
 - `production:validate` passes without network access

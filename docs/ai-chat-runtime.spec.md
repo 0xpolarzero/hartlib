@@ -4,7 +4,7 @@
 
 Brief provides a real, durable AI chat over content the user is authorized to read.
 
-This document is the canonical implementation specification for an AI turn: API acceptance, durable execution, conversation resolution, execution planning, retrieval, context fitting, direct and fanout answering, citations, memory, streaming, storage, observability, and failure handling.
+This document is the canonical implementation specification for an AI turn: API acceptance, durable execution, turn planning, retrieval, context fitting, direct and fanout answering, citations, memory, streaming, storage, observability, and failure handling.
 
 Billing and credit conversion are outside the demo runtime. The runtime records exact provider usage so production billing can be defined without changing the execution boundary.
 
@@ -24,21 +24,268 @@ Durable source and citation records exist so an old answer can still render and 
 
 The authoritative context limit covers every complete provider-shaped request and its requested output allowance, including fast-agent calls and accumulated tool transcripts. Code never treats a block-only estimate, character heuristic, message count, or item count as proof that a request fits.
 
-After A, B, or W has selected a semantically valid answer-context candidate, code may reject it only as inaccessible, missing, invalid, or duplicate for a typed reason. It never silently removes an authorized selected candidate to satisfy the direct/topic budget. Any semantic omission or range reduction within that candidate ledger is an explicit, persisted O decision. Explicit discovery boundaries—C's recent-turn window and cursor-bearing selector tool results—are separate, observable input scopes rather than post-selection context deletion.
+After A, B, or W has selected a semantically valid answer-context candidate, code may reject it only as inaccessible, missing, invalid, or duplicate for a typed reason. It never silently removes an authorized selected candidate to satisfy the direct/topic budget. Any semantic omission or range reduction within that candidate ledger is an explicit, persisted O decision. Explicit discovery boundaries—plan-turn's recent-turn window and cursor-bearing selector tool results—are separate, observable input scopes rather than post-selection context deletion.
 
 The main answer, topic-answer, and synthesis agents have no retrieval tools. Retrieval and context selection finish before those agents run.
 
 Only the final direct answer, clarification question, or synthesis is user-visible. Fanout topic packets are intermediate workflow state.
 
-Memory extraction runs concurrently with the answer lane, but it is part of the turn's success boundary. The terminal `done` event and acceptance of the next message wait until memory writes and the answer are committed.
+Memory extraction starts only after a valid `plan-turn` result and then runs concurrently with the selected answer route. It is part of the turn's success boundary. The terminal `done` event and acceptance of the next message wait until memory writes and the answer are committed.
+
+## Canonical Cutover Contract
+
+This section defines the only current AI chat contract. New code, tests,
+fixtures, evaluation captures, and public docs use these names and shapes.
+There is one clean cutover: no dual reads or writes, aliases, fallback decoder,
+repair path, compatibility event, or parallel schema.
+
+### Request state and citation handles
+
+The acceptance transaction saves one strict, immutable, server-derived
+`RunAcceptanceScope`. It binds the run to one user, chat, and company and
+contains sorted unique selected subscription/access/public-source IDs, the
+memory mode and exact eligible memory revision IDs, requested and effective
+web state, the provider service, fast and main model IDs, web transport
+provider, and the canonical domain allowlist. Client fields are requests only:
+the server intersects them with current entitlements and defaults, and rejects
+client-supplied snapshot fields. The database rejects missing keys, unknown
+keys, noncanonical arrays, cross-tenant identities, and scope updates. Later
+stages may read immutable content rows inside those IDs, but never current
+grants, subscriptions, source toggles, memory mode, provider settings, or web
+policy to authorize the accepted run.
+
+`load-turn` returns stable run and request data plus the validated scope. It
+does not preload conversation bodies, memories, source metadata, extraction
+rows, hashes, or policy bodies:
+
+```ts
+type LoadedTurn = {
+  aiRunId: string;
+  chatId: string;
+  initiatingUserId: string;
+  userMessageId: string;
+  userMessage: string;
+  locale: "fr-FR" | "en-US";
+  market: "FR" | "US";
+  currentDate: string;
+  webRequested: boolean;
+  memoryMode: "private_owner" | "disabled";
+  citationNamespace: string;
+  acceptanceScope: RunAcceptanceScope;
+};
+```
+
+```ts
+type RunAcceptanceScope = {
+  userId: string;
+  chatId: string;
+  companyId: string;
+  subscriptionIds: string[];
+  accessIds: string[];
+  publicSourceIds: string[];
+  memoryMode: "private_owner" | "disabled";
+  memoryRevisionIds: string[];
+  webRequested: boolean;
+  webEnabled: boolean;
+  provider: string;
+  fastModelId: string;
+  mainModelId: string;
+  webTransportProvider: "tinyfish" | null;
+  allowedDomains: string[] | null;
+};
+```
+
+The server generates a fresh random `citationNamespace` when it accepts the
+request and keeps it stable for retries and replay. It matches
+`^cn_[A-Za-z0-9_-]{22}$`. A local citation handle is exactly
+`k_<citationNamespace>_<positive-decimal-ordinal>`, where the ordinal comes
+from the normalized evidence manifest and is compared as a number. The
+namespace only scopes local handles. It never proves a claim, identifies
+evidence, or grants access; claim support always resolves to an exact stored
+evidence record in the current source map.
+
+Model-visible document references contain only the logical `documentId`:
+
+```ts
+type DocumentReference = {
+  kind: "document";
+  documentId: string;
+  purpose: string;
+};
+```
+
+After a provider returns a reference, Brief code applies one kind-specific
+binding. Public evidence binds `documentId` to the exact public document row,
+immutable version identity, lowercase content hash, source scope, and
+normalized ranges, with no extraction ID. Publisher evidence binds `documentId`
+to the logical publisher document row and the exact extraction row through the
+required one-to-one version relation, plus the immutable version identity,
+content hash, source scope, and normalized ranges. Those bindings stay
+internal. Memory evidence stores the exact revision that the model saw; web
+evidence stores the exact normalized quotation, canonical URL, and capture
+identity.
+
+### Task and output contract
+
+| Stable task ID                | Owner                                           | Strict result                                                                                                                                   |
+| ----------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `load-turn`                   | Brief code                                      | Stable run and request data only, including `citationNamespace`.                                                                                |
+| `plan-turn`                   | Brief code plus Pi in one Smithers compute task | One strict `clarify`/`single`/`fanout` union. It reads current prior turns, resolves references, selects valid turn IDs, and chooses the route. |
+| `memory-extract`              | Brief code plus Pi in one Smithers compute task | Ordered create/update proposals only; it never writes memory.                                                                                   |
+| `A`, `B`, `W`                 | Brief code plus Pi in one Smithers compute task | Separate internal, memory, and web selections.                                                                                                  |
+| `O`                           | Brief code plus Pi in one Smithers compute task | Bounded keep/range/omit decisions over hydrated candidates.                                                                                     |
+| direct/topic/synthesis answer | Brief code plus Pi in one Smithers compute task | Grounded text or a typed no-source result; no retrieval tools.                                                                                  |
+| `answer-select`               | Brief code                                      | Exactly one clarification, single, or fanout result.                                                                                            |
+| `finalize`                    | Brief code                                      | The terminal product transaction, or a fail-closed terminal error.                                                                              |
+
+Every listed result and every Smithers input wrapper is recursively strict at
+the root and at every nested object. Unknown keys, wrong discriminants,
+missing required keys, duplicate IDs, foreign identities, invalid ranges,
+invented sources, malformed terminal tool calls, and non-finite numbers fail
+before any side effect.
+
+One model call means one provider transport request made by direct Pi inside
+the owning Smithers compute task. Pi does not retry. A tool loop may make more
+than one model call, but every request gets its own exact
+`providerRequestIndex`, local measurement, usage row when usage is known, and
+the same `stepId`, `iteration`, and `attempt` coordinates. Smithers `agent=`
+execution and workflow-authoring agents are never a production chat path.
+
+### Ownership and state split
+
+Brief owns chats, messages, `ai_runs`, events, source exposures, source maps,
+source uses, observations, provider and external-tool usage, memories and
+revisions, final answers, terminal status, and stream retention. Smithers owns
+only disposable task status, attempts, loop frames, branch state, and typed
+intermediate outputs. The API never reads Smithers tables. Smithers cleanup
+runs only after a committed product finalization or fatal-failure transition.
+
+Code owns authorization, query compilation, limits, token counting,
+normalization, validation, hydration, citation identity, persistence,
+coordinates, cancellation, locks, events, and cleanup. Model work owns
+turn planning, reference selection, lexical queries, selections, context
+keep/range/omit choices, memory proposals, and grounded prose. Models never
+write SQL, grant access, mint source identities, choose runtime coordinates,
+repair schemas, or write product state.
+
+### Migration and removal policy
+
+The forward migration runs after `0063` and is idempotent. Before replacing any
+Smithers output or product schema it takes the shared schema fence exclusively,
+locks affected tables in one documented sorted order, and rejects the migration
+while an active `ai-chat` run or retained incompatible output exists. The
+operator must drain or reject those rows before rerunning the migration; the
+migration never guesses at product work. It then creates only the final schemas.
+Earlier migrations stay byte-for-byte unchanged. The migration does not add
+aliases, dual columns, fallback reads, or data repair.
+
+The same migration has a blocking conversion preflight for every retained
+product row. It reads `ai_runs`, assistant messages, saved source maps, source
+uses, memories and their cited revisions, web locators, observations, usage,
+and source exposures in primary-key order and writes nothing until every row
+has a deterministic final representation. A missing, malformed, ambiguous,
+stale, or conflicting identity aborts the transaction with the row identity and
+conversion reason; operators must fix or purge that row under the documented
+retention or legal-purge process before retrying. No incompatible row is
+silently dropped.
+
+Conversion is deterministic:
+
+- Each retained `ai_runs` row must have one valid 16-byte pre-cutover
+  per-answer citation value or a valid final `citationNamespace`. A pre-cutover
+  value is encoded as unpadded URL-safe base64 and prefixed with `cn_`; an
+  already valid namespace is kept. The conversion rejects missing values and
+  namespace collisions. For every saved source key, code parses the final
+  namespace and the positive decimal ordinal, rewrites only the namespace
+  prefix when needed, and preserves that ordinal exactly. It sorts and checks
+  ordinals numerically, rejects duplicates, overflow, gaps that conflict with
+  the stored manifest, and non-canonical forms, and never uses lexical order.
+  It copies each run's chat, initiating user, user-message, assistant-message,
+  locale, market, web-policy, status, error, and timestamp fields after
+  validating their live foreign-key and derived Smithers identities; the
+  terminal state is retained exactly and no active run passes the guard.
+- Every retained `assistant_message_sources` row becomes one strict
+  `FinalSourceRecord`. Document locators retain the namespaced `sourceId`,
+  `documentId`, immutable `versionId`, exact lowercase SHA-256 `contentHash`,
+  normalized ranges, the complete publisher issue/document tuple, and the exact
+  `publisherExtractionId` when applicable. Chat locators retain the exact message ID; memory locators
+  retain the memory ID and exact revision ID; web locators retain the
+  canonical URL, title, domain, normalized quotation, quotation hash, and
+  capture identity. The preflight resolves each locator against current
+  immutable storage and rejects any missing row, missing or duplicate
+  version-to-extraction relation, extraction/PDF or text/hash mismatch, range
+  mismatch, cross-namespace collision, or stale memory revision.
+- Every retained source-use row is copied by the converted source key while
+  preserving consumer task, topic, numeric context order, rendered token
+  count, and exact ranges. It must reference one converted source row, and the
+  final source record's range union must equal its uses' normalized union.
+  Orphan, duplicate, out-of-order, or otherwise inconsistent uses block the
+  cutover.
+- Every retained memory revision, web quotation, plan/usage observation, and
+  terminal message keeps its exact final identity and owner. The conversion
+  recomputes strict quotation, locator, identity, and attestation digests from
+  the retained fields and accepts a row only when the stored digest matches.
+- Every retained source-exposure row is classified by its actual provider
+  input. A content-bearing document preview or inspection must carry the full
+  namespaced source ID, document ID, immutable version ID, exact text hash,
+  and normalized ranges; the preflight resolves and verifies that tuple before
+  copying the row. A row proven to be metadata-only produces no final exposure
+  row. A row without content metadata that might have shown content, or any
+  row missing a complete identity, blocks the migration rather than becoming
+  unverifiable evidence. Chat, memory, and web exposures retain their exact message,
+  revision, or normalized quotation identity and are checked in the same way.
+
+After all conversions succeed, the migration adds the final not-null, kind,
+namespace, numeric-ordinal, locator, source/use, exposure, digest, publisher
+extraction one-to-one, and foreign-key constraints; validates them against the
+converted rows; and drops the
+pre-cutover citation byte, legacy locator and reconstruction columns, old
+usage payload columns, and superseded selector/planner output tables. Only the
+final `citationNamespace`, locator, source-use, and exposure fields remain.
+Saved answers reload through one strict decoder over those final tables. The
+decoder validates the namespace, numeric source keys, kind-specific locator,
+source uses, and exact evidence identities in one pass. It never reads an old
+column or table and has no alias, dual-read, fallback, or repair path.
+
+The cutover removes obsolete selector/planner tables, Smithers output tables,
+agent execution adapters, Pi agent plugin packages, legacy schema fields, and
+observations that exist only for removed paths. Evaluation-only comparison
+code remains outside production routing and configuration.
+
+### Failure and terminal rules
+
+Every task has a finite timeout and retry budget. Cancellation reaches the
+Smithers task, Pi request, web operation, and database effect; an aborted
+request cannot start later or write late deltas or usage. A fatal required-task
+failure skips `finalize`, commits one idempotent product failure transition,
+then emits `error` before Smithers cleanup. Clarification is a successful
+terminal answer. No-source and requested-web failures are typed results, not
+silent fallbacks. Finalization validates the immutable acceptance scope and
+exact source, document version, hash, locator, memory revision, quotation,
+usage, and run identities while holding the canonical storage locks. Later
+settings changes do not reject an accepted run; malformed or tampered scope and
+source-integrity data still fail closed.
+
+The exact public route is `GET /docs` without authentication. Development and
+preview serve the standalone English HTML directly; production emits
+`docs/index.html`; a static-host shell fallback serves the same bytes without
+auth or observability bootstrap. `GET /docs/` may render those same bytes only
+through the shell fallback and must not redirect or add a locale. A localized
+path such as `/en-US/docs` is not a docs route and must not render the
+standalone page. Client navigation to `/docs` keeps the same document. The
+page names the graph, final fields, SSE events, access checks, retry rules, and
+cleanup behavior defined here.
 
 ## Runtime Stack
 
 Smithers (`smithers-orchestrator`) uses its Postgres backend on the existing `DATABASE_URL`. The worker opens the backend once at startup and closes it during graceful shutdown. Startup schema provisioning is protected by a short-lived shared schema fence; each workflow producer operation takes that shared fence for its own lifetime, leaving terminal cleanup and retention free to acquire the exclusive side. The finite evaluation CLI additionally closes Smithers' process-local SingleRunner runtime after its operation, including failed operations, so Effect Cluster fibers cannot keep the command alive; cleanup failures are reported as exit `2` and never force termination with `process.exit`.
 
-Smithers 0.27.0 provisions one node-postgres client for that backend. The interop adapter fail-closes if the expected Postgres descriptor is absent and serializes that client's durable-state queries in submission order, including recovery after a rejected query. This transport serialization does not serialize workflow compute tasks, selector/model calls, or their independent Brief database work; Smithers `Parallel` branches still execute concurrently. Brief product-state calls retain that independence but share a process-wide 32-permit gate because each call's managed Pg pool is short-lived; the gate bounds pool creation without serializing the underlying workflow branches. Every AI workflow registers a run-level Smithers `maxConcurrency` of one memory-lane slot plus the maximum of three single selectors, `AI_TOPIC_RESEARCH_MAX_CONCURRENCY`, and `AI_TOPIC_ANSWER_MAX_CONCURRENCY`. That registration is immutable for the workflow object. Initial execution and resume use the same derived value, so Smithers' own default global limit cannot weaken an inner canonical concurrency bound while memory extraction is still running. A caller may repeat that exact value explicitly, but the adapter rejects any explicit value that differs from the registered cap instead of silently weakening or drifting from the workflow configuration.
+Smithers 0.30.0 provisions one node-postgres client for that backend. The interop adapter fail-closes if the expected Postgres descriptor is absent and serializes that client's durable-state queries in submission order, including recovery after a rejected query. This transport serialization does not serialize workflow compute tasks, selector/model calls, or their independent Brief database work; Smithers `Parallel` branches still execute concurrently. Brief product-state calls retain that independence but share a process-wide 32-permit gate because each call's managed Pg pool is short-lived; the gate bounds pool creation without serializing the underlying workflow branches. Every AI workflow registers a run-level Smithers `maxConcurrency` of one memory-lane slot plus the maximum of three single selectors, `AI_TOPIC_RESEARCH_MAX_CONCURRENCY`, and `AI_TOPIC_ANSWER_MAX_CONCURRENCY`. That registration is immutable for the workflow object. Initial execution and resume use the same derived value, so Smithers' own default global limit cannot weaken an inner canonical concurrency bound while memory extraction is still running. A caller may repeat that exact value explicitly, but the adapter rejects any explicit value that differs from the registered cap instead of silently weakening or drifting from the workflow configuration.
 
-Pi (`@earendil-works/pi-ai` and `@earendil-works/pi-agent-core`) performs every model call. Brief uses Pi directly from Smithers compute tasks. Smithers `agent=` tasks, `PiAgent`, `@smithers-orchestrator/pi-plugin`, and `@earendil-works/pi-coding-agent` are not part of the chat runtime.
+Pi (`@earendil-works/pi-ai`) performs every model call. Brief uses Pi directly
+from Smithers compute tasks. Smithers `agent=` tasks, `PiAgent`,
+`@smithers-orchestrator/pi-plugin`, `@earendil-works/pi-agent-core`, and
+`@earendil-works/pi-coding-agent` are not part of the chat runtime.
 
 Smithers pins Effect 3 and Brief backend code uses Effect 4. Smithers interop is isolated in the worker adapter whose Effect import resolves to Smithers' exact Effect 3 dependency. Smithers Effect values never cross the adapter into Brief Effect 4 services.
 
@@ -46,15 +293,15 @@ The approved development model provider is Z.AI through its official Coding Plan
 
 Production model calls are fail-closed until every applicable decision and evidence requirement in `docs/production-readiness.spec.md` is accepted. Production must use the exact approved provider service, origin, commercial/data-processing posture, model IDs, tokenizer artifacts, provider chat templates, context windows, output limits, API format, and live conformance evidence bound by the generated production posture. Mistral is one future option, not a current runtime dependency or an implicit production choice. Code must not guess a provider, accept a manual attestation boolean, or fall back to the development Z.AI posture.
 
-`AI_MAIN_MODEL` and `AI_FAST_MODEL` both default to `glm-5-turbo`. Conversation resolution, execution planning, internal retrieval, memory selection, web retrieval, context reduction, and memory extraction use the fast role. Direct answers, topic packets, and synthesis use the main role. The roles remain distinct even when they resolve to the same exact registered model.
+`AI_MAIN_MODEL` and `AI_FAST_MODEL` both default to `glm-5-turbo`. Plan-turn, internal retrieval, memory selection, web retrieval, context reduction, and memory extraction use the fast role. Direct answers, topic packets, and synthesis use the main role. The roles remain distinct even when they resolve to the same exact registered model.
 
-The worker configuration schema itself is typed and parsed to the exact live model literal `glm-5-turbo` for both roles, so malformed or historical environment overrides fail before worker operations are constructed. Live worker startup also accepts only that exact value for both roles and fails closed for either override, including the registered historical `glm-5.2` model. The `glm-5.2` tokenizer, template, and registry entry remain available only through explicit evaluation or compatibility resolver call sites; they are not a live chat configuration posture.
+The worker configuration schema itself is typed and parsed to the exact live model literal `glm-5-turbo` for both roles, so malformed, unknown, or historical environment overrides fail before worker operations are constructed. Live worker startup accepts only that exact value for both roles. The final-version tokenizer, template, and registry entry are the only model artifacts available to runtime or evaluation; no historical model artifacts or resolver paths remain.
 
 Z.AI transport uses its documented `tool_choice: "auto"` posture. Pi's pinned OpenAI-completions adapter also sends `strict: false` inside every provider-visible function definition. That transport field does not weaken Brief's output contract: structured calls and tool loops independently require exactly one schema-valid named terminal call, reject missing, extra, parallel-terminal, or malformed calls, and retry or fail with the owning task's canonical error. Provider-facing discriminated outputs may use a flat root-object parameter schema for documented function-call compatibility, but the exact strict semantic union is validated before an observation or workflow output is accepted.
 
 Pi client retries are disabled. Smithers owns finite task retries and backoff.
 
-The configured model must have a locally available exact tokenizer and matching provider chat template registered at worker startup. The GLM-5-Turbo tokenizer/template is pinned for the current runtime; the GLM-5.2 registry artifacts remain only for explicit compatibility and evaluation of historical captures. A model without an exact registered counter is rejected at startup; the production runtime has no estimated-token admission mode.
+The configured model must have a locally available exact tokenizer and matching provider chat template registered at worker startup. The final-version tokenizer and template are pinned for the current runtime and evaluation. A model without an exact registered counter is rejected at startup; the production runtime has no estimated-token admission mode.
 
 Real-provider contract tests compare the local provider-shaped count with provider-reported prompt usage, including deterministic zero-, one-, and three-function inventories so per-definition transport drift fails independently of ordinary message framing. The normalized request matches Pi's transport omission of empty assistant turns before counting. The local exact gate owns context admission; raw provider/error text cannot promote a later role failure into `context_budget_mismatch`. A repeated mismatch for an identical normalized official request remains capture-ineligible: durable local measurement and provider usage are preserved at their exact coordinates and evaluation does not add a tolerance, rewrite provider usage, or round either count. That code is reserved for a trusted, code-owned accounting defect.
 
@@ -67,15 +314,24 @@ Z.AI reports a reused prompt prefix in `prompt_tokens_details.cached_tokens` whi
 When a user sends a message:
 
 1. The browser calls `POST /v1/chat/messages` with the text, locale, market, and explicit web-search choice.
-2. The API resolves the user and their chat, validates source and web permissions, and rejects a second active run for either that chat or that initiating user.
-3. One database transaction inserts the user message, creates `ai_runs`, and enqueues a priority `ai_chat_run` job.
+2. The API resolves the user and their chat, intersects the request with server entitlements and defaults, and freezes one complete acceptance scope. Client fields cannot add or widen that scope.
+3. One database transaction inserts the user message, immutable acceptance scope, `ai_runs`, and a priority `ai_chat_run` job.
 4. A worker claims the job through the existing advisory-lock queue and renews its heartbeat.
 5. The handler derives Smithers run ID `ai-chat:<aiRunId>` and starts or resumes the `ai-chat` workflow. Before execution, and again before any terminal cleanup, a non-null durable `ai_runs.smithers_run_id` must equal that exact derived value; a mismatch fails closed without starting the workflow, changing the product run, or deleting Smithers state. Terminal failure transitions and cleanup re-read that identity while holding the `ai_runs` row lock, so the comparison and each mutation are fenced in their owning transaction; the typed mismatch is preserved through the Effect boundary. The handler never uses a stale stored coordinate as a cleanup target.
 6. Workflow tasks append sequenced product events to `ai_run_events`; the API forwards them over SSE.
-7. The answer lane and memory-extraction lane run under one Smithers `Parallel` join.
-8. For successful or typed controlled answer results, finalization validates already-idempotent usage/observation rows, authorizes the answer source map against the revisions that were rendered, applies memory proposals, stores the assistant message, source map, source uses, and final citation observations when applicable, derives aggregate usage, marks the run terminal, and appends `done` or `error` in one product transaction. Authorization precedes same-transaction memory updates so a cited memory revision remains the revision being authorized for that answer.
+7. After `plan-turn` returns a valid result, the selected answer route and
+   memory-extraction lane run under one Smithers `Parallel` join. A
+   clarification route schedules no retrieval or answer request.
+8. For successful or typed controlled answer results, finalization validates already-idempotent usage/observation rows, validates the answer source map against the immutable acceptance scope and the revisions that were rendered, applies memory proposals, stores the assistant message, source map, source uses, and final citation observations when applicable, derives aggregate usage, marks the run terminal, and appends `done` or `error` in one product transaction. Scope and integrity validation precede same-transaction memory updates so a cited memory revision remains the revision captured for that answer.
 9. A fatal required-task failure bypasses `finalize`; the worker handler performs the idempotent product failure transition, appends known aggregate `usage:run`, and then appends `error`.
 10. The handler deletes the terminal run from every Smithers engine, input, and output table. A sweep removes abandoned Smithers rows and expired stream events.
+
+The public account uses this order: save the request and immutable acceptance
+scope; plan the turn; retrieve internal, memory, and web evidence within that
+scope; build and fit context; answer; save the final message, exact evidence
+map, memory changes, usage, terminal event, and status. Later setting changes
+apply only to later runs. No public documentation promises a fixed agent or
+provider-call count.
 
 Partial unique indexes for unterminated runs are the server-side authority for one active turn per chat and one active memory-producing turn per initiating user. Client input state is only a convenience.
 
@@ -102,7 +358,7 @@ lock, or concurrent usage and external-tool observations could deadlock.
 Smithers owns disposable in-flight orchestration state:
 
 - task status, attempts, frames, loop iterations, and branch state
-- typed outputs from C, D, A, B, W, O, topic tasks, synthesis, and memory extraction
+- typed outputs from plan-turn, A, B, W, O, topic tasks, synthesis, and memory extraction
 - intermediate candidate ledgers and topic packets while the run is active
 
 Smithers state and Brief product tables share one Postgres database but use separate tables. Output schema keys are namespaced. The API never reads or writes Smithers tables.
@@ -124,17 +380,17 @@ Mandatory content:
 
 Discretionary context can contain:
 
-- recent conversation entries selected by C: complete user/assistant turns or terminal failed user-only turns
+- recent conversation entries selected by plan-turn: complete user/assistant turns or terminal failed user-only turns
 - internal document text or explicit ranges selected by A
 - older messages from the same chat selected by A
 - saved memories selected by B
 - verbatim web quotations selected by W
 
-C-selected recent entries preserve stored roles and wording and are not rewritten into evidence. A terminal-failed entry renders its original user message followed by a deterministic failure marker containing only error code and retryability; it never invents an assistant role or text. Before rendering any prior assistant message—whether selected by C or retrieved by A—deterministic code removes that message's old `[[cite:...]]` presentation tags; those keys belonged to another turn and must never enter the current source-key namespace. Stored messages remain unchanged.
+Plan-turn-selected recent entries preserve stored roles and wording and are not rewritten into evidence. A terminal-failed entry renders its original user message followed by a deterministic failure marker containing only error code and retryability; it never invents an assistant role or text. Before rendering any prior assistant message—whether selected by plan-turn or retrieved by A—deterministic code removes that message's old `[[cite:...]]` presentation tags; those keys belonged to another turn and must never enter the current source-key namespace. Stored messages remain unchanged.
 
 Selected or retrieved chat messages can ground statements about what participants said or requested. A saved memory can ground user-specific profile, preference, instruction, episode, or user-supplied fact claims. Neither prior assistant assertions nor saved memories are verified external-world evidence: current external factual claims require current document or web evidence. These type-specific grounding rules are stated in the answer prompts. Historical assistant tags are neither remapped nor resolved against the current turn.
 
-Evidence selected by A, B, or W receives an opaque turn-local source key such as `k_x7Q2M6F8N4V3J9P5T1X6Cg_1`. At run acceptance, code generates and persists a cryptographically random 128-bit citation nonce, encodes it as unpadded base64url, and combines it with the deterministic normalized-manifest ordinal. The nonce did not exist when user or source content was authored, and keys are never assigned from task completion order. Every later source-map, serialization, capture, and comparison order parses and compares that positive numeric ordinal; lexical key order is invalid because `_10` must follow `_9`, not `_1`. Duplicate evidence shared across fanout topics reuses one source key.
+Evidence selected by A, B, or W receives an opaque turn-local source key such as `k_cn_x7Q2M6F8N4V3J9P5T1X6Cg_1`. Code combines the accepted request's random `citationNamespace` with the deterministic normalized evidence-manifest ordinal. Keys are never assigned from task completion order. Every later source-map, serialization, capture, and comparison order parses and compares that positive numeric ordinal; lexical key order is invalid because `_10` must follow `_9`, not `_1`. Duplicate evidence shared across fanout topics reuses one source key.
 
 The final citation parser resolves only exact keys present in the current run's source map. Citation-shaped text copied from a user message, memory, document, web quotation, or older assistant turn therefore cannot alias a current source merely because it contains a generic key such as `s1`. Prior assistant tags are still removed from rendered conversation to keep the prompt clean; all stored content remains unchanged.
 
@@ -156,44 +412,78 @@ The public workflow is one durable `ai-chat` run:
 ```text
 load-turn
     |
-    +-- Parallel: turn-lanes ---------------------------------------+
-    |                                                              |
-    |  memory-extract                                               |
-    |                                                              |
-    |  answer lane                                                  |
-    |    resolve-conversation (C)                                   |
-    |      |                                                        |
-    |      +-- clarify -> clarification-result                      |
-    |      |                                                        |
-    |      +-- continue                                             |
-    |            plan-execution (D)                                 |
-    |            normalize-execution-plan                           |
-    |              |                                                |
-    |              +-- single -> SingleAnswerFlow                   |
-    |              |                                                |
-    |              +-- fanout -> FanoutAnswerFlow                   |
-    |            answer-select                                      |
-    |                                                              |
-    +--------------------------------------------------------------+
+    +-- plan-turn (every turn, including the first)
+          |
+          +-- Parallel (after a valid plan-turn result)
+                |
+                +-- AnswerLane
+                |     +-- clarify -> clarification result
+                |     |              (no retrieval or answer request)
+                |     +-- single -> internal || memory || web retrieval
+                |     |              -> context fit -> direct answer
+                |     +-- fanout -> per-topic internal || memory || web retrieval
+                |                    -> context fit -> topic answers -> synthesis
+                |
+                +-- memory-extract
     |
 finalize
 ```
 
-The `Parallel` group is a join: `finalize` is not eligible until both the complete answer lane and `memory-extract` have completed successfully.
+The `Parallel` group is a join: it is mounted after every valid plan-turn
+result and always contains both `AnswerLane` and `memory-extract`. `finalize`
+is not eligible until both lanes have completed successfully. `AnswerLane`
+branches to clarification, single, or fanout; clarification schedules no
+retrieval or answer request and stores the question as the assistant response.
+`memory-extract` still runs for clarification, and finalization waits for its
+result as well as the clarification result.
 
 ### Root Tasks
 
-`load-turn` is deterministic code. It loads the run and user message, bounded recent conversation entries, the accessible source catalog, active memory snapshots, locale, market, web-search choice and policy, and model configuration. Each memory snapshot contains its stable memory ID, current head revision ID, kind, and content. It does not search documents or hydrate evidence.
+`load-turn` is deterministic code. It loads only the stable run and request data
+defined in `LoadedTurn`. It does not load conversation bodies, memory
+inventories, source metadata, extraction rows, content hashes, or policy bodies.
+It locks the `ai_runs` row, derives `currentDate` from `ai_runs.created_at` as
+the UTC calendar date, and idempotently writes the `run_started` event in one
+product transaction. Delayed starts and task retries therefore keep the same
+date in plan-turn and retrieval requests, even when the worker clock crosses a
+date boundary.
 
-`memory-extract` begins immediately after `load-turn` and runs in parallel with the whole answer lane. It returns typed proposals only; finalization performs the writes.
+`plan-turn` is the first model task on every turn, including the first. Inside
+its own boundary, current database reads provide the accessible terminal prior
+turns and their complete message pairs. The task resolves references, selects
+only valid prior-turn IDs, and returns one strict union:
 
-`resolve-conversation` is agent C.
+```ts
+type PlanTurnResult =
+  | { mode: "clarify"; question: string }
+  | {
+      mode: "single";
+      question: string;
+      relevantTurnIds: string[];
+    }
+  | {
+      mode: "fanout";
+      question: string;
+      topics: Array<{
+        topicId: "t1" | "t2" | "t3";
+        question: string;
+        relevantTurnIds: string[];
+      }>;
+    };
+```
 
-`clarification-result` is a deterministic compute task. It turns C's validated question into a successful answer-lane result and appends the clarification's empty `context_ready`, `answer_started`, and `text_delta` events without another model call.
+The result is recursively strict. Code validates every selected ID against the
+current chat, rejects duplicates or foreign turns, checks that fanout has two
+or three independently answerable topics, and assigns internal topic IDs in
+this same boundary. There is no second planning schema or normalization task.
 
-`plan-execution` is agent D and runs only after C returns `continue`.
+`memory-extract` starts only after `plan-turn` has returned a valid result. It
+runs in parallel with the selected answer route and reads only the exact memory
+revision IDs captured in the immutable acceptance scope. It returns typed
+proposals only; finalization performs the writes.
 
-`normalize-execution-plan` is deterministic code. It validates coverage and turn IDs and persists the stable `t1`-to-`t3` IDs consumed by every dynamic fanout task.
+Clarification is a successful answer-lane result. It schedules no retrieval or
+answer call and stores the question as the assistant response.
 
 `answer-select` normalizes exactly one of `clarification-result`, `single-result`, or `fanout-result` into the answer-lane result consumed by finalization.
 
@@ -215,119 +505,63 @@ These components expand to `Sequence`, `Parallel`, `Branch`, `Loop`, and `Task` 
 
 `Subflow mode="childRun"` would introduce a second run, retry boundary, cleanup boundary, and result handoff. `Subflow mode="inline"` is also unnecessary when a normal component can expand directly into the parent graph.
 
-Production adaptation is data-driven. C, D, and O persist typed outputs; Smithers re-renders and mounts the selected stable graph. The runtime never copies or edits workflow source per turn. Smithers hot reload is limited to development or controlled operator work and is not an ordinary chat-planning mechanism.
+Production adaptation is data-driven. Plan-turn and O persist typed outputs; Smithers re-renders and mounts the selected stable graph. The runtime never copies or edits workflow source per turn. Smithers hot reload is limited to development or controlled operator work and is not an ordinary chat-planning mechanism.
 
-All model calls remain Smithers compute tasks whose async child invokes Pi. Brief does not use Smithers `agent=` execution. Brief async compute tasks do not use the Smithers `deps` prop: in installed 0.27.0, that shape invokes the function during render and treats the result as static. Components use structural ordering, optional `dependsOn` edges to nodes that are always mounted, and `ctx.output` or `ctx.outputMaybe` inside compute closures.
+All model calls remain Smithers compute tasks whose async child invokes Pi. Brief does not use Smithers `agent=` execution. Brief async compute tasks do not use the Smithers `deps` prop: in installed 0.30.0, that shape invokes the function during render and treats the result as static. Components use structural ordering, optional `dependsOn` edges to nodes that are always mounted, and `ctx.output` or `ctx.outputMaybe` inside compute closures.
 
 Inside every reduction loop, the plan task reads the previous measurement with `ctx.latest`; the measure task reads the just-completed plan with `ctx.latest` while the enclosing `Sequence` provides ordering; and the loop `until` condition reads the latest measure with `ctx.latest`. This remains correct when several sibling topic loops run concurrently.
 
 Every task has a stable ID, Zod-validated output, an explicit finite retry count, exponential backoff where appropriate, and a finite timeout. Dynamic fanout IDs are derived only from the persisted normalized topic list.
 
-Every provider-authored object is parsed by a strict schema at the root and at every nested object boundary. Unknown fields in C, D/topics, A queries or manifests, B manifests, W evidence, O decisions, memory proposals, topic packets, claims, tool arguments, and their wrapper objects are invalid output; validation never silently strips them into a different accepted value. The generic transport parser and each non-terminal tool's strict argument parser may recover a malformed tool-call argument with one bounded schema-correction turn only when the provider returned the explicitly supported single-call transport shape. A provider turn containing siblings is preflighted as one complete array; if any sibling is malformed, unknown, duplicated, or otherwise schema-invalid, the whole turn fails with the owning task's canonical error before any sibling executes or another provider turn is consumed. Terminal structured-output validation remains a task-output failure unless its owning bounded operation defines explicit typed recovery.
+Every provider-authored object is parsed by a strict schema at the root and at every nested object boundary. Unknown fields in plan-turn/topics, A queries or manifests, B manifests, W evidence, O decisions, memory proposals, topic packets, claims, tool arguments, and their wrapper objects are invalid output; validation never silently strips them into a different accepted value. The generic transport parser and each non-terminal tool's strict argument parser may recover a malformed tool-call argument with one bounded schema-correction turn only when the provider returned the explicitly supported single-call transport shape. A provider turn containing siblings is preflighted as one complete array; if any sibling is malformed, unknown, duplicated, or otherwise schema-invalid, the whole turn fails with the owning task's canonical error before any sibling executes or another provider turn is consumed. Terminal structured-output validation remains a task-output failure unless its owning bounded operation defines explicit typed recovery.
 
 Before any provider tool call executes, the complete sibling tool-call array is validated, including each call's strict arguments, disabled-tool arguments, terminal arguments, and unique call IDs. A malformed or duplicate sibling therefore produces no tool side effects. If a tool result is incomplete, every later non-disabled sibling in that same provider response receives continuation guidance and remains unexecuted until the exact cursor or required narrower range is supplied on a later turn.
 
 Every async compute task consumes the installed Smithers task runtime's exact `stepId`, `iteration`, `attempt`, and `AbortSignal`. Those runtime coordinates, rather than a latest-attempt query or hard-coded zero, own provider measurements, usage, observations, source exposures, external-tool usage, and streamed answer events. A worker interruption, lost job lock, run cancellation, or task timeout propagates through the Smithers run, the worker-global provider semaphore, Pi, Tinyfish discovery, the DNS-pinned page transport, and cancellation-aware database effects. An aborted semaphore waiter is removed without consuming a permit; an aborted request cannot begin later, emit a late delta, or persist provider/tool usage under a failed or retried attempt. Smithers state is retained when the outer worker is interrupted so the job can resume from durable completed nodes.
 
-## C: Conversation Resolver
+## Plan-turn
 
-C runs before every other planning or retrieval agent when prior terminal turns exist. This remains true when the exact recent-inventory token boundary excludes every prior entry: C is called with an explicit empty `entries` inventory so the boundary cannot be mistaken for a first turn. Only when the complete eligible prior-turn count is zero does deterministic code emit a `continue` result containing the current message as the retrieval question and an empty selection.
+`plan-turn` runs before every retrieval operation, including on the first turn.
+It receives the current message and a bounded, exact rendering of current
+terminal prior turns read inside the task. It may use stable message and turn
+IDs, locale, market, current date, and the effective request flags. It never
+receives a source list, memory inventory, extraction identity, or policy body.
 
-C receives:
+The model chooses one strict result from `PlanTurnResult`. A `clarify` result
+ends the answer lane without retrieval. A `single` result carries the resolved
+question and selected prior-turn IDs. A `fanout` result carries two or three
+independently researchable questions and the selected prior-turn IDs for each.
+Code rejects invented, duplicated, active, foreign, partially selected, or
+unauthorized IDs; checks topic coverage and limits; and assigns stable topic
+IDs from validated array order inside the same task boundary.
 
-- the current original user message
-- at most `AI_CONVERSATION_RECENT_TURNS` recent entries, each either a complete user/assistant pair or a terminal failed user-only turn carrying only its error code and retryable flag
-- stable message and turn IDs
-- locale, market, and current date
+The task loads the saved acceptance scope once and validates its run, user,
+chat, and company bindings. It may read immutable conversation rows inside
+that scope, but it does not query current grants, source toggles, memory mode,
+provider settings, or web policy to authorize an accepted run. Older messages
+outside its explicit input remain available only to the separate internal-chat
+retrieval boundary.
+Historical assistant citation tags are removed from rendered prior messages;
+stored messages stay unchanged.
 
-No provisional or failed assistant draft enters this inventory. `load-turn` considers at most the configured number of newest entries and adds each whole entry newest-first while the exact C-request budget allows. An entry is never partially clipped. Older messages outside that explicit inventory remain available to A's same-chat search. The observation records the number excluded by the count and token boundaries without copying their text.
-
-C emits one union:
-
-```ts
-type ConversationResolution =
-  | {
-      mode: "continue";
-      retrievalQuestion: string;
-      selectedTurnIds: string[];
-    }
-  | {
-      mode: "clarify";
-      question: string;
-    };
-```
-
-`retrievalQuestion` resolves references such as “it” only for D and the retrieval agents. The final answer still receives the original user message and C-selected turns with the deterministic historical-citation sanitization defined above. This prevents rewrite drift without allowing a prior turn's presentation keys to collide with current provenance.
-
-Every selected ID must identify one whole complete or terminal-failed entry in the current accessible chat and in C's input inventory. Code rejects invented, duplicated, partially selected, active, or unauthorized IDs.
-
-C returns `clarify` only when the ambiguity would materially change planning, retrieval, or the answer. In particular, a compare/contrast follow-up with multiple plausible same-kind antecedents and an unanchored pronoun or relative term such as `it`, `that`, `this`, `previous`, `prior`, `earlier`, `former`, `latter`, `one`, or `result` must clarify rather than infer a recency pairing. The clarification concisely names the competing candidates; C continues only when explicit names, stable IDs, dates, or other supplied anchors uniquely identify the referents. The clarification question is stored as the assistant response for this turn. The workflow does not pause waiting for the user; the user's reply starts a normal new run.
-
-## D: Execution Planner
-
-D runs after C and before any content retrieval. It chooses the execution strategy for semantic reasons, not as an overflow fallback.
-
-D receives:
-
-- C's retrieval question
-- the current original message
-- the IDs and rendered content of C-selected complete/failed entries
-- locale and market
-- whether authorized web research was requested
-- the maximum fanout topic count
-
-D emits:
-
-```ts
-type ExecutionPlan =
-  | {
-      mode: "single";
-      reason: string;
-    }
-  | {
-      mode: "fanout";
-      reason: string;
-      topics: Array<{
-        question: string;
-        relevantTurnIds: string[];
-      }>;
-    };
-```
-
-A valid fanout contains two or three topics. Each topic must be independently researchable and answerable; synthesis must be able to combine the packets without redoing cross-topic reasoning. A grammatically multipart but cross-cutting question stays `single`.
-
-Topics together must cover the original request without inventing new work. Topic turn IDs must be subsets of C's selected turns.
-
-`normalize-execution-plan` converts D's output into the persisted branch input:
-
-```ts
-type NormalizedExecutionPlan =
-  | { mode: "single"; reason: string }
-  | {
-      mode: "fanout";
-      reason: string;
-      topics: Array<{
-        topicId: "t1" | "t2" | "t3";
-        question: string;
-        relevantTurnIds: string[];
-      }>;
-    };
-```
-
-IDs derive from validated array order exactly once. The normalized output, not a fresh model response or completion order, drives dynamic JSX rendering and resume.
-
-Choosing fanout early gives each topic its own focused internal, memory, and web retrieval. Context overflow never changes a single route into fanout after broad retrieval has already happened.
+Choosing fanout early gives each topic its own focused internal, memory, and web
+retrieval. Context overflow never changes a single route into fanout after
+retrieval has begun.
 
 ## A: Internal Retrieval
 
 A owns one atomic information domain: relevant internal evidence. It searches authorized documents and older messages from the same chat through a bounded Pi tool loop.
 
-A receives the retrieval or topic question, C-selected complete/failed entries relevant to that path, source catalog metadata, locale, market, current date, and tool bounds.
+A receives the resolved or topic question, the selected prior-turn IDs for that
+path, locale, market, current date, and tool bounds. Brief code resolves named
+sources and searches only the immutable IDs in the saved scope; no broad source
+list enters provider input.
 
 A never writes SQL. Its tools are:
 
-- `search_internal(query)`: searches one typed target and returns bounded previews
-- `inspect_internal(reference)`: returns a bounded verbatim document range or one complete chat message
+- `search_internal(query)`: searches one typed target in the saved code-owned scope and returns bounded previews
+- `lookup_named_source(name)`: performs a bounded lookup for a user-named source and returns a strict `lookupRef` plus only saved-scope matches; names outside the scope and no matches have the same result
+- `inspect_internal(reference)`: accepts only a reference returned by the current tool result and returns a bounded verbatim document range or one complete chat message
 - `emit_internal_manifest(entries)`: validates and terminates the loop
 
 A completed `inspect_internal` reference cannot be repeated. Code returns a protocol recovery with the exact already exposed references and reserves the next provider turn for the terminal manifest after every mandatory cursor or narrower-range continuation has completed. When every candidate returned by the bounded search has a complete inspection, code also reserves that immediately following turn for the manifest, preventing a prose-only provider correction from consuming the terminal slot while preserving multi-candidate inspection. On any reserved manifest turn, both search and inspection are phase-disabled: a stale valid call to either tool is converted into a code-owned tool result carrying the immutable recovery references, then the following provider turn remains terminal-only.
@@ -348,7 +582,7 @@ type InternalQuery =
       target: "documents";
       terms: string;
       purpose: string;
-      sourceIds?: string[];
+      lookupRef?: string;
       countries?: string[];
       languages?: string[];
       documentTypes?: string[];
@@ -366,9 +600,43 @@ type InternalQuery =
     };
 ```
 
-Code validates schemas and access, injects tenant/source/chat restrictions, compiles parameterized Postgres queries, and returns previews. Document search uses the indexed full-text path. Chat search is restricted to the current chat, excludes deleted messages, and excludes recent messages already supplied to C.
+`lookup_named_source` returns one strict, code-minted handoff for the same task:
 
-Document `terms` use PostgreSQL web-search syntax: whitespace requires all lexemes and uppercase `OR` expresses alternatives. A owns semantic query construction and uses sparse lexical terms rather than quoted phrases or whole-question prose, with at most three required terms and each OR group counting as one. Catalog language is a hint rather than proof of indexed content language. For a non-English document question, A's first search includes sparse English content lexemes, either alone or OR-paired with user-language lexemes; it does not begin with a user-language-only document query. After one complete empty search, A may make at most one refinement, simplified to one or two English content nouns or immutable anchors. Each provider turn permits one search call; cursor continuations remain mandatory, and a target with a complete non-empty result cannot be searched again. Exhausting the two ordinary search turns does not hide `search_internal` while the second search has an unresolved cursor; only its exact continuation remains admissible, and the tool closes after that result completes. A malformed lexical query is correction-only: code returns `queryRejected` before any database search, it consumes neither the external search bound nor the permitted refinement, and it cannot authorize an empty manifest. The runtime preserves the configured finite retrieval-turn bound and, when no continuation obligation remains, exposes and requires only `emit_internal_manifest` on the final turn. A code-owned protocol-bound violation is returned visibly to A as a tool result with an exact echo of references already discovered before the violation. On the next terminal turn, A may copy only those exact references; code never applies the echo as a semantic selection, creates search terms, a semantic shortlist, references, quotations, or an empty manifest on A's behalf.
+```ts
+type NamedSourceLookupResult = {
+  found: boolean;
+  lookupRef: string | null; // ^lr_[A-Za-z0-9_-]{32}$ when found
+  matchCount?: number;
+};
+```
+
+Brief stores the lookup's exact saved-scope document set in the current task
+ledger and binds `lookupRef` to the run, task, iteration, attempt, and lookup
+result. A subsequent `search_internal` may include that `lookupRef` once; code
+checks the reference and scopes that search to the
+stored set before consuming the handoff. Code then accepts only document
+references returned by that saved lookup or its scoped search, checks each ledger
+entry and saved scope, and rejects repeats.
+Invented, foreign, stale, already-consumed, or cross-task references fail
+closed. When a normal search omits `lookupRef`, code searches the full saved
+document scope; a model can never supply a source ID to create or
+widen that scope.
+
+Code validates schemas and access, derives the accepted tenant and saved
+source scope,
+source identities, publisher state, and chat scope, compiles parameterized Postgres
+queries, and returns previews. Document search uses the indexed full-text path.
+Each document preview is rebuilt from immutable source text and exact normalized
+UTF-16 ranges. Headline markup never supplies a guessed range: an unmappable or
+ambiguous fragment fails closed, and the model sees only the source slices that
+those ranges reconstruct.
+Chat search is restricted to the current chat, excludes deleted messages, and
+excludes recent messages already supplied to `plan-turn`. The model never
+supplies a source ID for authorization. Named-source lookup and ordinary search
+remain separate retrieval operations; the handoff only narrows the one search
+that consumes its code-minted reference.
+
+Document `terms` use PostgreSQL web-search syntax: whitespace requires all lexemes and uppercase `OR` expresses alternatives. A owns semantic query construction and uses sparse lexical terms rather than quoted phrases or whole-question prose, with at most three required terms and each OR group counting as one. Inventory language is a hint rather than proof of indexed content language. For a non-English document question, A's first search includes sparse English content lexemes, either alone or OR-paired with user-language lexemes; it does not begin with a user-language-only document query. After one complete empty search, A may make at most one refinement, simplified to one or two English content nouns or immutable anchors. Each provider turn permits one search call; cursor continuations remain mandatory, and a target with a complete non-empty result cannot be searched again. Exhausting the two ordinary search turns does not hide `search_internal` while the second search has an unresolved cursor; only its exact continuation remains admissible, and the tool closes after that result completes. A malformed lexical query is correction-only: code returns `queryRejected` before any database search, it consumes neither the external search bound nor the permitted refinement, and it cannot authorize an empty manifest. The runtime preserves the configured finite retrieval-turn bound and, when no continuation obligation remains, exposes and requires only `emit_internal_manifest` on the final turn. A code-owned protocol-bound violation is returned visibly to A as a tool result with an exact echo of references already discovered before the violation. On the next terminal turn, A may copy only those exact references; code never applies the echo as a semantic selection, creates search terms, a semantic shortlist, references, quotations, or an empty manifest on A's behalf.
 
 When provider tool arguments fail the advertised schema before execution, Brief appends an explicit, proof-compatible tool result describing that rejection without executing the call or generically changing phase state. Mandatory cursor and narrower-range continuations remain open. The owning operation decides the next advertised phase: malformed internal search requires a corrected complete search before an empty manifest; malformed internal inspection may reserve the terminal manifest only after existing continuations close; and malformed candidate inspection or search leaves O's inspection/search and successful-measurement prerequisites intact. Internal-search rejection carries an empty canonical `items` array, candidate-search rejection carries an empty canonical `matchPreviews` array, and internal retrieval additionally carries only the exact references exposed before the rejected call so a malformed inspection cannot discard discovered evidence. Brief does not rely on Pi to synthesize `No result provided`; the exact local request ledger and the transmitted provider history therefore contain the same completed assistant/tool exchange.
 
@@ -379,7 +647,6 @@ type InternalReference =
   | {
       kind: "document";
       documentId: string;
-      documentVersionId: string;
       ranges?: Array<{ charStart: number; charEnd: number }>;
       purpose: string;
     }
@@ -390,7 +657,22 @@ type InternalReference =
     };
 ```
 
-Search and inspection results expose the immutable document version ID that produced their text, and A must return that version. Search matching preserves exact zero-based half-open UTF-16 contributor spans at code-point granularity through NFKC composition, case-fold expansion, canonical mark reordering, supplementary code points, and combining-only matches; it attributes contributors by the mapping rather than by unrelated grapheme-cluster membership. An explicit selected range must repeat a range from completed inspection; completed ranges may be combined. A may instead select a discovered immutable document without ranges as a whole downstream O candidate. A missing range means the whole immutable version and never authorizes code to take an arbitrary leading slice.
+Search and inspection results expose only `documentId` to the model. For public
+evidence, Brief code binds that ID to the exact public document row, immutable
+version identity, lowercase content hash, source scope, and inspected ranges,
+with no extraction ID. For publisher evidence, it binds the ID to the exact
+publisher extraction row through the required one-to-one version relation, plus
+the immutable version identity, hash, source scope, and inspected ranges. It
+rejects stale, invented, duplicate, cross-scope, or ambiguous identities.
+Search matching preserves exact zero-based half-open UTF-16 contributor spans
+at code-point granularity through NFKC composition, case-fold expansion,
+canonical mark reordering, supplementary code points, and combining-only
+matches; it attributes contributors by the mapping rather than by unrelated
+grapheme-cluster membership. An explicit selected range must repeat a range
+from completed inspection; completed ranges may be combined. A may instead
+select a discovered immutable document without ranges as a whole downstream O
+candidate. A missing range means the whole immutable version and never
+authorizes code to take an arbitrary leading slice.
 
 ## B: Memory Selector
 
@@ -398,7 +680,12 @@ B selects memories for relevance on every `private_owner` memory-mode path where
 
 A chat's memory mode is fixed as `private_owner` or `disabled` before its first accepted turn and is immutable afterward. A chat can be promoted to shared only when its mode has always been `disabled`; a `private_owner` chat, including one with memory-grounded history, cannot be shared. The demo's canonical chat uses `private_owner`; the schema permits additional chats for the same user without weakening those per-chat memory rules. This prevents later sharing from exposing an old memory-grounded answer.
 
-B receives the retrieval or topic question and access only to the initiating user's active memory snapshots. If the whole inventory fits the exact fast-agent request and configured direct-inventory count, it receives that inventory directly. Otherwise B uses a bounded `search_memories` / `inspect_memory` / `emit_memory_manifest` tool loop over the complete authorized active set. There is no code-generated semantic shortlist: queries and final selection remain B's decisions, search responses report truncation and cursors explicitly, and every tool result is exact-token bounded.
+B receives the retrieval or topic question and uses a bounded `search_memories` /
+`inspect_memory` / `emit_memory_manifest` tool loop over current active
+revisions read and authorized by Brief code. It never receives a preloaded
+memory inventory. There is no code-generated semantic shortlist: queries and
+final selection remain B's decisions, search responses report truncation and
+cursors explicitly, and every tool result is exact-token bounded.
 
 B emits an ordered list of `{ memoryId, memoryRevisionId }` pairs and may select none. Code rejects invented, foreign, deleted, stale-revision, or duplicate references.
 
@@ -441,11 +728,11 @@ Search queries never contain retrieved internal text, memories, or conversation 
 
 Direct URL fetches canonicalize and authorize every redirect hop, resolve that hop exactly once, reject the complete DNS answer if any address is malformed, private, reserved, or outside the ordinary globally routed IPv6 space, and use one validated numeric address as the actual HTTPS transport hostname. The transport performs no second DNS lookup. The original URL hostname remains the HTTP `Host` and TLS SNI value; when the runtime exposes the connected peer address, Brief additionally verifies it equals the pin before exposing response headers. A DNS answer cannot change between validation and transport. Redirect targets repeat the same process and redirects to plaintext or disallowed domains fail before their DNS or transport runs. The operation records the final canonical URL.
 
-Each Tinyfish discovery operation is capped at 1 MiB and one 10-second deadline across policy recheck, response headers, and body. Its `X-API-Key`-bearing GET rejects redirects and the endpoint is not configurable. The response is recursively strict: it must bind the original query, zero page, total-result count, and documented result fields; an optional documented date is validated but never becomes evidence metadata. Non-success provider statuses are classified before body reads, including oversized retryable statuses such as `429`, and their bodies are cancelled with rejection-safe bounded cleanup. Each Brief-owned page fetch is capped at 2 MiB of decoded response bytes and one cumulative 10-second deadline across policy rechecks, DNS, all redirects, response headers, decompression, and body consumption; a redirect never resets the deadline. At most five manually validated redirects are followed. Accepted page media types are HTML/XHTML, plain text, Markdown, JSON, JSON-LD, and PDF; PDFs are parsed in the isolated bounded source-ingestion worker before their text can become transient quotation evidence. Supported transport encodings are identity, gzip, deflate, and Brotli, and the decoded stream is the byte-gated stream. Rejected, redirected, oversized, or aborted responses await rejection-safe body/reader cancellation, bounded by the same cumulative deadline. These security limits are code-owned constants; changing them requires updating this specification and their boundary tests. Provider snippets and complete fetched bodies remain transient and never appear in durable operation accounting or local logs. Boundary errors retain only a sanitized code, retryability, and content-free operation ledger; raw transport and provider parse causes never cross into Smithers or product failure state.
+Each Tinyfish discovery operation is capped at 1 MiB and one 10-second deadline across the saved-policy check, response headers, and body. Its `X-API-Key`-bearing GET rejects redirects and the endpoint is not configurable. The response is recursively strict: it must bind the original query, zero page, total-result count, and documented result fields; an optional documented date is validated but never becomes evidence metadata. Non-success provider statuses are classified before body reads, including oversized retryable statuses such as `429`, and their bodies are cancelled with rejection-safe bounded cleanup. Each Brief-owned page fetch is capped at 2 MiB of decoded response bytes and one cumulative 10-second deadline across the saved-policy checks, DNS, all redirects, response headers, decompression, and body consumption; a redirect never resets the deadline. At most five manually validated redirects are followed. Accepted page media types are HTML/XHTML, plain text, Markdown, JSON, JSON-LD, and PDF; PDFs are parsed in the isolated bounded source-ingestion worker before their text can become transient quotation evidence. Supported transport encodings are identity, gzip, deflate, and Brotli, and the decoded stream is the byte-gated stream. Rejected, redirected, oversized, or aborted responses await rejection-safe body/reader cancellation, bounded by the same cumulative deadline. These security limits are code-owned constants; changing them requires updating this specification and their boundary tests. Provider snippets and complete fetched bodies remain transient and never appear in durable operation accounting or local logs. Boundary errors retain only a sanitized code, retryability, and content-free operation ledger; raw transport and provider parse causes never cross into Smithers or product failure state.
 
 The owning Smithers task signal is combined with, and remains distinct from, each boundary-owned 10-second deadline. Task cancellation aborts policy loading, provider search, DNS, the pinned socket, decompression/body reads, and any later domain operation as `AbortError`; it is never reclassified as `fetch_timeout` and does not hand a cancellation ledger to persistence after the task has failed or retried. Boundary deadline expiry continues to produce the typed, content-free failed operation required for retry accounting.
 
-The development adapter is available only when `TINYFISH_API_KEY` is non-empty and the effective policy permits it. Production web policy remains disabled until the Tinyfish contractual, disclosure, and conformance decisions in `docs/production-readiness.spec.md` are accepted; a development key never constitutes production approval. The stable W/tool contract does not change when production approval is granted. The accepted policy is snapshotted on the run for audit, but every search/fetch rechecks the effective policy and fails `web_policy_revoked` if access became stricter after acceptance. W returns only selected URL-backed verbatim quotations:
+The development adapter is available only when `TINYFISH_API_KEY` is non-empty and the saved acceptance scope enables it. Production web policy remains disabled until the Tinyfish contractual, disclosure, and conformance decisions in `docs/production-readiness.spec.md` are accepted; a development key never constitutes production approval. The acceptance transaction saves the complete server-derived web state, provider, model IDs, and canonical domain allowlist in the immutable run scope. Every search, fetch, redirect, and provider request uses those saved values. Network safety, response parsing, URL normalization, DNS, redirect, timeout, media, quotation, and exact evidence checks remain transport or data-integrity checks; they do not consult live policy. A malformed, incomplete, cross-tenant, or tampered saved scope fails closed. W returns only selected URL-backed verbatim quotations:
 
 Before quote containment and identity hashing, both the model quotation and fetched page text use the same transport-only normalization: Unicode NFC, CRLF/CR line endings to LF, and removal of outer whitespace; internal whitespace remains evidence.
 
@@ -463,21 +750,30 @@ type WebEvidence = {
 
 Search-result snippets may guide W but are not answer evidence unless W selects a fetched quotation with provenance. The durable citation record stores the selected quote and metadata, not the entire fetched page.
 
-If web was requested, W is a required selected domain: an exhausted transport, tool, or provider failure fails the path instead of silently answering as though web research succeeded. A valid empty enabled result is not a failure; context assembly adds the stable answer-visible gap `web:no_supporting_evidence`, and the answer must state that no supporting web evidence was found when that gap matters. Disabled W is not an enabled empty result. Finalization always rechecks the accepted web-policy snapshot for a requested W path, including when its final source map is empty.
+If web was requested, W is a required selected domain: an exhausted transport, tool, or provider failure fails the path instead of silently answering as though web research succeeded. A valid empty enabled result is not a failure; context assembly adds the stable answer-visible gap `web:no_supporting_evidence`, and the answer must state that no supporting web evidence was found when that gap matters. Disabled W is not an enabled empty result. Finalization uses the saved scope even when its final source map is empty.
 
 ## Candidate Assembly And Pull Metrics
 
 After A, B, and W join, deterministic code:
 
-1. Rechecks authorization against current product state.
+1. Loads the immutable acceptance scope and validates its run, user, chat, and company identities.
 2. Fetches every selected internal reference and memory.
 3. Validates web quotation provenance.
 4. Normalizes and merges duplicate or overlapping ranges without joining non-contiguous ranges.
-5. Deduplicates messages in C-selected entries against A-selected older messages and persists a typed `candidate_rejected: duplicate` decision for every A candidate removed by that rule.
+5. Deduplicates messages in plan-turn-selected entries against A-selected older messages and persists a typed `candidate_rejected: duplicate` decision for every A candidate removed by that rule.
 6. Assigns deterministic turn-local source keys.
-7. Renders every candidate exactly inside the real JSON-framed provider user message, including JSON escaping and separators.
-8. Counts each discretionary item as its deterministic marginal contribution in canonical request order. The history and source-item costs therefore sum exactly to `totalInputTokens - mandatoryInputTokens`; each `SerializedSourceUse.renderedTokenCount` is the source's JSON-framed marginal cost, not a count of the raw `<source>…</source>` fragment.
-9. Produces the candidate ledger, provisional immutable locators/provenance snapshots, and complete request measurement.
+7. Emits the authorized, hydrated, deterministically ordered candidate ledger, provisional immutable locators/provenance snapshots, source map, selected conversation, and gaps. Assembly does not render the provider request, count tokens, compute marginals, or persist a complete measurement.
+
+The path-specific `single/topic-measure` task owns the next boundary. It reads
+that durable assembly, renders every candidate inside the real JSON-framed
+provider user message (including JSON escaping and separators), computes the
+complete conversation and evidence token ledger, counts each discretionary item
+as its deterministic marginal in canonical request order, and persists the
+complete `context_measurement` plus the initial routing state. The history and
+source-item costs therefore sum exactly to `totalInputTokens -
+mandatoryInputTokens`; each `SerializedSourceUse.renderedTokenCount` is the
+source's JSON-framed marginal cost, not a count of the raw
+`<source>…</source>` fragment.
 
 Every rejected candidate has a typed reason such as `inaccessible`, `missing`, `invalid_range`, `duplicate`, or `overlap_merged`. Rejection is recorded without copying restricted source text.
 
@@ -504,12 +800,13 @@ type SourceLocator =
       /** Explicit durable namespace/source identity (`public:<sourceId>` or `publisher:<subscriptionId>`). */
       sourceId: string;
       documentId: string;
-      documentVersionId: string;
+      versionId: string;
       contentHash: string;
       ranges: SourceRange[];
-      /** Present together only for publisher documents. */
+      /** Present together only for publisher documents; internal, never model/API-visible. */
       publisherIssueId?: string;
       publisherDocumentId?: string;
+      publisherExtractionId?: string;
     }
   | { kind: "chat_message"; messageId: string }
   | {
@@ -533,7 +830,7 @@ type FinalSourceRecord = {
   locator: SourceLocator;
   label: string | null;
   publicProvenance: {
-    sourceName?: string;
+    lookupRef?: string;
     issueTitle?: string;
     documentTitle?: string;
     citationUrl?: string;
@@ -543,11 +840,46 @@ type FinalSourceRecord = {
 };
 ```
 
+The final internal document identity is one strict kind-specific binding. For a
+public document, `documentId` binds to the exact
+`public_source_documents.document_id` row. For a publisher document,
+`documentId` binds to the logical `brief_documents.id` row,
+`publisherDocumentId` binds that same publisher document inside its issue,
+`versionId` binds `brief_document_versions.id`, and `publisherExtractionId`
+binds the exact `brief_document_extractions.id` row that produced that version.
+The forward migration adds a required one-to-one
+`brief_document_versions.publisher_extraction_id` foreign key and uniqueness
+constraint, plus a same-document check, so a publisher version cannot have no
+extraction, two competing extraction bindings, or an extraction from another
+PDF. The extraction input hash must equal the immutable PDF hash, and the
+version text hash and ranges must match that extraction's canonical pages.
+Public documents carry no extraction identity. The extraction ID is stored only
+in internal locators, exposure rows and attestations, and database indexes; it
+never enters `DocumentReference`, model input, public provenance, or API
+projections.
+
 For a document, `locator.ranges` is the normalized union used anywhere in the turn; each `uses[].ranges` is the exact subset rendered for that consumer, and finalization rejects unless the union of every consumer subset equals the locator union exactly. For non-document evidence, `uses[].ranges` is empty. `uses` contains direct/topic answer consumers only, not selector previews or synthesis packets. Every use's `renderedTokenCount` is the non-negative marginal from the exact normalized provider request: start with the mandatory request, append selected conversation turns in stable order, then append sources in stable order and subtract each preceding prefix count. The marginals therefore include the exact JSON framing and separators actually introduced by that turn or source. `contextOrder` is the source's zero-based position in the terminal consumer ledger, not discovery order or a stale pre-reduction ordinal; every consumer's orders must be unique and contiguous from zero. `publicProvenance` is snapshotted during assembly and is never rebuilt from mutable metadata during finalization. Single context selection creates its final records immediately. Fanout topic selectors first create per-topic records, then `fanout-collect` merges them by source key into the union locator and stable list of exact consumer uses. Omitted candidates never enter `FinalSourceRecord[]`. This immutable record is sufficient to reproduce provenance even if the current document metadata or memory head later changes.
 
-For a document locator, `sourceId`, `documentId`, `documentVersionId`, `contentHash`, and normalized non-empty ranges are required. `sourceId` is an explicit durable namespace identity matching the anchored grammar `^public:[^:\s]+$` for `public:<public_sources.source_id>` or `^publisher:[^:\s]+$` for `publisher:<publisher_subscriptions.id>`; ECMAScript `\s` covers Unicode whitespace, line terminators, and `FEFF`, so raw IDs, empty/whitespace suffixes, embedded `:`, double prefixes, and wrong-kind values fail closed. The optional publisher tuple is all-or-nothing and, when present, must include both `publisherIssueId` and `publisherDocumentId`; it must match the document and the indexed publisher version. The candidate and source-locator schemas enforce this tuple discriminator before durable resume, and finalization/replay enforce it again. No durable boundary repairs or synthesizes a missing namespace prefix. `publicProvenance.documentTitle` and `citationUrl` are required. A publisher document uses the current authorized in-app URL `/v1/issues/{issueId}/documents/{documentId}/content`; a public-source document uses the exact official `public_source_documents.canonical_url`, and its citation URL is rejected if it differs from that row. Public replay binds the complete `(sourceId, documentId, documentVersionId, contentHash, canonical_url)` tuple; publisher replay binds the complete namespaced source/issue/document/version/hash tuple. Replay accepts the in-app route only when the durable source's indexed `publisher_document_version_id` equals the locator's `documentVersionId` and the exact publisher issue/document tuple is present; a row without that index is a public-source row and requires strict canonical credential-free HTTPS. The publisher route rechecks issue access and returns a private, non-cacheable object-store redirect that expires after five minutes. When the document belongs to a publisher issue, `sourceName`, `issueTitle`, and `publishedAt` are also required; `documentTitle` is the brief-document title. Public-source documents may omit `issueTitle` but still require their document title. Every durable `publicProvenance` object is recursively strict: only its declared string fields are accepted, unknown keys, non-object values, partial publisher tuples, and wrong field types fail closed. The API's document `PublicSourceLocator.url` is the direct projection of `citationUrl`, not a client-constructed or generic title mapping.
+For a document locator, `sourceId`, `documentId`, `versionId`, `contentHash`, and normalized non-empty ranges are required. `sourceId` is an explicit durable namespace identity matching the anchored grammar `^public:[^:\s]+$` for `public:<public_sources.source_id>` or `^publisher:[^:\s]+$` for `publisher:<publisher_subscriptions.id>`; ECMAScript `\s` covers Unicode whitespace, line terminators, and `FEFF`, so raw IDs, empty/whitespace suffixes, embedded `:`, double prefixes, and wrong-kind values fail closed. The publisher tuple is all-or-nothing and must include `publisherIssueId`, `publisherDocumentId`, and `publisherExtractionId`; it must match the document, indexed publisher version, and exact `brief_document_extractions` row. Public documents carry none of those publisher fields. The candidate and source-locator schemas enforce this discriminator before durable resume, and finalization/replay enforce it again. No durable boundary repairs or synthesizes a missing namespace prefix. `publicProvenance.documentTitle` and `citationUrl` are required. A publisher document uses the current authorized in-app URL `/v1/issues/{issueId}/documents/{documentId}/content`; a public-source document uses the exact official `public_source_documents.canonical_url`, and its citation URL is rejected if it differs from that row. Public replay binds the complete `(sourceId, documentId, versionId, contentHash, canonical_url)` tuple; publisher replay binds the complete namespaced source/issue/document/version/hash/extraction tuple and the required one-to-one version-to-extraction relation. Replay accepts the in-app route only when the durable source's indexed publisher version and extraction IDs equal the locator's values and the exact publisher issue/document tuple is present; a row without that relation is invalid, not a public-source row. The publisher route checks the authenticated viewer's exact historical delivery-recipient record and exceptional issue restrictions, then returns a private, non-cacheable object-store redirect that expires after five minutes. When the document belongs to a publisher issue, `sourceName`, `issueTitle`, and `publishedAt` are also required; `documentTitle` is the brief-document title. Public-source documents may omit `issueTitle` but still require their document title. Every durable `publicProvenance` object is recursively strict: only its declared string fields are accepted, unknown keys, non-object values, partial publisher tuples, and wrong field types fail closed. The API's document `PublicSourceLocator.url` is the direct projection of `citationUrl`, not a client-constructed or generic title mapping.
 
-Internal document references and candidate identities carry an explicit `public` or `publisher` namespace, including the public source ID or publisher source/issue/document tuple. Retrieval, inspection, materialization, fanout source-key assignment, provider-visible exposure markers, and deduplication preserve this discriminator; identical raw document/version/hash values from the two namespaces are never merged, and malformed or ambiguous provenance fails closed.
+Internal document references and candidate identities carry an explicit `public` or `publisher` namespace, including the public source ID or publisher source/issue/document tuple. Retrieval, inspection, materialization, fanout source-key assignment, internal exposure proofs, and deduplication preserve this discriminator; identical raw document/version/hash values from the two namespaces are never merged, and malformed or ambiguous provenance fails closed.
+
+For publisher documents, every internal identity carries the same exact
+`publisherExtractionId` as the bound version relation. When an issue reaches
+`ready`, database constraints and triggers make the PDF, `brief_documents` row,
+`brief_document_versions` row, `brief_document_extractions` row,
+version-to-extraction foreign key, content hash, page ranges, and current
+version pointer immutable. Normal writes cannot replace the PDF, insert a
+competing extraction, bind a version to another extraction, move the pointer,
+or delete any part of the ready tuple. A fenced retention or legal-purge
+transaction is the sole exception. It first resolves the complete canonical
+hold-scope key set, sorts those advisory-lock keys lexically, and acquires every
+one of them. While holding those locks, it row-locks the issue, then document,
+then version, then extraction, always in that order; it rechecks durable holds,
+record-level hold fields, and ready state, records actor, reason, and scope, and
+deletes the complete bound tuple atomically. It never takes a hold lock after a
+row lock. Partial deletion, an unfenced delete, or a purge that leaves a
+referenced version or extraction is rejected.
 
 An internal document, chat message, saved-memory revision, or web result is **pulled by AI** when any of its content becomes visible to any model. Metadata without body/snippet content is not a pull. Generated workflow data such as plans and topic packets is provider input but is not counted as a source pull.
 
@@ -555,18 +887,53 @@ An internal document, chat message, saved-memory revision, or web result is **pu
 - Every preview or snippet returned to A is pulled, even if A does not select it.
 - Content inspected by O is pulled.
 - A memory shown to B and a web result shown to W are AI exposures, though publisher issue-pull analytics apply only to publisher content.
-- The current message and recent messages shown to C, D, an answer consumer, synthesis, or memory extraction are chat-message exposures for those provider requests.
+- The current message and recent messages shown to plan-turn, an answer consumer, synthesis, or memory extraction are chat-message exposures for those provider requests.
 - A resolved retrieval question or validated topic question is generated workflow data, not a second exposure of the current message. A, B, W, and O receive that question rather than the current original message, so their provider calls do not record the current message as a chat-message pull.
 - Active memory content shown directly or through a memory tool to B or memory extraction is a memory-revision exposure.
 - Evidence serialized into a direct/topic answer is another detailed exposure stage even if the same source was previewed earlier.
 
-Detailed exposure rows identify the exact task, loop iteration, attempt, provider-request index, stage, logical source, exposed content item, and visible token count. Each successful insert atomically creates one strict, content-free `source_exposure_attestation` observation containing the same execution identity plus the digest of the exact normalized provider request that passed Pi's gate. Every document exposure stage, including baseline search/inspect, internal inspection, O inspection, context-candidate inspection, and answer serialization, carries the complete immutable namespaced source ID, document ID, document version ID, SHA-256 digest of the stored document text, and normalized non-overlapping UTF-16 ranges; only the body-free `internal_search_preview` stage may omit that reconstruction tuple. These fields are included in the attestation, so capture can reopen the canonical document and recount the exact visible slices after Smithers transcript deletion. The database independently requires every stored public or publisher document version's content hash to equal the exact UTF-8 SHA-256 of its text and rejects later text, character-count, or hash mutation. Code-owned internal-search, internal-inspection, and O-inspection tool results also serialize their exact content-free source markers under the reserved top-level `__briefSourceExposures` field. An O conversation-entry inspection exposes a strict structured entry body exactly once (never a duplicate JSON text field) and emits one `provider_input` chat-message marker for each whole message in that entry (user-only for a failed turn, user plus assistant for a completed turn); each marker's message ID, body, stage, and tokenizer count must match the separately persisted `provider_input` exposure row. A marker has exactly the source kind, logical identity, content-item identity, stage, and visible token count; that count is part of its proof digest. Immediately before measurement persistence and provider transport, Pi validates each reserved top-level marker against the exact known sibling snippet or text using the pinned request model tokenizer; a forged or stale marker never becomes a measured request. The unchanged exact gate counts those marker bytes. Pi independently derives the deduplicated marker-proof set from that top-level tool-result field and persists it with `provider_request_measurement`; it never reparses unrelated nested source or web objects as markers. Trusted evaluation requires an exact set bijection between those provider-request proofs and the marker-bearing exposure rows at the same coordinate, and independently reconstructs every reconstructable document stage from current namespaced storage and exact ranges. The body-free `internal_search_preview` row is the only intentionally non-reconstructable document exposure; its count and membership are therefore committed at the live Pi boundary by the validated marker, request digest, and proof. Missing, malformed, ambiguous, reordered, overlapping, out-of-bounds, widened, or tampered reconstruction metadata fails closed. Evaluation-bound exposure, provider/external usage, and observation rows are append-only at the database boundary, so a coordinated rewrite or deletion of those projections is rejected rather than accepted as a new hash. Thus changing only a reconstructable visible count, stage swap, coordinate swap, missing marker, or extra distinct marker fails; replaying an identical marker remains idempotent and creates no phantom exposure. A retry or later tool turn intentionally creates a separate detailed row.
+Answer evidence uses a strict length-prefixed source wrapper. Each wrapper carries a
+canonical decimal `length` in UTF-16 code units before its verbatim body; the
+decoder consumes exactly that many code units and then requires the closing
+`</source>` frame. It never searches for a delimiter inside source text.
 
-Content-item identity is document-version ID plus exact range/snippet hash for document previews, message ID for whole chat messages, memory-revision ID for whole memories, and final URL plus normalized snippet/quotation hash for web content. Therefore 20 distinct snippets shown to A are 20 exposed items even if A selects only three. Run-level exposed-item metrics deduplicate repeat visibility as `count distinct (runId, sourceKind, contentItemIdentity)`.
+Detailed exposure rows identify the exact task, loop iteration, attempt, provider-request index, stage, logical source, exposed content item, and visible token count. Each successful insert atomically creates one strict, content-free `source_exposure_attestation` observation containing the same execution identity plus the digest of the exact normalized provider request that passed Pi's gate. Every content-bearing document exposure stage, including search previews, baseline search/inspect, internal inspection, O inspection, context-candidate inspection, and answer serialization, carries the complete immutable namespaced source ID, document ID, document version ID, SHA-256 digest of the stored document text, and normalized non-overlapping UTF-16 ranges. A publisher document also carries the exact `publisherExtractionId`; a public document carries no extraction ID. The attestation contains that same kind-specific binding, including the required version-to-extraction relation, so capture can reopen both canonical rows and recount the exact visible slices after Smithers transcript deletion. A metadata-only search result creates no exposure or evidence row. The database independently requires every stored public or publisher document version's content hash to equal the exact UTF-8 SHA-256 of its text and rejects later text, character-count, hash, extraction-binding, or current-pointer mutation.
+
+The provider-visible tool results and messages contain only the strict model
+shapes: a document contributes `documentId` and allowed non-identity fields;
+source scope, version, content hash, extraction, range reconstruction, and
+other internal identity never enter them. Before measurement persistence and
+provider transport, Brief code creates an internal exposure-proof sidecar from
+the exact normalized request, known content slices, and the task's
+`stepId`/`iteration`/`attempt`/`providerRequestIndex` coordinates. Pi verifies
+that sidecar against the request and the pinned tokenizer; the sidecar is not
+serialized into a tool result or provider message and contributes no request
+bytes. The sidecar and request digest are stored with the attestation and
+measurement, while the detailed exposure row retains the complete kind-specific
+binding. For an O conversation-entry inspection, code derives one proof for
+each whole message from the structured entry body; a failed turn includes only
+the user message and a completed turn includes the user and assistant message.
+Trusted evaluation requires an exact set match between those out-of-band proofs
+and the detailed exposure rows at the same coordinate, then reconstructs every
+document stage from current namespaced storage, the version-to-extraction
+relation, and exact ranges. Missing, malformed, ambiguous, reordered,
+overlapping, out-of-bounds, widened, or tampered reconstruction metadata fails
+closed. Evaluation-bound exposure, provider/external usage, and observation rows
+are append-only at the database boundary; identical proof replay is idempotent,
+while a retry or later tool turn creates a separate detailed row.
+
+Content-item identity is document-version ID plus exact range/snippet hash for document previews, message ID for whole chat messages, memory-revision ID for whole memories, and final URL plus normalized snippet/quotation hash for web content. The identity stays in the internal sidecar and durable exposure row, never in provider-visible content. Therefore 20 distinct snippets shown to A are 20 exposed items even if A selects only three. Run-level exposed-item metrics deduplicate repeat visibility as `count distinct (runId, sourceKind, contentItemIdentity)`.
 
 Publisher-facing pulls are two separate distinct rollups: issue totals use `count distinct (runId, issueId)`, while the per-document breakdown uses `count distinct (runId, publisherDocumentId)`. A retry, 20 snippets from one document, or several documents from one issue cannot inflate either identity above one pull for the run.
 
 Pulled, selected, serialized, and cited are different funnel stages.
+
+Every current-run citation source must resolve to an authorized selector-stage
+source exposure and its attestation at the exact selector task, loop iteration,
+attempt, provider-request index, source kind, logical source identity,
+content-item identity, normalized range set, and, when applicable, the exact
+publisher extraction and document-reconstruction binding. An answer-stage
+exposure alone never authorizes a source.
 
 ## Exact Provider Request Gates
 
@@ -586,12 +953,18 @@ usableInput(requestClass, model) = min(
 
 The requested output limit is sent explicitly to the provider.
 
-Every Pi invocation passes an exact gate immediately before the provider call. This includes C, D, every A/B/W tool-loop turn, every O planning/tool-loop turn, memory extraction, direct answers, topic answers, and synthesis. Passing an earlier task measurement is never sufficient.
+Every Pi invocation passes an exact gate immediately before the provider call. This includes plan-turn, every A/B/W tool-loop turn, every O planning/tool-loop turn, memory extraction, direct answers, topic answers, and synthesis. Passing an earlier task measurement is never sufficient.
+
+Immediately before each content-bearing provider request, Brief validates the
+saved acceptance scope and exact integrity identities needed for that request.
+A stale `LoadedTurn`, prior tool result, malformed scope, or cross-tenant
+identity cannot expose content. Metadata-only requests may proceed without an
+evidence exposure row.
 
 The exact counter serializes the same provider-shaped request that Pi will send. Depending on the role, it includes:
 
 - every system instruction
-- C-selected complete/failed entries using the same deterministic renderer
+- plan-turn-selected complete/failed entries using the same deterministic renderer
 - selected memory and evidence headers, source keys, text, and separators
 - the current original user message or topic question
 - tool definitions, structured-output schema, assistant tool calls, tool results, and the complete accumulated tool transcript
@@ -600,11 +973,11 @@ The exact counter serializes the same provider-shaped request that Pi will send.
 
 One deterministic transport normalizer is shared by the counter and Pi. It hoists and joins multiple system messages with the same `\n\n` separator Pi uses, appends any response-schema instruction to that transmitted system content, recursively stable-orders tool schemas and assistant tool-call arguments while retaining tool-result IDs and names, and derives `strict: false` for every function exactly as Pi's pinned OpenAI-completions adapter serializes it. The derived strict field remains in the normalized request and its request digest, and the registered chat-template identity versions that Pi transport posture. The normalized request contains no inert response-schema side channel. Counter-only augmentation or a Pi-only rewrite is forbidden.
 
-The requested output allowance is explicit on every call and cannot exceed the request-class limit or the registry's model maximum. The main class applies to direct answers, topic packets, and synthesis. The fast class applies to C, D, A, B, W, O, and memory extraction. Role-specific output schemas may request less, but never more.
+The requested output allowance is explicit on every call and cannot exceed the request-class limit or the registry's model maximum. The main class applies to direct answers, topic packets, and synthesis. The fast class applies to plan-turn, A, B, W, O, and memory extraction. Role-specific output schemas may request less, but never more.
 
 Tool responses are bounded before they enter a transcript. Every search response declares the exact searched scope, `complete`, `truncated`, and cursor semantics. Results stop only at complete result boundaries; reaching a hard result cap is `complete: false`, and a provider that cannot continue that scope returns `cursor: null` plus `cursorSupported: false` rather than claiming completeness. An inspection request that cannot return the requested complete range within its response allowance is rejected with a typed request-for-narrower-range result; code never clips it silently. The runtime records every returned continuation obligation, requires the exact cursor or a strictly changed narrower range for that same scope, and rejects a terminal output while any obligation remains; an incomplete result without a usable continuation fails immediately. Before each subsequent model turn, the runtime gates the complete accumulated transcript. If it cannot fit, the task fails `agent_context_budget_exceeded`; it does not drop earlier tool messages or invoke O.
 
-If mandatory direct/topic content alone exceeds `usableInput`, the path fails with `context_mandatory_too_large`. This measurement uses an empty selected-conversation inventory and empty evidence; C-selected history is discretionary and can never cause the mandatory-only failure.
+If mandatory direct/topic content alone exceeds `usableInput`, the path fails with `context_mandatory_too_large`. This measurement uses an empty selected-conversation inventory and empty evidence; plan-turn-selected history is discretionary and can never cause the mandatory-only failure.
 
 If a complete direct/topic discretionary request fits, every authorized, deduplicated candidate is included. Code does not pack until full or remove a tail.
 
@@ -612,9 +985,19 @@ If it does not fit, the path mounts `ContextReductionLoop`.
 
 Synthesis has no O loop because its packet allowances are reserved before fanout. It still rebuilds and exact-counts its real final request immediately before the provider call and routes a mismatch to typed failure.
 
-Each `single/topic-context-select` rechecks chat, subscription, document-version, message, memory-revision, and effective web-policy access before it freezes the context for the first answer attempt. A then-inaccessible internal candidate is removed with persisted reason `access_revoked`, added to the answer's explicit gaps, and the real request/source records are rebuilt and exact-counted. This security removal is not budget trimming and never leaves a stale `FinalSourceRecord`. Revocation of a user-requested web path fails `web_policy_revoked` rather than degrading silently.
+Each `single/topic-context-select` validates the saved scope, exact source
+identities, and the selected document, version, hash, locator, memory revision,
+or web quotation before it freezes the context. A source outside that saved
+scope is rejected; a source whose immutable content or locator no longer
+matches is rejected as an integrity failure. Scope membership is not re-read
+from current grants, subscriptions, toggles, memory mode, provider settings,
+or web policy.
 
-The selected context and `FinalSourceRecord[]` are immutable across answer retries. Immediately before every direct/topic provider attempt, code rechecks the frozen source set and exact-counts the same rendered request; any new internal revocation fails `source_access_revoked`, and any web-policy revocation fails `web_policy_revoked`. A retry never removes a source or changes `sourcesRead`. Before synthesis is frozen, code rechecks every source key carried by every packet; any revocation fails `source_access_revoked` because synthesis cannot safely rewrite completed topic claims. Synthesis retries obey the same frozen-context rule. `context_ready` is built exactly once only after the relevant context is frozen and its authorization and exact gates pass.
+The selected context and `FinalSourceRecord[]` are immutable across answer
+retries. Every provider attempt, synthesis step, and replay uses the same
+saved scope and exact-counted request. A retry never removes a source or
+changes `sourcesRead` because a setting changed after acceptance. `context_ready`
+is built exactly once only after the saved scope and exact integrity gates pass.
 
 ## O: Context Reduction
 
@@ -625,7 +1008,7 @@ O initially receives compact data rather than the full oversized corpus:
 - the resolved or topic question
 - the exact input allowance and overage
 - mandatory input cost
-- candidate IDs, kinds, provenance labels, retrieval purpose, rank, and exact JSON-framed rendered cost, including one whole `conversation_entry` candidate for every C-selected recent turn
+- candidate IDs, kinds, provenance labels, retrieval purpose, rank, and exact JSON-framed rendered cost, including one whole `conversation_entry` candidate for every plan-turn-selected recent turn
 - prior validation feedback when this is a correction iteration
 
 O has bounded tools:
@@ -652,7 +1035,7 @@ type ContextDecision =
   | { id: string; action: "omit"; reason: string };
 ```
 
-`range` is valid only for document candidates, whose immutable version has stable verbatim offsets. C-selected recent conversation entries, A-selected older chat messages, memories, and selected web quotations are kept or omitted as whole units, so every non-document `SerializedSourceUse.ranges` remains empty. C-selected entries remain role-preserving conversation input rather than citable evidence and never enter `FinalSourceRecord[]`; their original ledger and exact costs persist across both correction iterations even after an earlier plan omitted them.
+`range` is valid only for document candidates, whose immutable version has stable verbatim offsets. Plan-turn-selected recent conversation entries, A-selected older chat messages, memories, and selected web quotations are kept or omitted as whole units, so every non-document `SerializedSourceUse.ranges` remains empty. Plan-turn-selected entries remain role-preserving conversation input rather than citable evidence and never enter `FinalSourceRecord[]`; their original ledger and exact costs persist across both correction iterations even after an earlier plan omitted them.
 
 External documents and web evidence remain verbatim. O does not rewrite factual evidence into a summary. Any lost coverage is represented by explicit omission reasons and passed to the answer prompt as a gap.
 
@@ -695,7 +1078,7 @@ single-result
 
 The three selector tasks run inside one `Parallel` group. `single-assemble` joins them and owns live hydration, selected-conversation duplicate rejection, candidate rejection observations, deterministic deduplication/order, and immutable source-record construction. It persists a typed `ContextAssembly` but does not construct or count the answer request. `single-measure` reads that durable assembly and alone constructs the exact provider request, computes the complete conversation/evidence token ledger, emits the initial `context_measurement` observation under the `single-measure` coordinates, and produces the initial routing state. These responsibilities are never collapsed into one operation or moved into pass-through task nodes. `single-context-select` runs structurally after the optional loop and reads the initial measurement plus the latest reduction measurement. It emits exactly `ready` with the original/reduced context or `failed` with `context_plan_unfit`. `single-answer-route` mounts `single-answer` only for `ready`; the failure branch produces a typed result without calling a model.
 
-`single-answer` uses the main model with no tools and streams the user-visible response. It receives the original current message, C-selected complete/failed entries, the final evidence, and explicit coverage gaps.
+`single-answer` uses the main model with no tools and streams the user-visible response. It receives the original current message, plan-turn-selected complete/failed entries, the final evidence, and explicit coverage gaps.
 
 There is no post-answer insufficiency sentinel or second retrieval pass. Retrieval agents refine inside their bounded tool loops; O resolves size before answering; the final answer states remaining evidence gaps honestly.
 
@@ -768,9 +1151,9 @@ fixedSynthesisInput
 
 The allowance is divided deterministically across two or three topics. Each per-topic allowance is capped by both `AI_MAIN_OUTPUT_MAX_TOKENS` and the registered model maximum output before it is placed on a topic request. A fanout plan is invalid if it cannot allocate enough tokens for each packet's required schema. Topic answer requests must also satisfy their own model input-plus-output invariant.
 
-Each topic runs focused A, B, and eligible W selectors. All topic/domain selector tasks are flattened into one `Parallel` group whose `maxConcurrency` is `AI_TOPIC_RESEARCH_MAX_CONCURRENCY`. `TopicResearch` returns task elements to that group; it does not create a nested `Parallel`, because Smithers 0.27.0 applies scheduling limits from the innermost parallel group. The derived run-level Smithers cap reserves the concurrent memory slot and is therefore never lower than this group or the topic-answer group. The worker-level provider semaphore remains the global provider limit.
+Each topic runs focused A, B, and eligible W selectors. All topic/domain selector tasks are flattened into one `Parallel` group whose `maxConcurrency` is `AI_TOPIC_RESEARCH_MAX_CONCURRENCY`. `TopicResearch` returns task elements to that group; it does not create a nested `Parallel`, because Smithers 0.30.0 applies scheduling limits from the innermost parallel group. The derived run-level Smithers cap reserves the concurrent memory slot and is therefore never lower than this group or the topic-answer group. The worker-level provider semaphore remains the global provider limit.
 
-After all topic research joins, `fanout-merge-sources` operates only on the persisted selector manifests: it deduplicates shared candidate identities and assigns nonce-prefixed keys in stable topic-ID, domain, rank, and source-identity order. It performs no database hydration, context assembly, exact measurement, or measurement observation. An inaccessible candidate may therefore leave an unused preassigned ordinal, but can never cause the keys of later manifest identities to change during a retry.
+After all topic research joins, `fanout-merge-sources` operates only on the persisted selector manifests: it deduplicates shared candidate identities and assigns namespace-prefixed keys in stable topic-ID, domain, rank, and source-identity order. It performs no database hydration, context assembly, exact measurement, or measurement observation. An inaccessible candidate may therefore leave an unused preassigned ordinal, but can never cause the keys of later manifest identities to change during a retry.
 
 Each `topic-tN-assemble` independently performs that topic's live hydration, selected-conversation duplicate rejection, candidate rejection observations, deterministic topic order, and immutable source-record construction using the durable shared key map. Each `topic-tN-measure` alone constructs and exactly counts its bounded topic request and emits the initial topic measurement under its own stable coordinates. Assembly and measurement outputs are independently durable, so a resume never replays a completed owner node or silently transfers its work to a later task.
 
@@ -807,8 +1190,8 @@ Direct and synthesized answers use the user's locale and Brief's editorial syste
 Every factual claim supported by evidence carries an adjacent tag:
 
 ```text
-[[cite:k_x7Q2M6F8N4V3J9P5T1X6Cg_1]]
-[[cite:k_x7Q2M6F8N4V3J9P5T1X6Cg_1,k_x7Q2M6F8N4V3J9P5T1X6Cg_4]]
+[[cite:k_cn_x7Q2M6F8N4V3J9P5T1X6Cg_1]]
+[[cite:k_cn_x7Q2M6F8N4V3J9P5T1X6Cg_1,k_cn_x7Q2M6F8N4V3J9P5T1X6Cg_4]]
 ```
 
 The final assistant message is stored with tags inline. The persisted source map resolves every valid key after reload.
@@ -835,9 +1218,12 @@ Memory selection for an answer and memory extraction from the current message ar
 `memory-extract` receives only:
 
 - the current user-authored message
-- access to the initiating user's active memory snapshots, for exact deduplication and update targeting
+- access to the initiating user's current active-memory search and inspection boundary, for exact deduplication and update targeting
 
-When the complete active inventory fits the exact fast-agent request and direct-inventory count, the snapshots are included directly. Otherwise the extractor uses the same authorization-safe `search_memories` and `inspect_memory` boundary over the complete active set. It never receives assistant text, retrieved documents, web content, topic packets, or non-memory tool output.
+The extractor reads current active revisions through the same authorization-safe
+`search_memories` and `inspect_memory` boundary. It never receives assistant
+text, retrieved documents, web content, topic packets, or non-memory tool
+output.
 
 The forced structured output is:
 
@@ -891,10 +1277,9 @@ Extraction always writes to the initiating user's private memory store, includin
 
 ## Prompt Modules
 
-Each agent role has a dedicated prompt module rather than one general planner prompt:
+Each model responsibility has a dedicated prompt module:
 
-- `ConversationResolverPrompt`
-- `ExecutionPlannerPrompt`
+- `PlanTurnPrompt`
 - `InternalRetrievalPrompt`
 - `MemorySelectorPrompt`
 - `WebResearchPrompt`
@@ -906,9 +1291,21 @@ Each agent role has a dedicated prompt module rather than one general planner pr
 
 Shared fragments define locale behavior, source-key grammar, grounding rules, restricted-content handling, tool-loop exit rules, and typed output requirements.
 
-Each prompt describes one atomic responsibility, its exact input inventory, allowed tools, output schema, and failure/empty-result behavior. The conversation resolver presents Z.AI with one flat root-object parameter schema whose only universally required field is `mode`; branch fields remain optional only at that transport boundary. Brief then parses those arguments through the exact recursively strict `continue`/`clarify` union, so an empty object, missing branch field, mixed-branch field, or unknown field consumes the task's bounded retry rather than being stripped or accepted. A prose-only response or a malformed non-terminal tool call from a bounded tool loop is retained as an assistant turn without executing side effects and receives one code-owned correction asking for exactly one advertised tool with its exact JSON object schema; strict tool-specific failures remain rejected and unexecuted until a later bounded turn supplies valid arguments. Terminal schema failures remain task failures unless the owning operation defines typed recovery. It still consumes the same finite loop and cannot bypass terminal validation or turn limits. Web research also tells the provider to emit exactly one quotation when one fetched page directly answers a single-source status/update question; related pages are not evidence merely because they share the topic. Its token-attested prompt tells a bounded retry to correct only that schema shape without changing the semantic responsibility. Prompt files do not restate workflow routing; the TSX workflow owns routing, joins, retries, bounds, and terminal behavior.
+Each prompt describes one atomic responsibility, its exact live-read input, allowed
+tools, output schema, and failure/empty-result behavior. `PlanTurnPrompt` uses
+the strict `clarify`/`single`/`fanout` union at its own boundary. Brief validates
+the complete nested result before routing, rejects unknown or mixed fields, and
+assigns internal topic IDs in that same boundary. A prose-only response or a
+malformed non-terminal tool call from a bounded tool loop is retained as an
+assistant turn without executing side effects and receives one code-owned
+correction asking for exactly one advertised tool with its exact JSON object
+schema. Strict tool-specific failures remain rejected and unexecuted until a
+later bounded turn supplies valid arguments. Terminal schema failures remain
+task failures unless the owning operation defines typed recovery. Prompt files
+do not restate workflow routing; the TSX workflow owns routing, joins, retries,
+bounds, and terminal behavior.
 
-The prompt contracts also define the semantic boundaries that the evaluator exercises: a uniquely identifiable older or earlier conversation entry is continued and selected, while clarification is reserved for multiple plausible referents; when a bounded recent inventory omits an explicitly older target, the resolver continues and lets A search older chat messages; memory application, memory update, formatting, and language side effects do not become fanout topics; internal comparison retrieval covers each distinct named subject with compact bounded queries, while a web-only current/public topic emits no internal search; a fanout topic uses web only when that topic requests current or public web evidence, and otherwise emits no web search; web selection keeps only the smallest directly relevant fetched set; context reduction preserves every question-required candidate and uses exact document ranges or whole non-document items; empty evidence produces no factual answer claim; synthesis may restate only packet claims; and memory extraction requires explicit durable language rather than inferring a preference from a one-turn request.
+The prompt contracts also define the semantic boundaries that the evaluator exercises: a uniquely identifiable older or earlier conversation entry is continued and selected, while clarification is reserved for multiple plausible referents; when a bounded recent read omits an explicitly older target, plan-turn continues and lets A search older chat messages; memory application, memory update, formatting, and language side effects do not become fanout topics; internal comparison retrieval covers each distinct named subject with compact bounded queries, while a web-only current/public topic emits no internal search; a fanout topic uses web only when that topic requests current or public web evidence, and otherwise emits no web search; web selection keeps only the smallest directly relevant fetched set; context reduction preserves every question-required candidate and uses exact document ranges or whole non-document items; empty evidence produces no factual answer claim; synthesis may restate only packet claims; and memory extraction requires explicit durable language rather than inferring a preference from a one-turn request.
 
 Prompt changes ship as application source. Stable task IDs are retained when the task's semantic contract remains compatible; materially different work receives a new task ID and output schema migration.
 
@@ -941,7 +1338,12 @@ The workflow-operation boundary preserves `AbortError` unchanged and converts ev
 
 A fatal Smithers task failure stops the graph. The worker's failure handler marks the Brief run failed and appends a terminal `error` event idempotently. Smithers state is retained until that product failure transition succeeds, then cleaned up.
 
-Workflow source is deterministic in production. A deploy must drain active runs or preserve source/schema compatibility. A resume metadata mismatch is a retryable product error requiring the user to resend; it does not trigger per-run source editing.
+Workflow source is deterministic in production. This clean cutover takes the
+exclusive Smithers schema fence, drains or rejects every active AI-chat run and
+retained incompatible outputs before deployment, installs only the final schema,
+and never resumes an old workflow shape. A worker that sees an old or mismatched
+shape fails closed and requires the user to resend; it never edits a run's
+workflow source or preserves an old schema.
 
 ## Answer Result And Finalization
 
@@ -966,12 +1368,36 @@ It reads mutually exclusive branch outputs with `ctx.outputMaybe`; it does not d
 
 After the outer answer/memory join, `finalize` runs one product-database transaction:
 
+Before replay detection or any memory, usage, assistant-message, source-map,
+event, failure, or terminal write, finalization consumes exactly one terminal
+`turn_plan` observation for the run and validates complete coordinate-bound
+bijections among the provider measurement, provider usage, content exposures,
+and exposure attestations for every provider output consumed by the result.
+Earlier retry rows may remain only as unconsumed history: a failed or aborted
+attempt may have one unmatched terminal measurement only when it has no
+provider-authored output. Missing, extra, duplicate, conflicting, or foreign
+records at any task/loop/attempt/provider-request coordinate fail closed before
+the transaction can write product state.
+
+The terminal direct/topic answer or fanout synthesis request must have exactly
+one `provider_request_measurement`, one durable provider usage row, one
+provider-authored serialization sidecar bound to that request, its complete
+source-exposure attestation set, and one exact restricted terminal context ledger at one
+canonical run/task/loop/attempt/provider-request coordinate. Missing, duplicate,
+foreign, or cross-coordinate rows or sidecars fail closed.
+
 1. Resolve the run's immutable chat, initiating-user, and client-company scope without locking mutable product state. Acquire, in canonical order, the initiating user's memory advisory lane, a shared chat-row lock, the client-company membership advisory lane, the chat-execution advisory lane, and then the `ai_runs` row lock. Before replay detection or any memory, usage, event, failure, assistant-message, or source mutation, compare the locked row's non-null `smithers_run_id` with the executing workflow's exact `ai-chat:<aiRunId>` coordinate; a mismatch fails closed with the typed Smithers-identity error. For a successful answer, derive the unique publisher issue IDs in the final source map, sort them lexically, and acquire each `brief:publisher-issue:<issueId>` transaction advisory lane before any source-authorization read. The same issue lane is acquired by platform restriction and unrestriction transactions and held through their update, audit, and commit. Revalidate that the locked run still has the resolved immutable scope and return its existing terminal result if the same run was already finalized. A full chat projection holds the chat row, membership lane, and execution lane through all of its message, run, source, and source-use queries, so it observes this transaction wholly before or wholly after the terminal transition. The publisher issue lane makes restriction and successful answer finalization linearize wholly before or wholly after one another.
-2. Validate and apply the completed memory proposals, append memory revisions, and append `memory_updated` with created, updated, and discarded counts.
-3. Derive aggregate model/web-tool usage from the detailed usage tables and append `usage:run`.
-4. For a successful answer result, recheck current chat/source/web authorization for every source map entry under the finalization snapshot. Internal revocation converts the result to retryable `source_access_revoked`; web-policy revocation converts it to retryable `web_policy_revoked`. No assistant draft or source row is persisted.
+2. For a successful answer result, validate the immutable acceptance scope, exact document/version/hash/locator/range identities, memory revisions, web quotations, usage, idempotency keys, and Smithers coordinates. Later membership, source, subscription, memory, provider, or web-policy changes do not reject finalization. No assistant draft or source row is persisted when an exact integrity check fails.
+3. Validate and apply the completed memory proposals, append memory revisions, and append `memory_updated` with created, updated, and discarded counts.
+4. Derive aggregate model/web-tool usage from the detailed usage tables and append `usage:run`.
 5. If the result remains successful, parse citation tags against `sourceMap`, insert the assistant message uniquely by `aiRunId`, persist every source record and its serialized consumer uses, persist one exact ordered citation/citation-defect observation per parsed token, set `finished_at`, and append `done` with the message ID after `usage:run`. Trusted replay reparses the persisted assistant content against its exact source-key set and requires a bijection with those observations; insertion, deletion, reordering, or source-key substitution is invalid.
+
 6. If the answer result is or became a controlled failure, set `failed_at`, error code, and retryable flag and append `error` after `memory_updated` and `usage:run`. The validated memory changes remain committed because they depend only on the user's message; the client refreshes the memory panel even though no assistant message was saved.
+
+Citation capture and trusted replay revalidate that same sealed terminal ledger
+and every immutable source binding, including selector-stage exposure and
+publisher reconstruction. They never trust persisted source rows or citation
+text on their own.
 
 Finalization derives the run's aggregate usage from `ai_run_usage` and `ai_external_tool_usage`; it does not store a second aggregate copy beyond the transient `usage:run` event.
 
@@ -981,7 +1407,7 @@ If a required task fails fatally before `finalize`, the worker failure handler a
 
 The stream endpoint is `GET /v1/ai-runs/:runId/stream`.
 
-The API incrementally polls `ai_run_events`, emits each monotonic `seq` as the SSE `id`, sends keep-alive comments, and replays after `Last-Event-ID` or `afterSeq`. The handshake performs the same full authorization query before returning `200`; it does not rely on chat access alone. Every poll scopes the event read through the viewer's current live user, company membership, chat visibility, every selected subscription grant, every publisher/public document or memory already exposed to the run, and the complete current effective web policy for an exposed web source—including company enablement, the live Tinyfish adapter/key, and the configured allowlist capability limit—all in the same SQL statement. User/company/chat deletion, publisher restriction, subscription-grant revocation, public-source opt-out, exposed-memory deletion, or any web-policy/deployment-capability revocation closes an already-open stream before any subsequently committed event or keep-alive is emitted; reconnect then fails the normal authorization check.
+The API incrementally polls `ai_run_events`, emits each monotonic `seq` as the SSE `id`, sends keep-alive comments, and replays after `Last-Event-ID` or `afterSeq`. The handshake authorizes the viewer against the owner/shared-chat boundary before returning `200`; it does not reauthorize the accepted run's saved sources, memory revisions, provider, or web policy. Every poll reads the run's immutable event ledger and saved source projection under the chat and execution locks. Later membership grants, subscription or source settings, exposed-memory state, provider capability, or web-policy changes do not prune or close an already accepted run stream. Account deletion, purge, legal restriction, and an exact viewer/chat identity mismatch remain explicit access denials.
 
 Production and demo browsers treat a `401`, `403`, or `404` stream handshake as definitive: they clear the cursor and provisional draft, perform one authoritative chat/memory reconciliation, and do not reconnect that cursor. A transient disconnect may be retried only after that reconciliation reports the same active run; an unauthorized reconciliation terminates and clears without a retry loop.
 
@@ -1034,6 +1460,7 @@ type UsageEvent =
       resultCount: number;
       responseBytes: number;
       billedUnits: number | null;
+      durationMs: number;
     }
   | {
       scope: "run";
@@ -1077,7 +1504,7 @@ Exactly one `context_ready` event is appended for a route that reaches a user-vi
 
 A clarification emits empty source and consumer arrays. A single answer lists its direct-answer consumer. Fanout emits this event only after topic packets have completed and the synthesis request has passed its exact gate; the one event lists every topic-answer consumer followed by synthesis in stable topic order. Thus topic calls do not create ambiguous repeated public events. A route that fails context preparation emits terminal `error` without `context_ready`. The worker, API, and shared client contract use the same recursively strict `AiRunEvent` schema: `sourcesRead` is the exact public projection of the terminal source map, `consumers` is the exact ordered terminal ledger projection, and unknown root or nested fields are invalid.
 
-C, D, selectors, O, and topic packets are observable in product records and structured logs, but their raw content is not streamed to the browser. Topic answers never emit `text_delta`.
+Plan-turn, selectors, O, and topic packets are observable in product records and structured logs, but their raw content is not streamed to the browser. Topic answers never emit `text_delta`.
 
 Each retry of a user-visible answer appends a new `answer_started` with a strictly higher attempt number. Every `text_delta` is owned by that consumer task and attempt, appears after its start and before the next attempt's start, and uses a contiguous zero-based delta index in both its emission key and durable chronology. The terminal latest attempt's concatenated deltas must equal the persisted assistant content exactly. The client discards visible deltas from earlier attempts. Existing event rows and sequence numbers are never rewritten.
 
@@ -1215,7 +1642,7 @@ An assistant message returned by `GET /v1/chat` contains:
 type PublicSourceLocator =
   | {
       kind: "document";
-      sourceName?: string;
+      lookupRef?: string;
       issueTitle?: string;
       documentTitle: string;
       url: string;
@@ -1268,6 +1695,12 @@ type AssistantMessage = {
 
 Here `ranges` is the normalized document-range union and is empty for non-document kinds. `tokenCount` is the sum of that source's exact JSON-framed marginal counts across direct/topic serialized uses; `topicIds` is their deduplicated stable topic list. The `sourcesRead` element is the same strict `PublicSourceRecord` used by `context_ready`.
 
+`GET /v1/chat` and trusted evaluation decode the same strict saved-answer
+`source`/`use`/`locator` contract. No alternate decoder, alias, fallback, or
+repair path exists. The public projection comes from that decoded record and
+hides provider coordinates, selector exposures, attestations, sidecars,
+reconstruction bindings, and other internal proof fields.
+
 The API exposes no Smithers IDs, candidate omissions, raw context plans, source previews, or restricted observations.
 
 The demo has no stop/cancel endpoint, artifact endpoint, or per-chat source picker. The runtime queries the demo user's server-authorized source set, including its seeded publisher-invitation and worker-ingested public-source documents. The production source-selection rules remain those in `docs/design.spec.md`.
@@ -1302,7 +1735,7 @@ All product migrations are forward-only and follow the repository's guarded migr
 
 `client_companies`: id, non-empty name, created at, updated at. The demo creates one deterministic workspace for its user; production company identity remains authoritative product state.
 
-`client_company_memberships`: company id, user id, role, created at, nullable revoked at, nullable revoked-by user id; primary key on company/user with an all-or-nothing revocation shape. This retained row is the authoritative user-to-company identity required by durable chat and related foreign keys. A membership authorizes only while `revoked_at` is null and the user and company are not recovery-deleted or purged. Administrative removal atomically revokes the membership and all employee subscription grants instead of deleting the row; physical deletion is restricted to the account-purge transaction. Re-invitation acceptance may explicitly reactivate the same retained identity. Every local member-authorized acceptance transaction serializes on the company membership lock and rechecks this active predicate before commit. AI send acceptance additionally rechecks every selected subscription grant and its access state after acquiring that same lock, so a concurrent membership or independent grant revocation cannot leave a message, run, or job behind.
+`client_company_memberships`: company id, user id, role, created at, nullable revoked at, nullable revoked-by user id; primary key on company/user with an all-or-nothing revocation shape. This retained row is the authoritative user-to-company identity required by durable chat and related foreign keys. Acceptance reads it once while holding the membership lock and copies the resulting identity into the immutable run scope. Later membership or grant changes affect later runs only; account deletion, purge, and legal restrictions remain explicit exceptional denies.
 
 `client_company_ai_settings`: company id, web-search-enabled defaulting to false, nullable normalized web-domain allowlist, created at, updated at. A null allowlist means no company domain restriction; an active allowlist is non-empty and contains no null items. The deterministic demo fixture explicitly opts its company in so the demo web path is exercisable when the adapter is configured; this fixture exception does not change the disabled default for new production companies.
 
@@ -1310,13 +1743,15 @@ All product migrations are forward-only and follow the repository's guarded migr
 
 `chat_messages`: id, chat id, author, content, assistant ai run id when applicable, created at; assistant run ID is unique.
 
-`ai_runs`: id, chat id, initiating user id, unique user message id, assistant message id, Smithers run id, 128-bit citation nonce, next event sequence, locale, market, web-search-enabled, effective web-policy snapshot, error code, retryable flag, created at, started at, finished at, failed at. Status derives from timestamps. Partial unique indexes on chat ID and initiating user ID where both terminal timestamps are null enforce one active run per chat and per memory owner.
+`ai_runs`: id, chat id, initiating user id, unique user message id, assistant message id, Smithers run id, random per-answer `citationNamespace`, one immutable server-derived `acceptance_scope`, next event sequence, locale, market, error code, retryable flag, created at, started at, finished at, failed at. The scope contains company identity, exact selected source/subscription/public-source IDs, memory mode and revision IDs, requested/effective web state, provider and model IDs, web transport provider, and canonical domain allowlist. Status derives from timestamps. Partial unique indexes on chat ID and initiating user ID where both terminal timestamps are null enforce one active run per chat and per memory owner.
 
 `ai_run_events`: identity id, run id, monotonic seq, deterministic emission key, event JSON, emitting task, created at; unique on run/seq and on run/emission key. Rows are transient restricted content. The run row holds the next-event sequence and is locked so a losing idempotency insert does not consume a public sequence.
 
-`ai_source_exposures`: run id, task id, loop iteration, attempt, provider-request index, source kind, logical source identity, publisher issue/document IDs when applicable, content-item identity, exposure stage, exact visible token count, and created at; unique on all execution coordinates, stage, and content-item identity. Document `internal_inspection` and `context_candidate_inspection` rows additionally persist a namespaced source ID, document ID, immutable version ID, lowercase SHA-256 content hash, and normalized non-overlapping UTF-16 range array. Those fields are required as a complete set for those stages; only body-free `internal_search_preview` may omit reconstruction metadata. Rows contain no copied source body. Exact replay of an exposure and its provider-request attestation is idempotent; any conflict in a bound exposure or attestation field fails closed inside the transaction. Run-level exposed-item counts derive by distinct run/content-item identity, publisher issue/document pulls by their separate distinct run/logical IDs, and the full per-attempt rows support the detailed funnel.
+`brief_document_versions`: publisher document id, exact one-to-one `publisher_extraction_id` foreign key to `brief_document_extractions`, immutable canonical text, lowercase content hash, page ranges, and search projection. The foreign key is unique, points to an extraction for the same PDF row, and is required for a publisher version. Ready-state constraints reject extraction replacement, version-pointer movement, PDF/text/hash/range mutation, and ordinary deletion; only the fenced complete-record purge may remove the bound rows.
 
-`assistant_message_sources`: assistant message id, source key, kind, typed immutable locator JSON matching `SourceLocator`, kind-specific indexed identity columns including namespaced `sourceId` plus document/version/content hash for documents, `document_version_id`, `message_id`, and `memory_revision_id`, snapshotted nullable display label, snapshotted public provenance JSON, created at; unique on message and source key. The locator therefore persists document namespace/source/version/hash/range union, message identity, exact memory revision, or web URL/title/domain/quote/quote hash/publication/capture times without later derivation from mutable state. The indexed memory revision is a protected reference used by provenance retention and GC. These rows are the immutable turn-local source map.
+`ai_source_exposures`: run id, task id, loop iteration, attempt, provider-request index, source kind, logical source identity, publisher issue/document/extraction IDs when applicable, content-item identity, exposure stage, exact visible token count, and created at; unique on all execution coordinates, stage, and content-item identity. Every content-bearing document row, including `internal_search_preview`, persists a namespaced source ID, document ID, immutable version ID, lowercase SHA-256 content hash, normalized non-overlapping UTF-16 range array, and, for publisher documents only, the exact `publisher_extraction_id` as one required set. The publisher extraction ID has a foreign key to the version's one-to-one binding; public rows must keep it null. Metadata-only lookup creates no row. Rows contain no copied source body. Exact replay of an exposure and its provider-request attestation is idempotent; any conflict in a bound exposure or attestation field, including extraction identity, fails closed inside the transaction. Run-level exposed-item counts derive by distinct run/content-item identity, publisher issue/document pulls by their separate distinct run/logical IDs, and the full per-attempt rows support the detailed funnel.
+
+`assistant_message_sources`: assistant message id, source key, kind, typed immutable locator JSON matching `SourceLocator`, kind-specific indexed identity columns including namespaced `sourceId` plus document/version/content hash for documents and the exact `publisher_extraction_id` for publisher documents, `version_id`, `message_id`, and `memory_revision_id`, snapshotted nullable display label, snapshotted public provenance JSON, created at; unique on message and source key. The extraction column has a foreign key to the version's required one-to-one extraction binding and is null for public documents. The locator therefore persists document namespace/source/version/hash/range union and publisher extraction identity, message identity, exact memory revision, or web URL/title/domain/quote/quote hash/publication/capture times without later derivation from mutable state. The indexed extraction and memory revisions are protected references used by provenance retention and GC. These rows are the immutable turn-local source map; extraction identity is omitted from every public projection.
 
 `assistant_message_source_uses`: assistant message id, source key, consumer task ID, topic ID when applicable, exact rendered token count, deterministic context order, exact ranges JSON, created at; unique on message, source key, and consumer task. These rows reproduce which slice each direct/topic consumer received and power aggregate `sourcesRead` metadata.
 
@@ -1344,12 +1779,12 @@ The daily `purge_user_memory_tombstones` job processes tombstones older than 30 
 
 Observation kinds are:
 
-- `conversation_resolution`: mode and selected turn IDs; restricted question text only when required for reproducibility
-- `execution_plan`: single or fanout, stable topic IDs, and validated topic questions
+- `turn_plan`: the strict `clarify`/`single`/`fanout` result, selected turn IDs, resolved question or topic questions, and the validation digest
 - `retrieval_manifest`: selector role, path/topic ID, ranked source references and purposes
+- `retrieval_no_call_seal`: finalization-owned selector task, attempt coordinates, exact no-call manifest key and reason, sealed after the locked initial-state check and required for terminal replay
 - `candidate_rejected`: source identity and typed reason
-- `provider_request_measurement`: every Pi request's task, role, provider-request index, exact normalized-request digest, deduplicated provider-visible source-marker proof set, exact input count, requested output allowance, usable input, model window, and gate result
-- `source_exposure_attestation`: one atomic, content-free provider-request-digest, serialization-proof, and (when present) immutable document reconstruction binding for each newly inserted detailed source exposure
+- `provider_request_measurement`: every Pi request's task, role, provider-request index, exact normalized-request digest, deduplicated internal exposure-proof sidecar set, exact input count, requested output allowance, usable input, model window, and gate result
+- `source_exposure_attestation`: one atomic, content-free provider-request-digest, internal exposure-proof sidecar, and (when present) immutable document reconstruction binding for each newly inserted detailed source exposure; publisher bindings include the exact `publisherExtractionId` and the required version-to-extraction relation, while public bindings contain no extraction identity
 - `context_measurement`: consumer task, exact mandatory, discretionary, total, output allowance, and model-window counts; direct/topic evaluation observations additionally carry a restricted, content-free request ledger with actual run-bound conversation IDs, question/gap strings, ordered candidate IDs/source keys/kinds/labels/ranges, request digest, and exact token allowance
 - `context_decision`: loop iteration and every keep/range/omit decision with reason
 - `context_reducer_terminal`: the schema-valid terminal O tool call's actual latest provider coordinate, model, normalized-request digest, provider prompt count, total usage, and successful stop reason
@@ -1361,7 +1796,7 @@ Observation kinds are:
 - `memory_application`: exact consumed extraction task/loop/attempt/key/digest and proposal/discarded counts
 - `memory_written`: numeric proposal ordinal, memory ID, new revision ID, independent previous revision ID or null, and create/update action
 
-Trusted evaluation interprets these as attempt-aware owned ledgers, not an unordered bag. Provider measurements and external-tool request indices are independently contiguous from zero within every task/loop/attempt. Every provider usage has one exact passed measurement at the same coordinate. A transport failure or abort after Pi's gate may leave exactly one unmatched terminal measurement on an attempt with no provider-authored output; an unmatched nonterminal measurement, multiple unmatched measurements, or any output bound to such an attempt is invalid. Every retained provider-authored output attempt binds to a successful canonical-role, canonical-model, official-provider usage and that attempt's latest exact Pi measurement; the consumed output must also be the latest task measurement and usage, so a later failed or aborted request cannot be hidden behind an earlier success. The terminal `conversation_resolution` is owned only by C or the paired baseline planner; its selected turns must be unique members of the seeded inventory and its payload must reconcile with the provider output. A continuing route has one terminal execution plan owned only by D or that baseline planner; clarification has none. Fanout topic IDs are the stable `t1`/`t2`/`t3` prefix, topic turn sets are subsets of the resolved turns, and terminal direct/topic/synthesis ledgers must reproduce the exact resolution and plan questions, turns, topic order, and packet order. Each specialized direct/topic route has exactly one terminal manifest per A/B/W task, with exact selector role, owner, cardinality, order, typed reference identity, ranges, purpose, and quote semantics matching its initial production ledger; clarification has no retrieval manifest. A selected internal reference requires a same-task/loop/attempt internal preview, a selected memory requires a same-coordinate direct-inventory or tool-result exposure, and selected web evidence requires its exact same-coordinate fetch. The oversized canonical A route additionally requires exactly six canonical document previews and six full-document internal inspections at its terminal provider-request coordinate; a missing, duplicate, noncanonical, or earlier-coordinate inspection invalidates capture. Earlier retry outputs may remain, but duplicate outputs at the terminal loop/attempt coordinate or a foreign owner are invalid.
+Trusted evaluation interprets these as attempt-aware owned ledgers, not an unordered bag. Provider measurements and external-tool request indices are independently contiguous from zero within every task/loop/attempt. Every provider usage has one exact passed measurement at the same coordinate. A transport failure or abort after Pi's gate may leave exactly one unmatched terminal measurement on an attempt with no provider-authored output; an unmatched nonterminal measurement, multiple unmatched measurements, or any output bound to such an attempt is invalid. Every retained provider-authored output attempt binds to a successful canonical-role, canonical-model, official-provider usage and that attempt's latest exact Pi measurement; the consumed output must also be the latest task measurement and usage, so a later failed or aborted request cannot be hidden behind an earlier success. The terminal `turn_plan` is owned by plan-turn; its selected turns must be unique members of the current chat and its payload must reconcile with the provider output. Clarification has no retrieval ledger. Fanout topic IDs are the stable `t1`/`t2`/`t3` prefix, topic turn sets are subsets of the plan-turn result, and terminal direct/topic/synthesis ledgers must reproduce the exact plan result, questions, turns, topic order, and packet order. Each specialized direct/topic route has one terminal manifest per A/B/W task, with exact selector role, owner, cardinality, order, typed reference identity, ranges, purpose, and quote semantics matching its initial production ledger; clarification has no retrieval manifest. A selected internal reference requires a same-task/loop/attempt internal preview, a selected memory requires a same-coordinate tool-result exposure, and selected web evidence requires its exact same-coordinate fetch. Public evidence binds `documentId` to the exact public document row, immutable version identity, hash, source scope, and ranges, with no extraction ID. Publisher evidence binds `documentId` to the exact publisher extraction row and the required one-to-one version relation, plus immutable version identity, hash, source scope, and ranges. Evaluation rejects a missing, mismatched, replaced, or pointer-drifted binding even when the text hash and ranges still match. Earlier retry outputs may remain, but duplicate outputs at the terminal loop/attempt coordinate or a foreign owner are invalid.
 
 The measurable funnel is:
 
@@ -1369,7 +1804,7 @@ The measurable funnel is:
 authorized database matches
 -> AI-exposed previews/content
 -> selector manifest
--> reauthorized against current product state
+-> validated against the immutable acceptance scope and exact source identities
 -> hydrated
 -> deduplicated
 -> O keep/range/omit, when needed
@@ -1377,7 +1812,9 @@ authorized database matches
 -> uniquely cited by the final answer
 ```
 
-Search-time authorization occurs before a preview can be exposed. Reauthorization occurs again after selection and before hydration, so no fetch relies on stale access state.
+Search-time authorization occurs before a preview can be exposed. After selection,
+hydration checks only the saved scope and exact source identity, version, hash,
+locator, and range bindings; it never performs a second live access check.
 
 Key metrics:
 
@@ -1386,8 +1823,7 @@ Key metrics:
 - duplicate, inaccessible, invalid-range, and omitted rates
 - unique cited sources and raw citation-tag count
 - cited-but-not-serialized defects, which must remain zero
-- C selection and clarification rates
-- D fanout rate and topic count
+- plan-turn selection, clarification, and fanout rates
 - O activation, correction iterations, exact token reduction, and non-convergence
 - topic partial rate and synthesis citation defects
 - logical agent runs and actual provider requests separately
@@ -1398,7 +1834,7 @@ Publisher-facing issue pulls use the deduplicated AI-exposure definition for tha
 
 ## Structured Logs
 
-Local API and worker logs must trace send, enqueue, claim, Smithers start/resume, C, D, every A/B/W path, assembly, exact gates, O iterations, direct/topic/synthesis calls, memory extraction, finalization, streaming, and cleanup.
+Local API and worker logs must trace send, enqueue, claim, Smithers start/resume, plan-turn, every A/B/W path, assembly, exact gates, O iterations, direct/topic/synthesis calls, memory extraction, finalization, streaming, and cleanup.
 
 Logs contain stable IDs, task IDs, topic IDs, models, durations, counts, token totals, statuses, and error codes.
 
@@ -1437,8 +1873,7 @@ The worker loader accepts every non-fixed numeric setting below only as a safe i
 - `AI_WEB_MAX_FETCHES`, default `8`, code-owned hard maximum `64`
 - `AI_WEB_MAX_DOMAIN_FILTERS`, default `8`, code-owned hard maximum `32`; it bounds the per-tool-call Tinyfish provider fanout required to enforce a company allowlist
 - `AI_CONTEXT_REDUCTION_MAX_ITERATIONS`, fixed default and maximum `2`
-- `AI_MEMORY_DIRECT_MAX_ITEMS`, default `200`, code-owned hard maximum `10000`; the complete inventory is injected only at or below this count and when the exact request fits, otherwise B or the extractor uses the authorized memory-search tool loop
-- `AI_MEMORY_TOOL_RESULT_MAX_ITEMS`, default `50`, code-owned hard maximum `500`; it bounds each complete, cursor-bearing memory search result, not the full searchable set
+- `AI_MEMORY_TOOL_RESULT_MAX_ITEMS`, default `50`, code-owned hard maximum `500`; each bounded, cursor-bearing memory search result is limited to this count, and B or the extractor always uses the authorized memory search/inspect tool loop rather than receiving a complete inventory
 - `AI_FAST_TASK_TIMEOUT_MS`, fixed default and maximum `1200000`; this bound covers bounded multi-turn fast-model retrieval and reduction loops, not only one provider request
 - `AI_ANSWER_TIMEOUT_MS`, default `120000`, code-owned hard maximum `900000`
 - `AI_STREAM_POLL_MS`, default `300`, code-owned hard maximum `10000`
@@ -1458,17 +1893,23 @@ The worker job lock timeout and heartbeat interval must requeue a crashed chat r
 
 Empty search or memory selection is a successful typed result. The answer states material evidence gaps instead of inventing support.
 
-C clarification is a successful assistant turn.
+Plan-turn clarification is a successful assistant turn.
 
-Invalid C IDs, invalid D topics, invented B IDs, invalid manifests, and invalid O accounting are schema or validation failures and receive bounded task retries.
+Invalid plan-turn IDs or topics, invented B IDs, invalid manifests, and invalid O accounting are schema or validation failures and receive bounded task retries.
 
 If any fast-agent request or accumulated tool transcript cannot pass its exact gate, the path fails `agent_context_budget_exceeded`. The runtime never drops prior tool messages or silently clips a tool result to retry it.
 
 If a selected internal, memory, or requested web domain exhausts retries, the path fails. The runtime does not silently pretend the unavailable domain returned no relevant material.
 
-If effective web access becomes stricter after a web-enabled turn was accepted, the next search/fetch fails `web_policy_revoked`; the run does not continue with stale permissions or silently degrade to internal-only retrieval.
+If effective web access becomes stricter after a web-enabled turn was accepted,
+that run keeps its saved provider and allowlist. Later web settings affect only
+later accepted runs. A missing credential or unsafe transport still fails as
+an operational boundary error.
 
-If chat or selected-source access is revoked after the final provider call but before commit, finalization fails retryably with `source_access_revoked`. Any streamed text remains provisional and is discarded by the client; no unauthorized assistant answer or provenance is saved.
+If a source grant or chat setting changes after the final provider call but
+before commit, finalization still uses the saved scope. Any mismatch in exact
+document, version, hash, locator, quotation, or range remains an integrity
+failure; streamed text remains provisional until the atomic save succeeds.
 
 If mandatory input is too large, the path fails `context_mandatory_too_large`.
 
@@ -1488,9 +1929,13 @@ Memory extraction failure prevents `done`. A successful memory extraction is app
 
 A stale memory update target after user-scoped locking fails `memory_conflict`; it never overwrites the newer head revision. The per-user active-run guard makes this exceptional rather than an ordinary next-message race.
 
-A worker crash requeues the job after the stale heartbeat, resumes the same Smithers run, and continues from completed task outputs. SSE resumes from its event cursor.
+A worker crash requeues the job after the stale heartbeat, resumes the same
+final-schema Smithers run, and continues from completed final-schema task
+outputs. SSE resumes from its event cursor.
 
-An incompatible workflow deploy produces a retryable terminal error and requires the user to resend. Production does not hot-edit the run's workflow source.
+After this cutover, a worker never resumes an old workflow shape. Active or
+retained incompatible runs are rejected before deployment and require the user
+to resend; production never hot-edits a run's workflow source.
 
 Unknown citation keys remain text and create a defect observation.
 
@@ -1498,7 +1943,7 @@ Unknown citation keys remain text and create a defect observation.
 
 Pure tests cover:
 
-- every C and D output validator
+- plan-turn strict union validation, first-turn invocation, prior-turn selection, and fanout normalization
 - internal query compilation and authorization injection
 - B ownership and active-memory validation
 - W allowlist enforcement and quote provenance
@@ -1533,7 +1978,7 @@ Postgres integration tests cover:
 Workflow graph tests cover:
 
 - clarification, single-fit, single-reduced, fanout, and controlled-failure branches
-- C before D and selectors
+- plan-turn before every selector on first and later turns
 - A/B/W parallel joins per path
 - memory parallel with the complete answer lane
 - two-iteration non-nested reduction loops
@@ -1549,69 +1994,48 @@ The Playwright project uses a dedicated database and real runtime provider path.
 
 ## Evaluation
 
-The specialized live gate uses the production W boundary unchanged: real Tinyfish discovery at the fixed endpoint and Brief-owned safe fetching of the selected canonical page. Evaluation no longer substitutes a seeded web fixture boundary. Tinyfish and Brief-fetch operation rows retain their real provider identities, response sizes, and durations; each fetched result must use HTTPS on the canonical allowed domain and carry non-empty provider-authored title and purpose metadata, while the actual fetched quotation and its hash are retained as live evidence and the fetch supplies the durable capture timestamp. Live retrieval may select a current page URL or multiple excerpts from one canonical domain; the durable capture preserves each quote and its source identity without substituting fixture text. Tinyfish page-zero completeness is determined from its declared total before URL de-duplication; a declared total beyond the returned rows remains an unresolvable continuation and fails closed.
+Evaluation uses real turns covering first messages, follow-ups, ambiguous
+references, irrelevant and long history, memory relevance, internal document
+and older-chat retrieval, web on/off, multilingual queries, oversized evidence,
+cross-cutting questions, separable multi-topic questions, and out-of-corpus
+requests. The golden labels define the expected plan-turn mode, selected prior
+turn IDs, resolved question or topic coverage, required evidence, acceptable
+document ranges, supported claims, expected gaps, and exact memory proposals.
 
-The evaluation baseline rejects ranged non-document inspections before exposure and reports oversized non-document inspections as bounded incompleteness rather than clipped text or a false complete result.
+The strict capture schema has one `turnPlan` ledger and one attestation. It
+binds the accepted request, plan-turn input and output, provider measurement and
+usage, every retrieval-domain ledger, exact evidence identities, context-fit
+decisions, answer claims, the final source map, memory result, and
+terminal save. It accepts only the final schema version and real production
+coordinates. Unknown fields, duplicate coordinates, stale identities,
+invented document IDs, missing exposure proofs, and mismatched request digests
+invalidate the capture.
 
-Evaluation uses real turns covering first messages, follow-ups, ambiguous references, irrelevant recent history, long history, memory relevance, document retrieval, older-chat retrieval, web on/off, multilingual queries, oversized evidence, cross-cutting questions, separable multi-topic questions, and out-of-corpus requests.
+Quality gates cover plan-turn mode accuracy, prior-turn selection, resolved
+question fidelity, clarification precision and recall, false fanout,
+topic coverage, separate A/B/W evidence precision and recall, exact local and
+provider token parity, context-fit validity and convergence, factual support,
+citation correctness, memory proposal correctness, access reconstruction,
+latency, token use, and cost. A general-planner comparison may remain
+evaluation-only; it is never a production route or configuration switch.
 
-The golden set labels relevant recent turns, retrieval intent, required sources, fanout suitability, acceptable omissions/ranges, supported claims, and expected gaps.
+The runner reconstructs exposure from durable rows and validates the saved
+acceptance scope plus exact user, company, membership, chat, source, publisher,
+memory, web-policy, and domain identities captured at acceptance. It rejects
+any source that was not exposed with an exact identity or whose immutable
+content identity no longer matches. Public document evidence must bind
+`documentId` to the exact public document row, immutable version identity, hash,
+source scope, and ranges, with no extraction ID. Publisher evidence must
+additionally match the exact extraction row and one-to-one version relation,
+along with its immutable version identity, hash, source scope, and ranges.
+Memory evidence must bind the exact revision; web evidence must bind the exact
+normalized quotation and URL. The citation
+namespace is checked only for local handle shape and numeric order; it never
+replaces evidence matching.
 
-Quality gates include:
-
-- C turn-selection accuracy, retrieval-question fidelity, and clarification precision/recall
-- D fanout precision and false-decomposition rate
-- A/B/W source recall and precision
-- exact local/provider prompt-count parity
-- O plan validity, convergence, coverage, and token reduction
-- answer and synthesis factual support and citation correctness
-- fanout quality/latency/cost relative to a single answer
-- memory proposal precision and update correctness
-- pull-to-serialized and serialized-to-cited efficiency
-- no unauthorized, cited-but-not-serialized, or unresolvable source keys
-- time to first token and time to terminal completion
-
-The versioned canonical golden set is `apps/worker/src/ai/evaluation/fixtures/golden-set.v2.ts`. Every evaluation run contains exactly one result for every golden case; missing, duplicate, or extra cases invalidate the run. The set covers every category above and labels all relevant recent turns, the canonical retrieval intent and required semantic term groups, required and relevant A/B/W sources, fanout suitability, acceptable omissions and document ranges, supported claim IDs and their supporting source IDs, expected evidence gaps, and exact memory proposals. The 13-turn older-chat case deliberately leaves the oldest turn outside C's default 12-entry inventory and therefore labels no C-selected turn; A must retrieve the old assistant message as evidence. Oversized fixtures contain genuinely oversized evidence rather than a size marker. The oversized case combines six full A documents with four whole, relevant B preference memories. Each oversized document begins with a searchable binding-conclusion header while retaining its full large body, so A must discover all six documents, inspect them in one parallel tool turn, and emit its terminal manifest in three of the default four turns with six of eight allowed inspections; B's whole direct inventory is independently gated. The combined production candidate exceeds the default `100000`-token main-input gate while every A/B request and individual inspection response fits its exact fast input/output allowance. Its labeled document windows plus the four indivisible memories fit the main gate after O; memory evidence remains preference/instruction context and never verifies an external fact.
-
-Evaluation keeps two distinct exact ledgers. The canonical comparison ledger is independently reconstructed from the golden fixture and source/range selections. Its standardized request uses the direct-answer system prompt, default `glm-5-turbo`, `16384` requested output tokens, `medium` reasoning, the fixture locale and current message, the labeled canonical retrieval question, labeled relevant complete conversation entries, deterministic source framing with verbatim selected ranges, and labeled expected gaps. Candidate measurement uses the durable candidate selections; specialized serialized measurement uses the reported final selections. The paired general-planner measurement uses each reported source's labeled acceptable range, or its full golden range when no narrower labeled range exists. Persisted documents shorter than the production minimum source width are padded during canonical reconstruction so production ranges remain valid. Multiple live quotations from one canonical web source remain distinct in durable evidence but collapse to one canonical scoring selection. `reduction.candidateTokens`, `reduction.serializedTokens`, `reduction.usableInputTokens`, specialized `serializedContextTokens`, and baseline `serializedContextTokens` must equal these canonical recomputations and remain the apples-to-apples topology inputs.
-
-Artifact v2 additionally carries a strict `productionContext` union reconstructed from the observations emitted by the unchanged production route. Clarification carries C's complete request attestation: the exact recent inventory with current run-bound turn/user/assistant IDs, current user-message ID, UTC date, request digest, exact input/usable/output counts, model, and terminal provider-usage coordinate. Capture re-queries the complete canonically ordered durable terminal-turn inventory, reapplies the configured count boundary and exact resolver token boundary, verifies all four durable boundary counts, and requires the attested inventory to equal that result in order; a valid request digest over a supplied subset is insufficient. C's matching measurement and usage must also use the attested model, exact request digest, and exact provider prompt-token count; matching arithmetic under a different model, different same-token request, or by even one token is invalid. A fitting single route carries identical initial and terminal direct-request ledgers. A reduced single route carries its initial and terminal direct-request ledgers plus one or two iterations and a complete decision for every actual conversation/source candidate. Fanout carries topics in the exact present prefix order `t1`, `t2`, `t3`; every topic has its initial/terminal topic-request ledgers and any complete O decision, followed by the terminal synthesis ledger. Direct/topic ledgers bind the actual selected conversation IDs, resolved/topic question, actual gap strings, and ordered candidate ID, golden source ID, source key, kind, exact retrieval purpose, rendered label, and exact ranges. Synthesis deliberately retains only ordered packet IDs, status/counts, and packet digests; topic claim/gap prose is never copied into the durable synthesis ledger or artifact. Its exact normalized request remains bound by the terminal ledger's request digest and the independently persisted Pi measurement; evaluation reconstruction must hash that same normalized transport shape (including derived tool fields), never the pre-normalization request object. Every terminal direct, topic, or synthesis ledger requires that exact request digest, matching durable local measurement, matching official-provider usage coordinate, and a successful Pi stop reason (`stop`, `length`, or `toolUse`); `error`, `aborted`, and unknown values are ineligible even when other arithmetic matches. O emits a `context_reducer_terminal` observation only after the schema-valid terminal tool call; it binds that actual request's latest coordinate, exact model, normalized-request digest, local/provider prompt count, total usage, and stop reason. Capture requires that coordinate to be the latest reducer measurement and usage in durable chronology, so an earlier success cannot attest a later failed request, including one that ended after measurement but before known usage. The same successful-stop rule applies to C's terminal request and O's terminal decision usage. One-token, one-ID, ordering, range, purpose, label, packet-hash, request-digest, route, coordinate, stop-reason, or inventory divergence invalidates the artifact. Quality and topology comparisons use only the canonical ledger, while `productionContext` attests what the unchanged runtime actually mounted across clarification, single, reduced, and fanout routes.
-
-The executable gates are code-owned in `apps/worker/src/ai/evaluation/runner.ts` and are exact:
-
-- C selected-turn micro-F1 is `1.00`, retrieval-question fidelity is at least `0.85`, and clarification precision and recall are both `1.00`.
-- D fanout precision and required-fanout recall are both `1.00`; false decomposition is `0`.
-- A, B, and W each have at least `0.90` required-source recall and `0.90` relevant-source precision.
-- local/provider input-token parity is `1.00` across every accounted request in both the specialized topology and baseline.
-- O plan validity, required-source coverage, and range validity are all `1.00`; non-reduced contexts use zero O iterations, reduced contexts converge in one or two iterations, and oversized cases reduce candidate tokens by at least `10%`. Plan validity is recomputed from the complete candidate, decision, selection, range, and independently reconstructed exact-token ledger and is never accepted from a self-reported success flag or token count.
-- factual support and citation correctness are `1.00`, supported-claim recall is at least `0.80`, and expected-gap recall is `1.00`.
-- on cases actually routed to fanout, answer quality is at least the single-general-planner result, terminal latency is at most `1.5x`, and total model tokens are at most `2x`.
-- memory proposal precision, recall, and update-target/head correctness are all `1.00`.
-- pull-to-serialized efficiency is at least `0.20` and serialized-to-cited efficiency is at least `0.50` on answer-bearing cases.
-- unauthorized, cited-but-not-serialized, unresolvable, unknown, cross-selector, web-policy-incompatible, or stage-inconsistent source defects total `0` in both specialized and baseline results; a defective baseline cannot manufacture an apparent specialization gain.
-- p95 time to first token is at most `120000 ms` and p95 time to terminal completion is at most `300000 ms`.
-
-Repeated exact preview rows from distinct allowed search calls collapse to one source identity; they do not create false candidates, while any additional identity still fails the exact set. An authorized message from the seeded conversation that appears only as a non-selected internal search or inspection distractor is identity-attested and maps to no pulled golden source; serializing that distractor into an answer remains a source defect.
-
-Set comparisons use unique golden IDs. A golden source ID denotes one canonical content-item identity—document version plus labeled range, whole chat message, whole memory revision, or final URL plus quotation—not a mutable logical source. Every document entry in a seed manifest stores its exact durable `sourceId` (`public:<raw>` or `publisher:<subscription>`) and separately stores the fixture-only `goldenSourceId`; the two identities are never implicitly repaired or conflated. Selector precision/recall and C turn selection are micro-averaged across the complete set; when both the expected and predicted sets are empty the score is `1`, while an unexpected prediction against an empty expected set scores `0`. Retrieval-question fidelity is `70%` required-term-group coverage plus `30%` token F1 against the canonical question after Unicode decomposition, diacritic removal, case folding, and non-alphanumeric token splitting. Answer quality is the arithmetic mean of factual-support precision, supported-claim recall, expected-gap recall, and reported-gap precision. Grounding is citation correctness when the case has zero source defects and `0` otherwise. Efficiency ratios use distinct source identities and aggregate stage counts. p95 uses the nearest-rank definition. Fanout ratios are computed per fanout case against its paired general-planner result and then averaged. The topology comparison uses aggregate serialized context tokens and mean terminal latency over the identical case set. Memory content is compared exactly after the runtime's outer-whitespace trim; case, punctuation, and internal whitespace are not erased.
-
-Every result carries `artifactVersion: 2` and `goldenSetVersion: 2`. Artifact v2 adds the dual exact ledgers, durable candidate selections, and source-key bijection required to reconstruct production framing; v1 and older shapes are rejected. Every artifact and seed-manifest object is recursively strict, and file revalidation compares the raw canonical JSON to the trusted durable capture before schema parsing, so unknown root or nested fields cannot be silently stripped. The runner accepts only artifacts marked as real Z.AI provider turns, with positive run duration, the canonical model IDs, one unique local measurement per recorded provider usage plus only the bounded terminal measurement-only failure shape above, and internally consistent aggregate usage. Every durable `ai_run_usage` row records the actual provider transport as immutable `provider_service_id`; only `zai_coding_plan_official` from the exact official endpoint is eligible. Migration-only `pre_attestation_unknown`, deterministic-test, custom OpenAI-compatible, mixed-provider, missing-measurement, duplicate-coordinate, model-mismatched, and token-inconsistent runs are ineligible for a real capture. Synthetic fixtures are accepted only through the test-only runner option and are rejected by the CLI.
-
-The trusted producer is code-owned in `apps/worker/src/ai/evaluation/pipeline.ts`. Before `bun run eval:ai -- --execute [--session <uuid>]` creates a session or seeds any fixture row, it requires the CLI database URL to equal the Smithers worker database URL, both `ZAI_API_KEY` and `TINYFISH_API_KEY` to be non-empty, the fake provider to be disabled, the exact official model and web origins, and the complete canonical execution configuration: main/fast models `glm-5-turbo`/`glm-5-turbo`; input/output limits `100000`/`16384` for both; recent turns `12`; fanout topics `3`; topic research/answer concurrency `6`/`3`; retrieval turns `8`; internal search/inspection limits `8`/`8`; web search/fetch/domain-filter limits `4`/`8`/`8`; O iterations `2`; memory direct/tool-result limits `200`/`50`; fast/answer timeouts `1200000`/`120000`; web provider `tinyfish`; Coding Plan origin `https://api.z.ai/api/coding/paas/v4`; and Tinyfish Search endpoint `https://api.search.tinyfish.ai`. Any mismatch fails with zero session, case, chat, document, memory, or Smithers seed writes. Passing preflight atomically binds the complete configuration digest and the exact Tinyfish endpoint identity as the session enters running; that digest independently includes the exact Z.AI endpoint identity, while every model-usage row must carry the code-owned `zai_coding_plan_official` service ID. A retry must present the same identities. Failed parents and children are terminal; awaiting-annotation or complete replay is accepted only when every child succeeded. Every forward transition asserts exactly one affected row or verifies an already-terminal legal idempotent state.
-
-After preflight, execute creates or resumes a versioned evaluation session, seeds exactly one isolated canonical dataset for every case and topology, and explicitly launches paid real-provider turns. Seed, execute, and resume hold one PostgreSQL session advisory execution lease for that evaluation-session ID across the complete operation. Concurrent callers wait on the same crash-released lease, re-read durable state after acquisition, and either resume/return the legal state or perform the sole next paid call; they can never race two seeded-to-running transitions or duplicate provider work. A zero-row session transition is accepted only after re-reading the exact already-reached legal state with the same immutable execution identity and complete child statuses. Running specialized and baseline cases resume their existing Smithers IDs rather than attempting a second seeded-to-running transition. A terminal specialized turn may seal its evidence directly. A terminal baseline turn may do so only after its immutable general-planner output is bound; a crash after answer finalization but before that binding resumes the finished Smithers result, binds the output idempotently, and only then seals evidence. Every case execution failure first idempotently starts and terminalizes its immutable product `ai_run`, then durably marks that originating case failed while the parent remains running. It next advances every remaining seeded sibling through the trigger-required `seeded → running` transition in deterministic case/topology order, starts and fails every nonterminal sibling product run with sanitized `finalization_failed`, and finally marks each remaining running sibling failed with an exact one-row assertion plus the parent failed transition in one transaction. Succeeded or already-failed children remain immutable. A crash-released running parent with one failed origin, or a legacy failed parent with nonterminal siblings, replays this same cascade under the session advisory lease; thus every child product run and case row is terminal whenever the failed parent is stable. A focused specialized executor seals its one successful target and then explicitly aborts the remaining trusted session under that same lease: the succeeded target remains immutable, the first canonical unfinished sibling supplies the sanitized failure origin, and every other child plus the parent becomes terminal. Focused tooling therefore cannot leave a running parent or accepted sibling products behind. A baseline workflow failure additionally deletes its exact schema-owned Smithers rows only after its product transition succeeds. The specialized branch runs the production C/D/A/B/W/O Smithers graph unchanged, including real Tinyfish discovery and Brief-owned safe fetching for the canonical live web case; every LLM call still crosses the real exact Pi/Z.AI transport. The evaluation-only single general planner is a separate one-task resumable Smithers workflow. Its persisted Smithers input is the shared canonical `{ aiRunId }` shape used by AI chat; the immutable evaluation case ID is bound by workflow construction from the seeded case row and is never added as a competing column to the shared `input` table. It receives only conversation plus evidence metadata initially and uses bounded code-owned literal search and verbatim inspect tools, so genuinely oversized evidence never bypasses the exact `100000`-token gate and the executor never discloses golden acceptable ranges. Its selected conversation turns must be exact supplied turn IDs and must be empty when no conversation was supplied. Conversation turn IDs are context-only and may appear only in `resolution.selectedTurnIds`, never as selected/cited source IDs or memory targets. The baseline applies C's same comparative-reference rule: multiple plausible same-kind antecedents plus an unanchored comparative pronoun or relative term require clarification without inferring recency or silently comparing every candidate. An inspect range is valid only for document evidence; web, chat-message, and memory inspections omit it, and every terminal non-document selection carries `ranges: []`. Invalid model arguments are rejected and consume only the existing bounded task retry budget; the executor never repairs or ignores them. This baseline module is imported only by the evaluation pipeline and cannot be selected by production routing or configuration.
-
-Evaluation reconciliation uses the public Smithers run summary and the product-owned evaluation rows while holding the session advisory lease. A fresh heartbeat on a `running` Smithers run is an active owner and causes the caller to leave the case and parent running for that owner; it never launches a competing provider turn or terminalizes the child. A stale `running`, durable wait, `failed`, or `cancelled` Smithers state resumes the same Smithers ID, and a `finished` Smithers run is read for its already-persisted output without reactivating its final boundary. A missing Smithers run is startable only when the bound product run has no provider or external-tool usage; if any such usage exists, the case is an irrecoverable orphan and the normal immutable-origin failure cascade terminalizes the parent and every unfinished sibling before cleanup. Repeated reconciliation is idempotent: terminal product evidence is sealed directly, terminal children are not rewritten, and a retry never changes the session, case, product, or Smithers identities. Runtime retention owns both `ai-chat:` and evaluation baseline Smithers IDs, removes only terminal product state past the retention window or mature absent-product orphan candidates, and preserves a currently heartbeating Smithers run even when a product row is already terminal.
-
-Generated answer claims and reported gaps are the sole human-annotation boundary. After inspecting the generated outputs, an evaluator supplies exactly one annotation for every case and topology with `bun run eval:ai -- --annotate --session <uuid> --annotations <annotations.json>`. The pipeline validates every claim, source, and gap ID against the canonical golden set and binds the immutable annotation digest to the exact AI run ID, assistant-output digest, and recomputed durable-run-evidence digest. That digest is computed from one recursively strict aggregate. It binds the complete accepted `ai_runs` snapshot—run and Smithers IDs, chat, current user-message, initiating user, locale, market, web-request flag, recursively strict effective-web-policy snapshot with canonical domains, creation/start/finish timestamps, failure shape, next event sequence, assistant-message link, 128-bit lowercase citation nonce, and terminal error state—the full chat scope/lifecycle row, the full current-user and joined-assistant message rows, and the complete eligible prior-run/user-message/assistant-message inventory. Every prior inventory entry independently binds its run/chat/user and Smithers identities, locale, market, web-request and effective-policy snapshots, creation/start/finish/failure state, retryability, and the exact user/assistant message linkage, authorship, content, and timestamps; matching only the displayed conversation text is insufficient. It also binds immutable execution identity and the complete canonically ordered model-usage, external-tool-usage, observation, exposure, event, source/use, memory-write, live memory-head, and recent-conversation evidence, including every durable row ID, publisher coordinate, ownership key, public provenance object, display label, source-use semantic field, and creation timestamp represented by those relations. The assistant output is eligible only when the pointed message has the same chat, is authored by `assistant`, and names the same run. Model usage binds its bigint row ID and creation timestamp in addition to every provider coordinate and accounting field. Every current-run evidence timestamp must fall within the accepted run interval. The event ledger is closed: sequences start at `1`, are contiguous, `next_event_seq` is exactly one past the final row, and there is exactly one correctly owned start, context, aggregate-usage, memory-update, and terminal event plus an exact request-usage-event bijection. Answer attempts strictly increase; every delta has exact owner/attempt/index chronology, each attempt's indices are contiguous from zero, and the terminal attempt reconstructs the persisted assistant byte-for-byte. The unique `context_ready` payload must equal the canonical public projection of the terminal source map and the exact ordered direct/topic/synthesis ledgers. Assistant sources and uses must reconstruct the exact nonce-bound final source map, including production labels, typed locators, public provenance, consumer/topic ownership, exact JSON-framed marginal tokens, terminal context order, and ranges. Reparsing assistant citations must produce an ordered bijection with the durable citation and defect observations. Memory revision actions are only the validated create/update outcomes; their before/after snapshots must match the seeded prior head and current live head exactly and reconcile by numeric proposal ordinal and revision identity with the one consumed digest-bound extraction, enriched `memory_written` observations, `memory_application`, and `memory_updated` event. Any malformed aggregate or relationship is rejected before sealing; mutating any accepted identity, policy, timestamp, nonce, linkage, ownership key, event payload, provenance, usage chronology, live memory state, or web-operation row after sealing invalidates attestation.
-
-Citations, authorization, resolvability, pulled and serialized source identities, exact local/provider measurements, usage, timing, and applied memory outcomes are reconstructed from `ai_runs`, `ai_run_usage`, `ai_external_tool_usage`, `ai_observations`, `ai_source_exposures`, terminal events, immutable assistant source/use rows, citation observations, memory revisions, and live heads rather than annotation fields or evaluator inference. Before initial sealing, idempotent resealing, capture, and revalidation, the pipeline rechecks the exact chat/user/company scope against current state: the user and company must not be recovery-deleted or purged and the initiating membership must still be active with both revocation fields null. A stale accepted snapshot never authorizes evaluation evidence. Web-source authorization requires both the accepted run snapshot and the current company policy: a run accepted with web disabled is never authorized, and capture applies the production `recheckWebPolicy` semantics so a current revocation or stricter allowlist marks the audited source unauthorized rather than trusting a fixture label; the source audit remains available so the quality gate can report the defect. Pulled identities preserve fixture order and are the canonical golden identities reconstructed from every valid source-bearing provider exposure, including internal/web search previews, fetches, literal inspections, memory inventories, O candidate inspections, answer serialization, and the paired baseline's exact source/range/text-hash identity. Current/prior conversation `provider_input` rows are validated against the durable turn inventory and included only when bound to canonical chat evidence; they are never invented as evidence. Exposure compatibility is a closed exact task/stage/source-kind matrix using only the canonical task IDs for C/D/A/B/W/O, answer serialization, memory extraction, and the evaluation baseline; prefix lookalikes and arbitrary tasks are invalid. Documents require the exact immutable version plus the stage-compatible preview/range identity, chat requires the exact message ID, memory requires the exact revision ID, web preview/fetch requires an HTTPS URL, transient body hash, and current-policy authorization, and serialized/O web evidence requires the canonical URL plus an integrity-checked live quotation/hash. Reconstructable stages must have the exact independently counted visible tokens; body-free internal preview membership and counts are bound by the independent provider-request marker proof described above. Any arbitrary stage or task, unknown identity, ambiguous match, kind mismatch, version/revision/hash/count mismatch, request-coordinate mismatch, or unbound exposure/reference invalidates sealing and capture instead of being ignored. A reduced capture additionally requires real terminal `context_reducer` Z.AI usage, the chronologically terminal O decision to be valid, unique, and complete for the actual hydrated candidate identities, its ranges/omissions to match final source uses exactly, and one or two durable iterations. A stale earlier valid decision or usage cannot override a later invalid decision or failed request.
-
-`bun run eval:ai -- --schema` prints the versioned specialized, baseline, and annotation JSON Schemas plus the exact canonical case IDs. `bun run eval:ai -- --capture --session <uuid> --specialized-out <specialized-results.json> --baseline-out <general-planner-results.json>` exports the attested capture. Run the gate directly from durable state with `bun run eval:ai -- --session <uuid> [--report <path>]`. Supplying exported files remains supported only as `bun run eval:ai -- --session <uuid> --specialized <specialized-results.json> --baseline <general-planner-results.json>`; the CLI byte-for-byte canonicalizes and revalidates both against the recomputed database capture before scoring, so arbitrary JSON cannot forge provenance. It prints a machine-readable report, exits `1` for a quality-gate failure, and exits `2` for an invalid capture, artifact, or Smithers shutdown. Database credentials come only from the shared worker configuration and are never accepted as command-line arguments.
-
-A single general planner remains an offline evaluation baseline. It is not a production configuration switch. Specialized C/D/A/B/W/O topology remains only if it measurably improves context efficiency, answer quality, grounding, or latency enough to justify its calls.
-
-That retention decision is executable: specialized answer quality and grounding may not regress at all relative to the paired single-general-planner turns, and at least one of context-token efficiency, answer quality, grounding, or terminal latency must improve by `5%`, `2` percentage points, `2` percentage points, or `5%`, respectively. The paired baseline is mandatory for every case and never becomes a production routing option. Changing the golden labels, artifact contract, formulas, or thresholds requires a new golden-set version plus a synchronized update to this specification and boundary tests.
+The runner's schema command, capture command, and report command remain
+code-owned by the evaluation package. Synthetic provider cases are test-only;
+the production evaluation gate requires the approved provider and web boundary.
 
 ## Out Of Scope
 

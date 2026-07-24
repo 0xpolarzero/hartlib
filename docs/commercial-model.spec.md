@@ -104,7 +104,7 @@ Usage is prepaid through monthly credits and additional credits.
 
 Credits are an internal cost-control unit.
 
-Internal cost accounting records every model request made by conversation resolution, execution planning, internal retrieval, memory selection, web research, context reduction, direct/topic answers, synthesis, and memory extraction. Tool-loop agent runs and their individual model requests are counted separately. Every web search and fetch operation is also recorded separately, including empty and failed operations, without retaining its query or URL in usage rows.
+Internal cost accounting records every model request made by plan-turn, internal retrieval, memory selection, web research, context reduction, direct/topic answers, synthesis, and memory extraction. Tool-loop work and its individual provider requests are counted separately. Every web search and fetch operation is also recorded separately, including empty and failed operations, without retaining its query or URL in usage rows.
 
 Customer credits remain one turn-level product abstraction. Credit calculation can use aggregate tokens in, tokens out, cached/reasoning tokens, web search/fetch usage, tool usage, and fanout topic count without exposing the internal agent graph to the customer.
 
@@ -174,7 +174,11 @@ When available credits are exhausted, AI chat pauses for that client company.
 
 When a publisher pauses a client company's subscription, delivery continues until the delivery end date.
 
-The client company keeps access to issues already delivered to it.
+The client company keeps access to issues already delivered to it. Delivery
+freezes the exact user recipients in an immutable delivery-recipient record;
+ordinary unsubscribe, source, grant, or policy changes do not revoke those
+historical recipients. A user added later is not a historical recipient, and
+current subscriptions govern only future delivery.
 
 The client company's delivered issue archive is durable.
 
@@ -215,6 +219,15 @@ Client company AI plans can still be used over already delivered issues.
 The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`. Fixtures and fake accounts remain acceptable for non-chat demo data.
 
 The approved development runtime sends model calls through the exact registered GLM-5-Turbo contract on Z.AI's official Coding Plan endpoint. Optional development web discovery uses Tinyfish Search when `TINYFISH_API_KEY` is present. These development choices do not approve either provider for production customer data.
+
+Each billed model call is one direct Pi provider request inside one Smithers
+compute task. Brief records the exact request coordinates and provider usage;
+Smithers agent execution is not a billable or production chat path. Saved
+citations use immutable document `documentId` evidence bound by kind: public
+evidence uses the exact public document row, immutable version identity, hash,
+source scope, and ranges with no extraction ID; publisher evidence additionally
+uses the exact extraction row and required one-to-one version relation. A turn-local
+`citationNamespace` scopes citation handles only; it is not claim proof.
 
 The platform hosts AI.
 

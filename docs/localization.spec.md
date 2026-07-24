@@ -68,6 +68,7 @@ For neutral entry points like `/` or `/demo` only, resolve the target in this or
 - Localize dates (`Intl.DateTimeFormat(locale)`), numbers (`Intl.NumberFormat(locale)`), relative time, document-type labels, empty states, validation messages, table labels and columns, tooltips, and aria labels.
 - AI chat chrome is localized in both catalogs: web-search toggle and each effective-policy reason (`deployment_unavailable`, `company_disabled`, `allowlist_unsupported`), clarification state, document/earlier-chat/saved-memory/web source-kind labels, sources-read empty state, context-fit failure guidance, memory-finalization failure, memory tombstone/revert actions and 30-day notice, resubmit state, provisional draft state, and terminal errors.
 - Source display names, publication titles, summaries, and citation text are content, not chrome. They remain in their original language for now. The demo translates UI chrome only.
+- The standalone English `GET /docs` page is not localized and is not mounted under `/fr-FR` or `/en-US`. Its field names remain exact: `LoadedTurn`, `plan-turn`, `documentId`, and `citationNamespace`.
 
 ## Transactional Email Locale
 

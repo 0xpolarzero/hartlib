@@ -51,7 +51,7 @@ Restricted content:
 - resolved retrieval questions and clarification questions
 - internal and web search queries, previews, inspected ranges, and manifests
 - web page results and selected quotations
-- execution plans, context measurements, keep/range/omit reasons, and topic questions
+- strict turn plans, context measurements, keep/range/omit reasons, and topic questions
 - topic claim packets and synthesis inputs
 - turn-local source maps and citation defects
 - transient Smithers inputs and outputs
@@ -159,7 +159,12 @@ Client employees see their own private chats.
 
 Client employees see shared chats for their client company when they have access to every subscription source selected in the chat.
 
-AI-run SSE handshakes, replay polls, and live stream reauthorization apply this owner/shared-chat boundary independently of web evidence: a private run is owner-only before and after web exposure, while a shared run is available only to an authorized same-company member.
+AI-run SSE handshakes and replay polls authorize only this owner/shared-chat
+boundary. A private run is owner-only and a shared run is available to an
+authorized same-company member; the stream never rechecks each saved source,
+memory revision, grant, or web policy after acceptance. Later settings affect
+later runs, while account deletion, purge, legal restriction, and exact
+viewer/chat identity mismatches remain explicit denials.
 
 A chat can be shared only if its immutable memory mode was `disabled` before its first AI turn. A private chat whose answers could use the creator's saved memories cannot be promoted to shared.
 
@@ -169,11 +174,19 @@ Shared chat viewers must belong to the same client company and have access to ev
 
 Shared answers contain no saved-memory source records or links. Saved memories and their revisions remain visible only to their owning user.
 
-Issue documents and chats require authenticated access. A delivered-client issue detail is projected with its live user, company, unrevoked membership, active/ending/paused access, employee grant, issue, and non-deleted documents in one SQL statement; authorization and returned content never come from different snapshots.
+Issue documents and chats require authenticated access. A delivered-client issue detail uses the exact durable delivery-recipient record for that user, company, issue, and document. Ordinary unsubscribe, source-setting, grant, and policy changes do not revoke a delivered publication; account deletion, purge, legal restriction, and exact identity mismatch remain exceptional denies.
 
-Publisher PDF reads use `/v1/issues/{issueId}/documents/{documentId}/content`. The route rechecks current publisher authorization or a delivered-client lane with a live user/company, unrevoked membership/grant, and access state exactly `active`, `ending`, or `paused`, then returns a private, non-cacheable signed object-store redirect with a five-minute lifetime; object keys and long-lived public URLs are never exposed.
+Publisher PDF reads use `/v1/issues/{issueId}/documents/{documentId}/content`. The route requires authentication, a live account, exact issue/document identity, and durable historical delivery entitlement for the recipient (or the current publisher lane for publisher-owned views), then returns a private, non-cacheable signed object-store redirect with a five-minute lifetime; object keys and long-lived public URLs are never exposed.
 
-The issue/document rows, the complete sorted client-company lane set for every delivered company (discovered independently of the requester's current membership), applicable publisher lane, and live user/company rows remain locked through the bounded signing operation, so membership acceptance, revocation, or account deletion cannot commit between authorization and bearer URL issuance. Chat lists and issue details take their applicable sorted membership lanes before the final projection. Full chat reads additionally lock the chat and chat-execution lane through every message, run, and visible-source query. Demo `GET /v1/chat` idempotently ensures the workspace and then uses this same authorized full-projection lease. AI success finalization and fatal failure handling take that same execution lane after the user-memory, chat-row, and company-membership locks and before the run-row lock, making terminal transition, revocation, unshare, deletion, and the entire projection one linearizable ordering.
+Delivery writes one immutable recipient row per `(issue, company, user)` in the
+same transaction as the delivery record. Existing company-level delivery rows
+prove company delivery but do not prove an employee recipient. A migration may
+backfill a recipient only when retained membership, grant, and delivery times
+prove entitlement at `delivered_at`; ambiguous rows fail closed. Raw PDF, issue
+detail, archive, and delivered-citation routes require that exact recipient
+row, and rows remain immutable until account purge.
+
+The issue/document rows, the complete sorted client-company lane set for every delivered company (discovered independently of the requester's current membership), applicable publisher lane, and live user/company rows remain locked through the bounded signing operation, so membership acceptance, revocation, or account deletion cannot commit between authorization and bearer URL issuance. Chat lists and issue details take their applicable sorted membership lanes before the final projection. Full chat reads additionally lock the chat and chat-execution lane through every message, run, and visible-source query. Demo `GET /v1/chat` idempotently ensures the workspace and then uses this same authorized full-projection lease. AI success finalization and fatal failure handling take that same execution lane after the user-memory, chat-row, and company-membership locks and before the run-row lock, making terminal transition, revocation, unshare, deletion, and the entire projection one linearizable ordering. An accepted run's source map, source uses, and event stream are immutable projections and do not trigger current source or policy reauthorization.
 
 Shared links open inside the authenticated app.
 
@@ -203,17 +216,41 @@ The approved development runtime uses the exact registered GLM-5-Turbo contract 
 
 The platform sends the configured AI provider only the role-specific context required by `docs/ai-chat-runtime.spec.md`:
 
-- C receives the current message and a bounded inventory of recent complete user/assistant turns or terminal failed user-only turns; failed drafts are never included.
-- D receives the resolved retrieval question, current message, and C-selected turns.
+- plan-turn receives the current message and a bounded live read of recent complete user/assistant turns or terminal failed user-only turns; failed drafts are never included.
 - A receives the resolved/topic question and authorized internal search previews or inspected ranges through Brief tools.
-- B receives the resolved/topic question and either the complete authorized memory inventory or bounded results from its authorized search/inspect tool loop over the complete active set; code does not create a semantic shortlist.
+- B receives the resolved/topic question and bounded results from its authorized search/inspect tool loop over the current active set; code does not create a semantic shortlist.
 - W receives the resolved/topic question and search/fetch results from allowed web domains.
 - O receives compact candidate metadata and only the candidate content it explicitly inspects through Brief tools.
 - direct/topic answer agents receive only their exact fitted prompt.
 - synthesis receives bounded topic claim packets and source keys, not the original full documents.
-- memory extraction receives only the current user message and either the complete active-memory inventory or bounded results from its authorized memory search/inspect tools.
+- memory extraction receives only the current user message and bounded results from its authorized memory search/inspect tools.
 
-The main answer, topic-answer, and synthesis agents have no retrieval tools. Brief rechecks authorization before every internal fetch and before final serialization.
+The main answer, topic-answer, and synthesis agents have no retrieval tools. Brief validates the saved acceptance scope before every internal fetch and validates exact evidence identities before final serialization.
+
+The chat turn keeps current authorized internal search scope in Brief code. No
+broad source list enters provider input. A model-visible document reference
+contains only `documentId`. For public evidence, code binds it to the exact
+public document row, immutable version identity, lowercase content hash, source
+scope, and normalized ranges, with no extraction ID. For publisher evidence,
+code additionally binds it to the exact extraction row through the required
+one-to-one version relation, with the same immutable version, hash, source
+scope, and ranges.
+Metadata-only search and lookup results create no exposure or evidence row. Any
+content-bearing document preview, including a search preview, carries the
+complete source namespace, document ID, immutable version, exact text hash,
+and normalized ranges.
+The server creates one random per-answer `citationNamespace` at request
+acceptance. It scopes local citation handles only; exact evidence identity and
+current access still validate every claim.
+
+Brief validates the saved user, company, membership and grant identities, chat scope,
+source enablement, publisher subscription and issue state, document version,
+memory owner and revision, accepted web policy, and domain allowlist
+immediately before every content-bearing provider request and each content
+exposure. A current denial fails closed even when an earlier read allowed the
+source. Finalization validates the complete final evidence set inside one save
+transaction before applying memory proposals, usage, source maps, messages, and
+the terminal event, while holding the canonical locks in the documented order.
 
 Web search/fetch services receive the minimum query and URL data required for the requested web path. Company domain allowlists are enforced before a request leaves Brief. Selected web quotations and provenance are stored with the chat; full fetched pages remain transient unless they are already canonical platform content under another ingestion contract. Web research is disabled in any deployment that has no approved `WebResearchService` adapter.
 
@@ -232,6 +269,12 @@ The platform contract with the AI provider must cover:
 Production use with real publisher content requires written, account-specific terms for the selected AI provider and exact stateless endpoint that establish confidentiality, training/data-use exclusion, retention and deletion, subprocessors, security, incident obligations, and international transfers. A public product page, development key, plan name, or manually entered attestation is insufficient. Brief calls stateless endpoints directly and stores files in platform storage; provider file, conversation, agent, or other stateful products are outside the current runtime.
 
 Until those decisions and evidence are accepted, production startup fails closed and real publisher content is not sent to an unapproved provider. Development and sales fixtures may use non-sensitive synthetic data. The platform security page names the selected provider and exact current posture only after acceptance, links to the governing terms, and never generalizes a provider-wide claim from an unsupported endpoint or account tier.
+
+One model call is one direct Pi provider request inside one Smithers compute
+task. Pi retries are disabled. The task owns `stepId`, `iteration`, `attempt`,
+and `providerRequestIndex`; it records one exact local measurement and one
+usage row when the provider reports usage. Smithers agent execution is not an
+alternative provider path.
 
 ## Hosting And Region
 
@@ -370,6 +413,14 @@ The launch retention schedule is:
 
 Legal hold pauses the affected deletion. Hold placement/release and every retention deletion, including private export-object GC, linearize on the same normalized, sorted canonical scope keys (`user`, `client_company`, `publisher_company`, `chat`, and `issue` as applicable): the worker takes those advisory locks, row-locks the candidate, and rechecks both durable scope holds and canonical record-level hold fields immediately before deletion. User account purge additionally discovers both membership sets, forms one deduplicated set of typed `client:<uuid>` and `publisher:<uuid>` lane keys, sorts the complete strings lexically, and acquires them before locking the user row. It then rechecks both membership sets and aborts rather than acquiring a newly discovered lane after the user lock. Mixed-scope publisher-document reads use the identical comparator, eliminating cross-kind client/publisher cycles. Hold-scope snapshots are immutable, so a later pointer change cannot detach the retained object. Hold history is append-only; release may set only the release fields. Restricted-support grants/access logs and authorization audits snapshot their complete hold-scope keys immutably when written, so later pointer deletion cannot detach retained evidence from a hold. Accounting retention likewise resolves immutable generated Stripe customer, subscription, schedule, payment, invoice, and Checkout-session identities through snapshotted company/requester mappings rather than mutable current account pointers. Before entering another market, legal review may lengthen a category where required; it may not silently shorten a customer-facing deletion promise.
 
+The sole ready-publisher-content purge follows one global row-lock order. After
+resolving the complete hold scope, the worker sorts and acquires every canonical
+hold-scope advisory lock first. It then row-locks the issue, document, version,
+and extraction in that order, rechecks durable and record-level holds plus ready
+state, and deletes the complete bound tuple in one transaction. It never takes
+an advisory hold lock after a row lock; partial, unfenced, or incomplete tuple
+deletion is rejected.
+
 ### User-Deleted Chats
 
 Deleted chats disappear from the product immediately.
@@ -378,7 +429,7 @@ Deleted chat content is purged from active storage within 30 days.
 
 Deleted chat content is excluded from search, AI context, analytics, and support views.
 
-Deletion immediately excludes the chat from C recent-turn selection and A older-message search. It also excludes its selected web quotations, source maps, context plans, topic packets, and citation records from any future model request.
+Deletion immediately excludes the chat from plan-turn's recent-turn read and A's older-message search. It also excludes its selected web quotations, source maps, context plans, topic packets, and citation records from any future model request.
 
 Saved user memories are a separate user-managed product record. Deleting a chat does not silently delete a memory already saved from that chat; its nullable source-message/run links are cleared when the chat is purged. The memories panel exposes explicit tombstone and revision/revert controls. A tombstone remains visible and reversible for 30 days. After that, it leaves the panel: unreferenced memory/revision content is hard-deleted, while each revision referenced by a retained private-chat answer keeps only its exact cited `after` snapshot; its `before` snapshot, unrelated revisions, and source/run links are erased. That minimal restricted provenance remains until the last referencing answer is deleted. Memory deletion prevents all future B selection immediately. Deleting the user account deletes the user's memories and private chats after the account's 180-day recovery period unless legal hold applies.
 
@@ -428,6 +479,18 @@ Publisher departure does not remove already delivered client archives.
 Draft and scheduled issues can be edited or deleted before publication.
 
 Published issues can be hidden or restricted only through restricted support action for security, legal, or compliance reasons.
+
+When a publisher issue reaches `ready`, its stored PDF identity, object key,
+metadata, extracted pages, canonical text, content hash, ranges, and active
+extraction binding become immutable. Normal writes cannot replace the PDF,
+create a competing extraction, move the current binding, or delete the ready
+content. Retention jobs and account deletion keep the same rule. The only
+exception is an explicit, fenced retention or legal-purge operation. It first
+acquires the complete sorted canonical hold-scope advisory-lock set, then
+row-locks issue, document, version, and extraction in that order, rechecks
+holds and ready state, records its reason and scope, and removes the complete
+immutable record as one authorized action. It never takes a hold lock after a
+row lock or leaves a partial tuple.
 
 ### Support Access Logs
 
