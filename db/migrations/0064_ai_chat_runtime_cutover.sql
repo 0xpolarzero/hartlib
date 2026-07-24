@@ -13906,7 +13906,14 @@ create table if not exists issue_delivery_recipients (
   user_id text not null,
   delivered_at timestamptz not null,
   created_at timestamptz not null default now(),
-  primary key (issue_id, client_company_id, user_id)
+  primary key (issue_id, client_company_id, user_id),
+  constraint issue_delivery_recipients_delivery_key
+    foreign key (issue_id, client_company_id)
+    references issue_deliveries (issue_id, client_company_id) on delete cascade,
+  constraint issue_delivery_recipients_membership_key
+    foreign key (client_company_id, user_id)
+    references client_company_memberships (company_id, user_id) on delete cascade,
+  constraint issue_delivery_recipients_user_nonempty check (btrim(user_id) <> '')
 );
 
 create index if not exists issue_delivery_recipients_user_issue_idx
@@ -13929,14 +13936,61 @@ join client_company_memberships memberships
 where grants.granted_at <= delivery.delivered_at
   and (grants.revoked_at is null or grants.revoked_at > delivery.delivered_at)
   and memberships.created_at <= delivery.delivered_at
+  and (memberships.revoked_at is null or memberships.revoked_at > delivery.delivered_at)
+  and not exists (
+    select 1
+    from issue_delivery_recipients existing
+    where existing.issue_id = delivery.issue_id
+      and existing.client_company_id = delivery.client_company_id
+      and existing.user_id = grants.user_id
+  )
 on conflict (issue_id, client_company_id, user_id) do nothing;
 
 create or replace function protect_issue_delivery_recipient()
 returns trigger language plpgsql as $$
+declare
+  delivery_row issue_deliveries%rowtype;
 begin
+  if tg_op = 'DELETE' then
+    if current_setting('brief.allow_account_purge', true) = 'on' then
+      return old;
+    end if;
+    raise exception 'issue delivery recipients are immutable'
+      using errcode = '23514', constraint = 'issue_delivery_recipients_immutable';
+  end if;
   if tg_op = 'UPDATE' then
     raise exception 'issue delivery recipients are immutable'
       using errcode = '23514', constraint = 'issue_delivery_recipients_immutable';
+  end if;
+
+  select * into delivery_row
+  from issue_deliveries deliveries
+  where deliveries.issue_id = new.issue_id
+    and deliveries.client_company_id = new.client_company_id;
+  if not found then
+    raise exception 'issue delivery recipient requires its exact delivery'
+      using errcode = '23514', constraint = 'issue_delivery_recipients_delivery';
+  end if;
+  if new.delivered_at is distinct from delivery_row.delivered_at then
+    raise exception 'issue delivery recipient timestamp must match its delivery'
+      using errcode = '23514', constraint = 'issue_delivery_recipients_timestamp';
+  end if;
+  if not exists (
+    select 1
+    from client_employee_subscription_grants grants
+    join client_company_memberships memberships
+      on memberships.company_id = grants.client_company_id
+     and memberships.user_id = grants.user_id
+    where grants.access_id = delivery_row.access_id
+      and grants.client_company_id = delivery_row.client_company_id
+      and grants.user_id = new.user_id
+      and grants.granted_at <= delivery_row.delivered_at
+      and (grants.revoked_at is null or grants.revoked_at > delivery_row.delivered_at)
+      and memberships.created_at <= delivery_row.delivered_at
+      and (memberships.revoked_at is null or memberships.revoked_at > delivery_row.delivered_at)
+  ) then
+    raise exception 'issue delivery recipient was not entitled at delivery time'
+      using errcode = '23514', constraint = 'issue_delivery_recipients_entitlement';
   end if;
   return new;
 end;
@@ -13944,7 +13998,7 @@ $$;
 
 drop trigger if exists issue_delivery_recipients_immutable on issue_delivery_recipients;
 create trigger issue_delivery_recipients_immutable
-before update on issue_delivery_recipients
+before insert or update or delete on issue_delivery_recipients
 for each row execute function protect_issue_delivery_recipient();
 
 -- These former live-policy columns are no longer authorization authority.

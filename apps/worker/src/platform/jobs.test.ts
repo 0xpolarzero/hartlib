@@ -386,11 +386,16 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         `;
         const [counts] = yield* sql<{
           readonly deliveries: number;
+          readonly recipients: number;
           readonly notifications: number;
           readonly extractions: number;
         }>`
           select
             (select count(*)::int from issue_deliveries where issue_id = ${scheduled.issueId}) as deliveries,
+            (
+              select count(*)::int from issue_delivery_recipients
+              where issue_id = ${scheduled.issueId}
+            ) as recipients,
             (
               select count(*)::int from jobs
               where kind = 'send_platform_notification'
@@ -407,7 +412,12 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
     );
     expect(publishedState.issue).toMatchObject({ status: "published", indexingStatus: "pending" });
     expect(publishedState.issue?.publishedAt).toBeInstanceOf(Date);
-    expect(publishedState.counts).toEqual({ deliveries: 1, notifications: 1, extractions: 1 });
+    expect(publishedState.counts).toEqual({
+      deliveries: 1,
+      recipients: 1,
+      notifications: 1,
+      extractions: 1,
+    });
 
     const notificationJob = await runDb(
       findJob("send_platform_notification", "issueId", scheduled.issueId),
@@ -427,6 +437,58 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       }),
     );
     expect(notificationCount).toBe(1);
+
+    await expect(
+      runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update issue_delivery_recipients
+            set delivered_at = delivered_at + interval '1 second'
+            where issue_id = ${scheduled.issueId}
+          `;
+        }),
+      ),
+    ).rejects.toBeDefined();
+    await expect(
+      runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            delete from issue_delivery_recipients
+            where issue_id = ${scheduled.issueId}
+          `;
+        }),
+      ),
+    ).rejects.toBeDefined();
+
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_employee_subscription_grants
+          set revoked_at = now(), revoked_by_user_id = ${scheduled.userId}
+          where access_id = ${scheduled.accessId}
+            and client_company_id = ${scheduled.clientCompanyId}
+            and user_id = ${scheduled.userId}
+        `;
+      }),
+    );
+    await expect(runPlatformJob(publishJob, fileStore)).resolves.toMatchObject({
+      status: "completed",
+    });
+    const recipientCountAfterRetry = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const [row] = yield* sql<{ readonly count: number }>`
+          select count(*)::int as count
+          from issue_delivery_recipients
+          where issue_id = ${scheduled.issueId}
+        `;
+        return row!.count;
+      }),
+    );
+    expect(recipientCountAfterRetry).toBe(1);
 
     await expect(
       runDb(

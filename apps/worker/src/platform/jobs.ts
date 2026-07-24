@@ -575,6 +575,35 @@ const publishIssue = (
               `
             : [];
 
+        // Freeze the user recipients at delivery time. Later grant, source,
+        // or subscription changes must not revoke a delivered publication.
+        for (const delivery of deliveries) {
+          yield* sql`
+            insert into issue_delivery_recipients (
+              issue_id, client_company_id, user_id, delivered_at
+            )
+            select
+              ${issueId}::uuid,
+              ${delivery.clientCompanyId}::uuid,
+              grants.user_id,
+              deliveries.delivered_at
+            from issue_deliveries deliveries
+            join client_employee_subscription_grants grants
+              on grants.access_id = deliveries.access_id
+             and grants.client_company_id = deliveries.client_company_id
+             and grants.granted_at <= deliveries.delivered_at
+             and (grants.revoked_at is null or grants.revoked_at > deliveries.delivered_at)
+            join client_company_memberships memberships
+              on memberships.company_id = deliveries.client_company_id
+             and memberships.user_id = grants.user_id
+             and memberships.created_at <= deliveries.delivered_at
+             and (memberships.revoked_at is null or memberships.revoked_at > deliveries.delivered_at)
+            where deliveries.issue_id = ${issueId}::uuid
+              and deliveries.client_company_id = ${delivery.clientCompanyId}::uuid
+            on conflict (issue_id, client_company_id, user_id) do nothing
+          `;
+        }
+
         if (!historical) {
           for (const delivery of deliveries) {
             yield* sql`

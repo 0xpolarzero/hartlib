@@ -458,6 +458,197 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     expect(result[0]?.count).toBe(0);
   }, 60_000);
 
+  it("freezes only proven delivery recipients and rejects later changes", async () => {
+    const result = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const suffix = crypto.randomUUID();
+        const publisherCompanyId = crypto.randomUUID();
+        const subscriptionId = crypto.randomUUID();
+        const clientCompanyId = crypto.randomUUID();
+        const issueId = crypto.randomUUID();
+        const accessId = crypto.randomUUID();
+        const deliveryAt = new Date(Date.now() - 60_000);
+        const validUserId = `delivery-valid-${suffix}`;
+        const neverEntitledUserId = `delivery-never-${suffix}`;
+        const futureGrantUserId = `delivery-future-${suffix}`;
+        const revokedBeforeUserId = `delivery-revoked-before-${suffix}`;
+        const revokedAfterUserId = `delivery-revoked-after-${suffix}`;
+        const allUsers = [
+          validUserId,
+          neverEntitledUserId,
+          futureGrantUserId,
+          revokedBeforeUserId,
+          revokedAfterUserId,
+        ];
+
+        yield* sql`
+          insert into publisher_companies (id, name)
+          values (${publisherCompanyId}, ${`Delivery publisher ${suffix}`})
+        `;
+        yield* sql`
+          insert into publisher_subscriptions (id, publisher_company_id, name, created_by_user_id)
+          values (${subscriptionId}, ${publisherCompanyId}, 'Delivery subscription', 'delivery-publisher')
+        `;
+        yield* sql`
+          insert into client_companies (id, name)
+          values (${clientCompanyId}, ${`Delivery client ${suffix}`})
+        `;
+        for (const userId of allUsers) {
+          yield* sql`
+            insert into client_company_memberships (
+              company_id, user_id, role, created_at
+            ) values (
+              ${clientCompanyId}, ${userId}, 'member', ${new Date(deliveryAt.getTime() - 3_600_000)}
+            )
+          `;
+        }
+        yield* sql`
+          insert into client_subscription_accesses (
+            id, subscription_id, client_company_id, state, first_admin_email,
+            accepted_at, subscribed_at, created_by_user_id
+          ) values (
+            ${accessId}, ${subscriptionId}, ${clientCompanyId}, 'active', 'delivery@example.test',
+            ${new Date(deliveryAt.getTime() - 7_200_000)},
+            ${new Date(deliveryAt.getTime() - 7_200_000)},
+            'delivery-publisher'
+          )
+        `;
+        yield* sql`
+          insert into publisher_issues (
+            id, subscription_id, title, status, publication_at, published_at, created_by_user_id
+          ) values (
+            ${issueId}, ${subscriptionId}, 'Delivery issue', 'published',
+            ${new Date(deliveryAt.getTime() - 7_200_000)},
+            ${new Date(deliveryAt.getTime() - 3_600_000)},
+            'delivery-publisher'
+          )
+        `;
+        yield* sql`
+          insert into issue_deliveries (
+            id, issue_id, subscription_id, access_id, client_company_id,
+            delivered_at, historical
+          ) values (
+            ${crypto.randomUUID()}, ${issueId}, ${subscriptionId}, ${accessId},
+            ${clientCompanyId}, ${deliveryAt}, false
+          )
+        `;
+        yield* sql`
+          insert into client_employee_subscription_grants (
+            access_id, client_company_id, user_id, granted_by_user_id, granted_at
+          ) values (
+            ${accessId}, ${clientCompanyId}, ${validUserId}, 'delivery-publisher',
+            ${new Date(deliveryAt.getTime() - 1_800_000)}
+          )
+        `;
+        yield* sql`
+          insert into client_employee_subscription_grants (
+            access_id, client_company_id, user_id, granted_by_user_id, granted_at
+          ) values (
+            ${accessId}, ${clientCompanyId}, ${futureGrantUserId}, 'delivery-publisher',
+            ${new Date(deliveryAt.getTime() + 1_800_000)}
+          )
+        `;
+        yield* sql`
+          insert into client_employee_subscription_grants (
+            access_id, client_company_id, user_id, granted_by_user_id,
+            granted_at, revoked_at, revoked_by_user_id
+          ) values (
+            ${accessId}, ${clientCompanyId}, ${revokedBeforeUserId}, 'delivery-publisher',
+            ${new Date(deliveryAt.getTime() - 1_800_000)},
+            ${new Date(deliveryAt.getTime() - 600_000)}, 'delivery-publisher'
+          )
+        `;
+        yield* sql`
+          insert into client_employee_subscription_grants (
+            access_id, client_company_id, user_id, granted_by_user_id,
+            granted_at, revoked_at, revoked_by_user_id
+          ) values (
+            ${accessId}, ${clientCompanyId}, ${revokedAfterUserId}, 'delivery-publisher',
+            ${new Date(deliveryAt.getTime() - 1_800_000)},
+            ${new Date(deliveryAt.getTime() + 1_800_000)}, 'delivery-publisher'
+          )
+        `;
+
+        yield* sql`
+          insert into issue_delivery_recipients (
+            issue_id, client_company_id, user_id, delivered_at
+          ) values (${issueId}, ${clientCompanyId}, ${validUserId}, ${deliveryAt})
+        `;
+        yield* sql`
+          insert into issue_delivery_recipients (
+            issue_id, client_company_id, user_id, delivered_at
+          ) values (${issueId}, ${clientCompanyId}, ${revokedAfterUserId}, ${deliveryAt})
+        `;
+        const neverEntitled = yield* Effect.flip(sql`
+          insert into issue_delivery_recipients (
+            issue_id, client_company_id, user_id, delivered_at
+          ) values (${issueId}, ${clientCompanyId}, ${neverEntitledUserId}, ${deliveryAt})
+        `);
+        const futureGrant = yield* Effect.flip(sql`
+          insert into issue_delivery_recipients (
+            issue_id, client_company_id, user_id, delivered_at
+          ) values (${issueId}, ${clientCompanyId}, ${futureGrantUserId}, ${deliveryAt})
+        `);
+        const revokedBefore = yield* Effect.flip(sql`
+          insert into issue_delivery_recipients (
+            issue_id, client_company_id, user_id, delivered_at
+          ) values (${issueId}, ${clientCompanyId}, ${revokedBeforeUserId}, ${deliveryAt})
+        `);
+        const wrongTimestamp = yield* Effect.flip(sql`
+          insert into issue_delivery_recipients (
+            issue_id, client_company_id, user_id, delivered_at
+          ) values (
+            ${issueId}, ${clientCompanyId}, ${validUserId}, ${new Date(deliveryAt.getTime() + 1_000)}
+          )
+        `);
+        const updateFailure = yield* Effect.flip(sql`
+          update issue_delivery_recipients
+          set delivered_at = ${new Date(deliveryAt.getTime() + 1_000)}
+          where issue_id = ${issueId}
+            and client_company_id = ${clientCompanyId}
+            and user_id = ${validUserId}
+        `);
+        const deleteFailure = yield* Effect.flip(sql`
+          delete from issue_delivery_recipients
+          where issue_id = ${issueId}
+            and client_company_id = ${clientCompanyId}
+            and user_id = ${validUserId}
+        `);
+        const recipients = yield* sql<{ readonly userId: string }>`
+          select user_id as "userId"
+          from issue_delivery_recipients
+          where issue_id = ${issueId}
+          order by user_id
+        `;
+        return {
+          neverEntitled,
+          futureGrant,
+          revokedBefore,
+          wrongTimestamp,
+          updateFailure,
+          deleteFailure,
+          validUserId,
+          revokedAfterUserId,
+          recipients: recipients.map((row) => row.userId),
+        };
+      }),
+    );
+
+    for (const failure of [
+      result.neverEntitled,
+      result.futureGrant,
+      result.revokedBefore,
+      result.wrongTimestamp,
+      result.updateFailure,
+      result.deleteFailure,
+    ]) {
+      expect(errorText(failure)).toMatch(/delivery|immutable|entitled/i);
+    }
+    expect(result.recipients).toEqual([result.revokedAfterUserId, result.validUserId].sort());
+  });
+
   it("stores one strict immutable acceptance scope and never reauthorizes run updates", async () => {
     const userId = `scope-contract-${crypto.randomUUID()}`;
     const companyId = await runDb(isolatedDatabaseUrl(), provisionClientUser(userId));
