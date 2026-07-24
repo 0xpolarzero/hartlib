@@ -13543,73 +13543,26 @@ for each row execute function reject_ready_extraction_insert();
 alter table ai_runs
   add column if not exists acceptance_scope jsonb;
 
--- Retained 0063 rows have no prior scope column. Convert the server-owned
--- fields that still exist into the final shape before enforcing NOT NULL; a
--- row with incomplete legacy evidence is rejected by the checks below.
+-- Retained 0063 rows have no acceptance snapshot.  Do not reconstruct one
+-- from current chat selections, source settings, memory heads, or provider
+-- policy: those rows describe present state, not what the run accepted.  A
+-- deployment may only replay this migration after a previous cutover attempt
+-- has already stored the complete per-run scope.  Every other retained row
+-- fails before any catalog write and must be drained or explicitly purged.
 do $$
+declare
+  row_data record;
 begin
-  if exists (
-    select 1 from information_schema.columns
-    where table_schema = 'public' and table_name = 'ai_runs'
-      and column_name = 'web_search_enabled'
-  ) and exists (
-    select 1 from information_schema.columns
-    where table_schema = 'public' and table_name = 'ai_runs'
-      and column_name = 'effective_web_policy'
-  ) then
-    execute $sql$
-      update ai_runs runs
-      set acceptance_scope = jsonb_build_object(
-        'userId', runs.initiating_user_id,
-        'chatId', runs.chat_id::text,
-        'companyId', chats.company_id::text,
-        'subscriptionIds', coalesce((
-          select jsonb_agg(distinct selected.subscription_id::text order by selected.subscription_id::text)
-          from chat_subscription_sources selected
-          join client_subscription_accesses accesses
-            on accesses.id = selected.access_id
-           and accesses.client_company_id = selected.client_company_id
-          where selected.chat_id = runs.chat_id
-            and selected.client_company_id = chats.company_id
-            and accesses.subscription_id = selected.subscription_id
-        ), '[]'::jsonb),
-        'accessIds', coalesce((
-          select jsonb_agg(distinct selected.access_id::text order by selected.access_id::text)
-          from chat_subscription_sources selected
-          where selected.chat_id = runs.chat_id
-            and selected.client_company_id = chats.company_id
-        ), '[]'::jsonb),
-        'publicSourceIds', coalesce((
-          select jsonb_agg(distinct settings.source_id order by settings.source_id)
-          from client_company_public_source_settings settings
-          where settings.client_company_id = chats.company_id and settings.enabled
-        ), '[]'::jsonb),
-        'memoryMode', chats.memory_mode,
-        'memoryRevisionIds', coalesce((
-          select jsonb_agg(distinct revisions.id::text order by revisions.id::text)
-          from user_memory_revisions revisions
-          join user_memories revision_memories
-            on revision_memories.id = revisions.memory_id
-           and revision_memories.user_id = runs.initiating_user_id
-          where revisions.run_id = runs.id or revision_memories.head_revision_id = revisions.id
-        ), '[]'::jsonb),
-        'webRequested', runs.web_search_enabled,
-        'webEnabled', coalesce((runs.effective_web_policy->>'enabled')::boolean, false),
-        'provider', 'zai_coding_plan_official',
-        'fastModelId', 'glm-5-turbo',
-        'mainModelId', 'glm-5-turbo',
-        'webTransportProvider', case when coalesce((runs.effective_web_policy->>'enabled')::boolean, false) then '"tinyfish"'::jsonb else 'null'::jsonb end,
-        'allowedDomains', case
-          when coalesce((runs.effective_web_policy->>'enabled')::boolean, false)
-            and jsonb_typeof(runs.effective_web_policy->'allowedDomains') = 'array'
-            then runs.effective_web_policy->'allowedDomains'
-          else 'null'::jsonb
-        end
-      )
-      from chats
-      where chats.id = runs.chat_id and runs.acceptance_scope is null
-    $sql$;
-  end if;
+  for row_data in
+      select runs.id::text as row_identity
+      from ai_runs runs
+      where runs.acceptance_scope is null
+      order by runs.id
+    loop
+      raise exception
+        'AI chat scope cutover preflight row ai_runs/%: no durable acceptance-time scope proves every accepted field',
+        row_data.row_identity;
+    end loop;
 end
 $$;
 
@@ -13738,10 +13691,21 @@ begin
      or (new.acceptance_scope->>'chatId') is distinct from new.chat_id::text
      or not exists (
        select 1 from chats chat
-       where chat.id = new.chat_id
-         and (new.acceptance_scope->>'companyId') = chat.company_id::text
-         and new.acceptance_scope->>'memoryMode' = chat.memory_mode::text
-     ) then
+         where chat.id = new.chat_id
+           and (new.acceptance_scope->>'companyId') = chat.company_id::text
+           and chat.user_id = new.initiating_user_id
+           and exists (
+             select 1
+             from client_company_memberships membership
+             join platform_users users on users.id = membership.user_id
+             where membership.company_id = chat.company_id
+               and membership.user_id = new.initiating_user_id
+               and membership.revoked_at is null
+               and users.recovery_deleted_at is null
+               and users.purged_at is null
+           )
+           and new.acceptance_scope->>'memoryMode' = chat.memory_mode::text
+       ) then
     raise exception 'AI run acceptance scope tenant binding is invalid'
       using errcode = '23514', constraint = 'ai_runs_acceptance_scope_binding';
   end if;
@@ -13757,6 +13721,10 @@ begin
        and grants.user_id = new.initiating_user_id
        and grants.granted_at <= now()
        and (grants.revoked_at is null or grants.revoked_at > now())
+      join client_company_memberships membership
+        on membership.company_id = grants.client_company_id
+       and membership.user_id = grants.user_id
+       and membership.revoked_at is null
       join client_subscription_accesses accesses
         on accesses.id = chat_sources.access_id
        and accesses.client_company_id = chat_sources.client_company_id
@@ -13781,6 +13749,10 @@ begin
        and grants.user_id = new.initiating_user_id
        and grants.granted_at <= now()
        and (grants.revoked_at is null or grants.revoked_at > now())
+      join client_company_memberships membership
+        on membership.company_id = grants.client_company_id
+       and membership.user_id = grants.user_id
+       and membership.revoked_at is null
       join client_subscription_accesses accesses
         on accesses.id = chat_sources.access_id
        and accesses.client_company_id = chat_sources.client_company_id
@@ -13803,8 +13775,12 @@ begin
       on grants.access_id = chat_sources.access_id
      and grants.client_company_id = chat_sources.client_company_id
      and grants.user_id = new.initiating_user_id
-     and grants.granted_at <= now()
-     and (grants.revoked_at is null or grants.revoked_at > now())
+      and grants.granted_at <= now()
+      and (grants.revoked_at is null or grants.revoked_at > now())
+    join client_company_memberships membership
+      on membership.company_id = grants.client_company_id
+     and membership.user_id = grants.user_id
+     and membership.revoked_at is null
     join client_subscription_accesses accesses
       on accesses.id = chat_sources.access_id
      and accesses.client_company_id = chat_sources.client_company_id
@@ -13825,8 +13801,12 @@ begin
       on grants.access_id = chat_sources.access_id
      and grants.client_company_id = chat_sources.client_company_id
      and grants.user_id = new.initiating_user_id
-     and grants.granted_at <= now()
-     and (grants.revoked_at is null or grants.revoked_at > now())
+      and grants.granted_at <= now()
+      and (grants.revoked_at is null or grants.revoked_at > now())
+    join client_company_memberships membership
+      on membership.company_id = grants.client_company_id
+     and membership.user_id = grants.user_id
+     and membership.revoked_at is null
     join client_subscription_accesses accesses
       on accesses.id = chat_sources.access_id
      and accesses.client_company_id = chat_sources.client_company_id
@@ -13927,8 +13907,30 @@ create table if not exists issue_delivery_recipients (
 create index if not exists issue_delivery_recipients_user_issue_idx
   on issue_delivery_recipients (user_id, issue_id, client_company_id);
 
+-- A recipient snapshot can be opened only by the delivery INSERT that owns
+-- it.  The marker is transaction-local, so a later transaction cannot add a
+-- user to an old delivery.  The migration backfill uses its separate,
+-- transaction-local proof flag below.
+create or replace function open_issue_delivery_recipient_snapshot()
+returns trigger language plpgsql as $$
+begin
+  perform set_config(
+    format('brief.delivery_snapshot.x%s', md5(new.issue_id::text || ':' || new.client_company_id::text)),
+    'on',
+    true
+  );
+  return new;
+end;
+$$;
+
+drop trigger if exists issue_deliveries_open_recipient_snapshot on issue_deliveries;
+create trigger issue_deliveries_open_recipient_snapshot
+after insert on issue_deliveries
+for each row execute function open_issue_delivery_recipient_snapshot();
+
 -- Backfill only recipients whose durable grant and membership timestamps prove
 -- entitlement at delivery time. Rows without that proof remain unavailable.
+select set_config('brief.allow_delivery_recipient_backfill', 'on', true);
 insert into issue_delivery_recipients (issue_id, client_company_id, user_id, delivered_at)
 select delivery.issue_id,
        delivery.client_company_id,
@@ -13953,6 +13955,7 @@ where grants.granted_at <= delivery.delivered_at
       and existing.user_id = grants.user_id
   )
 on conflict (issue_id, client_company_id, user_id) do nothing;
+select set_config('brief.allow_delivery_recipient_backfill', 'off', true);
 
 create or replace function protect_issue_delivery_recipient()
 returns trigger language plpgsql as $$
@@ -13969,6 +13972,15 @@ begin
   if tg_op = 'UPDATE' then
     raise exception 'issue delivery recipients are immutable'
       using errcode = '23514', constraint = 'issue_delivery_recipients_immutable';
+  end if;
+
+  if current_setting('brief.allow_delivery_recipient_backfill', true) is distinct from 'on'
+     and current_setting(
+       format('brief.delivery_snapshot.x%s', md5(new.issue_id::text || ':' || new.client_company_id::text)),
+       true
+     ) is distinct from 'on' then
+    raise exception 'issue delivery recipient requires the atomic delivery transaction'
+      using errcode = '23514', constraint = 'issue_delivery_recipients_delivery';
   end if;
 
   select * into delivery_row

@@ -885,9 +885,30 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         `;
         yield* sql`
           insert into ai_runs (
-            id, chat_id, user_message_id, locale, market, finished_at
+            id, chat_id, initiating_user_id, user_message_id, locale, market,
+            acceptance_scope, finished_at
           )
-          values (${runId}, ${chatId}, ${messageId}, 'en-US', 'US', now())
+          values (
+            ${runId}, ${chatId}, ${fixture.userId}, ${messageId}, 'en-US', 'US',
+            ${sql.json({
+              userId: fixture.userId,
+              chatId,
+              companyId: fixture.clientCompanyId,
+              subscriptionIds: [fixture.subscriptionId],
+              accessIds: [fixture.accessId],
+              publicSourceIds: [],
+              memoryMode: 'private_owner',
+              memoryRevisionIds: [],
+              webRequested: false,
+              webEnabled: false,
+              provider: 'zai_coding_plan_official',
+              fastModelId: 'glm-5-turbo',
+              mainModelId: 'glm-5-turbo',
+              webTransportProvider: null,
+              allowedDomains: null,
+            })},
+            now()
+          )
         `;
         yield* sql`
           insert into ai_run_usage (

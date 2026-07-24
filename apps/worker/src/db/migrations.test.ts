@@ -136,6 +136,10 @@ const provisionClientUser = (userId: string) =>
     const sql = yield* PgClient.PgClient;
     const companyId = crypto.randomUUID();
     yield* sql`
+      insert into platform_users (id, primary_email, display_name, clerk_user_id)
+      values (${userId}, ${`${userId}@example.test`}, 'Migration test user', ${`clerk-${userId}`})
+    `;
+    yield* sql`
       insert into client_companies (id, name)
       values (${companyId}, 'Migration test company')
     `;
@@ -571,16 +575,21 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           )
         `;
 
-        yield* sql`
-          insert into issue_delivery_recipients (
-            issue_id, client_company_id, user_id, delivered_at
-          ) values (${issueId}, ${clientCompanyId}, ${validUserId}, ${deliveryAt})
-        `;
-        yield* sql`
-          insert into issue_delivery_recipients (
-            issue_id, client_company_id, user_id, delivered_at
-          ) values (${issueId}, ${clientCompanyId}, ${revokedAfterUserId}, ${deliveryAt})
-        `;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`select set_config('brief.allow_delivery_recipient_backfill', 'on', true)`;
+            yield* sql`
+              insert into issue_delivery_recipients (
+                issue_id, client_company_id, user_id, delivered_at
+              ) values (${issueId}, ${clientCompanyId}, ${validUserId}, ${deliveryAt})
+            `;
+            yield* sql`
+              insert into issue_delivery_recipients (
+                issue_id, client_company_id, user_id, delivered_at
+              ) values (${issueId}, ${clientCompanyId}, ${revokedAfterUserId}, ${deliveryAt})
+            `;
+          }),
+        );
         const neverEntitled = yield* Effect.flip(sql`
           insert into issue_delivery_recipients (
             issue_id, client_company_id, user_id, delivered_at
@@ -815,6 +824,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           databaseUrl,
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
+            // This explicit pre-0064 fixture carries the durable acceptance
+            // evidence that a real deployment must have before cutover.
+            yield* sql`alter table ai_runs add column if not exists acceptance_scope jsonb`;
             yield* sql`
               insert into platform_users (id, primary_email, display_name, clerk_user_id)
               values (${ids.user}, ${`${ids.user}@example.test`}, 'Failed ledger user', ${`clerk-${ids.user}`})
@@ -837,9 +849,10 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             yield* sql`
               insert into ai_runs (
                 id, chat_id, initiating_user_id, user_message_id, locale, market,
-                citation_nonce, effective_web_policy, failed_at, error_code, retryable
+                acceptance_scope, citation_nonce, effective_web_policy, failed_at, error_code, retryable
               ) values (
                 ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
+                ${sql.json(testAcceptanceScope({ userId: ids.user, chatId: ids.chat, companyId: ids.company }))},
                 decode(${nonce.toString("base64")}, 'base64'),
                 ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
                 now(), 'failed_fixture', true
@@ -1681,6 +1694,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           databaseUrl,
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
+            // This explicit pre-0064 fixture carries the durable acceptance
+            // evidence that a real deployment must have before cutover.
+            yield* sql`alter table ai_runs add column if not exists acceptance_scope jsonb`;
             yield* sql`
               insert into platform_users (id, primary_email, display_name, clerk_user_id)
               values (${ids.user}, ${`${ids.user}@example.test`}, 'Duplicate manifest user', ${`clerk-${ids.user}`})
@@ -1703,9 +1719,10 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             yield* sql`
               insert into ai_runs (
                 id, chat_id, initiating_user_id, user_message_id, locale, market,
-                citation_nonce, effective_web_policy, finished_at
+                acceptance_scope, citation_nonce, effective_web_policy, finished_at
               ) values (
                 ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
+                ${sql.json(testAcceptanceScope({ userId: ids.user, chatId: ids.chat, companyId: ids.company }))},
                 decode(${nonce.toString("base64")}, 'base64'),
                 ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
                 now()
@@ -2967,6 +2984,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         databaseUrl,
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
+          // This explicit pre-0064 fixture carries the durable acceptance
+          // evidence that a real deployment must have before cutover.
+          yield* sql`alter table ai_runs add column if not exists acceptance_scope jsonb`;
           yield* sql`
             insert into publisher_companies (id, name)
             values (${publisherCompanyId}, ${`Upgrade publisher ${suffix}`})
@@ -3036,10 +3056,16 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           yield* sql`
             insert into ai_runs (
               id, chat_id, initiating_user_id, user_message_id, locale, market,
-              citation_nonce, effective_web_policy, finished_at
+              acceptance_scope, citation_nonce, effective_web_policy, finished_at
             ) values (
               ${upgradeRunId}, ${upgradeChatId}, ${upgradeUserId}, ${upgradeUserMessageId},
-              'en-US', 'US', decode(${upgradeNonce.toString("base64")}, 'base64'),
+              'en-US', 'US',
+              ${sql.json(testAcceptanceScope({
+                userId: upgradeUserId,
+                chatId: upgradeChatId,
+                companyId: upgradeCompanyId,
+              }))},
+              decode(${upgradeNonce.toString("base64")}, 'base64'),
               ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })}, now()
             )
           `;
@@ -3941,7 +3967,13 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         adminDatabaseUrl(),
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+          yield* sql`
+            select pg_terminate_backend(pid)
+            from pg_stat_activity
+            where datname = ${databaseName}
+              and pid <> pg_backend_pid()
+              and usename = current_user
+          `;
           yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
         }),
       );
@@ -4940,6 +4972,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         databaseUrl,
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
+          // This explicit pre-0064 fixture carries the durable acceptance
+          // evidence that a real deployment must have before cutover.
+          yield* sql`alter table ai_runs add column if not exists acceptance_scope jsonb`;
           yield* sql`
             insert into platform_users (id, primary_email, display_name, clerk_user_id)
             values (${ids.user}, ${`${ids.user}@example.test`}, 'Terminal 0063 user', ${`clerk-${ids.user}`})
@@ -4962,9 +4997,15 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           yield* sql`
             insert into ai_runs (
               id, chat_id, initiating_user_id, user_message_id, locale, market,
-              citation_nonce, effective_web_policy, finished_at
+              acceptance_scope, citation_nonce, effective_web_policy, finished_at
             ) values (
               ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
+              ${sql.json(testAcceptanceScope({
+                userId: ids.user,
+                chatId: ids.chat,
+                companyId: ids.company,
+                memoryMode: "private_owner",
+              }))},
               decode(${nonce.toString("base64")}, 'base64'),
               ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
               now()
@@ -6867,7 +6908,13 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         adminDatabaseUrl(),
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+          yield* sql`
+            select pg_terminate_backend(pid)
+            from pg_stat_activity
+            where datname = ${databaseName}
+              and pid <> pg_backend_pid()
+              and usename = current_user
+          `;
           yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
         }),
       );
@@ -9654,6 +9701,59 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         expect(beforeForward.indexCount).toBe(1);
         expect(beforeForward.insertExit._tag).toBe("Failure");
 
+        const historicalMigrationFiles = [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })]
+          .sort()
+          .filter(
+            (file) =>
+              file > "0013_chats_unique_user.sql" &&
+              file <= "0063_immutable_document_exposure_evidence.sql",
+          );
+        await runDb(
+          duplicateUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            for (const file of historicalMigrationFiles) {
+              const applied = yield* sql<{ readonly name: string }>`
+                select name from schema_migrations where name = ${file}
+              `;
+              if (applied.length > 0) continue;
+              const body = yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text());
+              yield* sql.unsafe(body).raw;
+              yield* sql`insert into schema_migrations (name) values (${file})`;
+            }
+          }),
+        );
+        await runDb(
+          duplicateUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            // The fixture supplies an explicit durable snapshot before 0064;
+            // the production migration rejects rows that lack this proof.
+            yield* sql`alter table ai_runs add column if not exists acceptance_scope jsonb`;
+            yield* sql`
+              update ai_runs runs
+              set acceptance_scope = jsonb_build_object(
+                'userId', runs.initiating_user_id,
+                'chatId', runs.chat_id::text,
+                'companyId', chats.company_id::text,
+                'subscriptionIds', '[]'::jsonb,
+                'accessIds', '[]'::jsonb,
+                'publicSourceIds', '[]'::jsonb,
+                'memoryMode', chats.memory_mode,
+                'memoryRevisionIds', '[]'::jsonb,
+                'webRequested', false,
+                'webEnabled', false,
+                'provider', 'zai_coding_plan_official',
+                'fastModelId', 'glm-5-turbo',
+                'mainModelId', 'glm-5-turbo',
+                'webTransportProvider', null,
+                'allowedDomains', null
+              )
+              from chats
+              where chats.id = runs.chat_id
+            `;
+          }),
+        );
         await runDb(duplicateUrl, runMigrations);
         const result = await runDb(
           duplicateUrl,
@@ -10278,10 +10378,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           const firstChatId = crypto.randomUUID();
           const secondChatId = crypto.randomUUID();
           yield* sql`
+          insert into client_company_memberships (company_id, user_id, role)
+          values (${otherCompanyId}, ${initiatingUserId}, 'member')
+        `;
+          yield* sql`
           insert into chats (id, company_id, user_id, memory_mode)
           values
             (${firstChatId}, ${initiatingCompanyId}, ${initiatingUserId}, 'disabled'),
-            (${secondChatId}, ${otherCompanyId}, ${otherUserId}, 'disabled')
+            (${secondChatId}, ${otherCompanyId}, ${initiatingUserId}, 'disabled')
         `;
           const messages = yield* sql<{ readonly id: string }>`
           insert into chat_messages (chat_id, author, content)

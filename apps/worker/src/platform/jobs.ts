@@ -612,20 +612,19 @@ const publishIssue = (
                 'send_platform_notification',
                 jsonb_build_object(
                   'clientCompanyId', ${delivery.clientCompanyId}::text,
-                  'userId', grants.user_id,
+                  'userId', recipients.user_id,
                   'kind', 'issue_published',
                   'deduplicationKey',
-                    'issue-published:' || ${issueId}::text || ':' || grants.user_id,
+                    'issue-published:' || ${issueId}::text || ':' || recipients.user_id,
                   'issueId', ${issueId}::text,
                   'accessId', ${delivery.accessId}::text
                 ),
                 'send_platform_notification:issue-published:'
-                  || ${issueId}::text || ':' || grants.user_id,
+                  || ${issueId}::text || ':' || recipients.user_id,
                 20
-              from client_employee_subscription_grants grants
-              where grants.access_id = ${delivery.accessId}
-                and grants.client_company_id = ${delivery.clientCompanyId}
-                and grants.revoked_at is null
+              from issue_delivery_recipients recipients
+              where recipients.issue_id = ${issueId}::uuid
+                and recipients.client_company_id = ${delivery.clientCompanyId}::uuid
               on conflict (unique_key) where unique_key is not null do nothing
             `;
           }
@@ -2664,14 +2663,50 @@ const purgeDeletedFiles = (): Effect.Effect<
             for update of documents
           `;
           const current = currentRows[0];
-          if (current === undefined) return false;
-          // Keep the legal-hold locks through the bounded, abortable delete.
-          // A hung provider is cancelled and the SQL transaction rolls back,
-          // leaving the document and tombstone durable for a later retry.
+          if (current === undefined) return null;
+          // Lock the full publisher tuple in the documented order before the
+          // purge flag is enabled. This keeps a concurrent extraction or
+          // pointer update from racing the legal-purge delete.
+          yield* sql`
+            select id
+            from brief_document_versions
+            where brief_document_id = ${current.id}::uuid
+            order by id
+            for update
+          `;
+          yield* sql`
+            select id
+            from brief_document_extractions
+            where brief_document_id = ${current.id}::uuid
+            order by id
+            for update
+          `;
+          const retainedReferences = yield* sql<{ readonly count: number }>`
+            select (
+              (select count(*) from ai_source_exposures
+               where source_kind = 'document'
+                 and document_id = ${current.id})
+              +
+              (select count(*) from assistant_message_sources
+               where kind = 'document'
+                 and (version_id = ${current.id}
+                      or publisher_extraction_id in (
+                        select id from brief_document_extractions
+                        where brief_document_id = ${current.id}::uuid
+                      )))
+            )::int as count
+          `;
+          // A retained answer or exposure keeps the immutable tuple alive. Do
+          // not delete the external object until every database reference is
+          // gone; the next legal-purge pass can retry after retention clears.
+          if ((retainedReferences[0]?.count ?? 0) > 0) return false;
+          yield* sql`select set_config('brief.allow_file_purge', 'on', true)`;
+          // Keep the database rows and object-store delete in one abortable
+          // boundary. A timed-out provider call must leave the tombstone and
+          // every immutable content row available for a later retry.
           yield* fileStore
             .delete(current.objectKey)
             .pipe(Effect.timeout(`${PLATFORM_FILE_PURGE_DELETE_TIMEOUT_MS} millis`));
-          yield* sql`select set_config('brief.allow_file_purge', 'on', true)`;
           yield* sql`
             insert into purged_brief_document_tombstones (
               brief_document_id,

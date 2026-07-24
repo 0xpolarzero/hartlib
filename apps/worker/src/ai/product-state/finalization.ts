@@ -556,18 +556,11 @@ const validateDurableObservability = (
       readonly webPolicyEnabled: boolean;
       readonly activeMemoryCount: number;
     }>`
-      select chats.memory_mode as "memoryMode",
-             runs.web_search_enabled as "webRequested",
-             coalesce((runs.effective_web_policy->>'enabled')::boolean, false) as "webPolicyEnabled",
-             (
-               select count(*)::int
-               from user_memories memories
-               where memories.user_id = runs.initiating_user_id
-                 and memories.deleted_at is null
-                 and memories.provenance_only_at is null
-             ) as "activeMemoryCount"
+      select runs.acceptance_scope->>'memoryMode' as "memoryMode",
+             coalesce((runs.acceptance_scope->>'webRequested')::boolean, false) as "webRequested",
+             coalesce((runs.acceptance_scope->>'webEnabled')::boolean, false) as "webPolicyEnabled",
+             coalesce(jsonb_array_length(runs.acceptance_scope->'memoryRevisionIds'), 0)::int as "activeMemoryCount"
       from ai_runs runs
-      join chats on chats.id = runs.chat_id
       where runs.id = ${runId}
     `;
     const selectorState = selectorStateRows[0];
