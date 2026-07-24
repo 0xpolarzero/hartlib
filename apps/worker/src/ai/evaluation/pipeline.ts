@@ -1548,12 +1548,11 @@ const seedOneCase = (
                   .map((source) => source.memoryRevisionId)
                   .sort(),
                 webRequested: fixture.webRequested,
-                webEnabled: fixture.webRequested && fixture.webPolicyEnabled,
+                webEnabled: fixture.webPolicyEnabled,
                 provider: "zai_coding_plan_official",
                 fastModelId: "glm-5-turbo",
                 mainModelId: "glm-5-turbo",
-                webTransportProvider:
-                  fixture.webRequested && fixture.webPolicyEnabled ? "tinyfish" : null,
+                webTransportProvider: fixture.webPolicyEnabled ? "tinyfish" : null,
                 allowedDomains: evaluationWebAllowlist,
               })}::jsonb
             ) on conflict (id) do nothing

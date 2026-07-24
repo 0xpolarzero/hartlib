@@ -13659,10 +13659,6 @@ alter table ai_runs
       or jsonb_typeof(acceptance_scope->'allowedDomains') = 'array'
     )
     and (
-      (acceptance_scope->>'webRequested')::boolean
-      or not (acceptance_scope->>'webEnabled')::boolean
-    )
-    and (
       (acceptance_scope->>'webEnabled')::boolean
       = (acceptance_scope->'webTransportProvider' = '"tinyfish"'::jsonb)
     )
