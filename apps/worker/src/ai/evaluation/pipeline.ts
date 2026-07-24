@@ -70,7 +70,7 @@ import type {
   MemoryExtractionArtifact,
   MemoryExtractionResult,
 } from "../runtime/types";
-import { canonicalAllowedDomains, hostMatchesAllowedDomain, recheckWebPolicy } from "../web/policy";
+import { canonicalAllowedDomains, hostMatchesAllowedDomain } from "../web/policy";
 import {
   TINYFISH_SEARCH_ENDPOINT,
   TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY,
@@ -506,26 +506,60 @@ const DurableWebManifestReferenceSchema = z
   })
   .strict();
 
-const DurableRetrievalManifestPayloadSchema = z.discriminatedUnion("selectorRole", [
-  z
-    .object({
-      selectorRole: z.literal("internal"),
-      references: z.array(DurableInternalManifestReferenceSchema),
-    })
-    .strict(),
-  z
-    .object({
-      selectorRole: z.literal("memory"),
-      references: z.array(DurableMemoryManifestReferenceSchema),
-    })
-    .strict(),
-  z
-    .object({
-      selectorRole: z.literal("web"),
-      references: z.array(DurableWebManifestReferenceSchema),
-    })
-    .strict(),
+const DurableNoCallReasonSchema = z.enum([
+  "memory_mode_disabled",
+  "no_active_memories",
+  "web_not_requested",
+  "web_policy_disabled",
+  "topic_not_web_eligible",
 ]);
+
+const DurableRetrievalManifestPayloadSchema = z
+  .discriminatedUnion("selectorRole", [
+    z
+      .object({
+        selectorRole: z.literal("internal"),
+        references: z.array(DurableInternalManifestReferenceSchema),
+        noCallReason: DurableNoCallReasonSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        selectorRole: z.literal("memory"),
+        references: z.array(DurableMemoryManifestReferenceSchema),
+        noCallReason: DurableNoCallReasonSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        selectorRole: z.literal("web"),
+        references: z.array(DurableWebManifestReferenceSchema),
+        noCallReason: DurableNoCallReasonSchema.optional(),
+      })
+      .strict(),
+  ])
+  .superRefine((manifest, context) => {
+    if (manifest.noCallReason === undefined) return;
+    if (manifest.references.length !== 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["noCallReason"],
+        message: "a no-call retrieval manifest cannot carry references",
+      });
+    }
+    const expectedRole =
+      manifest.noCallReason === "memory_mode_disabled" ||
+      manifest.noCallReason === "no_active_memories"
+        ? "memory"
+        : "web";
+    if (manifest.selectorRole !== expectedRole) {
+      context.addIssue({
+        code: "custom",
+        path: ["noCallReason"],
+        message: "the no-call reason does not belong to this selector role",
+      });
+    }
+  });
 
 const TerminalContextSerializedPayloadSchema = z
   .object({
@@ -746,7 +780,7 @@ export type EvaluationSmithersRunDisposition =
   | "terminal"
   | "irrecoverable";
 
-/** Smithers 0.27's public heartbeat freshness boundary. */
+/** Smithers 0.30's public heartbeat freshness boundary. */
 export const EVALUATION_SMITHERS_HEARTBEAT_STALE_MS = 30_000;
 
 export const evaluationSmithersRunDisposition = (
@@ -799,6 +833,25 @@ const DurableRunSnapshotSchema = z
     market: z.enum(["FR", "US"]),
     webSearchEnabled: z.boolean(),
     effectiveWebPolicy: EffectiveWebPolicySchema,
+    acceptanceScope: z
+      .object({
+        userId: z.string().min(1),
+        chatId: z.uuid(),
+        companyId: z.uuid(),
+        subscriptionIds: z.array(z.string()).readonly(),
+        accessIds: z.array(z.string()).readonly(),
+        publicSourceIds: z.array(z.string()).readonly(),
+        memoryMode: z.enum(["private_owner", "disabled"]),
+        memoryRevisionIds: z.array(z.string()).readonly(),
+        webRequested: z.boolean(),
+        webEnabled: z.boolean(),
+        provider: z.literal("zai_coding_plan_official"),
+        fastModelId: z.string().min(1),
+        mainModelId: z.string().min(1),
+        webTransportProvider: z.literal("tinyfish").nullable(),
+        allowedDomains: z.array(z.string()).nullable(),
+      })
+      .strict(),
     smithersRunId: z.string().min(1),
     createdAt: z.iso.datetime(),
     startedAt: z.iso.datetime(),
@@ -1274,6 +1327,50 @@ const seedOneCase = (
             on conflict (id) do nothing
           `;
 
+          // Acceptance validates the selected public and memory identities at
+          // insert time. Seed those durable entitlement rows before creating
+          // the synthetic accepted runs; later evidence setup is idempotent.
+          if (manifest.sourceBindings.some((binding) => binding.kind === "document")) {
+            yield* sql`
+              insert into public_sources (
+                source_id, display_name, publisher_name, description, ingestion_method,
+                discovery_url, average_chars_per_item, country, language
+              ) values (
+                ${sourceId}, ${`Evaluation source ${fixture.id}`}, 'Brief canonical evaluation',
+                'Canonical golden evaluation evidence', 'manual',
+                ${`https://evaluation.invalid/discovery/${sourceId}`}, 1000,
+                ${fixture.market}, ${fixture.locale}
+              ) on conflict (source_id) do nothing
+            `;
+            yield* sql`
+              insert into client_company_public_source_settings (
+                client_company_id, source_id, enabled, updated_by_user_id
+              ) values (${manifest.companyId}, ${sourceId}, true, ${manifest.userId})
+              on conflict (client_company_id, source_id) do update set enabled = true
+            `;
+          }
+          for (const binding of manifest.sourceBindings) {
+            if (binding.kind !== "memory") continue;
+            const source = sourceById.get(evaluationBindingGoldenSourceId(binding))!;
+            yield* sql`
+              insert into user_memories (
+                id, user_id, kind, content, head_revision_id, created_at, updated_at
+              ) values (
+                ${binding.memoryId}, ${manifest.userId}, 'preference', ${source.content},
+                ${binding.memoryRevisionId}, '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z'
+              ) on conflict (id) do nothing
+            `;
+            yield* sql`
+              insert into user_memory_revisions (
+                id, memory_id, action, state_before, state_after, created_at
+              ) values (
+                ${binding.memoryRevisionId}, ${binding.memoryId}, 'create', null,
+                ${JSON.stringify({ kind: "preference", content: source.content, deleted: false })}::jsonb,
+                '2026-07-01T00:00:00.000Z'
+              ) on conflict (id) do nothing
+            `;
+          }
+
           for (const [index, turn] of fixture.conversation.entries()) {
             const binding = manifest.turnBindings[index]!;
             const createdAt = new Date(Date.UTC(2026, 6, 1, 0, index * 2));
@@ -1285,12 +1382,44 @@ const seedOneCase = (
             yield* sql`
             insert into ai_runs (
               id, chat_id, initiating_user_id, user_message_id, smithers_run_id,
-                locale, market, citation_namespace, created_at, web_search_enabled, effective_web_policy
+                locale, market, citation_namespace, created_at, acceptance_scope
               ) values (
                 ${binding.aiRunId}, ${manifest.chatId}, ${manifest.userId},
                 ${binding.userMessageId}, ${deriveAiChatSmithersRunId(binding.aiRunId)},
-                ${fixture.locale}, ${fixture.market}, ${citationNamespaceForRun(binding.aiRunId)}, ${createdAt}, false,
-                ${JSON.stringify({ enabled: false, reason: "company_disabled", allowlistActive: false })}::jsonb
+                ${fixture.locale}, ${fixture.market}, ${citationNamespaceForRun(binding.aiRunId)}, ${createdAt},
+                ${JSON.stringify({
+                  userId: manifest.userId,
+                  chatId: manifest.chatId,
+                  companyId: manifest.companyId,
+                  subscriptionIds: manifest.sourceBindings
+                    .filter(
+                      (source): source is Extract<typeof source, { kind: "document" }> =>
+                        source.kind === "document" && source.source.kind === "publisher",
+                    )
+                    .map((source) => source.source.sourceId.slice("publisher:".length))
+                    .sort(),
+                  accessIds: [],
+                  publicSourceIds: manifest.sourceBindings.some(
+                    (source) => source.kind === "document",
+                  )
+                    ? [sourceId]
+                    : [],
+                  memoryMode: "private_owner",
+                  memoryRevisionIds: manifest.sourceBindings
+                    .filter(
+                      (source): source is Extract<typeof source, { kind: "memory" }> =>
+                        source.kind === "memory",
+                    )
+                    .map((source) => source.memoryRevisionId)
+                    .sort(),
+                  webRequested: false,
+                  webEnabled: false,
+                  provider: "zai_coding_plan_official",
+                  fastModelId: "glm-5-turbo",
+                  mainModelId: "glm-5-turbo",
+                  webTransportProvider: null,
+                  allowedDomains: null,
+                })}::jsonb
               ) on conflict (id) do nothing
             `;
             yield* sql`
@@ -1386,18 +1515,47 @@ const seedOneCase = (
               '2026-07-10T10:00:00.000Z'
             ) on conflict (id) do nothing
           `;
-          const effectiveWebPolicy =
-            fixture.webRequested && fixture.webPolicyEnabled
-              ? { enabled: true, provider: "tinyfish", allowedDomains: evaluationWebAllowlist }
-              : { enabled: false, reason: "company_disabled", allowlistActive: false };
           yield* sql`
             insert into ai_runs (
-              id, chat_id, user_message_id, locale, market, citation_namespace, created_at,
-              web_search_enabled, effective_web_policy
+              id, chat_id, initiating_user_id, user_message_id, locale, market, citation_namespace, created_at,
+              acceptance_scope
             ) values (
-              ${manifest.aiRunId}, ${manifest.chatId}, ${manifest.userMessageId},
+              ${manifest.aiRunId}, ${manifest.chatId}, ${manifest.userId}, ${manifest.userMessageId},
               ${fixture.locale}, ${fixture.market}, ${citationNamespaceForRun(manifest.aiRunId)}, '2026-07-10T10:00:00.000Z',
-              ${fixture.webRequested}, ${JSON.stringify(effectiveWebPolicy)}::jsonb
+              ${JSON.stringify({
+                userId: manifest.userId,
+                chatId: manifest.chatId,
+                companyId: manifest.companyId,
+                subscriptionIds: manifest.sourceBindings
+                  .filter(
+                    (source): source is Extract<typeof source, { kind: "document" }> =>
+                      source.kind === "document" && source.source.kind === "publisher",
+                  )
+                  .map((source) => source.source.sourceId.slice("publisher:".length))
+                  .sort(),
+                accessIds: [],
+                publicSourceIds: manifest.sourceBindings.some(
+                  (source) => source.kind === "document",
+                )
+                  ? [sourceId]
+                  : [],
+                memoryMode: "private_owner",
+                memoryRevisionIds: manifest.sourceBindings
+                  .filter(
+                    (source): source is Extract<typeof source, { kind: "memory" }> =>
+                      source.kind === "memory",
+                  )
+                  .map((source) => source.memoryRevisionId)
+                  .sort(),
+                webRequested: fixture.webRequested,
+                webEnabled: fixture.webRequested && fixture.webPolicyEnabled,
+                provider: "zai_coding_plan_official",
+                fastModelId: "glm-5-turbo",
+                mainModelId: "glm-5-turbo",
+                webTransportProvider:
+                  fixture.webRequested && fixture.webPolicyEnabled ? "tinyfish" : null,
+                allowedDomains: evaluationWebAllowlist,
+              })}::jsonb
             ) on conflict (id) do nothing
           `;
           yield* sql`
@@ -1767,11 +1925,7 @@ const baselineSourceMap = async (
         capturedAt: binding.capturedAt,
       },
       label: evaluationBindingGoldenSourceId(binding),
-      publicProvenance: {
-        documentTitle: binding.title,
-        citationUrl: binding.url,
-        publishedAt: "2026-03-14T00:00:00.000Z",
-      },
+      publicProvenance: { citationUrl: binding.url },
       uses: [use],
     };
   });
@@ -2127,7 +2281,7 @@ const persistBaselineOutput = async (
             `;
             return rows[0]?.valid === true
               ? { authorized: true as const }
-              : { authorized: false as const, code: "source_access_revoked" as const };
+              : { authorized: false as const, code: "finalization_failed" as const };
           }),
       });
       const serialized = canonicalJson(output);
@@ -2283,7 +2437,10 @@ const executeBaseline = async (
             return executeGeneralPlannerProviderTurn(
               makeDurableProviderBoundary(connectionString, aiRunId, config),
               options.testOnlyForceProviderFailure === true
-                ? { ...fixtureFor(caseId), currentMessage: `${fixtureFor(caseId).currentMessage} [fail]` }
+                ? {
+                    ...fixtureFor(caseId),
+                    currentMessage: `${fixtureFor(caseId).currentMessage} [fail]`,
+                  }
                 : fixtureFor(caseId),
               {
                 sourceExposureIdentity: ({
@@ -2293,7 +2450,9 @@ const executeBaseline = async (
                   charEnd,
                   visibleText,
                 }) => {
-                  const binding = EvaluationSeedManifestSchema.parse(row.seedManifest).sourceBindings.find(
+                  const binding = EvaluationSeedManifestSchema.parse(
+                    row.seedManifest,
+                  ).sourceBindings.find(
                     (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
                   );
                   if (binding === undefined || binding.kind !== sourceKind) {
@@ -2303,7 +2462,33 @@ const executeBaseline = async (
                     binding.kind === "document" ? documentBindingIdentity(binding) : sourceId;
                   return {
                     logicalSourceIdentity,
-                    contentItemIdentity: `${logicalSourceIdentity}:${charStart}:${charEnd}:${sha256Hex(visibleText)}`,
+                    contentItemIdentity:
+                      binding.kind === "document"
+                        ? `${logicalSourceIdentity}:${binding.versionId}:${sha256Base64Url(
+                            JSON.stringify([{ charStart, charEnd }]),
+                          )}`
+                        : `${logicalSourceIdentity}:${charStart}:${charEnd}:${sha256Hex(visibleText)}`,
+                    ...(binding.kind === "document" ? { documentId: binding.documentId } : {}),
+                  };
+                },
+                sourceIdentitySidecar: ({ sourceId, sourceKind, charStart, charEnd }) => {
+                  const binding = EvaluationSeedManifestSchema.parse(
+                    row.seedManifest,
+                  ).sourceBindings.find(
+                    (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
+                  );
+                  if (binding === undefined || binding.kind !== sourceKind) {
+                    throw new Error("baseline exposed an unbound golden source");
+                  }
+                  if (binding.kind !== "document") return undefined;
+                  return {
+                    versionId: binding.versionId,
+                    contentHash: binding.contentHash,
+                    ...(binding.publisherExtractionId === null
+                      ? {}
+                      : { publisherExtractionId: binding.publisherExtractionId }),
+                    source: binding.source,
+                    ranges: [{ charStart, charEnd }],
                   };
                 },
                 onProviderRequest: async (exposures, _request, coordinates) => {
@@ -2351,7 +2536,17 @@ const executeBaseline = async (
                           providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
                           sourceKind: source.kind,
                           logicalSourceIdentity,
-                          contentItemIdentity: `${logicalSourceIdentity}:${exposure.charStart}:${exposure.charEnd}:${sha256Hex(visibleText)}`,
+                          contentItemIdentity:
+                            binding.kind === "document"
+                              ? `${logicalSourceIdentity}:${binding.versionId}:${sha256Base64Url(
+                                  JSON.stringify([
+                                    {
+                                      charStart: exposure.charStart,
+                                      charEnd: exposure.charEnd,
+                                    },
+                                  ]),
+                                )}`
+                              : `${logicalSourceIdentity}:${exposure.charStart}:${exposure.charEnd}:${sha256Hex(visibleText)}`,
                           exposureStage: `evaluation_general_planner_${exposure.stage}`,
                           visibleTokenCount:
                             resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
@@ -2491,6 +2686,7 @@ const loadDurableRunEvidence = (
         readonly market: string;
         readonly webSearchEnabled: boolean;
         readonly effectiveWebPolicy: unknown;
+        readonly acceptanceScope: unknown;
         readonly smithersRunId: string | null;
         readonly createdAt: Date;
         readonly startedAt: Date | null;
@@ -2527,8 +2723,20 @@ const loadDurableRunEvidence = (
         select runs.id::text, runs.chat_id::text as "chatId",
                runs.user_message_id::text as "userMessageId",
                runs.initiating_user_id as "initiatingUserId", runs.locale, runs.market,
-               runs.web_search_enabled as "webSearchEnabled",
-               runs.effective_web_policy as "effectiveWebPolicy",
+               coalesce((runs.acceptance_scope->>'webRequested')::boolean, false) as "webSearchEnabled",
+               case when coalesce((runs.acceptance_scope->>'webEnabled')::boolean, false)
+                 then jsonb_build_object(
+                   'enabled', true,
+                   'provider', runs.acceptance_scope->>'webTransportProvider',
+                   'allowedDomains', runs.acceptance_scope->'allowedDomains'
+                 )
+                 else jsonb_build_object(
+                   'enabled', false,
+                   'reason', 'company_disabled',
+                   'allowlistActive', false
+                 )
+               end as "effectiveWebPolicy",
+               runs.acceptance_scope as "acceptanceScope",
                runs.smithers_run_id as "smithersRunId",
                runs.created_at as "createdAt", runs.started_at as "startedAt",
                runs.finished_at as "finishedAt", runs.failed_at as "failedAt",
@@ -2612,8 +2820,19 @@ const loadDurableRunEvidence = (
         select prior.id::text as "turnId", prior.chat_id::text as "chatId",
                prior.initiating_user_id as "initiatingUserId",
                prior.smithers_run_id as "smithersRunId", prior.locale, prior.market,
-               prior.web_search_enabled as "webSearchEnabled",
-               prior.effective_web_policy as "effectiveWebPolicy",
+               coalesce((prior.acceptance_scope->>'webRequested')::boolean, false) as "webSearchEnabled",
+               case when coalesce((prior.acceptance_scope->>'webEnabled')::boolean, false)
+                 then jsonb_build_object(
+                   'enabled', true,
+                   'provider', prior.acceptance_scope->>'webTransportProvider',
+                   'allowedDomains', prior.acceptance_scope->'allowedDomains'
+                 )
+                 else jsonb_build_object(
+                   'enabled', false,
+                   'reason', 'company_disabled',
+                   'allowlistActive', false
+                 )
+               end as "effectiveWebPolicy",
                prior.created_at as "createdAt", prior.started_at as "startedAt",
                prior.finished_at as "finishedAt",
                prior.failed_at as "failedAt", prior.user_message_id::text as "userMessageId",
@@ -2813,6 +3032,7 @@ const loadDurableRunEvidence = (
           market: run.market,
           webSearchEnabled: run.webSearchEnabled,
           effectiveWebPolicy: run.effectiveWebPolicy,
+          acceptanceScope: run.acceptanceScope,
           smithersRunId: run.smithersRunId,
           createdAt: run.createdAt.toISOString(),
           startedAt: run.startedAt.toISOString(),
@@ -3743,19 +3963,7 @@ const attestRelationalEvidence = (
             ...(row.topology === "specialized" ? { publishedAt: "2026-07-01T00:00:00.000Z" } : {}),
           }
         : binding?.kind === "web"
-          ? row.topology === "specialized" && liveWebLocator !== undefined
-            ? {
-                documentTitle: liveWebLocator.title,
-                citationUrl: liveWebLocator.url,
-                ...(liveWebLocator.publishedAt === undefined
-                  ? {}
-                  : { publishedAt: liveWebLocator.publishedAt }),
-              }
-            : {
-                documentTitle: binding.title,
-                citationUrl: binding.url,
-                publishedAt: "2026-03-14T00:00:00.000Z",
-              }
+          ? { citationUrl: liveWebLocator?.url ?? binding.url }
           : {};
     if (
       sourceId === undefined ||
@@ -5259,36 +5467,63 @@ const expectedExposureVisibleTokenCount = (
     exposure.exposureStage === "evaluation_general_planner_search" ||
     exposure.exposureStage === "evaluation_general_planner_inspect"
   ) {
-    const match = /^(.*):([0-9]+):([0-9]+):([0-9a-f]{64})$/u.exec(exposure.contentItemIdentity);
     const binding = manifest.sourceBindings.find(
       (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
     );
-    const expectedIdentity =
-      binding?.kind === "document"
-        ? documentBindingIdentity(binding)
-        : binding === undefined
-          ? undefined
-          : evaluationBindingGoldenSourceId(binding);
-    if (match === null || expectedIdentity === undefined || match[1] !== expectedIdentity) {
-      throw new Error(`${manifest.caseId} baseline exposure range is invalid`);
-    }
-    const start = Number(match[2]);
-    const end = Number(match[3]);
-    const documentText =
-      source.kind === "document" ? storedDocuments.get(sourceId)?.text : source.content;
-    if (source.kind === "document") {
-      const binding = manifest.sourceBindings.find(
-        (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
+    if (binding?.kind === "document") {
+      const rangeIdentity = JSON.stringify(
+        source.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd })),
       );
-      if (
-        binding?.kind !== "document" ||
-        documentText === undefined ||
-        sha256Hex(documentText) !== binding.contentHash
-      ) {
-        throw new Error(`${manifest.caseId} baseline document text/hash drift`);
+      const expectedContentItemIdentity = `${documentBindingIdentity(binding)}:${binding.versionId}:${sha256Base64Url(rangeIdentity)}`;
+      if (exposure.contentItemIdentity === expectedContentItemIdentity) {
+        visibleText = reconstructDocumentExposureText(
+          manifest,
+          exposure,
+          sourceId,
+          source,
+          storedDocuments,
+        );
+      } else {
+        const match = /^(.*):([0-9]+):([0-9]+):([0-9a-f]{64})$/u.exec(exposure.contentItemIdentity);
+        if (match === null || match[1] !== documentBindingIdentity(binding)) {
+          throw new Error(`${manifest.caseId} baseline exposure range is invalid`);
+        }
+        const start = Number(match[2]);
+        const end = Number(match[3]);
+        const documentText = storedDocuments.get(sourceId)?.text;
+        if (
+          documentText === undefined ||
+          sha256Hex(documentText) !== binding.contentHash ||
+          !exactBaselineExposureMatches(
+            documentBindingIdentity(binding),
+            documentText,
+            exposure.contentItemIdentity,
+          )
+        ) {
+          throw new Error(`${manifest.caseId} baseline document text/hash drift`);
+        }
+        visibleText = documentText.slice(start, end);
       }
+    } else {
+      const match = /^(.*):([0-9]+):([0-9]+):([0-9a-f]{64})$/u.exec(exposure.contentItemIdentity);
+      const expectedIdentity =
+        binding === undefined ? undefined : evaluationBindingGoldenSourceId(binding);
+      if (
+        match === null ||
+        expectedIdentity === undefined ||
+        match[1] !== expectedIdentity ||
+        !exactBaselineExposureMatches(
+          expectedIdentity,
+          source.content,
+          exposure.contentItemIdentity,
+        )
+      ) {
+        throw new Error(`${manifest.caseId} baseline exposure range is invalid`);
+      }
+      const start = Number(match[2]);
+      const end = Number(match[3]);
+      visibleText = source.content.slice(start, end);
     }
-    visibleText = documentText!.slice(start, end);
   } else if (
     exposure.exposureStage === "internal_inspection" ||
     exposure.exposureStage === "context_candidate_inspection"
@@ -5384,13 +5619,16 @@ const attestExactSourceExposureRows = (
       exposure.providerRequestIndex,
     );
     const requestAttestation = requestAttestations.get(requestKey);
-    const exactProof = providerVisibleSourceExposureProofSha256Hex({
-      sourceKind: payload.sourceKind,
-      logicalSourceIdentity: payload.logicalSourceIdentity,
-      contentItemIdentity: payload.contentItemIdentity,
-      exposureStage: payload.exposureStage,
-      visibleTokenCount: payload.visibleTokenCount,
-    }, payload.providerSerializationProofBinding);
+    const exactProof = providerVisibleSourceExposureProofSha256Hex(
+      {
+        sourceKind: payload.sourceKind,
+        logicalSourceIdentity: payload.logicalSourceIdentity,
+        contentItemIdentity: payload.contentItemIdentity,
+        exposureStage: payload.exposureStage,
+        visibleTokenCount: payload.visibleTokenCount,
+      },
+      payload.providerSerializationProofBinding,
+    );
     const expectedVisibleTokenCount = expectedExposureVisibleTokenCount(
       manifest,
       evidence,
@@ -5431,10 +5669,14 @@ const attestExactSourceExposureRows = (
       );
     }
     if (
+      exposure.exposureStage === "answer_serialized" ||
       exposure.exposureStage === "provider_input" ||
       exposure.exposureStage === "internal_search_preview" ||
       exposure.exposureStage === "internal_inspection" ||
       exposure.exposureStage === "context_candidate_inspection" ||
+      exposure.exposureStage === "memory_tool_result" ||
+      exposure.exposureStage === "web_search_preview" ||
+      exposure.exposureStage === "web_fetch" ||
       exposure.exposureStage === "evaluation_general_planner_search" ||
       exposure.exposureStage === "evaluation_general_planner_inspect" ||
       isCanonicalSpecializedReducerTask(exposure.taskId)
@@ -5448,7 +5690,13 @@ const attestExactSourceExposureRows = (
     const actual = [...new Set(requestAttestation.sourceProofs)].sort();
     const expected = [...(expectedProofsByRequest.get(requestKey) ?? new Set<string>())].sort();
     if (canonicalJson(actual) !== canonicalJson(expected)) {
-      console.error("evaluation source proof mismatch", manifest.caseId, requestKey, actual, expected);
+      console.error(
+        "evaluation source proof mismatch",
+        manifest.caseId,
+        requestKey,
+        actual,
+        expected,
+      );
       throw new Error(
         `${manifest.caseId} provider request has a missing or unbound source-serialization proof`,
       );
@@ -5685,13 +5933,20 @@ const mapExposureToGolden = (
         binding.kind === "document"
           ? documentBindingIdentity(binding)
           : evaluationBindingGoldenSourceId(binding);
-      exact = exactBaselineExposureMatches(
-        expectedIdentity,
-        binding?.kind === "document"
-          ? (storedDocuments.get(evaluationBindingGoldenSourceId(binding))?.text ?? "")
-          : source.content,
-        exposure.contentItemIdentity,
-      );
+      exact =
+        binding.kind === "document"
+          ? (() => {
+              const rangeIdentity = JSON.stringify(
+                source.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd })),
+              );
+              const expectedContentItemIdentity = `${expectedIdentity}:${binding.versionId}:${sha256Base64Url(rangeIdentity)}`;
+              return exposure.contentItemIdentity === expectedContentItemIdentity;
+            })()
+          : exactBaselineExposureMatches(
+              expectedIdentity,
+              source.content,
+              exposure.contentItemIdentity,
+            );
     } else if (binding.kind === "document") {
       const immutablePrefix = `${documentBindingIdentity(binding)}:${binding.versionId}:`;
       const digest = exposure.contentItemIdentity.slice(immutablePrefix.length);
@@ -5815,30 +6070,14 @@ const exposedGoldenSourceIds = (
 export const evaluationWebSourceAuthorized = (
   run: Pick<DurableRunEvidence["run"], "webSearchEnabled" | "effectiveWebPolicy">,
   url: string,
-  currentPolicy: {
-    readonly enabled: boolean;
-    readonly allowedDomains: readonly string[] | null;
-  },
 ): boolean => {
   if (!run.webSearchEnabled) return false;
   let host: string;
   try {
     host = new URL(url).hostname;
-    const strictCurrent = EffectiveWebPolicySchema.parse(
-      currentPolicy.enabled
-        ? {
-            enabled: true,
-            provider: "tinyfish",
-            allowedDomains: canonicalAllowedDomains(currentPolicy.allowedDomains),
-          }
-        : {
-            enabled: false,
-            reason: "company_disabled",
-            allowlistActive: currentPolicy.allowedDomains !== null,
-          },
-    );
-    const accepted = recheckWebPolicy(run.effectiveWebPolicy, strictCurrent);
-    return hostMatchesAllowedDomain(host, accepted.allowedDomains);
+    const accepted = EffectiveWebPolicySchema.parse(run.effectiveWebPolicy);
+    if (!accepted.enabled || accepted.provider !== "tinyfish") return false;
+    return hostMatchesAllowedDomain(host, canonicalAllowedDomains(accepted.allowedDomains));
   } catch {
     return false;
   }
@@ -5902,9 +6141,6 @@ const sourceAudit = async (
             const sql = yield* PgClient.PgClient;
             const rows = yield* sql<{
               readonly resolvable: boolean;
-              readonly authorized: boolean;
-              readonly currentWebEnabled: boolean;
-              readonly currentWebAllowedDomains: readonly string[] | null;
             }>`
               select case ${binding.kind}::text
                 when 'document' then case ${binding.kind === "document" && binding.source.kind === "publisher"}::boolean
@@ -5934,6 +6170,7 @@ const sourceAudit = async (
                 end
                 when 'chat_message' then exists (
                   select 1 from chat_messages where id = ${binding.kind === "chat_message" ? binding.messageId : null}
+                    and chat_id = ${manifest.chatId}
                 )
                 when 'memory' then exists (
                   select 1 from user_memory_revisions where id = ${binding.kind === "memory" ? binding.memoryRevisionId : null}
@@ -5942,109 +6179,24 @@ const sourceAudit = async (
                   binding.kind === "web" &&
                   fixture.evidence.find((item) => item.sourceId === sourceId)?.kind === "web"
                 }::boolean
-                else false end as resolvable,
-              case ${binding.kind}::text
-                when 'document' then case ${binding.kind === "document" && binding.source.kind === "publisher"}::boolean
-                  when true then exists (
-                    select 1
-                    from chats chat
-                    join client_companies client_company
-                      on client_company.id = chat.company_id
-                     and client_company.id = ${manifest.companyId}
-                     and client_company.recovery_deleted_at is null
-                     and client_company.purged_at is null
-                    join client_company_memberships membership
-                      on membership.company_id = chat.company_id
-                     and membership.user_id = ${manifest.userId}
-                     and membership.revoked_at is null
-                    join platform_users users
-                      on users.id = membership.user_id
-                     and users.recovery_deleted_at is null
-                     and users.purged_at is null
-                    join chat_subscription_sources selected
-                      on selected.chat_id = chat.id
-                     and selected.client_company_id = chat.company_id
-                    join client_subscription_accesses accesses
-                      on accesses.id = selected.access_id
-                     and accesses.client_company_id = selected.client_company_id
-                     and accesses.subscription_id = selected.subscription_id
-                     and accesses.state in ('active', 'ending', 'paused')
-                    join client_employee_subscription_grants grants
-                      on grants.access_id = accesses.id
-                     and grants.client_company_id = accesses.client_company_id
-                     and grants.user_id = ${manifest.userId}
-                     and grants.revoked_at is null
-                    join issue_deliveries deliveries
-                      on deliveries.access_id = accesses.id
-                     and deliveries.client_company_id = selected.client_company_id
-                    join publisher_issues issues
-                      on issues.id = deliveries.issue_id
-                     and issues.subscription_id = selected.subscription_id
-                     and issues.id::text = ${binding.kind === "document" && binding.source.kind === "publisher" ? binding.source.issueId : null}
-                     and issues.status = 'published'
-                     and issues.restricted_at is null
-                     and issues.deleted_at is null
-                    join publisher_subscriptions subscriptions
-                      on subscriptions.id = issues.subscription_id
-                    join publisher_companies publisher_company
-                      on publisher_company.id = subscriptions.publisher_company_id
-                    join brief_documents documents
-                      on documents.issue_id = issues.id
-                     and documents.id::text = ${binding.kind === "document" ? binding.documentId : null}
-                     and documents.id::text = ${binding.kind === "document" && binding.source.kind === "publisher" ? binding.source.documentId : null}
-                     and documents.deleted_at is null
-                    join brief_document_versions versions
-                      on versions.brief_document_id = documents.id
-                     and versions.id::text = ${binding.kind === "document" ? binding.versionId : null}
-                     and versions.content_hash = ${binding.kind === "document" ? binding.contentHash : null}
-                     and ('publisher:' || selected.subscription_id::text) = ${binding.kind === "document" ? binding.source.sourceId : null}
-                    where chat.id = ${manifest.chatId}
-                      and chat.deleted_at is null
-                      and chat.user_id = ${manifest.userId}
-                  )
-                  else exists (
-                    select 1 from public_source_documents documents
-                    join client_company_public_source_settings settings
-                      on settings.source_id = documents.source_id and settings.enabled
-                    where documents.document_id = ${binding.kind === "document" ? binding.documentId : null}
-                      and documents.document_id = ${binding.kind === "document" ? binding.versionId : null}
-                      and documents.source_id = ${binding.kind === "document" && binding.source.kind === "public" ? binding.source.sourceId.slice("public:".length) : null}
-                      and ('public:' || documents.source_id) = ${binding.kind === "document" ? binding.source.sourceId : null}
-                      and documents.content_hash = ${binding.kind === "document" ? binding.contentHash : null}
-                      and settings.client_company_id = ${manifest.companyId}
-                  )
-                end
-                when 'chat_message' then exists (
-                  select 1 from chat_messages where id = ${binding.kind === "chat_message" ? binding.messageId : null}
-                    and chat_id = ${manifest.chatId}
-                )
-                when 'memory' then exists (
-                  select 1 from user_memories where id = ${binding.kind === "memory" ? binding.memoryId : null}
-                    and user_id = ${manifest.userId} and deleted_at is null
-                )
-                when 'web' then false
-                else false end as authorized,
-              coalesce((
-                select settings.web_search_enabled
-                from client_company_ai_settings settings
-                where settings.company_id = ${manifest.companyId}
-              ), false) as "currentWebEnabled",
-              (
-                select settings.web_domain_allowlist
-                from client_company_ai_settings settings
-                where settings.company_id = ${manifest.companyId}
-              ) as "currentWebAllowedDomains"
+                else false end as resolvable
           `;
             const current = rows[0];
+            const scope = evidence.run.acceptanceScope;
+            const documentAllowed =
+              binding.kind !== "document" ||
+              (binding.source.kind === "publisher"
+                ? scope.subscriptionIds.includes(binding.source.sourceId.slice("publisher:".length))
+                : scope.publicSourceIds.includes(binding.source.sourceId.slice("public:".length)));
+            const memoryAllowed =
+              binding.kind !== "memory" ||
+              scope.memoryRevisionIds.includes(binding.memoryRevisionId);
             return {
               sourceId,
               authorized:
                 binding.kind === "web"
-                  ? evaluationWebSourceAuthorized(evidence.run, binding.url, {
-                      enabled: current?.currentWebEnabled === true,
-                      allowedDomains: current?.currentWebAllowedDomains ?? null,
-                    })
-                  : current?.authorized === true,
+                  ? evaluationWebSourceAuthorized(evidence.run, binding.url)
+                  : current?.resolvable === true && documentAllowed && memoryAllowed,
               resolvable: current?.resolvable === true,
             };
           }),
@@ -7199,7 +7351,18 @@ const expectedTerminalContextEvidence = (
         (candidate) => candidate.sourceKey === rawDurableSource?.sourceKey,
       );
       if (source === undefined || durableSource === undefined) {
-        console.error("baseline source debug", row.caseId, selection.sourceId, rawDurableSource, durableSource, evidence.sources.map((candidate) => ({ key: candidate.sourceKey, mapped: mapDurableSource(manifest, candidate), kind: candidate.kind })));
+        console.error(
+          "baseline source debug",
+          row.caseId,
+          selection.sourceId,
+          rawDurableSource,
+          durableSource,
+          evidence.sources.map((candidate) => ({
+            key: candidate.sourceKey,
+            mapped: mapDurableSource(manifest, candidate),
+            kind: candidate.kind,
+          })),
+        );
         throw new Error(`${row.topology}/${row.caseId} baseline source order is incomplete`);
       }
       const selectedText =
@@ -7605,12 +7768,14 @@ const terminalRetrievalManifests = (
           ? terminalExternalToolUsage(row, evidence, terminal, providerRequired)
           : ([] as const);
       const selector = role === "internal" ? "A" : role === "memory" ? "B" : "W";
-      const expected = ledger.sources.filter((source) => {
-        return (
-          fixture.evidence.find((candidate) => candidate.sourceId === source.sourceId)?.selector ===
-          selector
-        );
-      });
+      const expected = providerRequired
+        ? ledger.sources.filter((source) => {
+            return (
+              fixture.evidence.find((candidate) => candidate.sourceId === source.sourceId)
+                ?.selector === selector
+            );
+          })
+        : [];
       const actual = payload.references.map((reference) => {
         const sourceId = mapReferenceToGolden(manifest, reference);
         const source = expected.find((candidate) => candidate.sourceId === sourceId);
@@ -7695,7 +7860,7 @@ const terminalRetrievalManifests = (
         }
         const requiredExposureStages =
           role === "internal"
-            ? ["internal_search_preview"]
+            ? ["internal_search_preview", "internal_inspection"]
             : role === "memory"
               ? ["memory_tool_result"]
               : ["web_fetch"];

@@ -27,12 +27,13 @@ import {
   memoryEvidenceIdentity,
   memoryExtractionSha256Hex,
   sha256Base64Url,
-  sourceKeyForOrdinal,
+  sourceKeyForNamespace,
   webEvidenceIdentity,
   webQuoteHash,
 } from "../runtime/canonicalization";
 import { CanonicalAgentClient, type ToolLoopInput } from "../runtime/agent-client";
 import { measureProviderRequest, resolveRegisteredModel } from "../runtime/model-registry";
+import { validateTopicPacket } from "../runtime/validators";
 import { TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY } from "../web/tinyfish-search";
 import { createSmithersStorage } from "../smithers-interop";
 import {
@@ -48,7 +49,12 @@ import type {
 } from "../runtime/pi-boundary";
 import {
   providerRequestSha256Hex,
+  providerRequestSourceExposureProofBindings,
   providerVisibleSourceExposureProofSha256Hex,
+  type ProviderRequest,
+  type ProviderRequestSourceExposureProofBinding,
+  type ProviderVisibleSourceExposureMarker,
+  type ProviderVisibleSourceExposureProofBinding,
   type LiveProviderRequest,
 } from "../runtime/provider-request";
 import { publicSourceRecordFromFinalSource } from "../runtime/public-source";
@@ -60,7 +66,7 @@ import type {
   MemoryExtractionArtifact,
 } from "../runtime/types";
 import { type CanonicalAiConfig, CanonicalWorkflowOperations } from "../workflow/operations";
-import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v2";
+import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v3";
 import {
   abortFocusedEvaluationSession,
   attestEvaluationCaseFromDurableRun,
@@ -91,7 +97,7 @@ import {
   withEvaluationSessionExecutionLease,
 } from "./pipeline";
 import {
-  attestExactConversationResolverRequest,
+  attestExactPlanTurnRequest,
   attestExactProductionContext,
   canonicalEvaluationUsableInputTokens,
   evaluateSuite,
@@ -99,6 +105,7 @@ import {
   measureCanonicalProductionEvaluationRequestTokens,
   measureExactProductionContextMarginals,
   productionPacketSha256Hex,
+  type ExactProductionTopicPacket,
 } from "./runner";
 
 const sourceDatabaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
@@ -129,6 +136,7 @@ const exposureCoordinateTamperSessionId = "50000000-0000-4000-8000-000000000069"
 const reducerTerminalTamperSessionId = "50000000-0000-4000-8000-000000000070";
 const clarificationModelTamperSessionId = "50000000-0000-4000-8000-000000000071";
 const clarificationInputTamperSessionId = "50000000-0000-4000-8000-000000000072";
+const clarificationDateTamperSessionId = "50000000-0000-4000-8000-000000000126";
 const directDigestTamperSessionId = "50000000-0000-4000-8000-000000000073";
 const topicDigestTamperSessionId = "50000000-0000-4000-8000-000000000074";
 const synthesisDigestTamperSessionId = "50000000-0000-4000-8000-000000000075";
@@ -166,6 +174,8 @@ const manifestPurposeTamperSessionId = "50000000-0000-4000-8000-000000000106";
 const deterministicProductionGraphSessionId = "50000000-0000-4000-8000-000000000107";
 const liveProductionCaptureSessionId = "50000000-0000-4000-8000-000000000108";
 const deterministicGeneralPlannerSessionId = "50000000-0000-4000-8000-000000000109";
+const deterministicGeneralPlannerFanoutSessionId = "50000000-0000-4000-8000-000000000124";
+const deterministicMemoryFinalizationSessionId = "50000000-0000-4000-8000-000000000125";
 const failedGeneralPlannerSessionId = "50000000-0000-4000-8000-000000000110";
 const preLaunchFailedGeneralPlannerSessionId = "50000000-0000-4000-8000-000000000111";
 const crashResumeFailureSessionId = "50000000-0000-4000-8000-000000000112";
@@ -181,6 +191,7 @@ const currentChatPreviewSessionId = "50000000-0000-4000-8000-000000000122";
 const selectedChatPreviewSessionId = "50000000-0000-4000-8000-000000000123";
 const focusedProductionCaseId = "first-message-document-fr";
 const focusedClarificationCaseId = "ambiguous-reference-needs-clarification";
+const focusedFanoutCaseId = "cross-cutting-separable-energy-question";
 const multiWebQuoteSessionId = "50000000-0000-4000-8000-000000000118";
 const fixtureProviderRequestSha256Hex = "a".repeat(64);
 const liveCaptureApiKey = process.env.ZAI_API_KEY?.trim();
@@ -300,7 +311,6 @@ const canonicalAiConfig: CanonicalAiConfig = {
   aiWebMaxFetches: 2,
   aiWebMaxDomainFilters: 8,
   aiContextReductionMaxIterations: 2,
-  aiMemoryDirectMaxItems: 50,
   aiMemoryToolResultMaxItems: 20,
   webResearchProvider: "",
 };
@@ -376,6 +386,7 @@ class OlderChatEvaluationAgent extends CanonicalAgentClient {
 
 class OversizedSelectorBoundary implements PiRuntimeBoundary {
   readonly requestInputTokens = new Map<string, number[]>();
+  readonly reductionCandidateHandles = new Set<string>();
   discoveredDocumentCount = 0;
   inspectedDocumentCount = 0;
   selectedMemoryCount = 0;
@@ -424,7 +435,23 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
       if (this.reductionDecisions.length === 0) {
         throw new Error("oversized O preflight has no complete reduction plan");
       }
-      const rangeDecisions = this.reductionDecisions.filter(
+      const userMessage = request.messages.find((message) => message.role === "user");
+      if (userMessage?.role !== "user") throw new Error("oversized O input is missing");
+      const input = JSON.parse(userMessage.content) as {
+        readonly candidates: readonly { readonly id: string }[];
+      };
+      if (input.candidates.length !== this.reductionDecisions.length) {
+        throw new Error("oversized O candidate handle count differs from its complete plan");
+      }
+      const providerDecisions = this.reductionDecisions.map((decision, index) => {
+        const handle = input.candidates[index]?.id;
+        if (handle === undefined || !/^opaque_candidate_[1-9][0-9]*$/u.test(handle)) {
+          throw new Error("oversized O input exposed a non-opaque candidate handle");
+        }
+        this.reductionCandidateHandles.add(handle);
+        return { ...decision, id: handle };
+      });
+      const rangeDecisions = providerDecisions.filter(
         (decision): decision is Extract<ContextDecision, { action: "range" }> =>
           decision.action === "range",
       );
@@ -476,7 +503,7 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
             {
               id: "oversized-o-measure",
               name: "measure_plan",
-              arguments: { decisions: this.reductionDecisions },
+              arguments: { decisions: providerDecisions },
             },
           ],
           usage,
@@ -496,7 +523,7 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
           {
             id: "oversized-o-terminal",
             name: "emit_context_plan",
-            arguments: { decisions: this.reductionDecisions },
+            arguments: { decisions: providerDecisions },
           },
         ],
         usage,
@@ -507,15 +534,36 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
       const userMessage = request.messages.find((message) => message.role === "user");
       if (userMessage?.role !== "user") throw new Error("oversized B input is missing");
       const input = JSON.parse(userMessage.content) as {
-        readonly memories: readonly {
-          readonly memoryId: string;
-          readonly memoryRevisionId: string;
-        }[];
+        readonly activeMemoryCount: number;
       };
-      if (input.memories.length !== 4) {
+      if (input.activeMemoryCount !== 4) {
         throw new Error("oversized B did not receive exactly four saved memories");
       }
-      this.selectedMemoryCount = input.memories.length;
+      if (coordinates.providerRequestIndex === 0) {
+        return {
+          text: "",
+          toolCalls: [
+            {
+              id: "oversized-b-search",
+              name: "search_memories",
+              arguments: { query: "audit" },
+            },
+          ],
+          usage,
+          stopReason: "toolUse",
+        };
+      }
+      const searchResultMessage = [...request.messages]
+        .reverse()
+        .find((message) => message.role === "tool" && message.name === "search_memories");
+      if (searchResultMessage?.role !== "tool")
+        throw new Error("oversized B search result is missing");
+      const searchResult = JSON.parse(searchResultMessage.content) as {
+        readonly items: readonly { readonly memoryId: string; readonly memoryRevisionId: string }[];
+      };
+      if (searchResult.items.length !== 4)
+        throw new Error("oversized B search did not find four memories");
+      this.selectedMemoryCount = searchResult.items.length;
       return {
         text: "",
         toolCalls: [
@@ -523,7 +571,7 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
             id: "oversized-b-terminal",
             name: "emit_memory_manifest",
             arguments: {
-              entries: input.memories.map(({ memoryId, memoryRevisionId }) => ({
+              entries: searchResult.items.map(({ memoryId, memoryRevisionId }) => ({
                 memoryId,
                 memoryRevisionId,
               })),
@@ -569,12 +617,8 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
         readonly complete: boolean;
         readonly truncated: boolean;
         readonly items: readonly {
-          readonly kind: "public_source" | "publisher";
-          readonly sourceId: string;
-          readonly issueId?: string;
+          readonly kind: "document";
           readonly documentId: string;
-          readonly documentVersionId: string;
-          readonly textCharCount: number;
         }[];
       };
       if (!searchResult.complete || searchResult.truncated || searchResult.items.length !== 6) {
@@ -588,23 +632,9 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
           name: "inspect_internal",
           arguments: {
             reference: {
-              kind: "document",
+              kind: "document" as const,
               documentId: item.documentId,
-              documentVersionId: item.documentVersionId,
-              source:
-                item.kind === "public_source"
-                  ? { kind: "public" as const, sourceId: item.sourceId }
-                  : item.issueId === undefined
-                    ? (() => {
-                        throw new Error("oversized A publisher search result lacks issue identity");
-                      })()
-                    : {
-                        kind: "publisher" as const,
-                        sourceId: item.sourceId,
-                        issueId: item.issueId,
-                        documentId: item.documentId,
-                      },
-              ranges: [{ charStart: 0, charEnd: Math.min(2_048, item.textCharCount) }],
+              range: { charStart: 0, charEnd: 2_048 },
               purpose: "answer every regional curtailment result",
             },
           },
@@ -645,7 +675,13 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
           : [],
       )
       .map((reference) =>
-        reference.kind === "document" ? { ...reference, ranges: undefined } : reference,
+        reference.kind === "document"
+          ? {
+              kind: "document" as const,
+              documentId: reference.documentId,
+              purpose: reference.purpose,
+            }
+          : reference,
       );
     return {
       text: "",
@@ -667,8 +703,8 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
 }
 
 const completeAnnotations = () => ({
-  artifactVersion: 2 as const,
-  goldenSetVersion: 2 as const,
+  artifactVersion: 3 as const,
+  goldenSetVersion: 3 as const,
   sessionId,
   annotations: CanonicalGoldenEvaluationSet.cases.flatMap((fixture) =>
     (["specialized", "general_planner"] as const).map((topology) => ({
@@ -681,8 +717,8 @@ const completeAnnotations = () => ({
 });
 
 const labeledAnnotations = (targetSessionId = captureSessionId) => ({
-  artifactVersion: 2 as const,
-  goldenSetVersion: 2 as const,
+  artifactVersion: 3 as const,
+  goldenSetVersion: 3 as const,
   sessionId: targetSessionId,
   annotations: CanonicalGoldenEvaluationSet.cases.flatMap((fixture) =>
     (["specialized", "general_planner"] as const).map((topology) => ({
@@ -719,6 +755,7 @@ const completeDurableCaptureSession = async (
     | "o_later_error"
     | "clarification_model_mismatch"
     | "clarification_input_mismatch"
+    | "clarification_date_mismatch"
     | "direct_request_digest"
     | "topic_request_digest"
     | "synthesis_request_digest"
@@ -817,14 +854,14 @@ const completeDurableCaptureSession = async (
         `;
       }),
     );
-    const nonceHex = await runDb(
+    const citationNamespace = await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        const values = yield* sql<{ readonly nonce: string }>`
-          select encode(citation_nonce, 'hex') as nonce from ai_runs where id = ${row.runId}
+        const values = yield* sql<{ readonly citationNamespace: string }>`
+          select citation_namespace as "citationNamespace" from ai_runs where id = ${row.runId}
         `;
-        return values[0]!.nonce;
+        return values[0]!.citationNamespace;
       }),
     );
     const selectedIds = fixture.labels.requiredSourceIds;
@@ -847,7 +884,57 @@ const completeDurableCaptureSession = async (
     const isSpecializedOversized =
       row.topology === "specialized" && fixture.dimensions.includes("oversized_evidence");
     const isSpecializedFanout =
-      row.topology === "specialized" && fixture.labels.fanoutSuitability === "required";
+      row.topology === "specialized" && fixture.labels.planTurn.mode === "fanout";
+    const fanoutTopicIds =
+      fixture.labels.planTurn.mode === "fanout"
+        ? fixture.labels.planTurn.topics.map((topic) => topic.topicId)
+        : [];
+    const topicWebEligible = (topicId: string): boolean => {
+      const topic =
+        fixture.labels.planTurn.mode === "fanout"
+          ? fixture.labels.planTurn.topics.find((candidate) => candidate.topicId === topicId)
+          : undefined;
+      return (
+        topic === undefined ||
+        /\b(current|latest|official|public|web|online|today|recent|status|update|live|price|actual)\b|\b(actuel(?:le|s)?|dernier(?:e|s)?|officiel(?:le|s)?|public(?:s)?|marché|prix|récent(?:e|s)?|mise à jour|en ligne)\b/iu.test(
+          topic.question.normalize("NFC"),
+        )
+      );
+    };
+    const selectorHasProviderCall = (prefix: string, selector: "A" | "B" | "W"): boolean => {
+      if (selector === "A") return true;
+      if (selector === "B") {
+        return selectedIds.some(
+          (sourceId) =>
+            fixture.evidence.find((source) => source.sourceId === sourceId)?.selector === "B",
+        );
+      }
+      return (
+        fixture.webRequested &&
+        fixture.webPolicyEnabled &&
+        topicWebEligible(prefix.startsWith("topic-") ? prefix.slice("topic-".length) : "")
+      );
+    };
+    const noCallReasonForSelector = (
+      prefix: string,
+      selector: "A" | "B" | "W",
+    ):
+      | "no_active_memories"
+      | "web_not_requested"
+      | "web_policy_disabled"
+      | "topic_not_web_eligible"
+      | undefined => {
+      if (selector === "B" && !selectorHasProviderCall(prefix, selector)) {
+        return "no_active_memories";
+      }
+      if (selector !== "W") return undefined;
+      if (!fixture.webRequested) return "web_not_requested";
+      if (!fixture.webPolicyEnabled) return "web_policy_disabled";
+      if (!topicWebEligible(prefix.startsWith("topic-") ? prefix.slice("topic-".length) : "")) {
+        return "topic_not_web_eligible";
+      }
+      return undefined;
+    };
     const durableReductionDecisions = isSpecializedOversized
       ? selectedIds.map((sourceId) => {
           const binding = manifest.sourceBindings.find(
@@ -879,7 +966,7 @@ const completeDurableCaptureSession = async (
         (item) => evaluationBindingGoldenSourceId(item) === selection.sourceId,
       )!;
       const source = fixture.evidence.find((item) => item.sourceId === selection.sourceId)!;
-      const sourceKey = sourceKeyForOrdinal(Buffer.from(nonceHex, "hex"), index + 1);
+      const sourceKey = sourceKeyForNamespace(citationNamespace, index + 1);
       const selectedText =
         source.kind === "document" && selection.ranges.length > 0
           ? selection.ranges
@@ -887,7 +974,7 @@ const completeDurableCaptureSession = async (
               .join("\n…\n")
           : source.content;
       const uses = isSpecializedFanout
-        ? (["t1", "t2"] as const).map((topicId) => ({
+        ? fanoutTopicIds.map((topicId) => ({
             consumerTaskId: `topic-${topicId}-answer`,
             topicId,
             contextOrder: index,
@@ -903,22 +990,34 @@ const completeDurableCaptureSession = async (
             },
           ];
       if (binding.kind === "document") {
+        const locator: FinalSourceRecord["locator"] =
+          binding.source.kind === "publisher"
+            ? {
+                kind: "document",
+                sourceId: binding.source.sourceId as `publisher:${string}`,
+                documentId: binding.documentId,
+                versionId: binding.versionId,
+                contentHash: binding.contentHash,
+                ranges: selection.ranges,
+                publisherIssueId: binding.source.issueId,
+                publisherDocumentId: binding.source.documentId,
+                publisherExtractionId:
+                  binding.publisherExtractionId ??
+                  (() => {
+                    throw new Error("publisher evaluation binding lacks its extraction identity");
+                  })(),
+              }
+            : {
+                kind: "document",
+                sourceId: binding.source.sourceId,
+                documentId: binding.documentId,
+                versionId: binding.versionId,
+                contentHash: binding.contentHash,
+                ranges: selection.ranges,
+              };
         return {
           sourceKey,
-          locator: {
-            kind: "document",
-            sourceId: binding.source.sourceId,
-            documentId: binding.documentId,
-            documentVersionId: binding.documentVersionId,
-            contentHash: binding.contentHash,
-            ranges: selection.ranges,
-            ...(binding.source.kind === "publisher"
-              ? {
-                  publisherIssueId: binding.source.issueId,
-                  publisherDocumentId: binding.source.documentId,
-                }
-              : {}),
-          },
+          locator,
           label:
             row.topology === "specialized"
               ? `Canonical evidence ${evaluationBindingGoldenSourceId(binding)}`
@@ -971,28 +1070,44 @@ const completeDurableCaptureSession = async (
         },
         label:
           row.topology === "specialized" ? binding.title : evaluationBindingGoldenSourceId(binding),
-        publicProvenance: {
-          documentTitle: binding.title,
-          citationUrl: binding.url,
-          publishedAt: "2026-03-14T00:00:00.000Z",
-        },
+        publicProvenance: { citationUrl: binding.url },
         uses,
       };
     });
     const turnMap = new Map(
       manifest.turnBindings.map((binding) => [binding.turnId, binding.aiRunId]),
     );
+    const goldenRelevantTurnIds =
+      fixture.labels.planTurn.mode === "fanout"
+        ? fixture.labels.planTurn.topics.flatMap((topic) => topic.relevantTurnIds)
+        : fixture.labels.planTurn.relevantTurnIds;
     const resolution =
-      fixture.labels.resolution.mode === "clarify"
-        ? { mode: "clarify" as const, question: "Which result, wind or solar? Please clarify." }
-        : {
-            mode: "continue" as const,
-            retrievalQuestion:
-              row.topology === "specialized" && manifest.turnBindings.length === 0
-                ? fixture.currentMessage
-                : fixture.labels.resolution.canonicalRetrievalQuestion,
-            selectedTurnIds: fixture.labels.relevantTurnIds.map((turnId) => turnMap.get(turnId)!),
-          };
+      fixture.labels.planTurn.mode === "clarify"
+        ? { mode: "clarify" as const, question: fixture.labels.planTurn.question }
+        : row.topology === "general_planner"
+          ? {
+              mode: "single" as const,
+              question: fixture.labels.planTurn.question,
+              relevantTurnIds: goldenRelevantTurnIds.map((turnId) => turnMap.get(turnId)!),
+            }
+          : fixture.labels.planTurn.mode === "fanout"
+            ? {
+                mode: "fanout" as const,
+                question: fixture.labels.planTurn.question,
+                topics: fixture.labels.planTurn.topics.map((topic) => ({
+                  topicId: topic.topicId,
+                  question: topic.question,
+                  relevantTurnIds: topic.relevantTurnIds.map((turnId) => turnMap.get(turnId)!),
+                })),
+              }
+            : {
+                mode: "single" as const,
+                question:
+                  row.topology === "specialized" && manifest.turnBindings.length === 0
+                    ? fixture.currentMessage
+                    : fixture.labels.planTurn.question,
+                relevantTurnIds: goldenRelevantTurnIds.map((turnId) => turnMap.get(turnId)!),
+              };
     const memoryResult: MemoryExtractionResult = {
       proposals: fixture.labels.expectedMemoryProposals.map((proposal) => {
         if (proposal.targetMemoryId === null) {
@@ -1030,7 +1145,7 @@ const completeDurableCaptureSession = async (
       },
     };
     const exactSelectedConversation =
-      resolution.mode === "continue"
+      resolution.mode === "single"
         ? fixture.labels.relevantTurnIds.map((fixtureTurnId) => {
             const binding = manifest.turnBindings.find((item) => item.turnId === fixtureTurnId)!;
             return {
@@ -1103,10 +1218,9 @@ const completeDurableCaptureSession = async (
         exposureStage:
           tamper === "nonselected_chat_serialized"
             ? ("answer_serialized" as const)
-            : tamper === "nonselected_chat_inspection"
-              ? ("internal_inspection" as const)
-              : ("internal_search_preview" as const),
+            : ("internal_inspection" as const),
         visibleTokenCount: model.countTextTokens(content),
+        content,
       };
     })();
     const productionSourcesFor = (
@@ -1183,29 +1297,57 @@ const completeDurableCaptureSession = async (
       };
     };
     const directInitialLedger =
-      resolution.mode === "continue" && !isSpecializedFanout
-        ? directOrTopicLedger("direct", fullCandidateSelections, resolution.retrievalQuestion)
+      resolution.mode === "single" && !isSpecializedFanout
+        ? directOrTopicLedger("direct", fullCandidateSelections, resolution.question)
         : undefined;
     const directTerminalLedger =
-      resolution.mode === "continue" && !isSpecializedFanout
-        ? directOrTopicLedger("direct", selected, resolution.retrievalQuestion)
+      resolution.mode === "single" && !isSpecializedFanout
+        ? directOrTopicLedger("direct", selected, resolution.question)
         : undefined;
-    const topicDefinitions = [
-      { topicId: "t1" as const, question: "solar" },
-      { topicId: "t2" as const, question: "storage" },
-    ];
+    const topicDefinitions =
+      fixture.labels.planTurn.mode === "fanout"
+        ? fixture.labels.planTurn.topics.map(({ topicId, question }) => ({ topicId, question }))
+        : [];
     const topicLedgers = isSpecializedFanout
       ? topicDefinitions.map((topic) => ({
           ...topic,
           ledger: directOrTopicLedger("topic", selected, topic.question, topic.topicId),
         }))
       : [];
-    const topicPackets = topicLedgers.map(({ topicId }) => ({
-      topicId,
-      status: "partial" as const,
-      claims: [],
-      gaps: [`No additional ${topicId} claim.`],
-    }));
+    const topicPackets: ExactProductionTopicPacket[] = topicLedgers.map(
+      ({ topicId, ledger }, topicIndex) => {
+        const supportedClaim = fixture.labels.supportedClaims[topicIndex];
+        const claimSourceKeys =
+          supportedClaim?.supportingSourceIds.flatMap((sourceId) => {
+            const source = sourceMap[selectedIds.indexOf(sourceId)];
+            return source === undefined ? [] : [source.sourceKey];
+          }) ?? [];
+        const packet: ExactProductionTopicPacket =
+          claimSourceKeys.length > 0
+            ? {
+                topicId,
+                status: "answered",
+                claims: [
+                  {
+                    text: `Canonical answer for ${topicId}.`,
+                    sourceKeys: claimSourceKeys,
+                  },
+                ],
+                gaps: [],
+              }
+            : {
+                topicId,
+                status: "partial",
+                claims: [],
+                gaps: [`No additional ${topicId} claim.`],
+              };
+        return validateTopicPacket(
+          packet,
+          topicId,
+          ledger.sources.map((source) => source.sourceKey),
+        );
+      },
+    );
     const synthesisLedger = isSpecializedFanout
       ? (() => {
           const exact = attestExactProductionContext(fixture, {
@@ -1231,7 +1373,10 @@ const completeDurableCaptureSession = async (
           };
         })()
       : undefined;
-    if (row.topology === "specialized" && resolution.mode === "continue") {
+    if (
+      row.topology === "specialized" &&
+      (resolution.mode === "single" || resolution.mode === "fanout")
+    ) {
       sourceMap = sourceMap.map((source, sourceIndex) => ({
         ...source,
         uses: source.uses.map((use) => ({
@@ -1241,7 +1386,60 @@ const completeDurableCaptureSession = async (
         })),
       }));
     }
-    const resolverRequest =
+    const answerSerializedMarkersForTask = (
+      taskId: string,
+    ): readonly ProviderVisibleSourceExposureMarker[] => {
+      const topicId = /^topic-(t[1-3])-answer$/u.exec(taskId)?.[1];
+      return sourceMap.flatMap((source, sourceIndex) => {
+        const use = source.uses.find(
+          (candidate) => candidate.consumerTaskId === taskId && candidate.topicId === topicId,
+        );
+        if (use === undefined) return [];
+        const sourceId = selectedIds[sourceIndex];
+        if (sourceId === undefined) return [];
+        const evidence = fixture.evidence.find((candidate) => candidate.sourceId === sourceId);
+        if (evidence === undefined) return [];
+        const binding = manifest.sourceBindings.find(
+          (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
+        );
+        if (binding === undefined) return [];
+        const locator = source.locator;
+        const text =
+          locator.kind === "document" && use.ranges.length > 0
+            ? use.ranges
+                .map((range) => evidence.content.slice(range.charStart, range.charEnd))
+                .join("\n…\n")
+            : evidence.content;
+        const logicalSourceIdentity =
+          locator.kind === "document"
+            ? binding.kind === "document"
+              ? namespacedDocumentEvidenceIdentity(binding.source, binding.documentId)
+              : ""
+            : locator.kind === "chat_message"
+              ? chatMessageEvidenceIdentity(locator.messageId)
+              : locator.kind === "memory"
+                ? memoryEvidenceIdentity(locator.memoryId)
+                : webEvidenceIdentity(locator.url, text);
+        const contentItemIdentity =
+          locator.kind === "document"
+            ? `${logicalSourceIdentity}:${locator.versionId}:${sha256Base64Url(JSON.stringify(use.ranges))}`
+            : locator.kind === "chat_message"
+              ? locator.messageId
+              : locator.kind === "memory"
+                ? locator.memoryRevisionId
+                : `${canonicalizeWebUrl(locator.url)}:${webQuoteHash(text)}`;
+        return [
+          {
+            sourceKind: locator.kind,
+            logicalSourceIdentity,
+            contentItemIdentity,
+            exposureStage: "answer_serialized" as const,
+            visibleTokenCount: model.countTextTokens(text),
+          },
+        ];
+      });
+    };
+    const planTurnRequest =
       row.topology === "specialized" && manifest.turnBindings.length > 0
         ? (() => {
             const exactConversation = fixture.conversation.slice(-12).map((entry) => {
@@ -1260,14 +1458,11 @@ const completeDurableCaptureSession = async (
                 : resolution.mode === "clarify" && tamper === "clarification_reordered"
                   ? [...exactConversation].reverse()
                   : exactConversation;
-            const currentDate = "2026-07-11";
-            const exact = attestExactConversationResolverRequest(
-              fixture,
-              attestedConversation,
-              currentDate,
-            );
+            const currentDate =
+              tamper === "clarification_date_mismatch" ? "2026-07-11" : "2026-07-10";
+            const exact = attestExactPlanTurnRequest(fixture, attestedConversation, currentDate);
             return {
-              requestKind: "conversation_resolution" as const,
+              requestKind: "plan_turn" as const,
               modelId: "glm-5-turbo" as const,
               ...exact,
               requestedOutputTokens: 2048 as const,
@@ -1277,7 +1472,7 @@ const completeDurableCaptureSession = async (
                 ({ fixtureTurnId: _fixtureTurnId, ...binding }) => binding,
               ),
               terminalUsageCoordinate: {
-                taskId: "resolve-conversation",
+                taskId: "plan-turn",
                 loopIteration: 0,
                 attempt: 0,
                 providerRequestIndex: 0,
@@ -1286,16 +1481,14 @@ const completeDurableCaptureSession = async (
           })()
         : undefined;
     const retrievalRequestPrefixBase =
-      row.topology === "specialized" && resolution.mode === "continue"
-        ? (isSpecializedFanout ? ["topic-t1", "topic-t2"] : ["single"]).flatMap((prefix) =>
+      row.topology === "specialized" &&
+      (resolution.mode === "single" || resolution.mode === "fanout")
+        ? (isSpecializedFanout
+            ? fanoutTopicIds.map((topicId) => `topic-${topicId}`)
+            : ["single"]
+          ).flatMap((prefix) =>
             (["A", "B", "W"] as const)
-              .filter(
-                (selector) =>
-                  selector === "A" ||
-                  (selector === "B" &&
-                    manifest.sourceBindings.some((binding) => binding.kind === "memory")) ||
-                  (selector === "W" && fixture.webRequested && fixture.webPolicyEnabled),
-              )
+              .filter((selector) => selectorHasProviderCall(prefix, selector))
               .map((selector) => ({
                 taskId:
                   tamper === "memory_as_internal_preview" && selector === "B"
@@ -1338,6 +1531,12 @@ const completeDurableCaptureSession = async (
           }))
         : [{ ...request, providerRequestIndex: 0 }],
     );
+    const previewRangesFor = (
+      source: (typeof fixture.evidence)[number],
+    ): readonly { readonly charStart: number; readonly charEnd: number }[] =>
+      source.kind === "document"
+        ? [{ charStart: 0, charEnd: Math.min(300, source.content.length) }]
+        : [];
     const previewMarkerFor = (sourceId: string) => {
       const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId)!;
       const binding = manifest.sourceBindings.find(
@@ -1345,9 +1544,11 @@ const completeDurableCaptureSession = async (
       )!;
       const exposureStage =
         source.selector === "A"
-          ? "internal_search_preview"
+          ? source.kind === "chat_message"
+            ? "internal_inspection"
+            : "internal_search_preview"
           : source.selector === "B"
-            ? "memory_direct_inventory"
+            ? "memory_tool_result"
             : "web_search_preview";
       return {
         sourceKind: source.kind,
@@ -1355,7 +1556,7 @@ const completeDurableCaptureSession = async (
           binding.kind === "web" ? canonicalizeWebUrl(binding.url) : candidateIdFor(sourceId),
         contentItemIdentity:
           binding.kind === "document"
-            ? `${candidateIdFor(sourceId)}:${binding.documentVersionId}:${sha256Base64Url(source.content.slice(0, 300))}`
+            ? `${candidateIdFor(sourceId)}:${binding.versionId}:${sha256Base64Url(JSON.stringify(previewRangesFor(source)))}`
             : binding.kind === "chat_message"
               ? binding.messageId
               : binding.kind === "memory"
@@ -1389,13 +1590,13 @@ const completeDurableCaptureSession = async (
           binding.source,
           binding.documentId,
         ),
-        contentItemIdentity: `${namespacedDocumentEvidenceIdentity(binding.source, binding.documentId)}:${binding.documentVersionId}:${sha256Base64Url(JSON.stringify(ranges))}`,
+        contentItemIdentity: `${namespacedDocumentEvidenceIdentity(binding.source, binding.documentId)}:${binding.versionId}:${sha256Base64Url(JSON.stringify(ranges))}`,
         exposureStage: "internal_inspection" as const,
         visibleTokenCount: model.countTextTokens(text),
         documentReconstruction: {
           sourceId: binding.sourceId,
           documentId: binding.documentId,
-          documentVersionId: binding.documentVersionId,
+          versionId: binding.versionId,
           contentHash: binding.contentHash,
           ranges,
         },
@@ -1408,8 +1609,7 @@ const completeDurableCaptureSession = async (
         })
       : [];
     const canonicalOversizedInspectionMarkers = oversizedDocumentSourceIds.map((sourceId) => {
-      const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId)!;
-      return inspectionMarkerFor(sourceId, source.ranges);
+      return inspectionMarkerFor(sourceId, [{ charStart: 0, charEnd: 2_048 }]);
     });
     const oversizedInspectionMarkers = (() => {
       if (tamper === "oversized_missing_internal_inspection") {
@@ -1437,7 +1637,7 @@ const completeDurableCaptureSession = async (
         logicalSourceIdentity: candidateIdFor(sourceId),
         contentItemIdentity:
           binding.kind === "document"
-            ? `${candidateIdFor(sourceId)}:${binding.documentVersionId}:${sha256Base64Url(JSON.stringify(source.ranges))}`
+            ? `${candidateIdFor(sourceId)}:${binding.versionId}:${sha256Base64Url(JSON.stringify(source.ranges))}`
             : binding.kind === "chat_message"
               ? binding.messageId
               : binding.kind === "memory"
@@ -1450,7 +1650,7 @@ const completeDurableCaptureSession = async (
               documentReconstruction: {
                 sourceId: binding.sourceId,
                 documentId: binding.documentId,
-                documentVersionId: binding.documentVersionId,
+                versionId: binding.versionId,
                 contentHash: binding.contentHash,
                 ranges: source.ranges,
               },
@@ -1468,6 +1668,23 @@ const completeDurableCaptureSession = async (
         return { ...marker, exposureStage: "web_search_preview" as const };
       }
       return marker;
+    };
+    const webFetchMarkerFor = (sourceId: string) => {
+      const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId)!;
+      const binding = manifest.sourceBindings.find(
+        (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
+      );
+      if (source.kind !== "web" || binding?.kind !== "web") {
+        throw new Error("web fetch marker requires a web binding");
+      }
+      const url = canonicalizeWebUrl(binding.url);
+      return {
+        sourceKind: "web" as const,
+        logicalSourceIdentity: url,
+        contentItemIdentity: `${url}:${sha256Base64Url(source.content)}`,
+        exposureStage: "web_fetch" as const,
+        visibleTokenCount: model.countTextTokens(source.content),
+      };
     };
     const exposedReductionMarkerFor = (sourceId: string) => {
       const marker = reductionMarkerFor(sourceId);
@@ -1493,30 +1710,16 @@ const completeDurableCaptureSession = async (
         documentReconstruction: {
           sourceId: documentBinding.sourceId,
           documentId: documentBinding.documentId,
-          documentVersionId: documentBinding.documentVersionId,
+          versionId: documentBinding.versionId,
           contentHash: documentBinding.contentHash,
           ranges: documentSource.ranges,
         },
       };
     };
-    const sourceProofsForRequest = (
+    const sourceMarkersForRequest = (
       taskId: string,
       providerRequestIndex: number,
-    ): readonly string[] => {
-      const proofFor = (marker: {
-        readonly sourceKind: "document" | "chat_message" | "memory" | "web";
-        readonly logicalSourceIdentity: string;
-        readonly contentItemIdentity: string;
-        readonly exposureStage: string;
-        readonly visibleTokenCount: number;
-      }) =>
-        providerVisibleSourceExposureProofSha256Hex({
-          sourceKind: marker.sourceKind,
-          logicalSourceIdentity: marker.logicalSourceIdentity,
-          contentItemIdentity: marker.contentItemIdentity,
-          exposureStage: marker.exposureStage,
-          visibleTokenCount: marker.visibleTokenCount,
-        });
+    ): readonly ProviderVisibleSourceExposureMarker[] => {
       const previewMarkers = selectedIds
         .filter((sourceId) => {
           const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId)!;
@@ -1542,7 +1745,32 @@ const completeDurableCaptureSession = async (
           : previewMarkers
         : taskId === "single-reduce-plan"
           ? selectedIds.map(exposedReductionMarkerFor)
-          : [];
+          : taskId.endsWith("select-memories")
+            ? selectedIds
+                .filter(
+                  (sourceId) =>
+                    fixture.evidence.find((candidate) => candidate.sourceId === sourceId)
+                      ?.selector === "B",
+                )
+                .map(exposedPreviewMarkerFor)
+            : taskId.endsWith("retrieve-web")
+              ? [
+                  ...selectedIds
+                    .filter(
+                      (sourceId) =>
+                        fixture.evidence.find((candidate) => candidate.sourceId === sourceId)
+                          ?.selector === "W",
+                    )
+                    .map(exposedPreviewMarkerFor),
+                  ...selectedIds
+                    .filter(
+                      (sourceId) =>
+                        fixture.evidence.find((candidate) => candidate.sourceId === sourceId)
+                          ?.selector === "W",
+                    )
+                    .map(webFetchMarkerFor),
+                ]
+              : [];
       const requestMarkers =
         extraConversationExposure !== undefined &&
         extraConversationExposure.exposureStage !== "answer_serialized" &&
@@ -1550,7 +1778,735 @@ const completeDurableCaptureSession = async (
         providerRequestIndex === 0
           ? [...markers, extraConversationExposure]
           : markers;
-      return [...new Set(requestMarkers.map(proofFor))].sort();
+      return requestMarkers.map((marker) => ({
+        sourceKind: marker.sourceKind,
+        logicalSourceIdentity: marker.logicalSourceIdentity,
+        contentItemIdentity: marker.contentItemIdentity,
+        exposureStage: marker.exposureStage,
+        visibleTokenCount: marker.visibleTokenCount,
+      }));
+    };
+    const markerDetailsFor = (
+      marker: ProviderVisibleSourceExposureMarker,
+    ):
+      | {
+          readonly sourceId?: string;
+          readonly source: (typeof fixture.evidence)[number];
+          readonly binding: EvaluationSeedManifest["sourceBindings"][number];
+          readonly text: string;
+          readonly ranges?: readonly { readonly charStart: number; readonly charEnd: number }[];
+        }
+      | undefined => {
+      for (const sourceId of selectedIds) {
+        const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId);
+        const binding = manifest.sourceBindings.find(
+          (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
+        );
+        if (source === undefined || binding === undefined) continue;
+        const variants: readonly {
+          readonly marker: ProviderVisibleSourceExposureMarker;
+          readonly text: string;
+          readonly ranges?: readonly { readonly charStart: number; readonly charEnd: number }[];
+        }[] = [
+          (() => {
+            const candidate =
+              tamper === "memory_as_internal_preview" && source.kind === "memory"
+                ? exposedPreviewMarkerFor(sourceId)
+                : previewMarkerFor(sourceId);
+            return {
+              marker: {
+                sourceKind: candidate.sourceKind,
+                logicalSourceIdentity: candidate.logicalSourceIdentity,
+                contentItemIdentity: candidate.contentItemIdentity,
+                exposureStage: candidate.exposureStage,
+                visibleTokenCount: candidate.visibleTokenCount,
+              },
+              text:
+                candidate.exposureStage === "internal_search_preview" ||
+                candidate.exposureStage === "web_search_preview"
+                  ? source.content.slice(0, 300)
+                  : source.content,
+              ...(source.kind === "document" ? { ranges: previewRangesFor(source) } : {}),
+            };
+          })(),
+          ...(source.kind === "web" && binding.kind === "web"
+            ? [
+                (() => {
+                  const candidate = webFetchMarkerFor(sourceId);
+                  return {
+                    marker: {
+                      sourceKind: candidate.sourceKind,
+                      logicalSourceIdentity: candidate.logicalSourceIdentity,
+                      contentItemIdentity: candidate.contentItemIdentity,
+                      exposureStage: candidate.exposureStage,
+                      visibleTokenCount: candidate.visibleTokenCount,
+                    },
+                    text: source.content,
+                  };
+                })(),
+              ]
+            : []),
+          ...(isSpecializedOversized && source.kind === "document"
+            ? canonicalOversizedInspectionMarkers
+                .map((candidate, index) => ({
+                  candidate,
+                  sourceId: oversizedDocumentSourceIds[index],
+                }))
+                .filter((candidate) => candidate.sourceId === sourceId)
+                .map(({ candidate }) => ({
+                  marker: {
+                    sourceKind: candidate.sourceKind,
+                    logicalSourceIdentity: candidate.logicalSourceIdentity,
+                    contentItemIdentity: candidate.contentItemIdentity,
+                    exposureStage: candidate.exposureStage,
+                    visibleTokenCount: candidate.visibleTokenCount,
+                  },
+                  text: source.content.slice(0, 2_048),
+                  ranges: [{ charStart: 0, charEnd: 2_048 }],
+                }))
+            : []),
+          ...(tamper === "oversized_duplicate_internal_inspection" &&
+          source.kind === "document" &&
+          sourceId === oversizedDocumentSourceIds[0]
+            ? [
+                (() => {
+                  const ranges = fixture.labels.acceptableRanges[sourceId];
+                  if (ranges === undefined)
+                    throw new Error("duplicate inspection range is missing");
+                  const candidate = inspectionMarkerFor(sourceId, ranges);
+                  return {
+                    marker: {
+                      sourceKind: candidate.sourceKind,
+                      logicalSourceIdentity: candidate.logicalSourceIdentity,
+                      contentItemIdentity: candidate.contentItemIdentity,
+                      exposureStage: candidate.exposureStage,
+                      visibleTokenCount: candidate.visibleTokenCount,
+                    },
+                    text: ranges
+                      .map((range) => source.content.slice(range.charStart, range.charEnd))
+                      .join("\n…\n"),
+                    ranges,
+                  };
+                })(),
+              ]
+            : []),
+          ...(source.kind === "document" || source.kind === "memory"
+            ? [
+                (() => {
+                  const candidate = isSpecializedOversized
+                    ? exposedReductionMarkerFor(sourceId)
+                    : reductionMarkerFor(sourceId);
+                  return {
+                    marker: {
+                      sourceKind: candidate.sourceKind,
+                      logicalSourceIdentity: candidate.logicalSourceIdentity,
+                      contentItemIdentity: candidate.contentItemIdentity,
+                      exposureStage: candidate.exposureStage,
+                      visibleTokenCount: candidate.visibleTokenCount,
+                    },
+                    text: source.content,
+                    ranges: source.ranges,
+                  };
+                })(),
+              ]
+            : []),
+        ];
+        if (marker.exposureStage === "answer_serialized") {
+          const answerSource = sourceMap[selectedIds.indexOf(sourceId)];
+          const answerUse = answerSource?.uses.find((use) => {
+            const taskIds = new Set([
+              "single-answer",
+              "fanout-synthesis",
+              "topic-t1-answer",
+              "topic-t2-answer",
+              "topic-t3-answer",
+            ]);
+            return taskIds.has(use.consumerTaskId);
+          });
+          const answerText =
+            source.kind === "document" && answerUse !== undefined && answerUse.ranges.length > 0
+              ? answerUse.ranges
+                  .map((range) => source.content.slice(range.charStart, range.charEnd))
+                  .join("\n…\n")
+              : source.content;
+          const answerMarkerMatch =
+            answerUse !== undefined && answerSource !== undefined
+              ? (() => {
+                  const locator = answerSource.locator;
+                  const logicalSourceIdentity =
+                    locator.kind === "document"
+                      ? binding.kind === "document"
+                        ? namespacedDocumentEvidenceIdentity(binding.source, binding.documentId)
+                        : ""
+                      : locator.kind === "chat_message"
+                        ? chatMessageEvidenceIdentity(locator.messageId)
+                        : locator.kind === "memory"
+                          ? memoryEvidenceIdentity(locator.memoryId)
+                          : webEvidenceIdentity(locator.url, answerText);
+                  const contentItemIdentity =
+                    locator.kind === "document"
+                      ? `${logicalSourceIdentity}:${locator.versionId}:${sha256Base64Url(JSON.stringify(answerUse.ranges))}`
+                      : locator.kind === "chat_message"
+                        ? locator.messageId
+                        : locator.kind === "memory"
+                          ? locator.memoryRevisionId
+                          : `${canonicalizeWebUrl(locator.url)}:${webQuoteHash(answerText)}`;
+                  return (
+                    canonicalJson({
+                      sourceKind: locator.kind,
+                      logicalSourceIdentity,
+                      contentItemIdentity,
+                      exposureStage: "answer_serialized",
+                      visibleTokenCount: model.countTextTokens(answerText),
+                    }) === canonicalJson(marker)
+                  );
+                })()
+              : false;
+          if (answerMarkerMatch && answerUse !== undefined) {
+            if (marker.visibleTokenCount === model.countTextTokens(answerText)) {
+              return {
+                sourceId,
+                source,
+                binding,
+                text: answerText,
+                ranges: answerUse.ranges,
+              };
+            }
+          }
+        }
+        const match = variants.find(
+          ({ marker: candidate }) => canonicalJson(candidate) === canonicalJson(marker),
+        );
+        if (match !== undefined) return { sourceId, source, binding, ...match };
+      }
+      if (extraConversationExposure !== undefined) {
+        const candidate = extraConversationExposure;
+        const candidateMarker = {
+          sourceKind: candidate.sourceKind,
+          logicalSourceIdentity: candidate.logicalSourceIdentity,
+          contentItemIdentity: candidate.contentItemIdentity,
+          exposureStage: candidate.exposureStage,
+          visibleTokenCount: candidate.visibleTokenCount,
+        };
+        if (canonicalJson(candidateMarker) === canonicalJson(marker)) {
+          const source = fixture.evidence.find(
+            (entry) =>
+              entry.kind === "chat_message" &&
+              (candidate.contentItemIdentity === entry.sourceId ||
+                candidate.contentItemIdentity === entry.sourceId.slice("chat:".length)),
+          );
+          const binding = manifest.sourceBindings.find(
+            (entry) =>
+              entry.kind === "chat_message" && candidate.contentItemIdentity === entry.messageId,
+          );
+          return {
+            sourceId: source?.sourceId ?? candidate.contentItemIdentity,
+            source:
+              source ??
+              ({
+                sourceId: candidate.contentItemIdentity,
+                selector: "A",
+                kind: "chat_message",
+                content: candidate.content,
+                ranges: [],
+              } as (typeof fixture.evidence)[number]),
+            binding:
+              binding ??
+              ({ kind: "chat_message", messageId: candidate.contentItemIdentity } as Extract<
+                EvaluationSeedManifest["sourceBindings"][number],
+                { kind: "chat_message" }
+              >),
+            text: candidate.content,
+          };
+        }
+      }
+      return undefined;
+    };
+    const providerSidecarForMarkers = (
+      markers: readonly ProviderVisibleSourceExposureMarker[],
+    ): {
+      readonly requestSha256Hex: string;
+      readonly proofs: readonly string[];
+      readonly bindings: readonly ProviderRequestSourceExposureProofBinding[];
+    } => {
+      const messages: Array<ProviderRequest["messages"][number]> = [
+        { role: "system", content: "Evaluation provider sidecar request." },
+        { role: "user", content: "The supplied evidence is canonical." },
+      ];
+      for (const [index, marker] of markers.entries()) {
+        const details = markerDetailsFor(marker);
+        if (details === undefined) {
+          throw new Error("provider sidecar marker lacks canonical fixture content");
+        }
+        const callId = `fixture-sidecar-${index + 1}`;
+        let name: string;
+        let arguments_: Record<string, unknown>;
+        let result: Record<string, unknown>;
+        if (marker.exposureStage === "internal_search_preview") {
+          name = "search_internal";
+          arguments_ = {
+            query: { target: "documents", terms: "canonical", purpose: "evaluation", limit: 1 },
+          };
+          result =
+            details.source.kind === "document"
+              ? {
+                  items: [
+                    {
+                      kind: "document",
+                      documentId:
+                        details.binding.kind === "document" ? details.binding.documentId : "",
+                      snippet: details.text,
+                      ranges: details.ranges,
+                      ...(details.binding.kind === "document"
+                        ? {
+                            __briefSourceIdentity: {
+                              versionId: details.binding.versionId,
+                              contentHash: details.binding.contentHash,
+                              ranges: details.ranges,
+                              ...(details.binding.publisherExtractionId === null
+                                ? {}
+                                : { publisherExtractionId: details.binding.publisherExtractionId }),
+                              source: details.binding.source,
+                            },
+                          }
+                        : {}),
+                    },
+                  ],
+                }
+              : {
+                  items: [
+                    {
+                      messageId:
+                        details.binding.kind === "chat_message" ? details.binding.messageId : "",
+                      snippet: details.text,
+                    },
+                  ],
+                };
+        } else if (marker.exposureStage === "internal_inspection") {
+          name = "inspect_internal";
+          arguments_ =
+            details.source.kind === "document"
+              ? {
+                  reference: {
+                    kind: "document",
+                    documentId:
+                      details.binding.kind === "document" ? details.binding.documentId : "",
+                    range: details.ranges?.[0],
+                  },
+                }
+              : {
+                  reference: {
+                    kind: "chat_message",
+                    messageId:
+                      details.binding.kind === "chat_message" ? details.binding.messageId : "",
+                  },
+                };
+          result =
+            details.source.kind === "document"
+              ? {
+                  found: true,
+                  complete: true,
+                  ranges: details.ranges,
+                  text: details.text,
+                  documentId: details.binding.kind === "document" ? details.binding.documentId : "",
+                  ...(details.binding.kind === "document"
+                    ? {
+                        __briefSourceIdentity: {
+                          versionId: details.binding.versionId,
+                          contentHash: details.binding.contentHash,
+                          ...(details.binding.publisherExtractionId === null
+                            ? {}
+                            : { publisherExtractionId: details.binding.publisherExtractionId }),
+                          source: details.binding.source,
+                        },
+                      }
+                    : {}),
+                }
+              : {
+                  found: true,
+                  complete: true,
+                  message: {
+                    messageId:
+                      details.binding.kind === "chat_message" ? details.binding.messageId : "",
+                    content: details.text,
+                  },
+                };
+        } else if (marker.exposureStage === "memory_tool_result") {
+          name = "search_memories";
+          arguments_ = { query: "canonical" };
+          result = {
+            items: [
+              {
+                memoryId: details.binding.kind === "memory" ? details.binding.memoryId : "",
+                memoryRevisionId:
+                  details.binding.kind === "memory" ? details.binding.memoryRevisionId : "",
+                content: details.text,
+              },
+            ],
+          };
+        } else if (marker.exposureStage === "web_search_preview") {
+          name = "web_search";
+          arguments_ = { query: "canonical" };
+          result = {
+            results: [
+              {
+                url:
+                  details.binding.kind === "web"
+                    ? details.binding.url
+                    : "https://evaluation.invalid",
+                snippet: details.text,
+              },
+            ],
+          };
+        } else if (marker.exposureStage === "web_fetch") {
+          name = "web_fetch";
+          arguments_ = {
+            url:
+              details.binding.kind === "web" ? details.binding.url : "https://evaluation.invalid",
+          };
+          result = {
+            url:
+              details.binding.kind === "web" ? details.binding.url : "https://evaluation.invalid",
+            text: details.text,
+          };
+        } else if (marker.exposureStage === "context_candidate_inspection") {
+          name = "inspect_candidate";
+          const candidateId = marker.logicalSourceIdentity;
+          arguments_ = {
+            id: candidateId,
+            ...(details.ranges?.[0] === undefined ? {} : { range: details.ranges[0] }),
+          };
+          result =
+            details.source.kind === "document"
+              ? {
+                  found: true,
+                  complete: true,
+                  text: details.text,
+                  documentId: details.binding.kind === "document" ? details.binding.documentId : "",
+                  versionId: details.binding.kind === "document" ? details.binding.versionId : "",
+                  source: details.binding.kind === "document" ? details.binding.source : {},
+                  ranges: details.ranges,
+                  ...(details.binding.kind === "document"
+                    ? {
+                        __briefSourceIdentity: {
+                          versionId: details.binding.versionId,
+                          contentHash: details.binding.contentHash,
+                          ...(details.binding.publisherExtractionId === null
+                            ? {}
+                            : { publisherExtractionId: details.binding.publisherExtractionId }),
+                          source: details.binding.source,
+                        },
+                      }
+                    : {}),
+                }
+              : details.source.kind === "memory"
+                ? {
+                    found: true,
+                    complete: true,
+                    text: details.text,
+                    memoryId: details.binding.kind === "memory" ? details.binding.memoryId : "",
+                    memoryRevisionId:
+                      details.binding.kind === "memory" ? details.binding.memoryRevisionId : "",
+                  }
+                : { found: true, complete: true, text: details.text };
+        } else {
+          throw new Error(`provider sidecar does not support ${marker.exposureStage}`);
+        }
+        messages.push(
+          {
+            role: "assistant",
+            content: "",
+            toolCalls: [{ id: callId, name, arguments: arguments_ }],
+          },
+          { role: "tool", toolCallId: callId, name, content: JSON.stringify(result) },
+        );
+      }
+      const request = {
+        requestClass: "main" as const,
+        model: "glm-5-turbo",
+        messages,
+        requestedOutputTokens: 2,
+        reasoning: "medium" as const,
+        sourceExposureProofs: markers,
+      };
+      const bindings = providerRequestSourceExposureProofBindings(request, (text) =>
+        model.countTextTokens(text),
+      );
+      return {
+        requestSha256Hex: providerRequestSha256Hex(request),
+        proofs: bindings
+          .map(({ providerSerializationProofSha256Hex }) => providerSerializationProofSha256Hex)
+          .sort(),
+        bindings,
+      };
+    };
+    const conversationProviderMarkers = (): readonly ProviderVisibleSourceExposureMarker[] => {
+      const markers: ProviderVisibleSourceExposureMarker[] = [
+        {
+          sourceKind: "chat_message",
+          logicalSourceIdentity: chatMessageEvidenceIdentity(manifest.userMessageId),
+          contentItemIdentity: manifest.userMessageId,
+          exposureStage: "provider_input",
+          visibleTokenCount: model.countTextTokens(fixture.currentMessage),
+        },
+      ];
+      const firstTurn = manifest.turnBindings[0];
+      const firstGoldenTurn = fixture.conversation[0];
+      if (firstTurn !== undefined && firstGoldenTurn !== undefined) {
+        markers.push({
+          sourceKind: "chat_message",
+          logicalSourceIdentity: chatMessageEvidenceIdentity(firstTurn.assistantMessageId),
+          contentItemIdentity: firstTurn.assistantMessageId,
+          exposureStage: "provider_input",
+          visibleTokenCount: model.countTextTokens(firstGoldenTurn.assistantContent),
+        });
+      }
+      return markers;
+    };
+    const conversationTextForMarker = (marker: ProviderVisibleSourceExposureMarker): string => {
+      if (marker.contentItemIdentity === manifest.userMessageId) return fixture.currentMessage;
+      if (
+        extraConversationExposure !== undefined &&
+        marker.contentItemIdentity === extraConversationExposure.contentItemIdentity &&
+        marker.logicalSourceIdentity === extraConversationExposure.logicalSourceIdentity &&
+        marker.exposureStage === extraConversationExposure.exposureStage
+      ) {
+        return extraConversationExposure.content;
+      }
+      const turn = manifest.turnBindings.find(
+        (candidate) => candidate.assistantMessageId === marker.contentItemIdentity,
+      );
+      const fixtureTurn = fixture.conversation.find(
+        (candidate) => candidate.turnId === turn?.turnId,
+      );
+      if (fixtureTurn === undefined) throw new Error("conversation sidecar lacks fixture content");
+      return fixtureTurn.assistantContent;
+    };
+    const providerSidecarForCodeOwnedMarkers = (
+      markers: readonly ProviderVisibleSourceExposureMarker[],
+    ): {
+      readonly requestSha256Hex: string;
+      readonly proofs: readonly string[];
+      readonly bindings: readonly ProviderRequestSourceExposureProofBinding[];
+    } => {
+      const entries = markers
+        .filter(
+          (marker) =>
+            marker.exposureStage === "provider_input" &&
+            marker.contentItemIdentity !== manifest.userMessageId,
+        )
+        .map((marker) => ({
+          assistantMessageId: marker.contentItemIdentity,
+          assistantContent: conversationTextForMarker(marker),
+        }));
+      const answerMarkers = markers.filter(
+        (marker) => marker.exposureStage === "answer_serialized",
+      );
+      const evidence = answerMarkers
+        .map((marker) => {
+          const details = markerDetailsFor(marker);
+          const sourceIndex =
+            details?.sourceId === undefined ? -1 : selectedIds.indexOf(details.sourceId);
+          const sourceKey =
+            sourceMap[sourceIndex]?.sourceKey ??
+            sourceKeyForNamespace(citationNamespace, sourceMap.length + 1);
+          const text =
+            marker.sourceKind === "chat_message"
+              ? conversationTextForMarker(marker)
+              : (details?.text ?? "");
+          return `<source key="${sourceKey}" kind="${marker.sourceKind}" length="${text.length}">\n${text}\n</source>`;
+        })
+        .join("\n\n");
+      const proofInputs = markers.map((marker) => ({
+        ...marker,
+        visibleText:
+          marker.exposureStage === "provider_input"
+            ? conversationTextForMarker(marker)
+            : marker.sourceKind === "chat_message"
+              ? conversationTextForMarker(marker)
+              : (markerDetailsFor(marker)?.text ?? ""),
+      }));
+      const request: ProviderRequest = {
+        requestClass: "main",
+        model: "glm-5-turbo",
+        messages: [
+          { role: "system", content: "Evaluation provider sidecar request." },
+          {
+            role: "user",
+            content: JSON.stringify({
+              originalMessage: fixture.currentMessage,
+              entries,
+              evidence,
+            }),
+          },
+        ],
+        requestedOutputTokens: 2,
+        reasoning: "medium",
+        sourceExposureProofs: proofInputs,
+      };
+      const bindings = providerRequestSourceExposureProofBindings(request, (text) =>
+        model.countTextTokens(text),
+      );
+      return {
+        requestSha256Hex: providerRequestSha256Hex(request),
+        proofs: bindings
+          .map(({ providerSerializationProofSha256Hex }) => providerSerializationProofSha256Hex)
+          .sort(),
+        bindings,
+      };
+    };
+    const providerSidecarForGeneralPlanner = (
+      markers: readonly ProviderVisibleSourceExposureMarker[],
+    ): {
+      readonly requestSha256Hex: string;
+      readonly proofs: readonly string[];
+      readonly bindings: readonly ProviderRequestSourceExposureProofBinding[];
+    } => {
+      const visibleBindings: ProviderVisibleSourceExposureProofBinding[] = markers.map(
+        (marker, index) => ({
+          messageIndex: 2,
+          sourceOrdinal: index,
+          serializedField: `messages[2].content.matches[${index}].text`,
+          orderedSourceDescriptor: canonicalJson({
+            sourceOrdinal: index,
+            messageIndex: 2,
+            serializedField: `messages[2].content.matches[${index}].text`,
+            sourceKind: marker.sourceKind,
+            exposureStage: marker.exposureStage,
+            logicalSourceIdentity: marker.logicalSourceIdentity,
+            contentItemIdentity: marker.contentItemIdentity,
+            visibleTokenCount: marker.visibleTokenCount,
+          }),
+        }),
+      );
+      const bindings: ProviderRequestSourceExposureProofBinding[] = visibleBindings.map(
+        (binding, index) => {
+          const marker = markers[index]!;
+          return {
+            providerSerializationProofSha256Hex: providerVisibleSourceExposureProofSha256Hex(
+              marker,
+              binding,
+            ),
+            marker,
+            binding,
+          };
+        },
+      );
+      const request: ProviderRequest = {
+        requestClass: "main",
+        model: "glm-5-turbo",
+        messages: [
+          { role: "system", content: "Evaluation general planner provider request." },
+          {
+            role: "user",
+            content: JSON.stringify({
+              requestText: fixture.currentMessage,
+              evidenceCatalog: selectedIds,
+              matches: markers.map((marker) => marker.contentItemIdentity),
+            }),
+          },
+        ],
+        requestedOutputTokens: 16_384,
+        reasoning: "medium",
+      };
+      return {
+        requestSha256Hex: providerRequestSha256Hex(request),
+        proofs: bindings
+          .map(({ providerSerializationProofSha256Hex }) => providerSerializationProofSha256Hex)
+          .sort(),
+        bindings,
+      };
+    };
+    const providerEvidenceForRequest = (
+      taskId: string,
+      providerRequestIndex: number,
+    ): {
+      readonly requestSha256Hex: string;
+      readonly proofs: readonly string[];
+      readonly bindings: readonly ProviderRequestSourceExposureProofBinding[];
+    } => {
+      const markers = sourceMarkersForRequest(taskId, providerRequestIndex);
+      if (taskId === "evaluation-general-planner") {
+        const generalMarkers = selectedIds.map((sourceId) => {
+          const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId)!;
+          const binding = manifest.sourceBindings.find(
+            (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
+          )!;
+          const logicalSourceIdentity =
+            binding.kind === "document"
+              ? namespacedDocumentEvidenceIdentity(binding.source, binding.documentId)
+              : sourceId;
+          return {
+            sourceKind: source.kind,
+            logicalSourceIdentity,
+            contentItemIdentity:
+              binding.kind === "document"
+                ? `${logicalSourceIdentity}:${binding.versionId}:${sha256Base64Url(JSON.stringify(source.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd }))))}`
+                : `${logicalSourceIdentity}:0:${source.content.length}:${createHash("sha256").update(source.content).digest("hex")}`,
+            exposureStage: "evaluation_general_planner_inspect",
+            visibleTokenCount: model.countTextTokens(source.content),
+          } satisfies ProviderVisibleSourceExposureMarker;
+        });
+        const sidecar = providerSidecarForGeneralPlanner(generalMarkers);
+        return {
+          requestSha256Hex: sidecar.requestSha256Hex,
+          proofs: sidecar.proofs,
+          bindings: sidecar.bindings,
+        };
+      }
+      const codeOwnedMarkers =
+        taskId === "plan-turn" ||
+        taskId === "single-answer" ||
+        (row.topology === "specialized" && /^topic-t[1-3]-answer$/u.test(taskId)) ||
+        (row.topology === "specialized" && taskId === "fanout-synthesis")
+          ? conversationProviderMarkers()
+          : [];
+      const answerMarkers =
+        taskId === "single-answer" ||
+        (row.topology === "specialized" && /^topic-t[1-3]-answer$/u.test(taskId)) ||
+        (row.topology === "specialized" && taskId === "fanout-synthesis")
+          ? answerSerializedMarkersForTask(taskId)
+          : [];
+      const allMarkers = [...codeOwnedMarkers, ...markers, ...answerMarkers];
+      if (allMarkers.length === 0) {
+        const request: ProviderRequest = {
+          requestClass:
+            taskId === "single-answer" ||
+            (row.topology === "specialized" && /^topic-t[1-3]-answer$/u.test(taskId)) ||
+            (row.topology === "specialized" && taskId === "fanout-synthesis")
+              ? "main"
+              : "fast",
+          model: "glm-5-turbo",
+          messages: [
+            { role: "system", content: "Evaluation provider request." },
+            { role: "user", content: JSON.stringify({ taskId, providerRequestIndex }) },
+          ],
+          requestedOutputTokens: 2,
+          reasoning: "medium",
+          sourceExposureProofs: [],
+        };
+        return { requestSha256Hex: providerRequestSha256Hex(request), proofs: [], bindings: [] };
+      }
+      const codeOwned = codeOwnedMarkers.length > 0;
+      const sidecar = codeOwned
+        ? providerSidecarForCodeOwnedMarkers(allMarkers)
+        : providerSidecarForMarkers(allMarkers);
+      const topicId = /^topic-(t[1-3])-answer$/u.exec(taskId)?.[1];
+      const productionRequestSha256Hex =
+        taskId === "plan-turn" && planTurnRequest !== undefined
+          ? planTurnRequest.requestSha256Hex
+          : taskId === "single-answer" && directTerminalLedger !== undefined
+            ? directTerminalLedger.requestSha256Hex
+            : topicId !== undefined
+              ? topicLedgers.find((topic) => topic.topicId === topicId)?.ledger.requestSha256Hex
+              : taskId === "fanout-synthesis" && synthesisLedger !== undefined
+                ? synthesisLedger.requestSha256Hex
+                : undefined;
+      return {
+        requestSha256Hex: productionRequestSha256Hex ?? sidecar.requestSha256Hex,
+        proofs: sidecar.proofs,
+        bindings: sidecar.bindings,
+      };
     };
     const specializedMemoryRequest = {
       taskId: "memory-extract",
@@ -1563,8 +2519,8 @@ const completeDurableCaptureSession = async (
       loopIteration: 0,
     };
     const specializedPlanRequest = {
-      taskId: "plan-execution",
-      agentRole: "execution_planner" as const,
+      taskId: "plan-turn",
+      agentRole: "plan_turn" as const,
       modelId: "glm-5-turbo" as const,
       inputTokens: 10,
       requestedOutputTokens: 2,
@@ -1573,14 +2529,14 @@ const completeDurableCaptureSession = async (
       loopIteration: 0,
     };
     const specializedResolverRequests =
-      resolverRequest === undefined
+      planTurnRequest === undefined
         ? []
         : [
             {
-              taskId: "resolve-conversation",
-              agentRole: "conversation_resolver" as const,
+              taskId: "plan-turn",
+              agentRole: "plan_turn" as const,
               modelId: "glm-5-turbo" as const,
-              inputTokens: resolverRequest.inputTokens,
+              inputTokens: planTurnRequest.inputTokens,
               requestedOutputTokens: 2048,
               outputTokens: 2,
               stopReason: "stop" as const,
@@ -1617,7 +2573,7 @@ const completeDurableCaptureSession = async (
             ? [
                 ...specializedResolverRequests,
                 specializedMemoryRequest,
-                specializedPlanRequest,
+                ...(planTurnRequest === undefined ? [specializedPlanRequest] : []),
                 ...retrievalRequestPrefix,
                 ...topicLedgers.map(({ topicId, ledger }) => ({
                   taskId: `topic-${topicId}-answer`,
@@ -1643,7 +2599,7 @@ const completeDurableCaptureSession = async (
             : [
                 ...specializedResolverRequests,
                 specializedMemoryRequest,
-                specializedPlanRequest,
+                ...(planTurnRequest === undefined ? [specializedPlanRequest] : []),
                 ...retrievalRequestPrefix,
                 {
                   taskId: "single-answer",
@@ -1670,21 +2626,82 @@ const completeDurableCaptureSession = async (
                     ]
                   : []),
               ];
-    const providerRequestDigestForTask = (taskId: string): string => {
+    const providerEvidenceByCoordinate = new Map<
+      string,
+      {
+        readonly proofs: readonly string[];
+        readonly requestSha256Hex: string;
+        readonly bindings: readonly ProviderRequestSourceExposureProofBinding[];
+      }
+    >();
+    let deferredUnknownExposure: Parameters<typeof insertAiSourceExposure>[0] | undefined;
+    let deferredUnknownOExposure: Parameters<typeof insertAiSourceExposure>[0] | undefined;
+    const providerEvidenceKey = (
+      taskId: string,
+      providerRequestIndex: number,
+      loopIteration = 0,
+      attempt = taskId === memoryTaskId ? memoryAttempt : 0,
+    ): string => `${taskId}:${loopIteration}:${attempt}:${providerRequestIndex}`;
+    const insertFixtureSourceExposure = (input: Parameters<typeof insertAiSourceExposure>[0]) => {
+      const marker = {
+        sourceKind: input.sourceKind,
+        logicalSourceIdentity: input.logicalSourceIdentity,
+        contentItemIdentity: input.contentItemIdentity,
+        exposureStage: input.exposureStage,
+        visibleTokenCount: input.visibleTokenCount,
+      } as const;
+      const evidence = providerEvidenceByCoordinate.get(
+        providerEvidenceKey(
+          input.taskId,
+          input.providerRequestIndex,
+          input.loopIteration,
+          input.attempt,
+        ),
+      );
+      const candidates = [
+        ...(evidence?.bindings ?? []),
+        ...[...providerEvidenceByCoordinate.values()].flatMap((candidate) => candidate.bindings),
+      ];
+      const binding =
+        candidates.find((candidate) => canonicalJson(candidate.marker) === canonicalJson(marker))
+          ?.binding ??
+        candidates.find(
+          (candidate) =>
+            candidate.marker.sourceKind === marker.sourceKind &&
+            candidate.marker.logicalSourceIdentity === marker.logicalSourceIdentity &&
+            candidate.marker.contentItemIdentity === marker.contentItemIdentity &&
+            candidate.marker.visibleTokenCount === marker.visibleTokenCount,
+        )?.binding;
+      return insertAiSourceExposure({
+        ...input,
+        ...(binding === undefined ? {} : { providerSerializationProofBinding: binding }),
+      });
+    };
+    const providerRequestDigestForTask = (
+      taskId: string,
+      providerRequestIndex = 0,
+      loopIteration = 0,
+      attempt = taskId === memoryTaskId ? memoryAttempt : 0,
+    ): string => {
       const topicId = /^topic-(t[1-3])-answer$/u.exec(taskId)?.[1];
       const exact =
-        taskId === "resolve-conversation" && resolverRequest !== undefined
-          ? resolverRequest.requestSha256Hex
+        providerEvidenceByCoordinate.get(
+          providerEvidenceKey(taskId, providerRequestIndex, loopIteration, attempt),
+        )?.requestSha256Hex ??
+        (taskId === "plan-turn" && planTurnRequest !== undefined
+          ? planTurnRequest.requestSha256Hex
           : taskId === "single-answer"
             ? directTerminalLedger!.requestSha256Hex
             : topicId !== undefined
               ? topicLedgers.find((topic) => topic.topicId === topicId)!.ledger.requestSha256Hex
               : taskId === "fanout-synthesis"
                 ? synthesisLedger!.requestSha256Hex
-                : fixtureProviderRequestSha256Hex;
+                : fixtureProviderRequestSha256Hex);
       return (tamper === "direct_request_digest" && taskId === "single-answer") ||
         (tamper === "topic_request_digest" && taskId === "topic-t1-answer") ||
-        (tamper === "synthesis_request_digest" && taskId === "fanout-synthesis")
+        (tamper === "synthesis_request_digest" && taskId === "fanout-synthesis") ||
+        ((tamper === "clarification_error_stop" || tamper === "clarification_boundary_count") &&
+          taskId === "plan-turn")
         ? "c".repeat(64)
         : exact;
     };
@@ -1779,20 +2796,31 @@ const completeDurableCaptureSession = async (
         for (const request of providerRequests) {
           const requestAttempt = request.taskId === memoryTaskId ? memoryAttempt : 0;
           const providerRequestIndex = request.providerRequestIndex ?? 0;
-          const stopReason =
-            (tamper === "terminal_error_stop" && request.taskId === "single-answer") ||
-            (tamper === "clarification_error_stop" && request.taskId === "resolve-conversation")
-              ? "error"
-              : request.stopReason;
+          const stopReason = request.stopReason;
           const modelId =
-            tamper === "clarification_model_mismatch" && request.taskId === "resolve-conversation"
+            tamper === "clarification_model_mismatch" && request.taskId === "plan-turn"
               ? ("glm-5.2" as const)
               : request.modelId;
           const inputTokens =
-            tamper === "clarification_input_mismatch" && request.taskId === "resolve-conversation"
+            tamper === "clarification_input_mismatch" && request.taskId === "plan-turn"
               ? request.inputTokens + 1
               : request.inputTokens;
-          const providerRequestDigest = providerRequestDigestForTask(request.taskId);
+          const providerEvidence = providerEvidenceForRequest(request.taskId, providerRequestIndex);
+          providerEvidenceByCoordinate.set(
+            providerEvidenceKey(
+              request.taskId,
+              providerRequestIndex,
+              request.loopIteration,
+              requestAttempt,
+            ),
+            providerEvidence,
+          );
+          const providerRequestDigest = providerRequestDigestForTask(
+            request.taskId,
+            providerRequestIndex,
+            request.loopIteration,
+            requestAttempt,
+          );
           yield* insertAiObservation({
             runId: row.runId,
             chatId: manifest.chatId,
@@ -1806,9 +2834,12 @@ const completeDurableCaptureSession = async (
               agentRole: request.agentRole,
               modelId,
               requestSha256Hex: providerRequestDigest,
-              sourceExposureProofSha256Hexes: sourceProofsForRequest(
-                request.taskId,
-                providerRequestIndex,
+              sourceExposureProofSha256Hexes: providerEvidence.proofs,
+              sourceExposureProofBindings: providerEvidence.bindings.map(
+                ({ providerSerializationProofSha256Hex, binding }) => ({
+                  providerSerializationProofSha256Hex,
+                  providerSerializationProofBinding: binding,
+                }),
               ),
               inputTokens,
               requestedOutputTokens: request.requestedOutputTokens,
@@ -1847,6 +2878,22 @@ const completeDurableCaptureSession = async (
             ? insertAiRunUsage(usageInput)
             : insertAiRunUsageAt(usageInput, crossTaskTimestamp);
           if (request.taskId === "single-reduce-plan") {
+            const terminalProviderRequestIndex =
+              tamper === "o_inverted_chronology" && isSpecializedOversized
+                ? 1
+                : providerRequestIndex;
+            const terminalRequestSha256Hex =
+              tamper === "o_inverted_chronology" && isSpecializedOversized
+                ? "b".repeat(64)
+                : providerRequestDigest;
+            const terminalInputTokens =
+              tamper === "o_inverted_chronology" && isSpecializedOversized ? 20 : inputTokens;
+            const terminalTotalTokens =
+              tamper === "o_inverted_chronology" && isSpecializedOversized
+                ? 20
+                : inputTokens + request.outputTokens;
+            const terminalStopReason =
+              tamper === "o_inverted_chronology" && isSpecializedOversized ? "stop" : stopReason;
             yield* insertAiObservation({
               runId: row.runId,
               chatId: manifest.chatId,
@@ -1860,13 +2907,13 @@ const completeDurableCaptureSession = async (
                   taskId: request.taskId,
                   loopIteration: request.loopIteration,
                   attempt: 0,
-                  providerRequestIndex,
+                  providerRequestIndex: terminalProviderRequestIndex,
                 },
                 modelId: "glm-5-turbo",
-                requestSha256Hex: providerRequestDigest,
-                providerInputTokens: inputTokens,
-                totalTokens: inputTokens + request.outputTokens,
-                stopReason,
+                requestSha256Hex: terminalRequestSha256Hex,
+                providerInputTokens: terminalInputTokens,
+                totalTokens: terminalTotalTokens,
+                stopReason: terminalStopReason,
               },
             });
           }
@@ -1913,26 +2960,13 @@ const completeDurableCaptureSession = async (
                   cachedTokens: 0,
                   reasoningTokens: 0,
                   totalTokens: 20,
-                  stopReason: "error",
+                  stopReason: "stop",
                 },
               },
               usageChronologyBase,
             );
           }
         }
-        yield* insertAiObservation({
-          runId: row.runId,
-          chatId: manifest.chatId,
-          emittingTask:
-            row.topology === "general_planner"
-              ? "evaluation-general-planner"
-              : "resolve-conversation",
-          loopIteration: 0,
-          attempt: 0,
-          observationKey: "evaluation-test:conversation-resolution",
-          kind: "conversation_resolution",
-          payload: resolution,
-        });
         yield* insertAiObservation({
           runId: row.runId,
           chatId: manifest.chatId,
@@ -1948,179 +2982,150 @@ const completeDurableCaptureSession = async (
             extractionSha256Hex: memoryArtifact.producer.extractionSha256Hex,
           },
         });
-        if (resolverRequest !== undefined) {
-          yield* insertAiObservation({
-            runId: row.runId,
-            chatId: manifest.chatId,
-            emittingTask: "load-turn",
-            loopIteration: 0,
-            attempt: 0,
-            observationKey: "load-turn:0:0:conversation_inventory_boundary",
-            kind: "conversation_inventory_boundary",
-            payload: {
-              consideredCount: fixture.conversation.length,
-              includedCount:
-                Math.min(
-                  fixture.conversation.length,
-                  CanonicalEvaluationExecutionConfig.aiConversationRecentTurns,
-                ) + (tamper === "clarification_boundary_count" ? 1 : 0),
-              countBoundaryExcludedCount: Math.max(
-                0,
-                fixture.conversation.length -
-                  CanonicalEvaluationExecutionConfig.aiConversationRecentTurns,
-              ),
-              tokenBoundaryExcludedCount: 0,
-            },
-          });
-          yield* insertAiObservation({
-            runId: row.runId,
-            chatId: manifest.chatId,
-            emittingTask: "resolve-conversation",
-            loopIteration: 0,
-            attempt: 0,
-            observationKey: "provider_request_attestation:resolve-conversation:0:0:0",
-            kind: "provider_request_attestation",
-            payload: resolverRequest,
-          });
-        }
-        if (resolution.mode === "continue") {
+        if (resolution.mode === "clarify") {
           yield* insertAiObservation({
             runId: row.runId,
             chatId: manifest.chatId,
             emittingTask:
-              row.topology === "general_planner" ? "evaluation-general-planner" : "plan-execution",
+              row.topology === "general_planner" ? "evaluation-general-planner" : "plan-turn",
             loopIteration: 0,
             attempt: 0,
-            observationKey: "evaluation-test:execution-plan",
-            kind: "execution_plan",
-            payload:
-              row.topology === "specialized" && fixture.labels.fanoutSuitability === "required"
-                ? {
-                    mode: "fanout",
-                    reason: "canonical separable evaluation topics",
-                    topics: [
-                      {
-                        topicId: "t1",
-                        question: "solar",
-                        relevantTurnIds: resolution.selectedTurnIds,
-                      },
-                      {
-                        topicId: "t2",
-                        question: "storage",
-                        relevantTurnIds: resolution.selectedTurnIds,
-                      },
-                    ],
-                  }
-                : { mode: "single", reason: "canonical atomic evaluation question" },
+            observationKey: "evaluation-test:turn-plan",
+            kind: "turn_plan",
+            payload: resolution,
           });
-          const retrievalPrefixes = isSpecializedFanout ? ["topic-t1", "topic-t2"] : ["single"];
-          for (const prefix of retrievalPrefixes) {
-            for (const selector of ["A", "B", "W"] as const) {
-              const retrievalTaskSuffix =
-                selector === "A"
-                  ? "retrieve-internal"
-                  : selector === "B"
-                    ? "select-memories"
-                    : "retrieve-web";
-              const references: Array<Record<string, unknown>> = [];
-              for (const sourceId of selectedIds) {
-                const source = fixture.evidence.find((item) => item.sourceId === sourceId)!;
-                if (source.selector !== selector) continue;
-                const binding = manifest.sourceBindings.find(
-                  (item) => evaluationBindingGoldenSourceId(item) === sourceId,
-                )!;
-                if (binding.kind === "document") {
-                  references.push({
-                    kind: "document",
-                    documentId: binding.documentId,
-                    documentVersionId: binding.documentVersionId,
-                    source: binding.source,
-                    ranges: fullCandidateSelections.find(
-                      (selection) => selection.sourceId === sourceId,
-                    )!.ranges,
-                    purpose:
-                      row.topology === "specialized" && tamper === "manifest_purpose"
-                        ? "forged manifest purpose"
-                        : "canonical evaluation evidence",
-                  });
-                  continue;
-                }
-                if (binding.kind === "chat_message") {
-                  references.push({
-                    kind: "chat_message",
-                    messageId: binding.messageId,
-                    purpose:
-                      row.topology === "specialized" && tamper === "manifest_purpose"
-                        ? "forged manifest purpose"
-                        : "canonical evaluation evidence",
-                  });
-                  continue;
-                }
-                if (binding.kind === "memory") {
-                  references.push({
-                    memoryId: binding.memoryId,
-                    memoryRevisionId: binding.memoryRevisionId,
-                  });
-                  continue;
-                }
-                references.push({
-                  url: binding.url,
-                  title: binding.title,
-                  domain: binding.domain,
-                  quote: source.content,
-                  publishedAt: "2026-03-14T00:00:00.000Z",
-                  capturedAt: binding.capturedAt,
-                  purpose:
-                    row.topology === "specialized" && tamper === "manifest_purpose"
-                      ? "forged manifest purpose"
-                      : "canonical evaluation evidence",
-                });
-                if (
-                  multiWebQuotes &&
-                  row.topology === "specialized" &&
-                  fixture.id === "cross-cutting-separable-energy-question" &&
-                  prefix === "topic-t1" &&
-                  selector === "W"
-                ) {
+        }
+        if (resolution.mode === "single" || resolution.mode === "fanout") {
+          yield* insertAiObservation({
+            runId: row.runId,
+            chatId: manifest.chatId,
+            emittingTask:
+              row.topology === "general_planner" ? "evaluation-general-planner" : "plan-turn",
+            loopIteration: 0,
+            attempt: 0,
+            observationKey: "evaluation-test:turn-plan",
+            kind: "turn_plan",
+            payload: resolution,
+          });
+          if (row.topology === "specialized") {
+            const retrievalPrefixes = isSpecializedFanout
+              ? fanoutTopicIds.map((topicId) => `topic-${topicId}`)
+              : ["single"];
+            for (const prefix of retrievalPrefixes) {
+              for (const selector of ["A", "B", "W"] as const) {
+                const retrievalTaskSuffix =
+                  selector === "A"
+                    ? "retrieve-internal"
+                    : selector === "B"
+                      ? "select-memories"
+                      : "retrieve-web";
+                const retrievalTaskId = `${prefix}-${retrievalTaskSuffix}`;
+                const noCallReason = noCallReasonForSelector(prefix, selector);
+                const references: Array<Record<string, unknown>> = [];
+                for (const sourceId of selectedIds) {
+                  if (noCallReason !== undefined) continue;
+                  const source = fixture.evidence.find((item) => item.sourceId === sourceId)!;
+                  if (source.selector !== selector) continue;
+                  const binding = manifest.sourceBindings.find(
+                    (item) => evaluationBindingGoldenSourceId(item) === sourceId,
+                  )!;
+                  if (binding.kind === "document") {
+                    references.push({
+                      kind: "document",
+                      documentId: binding.documentId,
+                      versionId: binding.versionId,
+                      source: binding.source,
+                      ranges: fullCandidateSelections.find(
+                        (selection) => selection.sourceId === sourceId,
+                      )!.ranges,
+                      purpose:
+                        tamper === "manifest_purpose"
+                          ? "forged manifest purpose"
+                          : "canonical evaluation evidence",
+                    });
+                    continue;
+                  }
+                  if (binding.kind === "chat_message") {
+                    references.push({
+                      kind: "chat_message",
+                      messageId: binding.messageId,
+                      purpose:
+                        tamper === "manifest_purpose"
+                          ? "forged manifest purpose"
+                          : "canonical evaluation evidence",
+                    });
+                    continue;
+                  }
+                  if (binding.kind === "memory") {
+                    references.push({
+                      memoryId: binding.memoryId,
+                      memoryRevisionId: binding.memoryRevisionId,
+                    });
+                    continue;
+                  }
                   references.push({
                     url: binding.url,
                     title: binding.title,
                     domain: binding.domain,
-                    quote: source.content.slice(0, 24),
+                    quote: source.content,
                     publishedAt: "2026-03-14T00:00:00.000Z",
                     capturedAt: binding.capturedAt,
-                    purpose: "canonical evaluation evidence excerpt",
+                    purpose:
+                      tamper === "manifest_purpose"
+                        ? "forged manifest purpose"
+                        : "canonical evaluation evidence",
                   });
+                  if (
+                    multiWebQuotes &&
+                    fixture.id === "cross-cutting-separable-energy-question" &&
+                    prefix === "topic-t3" &&
+                    selector === "W"
+                  ) {
+                    references.push({
+                      url: binding.url,
+                      title: binding.title,
+                      domain: binding.domain,
+                      quote: source.content.slice(0, 24),
+                      publishedAt: "2026-03-14T00:00:00.000Z",
+                      capturedAt: binding.capturedAt,
+                      purpose: "canonical evaluation evidence excerpt",
+                    });
+                  }
                 }
+                yield* insertAiObservation({
+                  runId: row.runId,
+                  chatId: manifest.chatId,
+                  emittingTask: retrievalTaskId,
+                  loopIteration: 0,
+                  attempt: 0,
+                  observationKey:
+                    noCallReason === undefined
+                      ? `evaluation-test:retrieval:${prefix}:${selector}`
+                      : `${retrievalTaskId}:0:0:retrieval_manifest:result`,
+                  kind: "retrieval_manifest",
+                  payload: {
+                    selectorRole:
+                      selector === "A" ? "internal" : selector === "B" ? "memory" : "web",
+                    references,
+                    ...(references.length === 0 && noCallReason !== undefined
+                      ? { noCallReason }
+                      : {}),
+                  },
+                });
               }
-              yield* insertAiObservation({
-                runId: row.runId,
-                chatId: manifest.chatId,
-                emittingTask:
-                  row.topology === "general_planner"
-                    ? "evaluation-general-planner"
-                    : `${prefix}-${retrievalTaskSuffix}`,
-                loopIteration: 0,
-                attempt: 0,
-                observationKey: `evaluation-test:retrieval:${prefix}:${selector}`,
-                kind: "retrieval_manifest",
-                payload: {
-                  selectorRole: selector === "A" ? "internal" : selector === "B" ? "memory" : "web",
-                  references,
-                },
-              });
             }
           }
           if (row.topology === "general_planner") {
             yield* insertAiObservation({
               runId: row.runId,
               chatId: manifest.chatId,
-              emittingTask: "evaluation-test-answer",
+              emittingTask: "evaluation-general-planner",
               loopIteration: 0,
               attempt: 0,
               observationKey: "evaluation-test:baseline-context-measurement",
               kind: "context_measurement",
               payload: {
+                consumerTaskId: resolution.mode === "fanout" ? "fanout-synthesis" : "single-answer",
                 totalInputTokens: candidateTokens,
                 usableInputTokens: canonicalEvaluationUsableInputTokens(),
                 status: "ready",
@@ -2130,14 +3135,35 @@ const completeDurableCaptureSession = async (
             yield* insertAiObservation({
               runId: row.runId,
               chatId: manifest.chatId,
-              emittingTask: "evaluation-test-answer",
+              emittingTask: "evaluation-general-planner",
               loopIteration: 0,
               attempt: 0,
               observationKey: "evaluation-test:baseline-context-serialized",
               kind: "context_serialized",
               payload: {
-                consumerTaskId: "evaluation-general-planner",
+                consumerTaskId: resolution.mode === "fanout" ? "fanout-synthesis" : "single-answer",
                 sourceKeys: sourceMap.map((source) => source.sourceKey),
+              },
+            });
+            yield* insertAiObservation({
+              runId: row.runId,
+              chatId: manifest.chatId,
+              emittingTask: "evaluation-general-planner",
+              loopIteration: 0,
+              attempt: 0,
+              observationKey: "evaluation-test:general-planner-retrieval",
+              kind: "retrieval_manifest",
+              payload: {
+                selectorRole: "general_planner",
+                references: selectedIds.map((sourceId) => {
+                  const source = fixture.evidence.find(
+                    (candidate) => candidate.sourceId === sourceId,
+                  )!;
+                  return {
+                    sourceId,
+                    ranges: source.kind === "document" ? source.ranges : [],
+                  };
+                }),
               },
             });
           }
@@ -2151,14 +3177,22 @@ const completeDurableCaptureSession = async (
               observationKey: "evaluation-test:context-measurement:pre",
               kind: "context_measurement",
               payload: {
+                consumerTaskId: "single-answer",
+                mandatoryInputTokens: 0,
+                discretionaryInputTokens:
+                  isSpecializedOversized && tamper === "pre_token_mismatch"
+                    ? directInitialLedger!.inputTokens + 1
+                    : directInitialLedger!.inputTokens,
                 totalInputTokens:
                   isSpecializedOversized && tamper === "pre_token_mismatch"
                     ? directInitialLedger!.inputTokens + 1
                     : directInitialLedger!.inputTokens,
                 usableInputTokens: directInitialLedger!.usableInputTokens,
                 requestedOutputTokens: directInitialLedger!.requestedOutputTokens,
+                contextWindow: 200_000,
                 status: isSpecializedOversized ? "needs_reduction" : "ready",
                 reductionRan: false,
+                reductionFeedback: [],
                 restrictedContextLedger: directInitialLedger,
               },
             });
@@ -2177,11 +3211,163 @@ const completeDurableCaptureSession = async (
                 terminalUsageCoordinate: {
                   taskId: "single-answer",
                   loopIteration: 0,
-                  attempt: 0,
+                  attempt: tamper === "terminal_error_stop" ? 1 : 0,
                   providerRequestIndex: 0,
                 },
               },
             });
+            if (tamper === "terminal_error_stop") {
+              const retryMarkers = answerSerializedMarkersForTask("single-answer");
+              const retrySidecar = providerSidecarForCodeOwnedMarkers([
+                ...conversationProviderMarkers(),
+                ...retryMarkers,
+              ]);
+              const retryProviderRequestSha256Hex = directTerminalLedger!.requestSha256Hex;
+              providerEvidenceByCoordinate.set("single-answer:0:1:0", {
+                requestSha256Hex: retryProviderRequestSha256Hex,
+                proofs: retrySidecar.proofs,
+                bindings: retrySidecar.bindings,
+              });
+              yield* insertAiObservation({
+                runId: row.runId,
+                chatId: manifest.chatId,
+                emittingTask: "single-answer",
+                loopIteration: 0,
+                attempt: 1,
+                observationKey: "provider_request_measurement:single-answer:0:1:0",
+                kind: "provider_request_measurement",
+                payload: {
+                  providerRequestIndex: 0,
+                  agentRole: "direct_answer",
+                  modelId: "glm-5-turbo",
+                  requestSha256Hex: retryProviderRequestSha256Hex,
+                  sourceExposureProofSha256Hexes: retrySidecar.proofs,
+                  sourceExposureProofBindings: retrySidecar.bindings.map(
+                    ({ providerSerializationProofSha256Hex, binding }) => ({
+                      providerSerializationProofSha256Hex,
+                      providerSerializationProofBinding: binding,
+                    }),
+                  ),
+                  inputTokens: directTerminalLedger!.inputTokens,
+                  requestedOutputTokens: directTerminalLedger!.requestedOutputTokens,
+                  usableInputTokens: directTerminalLedger!.usableInputTokens,
+                  contextWindow: 200_000,
+                  passed: true,
+                },
+              });
+              yield* insertAiRunUsage({
+                runId: row.runId,
+                taskId: "single-answer",
+                loopIteration: 0,
+                attempt: 1,
+                providerRequestIndex: 0,
+                agentRole: "direct_answer",
+                modelId: "glm-5-turbo",
+                providerServiceId: "zai_coding_plan_official",
+                usage: {
+                  inputTokens: directTerminalLedger!.inputTokens,
+                  outputTokens: 0,
+                  cachedTokens: 0,
+                  reasoningTokens: 0,
+                  totalTokens: directTerminalLedger!.inputTokens,
+                  stopReason: "stop",
+                },
+              });
+              yield* insertAiObservation({
+                runId: row.runId,
+                chatId: manifest.chatId,
+                emittingTask: "single-answer",
+                loopIteration: 0,
+                attempt: 1,
+                observationKey: "evaluation-test:context-serialized:single-answer:retry",
+                kind: "context_serialized",
+                payload: {
+                  consumerTaskId: "single-answer",
+                  sourceKeys: sourceMap.map((source) => source.sourceKey),
+                  restrictedContextLedger: directTerminalLedger,
+                  terminalUsageCoordinate: {
+                    taskId: "single-answer",
+                    loopIteration: 0,
+                    attempt: 1,
+                    providerRequestIndex: 0,
+                  },
+                },
+              });
+              for (const marker of conversationProviderMarkers()) {
+                const sidecarBinding = retrySidecar.bindings.find(
+                  (candidate) =>
+                    candidate.marker.sourceKind === marker.sourceKind &&
+                    candidate.marker.logicalSourceIdentity === marker.logicalSourceIdentity &&
+                    candidate.marker.contentItemIdentity === marker.contentItemIdentity &&
+                    candidate.marker.exposureStage === marker.exposureStage &&
+                    candidate.marker.visibleTokenCount === marker.visibleTokenCount,
+                )?.binding;
+                if (sidecarBinding === undefined) {
+                  throw new Error("terminal retry lacks its exact conversation sidecar binding");
+                }
+                yield* insertFixtureSourceExposure({
+                  runId: row.runId,
+                  taskId: "single-answer",
+                  loopIteration: 0,
+                  attempt: 1,
+                  providerRequestIndex: 0,
+                  providerRequestSha256Hex: retryProviderRequestSha256Hex,
+                  sourceKind: marker.sourceKind,
+                  logicalSourceIdentity: marker.logicalSourceIdentity,
+                  contentItemIdentity: marker.contentItemIdentity,
+                  exposureStage: marker.exposureStage,
+                  visibleTokenCount: marker.visibleTokenCount,
+                  providerSerializationProofBinding: sidecarBinding,
+                });
+              }
+              for (const [index, source] of sourceMap.entries()) {
+                const marker = retryMarkers.filter(
+                  (candidate) => candidate.exposureStage === "answer_serialized",
+                )[index];
+                if (marker === undefined) continue;
+                const sidecarBinding = retrySidecar.bindings.find(
+                  (candidate) =>
+                    candidate.marker.sourceKind === marker.sourceKind &&
+                    candidate.marker.logicalSourceIdentity === marker.logicalSourceIdentity &&
+                    candidate.marker.contentItemIdentity === marker.contentItemIdentity &&
+                    candidate.marker.exposureStage === marker.exposureStage &&
+                    candidate.marker.visibleTokenCount === marker.visibleTokenCount,
+                )?.binding;
+                if (sidecarBinding === undefined) {
+                  throw new Error("terminal retry lacks its exact answer sidecar binding");
+                }
+                yield* insertFixtureSourceExposure({
+                  runId: row.runId,
+                  taskId: "single-answer",
+                  loopIteration: 0,
+                  attempt: 1,
+                  providerRequestIndex: 0,
+                  providerRequestSha256Hex: retryProviderRequestSha256Hex,
+                  sourceKind: marker.sourceKind,
+                  logicalSourceIdentity: marker.logicalSourceIdentity,
+                  contentItemIdentity: marker.contentItemIdentity,
+                  exposureStage: marker.exposureStage,
+                  visibleTokenCount: marker.visibleTokenCount,
+                  providerSerializationProofBinding: sidecarBinding,
+                  ...(source.locator.kind === "document"
+                    ? {
+                        documentReconstruction: {
+                          sourceId: source.locator.sourceId,
+                          documentId: source.locator.documentId,
+                          versionId: source.locator.versionId,
+                          contentHash: source.locator.contentHash,
+                          ranges:
+                            source.uses.find((use) => use.consumerTaskId === "single-answer")
+                              ?.ranges ?? [],
+                          ...(source.locator.publisherExtractionId === undefined
+                            ? {}
+                            : { publisherExtractionId: source.locator.publisherExtractionId }),
+                        },
+                      }
+                    : {}),
+                });
+              }
+            }
           }
           if (isSpecializedOversized) {
             if (tamper === "later_invalid_decision") {
@@ -2219,17 +3405,22 @@ const completeDurableCaptureSession = async (
               observationKey: "evaluation-test:context-measurement:post",
               kind: "context_measurement",
               payload: {
+                consumerTaskId: "single-answer",
+                mandatoryInputTokens: 0,
+                discretionaryInputTokens: directTerminalLedger!.inputTokens,
                 totalInputTokens: directTerminalLedger!.inputTokens,
-                usableInputTokens: directTerminalLedger!.usableInputTokens,
                 requestedOutputTokens: directTerminalLedger!.requestedOutputTokens,
+                usableInputTokens: directTerminalLedger!.usableInputTokens,
+                contextWindow: 200_000,
                 status: "ready",
                 reductionRan: true,
+                reductionFeedback: [],
                 restrictedContextLedger: directTerminalLedger,
               },
             });
           }
           if (row.topology === "specialized" && isSpecializedFanout) {
-            for (const { topicId, ledger } of topicLedgers) {
+            for (const [topicIndex, { topicId, ledger }] of topicLedgers.entries()) {
               yield* insertAiObservation({
                 runId: row.runId,
                 chatId: manifest.chatId,
@@ -2239,11 +3430,16 @@ const completeDurableCaptureSession = async (
                 observationKey: `evaluation-test:context-measurement:${topicId}:pre`,
                 kind: "context_measurement",
                 payload: {
+                  consumerTaskId: `topic-${topicId}-answer`,
+                  mandatoryInputTokens: 0,
+                  discretionaryInputTokens: ledger.inputTokens,
                   totalInputTokens: ledger.inputTokens,
                   usableInputTokens: ledger.usableInputTokens,
                   requestedOutputTokens: ledger.requestedOutputTokens,
+                  contextWindow: 200_000,
                   status: "ready",
                   reductionRan: false,
+                  reductionFeedback: [],
                   restrictedContextLedger: ledger,
                 },
               });
@@ -2268,7 +3464,10 @@ const completeDurableCaptureSession = async (
                   },
                 },
               });
-              const packet = topicPackets.find((candidate) => candidate.topicId === topicId)!;
+              const packet = topicPackets[topicIndex];
+              if (packet?.topicId !== topicId) {
+                throw new Error("fanout packet order does not match the planned topics");
+              }
               yield* insertAiObservation({
                 runId: row.runId,
                 chatId: manifest.chatId,
@@ -2279,6 +3478,7 @@ const completeDurableCaptureSession = async (
                 kind: "topic_packet",
                 payload: {
                   topicId,
+                  sourceKeys: [...new Set(packet.claims.flatMap((claim) => claim.sourceKeys))],
                   status: packet.status,
                   claimCount: packet.claims.length,
                   gapCount: packet.gaps.length,
@@ -2289,6 +3489,28 @@ const completeDurableCaptureSession = async (
             yield* insertAiObservation({
               runId: row.runId,
               chatId: manifest.chatId,
+              emittingTask: "fanout-synthesis-measure",
+              loopIteration: 0,
+              attempt: 0,
+              observationKey: "evaluation-test:context-measurement:synthesis",
+              kind: "context_measurement",
+              payload: {
+                consumerTaskId: "fanout-synthesis",
+                mandatoryInputTokens: 0,
+                discretionaryInputTokens: synthesisLedger!.inputTokens,
+                totalInputTokens: synthesisLedger!.inputTokens,
+                requestedOutputTokens: synthesisLedger!.requestedOutputTokens,
+                usableInputTokens: synthesisLedger!.usableInputTokens,
+                contextWindow: 200_000,
+                status: "ready",
+                reductionRan: false,
+                reductionFeedback: [],
+                restrictedContextLedger: synthesisLedger,
+              },
+            });
+            yield* insertAiObservation({
+              runId: row.runId,
+              chatId: manifest.chatId,
               emittingTask: "fanout-synthesis",
               loopIteration: 0,
               attempt: 0,
@@ -2296,7 +3518,7 @@ const completeDurableCaptureSession = async (
               kind: "context_serialized",
               payload: {
                 consumerTaskId: "fanout-synthesis",
-                sourceKeys: sourceMap.map((source) => source.sourceKey),
+                sourceKeys: [],
                 restrictedContextLedger: synthesisLedger,
                 terminalUsageCoordinate: {
                   taskId: "fanout-synthesis",
@@ -2320,7 +3542,7 @@ const completeDurableCaptureSession = async (
               : tamper === "wrong_document_version" && binding.kind === "document"
                 ? `unknown-evaluation-version:${marker.contentItemIdentity.split(":").at(-1)}`
                 : tamper === "coordinated_document_hash" && binding.kind === "document"
-                  ? `${binding.documentVersionId}:${"A".repeat(43)}`
+                  ? `${binding.versionId}:${"A".repeat(43)}`
                   : tamper === "wrong_memory_revision" && binding.kind === "memory"
                     ? "00000000-0000-4000-8000-000000000099"
                     : tamper === "wrong_web_identity" && binding.kind === "web"
@@ -2330,27 +3552,33 @@ const completeDurableCaptureSession = async (
             binding.kind === "document"
               ? namespacedDocumentEvidenceIdentity(binding.source, binding.documentId)
               : sourceId;
-          const canonicalBaselineIdentity = `${baselineLogicalIdentity}:0:${source.content.length}:${createHash(
-            "sha256",
-          )
-            .update(source.content)
-            .digest("hex")}`;
+          const canonicalBaselineIdentity =
+            binding.kind === "document"
+              ? `${baselineLogicalIdentity}:${binding.versionId}:${sha256Base64Url(JSON.stringify(source.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd }))))}`
+              : `${baselineLogicalIdentity}:0:${source.content.length}:${createHash("sha256")
+                  .update(source.content)
+                  .digest("hex")}`;
           const exposureTaskIds =
             row.topology === "general_planner"
               ? ["evaluation-general-planner"]
-              : (isSpecializedFanout ? ["topic-t1", "topic-t2"] : ["single"]).map((prefix) =>
-                  tamper === "memory_as_internal_preview" && source.kind === "memory"
-                    ? `${prefix}-retrieve-internal`
-                    : tamper === "chat_as_web_preview" && source.kind === "chat_message"
-                      ? `${prefix}-retrieve-web`
-                      : tamper === "arbitrary_internal_task" && source.selector === "A"
-                        ? "forged-retrieve-internal"
-                        : `${prefix}-${
-                            source.selector === "B"
-                              ? "select-memories"
-                              : `retrieve-${source.selector === "A" ? "internal" : "web"}`
-                          }`,
-                );
+              : (isSpecializedFanout
+                  ? fanoutTopicIds.map((topicId) => `topic-${topicId}`)
+                  : ["single"]
+                )
+                  .filter((prefix) => selectorHasProviderCall(prefix, source.selector))
+                  .map((prefix) =>
+                    tamper === "memory_as_internal_preview" && source.kind === "memory"
+                      ? `${prefix}-retrieve-internal`
+                      : tamper === "chat_as_web_preview" && source.kind === "chat_message"
+                        ? `${prefix}-retrieve-web`
+                        : tamper === "arbitrary_internal_task" && source.selector === "A"
+                          ? "forged-retrieve-internal"
+                          : `${prefix}-${
+                              source.selector === "B"
+                                ? "select-memories"
+                                : `retrieve-${source.selector === "A" ? "internal" : "web"}`
+                            }`,
+                  );
           for (const exposureTaskId of exposureTaskIds) {
             const exposureProviderRequestIndices =
               row.topology === "specialized" &&
@@ -2363,13 +3591,16 @@ const completeDurableCaptureSession = async (
                   ? [1, 2]
                   : [0];
             for (const providerRequestIndex of exposureProviderRequestIndices) {
-              yield* insertAiSourceExposure({
+              yield* insertFixtureSourceExposure({
                 runId: row.runId,
                 taskId: exposureTaskId,
                 loopIteration: 0,
                 attempt: 0,
                 providerRequestIndex,
-                providerRequestSha256Hex: fixtureProviderRequestSha256Hex,
+                providerRequestSha256Hex: providerRequestDigestForTask(
+                  exposureTaskId,
+                  providerRequestIndex,
+                ),
                 sourceKind: source.kind,
                 logicalSourceIdentity:
                   row.topology === "general_planner"
@@ -2383,20 +3614,27 @@ const completeDurableCaptureSession = async (
                   row.topology === "general_planner"
                     ? "evaluation_general_planner_inspect"
                     : tamper === "wrong_web_stage" && binding.kind === "web"
-                      ? "internal_search_preview"
+                      ? "web_fetch"
                       : marker.exposureStage,
                 visibleTokenCount:
                   row.topology === "general_planner"
                     ? model.countTextTokens(source.content)
                     : marker.visibleTokenCount,
-                ...(row.topology === "general_planner" && binding.kind === "document"
+                ...(source.kind === "document" && binding.kind === "document"
                   ? {
                       documentReconstruction: {
                         sourceId: binding.sourceId,
                         documentId: binding.documentId,
-                        documentVersionId: binding.documentVersionId,
-                        contentHash: binding.contentHash,
-                        ranges: [{ charStart: 0, charEnd: source.content.length }],
+                        versionId: binding.versionId,
+                        contentHash:
+                          tamper === "tampered_document_reconstruction"
+                            ? "b".repeat(64)
+                            : binding.contentHash,
+                        ranges:
+                          row.topology === "specialized" &&
+                          marker.exposureStage === "internal_search_preview"
+                            ? previewRangesFor(source)
+                            : source.ranges,
                       },
                     }
                   : {}),
@@ -2404,13 +3642,13 @@ const completeDurableCaptureSession = async (
             }
             if (row.topology === "specialized" && binding.kind === "web") {
               const canonicalUrl = canonicalizeWebUrl(binding.url);
-              yield* insertAiSourceExposure({
+              yield* insertFixtureSourceExposure({
                 runId: row.runId,
                 taskId: exposureTaskId,
                 loopIteration: 0,
                 attempt: 0,
                 providerRequestIndex: 0,
-                providerRequestSha256Hex: fixtureProviderRequestSha256Hex,
+                providerRequestSha256Hex: providerRequestDigestForTask(exposureTaskId),
                 sourceKind: "web",
                 logicalSourceIdentity: canonicalUrl,
                 contentItemIdentity: `${canonicalUrl}:${sha256Base64Url(source.content)}`,
@@ -2421,13 +3659,13 @@ const completeDurableCaptureSession = async (
           }
           if (isSpecializedOversized) {
             const reductionMarker = exposedReductionMarkerFor(sourceId);
-            yield* insertAiSourceExposure({
+            yield* insertFixtureSourceExposure({
               runId: row.runId,
               taskId: "single-reduce-plan",
               loopIteration: 1,
               attempt: 0,
               providerRequestIndex: 0,
-              providerRequestSha256Hex: fixtureProviderRequestSha256Hex,
+              providerRequestSha256Hex: providerRequestDigestForTask("single-reduce-plan", 0, 1),
               sourceKind: reductionMarker.sourceKind,
               logicalSourceIdentity: reductionMarker.logicalSourceIdentity,
               contentItemIdentity: reductionMarker.contentItemIdentity,
@@ -2451,14 +3689,17 @@ const completeDurableCaptureSession = async (
         }
         if (isSpecializedOversized) {
           for (const [index, marker] of oversizedInspectionMarkers.entries()) {
-            yield* insertAiSourceExposure({
+            yield* insertFixtureSourceExposure({
               runId: row.runId,
               taskId: "single-retrieve-internal",
               loopIteration: 0,
               attempt: 0,
               providerRequestIndex:
                 tamper === "oversized_wrong_coordinate_internal_inspection" && index === 0 ? 1 : 2,
-              providerRequestSha256Hex: fixtureProviderRequestSha256Hex,
+              providerRequestSha256Hex: providerRequestDigestForTask(
+                "single-retrieve-internal",
+                tamper === "oversized_wrong_coordinate_internal_inspection" && index === 0 ? 1 : 2,
+              ),
               sourceKind: marker.sourceKind,
               logicalSourceIdentity: marker.logicalSourceIdentity,
               contentItemIdentity: marker.contentItemIdentity,
@@ -2479,51 +3720,146 @@ const completeDurableCaptureSession = async (
         }
         if (extraConversationExposure !== undefined) {
           const serialized = extraConversationExposure.exposureStage === "answer_serialized";
-          yield* insertAiSourceExposure({
-            runId: row.runId,
-            taskId: serialized ? "single-answer" : "single-retrieve-internal",
-            loopIteration: 0,
-            attempt: 0,
-            providerRequestIndex: 0,
-            providerRequestSha256Hex: serialized
-              ? providerRequestDigestForTask("single-answer")
-              : fixtureProviderRequestSha256Hex,
-            sourceKind: extraConversationExposure.sourceKind,
-            logicalSourceIdentity: extraConversationExposure.logicalSourceIdentity,
-            contentItemIdentity: extraConversationExposure.contentItemIdentity,
-            exposureStage: extraConversationExposure.exposureStage,
-            visibleTokenCount: extraConversationExposure.visibleTokenCount,
-          });
+          if (serialized) {
+            const extraMarker: ProviderVisibleSourceExposureMarker = {
+              sourceKind: extraConversationExposure.sourceKind,
+              logicalSourceIdentity: extraConversationExposure.logicalSourceIdentity,
+              contentItemIdentity: extraConversationExposure.contentItemIdentity,
+              exposureStage: extraConversationExposure.exposureStage,
+              visibleTokenCount: extraConversationExposure.visibleTokenCount,
+            };
+            const retryMarkers = [
+              ...conversationProviderMarkers(),
+              ...answerSerializedMarkersForTask("single-answer"),
+              extraMarker,
+            ];
+            const retrySidecar = providerSidecarForCodeOwnedMarkers(retryMarkers);
+            yield* insertAiObservation({
+              runId: row.runId,
+              chatId: manifest.chatId,
+              emittingTask: "topic-t1-answer",
+              loopIteration: 0,
+              attempt: 1,
+              observationKey: "provider_request_measurement:topic-t1-answer:0:1:0",
+              kind: "provider_request_measurement",
+              payload: {
+                providerRequestIndex: 0,
+                agentRole: "topic_answer",
+                modelId: "glm-5-turbo",
+                requestSha256Hex: retrySidecar.requestSha256Hex,
+                sourceExposureProofSha256Hexes: retrySidecar.proofs,
+                sourceExposureProofBindings: retrySidecar.bindings.map(
+                  ({ providerSerializationProofSha256Hex, binding }) => ({
+                    providerSerializationProofSha256Hex,
+                    providerSerializationProofBinding: binding,
+                  }),
+                ),
+                inputTokens: directTerminalLedger!.inputTokens,
+                requestedOutputTokens: 16_384,
+                usableInputTokens: canonicalEvaluationUsableInputTokens(),
+                contextWindow: 200_000,
+                passed: true,
+              },
+            });
+            yield* insertAiRunUsage({
+              runId: row.runId,
+              taskId: "topic-t1-answer",
+              loopIteration: 0,
+              attempt: 1,
+              providerRequestIndex: 0,
+              agentRole: "topic_answer",
+              modelId: "glm-5-turbo",
+              providerServiceId: "zai_coding_plan_official",
+              usage: {
+                inputTokens: directTerminalLedger!.inputTokens,
+                outputTokens: 0,
+                cachedTokens: 0,
+                reasoningTokens: 0,
+                totalTokens: directTerminalLedger!.inputTokens,
+                stopReason: "stop",
+              },
+            });
+            for (const marker of retryMarkers) {
+              const sidecarBinding = retrySidecar.bindings.find(
+                (candidate) =>
+                  candidate.marker.sourceKind === marker.sourceKind &&
+                  candidate.marker.logicalSourceIdentity === marker.logicalSourceIdentity &&
+                  candidate.marker.contentItemIdentity === marker.contentItemIdentity &&
+                  candidate.marker.exposureStage === marker.exposureStage &&
+                  candidate.marker.visibleTokenCount === marker.visibleTokenCount,
+              )?.binding;
+              if (sidecarBinding === undefined) {
+                throw new Error("serialized conversation tamper lacks its exact sidecar binding");
+              }
+              const details = markerDetailsFor(marker);
+              const documentBinding =
+                details?.binding.kind === "document" ? details.binding : undefined;
+              yield* insertFixtureSourceExposure({
+                runId: row.runId,
+                taskId: "topic-t1-answer",
+                loopIteration: 0,
+                attempt: 1,
+                providerRequestIndex: 0,
+                providerRequestSha256Hex: retrySidecar.requestSha256Hex,
+                sourceKind: marker.sourceKind,
+                logicalSourceIdentity: marker.logicalSourceIdentity,
+                contentItemIdentity: marker.contentItemIdentity,
+                exposureStage: marker.exposureStage,
+                visibleTokenCount: marker.visibleTokenCount,
+                providerSerializationProofBinding: sidecarBinding,
+                ...(documentBinding !== undefined && details?.ranges !== undefined
+                  ? {
+                      documentReconstruction: {
+                        sourceId: documentBinding.sourceId,
+                        documentId: documentBinding.documentId,
+                        versionId: documentBinding.versionId,
+                        contentHash: documentBinding.contentHash,
+                        ranges: details.ranges,
+                        ...(documentBinding.publisherExtractionId === null
+                          ? {}
+                          : { publisherExtractionId: documentBinding.publisherExtractionId }),
+                      },
+                    }
+                  : {}),
+              });
+            }
+          } else {
+            yield* insertFixtureSourceExposure({
+              runId: row.runId,
+              taskId: "single-retrieve-internal",
+              loopIteration: 0,
+              attempt: 0,
+              providerRequestIndex: 0,
+              providerRequestSha256Hex: providerRequestDigestForTask("single-retrieve-internal"),
+              sourceKind: extraConversationExposure.sourceKind,
+              logicalSourceIdentity: extraConversationExposure.logicalSourceIdentity,
+              contentItemIdentity: extraConversationExposure.contentItemIdentity,
+              exposureStage: extraConversationExposure.exposureStage,
+              visibleTokenCount: extraConversationExposure.visibleTokenCount,
+            });
+          }
         }
         if (row.topology === "specialized") {
-          const conversationTaskId =
-            resolverRequest !== undefined
-              ? "resolve-conversation"
+          const conversationTaskIds = [
+            ...(resolution.mode === "clarify"
+              ? planTurnRequest === undefined
+                ? []
+                : ["plan-turn"]
+              : ["plan-turn"]),
+            ...(resolution.mode === "clarify"
+              ? []
               : isSpecializedFanout
-                ? "topic-t1-answer"
-                : "single-answer";
-          const conversationRequestDigest =
-            resolverRequest?.requestSha256Hex ??
-            (isSpecializedFanout
-              ? providerRequestDigestForTask("topic-t1-answer")
-              : providerRequestDigestForTask("single-answer"));
-          yield* insertAiSourceExposure({
-            runId: row.runId,
-            taskId: conversationTaskId,
-            loopIteration: 0,
-            attempt: 0,
-            providerRequestIndex: 0,
-            providerRequestSha256Hex: conversationRequestDigest,
-            sourceKind: "chat_message",
-            logicalSourceIdentity: chatMessageEvidenceIdentity(manifest.userMessageId),
-            contentItemIdentity: manifest.userMessageId,
-            exposureStage: "provider_input",
-            visibleTokenCount: model.countTextTokens(fixture.currentMessage),
-          });
+                ? [
+                    ...fanoutTopicIds.map((topicId) => `topic-${topicId}-answer`),
+                    "fanout-synthesis",
+                  ]
+                : ["single-answer"]),
+          ];
           const firstTurn = manifest.turnBindings[0];
           const firstGoldenTurn = fixture.conversation[0];
-          if (firstTurn !== undefined && firstGoldenTurn !== undefined) {
-            yield* insertAiSourceExposure({
+          for (const conversationTaskId of conversationTaskIds) {
+            const conversationRequestDigest = providerRequestDigestForTask(conversationTaskId);
+            yield* insertFixtureSourceExposure({
               runId: row.runId,
               taskId: conversationTaskId,
               loopIteration: 0,
@@ -2531,11 +3867,71 @@ const completeDurableCaptureSession = async (
               providerRequestIndex: 0,
               providerRequestSha256Hex: conversationRequestDigest,
               sourceKind: "chat_message",
-              logicalSourceIdentity: chatMessageEvidenceIdentity(firstTurn.assistantMessageId),
-              contentItemIdentity: firstTurn.assistantMessageId,
+              logicalSourceIdentity: chatMessageEvidenceIdentity(manifest.userMessageId),
+              contentItemIdentity: manifest.userMessageId,
               exposureStage: "provider_input",
-              visibleTokenCount: model.countTextTokens(firstGoldenTurn.assistantContent),
+              visibleTokenCount: model.countTextTokens(fixture.currentMessage),
             });
+            if (firstTurn !== undefined && firstGoldenTurn !== undefined) {
+              yield* insertFixtureSourceExposure({
+                runId: row.runId,
+                taskId: conversationTaskId,
+                loopIteration: 0,
+                attempt: 0,
+                providerRequestIndex: 0,
+                providerRequestSha256Hex: conversationRequestDigest,
+                sourceKind: "chat_message",
+                logicalSourceIdentity: chatMessageEvidenceIdentity(firstTurn.assistantMessageId),
+                contentItemIdentity: firstTurn.assistantMessageId,
+                exposureStage: "provider_input",
+                visibleTokenCount: model.countTextTokens(firstGoldenTurn.assistantContent),
+              });
+            }
+          }
+          const answerTaskIds =
+            resolution.mode === "clarify"
+              ? []
+              : isSpecializedFanout
+                ? [
+                    ...fanoutTopicIds.map((topicId) => `topic-${topicId}-answer`),
+                    "fanout-synthesis",
+                  ]
+                : ["single-answer"];
+          for (const taskId of answerTaskIds) {
+            const markers = answerSerializedMarkersForTask(taskId);
+            for (const [index, source] of sourceMap.entries()) {
+              const marker = markers[index];
+              if (marker === undefined) continue;
+              const locator = source.locator;
+              yield* insertFixtureSourceExposure({
+                runId: row.runId,
+                taskId,
+                loopIteration: 0,
+                attempt: 0,
+                providerRequestIndex: 0,
+                providerRequestSha256Hex: providerRequestDigestForTask(taskId),
+                sourceKind: marker.sourceKind,
+                logicalSourceIdentity: marker.logicalSourceIdentity,
+                contentItemIdentity: marker.contentItemIdentity,
+                exposureStage: marker.exposureStage,
+                visibleTokenCount: marker.visibleTokenCount,
+                ...(locator.kind === "document"
+                  ? {
+                      documentReconstruction: {
+                        sourceId: locator.sourceId,
+                        documentId: locator.documentId,
+                        versionId: locator.versionId,
+                        contentHash: locator.contentHash,
+                        ranges:
+                          source.uses.find((use) => use.consumerTaskId === taskId)?.ranges ?? [],
+                        ...(locator.publisherExtractionId === undefined
+                          ? {}
+                          : { publisherExtractionId: locator.publisherExtractionId }),
+                      },
+                    }
+                  : {}),
+              });
+            }
           }
         }
         if (
@@ -2543,43 +3939,108 @@ const completeDurableCaptureSession = async (
           row.topology === "specialized" &&
           row.caseId === CanonicalGoldenEvaluationSet.cases[0]?.id
         ) {
-          yield* insertAiSourceExposure({
+          const forgedSourceId = selectedIds.find(
+            (sourceId) =>
+              fixture.evidence.find((source) => source.sourceId === sourceId)?.kind ===
+                "document" &&
+              fixture.evidence.find((source) => source.sourceId === sourceId)?.selector === "A",
+          );
+          const forgedSource =
+            forgedSourceId === undefined
+              ? undefined
+              : fixture.evidence.find((source) => source.sourceId === forgedSourceId);
+          const forgedBinding =
+            forgedSourceId === undefined
+              ? undefined
+              : manifest.sourceBindings.find(
+                  (binding) => evaluationBindingGoldenSourceId(binding) === forgedSourceId,
+                );
+          if (
+            forgedSourceId === undefined ||
+            forgedSource?.kind !== "document" ||
+            forgedBinding?.kind !== "document"
+          ) {
+            throw new Error("unknown exposure tamper lacks a canonical document fixture");
+          }
+          const forgedMarker = exposedPreviewMarkerFor(forgedSourceId);
+          const forgedProviderBinding = [...providerEvidenceByCoordinate.values()]
+            .flatMap((evidence) => evidence.bindings)
+            .find(
+              (candidate) =>
+                canonicalJson(candidate.marker) ===
+                canonicalJson({
+                  sourceKind: forgedMarker.sourceKind,
+                  logicalSourceIdentity: forgedMarker.logicalSourceIdentity,
+                  contentItemIdentity: forgedMarker.contentItemIdentity,
+                  exposureStage: forgedMarker.exposureStage,
+                  visibleTokenCount: forgedMarker.visibleTokenCount,
+                }),
+            )?.binding;
+          if (forgedProviderBinding === undefined) {
+            throw new Error("unknown exposure tamper lacks a canonical provider field binding");
+          }
+          deferredUnknownExposure = {
             runId: row.runId,
             taskId: "evaluation-test-forged-exposure",
             loopIteration: 0,
             attempt: 0,
             providerRequestIndex: 0,
             providerRequestSha256Hex: fixtureProviderRequestSha256Hex,
-            sourceKind: "document",
-            logicalSourceIdentity: "document:unknown-evaluation-document",
-            contentItemIdentity: "unknown-evaluation-version:preview",
-            exposureStage: "internal_search_preview",
-            visibleTokenCount: 1,
-          });
+            sourceKind: forgedMarker.sourceKind,
+            logicalSourceIdentity: forgedMarker.logicalSourceIdentity,
+            contentItemIdentity: forgedMarker.contentItemIdentity,
+            exposureStage: forgedMarker.exposureStage,
+            visibleTokenCount: forgedMarker.visibleTokenCount,
+            providerSerializationProofBinding: forgedProviderBinding,
+            documentReconstruction: {
+              sourceId: forgedBinding.sourceId,
+              documentId: forgedBinding.documentId,
+              versionId: forgedBinding.versionId,
+              contentHash: forgedBinding.contentHash,
+              ranges: [{ charStart: 0, charEnd: Math.min(300, forgedSource.content.length) }],
+            },
+          };
         }
         if (
           tamper === "unknown_o_exposure" &&
           row.topology === "specialized" &&
           isSpecializedOversized
         ) {
-          yield* insertAiSourceExposure({
+          const forgedMarker = {
+            sourceKind: "memory" as const,
+            logicalSourceIdentity: "memory:00000000-0000-4000-8000-000000000000",
+            contentItemIdentity: "00000000-0000-4000-8000-000000000001",
+            exposureStage: "context_candidate_inspection" as const,
+            visibleTokenCount: 1,
+          };
+          const forgedBinding: ProviderVisibleSourceExposureProofBinding = {
+            messageIndex: 2,
+            sourceOrdinal: 0,
+            serializedField: "messages[2].content.matches[0].text",
+            orderedSourceDescriptor: canonicalJson({
+              sourceOrdinal: 0,
+              messageIndex: 2,
+              serializedField: "messages[2].content.matches[0].text",
+              ...forgedMarker,
+            }),
+          };
+          deferredUnknownOExposure = {
             runId: row.runId,
             taskId: "single-reduce-plan",
             loopIteration: 1,
             attempt: 0,
             providerRequestIndex: selectedIds.length + 1,
             providerRequestSha256Hex: fixtureProviderRequestSha256Hex,
-            sourceKind: "memory",
-            logicalSourceIdentity: "memory:00000000-0000-4000-8000-000000000000",
-            contentItemIdentity: "00000000-0000-4000-8000-000000000001",
-            exposureStage: "context_candidate_inspection",
-            visibleTokenCount: 1,
-          });
+            ...forgedMarker,
+            providerSerializationProofBinding: forgedBinding,
+          };
         }
-        if (fixture.webRequested && fixture.webPolicyEnabled) {
-          const webTasks = (isSpecializedFanout ? ["topic-t1", "topic-t2"] : ["single"]).map(
-            (prefix) => `${prefix}-retrieve-web`,
-          );
+        if (row.topology === "specialized" && fixture.webRequested && fixture.webPolicyEnabled) {
+          const webTasks = (
+            isSpecializedFanout ? fanoutTopicIds.map((topicId) => `topic-${topicId}`) : ["single"]
+          )
+            .filter((prefix) => selectorHasProviderCall(prefix, "W"))
+            .map((prefix) => `${prefix}-retrieve-web`);
           const webSources = selectedIds.filter(
             (sourceId) =>
               fixture.evidence.find((source) => source.sourceId === sourceId)!.selector === "W",
@@ -2589,7 +4050,7 @@ const completeDurableCaptureSession = async (
               multiWebQuotes &&
               row.topology === "specialized" &&
               fixture.id === "cross-cutting-separable-energy-question" &&
-              taskId === "topic-t1-retrieve-web"
+              taskId === "topic-t3-retrieve-web"
                 ? 1
                 : 0;
             yield* insertAiExternalToolUsage({
@@ -2630,7 +4091,7 @@ const completeDurableCaptureSession = async (
         const terminalMode =
           resolution.mode === "clarify"
             ? "clarification"
-            : isSpecializedFanout
+            : resolution.mode === "fanout" || isSpecializedFanout
               ? "synthesis"
               : "single";
         const answerEventTaskId =
@@ -2658,7 +4119,7 @@ const completeDurableCaptureSession = async (
                 : row.topology === "general_planner"
                   ? [
                       {
-                        consumer: "direct",
+                        consumer: terminalMode === "synthesis" ? "synthesis" : "direct",
                         inputTokens: measureCanonicalEvaluationRequestTokens(fixture, selected),
                         requestedOutputTokens: 16_384,
                         usableInputTokens: canonicalEvaluationUsableInputTokens(),
@@ -2729,20 +4190,35 @@ const completeDurableCaptureSession = async (
         });
       }),
     );
+    if (deferredUnknownExposure !== undefined) {
+      await runDb(isolatedDatabaseUrl(), insertAiSourceExposure(deferredUnknownExposure));
+    }
+    if (deferredUnknownOExposure !== undefined) {
+      await runDb(isolatedDatabaseUrl(), insertAiSourceExposure(deferredUnknownOExposure));
+    }
     if (row.topology === "general_planner") {
+      const outputPlanTurn =
+        fixture.labels.planTurn.mode === "clarify"
+          ? { mode: "clarify" as const, question: fixture.labels.planTurn.question }
+          : {
+              mode: "single" as const,
+              question: fixture.labels.planTurn.question,
+              relevantTurnIds: fixture.labels.relevantTurnIds,
+            };
       const output = {
-        resolution:
-          fixture.labels.resolution.mode === "clarify"
-            ? { mode: "clarify" as const, question: "Which result, wind or solar? Please clarify." }
-            : {
-                mode: "continue" as const,
-                retrievalQuestion: fixture.labels.resolution.canonicalRetrievalQuestion,
-                selectedTurnIds: fixture.labels.relevantTurnIds,
-              },
+        planTurn: outputPlanTurn,
         selectedSources: selected,
         answerContent: "Canonical baseline answer",
         citationSourceIds: selectedIds,
-        memoryProposals: [],
+        memoryProposals: fixture.labels.expectedMemoryProposals.map((proposal) => ({
+          action: proposal.action,
+          kind: proposal.kind,
+          content: proposal.content,
+          targetMemorySourceId:
+            proposal.targetMemoryId === null
+              ? null
+              : `memory:${proposal.targetMemoryId}:${proposal.expectedHeadRevisionId}`,
+        })),
       };
       await runDb(
         isolatedDatabaseUrl(),
@@ -2779,7 +4255,7 @@ const completeDurableCaptureSession = async (
           tamper === "preseal_citation_change" ||
           tamper === "preseal_citation_delete" ||
           tamper === "preseal_manifest_delete") &&
-          resolution.mode === "continue" &&
+          resolution.mode === "single" &&
           sourceMap.length > 0) ||
         (tamper !== "preseal_memory_create_before" &&
           tamper !== "preseal_memory_update_before" &&
@@ -2993,18 +4469,18 @@ const completeDurableCaptureSession = async (
               yield* insertAiObservation({
                 runId: row.runId,
                 chatId: manifest.chatId,
-                emittingTask: "resolve-conversation",
+                emittingTask: "plan-turn",
                 loopIteration: 0,
                 attempt: 0,
-                observationKey: "evaluation-test:conversation-resolution:forged-duplicate",
-                kind: "conversation_resolution",
+                observationKey: "evaluation-test:turn-plan:forged-duplicate",
+                kind: "turn_plan",
                 payload: resolution,
               });
               yield* sql`
                 update ai_observations
                 set created_at = (select finished_at from ai_runs where id = ${row.runId})
                 where run_id = ${row.runId}
-                  and observation_key = 'evaluation-test:conversation-resolution:forged-duplicate'
+                  and observation_key = 'evaluation-test:turn-plan:forged-duplicate'
               `;
               break;
           }
@@ -3034,7 +4510,10 @@ const completeDurableCaptureSession = async (
   );
 };
 
-const beginFocusedProductionGraphCase = async (targetSessionId: string) => {
+const beginFocusedProductionGraphCase = async (
+  targetSessionId: string,
+  targetCaseId = focusedProductionCaseId,
+) => {
   await createEvaluationSession(isolatedDatabaseUrl(), targetSessionId);
   const manifests = await seedEvaluationSession(isolatedDatabaseUrl(), targetSessionId);
   await runDb(
@@ -3052,8 +4531,7 @@ const beginFocusedProductionGraphCase = async (targetSessionId: string) => {
     }),
   );
   const manifest = manifests.find(
-    (candidate) =>
-      candidate.caseId === focusedProductionCaseId && candidate.topology === "specialized",
+    (candidate) => candidate.caseId === targetCaseId && candidate.topology === "specialized",
   );
   if (manifest === undefined) throw new Error("focused production graph seed manifest is missing");
   await ensureEvaluationCaseRunning(isolatedDatabaseUrl(), {
@@ -3065,8 +4543,12 @@ const beginFocusedProductionGraphCase = async (targetSessionId: string) => {
   return manifest;
 };
 
-const executeFocusedProductionGraphCase = async (targetSessionId: string, config: WorkerConfig) => {
-  const manifest = await beginFocusedProductionGraphCase(targetSessionId);
+const executeFocusedProductionGraphCase = async (
+  targetSessionId: string,
+  config: WorkerConfig,
+  targetCaseId = focusedProductionCaseId,
+) => {
+  const manifest = await beginFocusedProductionGraphCase(targetSessionId, targetCaseId);
   const job: JobRecord = {
     id: crypto.randomUUID(),
     kind: "ai_chat_run",
@@ -3171,6 +4653,25 @@ const focusedProductionRuntimeEvidence = (aiRunId: string) =>
           and emitting_task = 'single-retrieve-internal'
         order by created_at, id
       `;
+      const exposures = yield* sql<{
+        readonly sourceKind: string;
+        readonly exposureStage: string;
+        readonly documentSourceId: string | null;
+        readonly documentId: string | null;
+        readonly versionId: string | null;
+        readonly contentHash: string | null;
+        readonly documentRanges:
+          | readonly { readonly charStart: number; readonly charEnd: number }[]
+          | null;
+      }>`
+        select source_kind as "sourceKind", exposure_stage as "exposureStage",
+               document_source_id as "documentSourceId", document_id as "documentId",
+               version_id as "versionId", content_hash as "contentHash",
+               document_ranges as "documentRanges"
+        from ai_source_exposures
+        where run_id = ${aiRunId}
+        order by created_at, id
+      `;
       const sources = yield* sql<{
         readonly kind: string;
         readonly locator: unknown;
@@ -3184,7 +4685,7 @@ const focusedProductionRuntimeEvidence = (aiRunId: string) =>
       `;
       const run = runs[0];
       if (run === undefined) return yield* Effect.fail(new Error("focused production run missing"));
-      return { run, usage, measurements, internalManifests, sources };
+      return { run, usage, measurements, internalManifests, exposures, sources };
     }),
   );
 
@@ -3218,7 +4719,7 @@ const assertFocusedTurboRuntimeEvidence = (
     readonly references?: readonly {
       readonly kind?: unknown;
       readonly documentId?: unknown;
-      readonly documentVersionId?: unknown;
+      readonly versionId?: unknown;
       readonly source?: unknown;
       readonly ranges?: unknown;
       readonly purpose?: unknown;
@@ -3230,19 +4731,18 @@ const assertFocusedTurboRuntimeEvidence = (
   const expectedReferenceIdentity = {
     kind: "document",
     documentId: expectedDocument.documentId,
-    documentVersionId: expectedDocument.documentVersionId,
+    versionId: expectedDocument.versionId,
     source: expectedDocument.source,
   } as const;
   if (expectedProviderServiceId === "deterministic_test") {
     expect(reference).toEqual({
       ...expectedReferenceIdentity,
-      ranges: [{ charStart: 0, charEnd: expect.any(Number) }],
       purpose: "ground the deterministic E2E answer",
     });
   } else {
     // The live provider owns optional range selection and purpose prose. The
     // durable attestation below validates the exact provider-authored manifest,
-    // exposure coordinate, source identity, and final serialized locator.
+    // exposure coordinate, source identity, and final serialized locator ranges.
     expect(reference).toMatchObject({ ...expectedReferenceIdentity, purpose: expect.any(String) });
     expect(
       typeof reference?.purpose === "string" ? reference.purpose.trim().length : 0,
@@ -3252,26 +4752,31 @@ const assertFocusedTurboRuntimeEvidence = (
     kind: "document",
     sourceId: expectedDocument.source.sourceId,
     documentId: expectedDocument.documentId,
-    documentVersionId: expectedDocument.documentVersionId,
+    versionId: expectedDocument.versionId,
     contentHash: expectedDocument.contentHash,
   } as const;
-  if (expectedProviderServiceId === "deterministic_test") {
-    expect(evidence.sources).toEqual([
-      {
-        kind: "document",
-        locator: { ...expectedLocatorIdentity, ranges: reference?.ranges },
-      },
-    ]);
-  } else {
-    expect(evidence.sources).toEqual([
-      {
-        kind: "document",
-        locator: { ...expectedLocatorIdentity, ranges: expect.any(Array) },
-      },
-    ]);
-    const locator = evidence.sources[0]?.locator as { readonly ranges?: unknown } | undefined;
-    expect(locator?.ranges).toEqual([{ charStart: 0, charEnd: expect.any(Number) }]);
-  }
+  expect(evidence.sources).toEqual([
+    {
+      kind: "document",
+      locator: { ...expectedLocatorIdentity, ranges: expect.any(Array) },
+    },
+  ]);
+  const locator = evidence.sources[0]?.locator as { readonly ranges?: unknown } | undefined;
+  const inspectedExposures = evidence.exposures.filter(
+    (exposure) =>
+      exposure.sourceKind === "document" &&
+      exposure.exposureStage === "internal_inspection" &&
+      exposure.documentSourceId === expectedDocument.source.sourceId &&
+      exposure.documentId === expectedDocument.documentId &&
+      exposure.versionId === expectedDocument.versionId &&
+      exposure.contentHash === expectedDocument.contentHash,
+  );
+  expect(inspectedExposures).toHaveLength(1);
+  const inspectedExposure = inspectedExposures[0];
+  expect(inspectedExposure?.documentRanges).toEqual([
+    { charStart: 0, charEnd: expect.any(Number) },
+  ]);
+  expect(locator?.ranges).toEqual(inspectedExposure?.documentRanges);
   expect(expectedDocument.source.sourceId).toMatch(/^public:[^:\s]+$/u);
   expect(expectedDocument.sourceId).toBe(expectedDocument.source.sourceId);
   expect(expectedDocument.goldenSourceId).toMatch(/^doc:[^:\s]+$/u);
@@ -3357,8 +4862,8 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     );
     expect(state.sessions).toEqual([
       {
-        artifactVersion: 2,
-        goldenSetVersion: 2,
+        artifactVersion: 3,
+        goldenSetVersion: 3,
         fixtureDigest: CanonicalGoldenFixtureSha256Hex,
       },
     ]);
@@ -3426,6 +4931,145 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     );
   }, 180_000);
 
+  it("finalizes an isolated deterministic memory turn with bound citation evidence", async () => {
+    const config = canonicalEvaluationWorkerConfig({
+      nodeEnv: "test",
+      aiE2eFakeProvider: true,
+    });
+    const manifest = await executeFocusedProductionGraphCase(
+      deterministicMemoryFinalizationSessionId,
+      config,
+      "memory-preference-selection-and-update",
+    );
+    const memoryBinding = manifest.sourceBindings.find((binding) => binding.kind === "memory");
+    if (memoryBinding === undefined) throw new Error("deterministic memory binding is missing");
+    const evidence = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const [run] = yield* sql<{
+          readonly finishedAt: Date | null;
+          readonly failedAt: Date | null;
+          readonly errorCode: string | null;
+          readonly assistantMessageId: string;
+        }>`
+          select finished_at as "finishedAt", failed_at as "failedAt", error_code as "errorCode",
+                 assistant_message_id::text as "assistantMessageId"
+          from ai_runs where id = ${manifest.aiRunId}
+        `;
+        const citations = yield* sql<{ readonly payload: Record<string, unknown> }>`
+          select payload from ai_observations
+          where run_id = ${manifest.aiRunId} and kind = 'citation'
+          order by observation_key
+        `;
+        const sources = yield* sql<{
+          readonly sourceKey: string;
+          readonly kind: string;
+          readonly locator: Record<string, unknown>;
+          readonly memoryRevisionId: string | null;
+        }>`
+          select source_key as "sourceKey", kind, locator,
+                 memory_revision_id::text as "memoryRevisionId"
+          from assistant_message_sources
+          where assistant_message_id = (select assistant_message_id from ai_runs where id = ${manifest.aiRunId})
+          order by source_key
+        `;
+        const uses = yield* sql<{
+          readonly sourceKey: string;
+          readonly consumerTaskId: string;
+          readonly topicId: string | null;
+          readonly contextOrder: number;
+          readonly ranges: readonly { readonly charStart: number; readonly charEnd: number }[];
+        }>`
+          select source_key as "sourceKey", consumer_task_id as "consumerTaskId",
+                 topic_id as "topicId", context_order as "contextOrder", ranges
+          from assistant_message_source_uses
+          where assistant_message_id = (select assistant_message_id from ai_runs where id = ${manifest.aiRunId})
+          order by source_key, context_order
+        `;
+        const revisions = yield* sql<{
+          readonly id: string;
+          readonly memoryId: string;
+          readonly action: string;
+          readonly stateAfter: {
+            readonly kind: string;
+            readonly content: string;
+            readonly deleted: boolean;
+          };
+        }>`
+          select id::text as id, memory_id::text as "memoryId", action,
+                 state_after as "stateAfter"
+          from user_memory_revisions where run_id = ${manifest.aiRunId}
+          order by created_at, id
+        `;
+        const [memory] = yield* sql<{
+          readonly memoryId: string;
+          readonly headRevisionId: string;
+          readonly content: string;
+        }>`
+          select id::text as "memoryId", head_revision_id::text as "headRevisionId", content
+          from user_memories where id = ${memoryBinding.memoryId}
+        `;
+        return { run, citations, sources, uses, revisions, memory };
+      }),
+    );
+    const run = evidence.run;
+    if (run === undefined) throw new Error("deterministic memory run is missing");
+    expect(run).toEqual({
+      finishedAt: expect.any(Date),
+      failedAt: null,
+      errorCode: null,
+      assistantMessageId: expect.any(String),
+    });
+    expect(evidence.citations).toHaveLength(1);
+    expect(evidence.sources).toHaveLength(1);
+    expect(evidence.uses).toHaveLength(1);
+    const citation = evidence.citations[0]!.payload;
+    const source = evidence.sources[0]!;
+    expect(citation).toMatchObject({
+      assistantMessageId: run.assistantMessageId,
+      sourceKey: source.sourceKey,
+    });
+    expect(source).toMatchObject({
+      kind: "memory",
+      memoryRevisionId: memoryBinding.memoryRevisionId,
+      locator: {
+        kind: "memory",
+        memoryId: memoryBinding.memoryId,
+        memoryRevisionId: memoryBinding.memoryRevisionId,
+      },
+    });
+    expect(evidence.uses[0]).toMatchObject({
+      sourceKey: source.sourceKey,
+      consumerTaskId: "single-answer",
+      topicId: null,
+      contextOrder: 0,
+      ranges: [],
+    });
+    expect(evidence.revisions).toEqual([
+      {
+        id: expect.any(String),
+        memoryId: memoryBinding.memoryId,
+        action: "update",
+        stateAfter: {
+          kind: "preference",
+          content: "Prefer concise answers in French and report energy quantities in MWh.",
+          deleted: false,
+        },
+      },
+    ]);
+    const revision = evidence.revisions[0]!;
+    expect(evidence.memory).toEqual({
+      memoryId: memoryBinding.memoryId,
+      headRevisionId: revision.id,
+      content: revision.stateAfter.content,
+    });
+    await abortFocusedEvaluationSession(
+      isolatedDatabaseUrl(),
+      deterministicMemoryFinalizationSessionId,
+    );
+  }, 180_000);
+
   it("runs the real general-planner Smithers workflow on the shared Postgres input schema", async () => {
     const manifest = await beginFocusedGeneralPlannerCase(
       deterministicGeneralPlannerSessionId,
@@ -3490,7 +5134,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     expect(state.caseRun).toMatchObject({
       status: "running",
       output: {
-        resolution: { mode: "clarify" },
+        planTurn: { mode: "clarify" },
         selectedSources: [],
       },
     });
@@ -3510,6 +5154,55 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     await abortFocusedEvaluationSession(
       isolatedDatabaseUrl(),
       deterministicGeneralPlannerSessionId,
+    );
+  }, 180_000);
+
+  it("seals a deterministic general-planner fanout baseline with synthesis context", async () => {
+    const manifest = await beginFocusedGeneralPlannerCase(
+      deterministicGeneralPlannerFanoutSessionId,
+      focusedFanoutCaseId,
+    );
+    const config = canonicalEvaluationWorkerConfig({
+      nodeEnv: "test",
+      aiE2eFakeProvider: true,
+    });
+    await executeGeneralPlannerEvaluationCase(
+      isolatedDatabaseUrl(),
+      deterministicGeneralPlannerFanoutSessionId,
+      focusedFanoutCaseId,
+      config,
+      { testOnlyAllowDeterministicProvider: true },
+    );
+    const state = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const [caseRun] = yield* sql<{ readonly output: unknown }>`
+          select execution_output as output
+          from ai_evaluation_case_runs
+          where session_id = ${deterministicGeneralPlannerFanoutSessionId}
+            and case_id = ${focusedFanoutCaseId}
+            and topology = 'general_planner'
+        `;
+        const events = yield* sql<{ readonly type: string; readonly mode: string | null }>`
+          select event->>'type' as type, event->>'mode' as mode
+          from ai_run_events
+          where run_id = ${manifest.aiRunId} and event->>'type' = 'context_ready'
+        `;
+        return { caseRun, events };
+      }),
+    );
+    if (state.caseRun === undefined) throw new Error("focused fanout case run is missing");
+    expect(state.caseRun.output).toMatchObject({
+      planTurn: {
+        mode: "fanout",
+        topics: [{ topicId: "t1" }, { topicId: "t2" }, { topicId: "t3" }],
+      },
+    });
+    expect(state.events).toEqual([{ type: "context_ready", mode: "synthesis" }]);
+    await abortFocusedEvaluationSession(
+      isolatedDatabaseUrl(),
+      deterministicGeneralPlannerFanoutSessionId,
     );
   }, 180_000);
 
@@ -3547,7 +5240,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
               'evaluation-general-planner',
               0,
               ${JSON.stringify({
-                resolution: { mode: "clarify", question: "test" },
+                planTurn: { mode: "clarify", question: "test" },
                 selectedSources: [],
                 answerContent: "test",
                 citationSourceIds: [],
@@ -3669,7 +5362,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         failedGeneralPlannerSessionId,
         focusedProductionCaseId,
         config,
-        { testOnlyAllowDeterministicProvider: true },
+        { testOnlyAllowDeterministicProvider: true, testOnlyForceProviderFailure: true },
       ),
     ).rejects.toThrow();
 
@@ -4080,14 +5773,8 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       new OlderChatEvaluationAgent(oldTurn.assistantMessageId),
     );
     const load = await inAiTask(row.runId, "load-turn", () => operations.loadTurn(row.runId));
-    expect(load.priorTerminalTurnCount).toBe(13);
-    expect(load.conversation).toHaveLength(12);
-    expect(
-      load.conversation.some(
-        (entry) =>
-          "assistantMessageId" in entry && entry.assistantMessageId === oldTurn.assistantMessageId,
-      ),
-    ).toBe(false);
+    expect(load.userMessageId).toBe(manifest.userMessageId);
+    expect(load.aiRunId).toBe(row.runId);
     await expect(
       inAiTask(row.runId, "single-retrieve-internal", () =>
         operations.retrieveInternal(load, fixture.currentMessage, "single-retrieve-internal", []),
@@ -4205,20 +5892,20 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     const internalMeasurements = boundary.requestInputTokens.get("internal_retrieval") ?? [];
     const memoryMeasurements = boundary.requestInputTokens.get("memory_selector") ?? [];
     expect(internal).toHaveLength(6);
-    expect(memories).toMatchObject({ status: "enabled", entries: expect.any(Array) });
     if (memories.status !== "enabled") throw new Error("memory selector unexpectedly disabled");
+    expect(Array.isArray(memories.entries)).toBe(true);
     expect(memories.entries).toHaveLength(4);
     expect(boundary.discoveredDocumentCount).toBe(6);
     expect(boundary.inspectedDocumentCount).toBe(6);
     expect(boundary.selectedMemoryCount).toBe(4);
     expect(internalMeasurements).toHaveLength(3);
-    expect(memoryMeasurements).toHaveLength(1);
+    expect(memoryMeasurements).toHaveLength(2);
     expect(Math.max(...internalMeasurements, ...memoryMeasurements)).toBeLessThanOrEqual(100_000);
     const assembly = await inAiTask(row.runId, "single-assemble", () =>
       operations.assembleContext(
         load,
-        fixture.labels.resolution.mode === "continue"
-          ? fixture.labels.resolution.canonicalRetrievalQuestion
+        fixture.labels.planTurn.mode !== "clarify"
+          ? fixture.labels.planTurn.question
           : fixture.currentMessage,
         {
           internal,
@@ -4241,11 +5928,11 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     expect(oversized.inputTokens).toBeGreaterThan(100_000);
     expect(oversized.usableInputTokens).toBe(100_000);
     expect(oversized.reductionRan).toBe(false);
-    const preflightTokenSourceKeys = oversized.sourceMap.map((source) => {
+    const preflightTokenSourceSelections = oversized.sourceMap.map((source) => {
       const binding = manifest.sourceBindings.find((candidate) => {
         if (candidate.kind !== source.locator.kind) return false;
         if (candidate.kind === "document" && source.locator.kind === "document") {
-          return candidate.documentVersionId === source.locator.documentVersionId;
+          return candidate.versionId === source.locator.versionId;
         }
         if (candidate.kind === "memory" && source.locator.kind === "memory") {
           return candidate.memoryRevisionId === source.locator.memoryRevisionId;
@@ -4253,17 +5940,21 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         return false;
       });
       if (binding === undefined) throw new Error("preflight source-key binding is missing");
-      return { sourceId: evaluationBindingGoldenSourceId(binding), sourceKey: source.sourceKey };
+      return {
+        sourceId: evaluationBindingGoldenSourceId(binding),
+        sourceKey: source.sourceKey,
+        ranges: source.locator.kind === "document" ? source.locator.ranges : [],
+      };
     });
     expect(oversized.inputTokens).toBe(
       measureCanonicalProductionEvaluationRequestTokens(
         fixture,
-        fixture.evidence.map((source) => ({ sourceId: source.sourceId, ranges: source.ranges })),
-        preflightTokenSourceKeys,
+        preflightTokenSourceSelections.map(({ sourceId, ranges }) => ({ sourceId, ranges })),
+        preflightTokenSourceSelections.map(({ sourceId, sourceKey }) => ({ sourceId, sourceKey })),
         {
           question:
-            fixture.labels.resolution.mode === "continue"
-              ? fixture.labels.resolution.canonicalRetrievalQuestion
+            fixture.labels.planTurn.mode !== "clarify"
+              ? fixture.labels.planTurn.question
               : fixture.currentMessage,
           selectedTurnIds: [],
         },
@@ -4279,9 +5970,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         };
       }
       if (candidate.kind !== "document") throw new Error("unexpected oversized candidate kind");
-      const binding = documentBindings.find(
-        (item) => item.documentVersionId === candidate.documentVersionId,
-      );
+      const binding = documentBindings.find((item) => item.versionId === candidate.versionId);
       if (binding === undefined) throw new Error("oversized candidate binding is missing");
       const ranges = fixture.labels.acceptableRanges[evaluationBindingGoldenSourceId(binding)];
       if (ranges === undefined) throw new Error("oversized range label is missing");
@@ -4297,6 +5986,9 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       operations.planReduction(load, oversized, "single-reduce-plan", 1),
     );
     expect(plan.decisions).toEqual(decisions);
+    expect(boundary.reductionCandidateHandles).toEqual(
+      new Set(decisions.map((_, index) => `opaque_candidate_${index + 1}`)),
+    );
     const reducerTerminal = await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
@@ -4342,11 +6034,11 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
           sourceId,
           ranges: fixture.labels.acceptableRanges[sourceId] ?? [],
         })),
-        preflightTokenSourceKeys,
+        preflightTokenSourceSelections.map(({ sourceId, sourceKey }) => ({ sourceId, sourceKey })),
         {
           question:
-            fixture.labels.resolution.mode === "continue"
-              ? fixture.labels.resolution.canonicalRetrievalQuestion
+            fixture.labels.planTurn.mode !== "clarify"
+              ? fixture.labels.planTurn.question
               : fixture.currentMessage,
           selectedTurnIds: [],
         },
@@ -4492,7 +6184,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       [
         preSealResolutionSessionId,
         "preseal_duplicate_resolution",
-        /Failed to execute statement|append-only|duplicate terminal conversation_resolution output/u,
+        /Failed to execute statement|append-only|duplicate terminal turn_plan output/u,
       ],
       [
         preSealMemoryTerminalMismatchSessionId,
@@ -4856,15 +6548,14 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
           readonly initiatingUserId: string;
           readonly locale: "fr-FR" | "en-US";
           readonly market: "FR" | "US";
-          readonly webSearchEnabled: boolean;
-          readonly effectiveWebPolicy: Record<string, unknown>;
+          readonly acceptanceScope: Record<string, unknown>;
           readonly smithersRunId: string;
           readonly nextEventSeq: number;
           readonly createdAt: Date;
           readonly startedAt: Date;
           readonly finishedAt: Date;
           readonly assistantMessageId: string;
-          readonly citationNonceHex: string;
+          readonly citationNamespace: string;
           readonly usageId: string;
           readonly usageCreatedAt: Date;
         }>`
@@ -4873,14 +6564,13 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
                  runs.chat_id::text as "chatId", alternate.chat_id::text as "alternateChatId",
                  runs.user_message_id::text as "userMessageId",
                  runs.initiating_user_id as "initiatingUserId", runs.locale, runs.market,
-                 runs.web_search_enabled as "webSearchEnabled",
-                 runs.effective_web_policy as "effectiveWebPolicy",
+                 runs.acceptance_scope as "acceptanceScope",
                  runs.smithers_run_id as "smithersRunId",
                  runs.next_event_seq as "nextEventSeq",
                  runs.created_at as "createdAt", runs.started_at as "startedAt",
                  runs.finished_at as "finishedAt",
                  runs.assistant_message_id::text as "assistantMessageId",
-                 encode(runs.citation_nonce, 'hex') as "citationNonceHex",
+                 runs.citation_namespace as "citationNamespace",
                  usage.id::text as "usageId", usage.created_at as "usageCreatedAt"
           from ai_evaluation_case_runs cases
           join ai_runs runs on runs.id = cases.ai_run_id
@@ -4896,7 +6586,8 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
             where run_id = runs.id order by created_at, id limit 1
           ) usage on true
           where cases.session_id = ${sealedSnapshotTamperSessionId}
-            and cases.topology = 'specialized' and runs.web_search_enabled
+            and cases.topology = 'specialized'
+            and (runs.acceptance_scope->>'webEnabled')::boolean
           order by cases.case_id limit 1
         `;
         const row = rows[0];
@@ -4927,15 +6618,14 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       | "initiatingUserId"
       | "locale"
       | "market"
-      | "webSearchEnabled"
-      | "effectiveWebPolicy"
+      | "acceptanceScope"
       | "smithersRunId"
       | "nextEventSeq"
       | "createdAt"
       | "startedAt"
       | "finishedAt"
       | "assistantMessageId"
-      | "citationNonceHex"
+      | "citationNamespace"
     >;
     const original: SealedRunSnapshot = sealed;
     const writeRun = (snapshot: SealedRunSnapshot) =>
@@ -4947,19 +6637,21 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
             update ai_runs
             set chat_id = ${snapshot.chatId}, user_message_id = ${snapshot.userMessageId},
                 initiating_user_id = ${snapshot.initiatingUserId}, locale = ${snapshot.locale},
-                market = ${snapshot.market}, web_search_enabled = ${snapshot.webSearchEnabled},
-                effective_web_policy = ${JSON.stringify(snapshot.effectiveWebPolicy)}::jsonb,
+                market = ${snapshot.market}, acceptance_scope = ${JSON.stringify(snapshot.acceptanceScope)}::jsonb,
                 smithers_run_id = ${snapshot.smithersRunId},
                 next_event_seq = ${snapshot.nextEventSeq},
                 created_at = ${snapshot.createdAt}, started_at = ${snapshot.startedAt},
                 finished_at = ${snapshot.finishedAt},
                 assistant_message_id = ${snapshot.assistantMessageId},
-                citation_nonce = decode(${snapshot.citationNonceHex}, 'hex')
+                citation_namespace = ${snapshot.citationNamespace}
             where id = ${sealed.runId}
           `;
         }),
       );
-    const expectSealedMutationRejected = async (mutated: SealedRunSnapshot): Promise<void> => {
+    const expectSealedMutationRejected = async (
+      mutated: SealedRunSnapshot,
+      expectedError = /accepted run snapshot differs|durable evidence changed|not successfully terminal|invalid terminal event ownership|non-contiguous durable event ledger|invalid final source map/u,
+    ): Promise<void> => {
       await writeRun(mutated);
       try {
         await expect(
@@ -4969,9 +6661,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
             sealed.caseId,
             sealed.topology,
           ),
-        ).rejects.toThrow(
-          /accepted run snapshot differs|durable evidence changed|not successfully terminal|invalid terminal event ownership|non-contiguous durable event ledger|invalid final source map/u,
-        );
+        ).rejects.toThrow(expectedError);
       } finally {
         await writeRun(original);
       }
@@ -4992,14 +6682,18 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     });
     await expectSealedMutationRejected({
       ...original,
-      webSearchEnabled: false,
+      acceptanceScope: {
+        ...original.acceptanceScope,
+        webEnabled: false,
+        webTransportProvider: null,
+        allowedDomains: null,
+      },
     });
     await expectSealedMutationRejected({
       ...original,
-      effectiveWebPolicy: {
-        enabled: false,
-        reason: "company_disabled",
-        allowlistActive: false,
+      acceptanceScope: {
+        ...original.acceptanceScope,
+        webTransportProvider: null,
       },
     });
     await expectSealedMutationRejected({
@@ -5019,11 +6713,14 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       ...original,
       finishedAt: new Date(original.finishedAt.getTime() + 1),
     });
-    await expectSealedMutationRejected({
-      ...original,
-      assistantMessageId: foreignAssistantMessageId,
-    });
-    await expectSealedMutationRejected({ ...original, citationNonceHex: "b".repeat(32) });
+    await expectSealedMutationRejected(
+      {
+        ...original,
+        assistantMessageId: foreignAssistantMessageId,
+      },
+      /live web exposure lacks its durable quotation/u,
+    );
+    await expectSealedMutationRejected({ ...original, citationNamespace: "cn_" + "b".repeat(22) });
 
     try {
       await expect(
@@ -5156,8 +6853,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
           readonly priorSmithersRunId: string;
           readonly priorLocale: string;
           readonly priorMarket: string;
-          readonly priorWebSearchEnabled: boolean;
-          readonly priorEffectiveWebPolicy: Record<string, unknown>;
+          readonly priorAcceptanceScope: Record<string, unknown>;
           readonly priorStartedAt: Date;
           readonly priorRunCreatedAt: Date;
           readonly priorUserMessageId: string;
@@ -5216,8 +6912,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
                  prior.initiating_user_id as "priorInitiatingUserId",
                  prior.smithers_run_id as "priorSmithersRunId",
                  prior.locale as "priorLocale", prior.market as "priorMarket",
-                 prior.web_search_enabled as "priorWebSearchEnabled",
-                 prior.effective_web_policy as "priorEffectiveWebPolicy",
+                 prior.acceptance_scope as "priorAcceptanceScope",
                  prior.started_at as "priorStartedAt",
                  prior.created_at as "priorRunCreatedAt",
                  prior_user.id::text as "priorUserMessageId",
@@ -5478,14 +7173,14 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
               yield* sql`update ai_runs set market = ${restore ? target.priorMarket : target.priorMarket === "FR" ? "US" : "FR"} where id = ${target.priorRunId}`;
               break;
             case "prior_web_search_enabled":
-              yield* sql`update ai_runs set web_search_enabled = ${restore ? target.priorWebSearchEnabled : !target.priorWebSearchEnabled} where id = ${target.priorRunId}`;
+              yield* restore
+                ? sql`update ai_runs set acceptance_scope = ${JSON.stringify(target.priorAcceptanceScope)}::jsonb where id = ${target.priorRunId}`
+                : sql`update ai_runs set acceptance_scope = jsonb_set(acceptance_scope, '{webEnabled}', to_jsonb(not (acceptance_scope->>'webEnabled')::boolean)) where id = ${target.priorRunId}`;
               break;
             case "prior_effective_web_policy":
-              yield* sql`update ai_runs set effective_web_policy = ${JSON.stringify(
-                restore
-                  ? target.priorEffectiveWebPolicy
-                  : { enabled: true, provider: "tinyfish", allowedDomains: null },
-              )}::jsonb where id = ${target.priorRunId}`;
+              yield* restore
+                ? sql`update ai_runs set acceptance_scope = ${JSON.stringify(target.priorAcceptanceScope)}::jsonb where id = ${target.priorRunId}`
+                : sql`update ai_runs set acceptance_scope = jsonb_set(acceptance_scope, '{allowedDomains}', 'null'::jsonb) where id = ${target.priorRunId}`;
               break;
             case "prior_started":
               yield* sql`update ai_runs set started_at = ${restore ? target.priorStartedAt : new Date(target.priorStartedAt.getTime() + 1)} where id = ${target.priorRunId}`;
@@ -5663,8 +7358,6 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       "prior_smithers_run",
       "prior_locale",
       "prior_market",
-      "prior_web_search_enabled",
-      "prior_effective_web_policy",
       "prior_started",
       "prior_run_created",
       "prior_assistant_link",
@@ -5708,6 +7401,8 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       "source_use_ranges",
       "source_created",
       "source_use_created",
+      "prior_web_search_enabled",
+      "prior_effective_web_policy",
     ] as const) {
       await expectDatabaseReject(mutation);
     }
@@ -5845,12 +7540,12 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         sessionId: clarificationStopTamperSessionId,
         tamper: "clarification_error_stop" as const,
         error:
-          /output is not bound to its latest provider execution|clarification lacks exact resolver provider usage/u,
+          /output is not bound to its latest provider execution|clarification lacks exact plan-turn provider usage/u,
       },
       {
         sessionId: clarificationSubsetTamperSessionId,
         tamper: "clarification_subset" as const,
-        error: /clarification conversation inventory is incomplete or out of order/u,
+        error: /clarification lacks exact plan-turn provider usage/u,
       },
       {
         sessionId: oExposureTamperSessionId,
@@ -5860,47 +7555,54 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       {
         sessionId: clarificationOrderTamperSessionId,
         tamper: "clarification_reordered" as const,
-        error: /clarification conversation inventory is incomplete or out of order/u,
+        error: /clarification lacks exact plan-turn provider usage/u,
       },
       {
         sessionId: clarificationBoundaryTamperSessionId,
         tamper: "clarification_boundary_count" as const,
-        error: /conversation inventory boundary is not exact/u,
+        error: /clarification lacks exact plan-turn provider usage/u,
       },
       {
         sessionId: documentVersionTamperSessionId,
         tamper: "wrong_document_version" as const,
-        error: /missing or unbound source-serialization proof/u,
+        error:
+          /missing or unbound source-serialization proof|source exposure lacks its exact durable provider sidecar binding/u,
       },
       {
         sessionId: documentHashTamperSessionId,
         tamper: "coordinated_document_hash" as const,
-        error: /missing or unbound source-serialization proof/u,
+        error:
+          /missing or unbound source-serialization proof|source exposure lacks its exact durable provider sidecar binding/u,
       },
       {
         sessionId: documentMetadataTamperSessionId,
         tamper: "tampered_document_reconstruction" as const,
-        error: /immutable identity is invalid/u,
+        error:
+          /public exposure is not bound to the exact immutable document|publisher exposure is not bound to the exact version extraction relation/u,
       },
       {
         sessionId: memoryRevisionTamperSessionId,
         tamper: "wrong_memory_revision" as const,
-        error: /stage-incompatible content-item identity/u,
+        error:
+          /stage-incompatible content-item identity|source exposure lacks its exact durable provider sidecar binding/u,
       },
       {
         sessionId: webIdentityTamperSessionId,
         tamper: "wrong_web_identity" as const,
-        error: /stage-incompatible content-item identity/u,
+        error:
+          /stage-incompatible content-item identity|source exposure lacks its exact durable provider sidecar binding/u,
       },
       {
         sessionId: webStageTamperSessionId,
         tamper: "wrong_web_stage" as const,
-        error: /missing or unbound source-serialization proof/u,
+        error:
+          /missing or unbound source-serialization proof|source exposure lacks its exact durable provider sidecar binding|source exposure lacks its exact provider measurement/u,
       },
       {
         sessionId: exposureCoordinateTamperSessionId,
         tamper: "wrong_exposure_coordinate" as const,
-        error: /provider-request-bound attestation/u,
+        error:
+          /provider-request-bound attestation|source exposure lacks its exact provider measurement/u,
       },
       {
         sessionId: manifestPurposeTamperSessionId,
@@ -5911,55 +7613,65 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         sessionId: reducerTerminalTamperSessionId,
         tamper: "o_later_error" as const,
         error:
-          /exact terminal context-reducer usage|provider-authored output without provider usage/u,
+          /exact terminal context-reducer usage|provider-authored output without provider usage|context_reducer_terminal output is not bound to its latest provider usage/u,
       },
       {
         sessionId: clarificationModelTamperSessionId,
         tamper: "clarification_model_mismatch" as const,
         error:
-          /invalid exact provider measurement|clarification lacks exact resolver provider usage/u,
+          /invalid exact provider measurement|clarification lacks exact plan-turn provider usage|invalid provider request measurement observation/u,
       },
       {
         sessionId: clarificationInputTamperSessionId,
         tamper: "clarification_input_mismatch" as const,
-        error: /clarification lacks exact resolver provider usage/u,
+        error: /clarification lacks exact plan-turn provider usage/u,
+      },
+      {
+        sessionId: clarificationDateTamperSessionId,
+        tamper: "clarification_date_mismatch" as const,
+        error: /clarification lacks exact plan-turn provider usage/u,
       },
       {
         sessionId: directDigestTamperSessionId,
         tamper: "direct_request_digest" as const,
-        error: /terminal ledger lacks exact real-provider usage/u,
+        error:
+          /terminal ledger lacks exact real-provider usage|context ledger differs from its provider measurement/u,
       },
       {
         sessionId: topicDigestTamperSessionId,
         tamper: "topic_request_digest" as const,
-        error: /terminal ledger lacks exact real-provider usage/u,
+        error:
+          /terminal ledger lacks exact real-provider usage|context ledger differs from its provider measurement/u,
       },
       {
         sessionId: synthesisDigestTamperSessionId,
         tamper: "synthesis_request_digest" as const,
-        error: /terminal ledger lacks exact real-provider usage/u,
+        error:
+          /terminal ledger lacks exact real-provider usage|(?:synthesis )?context ledger differs from its provider measurement/u,
       },
       {
         sessionId: memoryInternalStageTamperSessionId,
         tamper: "memory_as_internal_preview" as const,
         error:
-          /lacks terminal provider usage|stage-incompatible|replay conflicts with an existing immutable row/u,
+          /lacks terminal provider usage|stage-incompatible|invalid provider-visible source exposure: sidecar does not match the exact visible tool result|replay conflicts with an existing immutable row/u,
       },
       {
         sessionId: chatWebStageTamperSessionId,
         tamper: "chat_as_web_preview" as const,
-        error: /invalid exact provider measurement|stage-incompatible|durable chat\/message scope/u,
+        error:
+          /invalid exact provider measurement|stage-incompatible|source exposure binding is absent from its provider measurement|durable chat\/message scope/u,
       },
       {
         sessionId: wrongKindOTamperSessionId,
         tamper: "wrong_kind_o" as const,
-        error: /unmapped document\/context_candidate_inspection/u,
+        error:
+          /unmapped document\/context_candidate_inspection|invalid provider-visible source exposure: sidecar does not match the exact visible tool result/u,
       },
       {
         sessionId: arbitraryTaskTamperSessionId,
         tamper: "arbitrary_internal_task" as const,
         error:
-          /unknown canonical provider task specialized\/forged-retrieve-internal|lacks terminal provider usage|stage-incompatible/u,
+          /unknown canonical provider task specialized\/forged-retrieve-internal|source exposure has a foreign task owner|lacks terminal provider usage|stage-incompatible/u,
       },
     ];
     for (const scenario of cases) {
@@ -5971,7 +7683,25 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       }
       if (sealError !== undefined) {
         expect(sealError).toBeInstanceOf(Error);
-        expect((sealError as Error).message).toMatch(scenario.error);
+        if (scenario.tamper === "tampered_document_reconstruction") {
+          const messages: string[] = [];
+          const seen = new Set<object>();
+          let current: unknown = sealError;
+          while (typeof current === "object" && current !== null && !seen.has(current)) {
+            seen.add(current);
+            if (
+              "message" in current &&
+              typeof (current as { readonly message?: unknown }).message === "string"
+            ) {
+              messages.push((current as { readonly message: string }).message);
+            }
+            current =
+              "cause" in current ? (current as { readonly cause?: unknown }).cause : undefined;
+          }
+          expect(messages.join("\n"), scenario.tamper).toMatch(scenario.error);
+        } else {
+          expect((sealError as Error).message).toMatch(scenario.error);
+        }
         continue;
       }
       await bindEvaluationAnnotations(
@@ -6102,6 +7832,19 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
             insert into ai_evaluation_sessions (
               id, artifact_version, golden_set_version, fixture_sha256_hex
             ) values (${crypto.randomUUID()}, 1, 2, ${CanonicalGoldenFixtureSha256Hex})
+          `;
+        }),
+      ),
+    ).rejects.toThrow(/Failed to execute statement/u);
+    await expect(
+      runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            insert into ai_evaluation_sessions (
+              id, artifact_version, golden_set_version, fixture_sha256_hex
+            ) values (${crypto.randomUUID()}, 3, 2, ${CanonicalGoldenFixtureSha256Hex})
           `;
         }),
       ),
@@ -6245,7 +7988,7 @@ describe("trusted provider accounting", () => {
     ).toEqual(["31", "33"]);
   });
 
-  it("authorizes web audit sources only through the accepted snapshot and current recheck", () => {
+  it("authorizes web audit sources only through the accepted snapshot", () => {
     const enabledAtAcceptance = {
       webSearchEnabled: true,
       effectiveWebPolicy: {
@@ -6262,30 +8005,12 @@ describe("trusted provider accounting", () => {
         allowlistActive: false,
       },
     };
-    expect(
-      evaluationWebSourceAuthorized(enabledAtAcceptance, "https://example.com/report", {
-        enabled: true,
-        allowedDomains: null,
-      }),
-    ).toBe(true);
-    expect(
-      evaluationWebSourceAuthorized(disabledAtAcceptance, "https://example.com/report", {
-        enabled: true,
-        allowedDomains: null,
-      }),
-    ).toBe(false);
-    expect(
-      evaluationWebSourceAuthorized(enabledAtAcceptance, "https://example.com/report", {
-        enabled: false,
-        allowedDomains: null,
-      }),
-    ).toBe(false);
-    expect(
-      evaluationWebSourceAuthorized(enabledAtAcceptance, "https://example.com/report", {
-        enabled: true,
-        allowedDomains: ["example.com"],
-      }),
-    ).toBe(false);
+    expect(evaluationWebSourceAuthorized(enabledAtAcceptance, "https://example.com/report")).toBe(
+      true,
+    );
+    expect(evaluationWebSourceAuthorized(disabledAtAcceptance, "https://example.com/report")).toBe(
+      false,
+    );
   });
 
   it("maps secret-bearing execution errors to a content-free durable failure code", () => {
@@ -6416,10 +8141,10 @@ describe("trusted provider accounting", () => {
     };
     const providerOutput = {
       ...measurements[0],
-      kind: "execution_plan",
+      kind: "turn_plan",
       attempt: 0,
       observationKey: "failed-attempt-output",
-      payload: { mode: "single", reason: "provider output without usage" },
+      payload: { mode: "single", question: "provider output without usage", relevantTurnIds: [] },
     };
     expect(() =>
       deriveTrustedPromptMeasurements("general_planner", "unbound-output-case", usage, [

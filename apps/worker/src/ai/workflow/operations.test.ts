@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import type { CanonicalAgentClient } from "../runtime/agent-client";
 import { resolveRegisteredModel } from "../runtime/model-registry";
-import type { AnswerCandidate, FinalSourceRecord, NormalizedExecutionPlan } from "../runtime/types";
+import type { AnswerCandidate, FinalSourceRecord, PlanTurnResult } from "../runtime/types";
 import {
   type CanonicalAiConfig,
   CanonicalWorkflowOperations,
@@ -53,57 +53,64 @@ describe("canonical answer event emission keys", () => {
   });
 
   it("uses flat provider schemas but retains exact semantic unions", () => {
-    const resolverProviderJsonSchema = z.toJSONSchema(
-      canonicalProviderValueSchemas.conversationResolutionProvider,
+    const planTurnProviderJsonSchema = z.toJSONSchema(
+      canonicalProviderValueSchemas.planTurnProvider,
     ) as Record<string, unknown>;
-    expect(resolverProviderJsonSchema).toMatchObject({
+    expect(planTurnProviderJsonSchema).toMatchObject({
       type: "object",
       required: ["mode"],
       additionalProperties: false,
     });
-    expect(resolverProviderJsonSchema).not.toHaveProperty("oneOf");
-    const validResolverOutputs = [
+    expect(planTurnProviderJsonSchema).not.toHaveProperty("oneOf");
+    const validPlanTurnOutputs = [
       { mode: "clarify", question: "Which result?" },
-      { mode: "continue", retrievalQuestion: "resolved", selectedTurnIds: ["turn-1"] },
+      { mode: "single", question: "resolved", relevantTurnIds: ["turn-1"] },
+      {
+        mode: "fanout",
+        question: "resolved",
+        topics: [
+          { question: "First", relevantTurnIds: ["turn-1"] },
+          { question: "Second", relevantTurnIds: [] },
+        ],
+      },
     ];
-    for (const output of validResolverOutputs) {
+    for (const output of validPlanTurnOutputs) {
       expect(
-        canonicalProviderValueSchemas.conversationResolution.parse(
-          canonicalProviderValueSchemas.conversationResolutionProvider.parse(output),
+        canonicalProviderValueSchemas.planTurn.parse(
+          canonicalProviderValueSchemas.planTurnProvider.parse(output),
         ),
       ).toEqual(output);
     }
-    expect(() => canonicalProviderValueSchemas.conversationResolutionProvider.parse({})).toThrow();
+    expect(() => canonicalProviderValueSchemas.planTurnProvider.parse({})).toThrow();
     expect(() =>
-      canonicalProviderValueSchemas.conversationResolution.parse(
-        canonicalProviderValueSchemas.conversationResolutionProvider.parse({
+      canonicalProviderValueSchemas.planTurn.parse(
+        canonicalProviderValueSchemas.planTurnProvider.parse({
           mode: "clarify",
           question: "Which result?",
-          retrievalQuestion: "mixed branch",
-          selectedTurnIds: [],
+          extra: true,
         }),
       ),
     ).toThrow();
 
     const providerJsonSchema = z.toJSONSchema(
-      canonicalProviderValueSchemas.executionPlanProvider,
+      canonicalProviderValueSchemas.planTurnProvider,
     ) as Record<string, unknown>;
     expect(providerJsonSchema).toMatchObject({
       type: "object",
-      required: ["mode", "reason"],
+      required: ["mode"],
       additionalProperties: false,
     });
     expect(providerJsonSchema).not.toHaveProperty("oneOf");
     expect(
-      canonicalProviderValueSchemas.executionPlanProvider.parse({
+      canonicalProviderValueSchemas.planTurnProvider.parse({
         mode: "single",
-        reason: "The request is atomic.",
       }),
-    ).toEqual({ mode: "single", reason: "The request is atomic." });
+    ).toEqual({ mode: "single" });
     expect(() =>
-      canonicalProviderValueSchemas.executionPlan.parse({
+      canonicalProviderValueSchemas.planTurn.parse({
         mode: "single",
-        reason: "The request is atomic.",
+        question: "The request is atomic.",
+        relevantTurnIds: [],
         topics: [
           { question: "First", relevantTurnIds: [] },
           { question: "Second", relevantTurnIds: [] },
@@ -130,7 +137,7 @@ describe("document selection range semantics", () => {
       purpose: "test ranges",
       sourceId: "source-one",
       documentId: "document-one",
-      documentVersionId: "version-one",
+      versionId: "version-one",
       contentHash: "a".repeat(64),
       text: "alpha hidden alpha gap alpha",
       ranges: [
@@ -159,7 +166,7 @@ describe("document selection range semantics", () => {
       purpose: "test Unicode offsets",
       sourceId: "source-unicode",
       documentId: "document-unicode",
-      documentVersionId: "version-unicode",
+      versionId: "version-unicode",
       contentHash: "c".repeat(64),
       text: "İ alpha 😀 ALPHA",
       ranges: [{ charStart: 0, charEnd: "İ alpha 😀 ALPHA".length }],
@@ -186,7 +193,7 @@ describe("document selection range semantics", () => {
       purpose: "test normalized UTF-16 spans",
       sourceId: "source-unicode-spans",
       documentId: "document-unicode-spans",
-      documentVersionId: "version-unicode-spans",
+      versionId: "version-unicode-spans",
       contentHash: "d".repeat(64),
       text,
       ranges: [{ charStart: 0, charEnd: text.length }],
@@ -209,6 +216,34 @@ describe("document selection range semantics", () => {
     expect(searchWithinCandidate(candidate, "😀")).toEqual([{ charStart: 12, charEnd: 14 }]);
   });
 
+  it("rejects surrogate fragments and malformed suffixes while preserving supplementary offsets", () => {
+    const text = "x😀y needle";
+    const candidate: AnswerCandidate = {
+      id: "document:surrogate-boundaries",
+      kind: "document",
+      rank: 0,
+      purpose: "test surrogate boundaries",
+      sourceId: "source-surrogate-boundaries",
+      documentId: "document-surrogate-boundaries",
+      versionId: "version-surrogate-boundaries",
+      contentHash: "s".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Surrogate boundaries",
+      publicProvenance: {
+        documentTitle: "Surrogate boundaries",
+        citationUrl: "https://example.test/surrogate-boundaries",
+      },
+      renderedTokenCount: 0,
+    };
+
+    expect(searchWithinCandidate(candidate, "\ud83d")).toEqual([]);
+    expect(searchWithinCandidate(candidate, "\ude00")).toEqual([]);
+    expect(searchWithinCandidate(candidate, "needle\ud800")).toEqual([]);
+    expect(searchWithinCandidate(candidate, "😀")).toEqual([{ charStart: 1, charEnd: 3 }]);
+    expect(searchWithinCandidate(candidate, "needle")).toEqual([{ charStart: 5, charEnd: 11 }]);
+  });
+
   it("keeps a combining-mark match narrower than its base code point", () => {
     const text = "x\u0301";
     const candidate: AnswerCandidate = {
@@ -218,7 +253,7 @@ describe("document selection range semantics", () => {
       purpose: "test combining-only spans",
       sourceId: "source-combining-only",
       documentId: "document-combining-only",
-      documentVersionId: "version-combining-only",
+      versionId: "version-combining-only",
       contentHash: "1".repeat(64),
       text,
       ranges: [{ charStart: 0, charEnd: text.length }],
@@ -243,7 +278,7 @@ describe("document selection range semantics", () => {
       purpose: "test reordered combining marks",
       sourceId: "source-reordered-marks",
       documentId: "document-reordered-marks",
-      documentVersionId: "version-reordered-marks",
+      versionId: "version-reordered-marks",
       contentHash: "2".repeat(64),
       text,
       ranges: [{ charStart: 0, charEnd: text.length }],
@@ -268,7 +303,7 @@ describe("document selection range semantics", () => {
       purpose: "test composed reordered contributors",
       sourceId: "source-composed-reordered-mark",
       documentId: "document-composed-reordered-mark",
-      documentVersionId: "version-composed-reordered-mark",
+      versionId: "version-composed-reordered-mark",
       contentHash: "4".repeat(64),
       text,
       ranges: [{ charStart: 0, charEnd: text.length }],
@@ -295,7 +330,7 @@ describe("document selection range semantics", () => {
       purpose: "test composition across a lower-class mark",
       sourceId: "source-blocked-composition",
       documentId: "document-blocked-composition",
-      documentVersionId: "version-blocked-composition",
+      versionId: "version-blocked-composition",
       contentHash: "5".repeat(64),
       text,
       ranges: [{ charStart: 0, charEnd: text.length }],
@@ -320,7 +355,7 @@ describe("document selection range semantics", () => {
       purpose: "test supplementary combining spans",
       sourceId: "source-supplementary-combining",
       documentId: "document-supplementary-combining",
-      documentVersionId: "version-supplementary-combining",
+      versionId: "version-supplementary-combining",
       contentHash: "3".repeat(64),
       text,
       ranges: [{ charStart: 0, charEnd: text.length }],
@@ -346,7 +381,7 @@ describe("document selection range semantics", () => {
       purpose: "test full fold expansions",
       sourceId: "source-fold-expansions",
       documentId: "document-fold-expansions",
-      documentVersionId: "version-fold-expansions",
+      versionId: "version-fold-expansions",
       contentHash: "e".repeat(64),
       text,
       ranges: [{ charStart: 0, charEnd: text.length }],
@@ -377,7 +412,7 @@ describe("document selection range semantics", () => {
       purpose: "test default Unicode case folding",
       sourceId: "source-greek-case-fold",
       documentId: "document-greek-case-fold",
-      documentVersionId: "version-greek-case-fold",
+      versionId: "version-greek-case-fold",
       contentHash: "f".repeat(64),
       text,
       ranges: [{ charStart: 0, charEnd: text.length }],
@@ -404,7 +439,7 @@ describe("document selection range semantics", () => {
       purpose: "test Hangul normalization spans",
       sourceId: "source-hangul-normalization",
       documentId: "document-hangul-normalization",
-      documentVersionId: "version-hangul-normalization",
+      versionId: "version-hangul-normalization",
       contentHash: "0".repeat(64),
       text,
       ranges: [{ charStart: 0, charEnd: text.length }],
@@ -424,6 +459,56 @@ describe("document selection range semantics", () => {
     expect(searchWithinCandidate(candidate, "가")).toEqual(expected);
   });
 
+  it("fails closed across a blocked Hangul trailing-jamo boundary", () => {
+    const text = "가\u0327\u11a8";
+    const candidate: AnswerCandidate = {
+      id: "document:blocked-hangul-boundary",
+      kind: "document",
+      rank: 0,
+      purpose: "test blocked Hangul composition",
+      sourceId: "source-blocked-hangul-boundary",
+      documentId: "document-blocked-hangul-boundary",
+      versionId: "version-blocked-hangul-boundary",
+      contentHash: "h".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Blocked Hangul boundary",
+      publicProvenance: {
+        documentTitle: "Blocked Hangul boundary",
+        citationUrl: "https://example.test/blocked-hangul-boundary",
+      },
+      renderedTokenCount: 0,
+    };
+
+    expect(searchWithinCandidate(candidate, "각")).toEqual([]);
+    expect(searchWithinCandidate(candidate, "가")).toEqual([{ charStart: 0, charEnd: 1 }]);
+  });
+
+  it("does not compose a match across an intervening combining mark", () => {
+    const text = "a\u0323\u0301";
+    const candidate: AnswerCandidate = {
+      id: "document:combining-boundary",
+      kind: "document",
+      rank: 0,
+      purpose: "test combining boundary",
+      sourceId: "source-combining-boundary",
+      documentId: "document-combining-boundary",
+      versionId: "version-combining-boundary",
+      contentHash: "i".repeat(64),
+      text,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+      label: "Combining boundary",
+      publicProvenance: {
+        documentTitle: "Combining boundary",
+        citationUrl: "https://example.test/combining-boundary",
+      },
+      renderedTokenCount: 0,
+    };
+
+    expect(searchWithinCandidate(candidate, "á")).toEqual([]);
+    expect(searchWithinCandidate(candidate, "ạ")).toEqual([{ charStart: 0, charEnd: 2 }]);
+  });
+
   it("surfaces structurally distinct verbatim match previews with exact document ranges", () => {
     const text =
       "Region 1 signed row 1: curtailment baseline. " +
@@ -436,7 +521,7 @@ describe("document selection range semantics", () => {
       purpose: "test previews",
       sourceId: "source-preview",
       documentId: "document-preview",
-      documentVersionId: "version-preview",
+      versionId: "version-preview",
       contentHash: "b".repeat(64),
       text,
       ranges: [{ charStart: 0, charEnd: text.length }],
@@ -671,62 +756,87 @@ const config = (mainInputTokens: number): CanonicalAiConfig => ({
   aiWebMaxFetches: 2,
   aiWebMaxDomainFilters: 8,
   aiContextReductionMaxIterations: 2,
-  aiMemoryDirectMaxItems: 50,
   aiMemoryToolResultMaxItems: 20,
   webResearchProvider: "" as const,
 });
 
-const load = (historyText: string): LoadedTurn => ({
-  aiRunId: crypto.randomUUID(),
-  chatId: crypto.randomUUID(),
-  initiatingUserId: "fanout-allocation-user",
-  userMessageId: crypto.randomUUID(),
-  userMessage: "Compare both topics.",
-  locale: "en-US",
-  market: "US",
-  currentDate: "2026-07-10",
-  citationNonce: [...new Uint8Array(16)],
-  priorTerminalTurnCount: 1,
-  conversation: [
-    {
-      turnId: "turn-1",
-      userMessageId: "message-user-1",
-      userContent: historyText,
-      assistantMessageId: "message-assistant-1",
-      assistantContent: historyText,
+const citationNamespace = "cn_AAAAAAAAAAAAAAAAAAAAAA";
+
+const load = (_historyText: string): LoadedTurn => {
+  const aiRunId = crypto.randomUUID();
+  const chatId = crypto.randomUUID();
+  return {
+    aiRunId,
+    chatId,
+    initiatingUserId: "fanout-allocation-user",
+    userMessageId: crypto.randomUUID(),
+    userMessage: "Compare both topics.",
+    locale: "en-US",
+    market: "US",
+    currentDate: "2026-07-10",
+    citationNamespace,
+    memoryMode: "disabled",
+    webRequested: false,
+    acceptanceScope: {
+      userId: "fanout-allocation-user",
+      chatId,
+      companyId: "00000000-0000-4000-8000-000000000002",
+      subscriptionIds: [],
+      accessIds: [],
+      publicSourceIds: [],
+      memoryMode: "disabled",
+      memoryRevisionIds: [],
+      webRequested: false,
+      webEnabled: false,
+      provider: "zai_coding_plan_official",
+      fastModelId: "glm-5-turbo",
+      mainModelId: "glm-5-turbo",
+      webTransportProvider: null,
+      allowedDomains: null,
     },
-  ],
-  memories: [],
-  memoryMode: "disabled",
-  sourceCatalog: [],
-  webRequested: false,
-  webPolicy: { enabled: false, reason: "company_disabled", allowlistActive: false },
-});
+  };
+};
 
 const plan = (
   relevantTurnIds: readonly string[],
-): Extract<NormalizedExecutionPlan, { readonly mode: "fanout" }> => ({
+): Extract<PlanTurnResult, { readonly mode: "fanout" }> => ({
   mode: "fanout",
-  reason: "two independent questions",
+  question: "Compare both topics.",
   topics: [
     { topicId: "t1", question: "Topic one", relevantTurnIds },
     { topicId: "t2", question: "Topic two", relevantTurnIds },
   ],
 });
 
+const stubPriorTurns = (operations: CanonicalWorkflowOperations, historyText = ""): void => {
+  (operations as any).currentPriorTurns = async () =>
+    historyText === ""
+      ? []
+      : [
+          {
+            turnId: "turn-1",
+            userMessageId: "message-user-1",
+            userContent: historyText,
+            assistantMessageId: "message-assistant-1",
+            assistantContent: historyText,
+          },
+        ];
+};
+
 describe("fanout source-key merge", () => {
-  it("does only stable cross-topic identity deduplication and nonce-key assignment", async () => {
+  it("does only stable cross-topic identity deduplication and namespace-key assignment", async () => {
     const operations = new CanonicalWorkflowOperations(
       "postgres://unused",
       config(100_000),
       {} as CanonicalAgentClient,
     );
+    stubPriorTurns(operations);
     const turn = load("");
     const topics = plan([]).topics;
     const sharedDocument = {
       kind: "document" as const,
       documentId: "shared-document",
-      documentVersionId: "shared-version",
+      versionId: "shared-version",
       source: { kind: "public" as const, sourceId: "public:shared-source" },
       ranges: [{ charStart: 0, charEnd: 10 }],
       purpose: "shared evidence",
@@ -777,17 +887,18 @@ describe("fanout source-key merge", () => {
       config(100_000),
       {} as CanonicalAgentClient,
     );
+    stubPriorTurns(operations);
     const publicReference = {
       kind: "document" as const,
       documentId: "same-document",
-      documentVersionId: "same-version",
+      versionId: "same-version",
       source: { kind: "public" as const, sourceId: "public:same-source" },
       purpose: "public",
     };
     const publisherReference = {
       kind: "document" as const,
       documentId: "same-document",
-      documentVersionId: "same-version",
+      versionId: "same-version",
       source: {
         kind: "publisher" as const,
         sourceId: "publisher:same-source",
@@ -878,27 +989,30 @@ describe("fanout synthesis allocation", () => {
     reductionRan: false,
   });
 
-  it("reserves the exact selected conversation and packet framing before topic calls", () => {
+  it("reserves the exact selected conversation and packet framing before topic calls", async () => {
     const operations = new CanonicalWorkflowOperations(
       "postgres://unused",
       config(100_000),
       {} as CanonicalAgentClient,
     );
+    stubPriorTurns(operations, "Relevant historical context. ".repeat(500));
     const turn = load("Relevant historical context. ".repeat(500));
-    const withoutHistory = operations.allocateFanout(turn, plan([]));
-    const withHistory = operations.allocateFanout(turn, plan(["turn-1"]));
+    const withoutHistory = await operations.allocateFanout(turn, plan([]));
+    const withHistory = await operations.allocateFanout(turn, plan(["turn-1"]));
     expect(withHistory.fixedSynthesisInput).toBeGreaterThan(withoutHistory.fixedSynthesisInput);
     expect(withHistory.packetOutputTokens).toBeLessThanOrEqual(withoutHistory.packetOutputTokens);
     expect(withHistory.packetOutputTokens).toBeGreaterThan(0);
   });
 
-  it("uses the exact minimum valid topic-packet serialization instead of an arbitrary threshold", () => {
+  it("uses the exact minimum valid topic-packet serialization instead of an arbitrary threshold", async () => {
     const turn = load("");
-    const roomy = new CanonicalWorkflowOperations(
+    const roomyOperations = new CanonicalWorkflowOperations(
       "postgres://unused",
       config(100_000),
       {} as CanonicalAgentClient,
-    ).allocateFanout(turn, plan([]));
+    );
+    stubPriorTurns(roomyOperations);
+    const roomy = await roomyOperations.allocateFanout(turn, plan([]));
     const minimum = resolveRegisteredModel("glm-5-turbo").countTextTokens(
       JSON.stringify({ topicId: "t1", status: "partial", claims: [], gaps: ["gap"] }),
     );
@@ -907,38 +1021,44 @@ describe("fanout synthesis allocation", () => {
       config(roomy.fixedSynthesisInput + minimum * 2),
       {} as CanonicalAgentClient,
     );
-    expect(exact.allocateFanout(turn, plan([])).packetOutputTokens).toBe(minimum);
+    stubPriorTurns(exact);
+    expect((await exact.allocateFanout(turn, plan([]))).packetOutputTokens).toBe(minimum);
 
     const oneTokenShort = new CanonicalWorkflowOperations(
       "postgres://unused",
       config(roomy.fixedSynthesisInput + minimum * 2 - 1),
       {} as CanonicalAgentClient,
     );
-    expect(() => oneTokenShort.allocateFanout(turn, plan([]))).toThrow("synthesis_budget_mismatch");
+    stubPriorTurns(oneTokenShort);
+    await expect(oneTokenShort.allocateFanout(turn, plan([]))).rejects.toThrow(
+      "synthesis_budget_mismatch",
+    );
   });
 
-  it("fails before fanout when mandatory selected history leaves no packet allowance", () => {
+  it("fails before fanout when mandatory selected history leaves no packet allowance", async () => {
     const operations = new CanonicalWorkflowOperations(
       "postgres://unused",
       config(2_000),
       {} as CanonicalAgentClient,
     );
+    stubPriorTurns(operations, "mandatory history ".repeat(20_000));
     try {
-      operations.allocateFanout(load("mandatory history ".repeat(20_000)), plan(["turn-1"]));
+      await operations.allocateFanout(load("mandatory history ".repeat(20_000)), plan(["turn-1"]));
       throw new Error("expected synthesis allocation to fail");
     } catch (error) {
       expect(error).toMatchObject({ code: "synthesis_budget_mismatch", retryable: false });
     }
   });
 
-  it("reasserts the exact preallocation against the real synthesis request", () => {
+  it("reasserts the exact preallocation against the real synthesis request", async () => {
     const operations = new CanonicalWorkflowOperations(
       "postgres://unused",
       config(100_000),
       {} as CanonicalAgentClient,
     );
+    stubPriorTurns(operations);
     const turn = load("");
-    const allocation = operations.allocateFanout(turn, plan([]));
+    const allocation = await operations.allocateFanout(turn, plan([]));
     const contexts = [
       topicContext("t1", allocation.packetOutputTokens),
       topicContext("t2", allocation.packetOutputTokens),
@@ -948,16 +1068,18 @@ describe("fanout synthesis allocation", () => {
       { topicId: "t2" as const, status: "partial" as const, claims: [], gaps: ["none"] },
     ];
 
-    expect(operations.synthesisContext(turn, packets, [], contexts, allocation)).toMatchObject({
+    await expect(
+      operations.synthesisContext(turn, packets, [], contexts, allocation),
+    ).resolves.toMatchObject({
       status: "ready",
     });
-    expect(
+    await expect(
       operations.synthesisContext(turn, packets, [], contexts, {
         ...allocation,
         fixedSynthesisInput: allocation.fixedSynthesisInput + 1,
       }),
-    ).toMatchObject({ status: "failed", failureCode: "synthesis_budget_mismatch" });
-    expect(
+    ).resolves.toMatchObject({ status: "failed", failureCode: "synthesis_budget_mismatch" });
+    await expect(
       operations.synthesisContext(
         turn,
         packets,
@@ -968,17 +1090,18 @@ describe("fanout synthesis allocation", () => {
         ],
         allocation,
       ),
-    ).toMatchObject({ status: "failed", failureCode: "synthesis_budget_mismatch" });
+    ).resolves.toMatchObject({ status: "failed", failureCode: "synthesis_budget_mismatch" });
   });
 
-  it("rejects packets whose real serialization exceeds their combined output allowance", () => {
+  it("rejects packets whose real serialization exceeds their combined output allowance", async () => {
     const operations = new CanonicalWorkflowOperations(
       "postgres://unused",
       config(100_000),
       {} as CanonicalAgentClient,
     );
+    stubPriorTurns(operations);
     const turn = load("");
-    const allocation = operations.allocateFanout(turn, plan([]));
+    const allocation = await operations.allocateFanout(turn, plan([]));
     const contexts = [
       topicContext("t1", allocation.packetOutputTokens),
       topicContext("t2", allocation.packetOutputTokens),
@@ -988,13 +1111,15 @@ describe("fanout synthesis allocation", () => {
       {
         topicId: "t1" as const,
         status: "answered" as const,
-        claims: [{ text: oversized, sourceKeys: ["k_AAAAAAAAAAAAAAAAAAAAAA_1"] }],
+        claims: [{ text: oversized, sourceKeys: ["k_cn_AAAAAAAAAAAAAAAAAAAAAA_1"] }],
         gaps: [],
       },
       { topicId: "t2" as const, status: "partial" as const, claims: [], gaps: ["none"] },
     ];
 
-    expect(operations.synthesisContext(turn, packets, [], contexts, allocation)).toMatchObject({
+    await expect(
+      operations.synthesisContext(turn, packets, [], contexts, allocation),
+    ).resolves.toMatchObject({
       status: "failed",
       failureCode: "synthesis_budget_mismatch",
     });
@@ -1008,11 +1133,11 @@ describe("typed controlled operation failures", () => {
       config(100_000),
       {} as CanonicalAgentClient,
     );
+    stubPriorTurns(operations);
     const assembly = await operations.assembleContext(
       {
         ...load(""),
         webRequested: false,
-        webPolicy: { enabled: false, reason: "company_disabled", allowlistActive: false },
       },
       "question",
       {
@@ -1068,15 +1193,15 @@ describe("fanout immutable source-map merge", () => {
   const source = (
     topicId: "t1" | "t2",
     range: { readonly charStart: number; readonly charEnd: number },
-    documentVersionId = "version-1",
-    sourceKey = "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+    versionId = "version-1",
+    sourceKey = "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1",
   ): FinalSourceRecord => ({
     sourceKey,
     locator: {
       kind: "document",
       sourceId: "public:source-1",
       documentId: "document-1",
-      documentVersionId,
+      versionId,
       contentHash: "a".repeat(64),
       ranges: [range],
     },
@@ -1137,7 +1262,7 @@ describe("fanout immutable source-map merge", () => {
           kind: "document",
           sourceId: "public:source-1",
           documentId: "document-1",
-          documentVersionId: "version-1",
+          versionId: "version-1",
           contentHash: "a".repeat(64),
           ranges: [
             { charStart: 0, charEnd: 10 },
@@ -1168,7 +1293,7 @@ describe("fanout immutable source-map merge", () => {
 
   it("reuses the first canonical fanout locator for the same normalized web quotation", () => {
     const webSource = (topicId: "t1" | "t2", capturedAt: string): FinalSourceRecord => ({
-      sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+      sourceKey: "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1",
       locator: {
         kind: "web",
         url: "https://example.test/report",
@@ -1218,7 +1343,7 @@ describe("fanout immutable source-map merge", () => {
       config(100_000),
       {} as CanonicalAgentClient,
     );
-    const keys = [9, 10, 11].map((ordinal) => `k_AAAAAAAAAAAAAAAAAAAAAA_${ordinal}`);
+    const keys = [9, 10, 11].map((ordinal) => `k_cn_AAAAAAAAAAAAAAAAAAAAAA_${ordinal}`);
     const contexts = keys.map((key, index) =>
       context("t1", source("t1", { charStart: index, charEnd: index + 1 }, "version-1", key)),
     );
@@ -1242,7 +1367,7 @@ describe("provider-authored canonical schemas", () => {
     const publicReference = {
       kind: "document" as const,
       documentId: "document",
-      documentVersionId: "version",
+      versionId: "version",
       source: { kind: "public" as const, sourceId: "public:source" },
       purpose: "ground answer",
     };
@@ -1256,56 +1381,35 @@ describe("provider-authored canonical schemas", () => {
     }
   });
 
-  it("accepts only exact document namespaces and matching publisher document identities", () => {
+  it("accepts only the model-visible document identity", () => {
     const publicReference = {
       kind: "document" as const,
       documentId: "document",
-      documentVersionId: "version",
-      source: { kind: "public" as const, sourceId: "public:source" },
       purpose: "ground answer",
     };
     expect(canonicalProviderValueSchemas.internalReference.parse(publicReference)).toEqual(
       publicReference,
     );
-    for (const sourceId of ["source", "publisher:source", "public:public:source", " public:source"])
-      expect(() =>
-        canonicalProviderValueSchemas.internalReference.parse({
-          ...publicReference,
-          source: { kind: "public", sourceId },
-        }),
-      ).toThrow();
-
-    const publisherReference = {
-      ...publicReference,
-      source: {
-        kind: "publisher" as const,
-        sourceId: "publisher:subscription",
-        issueId: "issue",
-        documentId: "document",
-      },
-    };
-    expect(canonicalProviderValueSchemas.internalReference.parse(publisherReference)).toEqual(
-      publisherReference,
-    );
     expect(() =>
       canonicalProviderValueSchemas.internalReference.parse({
-        ...publisherReference,
-        source: { ...publisherReference.source, documentId: "different-document" },
+        ...publicReference,
+        versionId: "version",
+        source: { kind: "public", sourceId: "public:source" },
       }),
-    ).toThrow(/must equal the outer documentId/u);
+    ).toThrow();
   });
 
   it("rejects unknown fields at every model-output root and nested object boundary", () => {
     expect(() =>
-      canonicalProviderValueSchemas.conversationResolution.parse({
-        mode: "continue",
-        retrievalQuestion: "question",
-        selectedTurnIds: [],
+      canonicalProviderValueSchemas.planTurn.parse({
+        mode: "single",
+        question: "question",
+        relevantTurnIds: [],
         ignored: true,
       }),
     ).toThrow();
     expect(() =>
-      canonicalProviderValueSchemas.executionPlan.parse({
+      canonicalProviderValueSchemas.planTurn.parse({
         mode: "fanout",
         reason: "independent topics",
         topics: [
@@ -1320,7 +1424,7 @@ describe("provider-authored canonical schemas", () => {
           {
             kind: "document",
             documentId: "document",
-            documentVersionId: "version",
+            versionId: "version",
             ranges: [{ charStart: 0, charEnd: 1, ignored: true }],
             purpose: "ground answer",
           },

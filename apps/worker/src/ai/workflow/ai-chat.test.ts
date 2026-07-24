@@ -1,5 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
+import { Effect as Effect3 } from "effect3";
+import { SmithersDb } from "smithers-orchestrator";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -8,9 +10,9 @@ import type { CanonicalAgentClient } from "../runtime/agent-client";
 import { AiRuntimeError } from "../runtime/errors";
 import type {
   AnswerLaneResult,
-  ConversationResolution,
+  FinalSourceRecord,
+  PlanTurnResult,
   MemoryExtractionArtifact,
-  NormalizedExecutionPlan,
   TopicPacket,
 } from "../runtime/types";
 import {
@@ -35,6 +37,7 @@ import {
   type ContextAssembly,
   type ContextReductionPlan,
   type ContextState,
+  type FanoutAllocation,
   type FanoutSourceKeySet,
   type LoadedTurn,
   type MemorySelectorResult,
@@ -93,24 +96,15 @@ interface SmithersFrameElement {
   readonly children?: readonly SmithersFrameElement[];
 }
 
-const graphKeyframe = (runId: string): Promise<SmithersFrameElement> =>
-  runDb(
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
-      const rows = yield* sql<{ readonly xmlJson: string }>`
-        select xml_json as "xmlJson"
-        from _smithers_frames
-        where run_id = ${runId}
-          and encoding = 'keyframe'
-          and xml_json like '%fanout-topic-research%'
-        order by frame_no desc
-        limit 1
-      `;
-      const frame = rows[0];
-      if (frame === undefined) throw new Error(`missing fanout keyframe for ${runId}`);
-      return JSON.parse(frame.xmlJson) as SmithersFrameElement;
-    }),
-  );
+const graphKeyframe = async (
+  storage: Pick<SmithersStorage<typeof aiChatSchemas>, "db">,
+  runId: string,
+): Promise<SmithersFrameElement> => {
+  const frames = await Effect3.runPromise(new SmithersDb(storage.db).listFrames(runId, 500));
+  const frame = frames.find((candidate) => candidate.xmlJson.includes("fanout-topic-research"));
+  if (frame === undefined) throw new Error(`missing fanout keyframe for ${runId}`);
+  return JSON.parse(frame.xmlJson) as SmithersFrameElement;
+};
 
 const collectFrameElements = (
   root: SmithersFrameElement,
@@ -126,13 +120,13 @@ const normalizedTopicIds = (runId: string): Promise<readonly string[]> =>
       const sql = yield* PgClient.PgClient;
       const rows = yield* sql<{ readonly value: string }>`
         select value
-        from ai_chat_normalized_plan
+        from ai_chat_plan_turn
         where run_id = ${runId}
-          and node_id = 'normalize-execution-plan'
+          and node_id = 'plan-turn'
           and iteration = 0
       `;
       const value = rows[0]?.value;
-      if (value === undefined) throw new Error(`missing normalized plan for ${runId}`);
+      if (value === undefined) throw new Error(`missing plan-turn output for ${runId}`);
       const parsed = JSON.parse(value) as {
         readonly topics?: readonly { readonly topicId: string }[];
       };
@@ -196,22 +190,34 @@ const emptyMemory: MemoryExtractionArtifact = {
   },
 };
 const load: LoadedTurn = {
-  aiRunId: crypto.randomUUID(),
-  chatId: crypto.randomUUID(),
+  aiRunId: "00000000-0000-4000-8000-000000000003",
+  chatId: "00000000-0000-4000-8000-000000000001",
   initiatingUserId: "workflow-user",
   userMessageId: crypto.randomUUID(),
   userMessage: "Compare the evidence.",
   locale: "en-US",
   market: "US",
   currentDate: "2026-07-10",
-  citationNonce: [...new Uint8Array(16).fill(7)],
-  priorTerminalTurnCount: 0,
-  conversation: [],
-  memories: [],
+  citationNamespace: "cn_" + "A".repeat(22),
   memoryMode: "disabled",
-  sourceCatalog: [],
   webRequested: false,
-  webPolicy: { enabled: false, reason: "company_disabled", allowlistActive: false },
+  acceptanceScope: {
+    userId: "workflow-user",
+    chatId: "00000000-0000-4000-8000-000000000001",
+    companyId: "00000000-0000-4000-8000-000000000002",
+    subscriptionIds: [],
+    accessIds: [],
+    publicSourceIds: [],
+    memoryMode: "disabled",
+    memoryRevisionIds: [],
+    webRequested: false,
+    webEnabled: false,
+    provider: "zai_coding_plan_official",
+    fastModelId: "glm-5-turbo",
+    mainModelId: "glm-5-turbo",
+    webTransportProvider: null,
+    allowedDomains: null,
+  },
 };
 const request = {
   requestClass: "main" as const,
@@ -267,7 +273,7 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
   constructor(
     readonly route: "clarify" | "single" | "fanout",
     readonly reduction: "none" | "fit" | "correct-then-fit" | "unfit" = "none",
-    readonly topicFailure: "web_policy_revoked" | "context_plan_unfit" | undefined = undefined,
+    readonly topicFailure: "context_plan_unfit" | undefined = undefined,
   ) {
     super(
       "postgres://unused",
@@ -287,7 +293,6 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
         aiWebMaxFetches: 8,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 200,
         aiMemoryToolResultMaxItems: 50,
         webResearchProvider: "",
       },
@@ -303,41 +308,26 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
     this.calls.push("memory-extract");
     return emptyMemory;
   }
-  override async resolveConversation(): Promise<ConversationResolution> {
-    this.calls.push("resolve-conversation");
-    return this.route === "clarify"
-      ? { mode: "clarify", question: "Which market?" }
-      : { mode: "continue", retrievalQuestion: "Compare", selectedTurnIds: [] };
-  }
   override async clarify(_load: LoadedTurn, question: string): Promise<AnswerLaneResult> {
     this.calls.push("clarification-result");
     return { status: "ok", mode: "clarification", content: question, sourceMap: [] };
   }
-  override async planExecution() {
-    this.calls.push("plan-execution");
-    return this.route === "fanout"
-      ? {
-          mode: "fanout" as const,
-          reason: "independent",
-          topics: [
-            { question: "one", relevantTurnIds: [] },
-            { question: "two", relevantTurnIds: [] },
-          ],
-        }
-      : { mode: "single" as const, reason: "atomic" };
-  }
-  override normalizePlan(value: unknown): NormalizedExecutionPlan {
-    this.calls.push("normalize-execution-plan");
-    const plan = value as Awaited<ReturnType<ScriptedOperations["planExecution"]>>;
-    return plan.mode === "single"
-      ? plan
-      : {
-          ...plan,
-          topics: plan.topics.map((topic, index) => ({
-            ...topic,
-            topicId: (index === 0 ? "t1" : "t2") as "t1" | "t2",
-          })),
-        };
+  override async planTurn(): Promise<PlanTurnResult> {
+    this.calls.push("plan-turn");
+    if (this.route === "clarify") {
+      return { mode: "clarify", question: "Which comparison?" };
+    }
+    if (this.route === "fanout") {
+      return {
+        mode: "fanout",
+        question: "Compare",
+        topics: [
+          { topicId: "t1", question: "one", relevantTurnIds: [] },
+          { topicId: "t2", question: "two", relevantTurnIds: [] },
+        ],
+      };
+    }
+    return { mode: "single", question: "Compare", relevantTurnIds: [] };
   }
   override async retrieveInternal(
     _load: LoadedTurn,
@@ -446,13 +436,16 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
     this.streamedTaskIds.push(taskId);
     return { status: "ok", mode: "single", content: "single", sourceMap: [] };
   }
-  override allocateFanout() {
+  override async allocateFanout(
+    _load: LoadedTurn,
+    _plan: Extract<PlanTurnResult, { mode: "fanout" }>,
+  ) {
     this.calls.push("fanout-allocate");
     return { packetOutputTokens: 1024, synthesisUsableInput: 100_000, fixedSynthesisInput: 100 };
   }
   override async mergeFanoutSources(
     _load: LoadedTurn,
-    _topics: Extract<NormalizedExecutionPlan, { mode: "fanout" }>["topics"],
+    _topics: Extract<PlanTurnResult, { mode: "fanout" }>["topics"],
     _selectors: Readonly<Record<"t1" | "t2" | "t3", SelectorBundle>>,
   ): Promise<FanoutSourceKeySet> {
     this.calls.push("fanout-merge-sources");
@@ -472,7 +465,13 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
     this.calls.push("fanout-collect");
     return [];
   }
-  override synthesisContext(_load: LoadedTurn, packets: readonly TopicPacket[]) {
+  override async synthesisContext(
+    _load: LoadedTurn,
+    packets: readonly TopicPacket[],
+    _sourceMap: readonly FinalSourceRecord[],
+    _topicContexts: readonly ContextState[],
+    _allocation: FanoutAllocation,
+  ) {
     this.calls.push("fanout-synthesis-measure");
     return packets.length === 0
       ? {
@@ -747,7 +746,7 @@ class BlockingFanoutCheckpointOperations extends ScriptedOperations {
 
   override async mergeFanoutSources(
     loaded: LoadedTurn,
-    topics: Extract<NormalizedExecutionPlan, { mode: "fanout" }>["topics"],
+    topics: Extract<PlanTurnResult, { mode: "fanout" }>["topics"],
     selectors: Readonly<Record<"t1" | "t2" | "t3", SelectorBundle>>,
   ): Promise<FanoutSourceKeySet> {
     return this.checkpoint === "after-research"
@@ -820,7 +819,13 @@ class SynthesisMismatchOperations extends ScriptedOperations {
     super("fanout");
   }
 
-  override synthesisContext(): ContextState {
+  override async synthesisContext(
+    _load: LoadedTurn,
+    _packets: readonly TopicPacket[],
+    _sourceMap: readonly FinalSourceRecord[],
+    _topicContexts: readonly ContextState[],
+    _allocation: FanoutAllocation,
+  ): Promise<ContextState> {
     this.calls.push("fanout-synthesis-measure");
     return {
       ...context(),
@@ -979,7 +984,7 @@ describe("canonical ai-chat workflow source contract", () => {
 
   it("rejects malformed durable document source identities before resume", () => {
     const base = {
-      sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+      sourceKey: "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1",
       label: null,
       publicProvenance: { documentTitle: "Document", citationUrl: "https://example.test/doc" },
       uses: [
@@ -1004,7 +1009,7 @@ describe("canonical ai-chat workflow source contract", () => {
       kind: "document",
       sourceId: "public:source-1",
       documentId: "document-1",
-      documentVersionId: "version-1",
+      versionId: "version-1",
       contentHash: "a".repeat(64),
       ranges: [{ charStart: 0, charEnd: 1 }],
     };
@@ -1033,6 +1038,7 @@ describe("canonical ai-chat workflow source contract", () => {
         sourceId: "publisher:subscription-1",
         publisherIssueId: "issue-1",
         publisherDocumentId: "document-1",
+        publisherExtractionId: "extraction-1",
       }).success,
     ).toBe(true);
     expect(
@@ -1044,40 +1050,36 @@ describe("canonical ai-chat workflow source contract", () => {
     ).toBe(false);
   });
 
-  it("accepts the enabled Tinyfish web policy in the load-turn output contract", () => {
+  it("keeps the web policy body out of the load-turn output contract", () => {
     const parsed = aiChatSchemas.aiChatLoadTurn.safeParse({
       value: {
         ...load,
         webRequested: true,
-        webPolicy: { enabled: true, provider: "tinyfish", allowedDomains: null },
       },
     });
     expect(parsed.success).toBe(true);
+    expect(
+      aiChatSchemas.aiChatLoadTurn.safeParse({
+        value: {
+          ...load,
+          webRequested: true,
+          webPolicy: {
+            enabled: true,
+            provider: "tinyfish",
+            allowedDomains: null,
+          },
+        },
+      }).success,
+    ).toBe(false);
   });
 
-  it("accepts only namespaced source-catalog identities in durable load-turn state", () => {
-    const source = {
-      sourceId: "public:e2e-fr-energie",
-      displayName: "E2E Energie France",
-      country: "FR",
-      language: "fr",
-      ingestionType: "public",
-    };
+  it("keeps durable load-turn state small and rejects authorization inventories", () => {
+    expect(aiChatSchemas.aiChatLoadTurn.safeParse({ value: load }).success).toBe(true);
     expect(
-      aiChatSchemas.aiChatLoadTurn.safeParse({ value: { ...load, sourceCatalog: [source] } })
-        .success,
-    ).toBe(true);
-    for (const sourceId of [
-      "e2e-fr-energie",
-      "public:public:e2e-fr-energie",
-      " publisher:subscription",
-    ]) {
-      expect(
-        aiChatSchemas.aiChatLoadTurn.safeParse({
-          value: { ...load, sourceCatalog: [{ ...source, sourceId }] },
-        }).success,
-      ).toBe(false);
-    }
+      aiChatSchemas.aiChatLoadTurn.safeParse({
+        value: { ...load, authorizedScope: [{ sourceId: "public:source" }] },
+      }).success,
+    ).toBe(false);
   });
 
   it("keeps disabled selectors distinct from enabled empty selections", () => {
@@ -1133,7 +1135,7 @@ describe("canonical ai-chat workflow source contract", () => {
       aiChatSchemas.aiChatLoadTurn.safeParse({
         value: {
           ...load,
-          sourceCatalog: [
+          authorizedScope: [
             {
               sourceId: "source-1",
               displayName: "Source",
@@ -1239,11 +1241,11 @@ describe("canonical ai-chat workflow source contract", () => {
       }).success,
     ).toBe(false);
     expect(
-      aiChatSchemas.aiChatResolution.safeParse({
+      aiChatSchemas.aiChatPlanTurn.safeParse({
         value: {
-          mode: "continue",
-          retrievalQuestion: "Question",
-          selectedTurnIds: [],
+          mode: "single",
+          question: "Question",
+          relevantTurnIds: [],
           forged: true,
         },
       }).success,
@@ -1271,9 +1273,10 @@ describe("canonical ai-chat workflow source contract", () => {
           purpose: "publisher evidence",
           sourceId: "publisher:source-1",
           documentId: "document-1",
-          documentVersionId: "version-1",
+          versionId: "version-1",
           publisherIssueId: "issue-1",
           publisherDocumentId: "document-1",
+          publisherExtractionId: "extraction-1",
           contentHash: "a".repeat(64),
           text: "publisher text",
           ranges: [{ charStart: 0, charEnd: 14 }],
@@ -1290,16 +1293,17 @@ describe("canonical ai-chat workflow source contract", () => {
       ],
       sourceMap: [
         {
-          sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+          sourceKey: "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1",
           locator: {
             kind: "document" as const,
             sourceId: "publisher:subscription-1",
             documentId: "document-1",
-            documentVersionId: "version-1",
+            versionId: "version-1",
             contentHash: "a".repeat(64),
             ranges: [{ charStart: 0, charEnd: 14 }],
             publisherIssueId: "issue-1",
             publisherDocumentId: "document-1",
+            publisherExtractionId: "extraction-1",
           },
           label: "Publisher document",
           publicProvenance: {
@@ -1340,22 +1344,21 @@ describe("canonical ai-chat workflow source contract", () => {
       {
         kind: "document" as const,
         documentId: "public-document-1",
-        documentVersionId: "public-document-1",
+        versionId: "public-version-1",
         source: { kind: "public" as const, sourceId: "public:e2e-fr-energie" },
-        ranges: [{ charStart: 0, charEnd: 24 }],
         purpose: "public evidence",
       },
       {
         kind: "document" as const,
         documentId: "publisher-document-1",
-        documentVersionId: "publisher-version-1",
+        versionId: "publisher-version-1",
         source: {
           kind: "publisher" as const,
-          sourceId: "publisher:subscription-1",
+          sourceId: "publisher:e2e-fr-energie",
           issueId: "issue-1",
           documentId: "publisher-document-1",
         },
-        ranges: [{ charStart: 0, charEnd: 24 }],
+        publisherExtractionId: "extraction-1",
         purpose: "publisher evidence",
       },
     ];
@@ -1363,26 +1366,10 @@ describe("canonical ai-chat workflow source contract", () => {
     expect(aiChatSchemas.aiChatInternal.safeParse({ value: references }).success).toBe(true);
     expect(
       aiChatSchemas.aiChatInternal.safeParse({
-        value: [{ ...references[0], sourceId: "public:e2e-fr-energie" }],
-      }).success,
-    ).toBe(false);
-    for (const sourceId of [
-      "e2e-fr-energie",
-      "publisher:e2e-fr-energie",
-      "public:public:e2e-fr-energie",
-    ]) {
-      expect(
-        aiChatSchemas.aiChatInternal.safeParse({
-          value: [{ ...references[0], source: { kind: "public", sourceId } }],
-        }).success,
-      ).toBe(false);
-    }
-    expect(
-      aiChatSchemas.aiChatInternal.safeParse({
         value: [
           {
             ...references[1]!,
-            source: { ...references[1]!.source, documentId: "different-document" },
+            source: { ...references[1]!.source, documentId: "wrong-document" },
           },
         ],
       }).success,
@@ -1825,7 +1812,7 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
       expect(operations.streamedTaskIds).toEqual(["fanout-synthesis"]);
       expect((await finishedNodeIds(runId)).has("fanout-synthesis-route")).toBe(true);
 
-      const frame = await graphKeyframe(runId);
+      const frame = await graphKeyframe(api, runId);
       const researchGroups = collectFrameElements(
         frame,
         (element) =>
@@ -1995,13 +1982,13 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
   it.each([
     {
       checkpoint: "after-plan",
-      durableNodes: ["memory-extract", "normalize-execution-plan", "fanout-allocate"],
+      durableNodes: ["memory-extract", "plan-turn", "fanout-allocate"],
       completedCalls: [
         "load-turn",
         "memory-extract",
-        "resolve-conversation",
-        "plan-execution",
-        "normalize-execution-plan",
+        "plan-turn",
+        "plan-turn",
+        "plan-turn",
         "fanout-allocate",
       ],
     },
@@ -2019,9 +2006,9 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
       completedCalls: [
         "load-turn",
         "memory-extract",
-        "resolve-conversation",
-        "plan-execution",
-        "normalize-execution-plan",
+        "plan-turn",
+        "plan-turn",
+        "plan-turn",
         "fanout-allocate",
         "topic-t1-retrieve-internal",
         "topic-t1-select-memories",
@@ -2037,9 +2024,9 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
       completedCalls: [
         "load-turn",
         "memory-extract",
-        "resolve-conversation",
-        "plan-execution",
-        "normalize-execution-plan",
+        "plan-turn",
+        "plan-turn",
+        "plan-turn",
         "fanout-allocate",
         "topic-t1-retrieve-internal",
         "topic-t1-select-memories",
@@ -2056,9 +2043,9 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
       completedCalls: [
         "load-turn",
         "memory-extract",
-        "resolve-conversation",
-        "plan-execution",
-        "normalize-execution-plan",
+        "plan-turn",
+        "plan-turn",
+        "plan-turn",
         "fanout-allocate",
         "topic-t1-retrieve-internal",
         "topic-t1-select-memories",
@@ -2085,9 +2072,9 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
       completedCalls: [
         "load-turn",
         "memory-extract",
-        "resolve-conversation",
-        "plan-execution",
-        "normalize-execution-plan",
+        "plan-turn",
+        "plan-turn",
+        "plan-turn",
         "fanout-allocate",
         "topic-t1-retrieve-internal",
         "topic-t1-select-memories",
@@ -2175,7 +2162,7 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
 
   it("preserves a typed topic failure through fanout collection without scheduling synthesis", async () => {
     const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
-    const operations = new ScriptedOperations("fanout", "none", "web_policy_revoked");
+    const operations = new ScriptedOperations("fanout", "none", "context_plan_unfit");
     try {
       const workflow = buildAiChatWorkflow(api, {
         operations,
@@ -2196,7 +2183,7 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
       expect(result.status).toBe("finished");
       expect(operations.calls).not.toContain("fanout-synthesis");
       expect(operations.finalAnswers).toEqual([
-        { status: "failed", code: "web_policy_revoked", retryable: true },
+        { status: "failed", code: "context_plan_unfit", retryable: true },
       ]);
       expect(operations.calls.at(-1)).toBe("finalize:failed");
     } finally {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -148,6 +149,29 @@ const provisionClientUser = (userId: string) =>
     `;
     return companyId;
   });
+
+const testAcceptanceScope = (args: {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly memoryMode?: "private_owner" | "disabled";
+}) => ({
+  userId: args.userId,
+  chatId: args.chatId,
+  companyId: args.companyId,
+  subscriptionIds: [],
+  accessIds: [],
+  publicSourceIds: [],
+  memoryMode: args.memoryMode ?? "disabled",
+  memoryRevisionIds: [],
+  webRequested: false,
+  webEnabled: false,
+  provider: "zai_coding_plan_official",
+  fastModelId: "glm-5-turbo",
+  mainModelId: "glm-5-turbo",
+  webTransportProvider: null,
+  allowedDomains: null,
+});
 
 function applyMigrationsThrough(lastMigration: string) {
   return Effect.gen(function* () {
@@ -402,6 +426,6772 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     },
   );
 
+  it("executes the final AI chat cutover body twice on the same clean schema", async () => {
+    const body = await Bun.file(
+      new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+    ).text();
+    const result = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql.unsafe(body).raw;
+        yield* sql.unsafe(body).raw;
+        return yield* sql<{ readonly count: number }>`
+          select count(*)::int as count
+          from pg_constraint constraints
+          join pg_class relations on relations.oid = constraints.conrelid
+          where constraints.connamespace = 'public'::regnamespace
+            and not constraints.convalidated
+            and relations.relname in (
+              'ai_runs',
+              'ai_observations',
+              'ai_run_usage',
+              'ai_source_exposures',
+              'assistant_message_sources',
+              'assistant_message_source_uses',
+              'brief_document_versions',
+              'public_source_documents'
+            )
+        `;
+      }),
+    );
+    expect(result[0]?.count).toBe(0);
+  }, 60_000);
+
+  it("stores one strict immutable acceptance scope and never reauthorizes run updates", async () => {
+    const userId = `scope-contract-${crypto.randomUUID()}`;
+    const companyId = await runDb(isolatedDatabaseUrl(), provisionClientUser(userId));
+    const chatId = crypto.randomUUID();
+    const messageId = crypto.randomUUID();
+    const runId = crypto.randomUUID();
+    const otherChatId = crypto.randomUUID();
+    const scope = testAcceptanceScope({ userId, chatId, companyId });
+
+    const result = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into chats (id, company_id, user_id, memory_mode)
+          values
+            (${chatId}, ${companyId}, ${userId}, 'disabled'),
+            (${otherChatId}, ${companyId}, ${userId}, 'disabled')
+        `;
+        yield* sql`
+          insert into chat_messages (id, chat_id, author, content)
+          values (${messageId}, ${chatId}, 'user', 'scope contract')
+        `;
+        const malformed = yield* Effect.all([
+          Effect.exit(sql`
+            insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)
+            values (
+              ${crypto.randomUUID()}, ${chatId}, ${messageId}, 'en-US', 'US',
+              ${sql.json({ ...scope, unknown: true })}
+            )
+          `),
+          Effect.exit(sql`
+            insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)
+            values (
+              ${crypto.randomUUID()}, ${chatId}, ${messageId}, 'en-US', 'US',
+              ${sql.json({ ...scope, webTransportProvider: "none" })}
+            )
+          `),
+          Effect.exit(sql`
+            insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)
+            values (
+              ${crypto.randomUUID()}, ${chatId}, ${messageId}, 'en-US', 'US',
+              ${sql.json({ ...scope, accessIds: [1] })}
+            )
+          `),
+        ]);
+        yield* sql`
+          insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)
+          values (${runId}, ${chatId}, ${messageId}, 'en-US', 'US', ${sql.json(scope)})
+        `;
+        yield* sql`
+          update client_company_ai_settings
+          set web_search_enabled = true, web_domain_allowlist = array['changed.example']::text[]
+          where company_id = ${companyId}
+        `;
+        const lifecycleUpdate = yield* Effect.exit(
+          sql`update ai_runs set started_at = now() where id = ${runId}`,
+        );
+        const scopeUpdate = yield* Effect.exit(
+          sql`update ai_runs set acceptance_scope = ${sql.json({ ...scope, webRequested: true })} where id = ${runId}`,
+        );
+        const bindingUpdate = yield* Effect.exit(
+          sql`update ai_runs set chat_id = ${otherChatId} where id = ${runId}`,
+        );
+        const columns = yield* sql<{ readonly name: string }>`
+          select column_name as name
+          from information_schema.columns
+          where table_schema = 'public' and table_name = 'ai_runs'
+            and column_name in ('web_search_enabled', 'effective_web_policy')
+        `;
+        return { malformed, lifecycleUpdate, scopeUpdate, bindingUpdate, columns };
+      }),
+    );
+
+    expect(result.malformed.every((exit) => exit._tag === "Failure")).toBe(true);
+    expect(result.lifecycleUpdate._tag).toBe("Success");
+    expect(result.scopeUpdate._tag).toBe("Failure");
+    expect(result.bindingUpdate._tag).toBe("Failure");
+    expect(result.columns).toEqual([]);
+  });
+
+  it("requires the exact mounted selector manifest set for single and fanout routes", async () => {
+    const migration = await Bun.file(
+      new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+    ).text();
+    const firstCatalogWrite = migration.indexOf("create or replace function");
+    expect(firstCatalogWrite).toBeGreaterThan(0);
+    const preflight = migration.slice(0, firstCatalogWrite);
+    for (const [owner, role] of [
+      ["single-retrieve-internal", "internal"],
+      ["single-select-memories", "memory"],
+      ["single-retrieve-web", "web"],
+      ["topic-t1-retrieve-internal", "internal"],
+      ["topic-t1-select-memories", "memory"],
+      ["topic-t1-retrieve-web", "web"],
+      ["topic-t2-retrieve-internal", "internal"],
+      ["topic-t2-select-memories", "memory"],
+      ["topic-t2-retrieve-web", "web"],
+      ["topic-t3-retrieve-internal", "internal"],
+      ["topic-t3-select-memories", "memory"],
+      ["topic-t3-retrieve-web", "web"],
+    ] as const) {
+      expect(preflight).toContain(`'${owner}'`);
+      expect(preflight).toContain(`'${role}'`);
+    }
+    for (const blocker of [
+      "successful run is missing terminal retrieval manifest",
+      "successful run has duplicate terminal retrieval manifest",
+      "retrieval manifest owner is outside selected route",
+      "retrieval manifest selector role does not match its owner",
+      "answer source use is not bound to its exact selector manifest",
+      "terminal selector reference lacks its exact selector-owned exposure and provider proof coordinate",
+      "memory write is not bound to its immediate prior revision and current live head",
+      "terminal request usage is not ordered after run_started and before usage:run",
+      "failed terminal error event is not last",
+      "successful run terminal events are incomplete",
+    ]) {
+      expect(preflight).toContain(blocker);
+    }
+    expect(preflight).toContain("noCallReason");
+    expect(preflight).toContain("mode' = 'fanout'");
+    expect(preflight).toContain("candidate_rejected");
+    expect(preflight).toContain("single-assemble");
+    expect(preflight).toContain("then substring(manifests.emitting_task from '^topic-t[123]')");
+    expect(preflight).toContain("retry_measurements");
+    expect(preflight).toContain("exposures.document_ranges is not distinct from uses.ranges");
+    expect(preflight).toContain("source-use union does not equal its locator union");
+    expect(preflight).toContain("exposures.task_id = manifests.emitting_task");
+  });
+
+  it(
+    "requires failed runs to retain one ordered usage and error terminal pair before cutover writes",
+    { timeout: 120_000 },
+    async () => {
+      const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+      const databaseName = `brief_migrations_failed_ledger_${process.pid}_${suffix}`;
+      const databaseUrl = databaseUrlForName(databaseName);
+      const ids = {
+        user: `failed-ledger-user-${suffix}`,
+        company: crypto.randomUUID(),
+        chat: crypto.randomUUID(),
+        userMessage: crypto.randomUUID(),
+        run: crypto.randomUUID(),
+        assistantMessage: crypto.randomUUID(),
+      };
+      const nonce = Buffer.from(`failed-${suffix}`).subarray(0, 16);
+      const migration = await Bun.file(
+        new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+      ).text();
+
+      try {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`);
+          }),
+        );
+        await runDb(
+          databaseUrl,
+          applyMigrationsThrough("0063_immutable_document_exposure_evidence.sql"),
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into platform_users (id, primary_email, display_name, clerk_user_id)
+              values (${ids.user}, ${`${ids.user}@example.test`}, 'Failed ledger user', ${`clerk-${ids.user}`})
+            `;
+            yield* sql`
+              insert into client_companies (id, name) values (${ids.company}, 'Failed ledger company')
+            `;
+            yield* sql`
+              insert into client_company_memberships (company_id, user_id, role)
+              values (${ids.company}, ${ids.user}, 'admin')
+            `;
+            yield* sql`
+              insert into chats (id, user_id, company_id, memory_mode)
+              values (${ids.chat}, ${ids.user}, ${ids.company}, 'disabled')
+            `;
+            yield* sql`
+              insert into chat_messages (id, chat_id, author, content)
+              values (${ids.userMessage}, ${ids.chat}, 'user', 'Failed ledger fixture')
+            `;
+            yield* sql`
+              insert into ai_runs (
+                id, chat_id, initiating_user_id, user_message_id, locale, market,
+                citation_nonce, effective_web_policy, failed_at, error_code, retryable
+              ) values (
+                ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
+                decode(${nonce.toString("base64")}, 'base64'),
+                ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
+                now(), 'failed_fixture', true
+              )
+            `;
+            yield* sql`
+              insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+              values
+                (${ids.run}, 1, ${sql.json({ type: "run_started" })}, null, 'run_started'),
+                (${ids.run}, 2, ${sql.json({
+                  type: "usage",
+                  scope: "run",
+                  model: {
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    cachedTokens: 0,
+                    reasoningTokens: 0,
+                    totalTokens: 0,
+                    requestCount: 0,
+                  },
+                  web: { searchCount: 0, fetchCount: 0, responseBytes: 0, billedUnits: 0 },
+                })}, 'failure-handler', 'usage:run')
+            `;
+          }),
+        );
+
+        const missingError = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* Effect.exit(sql.unsafe(migration).raw);
+          }),
+        );
+        expect(missingError._tag).toBe("Failure");
+        expect(errorText(missingError)).toContain(`ai_runs/${ids.run}`);
+        expect(errorText(missingError)).toContain("failed terminal event ledger is incomplete");
+        const unchanged = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly helpers: number; readonly finalColumn: number }>`
+              select
+                (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+                (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumn"
+            `;
+          }),
+        );
+        expect(unchanged).toEqual([{ helpers: 0, finalColumn: 0 }]);
+
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id)
+              values (${ids.assistantMessage}, ${ids.chat}, 'assistant', 'failed draft', ${ids.run})
+            `;
+            yield* sql`update ai_runs set assistant_message_id = ${ids.assistantMessage} where id = ${ids.run}`;
+            yield* sql`update ai_runs set assistant_message_id = null where id = ${ids.run}`;
+            yield* sql`
+              insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+              values (${ids.run}, 3, ${sql.json({ type: "error", code: "failed_fixture", retryable: true })}, 'failure-handler', 'terminal')
+            `;
+          }),
+        );
+        const failedDraftWithoutSource = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* Effect.exit(sql.unsafe(migration).raw);
+          }),
+        );
+        expect(failedDraftWithoutSource._tag).toBe("Failure");
+        expect(errorText(failedDraftWithoutSource)).toContain(`ai_runs/${ids.run}`);
+        expect(errorText(failedDraftWithoutSource)).toContain(
+          "failed run retains an assistant message or source row",
+        );
+        const failedDraftWithoutSourceFence = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly helpers: number; readonly finalColumn: number }>`
+              select
+                (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+                (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumn"
+            `;
+          }),
+        );
+        expect(failedDraftWithoutSourceFence).toEqual([{ helpers: 0, finalColumn: 0 }]);
+        const sourceKey = `k_${nonce.toString("base64url")}_1`;
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`update ai_runs set assistant_message_id = ${ids.assistantMessage} where id = ${ids.run}`;
+            yield* sql`
+              insert into assistant_message_sources (
+                assistant_message_id, source_key, kind, locator, message_id,
+                display_label, public_provenance
+              ) values (
+                ${ids.assistantMessage}, ${sourceKey}, 'chat_message',
+                ${sql.json({ kind: "chat_message", messageId: ids.userMessage })},
+                ${ids.userMessage}, 'failed source', '{}'::jsonb
+              )
+            `;
+            yield* sql`
+              insert into assistant_message_source_uses (
+                assistant_message_id, source_key, consumer_task_id, topic_id,
+                rendered_token_count, context_order, ranges
+              ) values (
+                ${ids.assistantMessage}, ${sourceKey}, 'single-answer', null,
+                0, 0, '[]'::jsonb
+              )
+            `;
+          }),
+        );
+        const failedDraft = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* Effect.exit(sql.unsafe(migration).raw);
+          }),
+        );
+        expect(failedDraft._tag).toBe("Failure");
+        expect(errorText(failedDraft)).toContain(`ai_runs/${ids.run}`);
+        expect(errorText(failedDraft)).toContain(
+          "failed run retains an assistant message or source row",
+        );
+        const failedDraftUnchanged = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly helpers: number; readonly finalColumn: number }>`
+              select
+                (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+                (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumn"
+            `;
+          }),
+        );
+        expect(failedDraftUnchanged).toEqual([{ helpers: 0, finalColumn: 0 }]);
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`update ai_runs set assistant_message_id = null where id = ${ids.run}`;
+            yield* sql`alter table assistant_message_source_uses disable trigger user`;
+            yield* sql`delete from assistant_message_source_uses where assistant_message_id = ${ids.assistantMessage}`;
+            yield* sql`alter table assistant_message_source_uses enable trigger user`;
+            yield* sql`alter table assistant_message_sources disable trigger user`;
+            yield* sql`delete from assistant_message_sources where assistant_message_id = ${ids.assistantMessage}`;
+            yield* sql`alter table assistant_message_sources enable trigger user`;
+            yield* sql`delete from chat_messages where id = ${ids.assistantMessage}`;
+            yield* sql`delete from ai_run_events where run_id = ${ids.run} and emission_key = 'terminal'`;
+          }),
+        );
+
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+              values (${ids.run}, 3, ${sql.json({ type: "error", code: "failed_fixture", retryable: true })}, 'failure-handler', 'terminal')
+            `;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${ids.run}, ${ids.chat}, 'finalize', 0, 0,
+                'finalize:0:0:memory_application:result', 'memory_application',
+                ${sql.json({
+                  extractionTaskId: "memory-extract",
+                  extractionLoopIteration: 0,
+                  extractionAttempt: 0,
+                  extractionObservationKey: "memory-extract:0:0:memory_extraction_result:result",
+                  extractionSha256Hex: "a".repeat(64),
+                  proposalCount: 0,
+                  discardedCount: 0,
+                })}
+              )
+            `;
+          }),
+        );
+        const fatalMemoryArtifact = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* Effect.exit(sql.unsafe(migration).raw);
+          }),
+        );
+        expect(fatalMemoryArtifact._tag).toBe("Failure");
+        expect(errorText(fatalMemoryArtifact)).toContain(`ai_runs/${ids.run}`);
+        expect(errorText(fatalMemoryArtifact)).toContain(
+          "failed terminal event ledger is incomplete",
+        );
+        const stillUnchanged = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly helpers: number; readonly finalColumn: number }>`
+              select
+                (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+                (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumn"
+            `;
+          }),
+        );
+        expect(stillUnchanged).toEqual([{ helpers: 0, finalColumn: 0 }]);
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${ids.run}, ${ids.chat}, 'memory-extract', 0, 0,
+                'memory-extract:0:0:memory_extraction_result:fatal', 'memory_extraction_result',
+                ${sql.json({ proposalCount: 0, discardedCount: 0, extractionSha256Hex: "c".repeat(64) })}
+              )
+            `;
+          }),
+        );
+        const fatalExtractionArtifact = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* Effect.exit(sql.unsafe(migration).raw);
+          }),
+        );
+        expect(fatalExtractionArtifact._tag).toBe("Failure");
+        expect(errorText(fatalExtractionArtifact)).toContain(`ai_runs/${ids.run}`);
+        expect(errorText(fatalExtractionArtifact)).toContain(
+          "failed terminal event ledger is incomplete",
+        );
+        const extractionUnchanged = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly helpers: number; readonly finalColumn: number }>`
+              select
+                (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+                (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumn"
+            `;
+          }),
+        );
+        expect(extractionUnchanged).toEqual([{ helpers: 0, finalColumn: 0 }]);
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`delete from ai_observations where run_id = ${ids.run} and kind in ('memory_application', 'memory_extraction_result')`;
+            yield* sql`delete from ai_run_events where run_id = ${ids.run}`;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values
+                (
+                  ${ids.run}, ${ids.chat}, 'memory-extract', 0, 0,
+                  'memory-extract:0:0:memory_extraction_result:result', 'memory_extraction_result',
+                  ${sql.json({ proposalCount: 0, discardedCount: 0, extractionSha256Hex: "b".repeat(64) })}
+                ), (
+                  ${ids.run}, ${ids.chat}, 'finalize', 0, 0,
+                  'finalize:0:0:memory_application:result', 'memory_application',
+                  ${sql.json({
+                    extractionTaskId: "memory-extract",
+                    extractionLoopIteration: 0,
+                    extractionAttempt: 0,
+                    extractionObservationKey: "memory-extract:0:0:memory_extraction_result:result",
+                    extractionSha256Hex: "b".repeat(64),
+                    proposalCount: 0,
+                    discardedCount: 0,
+                  })}
+                )
+            `;
+            yield* sql`
+              insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+              values
+                (${ids.run}, 1, ${sql.json({ type: "run_started" })}, null, 'run_started'),
+                (${ids.run}, 2, ${sql.json({ type: "memory_updated", created: 1, updated: 0, discarded: 0 })}, 'finalize', 'memory_updated'),
+                (${ids.run}, 3, ${sql.json({
+                  type: "usage",
+                  scope: "run",
+                  model: {
+                    inputTokens: 1,
+                    outputTokens: 1,
+                    cachedTokens: 0,
+                    reasoningTokens: 0,
+                    totalTokens: 2,
+                    requestCount: 1,
+                  },
+                  web: { searchCount: 0, fetchCount: 0, responseBytes: 0, billedUnits: 0 },
+                })}, 'finalize', 'usage:run'),
+                (${ids.run}, 4, ${sql.json({ type: "error", code: "failed_fixture", retryable: true })}, 'finalize', 'terminal')
+            `;
+          }),
+        );
+        const controlledMismatch = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* Effect.exit(sql.unsafe(migration).raw);
+          }),
+        );
+        expect(controlledMismatch._tag).toBe("Failure");
+        expect(errorText(controlledMismatch)).toContain(`ai_runs/${ids.run}`);
+        expect(errorText(controlledMismatch)).toContain(
+          "failed terminal event ledger is incomplete",
+        );
+        const controlledUnchanged = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly helpers: number; readonly finalColumn: number }>`
+              select
+                (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+                (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumn"
+            `;
+          }),
+        );
+        expect(controlledUnchanged).toEqual([{ helpers: 0, finalColumn: 0 }]);
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${ids.run}, ${ids.chat}, 'memory-extract', 0, 0,
+                'provider_request_measurement:memory-extract:0:0:0',
+                'provider_request_measurement',
+                ${sql.json({
+                  agentRole: "memory_extractor",
+                  modelId: "glm-5-turbo",
+                  requestSha256Hex: "d".repeat(64),
+                  sourceExposureProofSha256Hexes: [],
+                  providerRequestIndex: 0,
+                  inputTokens: 1,
+                  requestedOutputTokens: 1,
+                  usableInputTokens: 1,
+                  contextWindow: 100,
+                  passed: true,
+                })}
+              )
+            `;
+            yield* sql`
+              insert into ai_run_usage (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                agent_role, model_id, provider_service_id, input_tokens, output_tokens,
+                cached_tokens, reasoning_tokens, total_tokens, stop_reason
+              ) values (
+                ${ids.run}, 'memory-extract', 0, 0, 0,
+                'memory_extractor', 'glm-5-turbo', 'deterministic_test', 1, 1, 0, 0, 2, 'stop'
+              )
+            `;
+            yield* sql`
+              update ai_run_events
+              set seq = seq + 100
+              where run_id = ${ids.run}
+            `;
+            yield* sql`
+              update ai_run_events
+              set seq = case event->>'type'
+                when 'run_started' then 1
+                when 'memory_updated' then 3
+                when 'usage' then 4
+                when 'error' then 5
+                else seq end,
+                  event = case when event->>'type' = 'memory_updated'
+                    then ${sql.json({ type: "memory_updated", created: 0, updated: 0, discarded: 0 })}
+                    else event end
+              where run_id = ${ids.run}
+            `;
+            yield* sql`
+              insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+              values (${ids.run}, 6, ${sql.json({
+                type: "usage",
+                scope: "request",
+                kind: "model",
+                role: "memory_extractor",
+                attempt: 0,
+                inputTokens: 1,
+                outputTokens: 1,
+                cachedTokens: 0,
+                reasoningTokens: 0,
+                totalTokens: 2,
+              })}, 'memory-extract', 'usage:request:model:memory-extract:0:0:0')
+            `;
+            const [failedModelRequest] = yield* sql<{ readonly id: string }>`
+              select id::text as id
+              from ai_run_events
+              where run_id = ${ids.run}
+                and emission_key = 'usage:request:model:memory-extract:0:0:0'
+            `;
+            const lateRequest = yield* Effect.exit(sql.unsafe(migration).raw);
+            expect(errorText(lateRequest)).toContain(`ai_run_events/${failedModelRequest?.id}`);
+            expect(errorText(lateRequest)).toContain(
+              "terminal request usage is not ordered after run_started and before usage:run",
+            );
+            const lateRequestFence = yield* sql<{
+              readonly helpers: number;
+              readonly finalColumn: number;
+            }>`
+              select
+                (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+                (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumn"
+            `;
+            expect(lateRequestFence).toEqual([{ helpers: 0, finalColumn: 0 }]);
+            yield* sql`
+              update ai_run_events
+              set seq = 0
+              where id = ${failedModelRequest?.id}::bigint
+            `;
+            const earlyFailedRequest = yield* Effect.exit(sql.unsafe(migration).raw);
+            expect(errorText(earlyFailedRequest)).toContain(
+              `ai_run_events/${failedModelRequest?.id}`,
+            );
+            expect(errorText(earlyFailedRequest)).toContain(
+              "terminal request usage is not ordered after run_started and before usage:run",
+            );
+            yield* sql`
+              update ai_run_events
+              set seq = 2
+              where id = ${failedModelRequest?.id}::bigint
+            `;
+            yield* sql`
+              insert into ai_external_tool_usage (
+                run_id, task_id, loop_iteration, attempt, tool_request_index,
+                provider_service_id, operation, status, result_count,
+                response_bytes, billed_units, duration_ms
+              ) values (
+                ${ids.run}, 'single-retrieve-web', 0, 0, 0,
+                'deterministic_test', 'web_search', 'ok', 1, 10, 0, 1
+              )
+            `;
+            yield* sql`
+              insert into ai_run_events (
+                run_id, seq, event, emitted_by_task, emission_key
+              ) values (
+                ${ids.run}, 6, ${sql.json({
+                  type: "usage",
+                  scope: "request",
+                  kind: "web_search",
+                  attempt: 0,
+                  status: "ok",
+                  resultCount: 1,
+                  responseBytes: 10,
+                  billedUnits: 0,
+                  durationMs: 1,
+                })}, 'single-retrieve-web',
+                'usage:request:web_search:single-retrieve-web:0:0:0'
+              )
+            `;
+            const [failedExternalRequest] = yield* sql<{ readonly id: string }>`
+              select id::text as id
+              from ai_run_events
+              where run_id = ${ids.run}
+                and emission_key = 'usage:request:web_search:single-retrieve-web:0:0:0'
+            `;
+            const lateFailedExternal = yield* Effect.exit(sql.unsafe(migration).raw);
+            expect(errorText(lateFailedExternal)).toContain(
+              `ai_run_events/${failedExternalRequest?.id}`,
+            );
+            expect(errorText(lateFailedExternal)).toContain(
+              "terminal request usage is not ordered after run_started and before usage:run",
+            );
+            yield* sql`
+              update ai_run_events
+              set seq = 0
+              where id = ${failedExternalRequest?.id}::bigint
+            `;
+            const earlyFailedExternal = yield* Effect.exit(sql.unsafe(migration).raw);
+            expect(errorText(earlyFailedExternal)).toContain(
+              `ai_run_events/${failedExternalRequest?.id}`,
+            );
+            expect(errorText(earlyFailedExternal)).toContain(
+              "terminal request usage is not ordered after run_started and before usage:run",
+            );
+            yield* sql`
+              update ai_run_events
+              set seq = seq + 100
+              where run_id = ${ids.run}
+            `;
+            yield* sql`
+              update ai_run_events set seq = 1
+              where run_id = ${ids.run} and event->>'type' = 'run_started'
+            `;
+            yield* sql`
+              update ai_run_events set seq = 2
+              where id = ${failedModelRequest?.id}::bigint
+            `;
+            yield* sql`
+              update ai_run_events set seq = 3
+              where id = ${failedExternalRequest?.id}::bigint
+            `;
+            yield* sql`
+              update ai_run_events set seq = 4
+              where run_id = ${ids.run} and event->>'type' = 'memory_updated'
+            `;
+            yield* sql`
+              update ai_run_events
+              set seq = 5,
+                  event = jsonb_set(
+                    jsonb_set(event, '{web,searchCount}', '1'::jsonb, true),
+                    '{web,responseBytes}',
+                    '10'::jsonb,
+                    true
+                  )
+              where run_id = ${ids.run}
+                and event->>'type' = 'usage'
+                and event->>'scope' = 'run'
+            `;
+            yield* sql`
+              update ai_run_events set seq = 6
+              where run_id = ${ids.run}
+                and event->>'type' = 'error'
+            `;
+            yield* sql.unsafe(migration).raw;
+          }),
+        );
+        const final = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly count: number }>`
+              select count(*)::int as count
+              from information_schema.columns
+              where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace'
+            `;
+          }),
+        );
+        expect(final[0]?.count).toBe(1);
+      } finally {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+            yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
+          }),
+        );
+      }
+    },
+  );
+
+  it(
+    "checks astral document sources and uses against the immutable UTF-16 text before cutover writes",
+    { timeout: 120_000 },
+    async () => {
+      const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+      const databaseName = `brief_migrations_astral_ranges_${process.pid}_${suffix}`;
+      const databaseUrl = databaseUrlForName(databaseName);
+      const ids = {
+        user: `astral-ranges-user-${suffix}`,
+        company: crypto.randomUUID(),
+        chat: crypto.randomUUID(),
+        userMessage: crypto.randomUUID(),
+        assistantMessage: crypto.randomUUID(),
+        run: crypto.randomUUID(),
+        publicSource: `astral-ranges-source-${suffix}`,
+        publicDocument: `astral-ranges-document-${suffix}`,
+        rawArtifact: crypto.randomUUID(),
+      };
+      const legacyNamespaceBytes = Buffer.from(`astral-${suffix}`).subarray(0, 16);
+      const sourceKey = `k_${legacyNamespaceBytes.toString("base64url")}_1`;
+      const publicUrl = "https://example.test/astral-ranges";
+      const text = "A😀B".repeat(40);
+      const utf16Length = text.length;
+      const migration = await Bun.file(
+        new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+      ).text();
+
+      try {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`);
+          }),
+        );
+        await runDb(
+          databaseUrl,
+          applyMigrationsThrough("0063_immutable_document_exposure_evidence.sql"),
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into platform_users (id, primary_email, display_name, clerk_user_id)
+              values (${ids.user}, ${`${ids.user}@example.test`}, 'Astral ranges user', ${`clerk-${ids.user}`})
+            `;
+            yield* sql`insert into client_companies (id, name) values (${ids.company}, 'Astral ranges company')`;
+            yield* sql`
+              insert into client_company_memberships (company_id, user_id, role)
+              values (${ids.company}, ${ids.user}, 'admin')
+            `;
+            yield* sql`
+              insert into chats (id, user_id, company_id, memory_mode)
+              values (${ids.chat}, ${ids.user}, ${ids.company}, 'disabled')
+            `;
+            yield* sql`
+              insert into chat_messages (id, chat_id, author, content)
+              values (${ids.userMessage}, ${ids.chat}, 'user', 'Astral range fixture')
+            `;
+            yield* sql`
+              insert into ai_runs (
+                id, chat_id, initiating_user_id, user_message_id,
+                locale, market, citation_nonce, effective_web_policy
+              ) values (
+                ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage},
+                'en-US', 'US', decode(${legacyNamespaceBytes.toString("base64")}, 'base64'),
+                ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })}
+              )
+            `;
+            yield* sql`
+              insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id)
+              values (${ids.assistantMessage}, ${ids.chat}, 'assistant', 'Astral fixture', ${ids.run})
+            `;
+            yield* sql`update ai_runs set assistant_message_id = ${ids.assistantMessage} where id = ${ids.run}`;
+            yield* sql`
+              insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+              values
+                (${ids.run}, 1, ${sql.json({ type: "run_started" })}, null, 'run_started'),
+                (${ids.run}, 2, ${sql.json({
+                  type: "usage",
+                  scope: "run",
+                  model: {
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    cachedTokens: 0,
+                    reasoningTokens: 0,
+                    totalTokens: 0,
+                    requestCount: 0,
+                  },
+                  web: { searchCount: 0, fetchCount: 0, responseBytes: 0, billedUnits: 0 },
+                })}, 'failure-handler', 'usage:run'),
+                (${ids.run}, 3, ${sql.json({ type: "error", code: "astral_fixture", retryable: true })}, 'failure-handler', 'terminal')
+            `;
+            yield* sql`
+              insert into public_sources (
+                source_id, display_name, publisher_name, description,
+                ingestion_method, discovery_url, average_chars_per_item
+              ) values (
+                ${ids.publicSource}, 'Astral source', 'Astral publisher',
+                'Astral range fixture', 'rss', ${publicUrl}, 1000
+              )
+            `;
+            yield* sql`
+              insert into public_source_raw_artifacts (
+                id, source_id, canonical_url, fetched_at, media_type, body, body_hash
+              ) values (
+                ${ids.rawArtifact}, ${ids.publicSource}, ${publicUrl}, now(), 'text/html',
+                ${`<main>${text}</main>`},
+                encode(digest(convert_to(${`<main>${text}</main>`}, 'UTF8'), 'sha256'), 'hex')
+              )
+            `;
+            yield* sql`
+              insert into public_source_documents (
+                document_id, source_id, canonical_url, title, discovered_at, fetched_at,
+                language, document_type, text, text_char_count, content_hash, raw_artifact_id
+              ) values (
+                ${ids.publicDocument}, ${ids.publicSource}, ${publicUrl}, 'Astral document',
+                now(), now(), 'en', 'html', ${text}, ${utf16Length},
+                encode(digest(convert_to(${text}, 'UTF8'), 'sha256'), 'hex'), ${ids.rawArtifact}
+              )
+            `;
+            yield* sql`
+              insert into assistant_message_sources (
+                assistant_message_id, source_key, kind, locator,
+                document_version_id, message_id, memory_revision_id,
+                display_label, public_provenance
+              ) values (
+                ${ids.assistantMessage}, ${sourceKey}, 'document',
+                ${sql.json({
+                  kind: "document",
+                  sourceId: `public:${ids.publicSource}`,
+                  documentId: ids.publicDocument,
+                  versionId: ids.publicDocument,
+                  contentHash: createHash("sha256").update(text).digest("hex"),
+                  ranges: [{ charStart: 0, charEnd: utf16Length + 1 }],
+                })},
+                ${ids.publicDocument}, null, null, 'Astral document',
+                ${sql.json({ documentTitle: "Astral document", citationUrl: publicUrl })}
+              )
+            `;
+            yield* sql`
+              insert into assistant_message_source_uses (
+                assistant_message_id, source_key, consumer_task_id, topic_id,
+                rendered_token_count, context_order, ranges
+              ) values (
+                ${ids.assistantMessage}, ${sourceKey}, 'single-answer', null, 0, 0,
+                ${JSON.stringify([{ charStart: 0, charEnd: utf16Length + 1 }])}::jsonb
+              )
+            `;
+          }),
+        );
+
+        const sourceFailure = await runDb(
+          databaseUrl,
+          Effect.exit(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              return yield* sql.unsafe(migration).raw;
+            }),
+          ),
+        );
+        expect(sourceFailure._tag).toBe("Failure");
+        expect(errorText(sourceFailure)).toContain(
+          `assistant_message_sources/${ids.assistantMessage}/${sourceKey}`,
+        );
+        expect(errorText(sourceFailure)).toContain(
+          "document range exceeds immutable UTF-16 text length",
+        );
+
+        const sourceUseFailure = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`alter table assistant_message_sources disable trigger user`;
+            yield* sql`
+              update assistant_message_sources
+              set locator = ${sql.json({
+                kind: "document",
+                sourceId: `public:${ids.publicSource}`,
+                documentId: ids.publicDocument,
+                versionId: ids.publicDocument,
+                contentHash: createHash("sha256").update(text).digest("hex"),
+                ranges: [{ charStart: 0, charEnd: utf16Length }],
+              })},
+              source_identity_digest = assistant_message_source_identity_digest(
+                assistant_message_id, source_key, kind, ${sql.json({
+                  kind: "document",
+                  sourceId: `public:${ids.publicSource}`,
+                  documentId: ids.publicDocument,
+                  versionId: ids.publicDocument,
+                  contentHash: createHash("sha256").update(text).digest("hex"),
+                  ranges: [{ charStart: 0, charEnd: utf16Length }],
+                })}, document_version_id, publisher_document_version_id,
+                message_id, memory_revision_id, display_label, public_provenance
+              )
+              where assistant_message_id = ${ids.assistantMessage} and source_key = ${sourceKey}
+            `;
+            yield* sql`alter table assistant_message_sources enable trigger user`;
+            yield* sql`alter table assistant_message_source_uses disable trigger user`;
+            yield* sql`
+              update assistant_message_source_uses
+              set ranges = ${JSON.stringify([{ charStart: 0, charEnd: utf16Length + 1 }])}::jsonb,
+                  source_use_identity_digest = assistant_message_source_use_identity_digest(
+                    assistant_message_id, source_key, consumer_task_id, topic_id,
+                    rendered_token_count, context_order,
+                    ${JSON.stringify([{ charStart: 0, charEnd: utf16Length + 1 }])}::jsonb
+                  )
+              where assistant_message_id = ${ids.assistantMessage} and source_key = ${sourceKey}
+            `;
+            yield* sql`alter table assistant_message_source_uses enable trigger user`;
+            return yield* Effect.exit(sql.unsafe(migration).raw);
+          }),
+        );
+        expect(sourceUseFailure._tag).toBe("Failure");
+        expect(errorText(sourceUseFailure)).toContain(
+          `assistant_message_source_uses/${ids.assistantMessage}/${sourceKey}/single-answer/-`,
+        );
+        expect(errorText(sourceUseFailure)).toContain(
+          "source-use range exceeds immutable UTF-16 text length",
+        );
+
+        const unchanged = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly helpers: number; readonly finalColumn: number }>`
+              select
+                (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace
+                  and proname = 'brief_ai_safe_bigint') as helpers,
+                (select count(*)::int from information_schema.columns
+                  where table_schema = 'public' and table_name = 'assistant_message_sources'
+                    and column_name = 'version_id') as "finalColumn"
+            `;
+          }),
+        );
+        expect(unchanged[0]).toEqual({ helpers: 0, finalColumn: 0 });
+      } finally {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+            yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
+          }),
+        );
+      }
+    },
+  );
+
+  it(
+    "blocks duplicate terminal manifests before the cutover writes",
+    { timeout: 120_000 },
+    async () => {
+      const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+      const databaseName = `brief_migrations_duplicate_manifest_${process.pid}_${suffix}`;
+      const databaseUrl = databaseUrlForName(databaseName);
+      const ids = {
+        user: `duplicate-manifest-user-${suffix}`,
+        company: crypto.randomUUID(),
+        chat: crypto.randomUUID(),
+        userMessage: crypto.randomUUID(),
+        assistantMessage: crypto.randomUUID(),
+        run: crypto.randomUUID(),
+      };
+      const nonce = Buffer.from(`duplicate-${suffix}`).subarray(0, 16);
+      const migration = await Bun.file(
+        new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+      ).text();
+      const usage = [
+        ["plan-turn", "plan_turn"],
+        ["memory-extract", "memory_extractor"],
+        ["single-retrieve-internal", "internal_retrieval"],
+        ["single-answer", "direct_answer"],
+      ] as const;
+
+      try {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`);
+          }),
+        );
+        await runDb(
+          databaseUrl,
+          applyMigrationsThrough("0063_immutable_document_exposure_evidence.sql"),
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into platform_users (id, primary_email, display_name, clerk_user_id)
+              values (${ids.user}, ${`${ids.user}@example.test`}, 'Duplicate manifest user', ${`clerk-${ids.user}`})
+            `;
+            yield* sql`
+              insert into client_companies (id, name) values (${ids.company}, 'Duplicate manifest company')
+            `;
+            yield* sql`
+              insert into client_company_memberships (company_id, user_id, role)
+              values (${ids.company}, ${ids.user}, 'admin')
+            `;
+            yield* sql`
+              insert into chats (id, user_id, company_id, memory_mode)
+              values (${ids.chat}, ${ids.user}, ${ids.company}, 'disabled')
+            `;
+            yield* sql`
+              insert into chat_messages (id, chat_id, author, content)
+              values (${ids.userMessage}, ${ids.chat}, 'user', 'Duplicate manifest fixture')
+            `;
+            yield* sql`
+              insert into ai_runs (
+                id, chat_id, initiating_user_id, user_message_id, locale, market,
+                citation_nonce, effective_web_policy, finished_at
+              ) values (
+                ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
+                decode(${nonce.toString("base64")}, 'base64'),
+                ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
+                now()
+              )
+            `;
+            yield* sql`
+              insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id)
+              values (${ids.assistantMessage}, ${ids.chat}, 'assistant', 'Saved answer', ${ids.run})
+            `;
+            yield* sql`
+              update ai_runs set assistant_message_id = ${ids.assistantMessage} where id = ${ids.run}
+            `;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${ids.run}, ${ids.chat}, 'plan-turn', 0, 0,
+                'plan-turn:0:0:turn_plan', 'turn_plan',
+                ${sql.json({ mode: "single", question: "Duplicate manifest fixture", relevantTurnIds: [] })}
+              ), (
+                ${ids.run}, ${ids.chat}, 'single-retrieve-internal', 0, 0,
+                'single-retrieve-internal:0:0:retrieval_manifest:result', 'retrieval_manifest',
+                ${sql.json({ selectorRole: "internal", references: [] })}
+              ), (
+                ${ids.run}, ${ids.chat}, 'single-select-memories', 0, 0,
+                'single-select-memories:0:0:retrieval_manifest:result', 'retrieval_manifest',
+                ${sql.json({ selectorRole: "memory", references: [], noCallReason: "memory_mode_disabled" })}
+              ), (
+                ${ids.run}, ${ids.chat}, 'single-retrieve-web', 0, 0,
+                'single-retrieve-web:0:0:retrieval_manifest:result', 'retrieval_manifest',
+                ${sql.json({ selectorRole: "web", references: [], noCallReason: "web_policy_disabled" })}
+              ), (
+                ${ids.run}, ${ids.chat}, 'finalize', 0, 0,
+                'retrieval_no_call_seal:single-select-memories:0:0', 'retrieval_no_call_seal',
+                ${sql.json({
+                  selectorTaskId: "single-select-memories",
+                  selectorLoopIteration: 0,
+                  selectorAttempt: 0,
+                  selectorObservationKey: "single-select-memories:0:0:retrieval_manifest:result",
+                  noCallReason: "memory_mode_disabled",
+                })}
+              ), (
+                ${ids.run}, ${ids.chat}, 'finalize', 0, 0,
+                'retrieval_no_call_seal:single-retrieve-web:0:0', 'retrieval_no_call_seal',
+                ${sql.json({
+                  selectorTaskId: "single-retrieve-web",
+                  selectorLoopIteration: 0,
+                  selectorAttempt: 0,
+                  selectorObservationKey: "single-retrieve-web:0:0:retrieval_manifest:result",
+                  noCallReason: "web_policy_disabled",
+                })}
+              )
+            `;
+            for (const [index, [taskId, agentRole]] of usage.entries()) {
+              yield* sql`
+                insert into ai_observations (
+                  run_id, chat_id, emitting_task, loop_iteration, attempt,
+                  observation_key, kind, payload
+                ) values (
+                  ${ids.run}, ${ids.chat}, ${taskId}, 0, 0,
+                  ${`provider_request_measurement:${taskId}:0:0:0`}, 'provider_request_measurement',
+                  ${sql.json({
+                    agentRole,
+                    modelId: "glm-5-turbo",
+                    requestSha256Hex: String.fromCharCode(97 + index).repeat(64),
+                    sourceExposureProofSha256Hexes: [],
+                    providerRequestIndex: 0,
+                    inputTokens: 1,
+                    requestedOutputTokens: 1,
+                    usableInputTokens: 1,
+                    contextWindow: 100,
+                    passed: true,
+                  })}
+                )
+              `;
+              yield* sql`
+                insert into ai_run_usage (
+                  run_id, task_id, loop_iteration, attempt, provider_request_index,
+                  agent_role, model_id, provider_service_id, input_tokens, output_tokens,
+                  cached_tokens, reasoning_tokens, total_tokens, stop_reason
+                ) values (
+                  ${ids.run}, ${taskId}, 0, 0, 0, ${agentRole}, 'glm-5-turbo',
+                  'deterministic_test', 1, 1, 0, 0, 2, 'stop'
+                )
+              `;
+              yield* sql`
+                insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+                values (
+                  ${ids.run}, ${index + 2},
+                  ${sql.json({
+                    type: "usage",
+                    scope: "request",
+                    kind: "model",
+                    role: agentRole,
+                    attempt: 0,
+                    inputTokens: 1,
+                    outputTokens: 1,
+                    cachedTokens: 0,
+                    reasoningTokens: 0,
+                    totalTokens: 2,
+                  })},
+                  ${taskId}, ${`usage:request:model:${taskId}:0:0:0`}
+                )
+              `;
+            }
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values
+                (${ids.run}, ${ids.chat}, 'memory-extract', 0, 0,
+                 'memory-extract:0:0:memory_extraction_result:result', 'memory_extraction_result',
+                 ${sql.json({ proposalCount: 0, discardedCount: 0, extractionSha256Hex: "b".repeat(64) })}),
+                (${ids.run}, ${ids.chat}, 'finalize', 0, 0,
+                 'finalize:0:0:memory_application:result', 'memory_application',
+                 ${sql.json({
+                   extractionTaskId: "memory-extract",
+                   extractionLoopIteration: 0,
+                   extractionAttempt: 0,
+                   extractionObservationKey: "memory-extract:0:0:memory_extraction_result:result",
+                   extractionSha256Hex: "b".repeat(64),
+                   proposalCount: 0,
+                   discardedCount: 0,
+                 })}),
+                (${ids.run}, ${ids.chat}, 'single-answer', 0, 0,
+                 'answer:started', 'answer_started',
+                 ${sql.json({ mode: "single", attempt: 0 })}),
+                (${ids.run}, ${ids.chat}, 'single-answer', 0, 0,
+                 'answer:delta', 'answer_delta',
+                 ${sql.json({ delta: "Saved answer" })}),
+                (${ids.run}, ${ids.chat}, 'single-answer', 0, 0,
+                 'answer:completed', 'answer_completed',
+                 ${sql.json({ mode: "single", attempt: 0 })}),
+                (${ids.run}, ${ids.chat}, 'single-answer', 0, 0,
+                 'context:measure', 'context_measurement',
+                 ${sql.json({
+                   consumerTaskId: "single-answer",
+                   mandatoryInputTokens: 0,
+                   discretionaryInputTokens: 0,
+                   totalInputTokens: 0,
+                   requestedOutputTokens: 1,
+                   usableInputTokens: 1,
+                   contextWindow: 100,
+                   status: "ready",
+                   reductionRan: false,
+                   reductionFeedback: [],
+                   restrictedContextLedger: {
+                     requestKind: "direct",
+                     modelId: "glm-5-turbo",
+                     requestSha256Hex: "d".repeat(64),
+                     inputTokens: 0,
+                     usableInputTokens: 1,
+                     requestedOutputTokens: 1,
+                     selectedConversation: [],
+                     question: "Duplicate manifest fixture",
+                     gaps: [],
+                     sources: [],
+                   },
+                 })}),
+                (${ids.run}, ${ids.chat}, 'single-answer', 0, 0,
+                 'context:serialized', 'context_serialized',
+                 ${sql.json({
+                   consumerTaskId: "single-answer",
+                   sourceKeys: [],
+                   restrictedContextLedger: {
+                     requestKind: "direct",
+                     modelId: "glm-5-turbo",
+                     requestSha256Hex: "d".repeat(64),
+                     inputTokens: 0,
+                     usableInputTokens: 1,
+                     requestedOutputTokens: 1,
+                     selectedConversation: [],
+                     question: "Duplicate manifest fixture",
+                     gaps: [],
+                     sources: [],
+                   },
+                   terminalUsageCoordinate: {
+                     taskId: "single-answer",
+                     loopIteration: 0,
+                     attempt: 0,
+                     providerRequestIndex: 0,
+                   },
+                 })})
+            `;
+            yield* sql`
+              insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+              values
+                (${ids.run}, 1, ${sql.json({ type: "run_started" })}, null, 'run_started'),
+                (${ids.run}, 6, ${sql.json({
+                  type: "context_ready",
+                  mode: "single",
+                  reductionRan: false,
+                  sourcesRead: [],
+                  consumers: [
+                    {
+                      consumer: "direct",
+                      inputTokens: 0,
+                      requestedOutputTokens: 1,
+                      usableInputTokens: 1,
+                    },
+                  ],
+                })}, 'single-answer', 'context_ready'),
+                (${ids.run}, 7, ${sql.json({ type: "answer_started", mode: "single", attempt: 0 })}, 'single-answer', 'answer_started:single-answer:0'),
+                (${ids.run}, 8, ${sql.json({ type: "text_delta", delta: "Saved answer" })}, 'single-answer', 'text_delta:single-answer:0:0'),
+                (${ids.run}, 9, ${sql.json({ type: "memory_updated", created: 0, updated: 0, discarded: 0 })}, 'finalize', 'memory_updated'),
+                (${ids.run}, 10, ${sql.json({
+                  type: "usage",
+                  scope: "run",
+                  model: {
+                    inputTokens: 4,
+                    outputTokens: 4,
+                    cachedTokens: 0,
+                    reasoningTokens: 0,
+                    totalTokens: 8,
+                    requestCount: 4,
+                  },
+                  web: { searchCount: 0, fetchCount: 0, responseBytes: 0, billedUnits: 0 },
+                })}, 'finalize', 'usage:run'),
+                (${ids.run}, 11, ${sql.json({ type: "done", assistantMessageId: ids.assistantMessage })}, 'finalize', 'terminal')
+            `;
+
+            // A direct duplicate key is impossible: the parent unique index
+            // rejects it, while the strict key check at migration lines
+            // 1868-1874 rejects a different key. Inheritance keeps the parent
+            // constraint intact while giving the migration a valid child row
+            // at the same terminal coordinate.
+            yield* sql`
+              create table ai_observations_terminal_manifest_duplicate ()
+              inherits (ai_observations)
+            `;
+            yield* sql`
+              alter table ai_observations_terminal_manifest_duplicate
+                add constraint ai_observations_terminal_manifest_duplicate_pk primary key (id)
+            `;
+            yield* sql`
+              alter table ai_observations_terminal_manifest_duplicate
+                add constraint ai_observations_terminal_manifest_duplicate_run_fk
+                foreign key (run_id) references ai_runs (id) on delete cascade
+            `;
+            yield* sql`
+              alter table ai_observations_terminal_manifest_duplicate
+                add constraint ai_observations_terminal_manifest_duplicate_chat_fk
+                foreign key (chat_id) references chats (id) on delete cascade
+            `;
+            yield* sql`
+              alter table ai_observations_terminal_manifest_duplicate
+                add constraint ai_observations_terminal_manifest_duplicate_coordinates
+                check (loop_iteration >= 0 and attempt >= 0)
+            `;
+            yield* sql`
+              create unique index ai_observations_terminal_manifest_duplicate_key
+                on ai_observations_terminal_manifest_duplicate (run_id, observation_key)
+            `;
+            yield* sql`
+              insert into ai_observations_terminal_manifest_duplicate (
+                id, run_id, chat_id, kind, payload, created_at,
+                emitting_task, loop_iteration, attempt, observation_key
+              )
+              select
+                gen_random_uuid(), run_id, chat_id, kind, payload, created_at,
+                emitting_task, loop_iteration, attempt, observation_key
+              from ai_observations
+              where run_id = ${ids.run}
+                and kind = 'retrieval_manifest'
+                and emitting_task = 'single-retrieve-internal'
+                and loop_iteration = 0
+                and attempt = 0
+            `;
+            const duplicateTerminalManifest = yield* Effect.exit(sql.unsafe(migration).raw);
+            expect(errorText(duplicateTerminalManifest)).toContain(
+              `AI chat schema cutover preflight row ai_runs/${ids.run}/single-retrieve-internal: successful run has duplicate terminal retrieval manifest`,
+            );
+            const duplicateFence = yield* sql<{
+              readonly helperCount: number;
+              readonly finalColumnCount: number;
+              readonly finalIndexCount: number;
+            }>`
+              select
+                (
+                  select count(*)::int
+                  from pg_proc
+                  where pronamespace = 'public'::regnamespace
+                    and (
+                      proname like 'brief_ai_%'
+                      or proname in ('ai_chat_rewrite_citations', 'ai_chat_rewrite_source_keys')
+                    )
+                ) as "helperCount",
+                (
+                  select count(*)::int
+                  from information_schema.columns
+                  where table_schema = 'public'
+                    and table_name = 'ai_runs'
+                    and column_name = 'citation_namespace'
+                ) as "finalColumnCount",
+                (
+                  select count(*)::int
+                  from pg_indexes
+                  where schemaname = 'public'
+                    and tablename = 'ai_runs'
+                    and indexname = 'ai_runs_citation_namespace_key'
+                ) as "finalIndexCount"
+            `;
+            expect(duplicateFence).toEqual([
+              { helperCount: 0, finalColumnCount: 0, finalIndexCount: 0 },
+            ]);
+            yield* sql`drop table ai_observations_terminal_manifest_duplicate`;
+            const successfulCutover = yield* Effect.exit(sql.unsafe(migration).raw);
+            expect(successfulCutover._tag).toBe("Success");
+            const finalCitationColumns = yield* sql<ColumnRow>`
+              select column_name
+              from information_schema.columns
+              where table_schema = 'public'
+                and table_name = 'ai_runs'
+                and column_name = 'citation_namespace'
+            `;
+            expect(finalCitationColumns).toHaveLength(1);
+          }),
+        );
+      } finally {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              select pg_terminate_backend(pid)
+              from pg_stat_activity
+              where datname = ${databaseName} and pid <> pg_backend_pid()
+            `;
+            yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
+          }),
+        );
+      }
+    },
+  );
+
+  it(
+    "blocks populated two-topic fanout manifest cardinality, ownership, and role mutations",
+    { timeout: 120_000 },
+    async () => {
+      const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+      const databaseName = `brief_migrations_fanout_${process.pid}_${suffix}`;
+      const databaseUrl = databaseUrlForName(databaseName);
+      const ids = {
+        user: `fanout-user-${suffix}`,
+        company: crypto.randomUUID(),
+        chat: crypto.randomUUID(),
+        userMessage: crypto.randomUUID(),
+        run: crypto.randomUUID(),
+      };
+      const nonce = Buffer.from(`fanout-${suffix}`).subarray(0, 16);
+      const migration = await Bun.file(
+        new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+      ).text();
+      const mounted = [
+        ["topic-t1-retrieve-internal", "internal"],
+        ["topic-t1-select-memories", "memory"],
+        ["topic-t1-retrieve-web", "web"],
+        ["topic-t2-retrieve-internal", "internal"],
+        ["topic-t2-select-memories", "memory"],
+        ["topic-t2-retrieve-web", "web"],
+      ] as const;
+      const usage = [
+        ["plan-turn", "plan_turn"],
+        ["memory-extract", "memory_extractor"],
+        ["topic-t1-retrieve-internal", "internal_retrieval"],
+        ["topic-t2-retrieve-internal", "internal_retrieval"],
+      ] as const;
+
+      const runAndReadError = (mutate: Effect.Effect<void, unknown, PgClient.PgClient>) =>
+        runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* mutate;
+            const result = yield* Effect.exit(sql.unsafe(migration).raw);
+            return errorText(result);
+          }),
+        );
+
+      try {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`);
+          }),
+        );
+        await runDb(
+          databaseUrl,
+          applyMigrationsThrough("0063_immutable_document_exposure_evidence.sql"),
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into platform_users (id, primary_email, display_name, clerk_user_id)
+              values (${ids.user}, ${`${ids.user}@example.test`}, 'Fanout user', ${`clerk-${ids.user}`})
+            `;
+            yield* sql`
+              insert into client_companies (id, name) values (${ids.company}, 'Fanout company')
+            `;
+            yield* sql`
+              insert into client_company_memberships (company_id, user_id, role)
+              values (${ids.company}, ${ids.user}, 'admin')
+            `;
+            yield* sql`
+              insert into chats (id, user_id, company_id, memory_mode)
+              values (${ids.chat}, ${ids.user}, ${ids.company}, 'disabled')
+            `;
+            yield* sql`
+              insert into chat_messages (id, chat_id, author, content)
+              values (${ids.userMessage}, ${ids.chat}, 'user', 'Fanout fixture')
+            `;
+            yield* sql`
+              insert into ai_runs (
+                id, chat_id, user_message_id, locale, market, citation_nonce,
+                effective_web_policy, finished_at
+              ) values (
+                ${ids.run}, ${ids.chat}, ${ids.userMessage}, 'en-US', 'US',
+                decode(${nonce.toString("base64")}, 'base64'),
+                ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })}, now()
+              )
+            `;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${ids.run}, ${ids.chat}, 'plan-turn', 0, 0,
+                'plan-turn:0:0:turn_plan', 'turn_plan',
+                ${sql.json({
+                  mode: "fanout",
+                  question: "Fanout fixture",
+                  topics: [
+                    { topicId: "t1", question: "Topic one", relevantTurnIds: [] },
+                    { topicId: "t2", question: "Topic two", relevantTurnIds: [] },
+                  ],
+                })}
+              )
+            `;
+            for (const [owner, selectorRole] of mounted) {
+              yield* sql`
+                insert into ai_observations (
+                  run_id, chat_id, emitting_task, loop_iteration, attempt,
+                  observation_key, kind, payload
+                ) values (
+                  ${ids.run}, ${ids.chat}, ${owner}, 0, 0,
+                  ${`${owner}:0:0:retrieval_manifest:result`}, 'retrieval_manifest',
+                  ${sql.json({
+                    selectorRole,
+                    references: [],
+                    ...(selectorRole === "memory"
+                      ? { noCallReason: "memory_mode_disabled" }
+                      : selectorRole === "web"
+                        ? { noCallReason: "web_policy_disabled" }
+                        : {}),
+                  })}
+                )
+              `;
+            }
+            for (const [owner, selectorRole] of mounted) {
+              if (selectorRole === "internal") continue;
+              const noCallReason =
+                selectorRole === "memory" ? "memory_mode_disabled" : "web_policy_disabled";
+              yield* sql`
+                insert into ai_observations (
+                  run_id, chat_id, emitting_task, loop_iteration, attempt,
+                  observation_key, kind, payload
+                ) values (
+                  ${ids.run}, ${ids.chat}, 'finalize', 0, 0,
+                  ${`retrieval_no_call_seal:${owner}:0:0`}, 'retrieval_no_call_seal',
+                  ${sql.json({
+                    selectorTaskId: owner,
+                    selectorLoopIteration: 0,
+                    selectorAttempt: 0,
+                    selectorObservationKey: `${owner}:0:0:retrieval_manifest:result`,
+                    noCallReason,
+                  })}
+                )
+              `;
+            }
+            for (const [index, [taskId, agentRole]] of usage.entries()) {
+              yield* sql`
+                insert into ai_observations (
+                  run_id, chat_id, emitting_task, loop_iteration, attempt,
+                  observation_key, kind, payload
+                ) values (
+                  ${ids.run}, ${ids.chat}, ${taskId}, 0, 0,
+                  ${`provider_request_measurement:${taskId}:0:0:0`}, 'provider_request_measurement',
+                  ${sql.json({
+                    agentRole,
+                    modelId: "glm-5-turbo",
+                    requestSha256Hex: "a".repeat(64),
+                    sourceExposureProofSha256Hexes: [],
+                    providerRequestIndex: 0,
+                    inputTokens: 1,
+                    requestedOutputTokens: 1,
+                    usableInputTokens: 1,
+                    contextWindow: 100,
+                    passed: true,
+                  })}
+                )
+              `;
+              yield* sql`
+                insert into ai_run_usage (
+                  run_id, task_id, loop_iteration, attempt, provider_request_index,
+                  agent_role, model_id, provider_service_id, input_tokens, output_tokens,
+                  cached_tokens, reasoning_tokens, total_tokens, stop_reason
+                ) values (
+                  ${ids.run}, ${taskId}, 0, 0, 0, ${agentRole}, 'glm-5-turbo',
+                  'deterministic_test', 1, 1, 0, 0, 2, 'stop'
+                )
+              `;
+              yield* sql`
+                insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+                values (
+                  ${ids.run}, ${index + 1},
+                  ${sql.json({
+                    type: "usage",
+                    scope: "request",
+                    kind: "model",
+                    role: agentRole,
+                    attempt: 0,
+                    inputTokens: 1,
+                    outputTokens: 1,
+                    cachedTokens: 0,
+                    reasoningTokens: 0,
+                    totalTokens: 2,
+                  })},
+                  ${taskId}, ${`usage:request:model:${taskId}:0:0:0`}
+                )
+              `;
+            }
+          }),
+        );
+
+        const fanoutTopics = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly count: number }>`
+              select count(*)::int as count
+              from ai_observations plans
+              cross join lateral jsonb_array_elements(plans.payload->'topics') topic(value)
+              where plans.run_id = ${ids.run}
+                and plans.kind = 'turn_plan'
+                and plans.emitting_task = 'plan-turn'
+                and plans.payload->>'mode' = 'fanout'
+            `;
+          }),
+        );
+        expect(fanoutTopics).toEqual([{ count: 2 }]);
+        const missingTopicLedgerError = await runAndReadError(Effect.succeed(undefined));
+        expect(missingTopicLedgerError).toContain(`ai_runs/${ids.run}/topic-t1-answer`);
+        expect(missingTopicLedgerError).toContain("fanout topic packet ledger is incomplete");
+        const unchangedAfterTopicLedgerBlock = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly helpers: number; readonly finalColumn: number }>`
+              select
+                (select count(*)::int from pg_proc
+                 where pronamespace = 'public'::regnamespace
+                   and proname = 'brief_ai_safe_bigint') as helpers,
+                (select count(*)::int from information_schema.columns
+                 where table_schema = 'public'
+                   and table_name = 'ai_runs'
+                   and column_name = 'citation_namespace') as "finalColumn"
+            `;
+          }),
+        );
+        expect(unchangedAfterTopicLedgerBlock).toEqual([{ helpers: 0, finalColumn: 0 }]);
+
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values
+                (
+                  ${ids.run}, ${ids.chat}, 'topic-t1-answer', 1, 0,
+                  'topic-t1-answer:1:0:topic_packet', 'topic_packet',
+                  ${sql.json({
+                    topicId: "t1",
+                    status: "partial",
+                    sourceKeys: [],
+                    claimCount: 0,
+                    gapCount: 1,
+                    packetSha256Hex: "a".repeat(64),
+                  })}
+                ),
+                (
+                  ${ids.run}, ${ids.chat}, 'topic-t1-answer', 0, 0,
+                  'provider_request_measurement:topic-t1-answer:0:0:0',
+                  'provider_request_measurement',
+                  ${sql.json({
+                    agentRole: "topic_answer",
+                    modelId: "glm-5-turbo",
+                    requestSha256Hex: "b".repeat(64),
+                    sourceExposureProofSha256Hexes: [],
+                    providerRequestIndex: 0,
+                    inputTokens: 1,
+                    requestedOutputTokens: 1,
+                    usableInputTokens: 1,
+                    contextWindow: 100,
+                    passed: true,
+                  })}
+                )
+            `;
+            yield* sql`
+              insert into ai_run_usage (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                agent_role, model_id, provider_service_id, input_tokens, output_tokens,
+                cached_tokens, reasoning_tokens, total_tokens, stop_reason
+              ) values (
+                ${ids.run}, 'topic-t1-answer', 0, 0, 0,
+                'topic_answer', 'glm-5-turbo', 'deterministic_test',
+                1, 1, 0, 0, 2, 'stop'
+              )
+            `;
+            yield* sql`
+              insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+              values (
+                ${ids.run}, 20,
+                ${sql.json({
+                  type: "usage",
+                  scope: "request",
+                  kind: "model",
+                  role: "topic_answer",
+                  attempt: 0,
+                  inputTokens: 1,
+                  outputTokens: 1,
+                  cachedTokens: 0,
+                  reasoningTokens: 0,
+                  totalTokens: 2,
+                })},
+                'topic-t1-answer', 'usage:request:model:topic-t1-answer:0:0:0'
+              )
+            `;
+          }),
+        );
+        const mismatchedTopicCoordinateError = await runAndReadError(Effect.succeed(undefined));
+        expect(mismatchedTopicCoordinateError).toContain(`ai_runs/${ids.run}/topic-t1-answer`);
+        expect(mismatchedTopicCoordinateError).toContain(
+          "fanout topic packet has no matching provider coordinate",
+        );
+
+        const missingManifestError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              delete from ai_observations
+              where run_id = ${ids.run} and emitting_task = 'topic-t2-retrieve-web'
+            `;
+          }),
+        );
+        expect(missingManifestError).toContain(`ai_runs/${ids.run}/topic-t2-retrieve-web`);
+        expect(missingManifestError).toContain(
+          "successful run is missing terminal retrieval manifest",
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${ids.run}, ${ids.chat}, 'topic-t2-retrieve-web', 0, 0,
+                'topic-t2-retrieve-web:0:0:retrieval_manifest:result', 'retrieval_manifest',
+                ${sql.json({ selectorRole: "web", references: [], noCallReason: "web_policy_disabled" })}
+              )
+            `;
+          }),
+        );
+
+        const missingMemoryManifestError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              delete from ai_observations
+              where run_id = ${ids.run} and emitting_task = 'topic-t1-select-memories'
+            `;
+          }),
+        );
+        expect(missingMemoryManifestError).toContain(`ai_runs/${ids.run}/topic-t1-select-memories`);
+        expect(missingMemoryManifestError).toContain(
+          "successful run is missing terminal retrieval manifest",
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${ids.run}, ${ids.chat}, 'topic-t1-select-memories', 0, 0,
+                'topic-t1-select-memories:0:0:retrieval_manifest:result', 'retrieval_manifest',
+                ${sql.json({ selectorRole: "memory", references: [], noCallReason: "memory_mode_disabled" })}
+              )
+            `;
+          }),
+        );
+
+        const wrongTopicRouteError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set payload = ${sql.json({
+                mode: "fanout",
+                question: "Fanout fixture",
+                topics: [
+                  { topicId: "t2", question: "Topic two", relevantTurnIds: [] },
+                  { topicId: "t1", question: "Topic one", relevantTurnIds: [] },
+                ],
+              })}
+              where run_id = ${ids.run} and kind = 'turn_plan'
+            `;
+          }),
+        );
+        expect(wrongTopicRouteError).toContain(`ai_observations/`);
+        expect(wrongTopicRouteError).toContain("turn plan payload is not strict");
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set payload = ${sql.json({
+                mode: "fanout",
+                question: "Fanout fixture",
+                topics: [
+                  { topicId: "t1", question: "Topic one", relevantTurnIds: [] },
+                  { topicId: "t2", question: "Topic two", relevantTurnIds: [] },
+                ],
+              })}
+              where run_id = ${ids.run} and kind = 'turn_plan'
+            `;
+          }),
+        );
+
+        const wrongOwnerError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${ids.run}, ${ids.chat}, 'topic-t3-retrieve-internal', 0, 0,
+                'topic-t3-retrieve-internal:0:0:retrieval_manifest:result', 'retrieval_manifest',
+                ${sql.json({ selectorRole: "internal", references: [] })}
+              )
+            `;
+          }),
+        );
+        expect(wrongOwnerError).toContain(`ai_runs/${ids.run}/topic-t3-retrieve-internal`);
+        expect(wrongOwnerError).toContain("retrieval manifest owner is outside selected route");
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              delete from ai_observations
+              where run_id = ${ids.run}
+                and observation_key = 'topic-t3-retrieve-internal:0:0:retrieval_manifest:result'
+            `;
+          }),
+        );
+
+        const wrongWebOwnerError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${ids.run}, ${ids.chat}, 'topic-t3-retrieve-web', 0, 0,
+                'topic-t3-retrieve-web:0:0:retrieval_manifest:result', 'retrieval_manifest',
+                ${sql.json({ selectorRole: "web", references: [] })}
+              )
+            `;
+          }),
+        );
+        expect(wrongWebOwnerError).toContain(`ai_runs/${ids.run}/topic-t3-retrieve-web`);
+        expect(wrongWebOwnerError).toContain("retrieval manifest owner is outside selected route");
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              delete from ai_observations
+              where run_id = ${ids.run}
+                and observation_key = 'topic-t3-retrieve-web:0:0:retrieval_manifest:result'
+            `;
+          }),
+        );
+
+        const wrongRoleError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set payload = jsonb_set(payload - 'noCallReason', '{selectorRole}', '"web"'::jsonb)
+              where run_id = ${ids.run}
+                and emitting_task = 'topic-t2-select-memories'
+            `;
+          }),
+        );
+        expect(wrongRoleError).toContain(`ai_runs/${ids.run}/topic-t2-select-memories`);
+        expect(wrongRoleError).toContain(
+          "retrieval manifest selector role does not match its owner",
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set payload = ${sql.json({
+                selectorRole: "memory",
+                references: [],
+                noCallReason: "memory_mode_disabled",
+              })}
+              where run_id = ${ids.run}
+                and emitting_task = 'topic-t2-select-memories'
+            `;
+          }),
+        );
+        const wrongWebRoleError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set payload = jsonb_set(payload - 'noCallReason', '{selectorRole}', '"memory"'::jsonb)
+              where run_id = ${ids.run}
+                and emitting_task = 'topic-t1-retrieve-web'
+            `;
+          }),
+        );
+        expect(wrongWebRoleError).toContain(`ai_runs/${ids.run}/topic-t1-retrieve-web`);
+        expect(wrongWebRoleError).toContain(
+          "retrieval manifest selector role does not match its owner",
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set payload = ${sql.json({
+                selectorRole: "web",
+                references: [],
+                noCallReason: "web_policy_disabled",
+              })}
+              where run_id = ${ids.run}
+                and emitting_task = 'topic-t1-retrieve-web'
+            `;
+          }),
+        );
+
+        const missingInternalManifestError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              delete from ai_observations
+              where run_id = ${ids.run}
+                and emitting_task = 'topic-t1-retrieve-internal'
+                and kind = 'retrieval_manifest'
+            `;
+          }),
+        );
+        expect(missingInternalManifestError).toContain(
+          `ai_runs/${ids.run}/topic-t1-retrieve-internal`,
+        );
+        expect(missingInternalManifestError).toContain(
+          "successful run is missing terminal retrieval manifest",
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${ids.run}, ${ids.chat}, 'topic-t1-retrieve-internal', 0, 0,
+                'topic-t1-retrieve-internal:0:0:retrieval_manifest:result', 'retrieval_manifest',
+                ${sql.json({ selectorRole: "internal", references: [] })}
+              )
+            `;
+          }),
+        );
+
+        const wrongInternalRoleError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set payload = jsonb_set(payload, '{selectorRole}', '"memory"'::jsonb)
+              where run_id = ${ids.run}
+                and emitting_task = 'topic-t2-retrieve-internal'
+                and kind = 'retrieval_manifest'
+            `;
+          }),
+        );
+        expect(wrongInternalRoleError).toContain(`ai_runs/${ids.run}/topic-t2-retrieve-internal`);
+        expect(wrongInternalRoleError).toContain(
+          "retrieval manifest selector role does not match its owner",
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set payload = jsonb_set(payload, '{selectorRole}', '"internal"'::jsonb)
+              where run_id = ${ids.run}
+                and emitting_task = 'topic-t2-retrieve-internal'
+                and kind = 'retrieval_manifest'
+            `;
+          }),
+        );
+
+        const foreignPlanOwnerError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set emitting_task = 'single-answer'
+              where run_id = ${ids.run} and kind = 'turn_plan'
+            `;
+          }),
+        );
+        expect(foreignPlanOwnerError).toContain(`ai_runs/${ids.run}`);
+        expect(foreignPlanOwnerError).toContain("successful turn plan has a foreign owner");
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set emitting_task = 'plan-turn'
+              where run_id = ${ids.run} and kind = 'turn_plan'
+            `;
+          }),
+        );
+
+        const evaluationFanoutError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set emitting_task = 'evaluation-general-planner'
+              where run_id = ${ids.run} and kind = 'turn_plan'
+            `;
+          }),
+        );
+        expect(evaluationFanoutError).toContain(`ai_runs/${ids.run}/evaluation-general-planner`);
+        expect(evaluationFanoutError).toContain(
+          "successful run is missing terminal retrieval manifest",
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set emitting_task = 'plan-turn'
+              where run_id = ${ids.run} and kind = 'turn_plan'
+            `;
+          }),
+        );
+
+        const missingSealError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              delete from ai_observations
+              where run_id = ${ids.run}
+                and kind = 'retrieval_no_call_seal'
+                and payload->>'selectorTaskId' = 'topic-t1-select-memories'
+            `;
+          }),
+        );
+        expect(missingSealError).toContain(`ai_runs/${ids.run}/topic-t1-select-memories`);
+        expect(missingSealError).toContain(
+          "terminal no-call retrieval manifest lacks its exact finalization seal",
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${ids.run}, ${ids.chat}, 'finalize', 0, 0,
+                'retrieval_no_call_seal:topic-t1-select-memories:0:0', 'retrieval_no_call_seal',
+                ${sql.json({
+                  selectorTaskId: "topic-t1-select-memories",
+                  selectorLoopIteration: 0,
+                  selectorAttempt: 0,
+                  selectorObservationKey: "topic-t1-select-memories:0:0:retrieval_manifest:result",
+                  noCallReason: "memory_mode_disabled",
+                })}
+              )
+            `;
+          }),
+        );
+
+        const forbiddenNoCallUsageError = await runAndReadError(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_run_usage (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                agent_role, model_id, provider_service_id, input_tokens, output_tokens,
+                cached_tokens, reasoning_tokens, total_tokens, stop_reason
+              ) values (
+                ${ids.run}, 'topic-t1-select-memories', 0, 0, 0,
+                'memory_selector', 'glm-5-turbo', 'deterministic_test',
+                1, 1, 0, 0, 2, 'stop'
+              )
+            `;
+            yield* sql`
+              insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+              values (
+                ${ids.run}, 10,
+                ${sql.json({
+                  type: "usage",
+                  scope: "request",
+                  kind: "model",
+                  role: "memory_selector",
+                  attempt: 0,
+                  inputTokens: 1,
+                  outputTokens: 1,
+                  cachedTokens: 0,
+                  reasoningTokens: 0,
+                  totalTokens: 2,
+                })},
+                'topic-t1-select-memories',
+                'usage:request:model:topic-t1-select-memories:0:0:0'
+              )
+            `;
+          }),
+        );
+        expect(forbiddenNoCallUsageError).toContain(`ai_runs/${ids.run}/topic-t1-select-memories`);
+        expect(forbiddenNoCallUsageError).toContain(
+          "terminal no-call retrieval manifest lacks its exact finalization seal",
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              delete from ai_run_usage
+              where run_id = ${ids.run} and task_id = 'topic-t1-select-memories'
+            `;
+            yield* sql`
+              delete from ai_run_events
+              where run_id = ${ids.run}
+                and emission_key = 'usage:request:model:topic-t1-select-memories:0:0:0'
+            `;
+          }),
+        );
+      } finally {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+            yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
+          }),
+        );
+      }
+    },
+  );
+
+  it("upgrades a populated 0063 publisher tuple through the final cutover", async () => {
+    const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+    const databaseName = `brief_migrations_0063_${process.pid}_${suffix}`;
+    const databaseUrl = databaseUrlForName(databaseName);
+    const documentId = crypto.randomUUID();
+    const issueId = crypto.randomUUID();
+    const subscriptionId = crypto.randomUUID();
+    const publisherCompanyId = crypto.randomUUID();
+    const jobId = crypto.randomUUID();
+    const extractionId = crypto.randomUUID();
+    const versionId = crypto.randomUUID();
+    const upgradeUserId = `upgrade-user-${suffix}`;
+    const upgradeCompanyId = crypto.randomUUID();
+    const upgradeChatId = crypto.randomUUID();
+    const upgradeUserMessageId = crypto.randomUUID();
+    const upgradeRunId = crypto.randomUUID();
+    const upgradeAssistantMessageId = crypto.randomUUID();
+    const upgradeNonce = Buffer.from("publisher-0063-key").subarray(0, 16);
+    const upgradeSourceKey = `k_${upgradeNonce.toString("base64url")}_1`;
+    const sourceWithoutUseKey = `k_${upgradeNonce.toString("base64url")}_2`;
+    const pdfHash = "a".repeat(64);
+    const canonicalText = "A retained publisher page with exact immutable text.";
+    const internalManifestPayload = {
+      selectorRole: "internal",
+      references: [
+        {
+          kind: "document",
+          documentId,
+          versionId,
+          source: {
+            kind: "publisher",
+            sourceId: `publisher:${subscriptionId}`,
+            issueId,
+            documentId,
+          },
+          publisherExtractionId: extractionId,
+          ranges: [{ charStart: 0, charEnd: canonicalText.length }],
+          purpose: "grounding",
+        },
+      ],
+    };
+    const pages = JSON.stringify([{ pageNumber: 1, text: canonicalText }]);
+    const contentHash = createHash("sha256").update(canonicalText).digest("hex");
+    const splitPoint = Math.floor(canonicalText.length / 2);
+    const initialRanges = [{ charStart: 0, charEnd: canonicalText.length }];
+    const reducedRanges = [{ charStart: 0, charEnd: splitPoint }];
+    const exposureTask = "single-retrieve-internal";
+    const exposureLogicalIdentity = `publisher:${subscriptionId}:${documentId}:${versionId}`;
+    const exposureContentItemIdentity = `${exposureLogicalIdentity}:${versionId}:${createHash(
+      "sha256",
+    )
+      .update(JSON.stringify(initialRanges))
+      .digest("base64url")}`;
+    const exposureStage = "internal_search_preview";
+    const exposureVisibleTokenCount = 8;
+    const exposureProviderRequestHash = "d".repeat(64);
+    const exposureBinding = {
+      messageIndex: 0,
+      orderedSourceDescriptor: `publisher:${subscriptionId}:${documentId}`,
+      serializedField: "messages[0].content",
+      sourceOrdinal: 0,
+    };
+    const exposureProof = createHash("sha256")
+      .update(
+        JSON.stringify({
+          binding: exposureBinding,
+          contentItemIdentity: exposureContentItemIdentity,
+          exposureStage,
+          logicalSourceIdentity: exposureLogicalIdentity,
+          sourceKind: "document",
+          visibleTokenCount: exposureVisibleTokenCount,
+        }),
+      )
+      .digest("hex");
+    const exposureReconstruction = JSON.stringify({
+      contentHash,
+      documentId,
+      ranges: [{ charEnd: canonicalText.length, charStart: 0 }],
+      sourceId: `publisher:${subscriptionId}`,
+      versionId,
+    });
+    const answerExposureReconstruction = JSON.stringify({
+      contentHash,
+      documentId,
+      ranges: [{ charEnd: splitPoint, charStart: 0 }],
+      sourceId: `publisher:${subscriptionId}`,
+      versionId,
+    });
+    const answerExposureContentItemIdentity = `${exposureLogicalIdentity}:${versionId}:${createHash(
+      "sha256",
+    )
+      .update(JSON.stringify(reducedRanges))
+      .digest("base64url")}`;
+    const exposureAttestationKey = `source_exposure_attestation:${exposureTask}:0:0:0:${createHash(
+      "sha256",
+    )
+      .update(
+        JSON.stringify([
+          "document",
+          exposureLogicalIdentity,
+          exposureContentItemIdentity,
+          exposureStage,
+          exposureVisibleTokenCount,
+          exposureProviderRequestHash,
+          exposureBinding,
+          JSON.parse(exposureReconstruction),
+        ]),
+      )
+      .digest("hex")}`;
+    const exposureMeasurementKey = "provider_request_measurement:single-retrieve-internal:0:0:0";
+    const answerExposureTask = "single-answer";
+    const answerExposureStage = "answer_serialized";
+    const answerExposureProviderRequestHash = "a".repeat(64);
+    const answerExposureBinding = {
+      ...exposureBinding,
+      serializedField: "messages[0].content",
+    };
+    const answerExposureProof = createHash("sha256")
+      .update(
+        JSON.stringify({
+          binding: answerExposureBinding,
+          contentItemIdentity: answerExposureContentItemIdentity,
+          exposureStage: answerExposureStage,
+          logicalSourceIdentity: exposureLogicalIdentity,
+          sourceKind: "document",
+          visibleTokenCount: exposureVisibleTokenCount,
+        }),
+      )
+      .digest("hex");
+    const answerExposureAttestationKey = `source_exposure_attestation:${answerExposureTask}:0:0:1:${createHash(
+      "sha256",
+    )
+      .update(
+        JSON.stringify([
+          "document",
+          exposureLogicalIdentity,
+          answerExposureContentItemIdentity,
+          answerExposureStage,
+          exposureVisibleTokenCount,
+          answerExposureProviderRequestHash,
+          answerExposureBinding,
+          JSON.parse(answerExposureReconstruction),
+        ]),
+      )
+      .digest("hex")}`;
+
+    try {
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`);
+        }),
+      );
+      await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe("drop schema if exists public cascade");
+          yield* sql.unsafe("create schema public");
+        }),
+      );
+      await runDb(
+        databaseUrl,
+        applyMigrationsThrough("0063_immutable_document_exposure_evidence.sql"),
+      );
+      await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            insert into publisher_companies (id, name)
+            values (${publisherCompanyId}, ${`Upgrade publisher ${suffix}`})
+          `;
+          yield* sql`
+            insert into publisher_subscriptions (id, publisher_company_id, name, created_by_user_id)
+            values (${subscriptionId}, ${publisherCompanyId}, ${`Upgrade subscription ${suffix}`}, ${upgradeUserId})
+          `;
+          yield* sql`
+            insert into publisher_issues (id, subscription_id, title, status, created_by_user_id)
+            values (${issueId}, ${subscriptionId}, '0063 retained issue', 'draft', ${upgradeUserId})
+          `;
+          yield* sql`
+            insert into jobs (id, kind, payload)
+            values (${jobId}, 'extract_pdf_text', '{}'::jsonb)
+          `;
+          yield* sql`
+            insert into brief_documents (
+              id, issue_id, title, original_file_name, object_key, media_type,
+              byte_size, sha256_hex, upload_completed_at, language, created_by_user_id
+            ) values (
+              ${documentId}, ${issueId}, '0063 retained document', 'retained.pdf',
+              ${`upgrade/${documentId}.pdf`}, 'application/pdf', 128, ${pdfHash}, now(),
+              'en-US', ${upgradeUserId}
+            )
+          `;
+          yield* sql`
+            insert into brief_document_extractions (
+              id, brief_document_id, input_sha256_hex, pages,
+              extracted_char_count, created_by_job_id
+            ) values (
+              ${extractionId}, ${documentId}, ${pdfHash}, ${pages}::jsonb,
+              ${canonicalText.length}, ${jobId}
+            )
+          `;
+          yield* sql`
+            insert into brief_document_versions (
+              id, brief_document_id, content_hash, language, canonical_text,
+              text_char_count, page_ranges, created_by_job_id
+            ) values (
+              ${versionId}, ${documentId}, ${contentHash}, 'en-US', ${canonicalText},
+              ${canonicalText.length},
+              ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: canonicalText.length }])}::jsonb,
+              ${jobId}
+            )
+          `;
+          yield* sql`
+            insert into platform_users (id, primary_email, display_name, clerk_user_id)
+            values (${upgradeUserId}, ${`${upgradeUserId}@example.test`}, 'Upgrade user', ${`clerk-${upgradeUserId}`})
+          `;
+          yield* sql`
+            insert into client_companies (id, name)
+            values (${upgradeCompanyId}, 'Upgrade client company')
+          `;
+          yield* sql`
+            insert into client_company_memberships (company_id, user_id, role)
+            values (${upgradeCompanyId}, ${upgradeUserId}, 'admin')
+          `;
+          yield* sql`
+            insert into chats (id, user_id, company_id, memory_mode)
+            values (${upgradeChatId}, ${upgradeUserId}, ${upgradeCompanyId}, 'disabled')
+          `;
+          yield* sql`
+            insert into chat_messages (id, chat_id, author, content)
+            values (${upgradeUserMessageId}, ${upgradeChatId}, 'user', 'retained publisher answer')
+          `;
+          yield* sql`
+            insert into ai_runs (
+              id, chat_id, initiating_user_id, user_message_id, locale, market,
+              citation_nonce, effective_web_policy, finished_at
+            ) values (
+              ${upgradeRunId}, ${upgradeChatId}, ${upgradeUserId}, ${upgradeUserMessageId},
+              'en-US', 'US', decode(${upgradeNonce.toString("base64")}, 'base64'),
+              ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })}, now()
+            )
+          `;
+          yield* sql`
+            insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id)
+            values (
+              ${upgradeAssistantMessageId}, ${upgradeChatId}, 'assistant',
+              ${`Retained [[cite:${upgradeSourceKey}]]`}, ${upgradeRunId}
+            )
+          `;
+          yield* sql`
+            update ai_runs
+            set assistant_message_id = ${upgradeAssistantMessageId}
+            where id = ${upgradeRunId}
+          `;
+          yield* sql`
+            insert into assistant_message_sources (
+              assistant_message_id, source_key, kind, locator,
+              document_version_id, publisher_document_version_id, display_label, public_provenance
+            ) values (
+              ${upgradeAssistantMessageId}, ${upgradeSourceKey}, 'document',
+              ${sql.json({
+                kind: "document",
+                sourceId: `publisher:${subscriptionId}`,
+                documentId,
+                versionId: versionId,
+                contentHash,
+                ranges: reducedRanges,
+                publisherIssueId: issueId,
+                publisherDocumentId: documentId,
+              })}, ${versionId}, ${versionId}, 'Retained publisher document', ${sql.json({
+                sourceName: "Upgrade publisher",
+                issueTitle: "0063 retained issue",
+                documentTitle: "0063 retained document",
+                citationUrl: `/v1/issues/${issueId}/documents/${documentId}/content`,
+                publishedAt: "2026-07-01T00:00:00.000Z",
+              })}
+            )
+          `;
+          yield* sql`
+            insert into assistant_message_source_uses (
+              assistant_message_id, source_key, consumer_task_id,
+              rendered_token_count, context_order, ranges
+            ) values (
+              ${upgradeAssistantMessageId}, ${upgradeSourceKey}, 'single-answer',
+              1, 0, ${JSON.stringify(reducedRanges)}::jsonb
+            )
+          `;
+          const migration = yield* Effect.promise(() =>
+            Bun.file(
+              new URL(
+                "../../../../db/migrations/0064_ai_chat_runtime_cutover.sql",
+                import.meta.url,
+              ),
+            ).text(),
+          );
+          const firstCatalogWrite = migration.indexOf("create or replace function");
+          expect(firstCatalogWrite).toBeGreaterThan(0);
+          expect(migration.indexOf("AI chat schema cutover preflight row", firstCatalogWrite)).toBe(
+            -1,
+          );
+          for (const blocker of [
+            "stored source identity digest",
+            "source-use identity digest",
+            "source-use union does not equal",
+            "document locator is not a closed canonical record",
+            "memory locator is not a closed canonical record",
+            "exposure has no exact attestation row",
+            "provider measurement proof set has no exact attestation binding",
+            "provider measurement has no matching usage row",
+            "canonical publisher locator is not bound",
+            "public provenance is not a closed canonical record",
+          ]) {
+            expect(migration.indexOf(blocker)).toBeGreaterThanOrEqual(0);
+            expect(migration.indexOf(blocker)).toBeLessThan(firstCatalogWrite);
+          }
+          yield* sql`
+            insert into ai_source_exposures (
+              run_id, task_id, loop_iteration, attempt, provider_request_index,
+              source_kind, logical_source_identity, publisher_issue_id,
+              publisher_document_id, content_item_identity, exposure_stage,
+              visible_token_count, document_source_id, document_id, document_version_id,
+              document_content_hash, document_ranges
+            ) values (
+              ${upgradeRunId}, ${exposureTask}, 0, 0, 0, 'document',
+              ${exposureLogicalIdentity}, ${issueId},
+              ${documentId}, ${exposureContentItemIdentity},
+              ${exposureStage}, ${exposureVisibleTokenCount}, ${`publisher:${subscriptionId}`},
+              ${documentId}, ${versionId}, ${contentHash},
+              ${JSON.stringify([{ charStart: 0, charEnd: canonicalText.length }])}::jsonb
+            ), (
+              ${upgradeRunId}, ${answerExposureTask}, 0, 0, 1, 'document',
+              ${exposureLogicalIdentity}, ${issueId},
+              ${documentId}, ${answerExposureContentItemIdentity},
+              ${answerExposureStage}, ${exposureVisibleTokenCount}, ${`publisher:${subscriptionId}`},
+              ${documentId}, ${versionId}, ${contentHash},
+              ${JSON.stringify(reducedRanges)}::jsonb
+            )
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${upgradeRunId}, ${upgradeChatId}, ${exposureTask}, 0, 0,
+              ${exposureMeasurementKey}, 'provider_request_measurement',
+              ${sql.json({
+                agentRole: "internal_retrieval",
+                modelId: "glm-5-turbo",
+                requestSha256Hex: exposureProviderRequestHash,
+                sourceExposureProofSha256Hexes: [exposureProof],
+                sourceExposureProofBindings: [
+                  {
+                    providerSerializationProofSha256Hex: exposureProof,
+                    providerSerializationProofBinding: exposureBinding,
+                  },
+                ],
+                providerRequestIndex: 0,
+                inputTokens: 1,
+                requestedOutputTokens: 1,
+                usableInputTokens: 1,
+                contextWindow: 100,
+                passed: true,
+              })}
+            )
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${upgradeRunId}, ${upgradeChatId}, ${exposureTask}, 0, 0,
+              ${exposureAttestationKey}, 'source_exposure_attestation',
+              ${sql.json({
+                providerRequestIndex: 0,
+                providerRequestSha256Hex: exposureProviderRequestHash,
+                sourceKind: "document",
+                logicalSourceIdentity: exposureLogicalIdentity,
+                contentItemIdentity: exposureContentItemIdentity,
+                exposureStage,
+                visibleTokenCount: exposureVisibleTokenCount,
+                providerSerializationProofSha256Hex: exposureProof,
+                providerSerializationProofBinding: exposureBinding,
+                documentSourceId: `publisher:${subscriptionId}`,
+                documentId,
+                versionId,
+                documentContentHash: contentHash,
+                documentRanges: initialRanges,
+              })}
+            )
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${upgradeRunId}, ${upgradeChatId}, ${answerExposureTask}, 0, 0,
+              ${answerExposureAttestationKey}, 'source_exposure_attestation',
+              ${sql.json({
+                providerRequestIndex: 1,
+                providerRequestSha256Hex: answerExposureProviderRequestHash,
+                sourceKind: "document",
+                logicalSourceIdentity: exposureLogicalIdentity,
+                contentItemIdentity: answerExposureContentItemIdentity,
+                exposureStage: answerExposureStage,
+                visibleTokenCount: exposureVisibleTokenCount,
+                providerSerializationProofSha256Hex: answerExposureProof,
+                providerSerializationProofBinding: answerExposureBinding,
+                documentSourceId: `publisher:${subscriptionId}`,
+                documentId,
+                versionId,
+                documentContentHash: contentHash,
+                documentRanges: reducedRanges,
+              })}
+            )
+          `;
+          yield* sql`
+            insert into ai_run_usage (
+              run_id, task_id, loop_iteration, attempt, provider_request_index,
+              agent_role, model_id, provider_service_id, input_tokens, output_tokens,
+              cached_tokens, reasoning_tokens, total_tokens, stop_reason
+            ) values
+              (${upgradeRunId}, ${exposureTask}, 0, 0, 0, 'internal_retrieval', 'glm-5-turbo',
+               'deterministic_test', 1, 1, 0, 0, 2, 'stop'),
+              (${upgradeRunId}, 'single-answer', 0, 0, 1, 'direct_answer', 'glm-5-turbo',
+               'deterministic_test', 1, 1, 0, 0, 2, 'stop'),
+              (${upgradeRunId}, 'plan-turn', 0, 0, 0, 'plan_turn', 'glm-5-turbo',
+               'deterministic_test', 1, 1, 1, 0, 3, 'stop'),
+              (${upgradeRunId}, 'memory-extract', 0, 0, 0, 'memory_extractor', 'glm-5-turbo',
+               'deterministic_test', 1, 1, 0, 0, 2, 'stop')
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values
+              (${upgradeRunId}, ${upgradeChatId}, 'plan-turn', 0, 0,
+               'plan-turn:0:0:turn_plan', 'turn_plan',
+               ${sql.json({ mode: "single", question: "retained publisher answer", relevantTurnIds: [] })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'single-retrieve-internal', 0, 0,
+               'single-retrieve-internal:0:0:retrieval_manifest:result', 'retrieval_manifest',
+              ${sql.json(internalManifestPayload)}),
+              (${upgradeRunId}, ${upgradeChatId}, 'single-select-memories', 0, 0,
+               'single-select-memories:0:0:retrieval_manifest:result', 'retrieval_manifest',
+               ${sql.json({ selectorRole: "memory", references: [], noCallReason: "memory_mode_disabled" })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'single-retrieve-web', 0, 0,
+               'single-retrieve-web:0:0:retrieval_manifest:result', 'retrieval_manifest',
+               ${sql.json({ selectorRole: "web", references: [], noCallReason: "web_policy_disabled" })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'finalize', 0, 0,
+               'retrieval_no_call_seal:single-select-memories:0:0', 'retrieval_no_call_seal',
+               ${sql.json({
+                 selectorTaskId: "single-select-memories",
+                 selectorLoopIteration: 0,
+                 selectorAttempt: 0,
+                 selectorObservationKey: "single-select-memories:0:0:retrieval_manifest:result",
+                 noCallReason: "memory_mode_disabled",
+               })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'finalize', 0, 0,
+               'retrieval_no_call_seal:single-retrieve-web:0:0', 'retrieval_no_call_seal',
+               ${sql.json({
+                 selectorTaskId: "single-retrieve-web",
+                 selectorLoopIteration: 0,
+                 selectorAttempt: 0,
+                 selectorObservationKey: "single-retrieve-web:0:0:retrieval_manifest:result",
+                 noCallReason: "web_policy_disabled",
+               })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'single-measure', 0, 0,
+               'context:measure:initial', 'context_measurement',
+               ${sql.json({
+                 consumerTaskId: "single-answer",
+                 mandatoryInputTokens: 1,
+                 discretionaryInputTokens: 0,
+                 totalInputTokens: 1,
+                 requestedOutputTokens: 1,
+                 usableInputTokens: 1,
+                 contextWindow: 100,
+                 status: "ready",
+                 reductionRan: false,
+                 reductionFeedback: [],
+                 restrictedContextLedger: {
+                   requestKind: "direct",
+                   modelId: "glm-5-turbo",
+                   requestSha256Hex: "a".repeat(64),
+                   inputTokens: 1,
+                   usableInputTokens: 1,
+                   requestedOutputTokens: 1,
+                   selectedConversation: [],
+                   question: "retained publisher answer",
+                   gaps: [],
+                   sources: [
+                     {
+                       candidateId: documentId,
+                       sourceKey: upgradeSourceKey,
+                       kind: "document",
+                       purpose: "grounding",
+                       label: "Retained publisher document",
+                       ranges: initialRanges,
+                     },
+                   ],
+                 },
+               })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'single-answer', 0, 0,
+               'context:measure', 'context_measurement',
+               ${sql.json({
+                 consumerTaskId: "single-answer",
+                 mandatoryInputTokens: 1,
+                 discretionaryInputTokens: 0,
+                 totalInputTokens: 1,
+                 requestedOutputTokens: 1,
+                 usableInputTokens: 1,
+                 contextWindow: 100,
+                 status: "ready",
+                 reductionRan: false,
+                 reductionFeedback: [],
+                 restrictedContextLedger: {
+                   requestKind: "direct",
+                   modelId: "glm-5-turbo",
+                   requestSha256Hex: "a".repeat(64),
+                   inputTokens: 1,
+                   usableInputTokens: 1,
+                   requestedOutputTokens: 1,
+                   selectedConversation: [],
+                   question: "retained publisher answer",
+                   gaps: [],
+                   sources: [
+                     {
+                       candidateId: documentId,
+                       sourceKey: upgradeSourceKey,
+                       kind: "document",
+                       purpose: "grounding",
+                       label: "Retained publisher document",
+                       ranges: reducedRanges,
+                     },
+                   ],
+                 },
+               })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'single-reduce-measure', 1, 0,
+               'context:decision', 'context_decision',
+               ${sql.json({
+                 valid: true,
+                 decisions: [
+                   {
+                     id: documentId,
+                     action: "range",
+                     ranges: reducedRanges,
+                     reason: "kept the relevant passage",
+                   },
+                 ],
+                 feedback: [],
+               })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'single-answer', 0, 0,
+               'context:serialized', 'context_serialized',
+               ${sql.json({
+                 consumerTaskId: "single-answer",
+                 sourceKeys: [upgradeSourceKey],
+                 restrictedContextLedger: {
+                   requestKind: "direct",
+                   modelId: "glm-5-turbo",
+                   requestSha256Hex: "a".repeat(64),
+                   inputTokens: 1,
+                   usableInputTokens: 1,
+                   requestedOutputTokens: 1,
+                   selectedConversation: [],
+                   question: "retained publisher answer",
+                   gaps: [],
+                   sources: [
+                     {
+                       candidateId: documentId,
+                       sourceKey: upgradeSourceKey,
+                       kind: "document",
+                       purpose: "grounding",
+                       label: "Retained publisher document",
+                       ranges: reducedRanges,
+                     },
+                   ],
+                 },
+                 terminalUsageCoordinate: {
+                   taskId: "single-answer",
+                   loopIteration: 0,
+                   attempt: 0,
+                   providerRequestIndex: 1,
+                 },
+               })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'single-answer', 0, 0,
+               'provider_request_measurement:single-answer:0:0:1', 'provider_request_measurement',
+               ${sql.json({
+                 agentRole: "direct_answer",
+                 modelId: "glm-5-turbo",
+                 requestSha256Hex: "a".repeat(64),
+                 sourceExposureProofSha256Hexes: [answerExposureProof],
+                 sourceExposureProofBindings: [
+                   {
+                     providerSerializationProofSha256Hex: answerExposureProof,
+                     providerSerializationProofBinding: answerExposureBinding,
+                   },
+                 ],
+                 providerRequestIndex: 1,
+                 inputTokens: 1,
+                 requestedOutputTokens: 1,
+                 usableInputTokens: 1,
+                 contextWindow: 100,
+                 passed: true,
+               })})
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values
+              (${upgradeRunId}, ${upgradeChatId}, 'plan-turn', 0, 0,
+               'provider_request_measurement:plan-turn:0:0:0', 'provider_request_measurement',
+               ${sql.json({
+                 agentRole: "plan_turn",
+                 modelId: "glm-5-turbo",
+                 requestSha256Hex: "b".repeat(64),
+                 sourceExposureProofSha256Hexes: [],
+                 providerRequestIndex: 0,
+                 inputTokens: 2,
+                 requestedOutputTokens: 1,
+                 usableInputTokens: 2,
+                 contextWindow: 100,
+                 passed: true,
+               })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'memory-extract', 0, 0,
+               'provider_request_measurement:memory-extract:0:0:0', 'provider_request_measurement',
+               ${sql.json({
+                 agentRole: "memory_extractor",
+                 modelId: "glm-5-turbo",
+                 requestSha256Hex: "c".repeat(64),
+                 sourceExposureProofSha256Hexes: [],
+                 providerRequestIndex: 0,
+                 inputTokens: 1,
+                 requestedOutputTokens: 1,
+                 usableInputTokens: 1,
+                 contextWindow: 100,
+                 passed: true,
+               })})
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values
+              (${upgradeRunId}, ${upgradeChatId}, 'memory-extract', 0, 0,
+               'memory-extract:0:0:memory_extraction_result:result', 'memory_extraction_result',
+               ${sql.json({ proposalCount: 0, discardedCount: 0, extractionSha256Hex: "d".repeat(64) })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'finalize', 0, 0,
+               'finalize:0:0:memory_application:result', 'memory_application',
+               ${sql.json({
+                 extractionTaskId: "memory-extract",
+                 extractionLoopIteration: 0,
+                 extractionAttempt: 0,
+                 extractionObservationKey: "memory-extract:0:0:memory_extraction_result:result",
+                 extractionSha256Hex: "d".repeat(64),
+                 proposalCount: 0,
+                 discardedCount: 0,
+               })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'single-answer', 0, 0,
+               'answer:completed', 'answer_completed',
+               ${sql.json({ mode: "single", attempt: 0 })})
+          `;
+          yield* sql`
+            insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+            values
+              (${upgradeRunId}, 1, ${sql.json({ type: "run_started" })}, null, 'run_started'),
+              (${upgradeRunId}, 2, ${sql.json({
+                type: "context_ready",
+                mode: "single",
+                reductionRan: true,
+                sourcesRead: [
+                  {
+                    sourceKey: upgradeSourceKey,
+                    label: "Retained publisher document",
+                    tokenCount: 1,
+                    topicIds: [],
+                    kind: "document",
+                    sourceName: "Upgrade publisher",
+                    issueTitle: "0063 retained issue",
+                    documentTitle: "0063 retained document",
+                    url: `/v1/issues/${issueId}/documents/${documentId}/content`,
+                    publishedAt: "2026-07-01T00:00:00.000Z",
+                    ranges: reducedRanges,
+                  },
+                ],
+                consumers: [
+                  {
+                    consumer: "direct",
+                    inputTokens: 1,
+                    requestedOutputTokens: 1,
+                    usableInputTokens: 1,
+                  },
+                ],
+              })}, 'single-answer', 'context_ready'),
+              (${upgradeRunId}, 3, ${sql.json({ type: "answer_started", mode: "single", attempt: 0 })}, 'single-answer', 'answer_started:single-answer:0'),
+              (${upgradeRunId}, 4, ${sql.json({ type: "text_delta", delta: `Retained [[cite:${upgradeSourceKey}]]` })}, 'single-answer', 'text_delta:single-answer:0:0'),
+              (${upgradeRunId}, 6, ${sql.json({ type: "usage", scope: "request", kind: "model", role: "internal_retrieval", attempt: 0, inputTokens: 1, outputTokens: 1, cachedTokens: 0, reasoningTokens: 0, totalTokens: 2 })}, ${exposureTask}, 'usage:request:model:single-retrieve-internal:0:0:0'),
+              (${upgradeRunId}, 7, ${sql.json({ type: "usage", scope: "request", kind: "model", role: "direct_answer", attempt: 0, inputTokens: 1, outputTokens: 1, cachedTokens: 0, reasoningTokens: 0, totalTokens: 2 })}, 'single-answer', 'usage:request:model:single-answer:0:0:1'),
+              (${upgradeRunId}, 8, ${sql.json({ type: "usage", scope: "request", kind: "model", role: "plan_turn", attempt: 0, inputTokens: 1, outputTokens: 1, cachedTokens: 1, reasoningTokens: 0, totalTokens: 3 })}, 'plan-turn', 'usage:request:model:plan-turn:0:0:0'),
+              (${upgradeRunId}, 9, ${sql.json({ type: "usage", scope: "request", kind: "model", role: "memory_extractor", attempt: 0, inputTokens: 1, outputTokens: 1, cachedTokens: 0, reasoningTokens: 0, totalTokens: 2 })}, 'memory-extract', 'usage:request:model:memory-extract:0:0:0'),
+              (${upgradeRunId}, 10, ${sql.json({ type: "memory_updated", created: 0, updated: 0, discarded: 0 })}, 'finalize', 'memory_updated'),
+              (${upgradeRunId}, 11, ${sql.json({ type: "usage", scope: "run", model: { inputTokens: 4, outputTokens: 4, cachedTokens: 1, reasoningTokens: 0, totalTokens: 9, requestCount: 4 }, web: { searchCount: 0, fetchCount: 0, responseBytes: 0, billedUnits: 0 } })}, 'finalize', 'usage:run'),
+              (${upgradeRunId}, 12, ${sql.json({ type: "done", assistantMessageId: upgradeAssistantMessageId })}, 'finalize', 'terminal')
+          `;
+          yield* sql`
+            delete from ai_observations
+            where run_id = ${upgradeRunId}
+              and (emitting_task = 'memory-extract' or kind = 'memory_application')
+          `;
+          yield* sql`
+            delete from ai_run_usage
+            where run_id = ${upgradeRunId} and task_id = 'plan-turn'
+          `;
+          yield* sql`
+            delete from ai_run_events
+            where run_id = ${upgradeRunId}
+              and emission_key = 'usage:request:model:plan-turn:0:0:0'
+          `;
+          const routeBlock = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(routeBlock._tag).toBe("Failure");
+          expect(errorText(routeBlock)).toContain(`ai_runs/${upgradeRunId}`);
+          expect(errorText(routeBlock)).toContain(
+            "successful run has no coherent plan and memory route",
+          );
+          const helpersAfterRouteBlock = yield* sql<{ readonly count: number }>`
+            select count(*)::int as count
+            from pg_proc
+            where pronamespace = 'public'::regnamespace
+              and proname in (
+                'brief_ai_safe_bigint', 'brief_ai_utf16_length', 'brief_ai_legacy_json_key',
+                'brief_ai_valid_restricted_context_ledger', 'brief_ai_valid_terminal_usage_coordinate',
+                'brief_ai_normalize_ranges'
+              )
+          `;
+          expect(helpersAfterRouteBlock[0]?.count).toBe(0);
+          yield* sql`
+            delete from ai_run_usage
+            where run_id = ${upgradeRunId} and task_id = 'memory-extract'
+          `;
+          yield* sql`
+            delete from ai_run_events
+            where run_id = ${upgradeRunId}
+              and emission_key = 'usage:request:model:memory-extract:0:0:0'
+          `;
+          yield* sql`
+            insert into ai_run_usage (
+              run_id, task_id, loop_iteration, attempt, provider_request_index,
+              agent_role, model_id, provider_service_id, input_tokens, output_tokens,
+              cached_tokens, reasoning_tokens, total_tokens, stop_reason
+            ) values
+            (
+              ${upgradeRunId}, 'plan-turn', 0, 0, 0, 'plan_turn', 'glm-5-turbo',
+              'deterministic_test', 1, 1, 1, 0, 3, 'stop'
+            ), (
+              ${upgradeRunId}, 'memory-extract', 0, 0, 0, 'memory_extractor', 'glm-5-turbo',
+              'deterministic_test', 1, 1, 0, 0, 2, 'stop'
+            )
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values
+              (${upgradeRunId}, ${upgradeChatId}, 'memory-extract', 0, 0,
+               'provider_request_measurement:memory-extract:0:0:0', 'provider_request_measurement',
+               ${sql.json({
+                 agentRole: "memory_extractor",
+                 modelId: "glm-5-turbo",
+                 requestSha256Hex: "c".repeat(64),
+                 sourceExposureProofSha256Hexes: [],
+                 providerRequestIndex: 0,
+                 inputTokens: 1,
+                 requestedOutputTokens: 1,
+                 usableInputTokens: 1,
+                 contextWindow: 100,
+                 passed: true,
+               })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'memory-extract', 0, 0,
+               'memory-extract:0:0:memory_extraction_result:result', 'memory_extraction_result',
+               ${sql.json({ proposalCount: 0, discardedCount: 0, extractionSha256Hex: "d".repeat(64) })}),
+              (${upgradeRunId}, ${upgradeChatId}, 'finalize', 0, 0,
+               'finalize:0:0:memory_application:result', 'memory_application',
+               ${sql.json({
+                 extractionTaskId: "memory-extract",
+                 extractionLoopIteration: 0,
+                 extractionAttempt: 0,
+                 extractionObservationKey: "memory-extract:0:0:memory_extraction_result:result",
+                 extractionSha256Hex: "d".repeat(64),
+                 proposalCount: 0,
+                 discardedCount: 0,
+               })})
+          `;
+          yield* sql`
+            insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+            values
+            (
+              ${upgradeRunId}, 8,
+              ${sql.json({ type: "usage", scope: "request", kind: "model", role: "plan_turn", attempt: 0, inputTokens: 1, outputTokens: 1, cachedTokens: 1, reasoningTokens: 0, totalTokens: 3 })},
+              'plan-turn', 'usage:request:model:plan-turn:0:0:0'
+            ), (
+              ${upgradeRunId}, 9,
+              ${sql.json({ type: "usage", scope: "request", kind: "model", role: "memory_extractor", attempt: 0, inputTokens: 1, outputTokens: 1, cachedTokens: 0, reasoningTokens: 0, totalTokens: 2 })},
+              'memory-extract', 'usage:request:model:memory-extract:0:0:0'
+            )
+          `;
+          yield* sql`
+            insert into assistant_message_sources (
+              assistant_message_id, source_key, kind, locator,
+              document_version_id, publisher_document_version_id, display_label, public_provenance
+            ) values (
+              ${upgradeAssistantMessageId}, ${sourceWithoutUseKey}, 'document',
+              ${sql.json({
+                kind: "document",
+                sourceId: `publisher:${subscriptionId}`,
+                documentId,
+                versionId: versionId,
+                contentHash,
+                ranges: [{ charStart: 0, charEnd: canonicalText.length }],
+                publisherIssueId: issueId,
+                publisherDocumentId: documentId,
+              })}, ${versionId}, ${versionId}, 'Unreferenced publisher document', ${sql.json({
+                sourceName: "Upgrade publisher",
+                issueTitle: "0063 retained issue",
+                documentTitle: "0063 retained document",
+                citationUrl: `/v1/issues/${issueId}/documents/${documentId}/content`,
+                publishedAt: "2026-07-01T00:00:00.000Z",
+              })}
+            )
+          `;
+          const sourceUseBlock = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(sourceUseBlock._tag).toBe("Failure");
+          expect(errorText(sourceUseBlock)).toContain(
+            `assistant_message_sources/${upgradeAssistantMessageId}/${sourceWithoutUseKey}`,
+          );
+          expect(errorText(sourceUseBlock)).toContain("source has no canonical answer use");
+          const helpersAfterSourceUseBlock = yield* sql<{
+            readonly count: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (
+                  select count(*)::int
+                  from pg_proc
+                  where pronamespace = 'public'::regnamespace
+                  and proname = 'brief_ai_safe_bigint'
+              ) as count,
+              (
+                select count(*)::int
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'assistant_message_sources'
+                  and column_name = 'version_id'
+              ) as "finalColumns"
+          `;
+          expect(helpersAfterSourceUseBlock[0]?.count).toBe(0);
+          expect(helpersAfterSourceUseBlock[0]?.finalColumns).toBe(0);
+          yield* sql`alter table assistant_message_sources disable trigger user`;
+          yield* sql`
+            delete from assistant_message_sources
+            where assistant_message_id = ${upgradeAssistantMessageId}
+              and source_key = ${sourceWithoutUseKey}
+          `;
+          yield* sql`alter table assistant_message_sources enable trigger user`;
+          yield* sql`
+            update ai_observations
+            set kind = 'candidate_rejected',
+                payload = ${sql.json({ candidateId: "publisher:missing", reason: "missing" })}
+            where run_id = ${upgradeRunId}
+              and emitting_task = 'single-retrieve-internal'
+              and observation_key = 'single-retrieve-internal:0:0:retrieval_manifest:result'
+          `;
+          const missingManifestBlock = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(missingManifestBlock)).toContain(`ai_runs/${upgradeRunId}`);
+          expect(errorText(missingManifestBlock)).toContain(
+            "successful run is missing terminal retrieval manifest",
+          );
+          yield* sql`
+            update ai_observations
+            set kind = 'retrieval_manifest', payload = ${sql.json(internalManifestPayload)}
+            where run_id = ${upgradeRunId}
+              and emitting_task = 'single-retrieve-internal'
+              and observation_key = 'single-retrieve-internal:0:0:retrieval_manifest:result'
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            )
+            select run_id, chat_id, 'single-answer', 0, 0,
+                   'single-answer:0:0:retrieval_manifest:result', kind, payload
+            from ai_observations
+            where run_id = ${upgradeRunId}
+              and observation_key = 'single-retrieve-internal:0:0:retrieval_manifest:result'
+          `;
+          const wrongOwnerManifestBlock = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(wrongOwnerManifestBlock)).toContain(`ai_runs/${upgradeRunId}`);
+          expect(errorText(wrongOwnerManifestBlock)).toContain(
+            "retrieval manifest owner is outside selected route",
+          );
+          yield* sql`
+            delete from ai_observations
+            where run_id = ${upgradeRunId}
+              and observation_key = 'single-answer:0:0:retrieval_manifest:result'
+          `;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(payload, '{selectorRole}', '"memory"'::jsonb)
+            where run_id = ${upgradeRunId}
+              and observation_key = 'single-retrieve-internal:0:0:retrieval_manifest:result'
+          `;
+          const wrongRoleManifestBlock = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(wrongRoleManifestBlock)).toContain(`ai_runs/${upgradeRunId}`);
+          expect(errorText(wrongRoleManifestBlock)).toContain(
+            "retrieval manifest selector role does not match its owner",
+          );
+          yield* sql`
+            update ai_observations
+            set payload = ${sql.json(internalManifestPayload)}
+            where run_id = ${upgradeRunId}
+              and observation_key = 'single-retrieve-internal:0:0:retrieval_manifest:result'
+          `;
+          const [internalManifest] = yield* sql<{ readonly id: string }>`
+            select id::text as id
+            from ai_observations
+            where run_id = ${upgradeRunId}
+              and observation_key = 'single-retrieve-internal:0:0:retrieval_manifest:result'
+          `;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              payload,
+              '{references,0,publisherExtractionId}',
+              to_jsonb(${crypto.randomUUID()}::text),
+              true
+            )
+            where id = ${internalManifest?.id}::uuid
+          `;
+          const wrongSelectorExtraction = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(wrongSelectorExtraction)).toContain(
+            `ai_observations/${internalManifest?.id}/1`,
+          );
+          expect(errorText(wrongSelectorExtraction)).toContain(
+            "terminal selector reference lacks its exact selector-owned exposure and provider proof coordinate",
+          );
+          const selectorExtractionFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'assistant_message_sources' and column_name = 'version_id') as "finalColumns"
+          `;
+          expect(selectorExtractionFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`
+            update ai_observations
+            set payload = ${sql.json(internalManifestPayload)}
+            where id = ${internalManifest?.id}::uuid
+          `;
+          yield* sql`
+            delete from ai_run_events
+            where run_id = ${upgradeRunId} and emission_key = 'context_ready'
+          `;
+          const terminalEventsBlock = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(terminalEventsBlock)).toContain(`ai_runs/${upgradeRunId}`);
+          expect(errorText(terminalEventsBlock)).toContain(
+            "successful terminal event order or cardinality is incomplete",
+          );
+          yield* sql`
+            insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+            values (
+              ${upgradeRunId}, 2, ${sql.json({
+                type: "context_ready",
+                mode: "single",
+                reductionRan: true,
+                sourcesRead: [
+                  {
+                    sourceKey: upgradeSourceKey,
+                    label: "Retained publisher document",
+                    tokenCount: 1,
+                    topicIds: [],
+                    kind: "document",
+                    sourceName: "Upgrade publisher",
+                    issueTitle: "0063 retained issue",
+                    documentTitle: "0063 retained document",
+                    url: `/v1/issues/${issueId}/documents/${documentId}/content`,
+                    publishedAt: "2026-07-01T00:00:00.000Z",
+                    ranges: reducedRanges,
+                  },
+                ],
+                consumers: [
+                  {
+                    consumer: "direct",
+                    inputTokens: 1,
+                    requestedOutputTokens: 1,
+                    usableInputTokens: 1,
+                  },
+                ],
+              })}, 'single-answer', 'context_ready')
+          `;
+          yield* sql`
+            update ai_run_events
+            set seq = -1
+            where run_id = ${upgradeRunId}
+              and emission_key = 'terminal'
+          `;
+          const outOfOrderTerminal = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(outOfOrderTerminal)).toContain(`ai_runs/${upgradeRunId}`);
+          expect(errorText(outOfOrderTerminal)).toContain(
+            "successful terminal event order or cardinality is incomplete",
+          );
+          yield* sql`
+            update ai_run_events
+            set seq = 12
+            where run_id = ${upgradeRunId}
+              and emission_key = 'terminal'
+          `;
+          yield* sql`
+            delete from ai_run_usage
+            where run_id = ${upgradeRunId} and task_id = 'single-answer'
+          `;
+          const measurementUsageBlock = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(measurementUsageBlock)).toContain(`ai_runs/${upgradeRunId}`);
+          expect(errorText(measurementUsageBlock)).toContain(
+            "request usage event has no exact provider usage owner",
+          );
+          yield* sql`
+            insert into ai_run_usage (
+              run_id, task_id, loop_iteration, attempt, provider_request_index,
+              agent_role, model_id, provider_service_id, input_tokens, output_tokens,
+              cached_tokens, reasoning_tokens, total_tokens, stop_reason
+            ) values (
+              ${upgradeRunId}, 'single-answer', 0, 0, 1, 'direct_answer', 'glm-5-turbo',
+              'deterministic_test', 1, 1, 0, 0, 2, 'stop'
+            )
+          `;
+          const invalidProvenance = {};
+          yield* sql`alter table assistant_message_sources disable trigger user`;
+          yield* sql`
+            update assistant_message_sources
+            set public_provenance = ${sql.json(invalidProvenance)},
+                source_identity_digest = assistant_message_source_identity_digest(
+                  assistant_message_id, source_key, kind, locator,
+                  document_version_id, publisher_document_version_id,
+                  message_id, memory_revision_id, display_label, ${sql.json(invalidProvenance)}
+                )
+            where assistant_message_id = ${upgradeAssistantMessageId}
+              and source_key = ${upgradeSourceKey}
+          `;
+          yield* sql`alter table assistant_message_sources enable trigger user`;
+          const provenanceBlock = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(provenanceBlock._tag).toBe("Failure");
+          expect(errorText(provenanceBlock)).toContain(
+            `assistant_message_sources/${upgradeAssistantMessageId}/${upgradeSourceKey}`,
+          );
+          expect(errorText(provenanceBlock)).toContain(
+            "public provenance is not a closed canonical record",
+          );
+          const helpersAfterProvenanceBlock = yield* sql<{
+            readonly count: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (
+                select count(*)::int
+                from pg_proc
+                where pronamespace = 'public'::regnamespace
+                  and proname in (
+                    'brief_ai_safe_bigint', 'brief_ai_utf16_length', 'brief_ai_legacy_json_key',
+                    'brief_ai_valid_restricted_context_ledger', 'brief_ai_valid_terminal_usage_coordinate',
+                    'brief_ai_normalize_ranges'
+                  )
+              ) as count,
+              (
+                select count(*)::int
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'assistant_message_sources'
+                  and column_name = 'version_id'
+              ) as "finalColumns"
+          `;
+          expect(helpersAfterProvenanceBlock[0]?.count).toBe(0);
+          expect(helpersAfterProvenanceBlock[0]?.finalColumns).toBe(0);
+          const validProvenance = {
+            sourceName: "Upgrade publisher",
+            issueTitle: "0063 retained issue",
+            documentTitle: "0063 retained document",
+            citationUrl: `/v1/issues/${issueId}/documents/${documentId}/content`,
+            publishedAt: "2026-07-01T00:00:00.000Z",
+          };
+          yield* sql`alter table assistant_message_sources disable trigger user`;
+          yield* sql`
+            update assistant_message_sources
+            set public_provenance = ${sql.json(validProvenance)},
+                source_identity_digest = assistant_message_source_identity_digest(
+                  assistant_message_id, source_key, kind, locator,
+                  document_version_id, publisher_document_version_id,
+                  message_id, memory_revision_id, display_label, ${sql.json(validProvenance)}
+                )
+            where assistant_message_id = ${upgradeAssistantMessageId}
+              and source_key = ${upgradeSourceKey}
+          `;
+          yield* sql`alter table assistant_message_sources enable trigger user`;
+          // The second run sees only canonical version_id/content_hash
+          // exposure columns and must still accept the populated ledger.
+          yield* sql.unsafe(migration).raw;
+        }),
+      );
+      const binding = await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{
+            readonly extractionId: string;
+            readonly versionId: string;
+            readonly sourceKey: string;
+            readonly locatorExtractionId: string;
+          }>`
+            select
+              versions.publisher_extraction_id::text as "extractionId",
+              versions.id::text as "versionId",
+              sources.source_key as "sourceKey",
+              sources.locator->>'publisherExtractionId' as "locatorExtractionId"
+            from brief_document_versions versions
+            join assistant_message_sources sources
+              on sources.version_id = versions.id::text
+            where versions.id = ${versionId}
+          `;
+        }),
+      );
+      expect(binding).toEqual([
+        {
+          extractionId,
+          versionId,
+          sourceKey: `k_cn_${upgradeNonce.toString("base64url")}_1`,
+          locatorExtractionId: extractionId,
+        },
+      ]);
+    } finally {
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+          yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
+        }),
+      );
+    }
+  }, 120_000);
+
+  it(
+    "accepts canonical provenance for every retained source kind and blocks one-field mutations",
+    { timeout: 120_000 },
+    async () => {
+      const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+      const databaseName = `brief_migrations_provenance_${process.pid}_${suffix}`;
+      const databaseUrl = databaseUrlForName(databaseName);
+      const ids = {
+        user: `provenance-user-${suffix}`,
+        company: crypto.randomUUID(),
+        chat: crypto.randomUUID(),
+        userMessage: crypto.randomUUID(),
+        assistantMessage: crypto.randomUUID(),
+        run: crypto.randomUUID(),
+        memory: crypto.randomUUID(),
+        memoryRevision: crypto.randomUUID(),
+        publicSource: `provenance-source-${suffix}`,
+        publicDocument: `provenance-document-${suffix}`,
+        rawArtifact: crypto.randomUUID(),
+      };
+      const legacyNamespaceBytes = Buffer.from(`provenance-${suffix}`).subarray(0, 16);
+      const citationNamespace = legacyNamespaceBytes.toString("base64url");
+      const sourceKeys = {
+        chat: `k_${citationNamespace}_1`,
+        memory: `k_${citationNamespace}_2`,
+        web: `k_${citationNamespace}_3`,
+        document: `k_${citationNamespace}_4`,
+      };
+      const publicUrl = "https://example.test/provenance-document";
+      const webUrl = "https://example.test/provenance-web";
+      const publicText = "A public document retained for provenance checks. ".repeat(3);
+      const webQuote = "A web quotation retained for provenance checks.";
+      const webQuoteHash = createHash("sha256").update(webQuote).digest("base64url");
+      const validWebLocator = {
+        kind: "web",
+        url: webUrl,
+        title: "Provenance web page",
+        domain: "example.test",
+        quote: webQuote,
+        quoteHash: webQuoteHash,
+        capturedAt: "2026-07-01T00:00:00.000Z",
+      } as const;
+      const validProvenance = {
+        chat: {},
+        memory: {},
+        web: { citationUrl: webUrl },
+        document: { documentTitle: "Public provenance document", citationUrl: publicUrl },
+      } as const;
+      const nonCanonicalWebUrl = "https://example.test";
+      const invalidWebLocator = { ...validWebLocator, url: nonCanonicalWebUrl };
+      const invalidWebProvenance = { citationUrl: nonCanonicalWebUrl };
+      const nonCanonicalPublicUrl = "https://example.test";
+      const invalidPublicProvenance = {
+        documentTitle: "Public provenance document",
+        citationUrl: nonCanonicalPublicUrl,
+      };
+
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`);
+        }),
+      );
+
+      try {
+        await runDb(
+          databaseUrl,
+          applyMigrationsThrough("0063_immutable_document_exposure_evidence.sql"),
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into platform_users (id, primary_email, display_name, clerk_user_id)
+              values (${ids.user}, ${`${ids.user}@example.test`}, 'Provenance user', ${`clerk-${ids.user}`})
+            `;
+            yield* sql`
+              insert into client_companies (id, name) values (${ids.company}, 'Provenance company')
+            `;
+            yield* sql`
+              insert into client_company_memberships (company_id, user_id, role)
+              values (${ids.company}, ${ids.user}, 'admin')
+            `;
+            yield* sql`
+              insert into chats (id, user_id, company_id, memory_mode)
+              values (${ids.chat}, ${ids.user}, ${ids.company}, 'disabled')
+            `;
+            yield* sql`
+              insert into chat_messages (id, chat_id, author, content)
+              values (${ids.userMessage}, ${ids.chat}, 'user', 'Provenance fixture')
+            `;
+            yield* sql`
+              insert into ai_runs (
+                id, chat_id, initiating_user_id, user_message_id, locale, market,
+                citation_nonce, effective_web_policy
+              ) values (
+                ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
+                decode(${legacyNamespaceBytes.toString("base64")}, 'base64'),
+                ${sql.json({ enabled: true, reason: null, allowlistActive: false })}
+              )
+            `;
+            yield* sql`
+              insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+              values
+                (${ids.run}, 1, ${sql.json({ type: "run_started" })}, null, 'run_started'),
+                (${ids.run}, 2, ${sql.json({
+                  type: "usage",
+                  scope: "run",
+                  model: {
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    cachedTokens: 0,
+                    reasoningTokens: 0,
+                    totalTokens: 0,
+                    requestCount: 0,
+                  },
+                  web: { searchCount: 0, fetchCount: 0, responseBytes: 0, billedUnits: 0 },
+                })}, 'failure-handler', 'usage:run'),
+                (${ids.run}, 3, ${sql.json({ type: "error", code: "fixture_failure", retryable: false })}, 'failure-handler', 'terminal')
+            `;
+            yield* sql`
+              insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id)
+              values (
+                ${ids.assistantMessage}, ${ids.chat}, 'assistant',
+                ${`Answer [[cite:${sourceKeys.chat}]] [[cite:${sourceKeys.memory}]] [[cite:${sourceKeys.web}]] [[cite:${sourceKeys.document}]]`},
+                ${ids.run}
+              )
+            `;
+            yield* sql`update ai_runs set assistant_message_id = ${ids.assistantMessage} where id = ${ids.run}`;
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`
+                  insert into user_memories (id, user_id, kind, content, head_revision_id)
+                  values (
+                    ${ids.memory}, ${ids.user}, 'preference', 'Retain this provenance fixture', ${ids.memoryRevision}
+                  )
+                `;
+                yield* sql`
+                  insert into user_memory_revisions (
+                    id, memory_id, action, state_before, state_after, run_id
+                  ) values (
+                    ${ids.memoryRevision}, ${ids.memory}, 'create', null,
+                    ${sql.json({ kind: "preference", content: "Retain this provenance fixture", deleted: false })},
+                    null
+                  )
+                `;
+              }),
+            );
+            yield* sql`
+              insert into public_sources (
+                source_id, display_name, publisher_name, description,
+                ingestion_method, discovery_url, average_chars_per_item
+              ) values (
+                ${ids.publicSource}, 'Provenance source', 'Provenance publisher',
+                'Migration provenance fixture', 'rss', ${publicUrl}, 1000
+              )
+            `;
+            yield* sql`
+              insert into public_source_raw_artifacts (
+                id, source_id, canonical_url, fetched_at, media_type, body, body_hash
+              ) values (
+                ${ids.rawArtifact}, ${ids.publicSource}, ${publicUrl}, now(), 'text/html',
+                ${`<main>${publicText}</main>`},
+                encode(digest(convert_to(${`<main>${publicText}</main>`}, 'UTF8'), 'sha256'), 'hex')
+              )
+            `;
+            yield* sql`
+              insert into public_source_documents (
+                document_id, source_id, canonical_url, title, discovered_at, fetched_at,
+                language, document_type, text, text_char_count, content_hash, raw_artifact_id
+              ) values (
+                ${ids.publicDocument}, ${ids.publicSource}, ${publicUrl}, 'Public provenance document',
+                now(), now(), 'en', 'html', ${publicText}, ${publicText.length},
+                encode(digest(convert_to(${publicText}, 'UTF8'), 'sha256'), 'hex'), ${ids.rawArtifact}
+              )
+            `;
+            yield* sql`
+              insert into assistant_message_sources (
+                assistant_message_id, source_key, kind, locator,
+                document_version_id, message_id, memory_revision_id, display_label, public_provenance
+              ) values
+                (
+                  ${ids.assistantMessage}, ${sourceKeys.chat}, 'chat_message',
+                  ${sql.json({ kind: "chat_message", messageId: ids.userMessage })},
+                  null, ${ids.userMessage}, null, 'Chat provenance', ${sql.json(validProvenance.chat)}
+                ),
+                (
+                  ${ids.assistantMessage}, ${sourceKeys.memory}, 'memory',
+                  ${sql.json({ kind: "memory", memoryId: ids.memory, memoryRevisionId: ids.memoryRevision })},
+                  null, null, ${ids.memoryRevision}, 'Memory provenance', ${sql.json(validProvenance.memory)}
+                ),
+                (
+                  ${ids.assistantMessage}, ${sourceKeys.web}, 'web',
+                  ${sql.json(validWebLocator)},
+                  null, null, null, 'Web provenance', ${sql.json(validProvenance.web)}
+                ),
+                (
+                  ${ids.assistantMessage}, ${sourceKeys.document}, 'document',
+                  ${sql.json({
+                    kind: "document",
+                    sourceId: `public:${ids.publicSource}`,
+                    documentId: ids.publicDocument,
+                    versionId: ids.publicDocument,
+                    contentHash: createHash("sha256").update(publicText).digest("hex"),
+                    ranges: [{ charStart: 0, charEnd: publicText.length }],
+                  })},
+                  ${ids.publicDocument}, null, null, 'Public provenance document', ${sql.json(validProvenance.document)}
+                )
+            `;
+            yield* sql`
+            insert into assistant_message_source_uses (
+                assistant_message_id, source_key, consumer_task_id, topic_id,
+                rendered_token_count, context_order, ranges
+              ) values
+                (${ids.assistantMessage}, ${sourceKeys.chat}, 'topic-t1-answer', 't1', 0, 0, '[]'::jsonb),
+                (${ids.assistantMessage}, ${sourceKeys.memory}, 'topic-t1-answer', 't1', 0, 1, '[]'::jsonb),
+                (${ids.assistantMessage}, ${sourceKeys.web}, 'topic-t1-answer', 't1', 0, 2, '[]'::jsonb),
+                (${ids.assistantMessage}, ${sourceKeys.document}, 'topic-t1-answer', 't1', 0, 3,
+                  ${JSON.stringify([{ charStart: 0, charEnd: publicText.length }])}::jsonb)
+            `;
+          }),
+        );
+
+        const migration = await Bun.file(
+          new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+        ).text();
+        const invalidCases = [
+          { sourceKey: sourceKeys.chat, provenance: { documentTitle: "forbidden" } },
+          {
+            sourceKey: sourceKeys.memory,
+            provenance: { citationUrl: "https://example.test/forbidden" },
+          },
+          {
+            sourceKey: sourceKeys.web,
+            provenance: { citationUrl: "https://example.test/forbidden" },
+          },
+          {
+            sourceKey: sourceKeys.web,
+            provenance: { citationUrl: webUrl, documentTitle: "forbidden" },
+          },
+          {
+            sourceKey: sourceKeys.document,
+            provenance: {
+              documentTitle: "Public provenance document",
+              citationUrl: "https://example.test/forbidden",
+            },
+          },
+          {
+            sourceKey: sourceKeys.document,
+            provenance: {
+              documentTitle: "Public provenance document",
+              citationUrl: publicUrl,
+              unknownField: "forbidden",
+            },
+          },
+        ];
+        const validBySourceKey = new Map<string, object>([
+          [sourceKeys.chat, validProvenance.chat],
+          [sourceKeys.memory, validProvenance.memory],
+          [sourceKeys.web, validProvenance.web],
+          [sourceKeys.document, validProvenance.document],
+        ]);
+        const sourceKinds = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly sourceKey: string; readonly kind: string }>`
+              select source_key as "sourceKey", kind
+              from assistant_message_sources
+              where assistant_message_id = ${ids.assistantMessage}
+              order by source_key
+            `;
+          }),
+        );
+        expect(sourceKinds).toEqual(
+          [
+            { sourceKey: sourceKeys.chat, kind: "chat_message" },
+            { sourceKey: sourceKeys.memory, kind: "memory" },
+            { sourceKey: sourceKeys.web, kind: "web" },
+            { sourceKey: sourceKeys.document, kind: "document" },
+          ].sort((left, right) => left.sourceKey.localeCompare(right.sourceKey)),
+        );
+        const sourceUseRows = [
+          { sourceKey: sourceKeys.chat, contextOrder: 0, ranges: [] },
+          { sourceKey: sourceKeys.memory, contextOrder: 1, ranges: [] },
+          { sourceKey: sourceKeys.web, contextOrder: 2, ranges: [] },
+          {
+            sourceKey: sourceKeys.document,
+            contextOrder: 3,
+            ranges: [{ charStart: 0, charEnd: publicText.length }],
+          },
+        ] as const;
+        for (const sourceUse of sourceUseRows) {
+          await runDb(
+            databaseUrl,
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              yield* sql`alter table assistant_message_source_uses disable trigger user`;
+              yield* sql`
+                delete from assistant_message_source_uses
+                where assistant_message_id = ${ids.assistantMessage}
+                  and source_key = ${sourceUse.sourceKey}
+              `;
+              yield* sql`alter table assistant_message_source_uses enable trigger user`;
+            }),
+          );
+          const blocked = await runDb(
+            databaseUrl,
+            Effect.exit(
+              Effect.gen(function* () {
+                const sql = yield* PgClient.PgClient;
+                return yield* sql.unsafe(migration).raw;
+              }),
+            ),
+          );
+          expect(blocked._tag).toBe("Failure");
+          expect(errorText(blocked)).toContain(
+            `assistant_message_sources/${ids.assistantMessage}/${sourceUse.sourceKey}`,
+          );
+          expect(errorText(blocked)).toContain("source has no canonical answer use");
+          const fenced = await runDb(
+            databaseUrl,
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              return yield* sql<{ readonly helpers: number; readonly finalColumn: number }>`
+                select
+                  (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace
+                    and proname = 'brief_ai_safe_bigint') as helpers,
+                  (select count(*)::int from information_schema.columns
+                    where table_schema = 'public' and table_name = 'assistant_message_sources'
+                      and column_name = 'version_id') as "finalColumn"
+              `;
+            }),
+          );
+          expect(fenced[0]).toEqual({ helpers: 0, finalColumn: 0 });
+          await runDb(
+            databaseUrl,
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              yield* sql`
+                insert into assistant_message_source_uses (
+                  assistant_message_id, source_key, consumer_task_id, topic_id,
+                  rendered_token_count, context_order, ranges
+                ) values (
+                  ${ids.assistantMessage}, ${sourceUse.sourceKey}, 'topic-t1-answer', 't1',
+                  0, ${sourceUse.contextOrder}, ${JSON.stringify(sourceUse.ranges)}::jsonb
+                )
+              `;
+            }),
+          );
+        }
+        for (const invalidCase of invalidCases) {
+          await runDb(
+            databaseUrl,
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              yield* sql`alter table assistant_message_sources disable trigger user`;
+              yield* sql`
+                update assistant_message_sources
+                set public_provenance = ${sql.json(invalidCase.provenance)},
+                    source_identity_digest = assistant_message_source_identity_digest(
+                      assistant_message_id, source_key, kind, locator,
+                      document_version_id, publisher_document_version_id,
+                      message_id, memory_revision_id, display_label, ${sql.json(invalidCase.provenance)}
+                    )
+                where assistant_message_id = ${ids.assistantMessage} and source_key = ${invalidCase.sourceKey}
+              `;
+              yield* sql`alter table assistant_message_sources enable trigger user`;
+            }),
+          );
+          const blocked = await runDb(
+            databaseUrl,
+            Effect.exit(
+              Effect.gen(function* () {
+                const sql = yield* PgClient.PgClient;
+                return yield* sql.unsafe(migration).raw;
+              }),
+            ),
+          );
+          expect(blocked._tag).toBe("Failure");
+          expect(errorText(blocked)).toContain(
+            `assistant_message_sources/${ids.assistantMessage}/${invalidCase.sourceKey}`,
+          );
+          expect(errorText(blocked)).toContain("public provenance");
+          const fenced = await runDb(
+            databaseUrl,
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              return yield* sql<{
+                readonly helperCount: number;
+                readonly finalColumnCount: number;
+              }>`
+                select
+                  (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace
+                    and proname = 'brief_ai_safe_bigint') as "helperCount",
+                  (select count(*)::int from information_schema.columns
+                    where table_schema = 'public' and table_name = 'assistant_message_sources'
+                      and column_name = 'version_id') as "finalColumnCount"
+              `;
+            }),
+          );
+          expect(fenced[0]).toEqual({ helperCount: 0, finalColumnCount: 0 });
+          await runDb(
+            databaseUrl,
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              yield* sql`alter table assistant_message_sources disable trigger user`;
+              for (const [sourceKey, provenance] of validBySourceKey) {
+                yield* sql`
+                  update assistant_message_sources
+                  set public_provenance = ${sql.json(provenance)},
+                      source_identity_digest = assistant_message_source_identity_digest(
+                        assistant_message_id, source_key, kind, locator,
+                        document_version_id, publisher_document_version_id,
+                        message_id, memory_revision_id, display_label, ${sql.json(provenance)}
+                      )
+                  where assistant_message_id = ${ids.assistantMessage} and source_key = ${sourceKey}
+                `;
+              }
+              yield* sql`alter table assistant_message_sources enable trigger user`;
+            }),
+          );
+          const restoredState = await runDb(
+            databaseUrl,
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              return yield* sql<{ readonly webProvenance: unknown }>`
+                select public_provenance as "webProvenance"
+                from assistant_message_sources
+                where assistant_message_id = ${ids.assistantMessage} and source_key = ${sourceKeys.web}
+              `;
+            }),
+          );
+          expect(restoredState[0]?.webProvenance).toEqual(validProvenance.web);
+        }
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`alter table assistant_message_sources disable trigger user`;
+            yield* sql`
+              update assistant_message_sources
+              set locator = ${sql.json(invalidWebLocator)},
+                  public_provenance = ${sql.json(invalidWebProvenance)},
+                  source_identity_digest = assistant_message_source_identity_digest(
+                    assistant_message_id, source_key, kind, ${sql.json(invalidWebLocator)},
+                    document_version_id, publisher_document_version_id,
+                    message_id, memory_revision_id, display_label, ${sql.json(invalidWebProvenance)}
+                  )
+              where assistant_message_id = ${ids.assistantMessage} and source_key = ${sourceKeys.web}
+            `;
+            yield* sql`alter table assistant_message_sources enable trigger user`;
+          }),
+        );
+        const nonCanonicalUrlBlocked = await runDb(
+          databaseUrl,
+          Effect.exit(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              return yield* sql.unsafe(migration).raw;
+            }),
+          ),
+        );
+        expect(nonCanonicalUrlBlocked._tag).toBe("Failure");
+        expect(errorText(nonCanonicalUrlBlocked)).toContain(
+          `assistant_message_sources/${ids.assistantMessage}/${sourceKeys.web}`,
+        );
+        expect(errorText(nonCanonicalUrlBlocked)).toContain("public provenance");
+        const nonCanonicalFenced = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{
+              readonly helperCount: number;
+              readonly finalColumnCount: number;
+            }>`
+              select
+                (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace
+                  and proname = 'brief_ai_safe_bigint') as "helperCount",
+                (select count(*)::int from information_schema.columns
+                  where table_schema = 'public' and table_name = 'assistant_message_sources'
+                    and column_name = 'version_id') as "finalColumnCount"
+            `;
+          }),
+        );
+        expect(nonCanonicalFenced[0]).toEqual({ helperCount: 0, finalColumnCount: 0 });
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`alter table assistant_message_sources disable trigger user`;
+            yield* sql`
+              update assistant_message_sources
+              set locator = ${sql.json(validWebLocator)},
+                  public_provenance = ${sql.json(validProvenance.web)},
+                  source_identity_digest = assistant_message_source_identity_digest(
+                    assistant_message_id, source_key, kind, ${sql.json(validWebLocator)},
+                    document_version_id, publisher_document_version_id,
+                    message_id, memory_revision_id, display_label, ${sql.json(validProvenance.web)}
+                  )
+              where assistant_message_id = ${ids.assistantMessage} and source_key = ${sourceKeys.web}
+            `;
+            yield* sql`alter table assistant_message_sources enable trigger user`;
+          }),
+        );
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`alter table public_source_documents disable trigger user`;
+            yield* sql`alter table public_source_raw_artifacts disable trigger user`;
+            yield* sql`
+              alter table public_source_documents
+              drop constraint public_source_documents_raw_source_url_fkey
+            `;
+            yield* sql`
+              update public_source_documents
+              set canonical_url = ${nonCanonicalPublicUrl}
+              where document_id = ${ids.publicDocument}
+            `;
+            yield* sql`
+              update public_source_raw_artifacts
+              set canonical_url = ${nonCanonicalPublicUrl}
+              where id = ${ids.rawArtifact}
+            `;
+            yield* sql`
+              alter table public_source_documents
+              add constraint public_source_documents_raw_source_url_fkey
+              foreign key (raw_artifact_id, source_id, canonical_url)
+              references public_source_raw_artifacts (id, source_id, canonical_url)
+            `;
+            yield* sql`alter table assistant_message_sources disable trigger user`;
+            yield* sql`
+              update assistant_message_sources
+              set public_provenance = ${sql.json(invalidPublicProvenance)},
+                  source_identity_digest = assistant_message_source_identity_digest(
+                    assistant_message_id, source_key, kind, locator,
+                    document_version_id, publisher_document_version_id,
+                    message_id, memory_revision_id, display_label, ${sql.json(invalidPublicProvenance)}
+                  )
+              where assistant_message_id = ${ids.assistantMessage} and source_key = ${sourceKeys.document}
+            `;
+            yield* sql`alter table assistant_message_sources enable trigger user`;
+            yield* sql`alter table public_source_raw_artifacts enable trigger user`;
+            yield* sql`alter table public_source_documents enable trigger user`;
+          }),
+        );
+        const nonCanonicalPublicBlocked = await runDb(
+          databaseUrl,
+          Effect.exit(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              return yield* sql.unsafe(migration).raw;
+            }),
+          ),
+        );
+        expect(nonCanonicalPublicBlocked._tag).toBe("Failure");
+        expect(errorText(nonCanonicalPublicBlocked)).toContain(
+          `assistant_message_sources/${ids.assistantMessage}/${sourceKeys.document}`,
+        );
+        expect(errorText(nonCanonicalPublicBlocked)).toContain("public provenance");
+        const nonCanonicalPublicFenced = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{
+              readonly helperCount: number;
+              readonly finalColumnCount: number;
+            }>`
+              select
+                (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace
+                  and proname = 'brief_ai_safe_bigint') as "helperCount",
+                (select count(*)::int from information_schema.columns
+                  where table_schema = 'public' and table_name = 'assistant_message_sources'
+                    and column_name = 'version_id') as "finalColumnCount"
+            `;
+          }),
+        );
+        expect(nonCanonicalPublicFenced[0]).toEqual({ helperCount: 0, finalColumnCount: 0 });
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`alter table public_source_documents disable trigger user`;
+            yield* sql`alter table public_source_raw_artifacts disable trigger user`;
+            yield* sql`
+              alter table public_source_documents
+              drop constraint public_source_documents_raw_source_url_fkey
+            `;
+            yield* sql`
+              update public_source_raw_artifacts
+              set canonical_url = ${publicUrl}
+              where id = ${ids.rawArtifact}
+            `;
+            yield* sql`
+              update public_source_documents
+              set canonical_url = ${publicUrl}
+              where document_id = ${ids.publicDocument}
+            `;
+            yield* sql`
+              alter table public_source_documents
+              add constraint public_source_documents_raw_source_url_fkey
+              foreign key (raw_artifact_id, source_id, canonical_url)
+              references public_source_raw_artifacts (id, source_id, canonical_url)
+            `;
+            yield* sql`alter table assistant_message_sources disable trigger user`;
+            yield* sql`
+              update assistant_message_sources
+              set public_provenance = ${sql.json(validProvenance.document)},
+                  source_identity_digest = assistant_message_source_identity_digest(
+                    assistant_message_id, source_key, kind, locator,
+                    document_version_id, publisher_document_version_id,
+                    message_id, memory_revision_id, display_label, ${sql.json(validProvenance.document)}
+                  )
+              where assistant_message_id = ${ids.assistantMessage} and source_key = ${sourceKeys.document}
+            `;
+            yield* sql`alter table assistant_message_sources enable trigger user`;
+            yield* sql`alter table public_source_raw_artifacts enable trigger user`;
+            yield* sql`alter table public_source_documents enable trigger user`;
+            yield* sql`
+              update ai_runs
+              set failed_at = now(), error_code = 'failed_fixture', retryable = true
+              where id = ${ids.run}
+            `;
+          }),
+        );
+        const failedRetention = await runDb(
+          databaseUrl,
+          Effect.exit(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              yield* sql.unsafe(migration).raw;
+            }),
+          ),
+        );
+        expect(failedRetention._tag).toBe("Failure");
+        expect(errorText(failedRetention)).toContain(`ai_runs/${ids.run}`);
+        expect(errorText(failedRetention)).toContain(
+          "failed run retains an assistant message or source row",
+        );
+        const failedRetentionFence = await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly helpers: number; readonly finalColumn: number }>`
+              select
+                (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+                (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumn"
+            `;
+          }),
+        );
+        expect(failedRetentionFence).toEqual([{ helpers: 0, finalColumn: 0 }]);
+      } finally {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              select pg_terminate_backend(pid)
+              from pg_stat_activity
+              where datname = ${databaseName} and pid <> pg_backend_pid()
+            `;
+            yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
+          }),
+        );
+      }
+    },
+  );
+
+  it("converts a terminal 0063 answer with sparse ordinals and exact legacy text handling", async () => {
+    const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+    const databaseName = `brief_migrations_terminal_0063_${process.pid}_${suffix}`;
+    const databaseUrl = databaseUrlForName(databaseName);
+    const ids = {
+      user: `terminal-0063-user-${suffix}`,
+      company: crypto.randomUUID(),
+      chat: crypto.randomUUID(),
+      userMessage: crypto.randomUUID(),
+      run: crypto.randomUUID(),
+      assistantMessage: crypto.randomUUID(),
+      memory: crypto.randomUUID(),
+      revision: crypto.randomUUID(),
+      memory2: crypto.randomUUID(),
+      revision2: crypto.randomUUID(),
+      memory3: crypto.randomUUID(),
+      revision3: crypto.randomUUID(),
+      olderRevision: crypto.randomUUID(),
+      writeRevision: crypto.randomUUID(),
+      writeRevision2: crypto.randomUUID(),
+    };
+    const nonce = Buffer.from("terminal-0063-citation", "utf8").subarray(0, 16);
+    const webUrl = "https://example.test/terminal-web";
+    const webPageText = "A complete fetched page with a selected quotation and more context.";
+    const webQuote = "a selected quotation";
+    const webQuoteHash = createHash("sha256").update(webQuote).digest("base64url");
+    const webContentItemIdentity = `${webUrl}:${createHash("sha256")
+      .update(webPageText)
+      .digest("base64url")}`;
+    const webExposureStage = "web_fetch";
+    const webExposureBinding = {
+      messageIndex: 0,
+      orderedSourceDescriptor: webUrl,
+      serializedField: "messages[0].content",
+      sourceOrdinal: 0,
+    };
+    const webExposureProof = createHash("sha256")
+      .update(
+        JSON.stringify({
+          binding: webExposureBinding,
+          contentItemIdentity: webContentItemIdentity,
+          exposureStage: webExposureStage,
+          logicalSourceIdentity: webUrl,
+          sourceKind: "web",
+          visibleTokenCount: 2,
+        }),
+      )
+      .digest("hex");
+    const wrongWebContentItemIdentity = `${webUrl}:not-a-full-page-hash`;
+    const wrongWebExposureBinding = {
+      ...webExposureBinding,
+      orderedSourceDescriptor: `${webUrl}:wrong-page`,
+    };
+    const wrongWebExposureProof = createHash("sha256")
+      .update(
+        JSON.stringify({
+          binding: wrongWebExposureBinding,
+          contentItemIdentity: wrongWebContentItemIdentity,
+          exposureStage: webExposureStage,
+          logicalSourceIdentity: webUrl,
+          sourceKind: "web",
+          visibleTokenCount: 2,
+        }),
+      )
+      .digest("hex");
+    const webAttestationKey = `source_exposure_attestation:single-retrieve-web:0:0:0:${createHash(
+      "sha256",
+    )
+      .update(
+        JSON.stringify([
+          "web",
+          webUrl,
+          webContentItemIdentity,
+          webExposureStage,
+          2,
+          "d".repeat(64),
+          webExposureBinding,
+          null,
+        ]),
+      )
+      .digest("hex")}`;
+    const webReference = {
+      url: webUrl,
+      title: "Terminal fetched page",
+      domain: "example.test",
+      quote: webQuote,
+      publishedAt: "2026-07-01T00:00:00.000Z",
+      capturedAt: "2026-07-01T00:00:00.000Z",
+      purpose: "grounding",
+    };
+    const webCandidateId = `web:${webUrl}:${webQuoteHash}`;
+    const legacyNamespace = nonce.toString("base64url");
+    const oldKey1 = `k_${legacyNamespace}_1`;
+    const oldKey3 = `k_${legacyNamespace}_3`;
+    const unknownKey = `k_${legacyNamespace}_9`;
+    const exposureStage = "memory_selection";
+    const selectorExposureStage = "memory_tool_result";
+    const exposureBinding = {
+      messageIndex: 0,
+      orderedSourceDescriptor: `memory:${ids.memory}`,
+      serializedField: "messages[0].content",
+      sourceOrdinal: 0,
+    };
+    const exposureProof = createHash("sha256")
+      .update(
+        JSON.stringify({
+          binding: exposureBinding,
+          contentItemIdentity: ids.revision,
+          exposureStage,
+          logicalSourceIdentity: `memory:${ids.memory}`,
+          sourceKind: "memory",
+          visibleTokenCount: 2,
+        }),
+      )
+      .digest("hex");
+    const exposureProof2 = createHash("sha256")
+      .update(
+        JSON.stringify({
+          binding: {
+            ...exposureBinding,
+            sourceOrdinal: 1,
+            orderedSourceDescriptor: `memory:${ids.memory2}`,
+          },
+          contentItemIdentity: ids.revision2,
+          exposureStage,
+          logicalSourceIdentity: `memory:${ids.memory2}`,
+          sourceKind: "memory",
+          visibleTokenCount: 2,
+        }),
+      )
+      .digest("hex");
+    const selectorExposureBinding = {
+      messageIndex: 0,
+      orderedSourceDescriptor: `memory:${ids.memory}`,
+      serializedField: "messages[0].content",
+      sourceOrdinal: 0,
+    };
+    const selectorExposureBinding2 = {
+      ...selectorExposureBinding,
+      orderedSourceDescriptor: `memory:${ids.memory2}`,
+      sourceOrdinal: 1,
+    };
+    const selectorExposureBinding3 = {
+      ...selectorExposureBinding,
+      orderedSourceDescriptor: `memory:${ids.memory3}`,
+      sourceOrdinal: 2,
+    };
+    const selectorExposureProof = createHash("sha256")
+      .update(
+        JSON.stringify({
+          binding: selectorExposureBinding,
+          contentItemIdentity: ids.revision,
+          exposureStage: selectorExposureStage,
+          logicalSourceIdentity: `memory:${ids.memory}`,
+          sourceKind: "memory",
+          visibleTokenCount: 2,
+        }),
+      )
+      .digest("hex");
+    const selectorExposureProof2 = createHash("sha256")
+      .update(
+        JSON.stringify({
+          binding: selectorExposureBinding2,
+          contentItemIdentity: ids.revision2,
+          exposureStage: selectorExposureStage,
+          logicalSourceIdentity: `memory:${ids.memory2}`,
+          sourceKind: "memory",
+          visibleTokenCount: 2,
+        }),
+      )
+      .digest("hex");
+    const selectorExposureProof3 = createHash("sha256")
+      .update(
+        JSON.stringify({
+          binding: selectorExposureBinding3,
+          contentItemIdentity: ids.revision3,
+          exposureStage: selectorExposureStage,
+          logicalSourceIdentity: `memory:${ids.memory3}`,
+          sourceKind: "memory",
+          visibleTokenCount: 2,
+        }),
+      )
+      .digest("hex");
+    const selectorAttestationKey = `source_exposure_attestation:single-select-memories:0:0:0:${createHash(
+      "sha256",
+    )
+      .update(
+        JSON.stringify([
+          "memory",
+          `memory:${ids.memory}`,
+          ids.revision,
+          selectorExposureStage,
+          2,
+          "e".repeat(64),
+          selectorExposureBinding,
+          null,
+        ]),
+      )
+      .digest("hex")}`;
+    const selectorAttestationKey2 = `source_exposure_attestation:single-select-memories:0:0:0:${createHash(
+      "sha256",
+    )
+      .update(
+        JSON.stringify([
+          "memory",
+          `memory:${ids.memory2}`,
+          ids.revision2,
+          selectorExposureStage,
+          2,
+          "e".repeat(64),
+          selectorExposureBinding2,
+          null,
+        ]),
+      )
+      .digest("hex")}`;
+    const wrongOwnerSelectorAttestationKey2 = `source_exposure_attestation:single-answer:0:0:0:${createHash(
+      "sha256",
+    )
+      .update(
+        JSON.stringify([
+          "memory",
+          `memory:${ids.memory2}`,
+          ids.revision2,
+          selectorExposureStage,
+          2,
+          "a".repeat(64),
+          selectorExposureBinding2,
+          null,
+        ]),
+      )
+      .digest("hex")}`;
+    const selectorAttestationKey3 = `source_exposure_attestation:single-select-memories:0:0:0:${createHash(
+      "sha256",
+    )
+      .update(
+        JSON.stringify([
+          "memory",
+          `memory:${ids.memory3}`,
+          ids.revision3,
+          selectorExposureStage,
+          2,
+          "e".repeat(64),
+          selectorExposureBinding3,
+          null,
+        ]),
+      )
+      .digest("hex")}`;
+    const attestationKey = `source_exposure_attestation:single-answer:0:0:0:${createHash("sha256")
+      .update(
+        JSON.stringify([
+          "memory",
+          `memory:${ids.memory}`,
+          ids.revision,
+          exposureStage,
+          2,
+          "a".repeat(64),
+          exposureBinding,
+          null,
+        ]),
+      )
+      .digest("hex")}`;
+    const attestationKey2 = `source_exposure_attestation:single-answer:0:0:0:${createHash("sha256")
+      .update(
+        JSON.stringify([
+          "memory",
+          `memory:${ids.memory2}`,
+          ids.revision2,
+          exposureStage,
+          2,
+          "a".repeat(64),
+          {
+            ...exposureBinding,
+            sourceOrdinal: 1,
+            orderedSourceDescriptor: `memory:${ids.memory2}`,
+          },
+          null,
+        ]),
+      )
+      .digest("hex")}`;
+    const content = [
+      `Mapped [[cite:${oldKey1}]] and [[cite:${oldKey3}]].`,
+      `Unknown [[cite:${unknownKey}]]; prose ${oldKey1}; partial [[cite:${oldKey1}. then valid [[cite:${oldKey3}]]`,
+      `Mixed [[cite:${oldKey1},${unknownKey}]] and malformed [[cite:${oldKey1},]]`,
+      `Code:\n\`\`\`text\n[[cite:${oldKey1}]]\n\`\`\``,
+      `Tilde:\n~~~text\n[[cite:${oldKey3}]]\n~~~`,
+      `Indented:\n    [[cite:${oldKey1}]]`,
+      `HTML: <code>[[cite:${oldKey3}]]</code> <pre>[[cite:${oldKey1}]]</pre>`,
+      `Inline: \`code [[cite:${oldKey1}]]\`[[cite:${oldKey3}]]`,
+      `Adjacent \`code\`[[cite:${oldKey1}]]`,
+      `Multi: \`\`code [[cite:${oldKey1}]]\`\`[[cite:${oldKey3}]]`,
+      `Closing backslash: \`code\\\`[[cite:${oldKey1}]]\`[[cite:${oldKey3}]]`,
+      "Escaped: \\`literal [[cite:" + oldKey1 + "]] and [[cite:" + oldKey3 + "]]",
+      `Unmatched multi: \`\`literal [[cite:${oldKey1}]] then [[cite:${oldKey3}]]`,
+      `After code [[cite:${oldKey1}]]`,
+      `Unmatched single at end \`literal [[cite:${oldKey1}]] then [[cite:${oldKey3}]]`,
+    ].join("\n");
+
+    try {
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`);
+        }),
+      );
+      await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe("drop schema if exists public cascade");
+          yield* sql.unsafe("create schema public");
+        }),
+      );
+      await runDb(
+        databaseUrl,
+        applyMigrationsThrough("0063_immutable_document_exposure_evidence.sql"),
+      );
+      await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            insert into platform_users (id, primary_email, display_name, clerk_user_id)
+            values (${ids.user}, ${`${ids.user}@example.test`}, 'Terminal 0063 user', ${`clerk-${ids.user}`})
+          `;
+          yield* sql`
+            insert into client_companies (id, name) values (${ids.company}, 'Terminal 0063 company')
+          `;
+          yield* sql`
+            insert into client_company_memberships (company_id, user_id, role)
+            values (${ids.company}, ${ids.user}, 'admin')
+          `;
+          yield* sql`
+            insert into chats (id, user_id, company_id, memory_mode)
+            values (${ids.chat}, ${ids.user}, ${ids.company}, 'private_owner')
+          `;
+          yield* sql`
+            insert into chat_messages (id, chat_id, author, content)
+            values (${ids.userMessage}, ${ids.chat}, 'user', 'What was the saved fact?')
+          `;
+          yield* sql`
+            insert into ai_runs (
+              id, chat_id, initiating_user_id, user_message_id, locale, market,
+              citation_nonce, effective_web_policy, finished_at
+            ) values (
+              ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
+              decode(${nonce.toString("base64")}, 'base64'),
+              ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
+              now()
+            )
+          `;
+          yield* sql`
+            insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id)
+            values (${ids.assistantMessage}, ${ids.chat}, 'assistant', ${content}, ${ids.run})
+          `;
+          yield* sql`
+            update ai_runs set assistant_message_id = ${ids.assistantMessage} where id = ${ids.run}
+          `;
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`
+                insert into user_memories (
+                  id, user_id, kind, content, head_revision_id, deleted_at, provenance_only_at
+                ) values (${ids.memory}, ${ids.user}, 'fact', 'A saved fact', ${ids.revision}, null, null)
+              `;
+              yield* sql`
+                insert into user_memory_revisions (
+                  id, memory_id, action, state_before, state_after, run_id, created_at
+                ) values (
+                  ${ids.olderRevision}, ${ids.memory}, 'create', null,
+                  ${sql.json({ kind: "fact", content: "An older saved fact", deleted: false })},
+                  null, now() - interval '2 minutes'
+                )
+              `;
+              yield* sql`
+                insert into user_memory_revisions (
+                  id, memory_id, action, state_before, state_after, run_id, created_at
+                ) values (
+                  ${ids.revision}, ${ids.memory}, 'create', null,
+                  ${sql.json({ kind: "fact", content: "A saved fact", deleted: false })},
+                  null, now() - interval '1 minute'
+                )
+              `;
+            }),
+          );
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`
+                insert into user_memories (
+                  id, user_id, kind, content, head_revision_id, deleted_at, provenance_only_at
+                ) values (${ids.memory2}, ${ids.user}, 'fact', 'A second saved fact', ${ids.revision2}, null, null)
+              `;
+              yield* sql`
+                insert into user_memory_revisions (
+                  id, memory_id, action, state_before, state_after, run_id, created_at
+                ) values (
+                  ${ids.revision2}, ${ids.memory2}, 'create', null,
+                  ${sql.json({ kind: "fact", content: "A second saved fact", deleted: false })},
+                  null, now() - interval '1 minute'
+                )
+              `;
+            }),
+          );
+          yield* sql`
+            insert into user_memory_revisions (
+              id, memory_id, action, state_before, state_after, run_id, created_at
+            ) values (
+              ${ids.writeRevision}, ${ids.memory}, 'update',
+              ${sql.json({ kind: "fact", content: "A saved fact", deleted: false })},
+              ${sql.json({ kind: "fact", content: "A saved fact updated", deleted: false })},
+              ${ids.run}, now()
+            )
+          `;
+          yield* sql`
+            update user_memories
+            set content = 'A saved fact updated',
+                head_revision_id = ${ids.writeRevision},
+                source_message_id = ${ids.userMessage}
+            where id = ${ids.memory}
+          `;
+          yield* sql`
+            insert into user_memory_revisions (
+              id, memory_id, action, state_before, state_after, run_id, created_at
+            ) values (
+              ${ids.writeRevision2}, ${ids.memory2}, 'update',
+              ${sql.json({ kind: "fact", content: "A second saved fact", deleted: false })},
+              ${sql.json({ kind: "fact", content: "A second saved fact updated", deleted: false })},
+              ${ids.run}, now()
+            )
+          `;
+          yield* sql`
+            update user_memories
+            set content = 'A second saved fact updated',
+                head_revision_id = ${ids.writeRevision2},
+                source_message_id = ${ids.userMessage}
+            where id = ${ids.memory2}
+          `;
+          for (const [sourceKey, ordinal] of [
+            [oldKey1, 1, ids.memory, ids.revision],
+            [oldKey3, 3, ids.memory2, ids.revision2],
+          ] as const) {
+            yield* sql`
+              insert into assistant_message_sources (
+                assistant_message_id, source_key, kind, locator, memory_revision_id,
+                display_label, public_provenance
+              ) values (
+                ${ids.assistantMessage}, ${sourceKey}, 'memory',
+                ${sql.json({
+                  kind: "memory",
+                  memoryId: ordinal === 1 ? ids.memory : ids.memory2,
+                  memoryRevisionId: ordinal === 1 ? ids.revision : ids.revision2,
+                })}, ${ordinal === 1 ? ids.revision : ids.revision2}, 'Saved fact', '{}'::jsonb
+              )
+            `;
+            yield* sql`
+              insert into assistant_message_source_uses (
+                assistant_message_id, source_key, consumer_task_id,
+                rendered_token_count, context_order, ranges
+              ) values (${ids.assistantMessage}, ${sourceKey}, 'single-answer', 1, ${ordinal === 1 ? 0 : 1}, '[]'::jsonb)
+            `;
+          }
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${ids.run}, ${ids.chat}, 'single-answer', 0, 0,
+              'provider_request_measurement:single-answer:0:0:0',
+              'provider_request_measurement',
+              ${sql.json({
+                agentRole: "direct_answer",
+                modelId: "glm-5-turbo",
+                requestSha256Hex: "a".repeat(64),
+                sourceExposureProofSha256Hexes: [exposureProof, exposureProof2].sort(),
+                sourceExposureProofBindings: [
+                  {
+                    providerSerializationProofSha256Hex: exposureProof,
+                    providerSerializationProofBinding: exposureBinding,
+                  },
+                  {
+                    providerSerializationProofSha256Hex: exposureProof2,
+                    providerSerializationProofBinding: {
+                      ...exposureBinding,
+                      sourceOrdinal: 1,
+                      orderedSourceDescriptor: `memory:${ids.memory2}`,
+                    },
+                  },
+                ].sort((left, right) =>
+                  left.providerSerializationProofSha256Hex.localeCompare(
+                    right.providerSerializationProofSha256Hex,
+                  ),
+                ),
+                providerRequestIndex: 0,
+                inputTokens: 2,
+                requestedOutputTokens: 1,
+                usableInputTokens: 2,
+                contextWindow: 100,
+                passed: true,
+              })}
+            )
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values
+              (
+                ${ids.run}, ${ids.chat}, 'plan-turn', 0, 0,
+                'provider_request_measurement:plan-turn:0:0:0',
+                'provider_request_measurement',
+                ${sql.json({
+                  agentRole: "plan_turn",
+                  modelId: "glm-5-turbo",
+                  requestSha256Hex: "b".repeat(64),
+                  sourceExposureProofSha256Hexes: [],
+                  providerRequestIndex: 0,
+                  inputTokens: 1,
+                  requestedOutputTokens: 1,
+                  usableInputTokens: 1,
+                  contextWindow: 100,
+                  passed: true,
+                })}
+              ),
+              (
+                ${ids.run}, ${ids.chat}, 'single-select-memories', 0, 0,
+                'provider_request_measurement:single-select-memories:0:0:0',
+                'provider_request_measurement',
+                ${sql.json({
+                  agentRole: "memory_selector",
+                  modelId: "glm-5-turbo",
+                  requestSha256Hex: "e".repeat(64),
+                  sourceExposureProofSha256Hexes: [
+                    selectorExposureProof,
+                    selectorExposureProof2,
+                    selectorExposureProof3,
+                  ].sort(),
+                  sourceExposureProofBindings: [
+                    {
+                      providerSerializationProofSha256Hex: selectorExposureProof,
+                      providerSerializationProofBinding: selectorExposureBinding,
+                    },
+                    {
+                      providerSerializationProofSha256Hex: selectorExposureProof2,
+                      providerSerializationProofBinding: selectorExposureBinding2,
+                    },
+                    {
+                      providerSerializationProofSha256Hex: selectorExposureProof3,
+                      providerSerializationProofBinding: selectorExposureBinding3,
+                    },
+                  ].sort((left, right) =>
+                    left.providerSerializationProofSha256Hex.localeCompare(
+                      right.providerSerializationProofSha256Hex,
+                    ),
+                  ),
+                  providerRequestIndex: 0,
+                  inputTokens: 1,
+                  requestedOutputTokens: 1,
+                  usableInputTokens: 1,
+                  contextWindow: 100,
+                  passed: true,
+                })}
+              ),
+              (
+                ${ids.run}, ${ids.chat}, 'memory-extract', 0, 0,
+                'provider_request_measurement:memory-extract:0:0:0',
+                'provider_request_measurement',
+                ${sql.json({
+                  agentRole: "memory_extractor",
+                  modelId: "glm-5-turbo",
+                  requestSha256Hex: "c".repeat(64),
+                  sourceExposureProofSha256Hexes: [],
+                  providerRequestIndex: 0,
+                  inputTokens: 1,
+                  requestedOutputTokens: 1,
+                  usableInputTokens: 1,
+                  contextWindow: 100,
+                  passed: true,
+                })}
+              ),
+              (
+                ${ids.run}, ${ids.chat}, 'single-retrieve-internal', 0, 0,
+                'provider_request_measurement:single-retrieve-internal:0:0:0',
+                'provider_request_measurement',
+                ${sql.json({
+                  agentRole: "internal_retrieval",
+                  modelId: "glm-5-turbo",
+                  requestSha256Hex: "f".repeat(64),
+                  sourceExposureProofSha256Hexes: [],
+                  providerRequestIndex: 0,
+                  inputTokens: 1,
+                  requestedOutputTokens: 1,
+                  usableInputTokens: 1,
+                  contextWindow: 100,
+                  passed: true,
+                })}
+              )
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${ids.run}, ${ids.chat}, 'single-retrieve-internal', 0, 0,
+              'candidate_rejected:single-retrieve-internal:0:0:0:0', 'candidate_rejected',
+              ${sql.json({ candidateId: oldKey1, reason: "missing" })}
+            )
+          `;
+          yield* sql`
+            insert into ai_run_usage (
+              run_id, task_id, loop_iteration, attempt, provider_request_index,
+              agent_role, model_id, provider_service_id, input_tokens, output_tokens,
+              cached_tokens, reasoning_tokens, total_tokens, stop_reason
+            ) values (
+              ${ids.run}, 'single-answer', 0, 0, 0,
+              'direct_answer', 'glm-5-turbo', 'deterministic_test', 2, 1, 0, 0, 3, 'stop'
+            ), (
+              ${ids.run}, 'single-select-memories', 0, 0, 0,
+              'memory_selector', 'glm-5-turbo', 'deterministic_test', 1, 1, 0, 0, 2, 'stop'
+            ), (
+              ${ids.run}, 'plan-turn', 0, 0, 0,
+              'plan_turn', 'glm-5-turbo', 'deterministic_test', 1, 1, 0, 0, 2, 'stop'
+            ), (
+              ${ids.run}, 'memory-extract', 0, 0, 0,
+              'memory_extractor', 'glm-5-turbo', 'deterministic_test', 1, 1, 0, 0, 2, 'stop'
+            ), (
+              ${ids.run}, 'single-retrieve-internal', 0, 0, 0,
+              'internal_retrieval', 'glm-5-turbo', 'deterministic_test', 1, 1, 0, 0, 2, 'stop'
+            )
+          `;
+          yield* sql`
+            insert into ai_source_exposures (
+              run_id, task_id, loop_iteration, attempt, provider_request_index,
+              source_kind, logical_source_identity, content_item_identity,
+              exposure_stage, visible_token_count
+            ) values (
+              ${ids.run}, 'single-select-memories', 0, 0, 0, 'memory',
+              ${`memory:${ids.memory}`}, ${ids.revision}, ${selectorExposureStage}, 2
+            ), (
+              ${ids.run}, 'single-select-memories', 0, 0, 0, 'memory',
+              ${`memory:${ids.memory2}`}, ${ids.revision2}, ${selectorExposureStage}, 2
+            ), (
+              ${ids.run}, 'single-select-memories', 0, 0, 0, 'memory',
+              ${`memory:${ids.memory3}`}, ${ids.revision3}, ${selectorExposureStage}, 2
+            ), (
+              ${ids.run}, 'single-answer', 0, 0, 0, 'memory',
+              ${`memory:${ids.memory}`}, ${ids.revision}, ${exposureStage}, 2
+            ), (
+              ${ids.run}, 'single-answer', 0, 0, 0, 'memory',
+              ${`memory:${ids.memory2}`}, ${ids.revision2}, ${exposureStage}, 2
+            )
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${ids.run}, ${ids.chat}, 'single-select-memories', 0, 0,
+              ${selectorAttestationKey}, 'source_exposure_attestation',
+              ${sql.json({
+                providerRequestIndex: 0,
+                providerRequestSha256Hex: "e".repeat(64),
+                sourceKind: "memory",
+                logicalSourceIdentity: `memory:${ids.memory}`,
+                contentItemIdentity: ids.revision,
+                exposureStage: selectorExposureStage,
+                visibleTokenCount: 2,
+                providerSerializationProofSha256Hex: selectorExposureProof,
+                providerSerializationProofBinding: selectorExposureBinding,
+              })}
+            ), (
+              ${ids.run}, ${ids.chat}, 'single-select-memories', 0, 0,
+              ${selectorAttestationKey2}, 'source_exposure_attestation',
+              ${sql.json({
+                providerRequestIndex: 0,
+                providerRequestSha256Hex: "e".repeat(64),
+                sourceKind: "memory",
+                logicalSourceIdentity: `memory:${ids.memory2}`,
+                contentItemIdentity: ids.revision2,
+                exposureStage: selectorExposureStage,
+                visibleTokenCount: 2,
+                providerSerializationProofSha256Hex: selectorExposureProof2,
+                providerSerializationProofBinding: selectorExposureBinding2,
+              })}
+            ), (
+              ${ids.run}, ${ids.chat}, 'single-select-memories', 0, 0,
+              ${selectorAttestationKey3}, 'source_exposure_attestation',
+              ${sql.json({
+                providerRequestIndex: 0,
+                providerRequestSha256Hex: "e".repeat(64),
+                sourceKind: "memory",
+                logicalSourceIdentity: `memory:${ids.memory3}`,
+                contentItemIdentity: ids.revision3,
+                exposureStage: selectorExposureStage,
+                visibleTokenCount: 2,
+                providerSerializationProofSha256Hex: selectorExposureProof3,
+                providerSerializationProofBinding: selectorExposureBinding3,
+              })}
+            ), (
+              ${ids.run}, ${ids.chat}, 'single-answer', 0, 0,
+              ${attestationKey}, 'source_exposure_attestation',
+              ${sql.json({
+                providerRequestIndex: 0,
+                providerRequestSha256Hex: "a".repeat(64),
+                sourceKind: "memory",
+                logicalSourceIdentity: `memory:${ids.memory}`,
+                contentItemIdentity: ids.revision,
+                exposureStage,
+                visibleTokenCount: 2,
+                providerSerializationProofSha256Hex: exposureProof,
+                providerSerializationProofBinding: exposureBinding,
+              })}
+            )
+            , (
+              ${ids.run}, ${ids.chat}, 'single-answer', 0, 0,
+              ${attestationKey2}, 'source_exposure_attestation',
+              ${sql.json({
+                providerRequestIndex: 0,
+                providerRequestSha256Hex: "a".repeat(64),
+                sourceKind: "memory",
+                logicalSourceIdentity: `memory:${ids.memory2}`,
+                contentItemIdentity: ids.revision2,
+                exposureStage,
+                visibleTokenCount: 2,
+                providerSerializationProofSha256Hex: exposureProof2,
+                providerSerializationProofBinding: {
+                  ...exposureBinding,
+                  sourceOrdinal: 1,
+                  orderedSourceDescriptor: `memory:${ids.memory2}`,
+                },
+              })}
+            )
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${ids.run}, ${ids.chat}, 'finalize', 0, 0,
+              'citation:0:0', 'citation',
+              ${sql.json({ assistantMessageId: ids.assistantMessage, sourceKey: oldKey1 })}
+            )
+          `;
+          const restrictedLedger = {
+            requestKind: "direct",
+            modelId: "glm-5-turbo",
+            requestSha256Hex: "a".repeat(64),
+            inputTokens: 2,
+            usableInputTokens: 2,
+            requestedOutputTokens: 1,
+            selectedConversation: [],
+            question: "retained answer",
+            gaps: [],
+            sources: [
+              {
+                candidateId: ids.memory,
+                sourceKey: oldKey1,
+                kind: "memory",
+                purpose: "grounding",
+                label: "Saved fact",
+                ranges: [],
+              },
+              {
+                candidateId: ids.memory2,
+                sourceKey: oldKey3,
+                kind: "memory",
+                purpose: "grounding",
+                label: "Saved fact",
+                ranges: [],
+              },
+              {
+                candidateId: ids.memory3,
+                sourceKey: unknownKey,
+                kind: "memory",
+                purpose: "grounding",
+                label: "Omitted fact",
+                ranges: [],
+              },
+              {
+                candidateId: webCandidateId,
+                sourceKey: `k_${legacyNamespace}_4`,
+                kind: "web",
+                purpose: "grounding",
+                label: webReference.title,
+                ranges: [],
+              },
+            ],
+          };
+          const serializedLedger = {
+            ...restrictedLedger,
+            sources: restrictedLedger.sources.slice(0, 2),
+          };
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values
+              (${ids.run}, ${ids.chat}, 'plan-turn', 0, 0, 'plan-turn:0:0:turn_plan', 'turn_plan',
+                ${sql.json({ mode: "single", question: "retained answer", relevantTurnIds: [] })}),
+              (${ids.run}, ${ids.chat}, 'single-retrieve-internal', 0, 0, 'single-retrieve-internal:0:0:retrieval_manifest:result', 'retrieval_manifest',
+                ${sql.json({ selectorRole: "internal", references: [] })}),
+              (${ids.run}, ${ids.chat}, 'single-select-memories', 0, 0, 'single-select-memories:0:0:retrieval_manifest:result', 'retrieval_manifest',
+                ${sql.json({
+                  selectorRole: "memory",
+                  references: [
+                    { memoryId: ids.memory, memoryRevisionId: ids.revision },
+                    { memoryId: ids.memory2, memoryRevisionId: ids.revision2 },
+                    { memoryId: ids.memory3, memoryRevisionId: ids.revision3 },
+                  ],
+                })}),
+              (${ids.run}, ${ids.chat}, 'single-retrieve-web', 0, 0, 'single-retrieve-web:0:0:retrieval_manifest:result', 'retrieval_manifest',
+                ${sql.json({ selectorRole: "web", references: [], noCallReason: "web_policy_disabled" })}),
+              (${ids.run}, ${ids.chat}, 'finalize', 0, 0,
+                'retrieval_no_call_seal:single-retrieve-web:0:0', 'retrieval_no_call_seal',
+                ${sql.json({
+                  selectorTaskId: "single-retrieve-web",
+                  selectorLoopIteration: 0,
+                  selectorAttempt: 0,
+                  selectorObservationKey: "single-retrieve-web:0:0:retrieval_manifest:result",
+                  noCallReason: "web_policy_disabled",
+                })}),
+              (${ids.run}, ${ids.chat}, 'single-measure', 0, 0, 'context:measure:initial', 'context_measurement',
+                ${sql.json({
+                  consumerTaskId: "single-answer",
+                  mandatoryInputTokens: 2,
+                  discretionaryInputTokens: 0,
+                  totalInputTokens: 2,
+                  requestedOutputTokens: 1,
+                  usableInputTokens: 2,
+                  contextWindow: 100,
+                  status: "ready",
+                  reductionRan: false,
+                  reductionFeedback: [],
+                  restrictedContextLedger: restrictedLedger,
+                })}),
+              (${ids.run}, ${ids.chat}, 'single-answer', 0, 0, 'context:measure', 'context_measurement',
+                ${sql.json({
+                  consumerTaskId: "single-answer",
+                  mandatoryInputTokens: 2,
+                  discretionaryInputTokens: 0,
+                  totalInputTokens: 2,
+                  requestedOutputTokens: 1,
+                  usableInputTokens: 2,
+                  contextWindow: 100,
+                  status: "ready",
+                  reductionRan: false,
+                  reductionFeedback: [],
+                  restrictedContextLedger: restrictedLedger,
+                })}),
+              (${ids.run}, ${ids.chat}, 'single-reduce-measure', 1, 0, 'context:decision', 'context_decision',
+                ${sql.json({
+                  valid: true,
+                  decisions: [
+                    { id: ids.memory, action: "keep", reason: "retained" },
+                    { id: ids.memory2, action: "keep", reason: "retained" },
+                    { id: ids.memory3, action: "omit", reason: "not needed" },
+                    { id: webCandidateId, action: "omit", reason: "not needed" },
+                  ],
+                  feedback: ["ownerId role versionId"],
+                })}),
+              (${ids.run}, ${ids.chat}, 'single-answer', 0, 0, 'context:serialized', 'context_serialized',
+                ${sql.json({
+                  consumerTaskId: "single-answer",
+                  sourceKeys: [oldKey1, oldKey3],
+                  restrictedContextLedger: serializedLedger,
+                  terminalUsageCoordinate: {
+                    taskId: "single-answer",
+                    loopIteration: 0,
+                    attempt: 0,
+                    providerRequestIndex: 0,
+                  },
+                })}),
+              (${ids.run}, ${ids.chat}, 'memory-extract', 0, 0, 'memory-extract:0:0:memory_extraction_result:result', 'memory_extraction_result',
+                ${sql.json({ proposalCount: 2, discardedCount: 0, extractionSha256Hex: "b".repeat(64) })}),
+              (${ids.run}, ${ids.chat}, 'finalize', 0, 0, 'finalize:0:0:memory_application:result', 'memory_application',
+                ${sql.json({
+                  extractionTaskId: "memory-extract",
+                  extractionLoopIteration: 0,
+                  extractionAttempt: 0,
+                  extractionObservationKey: "memory-extract:0:0:memory_extraction_result:result",
+                  extractionSha256Hex: "b".repeat(64),
+                  proposalCount: 2,
+                  discardedCount: 0,
+                })}),
+              (${ids.run}, ${ids.chat}, 'finalize', 0, 0, 'memory_written:0', 'memory_written',
+              ${sql.json({
+                ordinal: 0,
+                memoryId: ids.memory,
+                revisionId: ids.writeRevision,
+                previousRevisionId: ids.revision,
+                action: "update",
+              })}),
+              (${ids.run}, ${ids.chat}, 'finalize', 0, 0, 'memory_written:1', 'memory_written',
+              ${sql.json({
+                ordinal: 1,
+                memoryId: ids.memory2,
+                revisionId: ids.writeRevision2,
+                previousRevisionId: ids.revision2,
+                action: "update",
+              })}),
+              (${ids.run}, ${ids.chat}, 'single-answer', 0, 0, 'answer:started', 'answer_started',
+                ${sql.json({ mode: "single", attempt: 0 })}),
+              (${ids.run}, ${ids.chat}, 'single-answer', 0, 0, 'answer:delta', 'answer_delta',
+                ${sql.json({ delta: content })}),
+              (${ids.run}, ${ids.chat}, 'single-answer', 0, 0, 'answer:completed', 'answer_completed',
+                ${sql.json({ mode: "single", attempt: 0 })})
+          `;
+          yield* sql`
+            insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+            values
+              (${ids.run}, 1, ${sql.json({ type: "run_started" })}, null, 'run_started')
+          `;
+          yield* sql`
+            insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+            values
+              (${ids.run}, 2, ${sql.json({
+                type: "context_ready",
+                mode: "single",
+                reductionRan: false,
+                sourcesRead: [
+                  {
+                    sourceKey: oldKey1,
+                    label: "Saved fact",
+                    tokenCount: 1,
+                    topicIds: [],
+                    kind: "memory",
+                    memoryId: ids.memory,
+                    memoryRevisionId: ids.revision,
+                    ranges: [],
+                  },
+                  {
+                    sourceKey: oldKey3,
+                    label: "Saved fact",
+                    tokenCount: 1,
+                    topicIds: [],
+                    kind: "memory",
+                    memoryId: ids.memory2,
+                    memoryRevisionId: ids.revision2,
+                    ranges: [],
+                  },
+                ],
+                consumers: [
+                  {
+                    consumer: "direct",
+                    inputTokens: 2,
+                    requestedOutputTokens: 1,
+                    usableInputTokens: 2,
+                  },
+                ],
+              })}, 'single-answer', 'context_ready'),
+              (${ids.run}, 3, ${sql.json({ type: "answer_started", mode: "single", attempt: 0 })}, 'single-answer', 'answer_started:single-answer:0'),
+              (${ids.run}, 4, ${sql.json({ type: "text_delta", delta: content })}, 'single-answer', 'text_delta:single-answer:0:0'),
+              (${ids.run}, 5, ${sql.json({
+                type: "usage",
+                scope: "request",
+                kind: "model",
+                role: "internal_retrieval",
+                attempt: 0,
+                inputTokens: 1,
+                outputTokens: 1,
+                cachedTokens: 0,
+                reasoningTokens: 0,
+                totalTokens: 2,
+              })}, 'single-retrieve-internal', 'usage:request:model:single-retrieve-internal:0:0:0'),
+              (${ids.run}, 6, ${sql.json({
+                type: "usage",
+                scope: "request",
+                kind: "model",
+                role: "direct_answer",
+                attempt: 0,
+                inputTokens: 2,
+                outputTokens: 1,
+                cachedTokens: 0,
+                reasoningTokens: 0,
+                totalTokens: 3,
+              })}, 'single-answer', 'usage:request:model:single-answer:0:0:0'),
+              (${ids.run}, 7, ${sql.json({
+                type: "usage",
+                scope: "request",
+                kind: "model",
+                role: "memory_selector",
+                attempt: 0,
+                inputTokens: 1,
+                outputTokens: 1,
+                cachedTokens: 0,
+                reasoningTokens: 0,
+                totalTokens: 2,
+              })}, 'single-select-memories', 'usage:request:model:single-select-memories:0:0:0'),
+              (${ids.run}, 8, ${sql.json({
+                type: "usage",
+                scope: "request",
+                kind: "model",
+                role: "plan_turn",
+                attempt: 0,
+                inputTokens: 1,
+                outputTokens: 1,
+                cachedTokens: 0,
+                reasoningTokens: 0,
+                totalTokens: 2,
+              })}, 'plan-turn', 'usage:request:model:plan-turn:0:0:0'),
+              (${ids.run}, 9, ${sql.json({
+                type: "usage",
+                scope: "request",
+                kind: "model",
+                role: "memory_extractor",
+                attempt: 0,
+                inputTokens: 1,
+                outputTokens: 1,
+                cachedTokens: 0,
+                reasoningTokens: 0,
+                totalTokens: 2,
+              })}, 'memory-extract', 'usage:request:model:memory-extract:0:0:0'),
+              (${ids.run}, 10, ${sql.json({ type: "memory_updated", created: 0, updated: 2, discarded: 0 })}, 'finalize', 'memory_updated'),
+              (${ids.run}, 14, ${sql.json({
+                type: "usage",
+                scope: "run",
+                model: {
+                  inputTokens: 6,
+                  outputTokens: 5,
+                  cachedTokens: 0,
+                  reasoningTokens: 0,
+                  totalTokens: 11,
+                  requestCount: 5,
+                },
+                web: { searchCount: 0, fetchCount: 0, responseBytes: 0, billedUnits: 0 },
+              })}, 'finalize', 'usage:run'),
+              (${ids.run}, 16, ${sql.json({ type: "done", assistantMessageId: ids.assistantMessage })}, 'finalize', 'terminal')
+          `;
+          const migration = yield* Effect.promise(() =>
+            Bun.file(
+              new URL(
+                "../../../../db/migrations/0064_ai_chat_runtime_cutover.sql",
+                import.meta.url,
+              ),
+            ).text(),
+          );
+          const [successfulRequestEvent] = yield* sql<{ readonly id: string }>`
+            select id::text as id
+            from ai_run_events
+            where run_id = ${ids.run}
+              and emission_key = 'usage:request:model:single-answer:0:0:0'
+          `;
+          expect(successfulRequestEvent).toBeDefined();
+          yield* sql`
+            update ai_run_events
+            set seq = 15
+            where id = ${successfulRequestEvent?.id}
+          `;
+          const lateSuccessfulRequest = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(lateSuccessfulRequest)).toContain(
+            `ai_run_events/${successfulRequestEvent?.id}`,
+          );
+          expect(errorText(lateSuccessfulRequest)).toContain(
+            "terminal request usage is not ordered after run_started and before usage:run",
+          );
+          const lateSuccessfulRequestFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumns"
+          `;
+          expect(lateSuccessfulRequestFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`
+            update ai_run_events
+            set seq = -1
+            where id = ${successfulRequestEvent?.id}
+          `;
+          const earlySuccessfulRequest = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(earlySuccessfulRequest)).toContain(
+            `ai_run_events/${successfulRequestEvent?.id}`,
+          );
+          expect(errorText(earlySuccessfulRequest)).toContain(
+            "terminal request usage is not ordered after run_started and before usage:run",
+          );
+          const earlySuccessfulRequestFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumns"
+          `;
+          expect(earlySuccessfulRequestFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`
+            update ai_run_events
+            set seq = 6
+            where id = ${successfulRequestEvent?.id}
+          `;
+          yield* sql`alter table assistant_message_sources disable trigger user`;
+          yield* sql`
+            update assistant_message_sources
+            set source_identity_digest = ${"0".repeat(64)}
+            where assistant_message_id = ${ids.assistantMessage}
+              and source_key = ${oldKey1}
+          `;
+          yield* sql`alter table assistant_message_sources enable trigger user`;
+          const tamperedSource = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(tamperedSource)).toContain(
+            `assistant_message_sources/${ids.assistantMessage}/${oldKey1}`,
+          );
+          expect(errorText(tamperedSource)).toContain(
+            "stored source identity digest does not match retained fields",
+          );
+          yield* sql`alter table assistant_message_sources disable trigger user`;
+          yield* sql`
+            update assistant_message_sources
+            set source_identity_digest = assistant_message_source_identity_digest(
+              assistant_message_id, source_key, kind, locator, document_version_id,
+              publisher_document_version_id, message_id, memory_revision_id,
+              display_label, public_provenance
+            )
+            where assistant_message_id = ${ids.assistantMessage}
+              and source_key = ${oldKey1}
+          `;
+          yield* sql`alter table assistant_message_sources enable trigger user`;
+          const setContextOrder = (contextOrder: number) =>
+            sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`alter table assistant_message_source_uses disable trigger user`;
+                yield* sql`
+                  update assistant_message_source_uses
+                  set context_order = ${contextOrder},
+                      source_use_identity_digest = assistant_message_source_use_identity_digest(
+                        assistant_message_id, source_key, consumer_task_id, topic_id,
+                        rendered_token_count, ${contextOrder}, ranges
+                      )
+                  where assistant_message_id = ${ids.assistantMessage}
+                    and source_key = ${oldKey3}
+                `;
+                yield* sql`alter table assistant_message_source_uses enable trigger user`;
+              }),
+            );
+          yield* setContextOrder(2);
+          const gappedContext = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(gappedContext)).toContain(
+            `assistant_message_source_uses/${ids.assistantMessage}/${oldKey3}/single-answer/-`,
+          );
+          expect(errorText(gappedContext)).toContain(
+            "context orders must be unique and contiguous from zero",
+          );
+          const unchangedAfterLateBlocker = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (
+                select count(*)::int
+                from pg_proc
+                where pronamespace = 'public'::regnamespace
+                  and proname in (
+                    'brief_ai_safe_bigint', 'brief_ai_utf16_length', 'brief_ai_legacy_json_key',
+                    'brief_ai_valid_restricted_context_ledger', 'brief_ai_valid_terminal_usage_coordinate',
+                    'brief_ai_normalize_ranges'
+                  )
+              ) as helpers,
+              (
+                select count(*)::int
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'ai_runs'
+                  and column_name = 'citation_namespace'
+              ) as "finalColumns"
+          `;
+          expect(unchangedAfterLateBlocker).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* setContextOrder(0);
+          const duplicateContext = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(duplicateContext)).toContain(
+            `assistant_message_source_uses/${ids.assistantMessage}/${oldKey3}/single-answer/-`,
+          );
+          expect(errorText(duplicateContext)).toContain(
+            "context orders must be unique and contiguous from zero",
+          );
+          yield* setContextOrder(1);
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              payload,
+              '{restrictedContextLedger,sources}',
+              (payload->'restrictedContextLedger'->'sources') || jsonb_build_array(
+                jsonb_build_object(
+                  'candidateId', ${ids.memory3}::text,
+                  'sourceKey', ${unknownKey}::text,
+                  'kind', 'memory',
+                  'purpose', 'grounding',
+                  'label', 'Omitted fact',
+                  'ranges', '[]'::jsonb
+                )
+              ),
+              true
+            )
+            where run_id = ${ids.run}
+              and kind = 'context_serialized'
+          `;
+          const extraOmittedContext = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(extraOmittedContext)).toContain(`ai_observations/${ids.run}/`);
+          expect(errorText(extraOmittedContext)).toContain(
+            "context decision does not project the exact serialized context",
+          );
+          const unchangedAfterContextProjection = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (
+                select count(*)::int
+                from pg_proc
+                where pronamespace = 'public'::regnamespace
+                  and proname in (
+                    'brief_ai_safe_bigint', 'brief_ai_utf16_length', 'brief_ai_legacy_json_key',
+                    'brief_ai_valid_restricted_context_ledger', 'brief_ai_valid_terminal_usage_coordinate',
+                    'brief_ai_normalize_ranges'
+                  )
+              ) as helpers,
+              (
+                select count(*)::int
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'ai_runs'
+                  and column_name = 'citation_namespace'
+              ) as "finalColumns"
+          `;
+          expect(unchangedAfterContextProjection).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              payload,
+              '{restrictedContextLedger,sources}',
+              (payload->'restrictedContextLedger'->'sources') - 2,
+              true
+            )
+            where run_id = ${ids.run}
+              and kind = 'context_serialized'
+          `;
+          const [selectorManifest] = yield* sql<{ readonly id: string }>`
+            select id::text as id
+            from ai_observations
+            where run_id = ${ids.run}
+              and observation_key = 'single-select-memories:0:0:retrieval_manifest:result'
+          `;
+          yield* sql`alter table ai_source_exposures disable trigger user`;
+          yield* sql`
+            update ai_source_exposures
+            set task_id = 'single-answer'
+            where run_id = ${ids.run}
+              and task_id = 'single-select-memories'
+              and content_item_identity = ${ids.revision2}
+          `;
+          yield* sql`alter table ai_source_exposures enable trigger user`;
+          yield* sql`
+            update ai_observations
+            set emitting_task = 'single-answer',
+                observation_key = ${wrongOwnerSelectorAttestationKey2},
+                payload = jsonb_set(
+                  payload,
+                  '{providerRequestSha256Hex}',
+                  to_jsonb(${"a".repeat(64)}::text),
+                  true
+                )
+            where run_id = ${ids.run}
+              and kind = 'source_exposure_attestation'
+              and emitting_task = 'single-select-memories'
+              and payload->>'contentItemIdentity' = ${ids.revision2}
+          `;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              jsonb_set(
+                payload,
+                '{sourceExposureProofSha256Hexes}',
+                (${sql.json({
+                  value: [selectorExposureProof, selectorExposureProof3].sort(),
+                })}::jsonb->'value'),
+                true
+              ),
+              '{sourceExposureProofBindings}',
+              (${sql.json({
+                value: [
+                  {
+                    providerSerializationProofSha256Hex: selectorExposureProof,
+                    providerSerializationProofBinding: selectorExposureBinding,
+                  },
+                  {
+                    providerSerializationProofSha256Hex: selectorExposureProof3,
+                    providerSerializationProofBinding: selectorExposureBinding3,
+                  },
+                ].sort((left, right) =>
+                  left.providerSerializationProofSha256Hex.localeCompare(
+                    right.providerSerializationProofSha256Hex,
+                  ),
+                ),
+              })}::jsonb->'value'),
+              true
+            )
+            where run_id = ${ids.run}
+              and observation_key = 'provider_request_measurement:single-select-memories:0:0:0'
+          `;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              jsonb_set(
+                payload,
+                '{sourceExposureProofSha256Hexes}',
+                (${sql.json({
+                  value: [exposureProof, exposureProof2, selectorExposureProof2].sort(),
+                })}::jsonb->'value'),
+                true
+              ),
+              '{sourceExposureProofBindings}',
+              (${sql.json({
+                value: [
+                  {
+                    providerSerializationProofSha256Hex: exposureProof,
+                    providerSerializationProofBinding: exposureBinding,
+                  },
+                  {
+                    providerSerializationProofSha256Hex: exposureProof2,
+                    providerSerializationProofBinding: {
+                      ...exposureBinding,
+                      sourceOrdinal: 1,
+                      orderedSourceDescriptor: `memory:${ids.memory2}`,
+                    },
+                  },
+                  {
+                    providerSerializationProofSha256Hex: selectorExposureProof2,
+                    providerSerializationProofBinding: selectorExposureBinding2,
+                  },
+                ].sort((left, right) =>
+                  left.providerSerializationProofSha256Hex.localeCompare(
+                    right.providerSerializationProofSha256Hex,
+                  ),
+                ),
+              })}::jsonb->'value'),
+              true
+            )
+            where run_id = ${ids.run}
+              and observation_key = 'provider_request_measurement:single-answer:0:0:0'
+          `;
+          const wrongSelectorOwner = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(wrongSelectorOwner)).toContain(
+            `ai_observations/${selectorManifest?.id}/2`,
+          );
+          expect(errorText(wrongSelectorOwner)).toContain(
+            "terminal selector reference lacks its exact selector-owned exposure and provider proof coordinate",
+          );
+          const selectorOwnerFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumns"
+          `;
+          expect(selectorOwnerFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`alter table ai_source_exposures disable trigger user`;
+          yield* sql`
+            update ai_source_exposures
+            set task_id = 'single-select-memories'
+            where run_id = ${ids.run}
+              and task_id = 'single-answer'
+              and exposure_stage = ${selectorExposureStage}
+              and content_item_identity = ${ids.revision2}
+          `;
+          yield* sql`alter table ai_source_exposures enable trigger user`;
+          yield* sql`
+            update ai_observations
+            set emitting_task = 'single-select-memories',
+                observation_key = ${selectorAttestationKey2},
+                payload = jsonb_set(
+                  payload,
+                  '{providerRequestSha256Hex}',
+                  to_jsonb(${"e".repeat(64)}::text),
+                  true
+                )
+            where run_id = ${ids.run}
+              and kind = 'source_exposure_attestation'
+              and emitting_task = 'single-answer'
+              and observation_key = ${wrongOwnerSelectorAttestationKey2}
+              and payload->>'contentItemIdentity' = ${ids.revision2}
+          `;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              jsonb_set(
+                payload,
+                '{sourceExposureProofSha256Hexes}',
+                (${sql.json({
+                  value: [
+                    selectorExposureProof,
+                    selectorExposureProof2,
+                    selectorExposureProof3,
+                  ].sort(),
+                })}::jsonb->'value'),
+                true
+              ),
+              '{sourceExposureProofBindings}',
+              (${sql.json({
+                value: [
+                  {
+                    providerSerializationProofSha256Hex: selectorExposureProof,
+                    providerSerializationProofBinding: selectorExposureBinding,
+                  },
+                  {
+                    providerSerializationProofSha256Hex: selectorExposureProof2,
+                    providerSerializationProofBinding: selectorExposureBinding2,
+                  },
+                  {
+                    providerSerializationProofSha256Hex: selectorExposureProof3,
+                    providerSerializationProofBinding: selectorExposureBinding3,
+                  },
+                ].sort((left, right) =>
+                  left.providerSerializationProofSha256Hex.localeCompare(
+                    right.providerSerializationProofSha256Hex,
+                  ),
+                ),
+              })}::jsonb->'value'),
+              true
+            )
+            where run_id = ${ids.run}
+              and observation_key = 'provider_request_measurement:single-select-memories:0:0:0'
+          `;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              jsonb_set(
+                payload,
+                '{sourceExposureProofSha256Hexes}',
+                (${sql.json({ value: [exposureProof, exposureProof2].sort() })}::jsonb->'value'),
+                true
+              ),
+              '{sourceExposureProofBindings}',
+              (${sql.json({
+                value: [
+                  {
+                    providerSerializationProofSha256Hex: exposureProof,
+                    providerSerializationProofBinding: exposureBinding,
+                  },
+                  {
+                    providerSerializationProofSha256Hex: exposureProof2,
+                    providerSerializationProofBinding: {
+                      ...exposureBinding,
+                      sourceOrdinal: 1,
+                      orderedSourceDescriptor: `memory:${ids.memory2}`,
+                    },
+                  },
+                ].sort((left, right) =>
+                  left.providerSerializationProofSha256Hex.localeCompare(
+                    right.providerSerializationProofSha256Hex,
+                  ),
+                ),
+              })}::jsonb->'value'),
+              true
+            )
+            where run_id = ${ids.run}
+              and observation_key = 'provider_request_measurement:single-answer:0:0:0'
+          `;
+          yield* sql`alter table ai_source_exposures disable trigger user`;
+          yield* sql`
+            delete from ai_source_exposures
+            where run_id = ${ids.run}
+              and task_id = 'single-select-memories'
+              and content_item_identity = ${ids.revision2}
+          `;
+          yield* sql`alter table ai_source_exposures enable trigger user`;
+          yield* sql`
+            delete from ai_observations
+            where run_id = ${ids.run}
+              and kind = 'source_exposure_attestation'
+              and emitting_task = 'single-select-memories'
+              and payload->>'contentItemIdentity' = ${ids.revision2}
+          `;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              jsonb_set(
+                payload,
+                '{sourceExposureProofSha256Hexes}',
+                (${sql.json({
+                  value: [selectorExposureProof, selectorExposureProof3].sort(),
+                })}::jsonb->'value'),
+                true
+              ),
+              '{sourceExposureProofBindings}',
+              (${sql.json({
+                value: [
+                  {
+                    providerSerializationProofSha256Hex: selectorExposureProof,
+                    providerSerializationProofBinding: selectorExposureBinding,
+                  },
+                  {
+                    providerSerializationProofSha256Hex: selectorExposureProof3,
+                    providerSerializationProofBinding: selectorExposureBinding3,
+                  },
+                ].sort((left, right) =>
+                  left.providerSerializationProofSha256Hex.localeCompare(
+                    right.providerSerializationProofSha256Hex,
+                  ),
+                ),
+              })}::jsonb->'value'),
+              true
+            )
+            where run_id = ${ids.run}
+              and observation_key = 'provider_request_measurement:single-select-memories:0:0:0'
+          `;
+          const missingSelectorExposure = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(missingSelectorExposure)).toContain(
+            `ai_observations/${selectorManifest?.id}/2`,
+          );
+          expect(errorText(missingSelectorExposure)).toContain(
+            "terminal selector reference lacks its exact selector-owned exposure and provider proof coordinate",
+          );
+          const missingSelectorFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumns"
+          `;
+          expect(missingSelectorFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`
+            insert into ai_source_exposures (
+              run_id, task_id, loop_iteration, attempt, provider_request_index,
+              source_kind, logical_source_identity, content_item_identity,
+              exposure_stage, visible_token_count
+            ) values (
+              ${ids.run}, 'single-select-memories', 0, 0, 0, 'memory',
+              ${`memory:${ids.memory2}`}, ${ids.revision2}, ${selectorExposureStage}, 2
+            )
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${ids.run}, ${ids.chat}, 'single-select-memories', 0, 0,
+              ${selectorAttestationKey2}, 'source_exposure_attestation',
+              ${sql.json({
+                providerRequestIndex: 0,
+                providerRequestSha256Hex: "e".repeat(64),
+                sourceKind: "memory",
+                logicalSourceIdentity: `memory:${ids.memory2}`,
+                contentItemIdentity: ids.revision2,
+                exposureStage: selectorExposureStage,
+                visibleTokenCount: 2,
+                providerSerializationProofSha256Hex: selectorExposureProof2,
+                providerSerializationProofBinding: selectorExposureBinding2,
+              })}
+            )
+          `;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              jsonb_set(
+                payload,
+                '{sourceExposureProofSha256Hexes}',
+                (${sql.json({
+                  value: [
+                    selectorExposureProof,
+                    selectorExposureProof2,
+                    selectorExposureProof3,
+                  ].sort(),
+                })}::jsonb->'value'),
+                true
+              ),
+              '{sourceExposureProofBindings}',
+              (${sql.json({
+                value: [
+                  {
+                    providerSerializationProofSha256Hex: selectorExposureProof,
+                    providerSerializationProofBinding: selectorExposureBinding,
+                  },
+                  {
+                    providerSerializationProofSha256Hex: selectorExposureProof2,
+                    providerSerializationProofBinding: selectorExposureBinding2,
+                  },
+                  {
+                    providerSerializationProofSha256Hex: selectorExposureProof3,
+                    providerSerializationProofBinding: selectorExposureBinding3,
+                  },
+                ].sort((left, right) =>
+                  left.providerSerializationProofSha256Hex.localeCompare(
+                    right.providerSerializationProofSha256Hex,
+                  ),
+                ),
+              })}::jsonb->'value'),
+              true
+            )
+            where run_id = ${ids.run}
+              and observation_key = 'provider_request_measurement:single-select-memories:0:0:0'
+          `;
+
+          const [memoryWrite] = yield* sql<{ readonly id: string }>`
+            select id::text as id
+            from ai_observations
+            where run_id = ${ids.run}
+              and kind = 'memory_written'
+              and payload->>'memoryId' = ${ids.memory}
+          `;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              payload,
+              '{previousRevisionId}',
+              to_jsonb(${ids.olderRevision}::text),
+              true
+            )
+            where id = ${memoryWrite?.id}::uuid
+          `;
+          const wrongPreviousRevision = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(wrongPreviousRevision)).toContain(`ai_observations/${memoryWrite?.id}`);
+          expect(errorText(wrongPreviousRevision)).toContain(
+            "memory write is not bound to its immediate prior revision and current live head",
+          );
+          const previousRevisionFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumns"
+          `;
+          expect(previousRevisionFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              payload,
+              '{previousRevisionId}',
+              to_jsonb(${ids.revision}::text),
+              true
+            )
+            where id = ${memoryWrite?.id}::uuid
+          `;
+
+          yield* sql`
+            update user_memories
+            set head_revision_id = ${ids.revision}
+            where id = ${ids.memory}
+          `;
+          const staleMemoryHead = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(staleMemoryHead)).toContain(`ai_observations/${memoryWrite?.id}`);
+          expect(errorText(staleMemoryHead)).toContain(
+            "memory write is not bound to its immediate prior revision and current live head",
+          );
+          const staleHeadFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumns"
+          `;
+          expect(staleHeadFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`
+            update user_memories
+            set head_revision_id = ${ids.writeRevision}
+            where id = ${ids.memory}
+          `;
+          yield* sql`
+            update user_memories
+            set source_message_id = null
+            where id = ${ids.memory}
+          `;
+          const wrongMemoryProvenance = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(wrongMemoryProvenance)).toContain(`ai_observations/${memoryWrite?.id}`);
+          expect(errorText(wrongMemoryProvenance)).toContain(
+            "memory write is not bound to its immediate prior revision and current live head",
+          );
+          const memoryProvenanceFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumns"
+          `;
+          expect(memoryProvenanceFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`
+            update user_memories
+            set source_message_id = ${ids.userMessage}
+            where id = ${ids.memory}
+          `;
+          yield* sql`update ai_runs set web_search_enabled = true, effective_web_policy = ${sql.json({ enabled: true, reason: null, allowlistActive: false })} where id = ${ids.run}`;
+          yield* sql`
+            update ai_observations
+            set payload = ${sql.json({
+              selectorRole: "web",
+              references: [webReference],
+            })}
+            where run_id = ${ids.run}
+              and emitting_task = 'single-retrieve-web'
+              and kind = 'retrieval_manifest'
+          `;
+          yield* sql`
+            delete from ai_observations
+            where run_id = ${ids.run}
+              and observation_key = 'retrieval_no_call_seal:single-retrieve-web:0:0'
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${ids.run}, ${ids.chat}, 'single-retrieve-web', 0, 0,
+              'provider_request_measurement:single-retrieve-web:0:0:0',
+              'provider_request_measurement',
+              ${sql.json({
+                agentRole: "web_research",
+                modelId: "glm-5-turbo",
+                requestSha256Hex: "d".repeat(64),
+                sourceExposureProofSha256Hexes: [webExposureProof],
+                sourceExposureProofBindings: [
+                  {
+                    providerSerializationProofSha256Hex: webExposureProof,
+                    providerSerializationProofBinding: webExposureBinding,
+                  },
+                ],
+                providerRequestIndex: 0,
+                inputTokens: 1,
+                requestedOutputTokens: 1,
+                usableInputTokens: 1,
+                contextWindow: 100,
+                passed: true,
+              })}
+            )
+          `;
+          yield* sql`
+            insert into ai_run_usage (
+              run_id, task_id, loop_iteration, attempt, provider_request_index,
+              agent_role, model_id, provider_service_id, input_tokens, output_tokens,
+              cached_tokens, reasoning_tokens, total_tokens, stop_reason
+            ) values (
+              ${ids.run}, 'single-retrieve-web', 0, 0, 0,
+              'web_research', 'glm-5-turbo', 'deterministic_test', 1, 1, 0, 0, 2, 'stop'
+            )
+          `;
+          yield* sql`
+            insert into ai_external_tool_usage (
+              run_id, task_id, loop_iteration, attempt, tool_request_index,
+              provider_service_id, operation, status, result_count,
+              response_bytes, billed_units, duration_ms
+            ) values (
+              ${ids.run}, 'single-retrieve-web', 0, 0, 0,
+              'deterministic_test', 'web_fetch', 'ok', 1, 100, 0, 1
+            )
+          `;
+          yield* sql`
+            insert into ai_source_exposures (
+              run_id, task_id, loop_iteration, attempt, provider_request_index,
+              source_kind, logical_source_identity, content_item_identity,
+              exposure_stage, visible_token_count
+            ) values (
+              ${ids.run}, 'single-retrieve-web', 0, 0, 0, 'web',
+              ${webUrl}, ${webContentItemIdentity}, ${webExposureStage}, 2
+            )
+          `;
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${ids.run}, ${ids.chat}, 'single-retrieve-web', 0, 0,
+              ${webAttestationKey}, 'source_exposure_attestation',
+              ${sql.json({
+                providerRequestIndex: 0,
+                providerRequestSha256Hex: "d".repeat(64),
+                sourceKind: "web",
+                logicalSourceIdentity: webUrl,
+                contentItemIdentity: webContentItemIdentity,
+                exposureStage: webExposureStage,
+                visibleTokenCount: 2,
+                providerSerializationProofSha256Hex: webExposureProof,
+                providerSerializationProofBinding: webExposureBinding,
+              })}
+            )
+          `;
+          yield* sql`
+            update ai_run_events
+            set event = jsonb_set(
+              jsonb_set(
+                jsonb_set(
+                  jsonb_set(
+                    jsonb_set(event, '{model,inputTokens}', '7'::jsonb),
+                    '{model,outputTokens}', '6'::jsonb
+                  ),
+                  '{model,totalTokens}', '13'::jsonb
+                ),
+                '{model,requestCount}', '6'::jsonb
+              ),
+              '{web,fetchCount}', '1'::jsonb
+            )
+            where run_id = ${ids.run} and emission_key = 'usage:run'
+          `;
+          yield* sql`
+            update ai_run_events
+            set event = jsonb_set(
+              jsonb_set(event, '{web,responseBytes}', '100'::jsonb),
+              '{web,billedUnits}', '0'::jsonb
+            )
+            where run_id = ${ids.run} and emission_key = 'usage:run'
+          `;
+          yield* sql`
+            insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+            values (
+              ${ids.run}, 11, ${sql.json({
+                type: "usage",
+                scope: "request",
+                kind: "model",
+                role: "web_research",
+                attempt: 0,
+                inputTokens: 1,
+                outputTokens: 1,
+                cachedTokens: 0,
+                reasoningTokens: 0,
+                totalTokens: 2,
+              })}, 'single-retrieve-web',
+              'usage:request:model:single-retrieve-web:0:0:0'
+            ), (
+              ${ids.run}, 12, ${sql.json({
+                type: "usage",
+                scope: "request",
+                kind: "web_fetch",
+                attempt: 0,
+                status: "ok",
+                resultCount: 1,
+                responseBytes: 100,
+                billedUnits: 0,
+                durationMs: 1,
+              })}, 'single-retrieve-web',
+              'usage:request:web_fetch:single-retrieve-web:0:0:0'
+            )
+          `;
+          const [webManifest] = yield* sql<{ readonly id: string }>`
+            select id::text as id
+            from ai_observations
+            where run_id = ${ids.run}
+              and emitting_task = 'single-retrieve-web'
+              and kind = 'retrieval_manifest'
+          `;
+          const [webExposure] = yield* sql<{ readonly id: string }>`
+            select id::text as id
+            from ai_source_exposures
+            where run_id = ${ids.run}
+              and task_id = 'single-retrieve-web'
+              and provider_request_index = 0
+          `;
+          yield* sql`alter table ai_source_exposures disable trigger user`;
+          yield* sql`
+            update ai_source_exposures
+            set content_item_identity = ${wrongWebContentItemIdentity}
+            where id::text = ${webExposure?.id}
+          `;
+          yield* sql`alter table ai_source_exposures enable trigger user`;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              jsonb_set(
+                jsonb_set(
+                  payload,
+                  '{contentItemIdentity}',
+                  to_jsonb(${wrongWebContentItemIdentity}::text),
+                  true
+                ),
+                '{providerSerializationProofSha256Hex}',
+                to_jsonb(${wrongWebExposureProof}::text),
+                true
+              ),
+              '{providerSerializationProofBinding}',
+              (${sql.json(wrongWebExposureBinding)}::jsonb),
+              true
+            )
+            where run_id = ${ids.run}
+              and emitting_task = 'single-retrieve-web'
+              and kind = 'source_exposure_attestation'
+          `;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              jsonb_set(
+                payload,
+                '{sourceExposureProofSha256Hexes}',
+                (${sql.json({ value: [wrongWebExposureProof] })}::jsonb->'value'),
+                true
+              ),
+              '{sourceExposureProofBindings}',
+              (${sql.json({
+                value: [
+                  {
+                    providerSerializationProofSha256Hex: wrongWebExposureProof,
+                    providerSerializationProofBinding: wrongWebExposureBinding,
+                  },
+                ],
+              })}::jsonb->'value'),
+              true
+            )
+            where run_id = ${ids.run}
+              and observation_key = 'provider_request_measurement:single-retrieve-web:0:0:0'
+          `;
+          const wrongWebContentItem = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(wrongWebContentItem)).toContain(`ai_observations/${webManifest?.id}/1`);
+          expect(errorText(wrongWebContentItem)).toContain(
+            "terminal selector reference lacks its exact selector-owned exposure and provider proof coordinate",
+          );
+          const wrongWebContentItemFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumns"
+          `;
+          expect(wrongWebContentItemFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`alter table ai_source_exposures disable trigger user`;
+          yield* sql`
+            update ai_source_exposures
+            set content_item_identity = ${webContentItemIdentity}
+            where id::text = ${webExposure?.id}
+          `;
+          yield* sql`alter table ai_source_exposures enable trigger user`;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              jsonb_set(
+                jsonb_set(
+                  payload,
+                  '{contentItemIdentity}',
+                  to_jsonb(${webContentItemIdentity}::text),
+                  true
+                ),
+                '{providerSerializationProofSha256Hex}',
+                to_jsonb(${webExposureProof}::text),
+                true
+              ),
+              '{providerSerializationProofBinding}',
+              (${sql.json(webExposureBinding)}::jsonb),
+              true
+            )
+            where run_id = ${ids.run}
+              and emitting_task = 'single-retrieve-web'
+              and kind = 'source_exposure_attestation'
+          `;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              jsonb_set(
+                payload,
+                '{sourceExposureProofSha256Hexes}',
+                (${sql.json({ value: [webExposureProof] })}::jsonb->'value'),
+                true
+              ),
+              '{sourceExposureProofBindings}',
+              (${sql.json({
+                value: [
+                  {
+                    providerSerializationProofSha256Hex: webExposureProof,
+                    providerSerializationProofBinding: webExposureBinding,
+                  },
+                ],
+              })}::jsonb->'value'),
+              true
+            )
+            where run_id = ${ids.run}
+              and observation_key = 'provider_request_measurement:single-retrieve-web:0:0:0'
+          `;
+          yield* sql`alter table ai_source_exposures disable trigger user`;
+          yield* sql`
+            update ai_source_exposures
+            set task_id = 'single-answer'
+            where id::text = ${webExposure?.id}
+          `;
+          yield* sql`alter table ai_source_exposures enable trigger user`;
+          const wrongWebOwner = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(wrongWebOwner)).toContain(`ai_source_exposures/${webExposure?.id}`);
+          expect(errorText(wrongWebOwner)).toContain("exposure has no exact attestation row");
+          const wrongWebOwnerFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumns"
+          `;
+          expect(wrongWebOwnerFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`alter table ai_source_exposures disable trigger user`;
+          yield* sql`
+            update ai_source_exposures
+            set task_id = 'single-retrieve-web'
+            where id::text = ${webExposure?.id}
+          `;
+          yield* sql`alter table ai_source_exposures enable trigger user`;
+          yield* sql`
+            update ai_run_events
+            set event = jsonb_set(
+              jsonb_set(
+                jsonb_set(event, '{web,searchCount}', '1'::jsonb),
+                '{web,responseBytes}', '110'::jsonb
+              ),
+              '{web,billedUnits}', '0'::jsonb
+            )
+            where run_id = ${ids.run} and emission_key = 'usage:run'
+          `;
+          yield* sql`
+            insert into ai_external_tool_usage (
+              run_id, task_id, loop_iteration, attempt, tool_request_index,
+              provider_service_id, operation, status, result_count,
+              response_bytes, billed_units, duration_ms
+            ) values (
+              ${ids.run}, 'evaluation-general-planner', 0, 0, 0,
+              'deterministic_test', 'web_search', 'ok', 1, 10, 0, 1
+            )
+          `;
+          yield* sql`
+            insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+            values (
+              ${ids.run}, 0, ${sql.json({
+                type: "usage",
+                scope: "request",
+                kind: "web_search",
+                attempt: 0,
+                status: "ok",
+                resultCount: 1,
+                responseBytes: 10,
+                billedUnits: 0,
+                durationMs: 1,
+              })}, 'evaluation-general-planner',
+              'usage:request:web_search:evaluation-general-planner:0:0:0'
+            )
+          `;
+          const [successfulExternalRequestEvent] = yield* sql<{ readonly id: string }>`
+            select id::text as id
+            from ai_run_events
+            where run_id = ${ids.run}
+              and emission_key = 'usage:request:web_search:evaluation-general-planner:0:0:0'
+          `;
+          expect(successfulExternalRequestEvent).toBeDefined();
+          yield* sql`
+            update ai_run_events
+            set seq = 15
+            where id = ${successfulExternalRequestEvent?.id}
+          `;
+          const lateSuccessfulExternalRequest = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(lateSuccessfulExternalRequest)).toContain(
+            `ai_run_events/${successfulExternalRequestEvent?.id}`,
+          );
+          expect(errorText(lateSuccessfulExternalRequest)).toContain(
+            "terminal request usage is not ordered after run_started and before usage:run",
+          );
+          const lateSuccessfulExternalRequestFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumns"
+          `;
+          expect(lateSuccessfulExternalRequestFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`
+            update ai_run_events
+            set seq = -1
+            where id = ${successfulExternalRequestEvent?.id}
+          `;
+          const earlySuccessfulExternalRequest = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(errorText(earlySuccessfulExternalRequest)).toContain(
+            `ai_run_events/${successfulExternalRequestEvent?.id}`,
+          );
+          expect(errorText(earlySuccessfulExternalRequest)).toContain(
+            "terminal request usage is not ordered after run_started and before usage:run",
+          );
+          const earlySuccessfulExternalRequestFence = yield* sql<{
+            readonly helpers: number;
+            readonly finalColumns: number;
+          }>`
+            select
+              (select count(*)::int from pg_proc where pronamespace = 'public'::regnamespace and proname = 'brief_ai_safe_bigint') as helpers,
+              (select count(*)::int from information_schema.columns where table_schema = 'public' and table_name = 'ai_runs' and column_name = 'citation_namespace') as "finalColumns"
+          `;
+          expect(earlySuccessfulExternalRequestFence).toEqual([{ helpers: 0, finalColumns: 0 }]);
+          yield* sql`
+            update ai_run_events
+            set seq = 13
+            where id = ${successfulExternalRequestEvent?.id}
+          `;
+          yield* sql.unsafe(migration).raw;
+          yield* sql.unsafe(migration).raw;
+        }),
+      );
+
+      const result = await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const [message] = yield* sql<{ readonly content: string }>`
+            select content from chat_messages where id = ${ids.assistantMessage}
+          `;
+          const sources = yield* sql<{ readonly sourceKey: string; readonly ordinal: number }>`
+            select source_key as "sourceKey",
+              substring(source_key from '_([1-9][0-9]*)$')::int as ordinal
+            from assistant_message_sources
+            where assistant_message_id = ${ids.assistantMessage}
+            order by ordinal
+          `;
+          const memory = yield* sql<{
+            readonly deletedAt: string | null;
+            readonly provenanceOnlyAt: string | null;
+          }>`
+            select deleted_at as "deletedAt", provenance_only_at as "provenanceOnlyAt"
+            from user_memories where id = ${ids.memory}
+          `;
+          const acceptedRevisions = yield* sql<{
+            readonly id: string;
+            readonly runId: string | null;
+          }>`
+            select id::text as id, run_id::text as "runId"
+            from user_memory_revisions
+            where id in (${ids.writeRevision}, ${ids.writeRevision2})
+            order by id
+          `;
+          const memoryHeads = yield* sql<{
+            readonly id: string;
+            readonly headRevisionId: string | null;
+          }>`
+            select id::text as id, head_revision_id::text as "headRevisionId"
+            from user_memories
+            where id in (${ids.memory}, ${ids.memory2})
+            order by id
+          `;
+          const retainedSourceRevisions = yield* sql<{ readonly revisionId: string }>`
+            select locator->>'memoryRevisionId' as "revisionId"
+            from assistant_message_sources
+            where assistant_message_id = ${ids.assistantMessage}
+            order by source_key
+          `;
+          const citation = yield* sql<{ readonly sourceKey: string }>`
+            select payload->>'sourceKey' as "sourceKey"
+            from ai_observations
+            where run_id = ${ids.run} and kind = 'citation'
+            order by id limit 1
+          `;
+          const rejected = yield* sql<{ readonly candidateId: string }>`
+            select payload->>'candidateId' as "candidateId"
+            from ai_observations
+            where run_id = ${ids.run} and kind = 'candidate_rejected'
+            order by id limit 1
+          `;
+          const delta = yield* sql<{ readonly delta: string }>`
+            select payload->>'delta' as delta
+            from ai_observations
+            where run_id = ${ids.run} and kind = 'answer_delta'
+            order by id limit 1
+          `;
+          const contextReady = yield* sql<{
+            readonly sourcesRead: readonly Record<string, unknown>[];
+          }>`
+            select event->'sourcesRead' as "sourcesRead"
+            from ai_run_events
+            where run_id = ${ids.run} and event->>'type' = 'context_ready'
+            order by seq limit 1
+          `;
+          return {
+            content: message?.content,
+            sources,
+            memory,
+            acceptedRevisions,
+            memoryHeads,
+            retainedSourceRevisions,
+            citation,
+            rejected,
+            delta,
+            contextReady,
+          };
+        }),
+      );
+      expect(result.content).toBe(
+        [
+          `Mapped [[cite:k_cn_${legacyNamespace}_1]] and [[cite:k_cn_${legacyNamespace}_3]].`,
+          `Unknown [[cite:${unknownKey}]]; prose ${oldKey1}; partial [[cite:${oldKey1}. then valid [[cite:k_cn_${legacyNamespace}_3]]`,
+          `Mixed [[cite:${oldKey1},${unknownKey}]] and malformed [[cite:${oldKey1},]]`,
+          `Code:\n\`\`\`text\n[[cite:${oldKey1}]]\n\`\`\``,
+          `Tilde:\n~~~text\n[[cite:${oldKey3}]]\n~~~`,
+          `Indented:\n    [[cite:${oldKey1}]]`,
+          `HTML: <code>[[cite:${oldKey3}]]</code> <pre>[[cite:${oldKey1}]]</pre>`,
+          `Inline: \`code [[cite:${oldKey1}]]\`[[cite:k_cn_${legacyNamespace}_3]]`,
+          `Adjacent \`code\`[[cite:k_cn_${legacyNamespace}_1]]`,
+          `Multi: \`\`code [[cite:${oldKey1}]]\`\`[[cite:k_cn_${legacyNamespace}_3]]`,
+          `Closing backslash: \`code\\\`[[cite:k_cn_${legacyNamespace}_1]]\`[[cite:${oldKey3}]]`,
+          "Escaped: \\`literal [[cite:k_cn_" +
+            legacyNamespace +
+            "_1]] and [[cite:k_cn_" +
+            legacyNamespace +
+            "_3]]",
+          `Unmatched multi: \`\`literal [[cite:k_cn_${legacyNamespace}_1]] then [[cite:k_cn_${legacyNamespace}_3]]`,
+          `After code [[cite:k_cn_${legacyNamespace}_1]]`,
+          `Unmatched single at end \`literal [[cite:k_cn_${legacyNamespace}_1]] then [[cite:k_cn_${legacyNamespace}_3]]`,
+        ].join("\n"),
+      );
+      expect(result.sources).toEqual([
+        { sourceKey: `k_cn_${legacyNamespace}_1`, ordinal: 1 },
+        { sourceKey: `k_cn_${legacyNamespace}_3`, ordinal: 3 },
+      ]);
+      expect(result.citation).toEqual([{ sourceKey: `k_cn_${legacyNamespace}_1` }]);
+      expect(result.rejected).toEqual([{ candidateId: oldKey1 }]);
+      expect(result.delta).toEqual([{ delta: result.content }]);
+      expect(result.contextReady).toEqual([
+        {
+          sourcesRead: [
+            {
+              sourceKey: `k_cn_${legacyNamespace}_1`,
+              label: "Saved fact",
+              tokenCount: 1,
+              topicIds: [],
+              kind: "memory",
+              memoryId: ids.memory,
+              memoryRevisionId: ids.revision,
+              ranges: [],
+            },
+            {
+              sourceKey: `k_cn_${legacyNamespace}_3`,
+              label: "Saved fact",
+              tokenCount: 1,
+              topicIds: [],
+              kind: "memory",
+              memoryId: ids.memory2,
+              memoryRevisionId: ids.revision2,
+              ranges: [],
+            },
+          ],
+        },
+      ]);
+      expect(result.memory[0]?.deletedAt).toBeNull();
+      expect(result.memory[0]?.provenanceOnlyAt).toBeNull();
+      expect(result.acceptedRevisions).toEqual(
+        [ids.writeRevision, ids.writeRevision2].sort().map((id) => ({ id, runId: ids.run })),
+      );
+      expect(result.memoryHeads).toEqual(
+        [
+          { id: ids.memory, headRevisionId: ids.writeRevision },
+          { id: ids.memory2, headRevisionId: ids.writeRevision2 },
+        ].sort((left, right) => left.id.localeCompare(right.id)),
+      );
+      expect(result.retainedSourceRevisions).toEqual([
+        { revisionId: ids.revision },
+        { revisionId: ids.revision2 },
+      ]);
+    } finally {
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+          yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
+        }),
+      );
+    }
+  }, 120_000);
+
+  it("rejects every legacy terminal 0063 ledger row before the cutover writes", async () => {
+    const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+    const databaseName = `brief_migrations_terminal_0063_legacy_${process.pid}_${suffix}`;
+    const databaseUrl = databaseUrlForName(databaseName);
+    const ids = {
+      user: `terminal-0063-legacy-user-${suffix}`,
+      company: crypto.randomUUID(),
+      chat: crypto.randomUUID(),
+      userMessage: crypto.randomUUID(),
+      run: crypto.randomUUID(),
+      assistantMessage: crypto.randomUUID(),
+      memory: crypto.randomUUID(),
+      revision: crypto.randomUUID(),
+      legacyObservation: "00000000-0000-4000-8000-000000000001",
+      legacyExecutionPlan: "00000000-0000-4000-8000-000000000002",
+      legacyAttestation: "00000000-0000-4000-8000-000000000003",
+      legacyCitation: "00000000-0000-4000-8000-000000000004",
+      legacyMeasurement: "00000000-0000-4000-8000-000000000010",
+      nestedOwner: "00000000-0000-4000-8000-000000000006",
+      nestedRole: "00000000-0000-4000-8000-000000000007",
+      nestedDocumentVersion: "00000000-0000-4000-8000-000000000008",
+      malformedArrayElement: "00000000-0000-4000-8000-000000000009",
+      malformedRootPayload: "00000000-0000-4000-8000-000000000011",
+      invalidContextTerminal: "00000000-0000-4000-8000-000000000012",
+      invalidProviderMeasurement: "00000000-0000-4000-8000-000000000013",
+      oversizedSource: "00000000-0000-4000-8000-000000000014",
+      invalidProviderPassed: "00000000-0000-4000-8000-000000000015",
+      invalidProviderProofElement: "00000000-0000-4000-8000-000000000016",
+      invalidProviderBinding: "00000000-0000-4000-8000-000000000017",
+      invalidRestrictedLedger: "00000000-0000-4000-8000-000000000018",
+    };
+    const nonce = Buffer.from("terminal-0063-legacy", "utf8").subarray(0, 16);
+    const oldKey = `k_${nonce.toString("base64url")}_1`;
+
+    try {
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`);
+        }),
+      );
+      await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe("drop schema if exists public cascade");
+          yield* sql.unsafe("create schema public");
+        }),
+      );
+      await runDb(
+        databaseUrl,
+        applyMigrationsThrough("0063_immutable_document_exposure_evidence.sql"),
+      );
+      const migration = await Bun.file(
+        new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+      ).text();
+      await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            insert into platform_users (id, primary_email, display_name, clerk_user_id)
+            values (${ids.user}, ${`${ids.user}@example.test`}, 'Terminal legacy user', ${`clerk-${ids.user}`})
+          `;
+          yield* sql`insert into client_companies (id, name) values (${ids.company}, 'Terminal legacy company')`;
+          yield* sql`
+            insert into client_company_memberships (company_id, user_id, role)
+            values (${ids.company}, ${ids.user}, 'admin')
+          `;
+          yield* sql`
+            insert into chats (id, user_id, company_id, memory_mode)
+            values (${ids.chat}, ${ids.user}, ${ids.company}, 'private_owner')
+          `;
+          yield* sql`
+            insert into chat_messages (id, chat_id, author, content)
+            values (${ids.userMessage}, ${ids.chat}, 'user', 'What survived?')
+          `;
+          yield* sql`
+            insert into ai_runs (
+              id, chat_id, initiating_user_id, user_message_id, locale, market,
+              citation_nonce, effective_web_policy, finished_at
+            ) values (
+              ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
+              decode(${nonce.toString("base64")}, 'base64'),
+              ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })}, now()
+            )
+          `;
+          yield* sql`
+            insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id)
+            values (${ids.assistantMessage}, ${ids.chat}, 'assistant', ${`Answer [[cite:${oldKey}]]`}, ${ids.run})
+          `;
+          yield* sql`update ai_runs set assistant_message_id = ${ids.assistantMessage} where id = ${ids.run}`;
+          yield* sql`
+            insert into user_memories (
+              id, user_id, kind, content, head_revision_id, deleted_at, provenance_only_at
+            ) values (${ids.memory}, ${ids.user}, null, null, null, now(), now())
+          `;
+          yield* sql`
+            insert into user_memory_revisions (id, memory_id, action, state_before, state_after)
+            values (
+              ${ids.revision}, ${ids.memory}, 'create', null,
+              ${sql.json({ kind: "fact", content: "A retained fact", deleted: false })}
+            )
+          `;
+          yield* sql`
+            insert into assistant_message_sources (
+              assistant_message_id, source_key, kind, locator, memory_revision_id,
+              display_label, public_provenance
+            ) values (
+              ${ids.assistantMessage}, ${oldKey}, 'memory',
+              ${sql.json({ kind: "memory", memoryId: ids.memory, memoryRevisionId: ids.revision })},
+              ${ids.revision}, 'Retained fact', '{}'::jsonb
+            )
+          `;
+          yield* sql`
+            insert into assistant_message_source_uses (
+              assistant_message_id, source_key, consumer_task_id,
+              rendered_token_count, context_order, ranges
+            ) values (${ids.assistantMessage}, ${oldKey}, 'single-answer', 2, 0, '[]'::jsonb)
+          `;
+          const insertLegacyObservation = (
+            id: string,
+            kind: string,
+            payload: Record<string, unknown>,
+          ) => sql`
+            insert into ai_observations (
+              id, run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${id}, ${ids.run}, ${ids.chat}, 'finalize', 0, 0,
+              ${`legacy:${kind}`}, ${kind}, ${sql.json(payload)}
+            )
+          `;
+          yield* insertLegacyObservation(ids.legacyObservation, "conversation_resolution", {
+            nested: [{ ownerId: ids.user }],
+          });
+          yield* sql`
+            insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+            values
+              (${ids.run}, 1, ${sql.json({ type: "run_started" })}, null, 'run_started'),
+              (${ids.run}, 2, ${sql.json({ type: "done", assistantMessageId: ids.assistantMessage })}, 'finalize', 'terminal')
+          `;
+          const exit = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(exit._tag).toBe("Failure");
+          expect(errorText(exit)).toContain(`ai_observations/${ids.legacyObservation}`);
+          expect(errorText(exit)).toContain("legacy observation kind conversation_resolution");
+        }),
+      );
+      const unchanged = await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{
+            readonly legacyNamespaceBytes: number;
+            readonly citationNamespace: number;
+            readonly oldSource: number;
+            readonly legacyKinds: number;
+            readonly terminalEvents: number;
+            readonly cutoverHelpers: number;
+          }>`
+            select
+              (select count(*) from information_schema.columns where table_name = 'ai_runs' and column_name = 'citation_nonce')::int as "legacyNamespaceBytes",
+              (select count(*) from information_schema.columns where table_name = 'ai_runs' and column_name = 'citation_namespace')::int as "citationNamespace",
+              (select count(*) from assistant_message_sources where source_key = ${oldKey})::int as "oldSource",
+              (select count(*) from ai_observations where kind in ('conversation_resolution', 'execution_plan', 'provider_request_attestation'))::int as "legacyKinds",
+              (select count(*) from ai_run_events where run_id = ${ids.run})::int as "terminalEvents",
+              (select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname in (
+                'brief_ai_safe_bigint', 'brief_ai_utf16_length', 'brief_ai_legacy_json_key',
+                'brief_ai_valid_restricted_context_ledger', 'brief_ai_valid_terminal_usage_coordinate',
+                'brief_ai_normalize_ranges'
+              ))::int as "cutoverHelpers"
+          `;
+        }),
+      );
+      expect(unchanged).toEqual([
+        {
+          legacyNamespaceBytes: 1,
+          citationNamespace: 0,
+          oldSource: 1,
+          legacyKinds: 1,
+          terminalEvents: 2,
+          cutoverHelpers: 0,
+        },
+      ]);
+
+      const expectLegacyObservationBlocker = async (
+        id: string,
+        kind: string,
+        payload: unknown,
+        reason: string,
+        options: { readonly emittingTask?: string; readonly observationKey?: string } = {},
+      ) => {
+        await runDb(
+          databaseUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_observations (
+                id, run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${id}, ${ids.run}, ${ids.chat},
+                ${options.emittingTask ?? (kind === "execution_plan" || kind === "provider_request_attestation" ? "finalize" : "single-retrieve-internal")},
+                0, 0, ${options.observationKey ?? `legacy:${kind}`}, ${kind}, ${JSON.stringify(payload)}::jsonb
+              )
+            `;
+            const blocked = yield* Effect.exit(sql.unsafe(migration).raw);
+            expect(blocked._tag).toBe("Failure");
+            expect(errorText(blocked)).toContain(`ai_observations/${id}`);
+            expect(errorText(blocked)).toContain(reason);
+            const helpers = yield* sql<{ readonly count: number }>`
+              select count(*)::int as count
+              from pg_proc
+              where pronamespace = 'public'::regnamespace
+                and proname in (
+                  'brief_ai_safe_bigint', 'brief_ai_utf16_length', 'brief_ai_legacy_json_key',
+                  'brief_ai_valid_restricted_context_ledger', 'brief_ai_valid_terminal_usage_coordinate',
+                  'brief_ai_normalize_ranges'
+                )
+            `;
+            expect(helpers[0]?.count).toBe(0);
+            yield* sql`delete from ai_observations where id = ${id}`;
+          }),
+        );
+      };
+      await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`delete from ai_observations where id = ${ids.legacyObservation}`;
+        }),
+      );
+      await expectLegacyObservationBlocker(
+        ids.legacyExecutionPlan,
+        "execution_plan",
+        { nested: [{ role: "direct_answer" }] },
+        "legacy observation kind execution_plan",
+      );
+      await expectLegacyObservationBlocker(
+        ids.legacyAttestation,
+        "provider_request_attestation",
+        { nested: [{ versionId: "legacy" }] },
+        "legacy observation kind provider_request_attestation",
+      );
+      await expectLegacyObservationBlocker(
+        ids.nestedOwner,
+        "candidate_rejected",
+        { candidateId: oldKey, reason: "missing", nested: [{ ownerId: ids.user }] },
+        "legacy payload field ownerId",
+      );
+      await expectLegacyObservationBlocker(
+        ids.nestedRole,
+        "candidate_rejected",
+        { candidateId: oldKey, reason: "missing", nested: [{ role: "direct_answer" }] },
+        "legacy payload field role",
+      );
+      await expectLegacyObservationBlocker(
+        ids.nestedDocumentVersion,
+        "candidate_rejected",
+        { candidateId: oldKey, reason: "missing", nested: [{ versionId: "legacy" }] },
+        "legacy payload field versionId",
+      );
+      await expectLegacyObservationBlocker(
+        ids.legacyCitation,
+        "citation",
+        { sourceKey: oldKey },
+        "citation payload is not bound to its answer source",
+      );
+      await expectLegacyObservationBlocker(
+        "00000000-0000-4000-8000-000000000005",
+        "candidate_rejected",
+        { candidateId: [oldKey], reason: "missing" },
+        "candidate rejection payload is not strict",
+      );
+      await expectLegacyObservationBlocker(
+        ids.malformedArrayElement,
+        "context_decision",
+        { valid: true, decisions: [], feedback: ["ok", 1] },
+        "context decision feedback is not an array of strings",
+      );
+      await expectLegacyObservationBlocker(
+        ids.malformedRootPayload,
+        "candidate_rejected",
+        ["not-an-object"],
+        "payload must be a JSON object",
+      );
+      await expectLegacyObservationBlocker(
+        ids.invalidContextTerminal,
+        "context_reducer_terminal",
+        {
+          terminalUsageCoordinate: {
+            taskId: "single-reduce-plan",
+            loopIteration: 0,
+            attempt: 0,
+            providerRequestIndex: 0,
+          },
+          modelId: "glm-5-turbo",
+          requestSha256Hex: "a".repeat(64),
+          providerInputTokens: 1,
+          totalTokens: 2,
+          stopReason: "unknown",
+        },
+        "context reducer terminal payload is not strict",
+        { emittingTask: "single-reduce-plan" },
+      );
+      await expectLegacyObservationBlocker(
+        ids.invalidProviderMeasurement,
+        "provider_request_measurement",
+        {
+          agentRole: "direct_answer",
+          modelId: "glm-5-turbo",
+          requestSha256Hex: "a".repeat(64),
+          sourceExposureProofSha256Hexes: [],
+          providerRequestIndex: 0,
+          inputTokens: 1,
+          requestedOutputTokens: 0,
+          usableInputTokens: 1,
+          contextWindow: 100,
+          passed: true,
+        },
+        "provider measurement payload is not strict",
+        {
+          emittingTask: "single-answer",
+          observationKey: "provider_request_measurement:single-answer:0:0:0",
+        },
+      );
+      const validProviderPayload = {
+        agentRole: "direct_answer",
+        modelId: "glm-5-turbo",
+        requestSha256Hex: "a".repeat(64),
+        sourceExposureProofSha256Hexes: [],
+        providerRequestIndex: 0,
+        inputTokens: 1,
+        requestedOutputTokens: 1,
+        usableInputTokens: 1,
+        contextWindow: 100,
+        passed: true,
+      };
+      await expectLegacyObservationBlocker(
+        ids.invalidProviderPassed,
+        "provider_request_measurement",
+        { ...validProviderPayload, passed: false },
+        "provider measurement payload is not strict or passed",
+        {
+          emittingTask: "single-answer",
+          observationKey: "provider_request_measurement:single-answer:0:0:0",
+        },
+      );
+      await expectLegacyObservationBlocker(
+        ids.invalidProviderProofElement,
+        "provider_request_measurement",
+        { ...validProviderPayload, sourceExposureProofSha256Hexes: [{}] },
+        "provider measurement payload is not strict or passed",
+        {
+          emittingTask: "single-answer",
+          observationKey: "provider_request_measurement:single-answer:0:0:0",
+        },
+      );
+      await expectLegacyObservationBlocker(
+        ids.invalidProviderBinding,
+        "provider_request_measurement",
+        {
+          ...validProviderPayload,
+          sourceExposureProofSha256Hexes: ["a".repeat(64)],
+          sourceExposureProofBindings: [{}],
+        },
+        "provider measurement payload is not strict or passed",
+        {
+          emittingTask: "single-answer",
+          observationKey: "provider_request_measurement:single-answer:0:0:0",
+        },
+      );
+      await expectLegacyObservationBlocker(
+        ids.invalidRestrictedLedger,
+        "context_serialized",
+        {
+          consumerTaskId: "single-answer",
+          sourceKeys: [],
+          restrictedContextLedger: {
+            requestKind: "direct",
+            modelId: "glm-5-turbo",
+            requestSha256Hex: "a".repeat(64),
+            inputTokens: 1,
+            usableInputTokens: 1,
+            requestedOutputTokens: 0,
+            selectedConversation: [],
+            question: "retained question",
+            gaps: [],
+            sources: [],
+          },
+          terminalUsageCoordinate: {
+            taskId: "single-answer",
+            loopIteration: 0,
+            attempt: 0,
+            providerRequestIndex: 0,
+          },
+        },
+        "restricted context ledger is not strict",
+        { emittingTask: "single-answer" },
+      );
+      await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const oversizedKey = `k_${nonce.toString("base64url")}_9223372036854775808`;
+          yield* sql`alter table assistant_message_sources disable trigger user`;
+          yield* sql`
+            insert into assistant_message_sources (
+              assistant_message_id, source_key, kind, locator,
+              document_version_id, publisher_document_version_id,
+              message_id, memory_revision_id, display_label, public_provenance,
+              source_identity_digest
+            ) values (
+              ${ids.assistantMessage}, ${oversizedKey}, 'memory',
+              ${sql.json({ kind: "memory", memoryId: ids.memory, memoryRevisionId: ids.revision })},
+              null, null, null, ${ids.revision}, 'Retained fact', '{}'::jsonb,
+              assistant_message_source_identity_digest(
+                ${ids.assistantMessage}, ${oversizedKey}, 'memory',
+                ${sql.json({ kind: "memory", memoryId: ids.memory, memoryRevisionId: ids.revision })},
+                null, null, null, ${ids.revision}, 'Retained fact', '{}'::jsonb
+              )
+            )
+          `;
+          yield* sql`alter table assistant_message_sources enable trigger user`;
+          const blocked = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(blocked._tag).toBe("Failure");
+          expect(errorText(blocked)).toContain(
+            `assistant_message_sources/${ids.assistantMessage}/${oversizedKey}`,
+          );
+          expect(errorText(blocked)).toContain("citation ordinal exceeds final integer bound");
+          const helpers = yield* sql<{ readonly count: number }>`
+            select count(*)::int as count
+            from pg_proc
+            where pronamespace = 'public'::regnamespace
+              and proname in (
+                'brief_ai_safe_bigint', 'brief_ai_utf16_length', 'brief_ai_legacy_json_key',
+                'brief_ai_valid_restricted_context_ledger', 'brief_ai_valid_terminal_usage_coordinate',
+                'brief_ai_normalize_ranges'
+              )
+          `;
+          expect(helpers[0]?.count).toBe(0);
+          yield* sql`alter table assistant_message_sources disable trigger user`;
+          yield* sql`
+            delete from assistant_message_sources
+            where assistant_message_id = ${ids.assistantMessage}
+              and source_key = ${oversizedKey}
+          `;
+          yield* sql`alter table assistant_message_sources enable trigger user`;
+        }),
+      );
+      await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const legacyLocator = {
+            kind: "memory",
+            memoryId: ids.memory,
+            memoryRevisionId: ids.revision,
+            versionId: "legacy-version",
+          };
+          yield* sql`alter table assistant_message_sources disable trigger user`;
+          yield* sql`
+            update assistant_message_sources
+            set locator = ${sql.json(legacyLocator)},
+                source_identity_digest = assistant_message_source_identity_digest(
+                  assistant_message_id, source_key, kind, ${sql.json(legacyLocator)},
+                  document_version_id, publisher_document_version_id,
+                  message_id, memory_revision_id, display_label, public_provenance
+                )
+            where assistant_message_id = ${ids.assistantMessage}
+              and source_key = ${oldKey}
+          `;
+          yield* sql`alter table assistant_message_sources enable trigger user`;
+          const blocked = yield* Effect.exit(sql.unsafe(migration).raw);
+          expect(blocked._tag).toBe("Failure");
+          expect(errorText(blocked)).toContain(
+            `assistant_message_sources/${ids.assistantMessage}/${oldKey}`,
+          );
+          expect(errorText(blocked)).toContain(
+            "non-document locator carries a legacy document version field",
+          );
+          yield* sql`alter table assistant_message_sources disable trigger user`;
+          yield* sql`
+            update assistant_message_sources
+            set locator = ${sql.json({ kind: "memory", memoryId: ids.memory, memoryRevisionId: ids.revision })},
+                source_identity_digest = assistant_message_source_identity_digest(
+                  assistant_message_id, source_key, kind, ${sql.json({ kind: "memory", memoryId: ids.memory, memoryRevisionId: ids.revision })},
+                  document_version_id, publisher_document_version_id,
+                  message_id, memory_revision_id, display_label, public_provenance
+                )
+            where assistant_message_id = ${ids.assistantMessage}
+              and source_key = ${oldKey}
+          `;
+          yield* sql`alter table assistant_message_sources enable trigger user`;
+        }),
+      );
+    } finally {
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+          yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
+        }),
+      );
+    }
+  }, 120_000);
+
   it("immutably binds assistant source and source-use tuples after citation persistence", async () => {
     const testUrl = isolatedDatabaseUrl();
     const ids = {
@@ -411,8 +7201,10 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       message: crypto.randomUUID(),
       run: crypto.randomUUID(),
       assistant: crypto.randomUUID(),
+      memory: crypto.randomUUID(),
+      memoryRevision: crypto.randomUUID(),
     };
-    const sourceKey = `k_${"A".repeat(22)}_1`;
+    const sourceKey = `k_${"cn_" + "A".repeat(22)}_1`;
     const assistantContent = `Answer [[cite:${sourceKey}]]`;
 
     await runDb(
@@ -440,11 +7232,27 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         `;
         yield* sql`
           insert into ai_runs (
-            id, chat_id, initiating_user_id, user_message_id, locale, market,
-            effective_web_policy
+            id, chat_id, initiating_user_id, user_message_id, locale, market, citation_namespace,
+            acceptance_scope
           ) values (
-            ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.message}, 'en-US', 'US',
-            ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })}
+            ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.message}, 'en-US', 'US', ${"cn_" + "A".repeat(22)},
+            ${sql.json({
+              userId: ids.user,
+              chatId: ids.chat,
+              companyId: ids.company,
+              subscriptionIds: [],
+              accessIds: [],
+              publicSourceIds: [],
+              memoryMode: "disabled",
+              memoryRevisionIds: [],
+              webRequested: false,
+              webEnabled: false,
+              provider: "zai_coding_plan_official",
+              fastModelId: "glm-5-turbo",
+              mainModelId: "glm-5-turbo",
+              webTransportProvider: null,
+              allowedDomains: null,
+            })}
           )
         `;
         yield* sql`
@@ -452,6 +7260,21 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           values (${ids.assistant}, ${ids.chat}, 'assistant', ${assistantContent}, ${ids.run})
         `;
         yield* sql`update ai_runs set assistant_message_id = ${ids.assistant} where id = ${ids.run}`;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              insert into user_memories (id, user_id, kind, content, head_revision_id)
+              values (${ids.memory}, ${ids.user}, 'fact', 'Source identity memory', ${ids.memoryRevision})
+            `;
+            yield* sql`
+              insert into user_memory_revisions (id, memory_id, action, state_before, state_after, run_id)
+              values (
+                ${ids.memoryRevision}, ${ids.memory}, 'create', null,
+                ${sql.json({ kind: "fact", content: "Source identity memory", deleted: false })}, null
+              )
+            `;
+          }),
+        );
         yield* sql`
           insert into assistant_message_sources (
             assistant_message_id, source_key, kind, locator, display_label, public_provenance
@@ -463,7 +7286,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               title: "Evidence",
               domain: "example.test",
               quote: "Evidence",
-              quoteHash: "hash",
+              quoteHash: createHash("sha256").update("Evidence").digest("base64url"),
               capturedAt: "2026-01-01T00:00:00.000Z",
             })},
             'Evidence', ${sql.json({ citationUrl: "https://example.test/evidence" })}
@@ -499,6 +7322,214 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       expect(failure).toBeDefined();
       expect(errorText(failure)).toContain(fragment);
     };
+    await expectDbFailure(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator, message_id,
+            display_label, public_provenance
+          ) values (
+            ${ids.assistant}, ${`${sourceKey.slice(0, -1)}2`}, 'chat_message',
+            ${sql.json({ kind: "chat_message", messageId: ids.assistant })},
+            ${ids.message}, 'Chat', ${sql.json({})}
+          )
+        `;
+      }),
+      "chat locator must bind messageId",
+    );
+    await expectDbFailure(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator,
+            display_label, public_provenance
+          ) values (
+            ${ids.assistant}, ${`${sourceKey.slice(0, -1)}3`}, 'memory',
+            ${sql.json({ kind: "memory", memoryId: crypto.randomUUID(), memoryRevisionId: crypto.randomUUID() })},
+            'Memory', ${sql.json({})}
+          )
+        `;
+      }),
+      "memory locator must bind memoryRevisionId",
+    );
+    await expectDbFailure(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator, message_id,
+            display_label, public_provenance
+          ) values (
+            ${ids.assistant}, ${`${sourceKey.slice(0, -1)}10`}, 'chat_message',
+            ${sql.json({ kind: "chat_message", messageId: ids.message })},
+            ${ids.message}, 'Chat', ${sql.json({ forbidden: true })}
+          )
+        `;
+      }),
+      "chat locator must bind messageId",
+    );
+    await expectDbFailure(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator, memory_revision_id,
+            display_label, public_provenance
+          ) values (
+            ${ids.assistant}, ${`${sourceKey.slice(0, -1)}11`}, 'memory',
+            ${sql.json({ kind: "memory", memoryId: ids.memory, memoryRevisionId: ids.memoryRevision })},
+            ${ids.memoryRevision}, 'Memory', ${sql.json({ forbidden: true })}
+          )
+        `;
+      }),
+      "memory locator must bind memoryRevisionId",
+    );
+    await expectDbFailure(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator,
+            display_label, public_provenance
+          ) values (
+            ${ids.assistant}, ${`${sourceKey.slice(0, -1)}4`}, 'web',
+            ${sql.json({
+              kind: "web",
+              url: "https://example.test/evidence",
+              title: "Evidence",
+              domain: "example.test",
+              quote: "Evidence",
+              quoteHash: "hash",
+              capturedAt: "2026-01-01T00:00:00.000Z",
+            })},
+            'Web', ${sql.json({})}
+          )
+        `;
+      }),
+      "web locator must use the strict URL, quote, and hash form",
+    );
+    await expectDbFailure(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator,
+            display_label, public_provenance
+          ) values (
+            ${ids.assistant}, ${`${sourceKey.slice(0, -1)}9`}, 'web',
+            ${sql.json({
+              kind: "web",
+              url: "https://example.test",
+              title: "Evidence",
+              domain: "example.test",
+              quote: "Evidence",
+              quoteHash: createHash("sha256").update("Evidence").digest("base64url"),
+              capturedAt: "2026-01-01T00:00:00.000Z",
+            })},
+            'Web', ${sql.json({ citationUrl: "https://example.test" })}
+          )
+        `;
+      }),
+      "web locator must use the strict URL, quote, and hash form",
+    );
+    await expectDbFailure(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator,
+            display_label, public_provenance
+          ) values (
+            ${ids.assistant}, ${`${sourceKey.slice(0, -1)}8`}, 'web',
+            ${sql.json({
+              kind: "web",
+              url: "https://example.test/a/../b",
+              title: "Evidence",
+              domain: "example.test",
+              quote: "Evidence",
+              quoteHash: createHash("sha256").update("Evidence").digest("base64url"),
+              capturedAt: "2026-01-01T00:00:00.000Z",
+            })},
+            'Web', ${sql.json({ citationUrl: "https://example.test/a/../b" })}
+          )
+        `;
+      }),
+      "web locator must use the strict URL, quote, and hash form",
+    );
+    await expectDbFailure(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator,
+            display_label, public_provenance
+          ) values (
+            ${ids.assistant}, ${`${sourceKey.slice(0, -1)}5`}, 'web',
+            ${sql.json({
+              kind: "web",
+              url: "https://Example.test/evidence",
+              title: "Evidence",
+              domain: "Example.test",
+              quote: "Evidence",
+              quoteHash: createHash("sha256").update("Evidence").digest("base64url"),
+              capturedAt: "2026-01-01T00:00:00.000Z",
+            })},
+            'Web', ${sql.json({ citationUrl: "https://Example.test/evidence" })}
+          )
+        `;
+      }),
+      "web locator must use the strict URL, quote, and hash form",
+    );
+    await expectDbFailure(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator,
+            display_label, public_provenance
+          ) values (
+            ${ids.assistant}, ${`${sourceKey.slice(0, -1)}6`}, 'web',
+            ${sql.json({
+              kind: "web",
+              url: "https://example.test/evidence",
+              title: "Evidence",
+              domain: "example.test",
+              quote: "Evidence",
+              quoteHash: createHash("sha256").update("Evidence").digest("base64url"),
+              capturedAt: "2026-02-31T00:00:00.000Z",
+            })},
+            'Web', ${sql.json({ citationUrl: "https://example.test/evidence" })}
+          )
+        `;
+      }),
+      "web locator must use the strict URL, quote, and hash form",
+    );
+    await expectDbFailure(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator,
+            display_label, public_provenance
+          ) values (
+            ${ids.assistant}, ${`${sourceKey.slice(0, -1)}7`}, 'web',
+            ${sql.json({
+              kind: "web",
+              url: "https://example.test/evidence",
+              title: "Evidence",
+              domain: "example.test",
+              quote: "Evidence",
+              quoteHash: createHash("sha256").update("Evidence").digest("base64url"),
+              capturedAt: "2026-01-01T00:00:00.000Z",
+            })},
+            'Web', ${sql.json({})}
+          )
+        `;
+      }),
+      "web locator must use the strict URL, quote, and hash form",
+    );
     await expectDbFailure(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -562,6 +7593,139 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         `;
       }),
       "source uses cannot be deleted independently",
+    );
+
+    const malformedIdentityRows = [
+      {
+        kind: "document",
+        locator: {
+          kind: "document",
+          sourceId: "public:missing",
+          documentId: "missing",
+          versionId: "missing",
+          contentHash: "a".repeat(64),
+          ranges: [{ charStart: 0, charEnd: 1 }],
+        },
+        documentSourceId: null,
+        documentId: "missing",
+        contentHash: "a".repeat(64),
+        versionId: "missing",
+        publisherExtractionId: null,
+        messageId: null,
+        memoryRevisionId: null,
+      },
+      {
+        kind: "document",
+        locator: {
+          kind: "document",
+          sourceId: "public:missing",
+          documentId: "missing",
+          versionId: "missing",
+          contentHash: "a".repeat(64),
+          ranges: [{ charStart: 0, charEnd: 1 }],
+        },
+        documentSourceId: "public:missing",
+        documentId: null,
+        contentHash: "a".repeat(64),
+        versionId: "missing",
+        publisherExtractionId: null,
+        messageId: null,
+        memoryRevisionId: null,
+      },
+      {
+        kind: "document",
+        locator: {
+          kind: "document",
+          sourceId: "public:missing",
+          documentId: "missing",
+          versionId: "missing",
+          contentHash: "a".repeat(64),
+          ranges: [{ charStart: 0, charEnd: 1 }],
+        },
+        documentSourceId: "public:missing",
+        documentId: "missing",
+        contentHash: null,
+        versionId: "missing",
+        publisherExtractionId: null,
+        messageId: null,
+        memoryRevisionId: null,
+      },
+      {
+        kind: "document",
+        locator: {
+          kind: "document",
+          sourceId: "public:missing",
+          documentId: "missing",
+          versionId: "missing",
+          contentHash: "a".repeat(64),
+          ranges: [{ charStart: 0, charEnd: 1 }],
+        },
+        documentSourceId: "public:missing",
+        documentId: "missing",
+        contentHash: "a".repeat(64),
+        versionId: null,
+        publisherExtractionId: null,
+        messageId: null,
+        memoryRevisionId: null,
+      },
+      ...(["chat_message", "memory", "web"] as const).flatMap((kind) =>
+        (
+          [
+            "documentSourceId",
+            "documentId",
+            "contentHash",
+            "versionId",
+            "publisherExtractionId",
+          ] as const
+        ).map((forbiddenColumn) => ({
+          kind,
+          locator:
+            kind === "chat_message"
+              ? { kind, messageId: ids.message }
+              : kind === "memory"
+                ? { kind, memoryId: crypto.randomUUID(), memoryRevisionId: crypto.randomUUID() }
+                : {
+                    kind,
+                    url: "https://example.test",
+                    title: "Example",
+                    domain: "example.test",
+                    quote: "q",
+                    quoteHash: "a".repeat(43),
+                    capturedAt: "2026-01-01T00:00:00.000Z",
+                  },
+          documentSourceId: forbiddenColumn === "documentSourceId" ? "public:malformed" : null,
+          documentId: forbiddenColumn === "documentId" ? "malformed" : null,
+          contentHash: forbiddenColumn === "contentHash" ? "a".repeat(64) : null,
+          versionId: forbiddenColumn === "versionId" ? "malformed" : null,
+          publisherExtractionId:
+            forbiddenColumn === "publisherExtractionId" ? crypto.randomUUID() : null,
+          messageId: kind === "chat_message" ? ids.message : null,
+          memoryRevisionId: kind === "memory" ? crypto.randomUUID() : null,
+        })),
+      ),
+    ];
+    await runDb(
+      testUrl,
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`alter table assistant_message_sources disable trigger user`;
+        for (const [index, row] of malformedIdentityRows.entries()) {
+          const failure = yield* Effect.flip(sql`
+            insert into assistant_message_sources (
+              assistant_message_id, source_key, kind, locator,
+              version_id, publisher_extraction_id, document_source_id, document_id,
+              content_hash, message_id, memory_revision_id, source_identity_digest
+            ) values (
+              ${ids.assistant}, ${`k_cn_${"M".repeat(22)}_${index + 100}`}, ${row.kind},
+              ${sql.json(row.locator)}, ${row.versionId}, ${row.publisherExtractionId},
+              ${row.documentSourceId}, ${row.documentId}, ${row.contentHash},
+              ${row.messageId}, ${row.memoryRevisionId}, ${"0".repeat(64)}
+            )
+          `);
+          expect(errorText(failure)).toContain("assistant_message_sources_");
+        }
+        yield* sql`alter table assistant_message_sources enable trigger user`;
+      }),
     );
 
     await runDb(
@@ -1774,6 +8938,10 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         .replaceAll("-", "")
         .slice(0, 8)}`;
       const pdfUrl = databaseUrlForName(pdfDatabaseName);
+      const legacyPdfText = "legacy pdf text ".repeat(10);
+      const currentHtmlText = "current html text ".repeat(10);
+      const legacyPdfContentHash = createHash("sha256").update(legacyPdfText).digest("hex");
+      const currentHtmlContentHash = createHash("sha256").update(currentHtmlText).digest("hex");
       await runDb(
         adminDatabaseUrl(),
         Effect.gen(function* () {
@@ -1834,14 +9002,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 (
                   'legacy-pdf-document', 'binary-migration-source',
                   'https://example.test/legacy.pdf', 'Legacy PDF', now(), now(),
-                  'en-US', 'report', repeat('legacy pdf text ', 10), 160,
-                  'legacy-pdf-content', '27000000-0000-4000-8000-000000000001'
+                  'en-US', 'report', ${legacyPdfText}, 160,
+                  ${legacyPdfContentHash}, '27000000-0000-4000-8000-000000000001'
                 ),
                 (
                   'current-html-document', 'binary-migration-source',
                   'https://example.test/current.html', 'Current HTML', now(), now(),
-                  'en-US', 'article', repeat('current html text ', 10), 180,
-                  'current-html-content', '27000000-0000-4000-8000-000000000002'
+                  'en-US', 'article', ${currentHtmlText}, 180,
+                  ${currentHtmlContentHash}, '27000000-0000-4000-8000-000000000002'
                 )
             `;
             yield* sql`
@@ -1851,12 +9019,12 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               ) values
                 (
                   'binary-migration-source', 'https://example.test/legacy.pdf',
-                  'Legacy PDF', now(), 'legacy-pdf-content', 'legacy-pdf-document',
+                  'Legacy PDF', now(), ${legacyPdfContentHash}, 'legacy-pdf-document',
                   '27000000-0000-4000-8000-000000000001'
                 ),
                 (
                   'binary-migration-source', 'https://example.test/current.html',
-                  'Current HTML', now(), 'current-html-content', 'current-html-document',
+                  'Current HTML', now(), ${currentHtmlContentHash}, 'current-html-document',
                   '27000000-0000-4000-8000-000000000002'
                 )
             `;
@@ -2193,7 +9361,6 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       const chatId = "eeeeeeee-0000-0000-0000-000000000001";
       const messageId = "eeeeeeee-0000-0000-0000-000000000002";
       const runId = "eeeeeeee-0000-0000-0000-000000000003";
-      const assistantMessageId = "eeeeeeee-0000-0000-0000-000000000004";
       const memoryId = "eeeeeeee-0000-0000-0000-000000000005";
 
       await runDb(
@@ -2227,25 +9394,30 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               values (${messageId}, ${chatId}, 'user', 'surviving chat message')
             `;
             yield* sql`
-              insert into ai_runs (id, chat_id, user_message_id, locale, market, finished_at)
-              values (${runId}, ${chatId}, ${messageId}, 'fr-FR', 'FR', now())
+            insert into ai_runs (id, chat_id, user_message_id, locale, market, failed_at, error)
+              values (${runId}, ${chatId}, ${messageId}, 'fr-FR', 'FR', now(), 'historical_failure')
             `;
             yield* sql`
-              insert into chat_messages (id, chat_id, author, content, ai_run_id)
-              values (${assistantMessageId}, ${chatId}, 'assistant', 'surviving assistant', ${runId})
+              alter table ai_run_events add column if not exists emission_key text
             `;
             yield* sql`
-              update ai_runs
-              set assistant_message_id = ${assistantMessageId}
-              where id = ${runId}
-            `;
-            yield* sql`
-              insert into ai_run_events (run_id, seq, event, emitted_by_task)
-              values (${runId}, 1, '{}'::jsonb, 'test-task')
-            `;
-            yield* sql`
-              insert into ai_observations (id, run_id, chat_id, kind, payload)
-              values (${crypto.randomUUID()}, ${runId}, ${chatId}, 'citation', '{}'::jsonb)
+              insert into ai_run_events (run_id, seq, event, emitted_by_task, emission_key)
+              values
+                (${runId}, 1, ${sql.json({ type: "run_started" })}, null, 'run_started'),
+                (${runId}, 2, ${sql.json({
+                  type: "usage",
+                  scope: "run",
+                  model: {
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    cachedTokens: 0,
+                    reasoningTokens: 0,
+                    totalTokens: 0,
+                    requestCount: 0,
+                  },
+                  web: { searchCount: 0, fetchCount: 0, responseBytes: 0, billedUnits: 0 },
+                })}, 'failure-handler', 'usage:run'),
+                (${runId}, 3, ${sql.json({ type: "error", code: "historical_failure", retryable: false })}, 'failure-handler', 'terminal')
             `;
             yield* sql`
               insert into user_memories (id, user_id, kind, content)
@@ -2253,7 +9425,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             `;
             yield* sql`
               insert into user_memory_revisions (memory_id, action, content_after, run_id)
-              values (${memoryId}, 'created', 'surviving memory', ${runId})
+              values (${memoryId}, 'created', 'surviving memory', null)
             `;
           }),
         );
@@ -2308,23 +9480,18 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               order by id
             `;
             const [surviving] = yield* sql<CountRow>`
-              select count(*)::int as count
+              select count(distinct runs.id)::int as count
               from chats surviving_chats
               join chat_messages messages on messages.chat_id = surviving_chats.id
               join ai_runs runs on runs.chat_id = messages.chat_id
-              join chat_messages assistants
-                on assistants.id = runs.assistant_message_id
               join ai_run_events events on events.run_id = runs.id
-              join ai_observations observations on observations.run_id = runs.id
               join user_memories memories on memories.id = ${memoryId}
               join user_memory_revisions revisions on revisions.memory_id = memories.id
               where surviving_chats.id = ${chatId}
                 and messages.id = ${messageId}
                 and runs.id = ${runId}
-                and assistants.id = ${assistantMessageId}
+                and runs.assistant_message_id is null
                 and events.run_id = ${runId}
-                and observations.run_id = ${runId}
-                and revisions.run_id = ${runId}
             `;
             const survivingCompanyId = chats[0]?.companyId;
             if (!survivingCompanyId) {
@@ -2541,7 +9708,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 'fr-FR',
                 'article',
                 'Les réformes économiques annoncées par le gouvernement ' || repeat('remplissage ', 20),
-                200,
+                295,
                 encode(digest(convert_to('Les réformes économiques annoncées par le gouvernement ' || repeat('remplissage ', 20), 'UTF8'), 'sha256'), 'hex'),
                 'aaaaaaaa-0000-0000-0000-000000000002'
               ),
@@ -2556,7 +9723,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 'en-US',
                 'article',
                 'The committee is running new stress tests this quarter ' || repeat('filler ', 20),
-                200,
+                195,
                 encode(digest(convert_to('The committee is running new stress tests this quarter ' || repeat('filler ', 20), 'UTF8'), 'sha256'), 'hex'),
                 'aaaaaaaa-0000-0000-0000-000000000003'
               ),
@@ -2571,7 +9738,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 'de',
                 'article',
                 'Wirtschaftsberichte und laufende Analysen ' || repeat('inhalt ', 20),
-                200,
+                182,
                 encode(digest(convert_to('Wirtschaftsberichte und laufende Analysen ' || repeat('inhalt ', 20), 'UTF8'), 'sha256'), 'hex'),
                 'aaaaaaaa-0000-0000-0000-000000000004'
               )
@@ -2653,8 +9820,10 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         const publisherDocumentId = crypto.randomUUID();
         const publisherVersionId = crypto.randomUUID();
         const publisherInvalidVersionId = crypto.randomUUID();
-        const publicText = "Données publiques ✅ ".repeat(10);
-        const publisherText = "Version publiée ✅";
+        const publisherExtractionId = crypto.randomUUID();
+        const publisherExtractionJobId = crypto.randomUUID();
+        const publicText = "Données publiques 😀 ".repeat(10);
+        const publisherText = "Version publiée 😀";
 
         yield* sql`
           insert into public_sources (
@@ -2680,7 +9849,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           ) values (
             ${publicInvalidDocumentId}, ${publicSourceId}, ${publicArtifactId},
             ${`https://hash.example/${suffix}`}, 'Invalid hash', ${publicText}, 'en-US',
-            now(), now(), 'article', ${"a".repeat(64)}, char_length(${publicText})
+            now(), now(), 'article', ${"a".repeat(64)}, ${publicText.length}
           )
         `);
         yield* sql`
@@ -2692,7 +9861,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             ${`https://hash.example/${suffix}`}, 'Valid hash', ${publicText}, 'en-US',
             now(), now(), 'article',
             encode(digest(convert_to(${publicText}, 'UTF8'), 'sha256'), 'hex'),
-            char_length(${publicText})
+            ${publicText.length}
           )
         `;
         const publicTextUpdateFailure = yield* Effect.flip(sql`
@@ -2731,25 +9900,39 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             ${"b".repeat(64)}, now(), 'en-US', 'hash-user'
           )
         `;
+        yield* sql`
+          insert into jobs (id, kind, payload)
+          values (${publisherExtractionJobId}, 'extract_pdf_text', '{}'::jsonb)
+        `;
+        yield* sql`
+          insert into brief_document_extractions (
+            id, brief_document_id, input_sha256_hex, pages,
+            extracted_char_count, created_by_job_id
+          ) values (
+            ${publisherExtractionId}, ${publisherDocumentId}, ${"b".repeat(64)},
+            ${JSON.stringify([{ pageNumber: 1, text: publisherText }])}::jsonb,
+            ${publisherText.length}, ${publisherExtractionJobId}
+          )
+        `;
         const publisherHashFailure = yield* Effect.flip(sql`
           insert into brief_document_versions (
-            id, brief_document_id, content_hash, language, canonical_text,
+            id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${publisherInvalidVersionId}, ${publisherDocumentId}, ${"b".repeat(64)},
-            'en-US', ${publisherText}, char_length(${publisherText}),
-            '[{"pageNumber":1,"charStart":0,"charEnd":17}]'::jsonb
+            ${publisherInvalidVersionId}, ${publisherDocumentId}, ${publisherExtractionId}, ${"b".repeat(64)},
+            'en-US', ${publisherText}, ${publisherText.length},
+            ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: publisherText.length }])}::jsonb
           )
         `);
         yield* sql`
           insert into brief_document_versions (
-            id, brief_document_id, content_hash, language, canonical_text,
+            id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${publisherVersionId}, ${publisherDocumentId},
+            ${publisherVersionId}, ${publisherDocumentId}, ${publisherExtractionId},
             encode(digest(convert_to(${publisherText}, 'UTF8'), 'sha256'), 'hex'),
-            'en-US', ${publisherText}, char_length(${publisherText}),
-            '[{"pageNumber":1,"charStart":0,"charEnd":17}]'::jsonb
+            'en-US', ${publisherText}, ${publisherText.length},
+            ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: publisherText.length }])}::jsonb
           )
         `;
         const publisherTextUpdateFailure = yield* Effect.flip(sql`
@@ -2813,25 +9996,39 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             on conflict (id) do nothing
           `;
         yield* sql`
-            insert into ai_runs (id, chat_id, user_message_id, locale, market)
+            insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)
             values (
               'bbbbbbbb-0000-0000-0000-000000000003',
               'bbbbbbbb-0000-0000-0000-000000000001',
               'bbbbbbbb-0000-0000-0000-000000000002',
               'fr-FR',
-              'FR'
+              'FR',
+              ${sql.json(
+                testAcceptanceScope({
+                  userId,
+                  chatId: "bbbbbbbb-0000-0000-0000-000000000001",
+                  companyId,
+                }),
+              )}
             )
             on conflict (id) do nothing
           `;
 
         const failure = yield* Effect.flip(sql`
-            insert into ai_runs (id, chat_id, user_message_id, locale, market)
+            insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)
             values (
               'bbbbbbbb-0000-0000-0000-000000000004',
               'bbbbbbbb-0000-0000-0000-000000000001',
               'bbbbbbbb-0000-0000-0000-000000000005',
               'fr-FR',
-              'FR'
+              'FR',
+              ${sql.json(
+                testAcceptanceScope({
+                  userId,
+                  chatId: "bbbbbbbb-0000-0000-0000-000000000001",
+                  companyId,
+                }),
+              )}
             )
           `);
 
@@ -2841,13 +10038,20 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             where id = 'bbbbbbbb-0000-0000-0000-000000000003'
           `;
         yield* sql`
-            insert into ai_runs (id, chat_id, user_message_id, locale, market)
+            insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)
             values (
               'bbbbbbbb-0000-0000-0000-000000000004',
               'bbbbbbbb-0000-0000-0000-000000000001',
               'bbbbbbbb-0000-0000-0000-000000000005',
               'fr-FR',
-              'FR'
+              'FR',
+              ${sql.json(
+                testAcceptanceScope({
+                  userId,
+                  chatId: "bbbbbbbb-0000-0000-0000-000000000001",
+                  companyId,
+                }),
+              )}
             )
           `;
 
@@ -2899,16 +10103,34 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           const secondMessageId = messages[1]!.id;
           const [firstRun] = yield* sql<{ readonly id: string }>`
           insert into ai_runs (
-            chat_id, initiating_user_id, user_message_id, locale, market
+            chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope
           )
-          values (${firstChatId}, ${initiatingUserId}, ${firstMessageId}, 'en-US', 'US')
+          values (
+            ${firstChatId}, ${initiatingUserId}, ${firstMessageId}, 'en-US', 'US',
+            ${sql.json(
+              testAcceptanceScope({
+                userId: initiatingUserId,
+                chatId: firstChatId,
+                companyId: initiatingCompanyId,
+              }),
+            )}
+          )
           returning id::text
         `;
           const failure = yield* Effect.flip(sql`
           insert into ai_runs (
-            chat_id, initiating_user_id, user_message_id, locale, market
+            chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope
           )
-          values (${secondChatId}, ${initiatingUserId}, ${secondMessageId}, 'en-US', 'US')
+          values (
+            ${secondChatId}, ${initiatingUserId}, ${secondMessageId}, 'en-US', 'US',
+            ${sql.json(
+              testAcceptanceScope({
+                userId: initiatingUserId,
+                chatId: secondChatId,
+                companyId: otherCompanyId,
+              }),
+            )}
+          )
         `);
           yield* sql`
           update ai_runs
@@ -2917,9 +10139,18 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         `;
           yield* sql`
           insert into ai_runs (
-            chat_id, initiating_user_id, user_message_id, locale, market
+            chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope
           )
-          values (${secondChatId}, ${initiatingUserId}, ${secondMessageId}, 'en-US', 'US')
+          values (
+            ${secondChatId}, ${initiatingUserId}, ${secondMessageId}, 'en-US', 'US',
+            ${sql.json(
+              testAcceptanceScope({
+                userId: initiatingUserId,
+                chatId: secondChatId,
+                companyId: otherCompanyId,
+              }),
+            )}
+          )
         `;
           return failure;
         }),
@@ -3009,8 +10240,21 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           values ('dddddddd-0000-0000-0000-000000000002', 'dddddddd-0000-0000-0000-000000000001', 'user', 'Memory revision cascade test')
         `;
           yield* sql`
-          insert into ai_runs (id, chat_id, user_message_id, locale, market, finished_at)
-          values ('dddddddd-0000-0000-0000-000000000003', 'dddddddd-0000-0000-0000-000000000001', 'dddddddd-0000-0000-0000-000000000002', 'fr-FR', 'FR', now())
+          insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope, finished_at)
+          values (
+            'dddddddd-0000-0000-0000-000000000003',
+            'dddddddd-0000-0000-0000-000000000001',
+            'dddddddd-0000-0000-0000-000000000002',
+            'fr-FR', 'FR',
+            ${sql.json(
+              testAcceptanceScope({
+                userId,
+                chatId: "dddddddd-0000-0000-0000-000000000001",
+                companyId,
+              }),
+            )},
+            now()
+          )
         `;
           yield* sql.withTransaction(
             Effect.gen(function* () {
@@ -4141,6 +11385,11 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           const evaluationRunId = crypto.randomUUID();
           const ordinaryRunId = crypto.randomUUID();
           const evaluationSessionId = crypto.randomUUID();
+          const publicSourceId = `evaluation-evidence-source-${crypto.randomUUID()}`;
+          const publicDocumentId = `evaluation-evidence-document-${crypto.randomUUID()}`;
+          const publicArtifactId = crypto.randomUUID();
+          const publicText = "Exact evaluation 😀 evidence. ".repeat(10);
+          const publicHash = createHash("sha256").update(publicText).digest("hex");
 
           yield* sql`
             insert into chats (id, company_id, user_id, memory_mode)
@@ -4155,15 +11404,35 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               (${ordinaryMessageId}, ${ordinaryChatId}, 'user', 'ordinary evidence')
           `;
           yield* sql`
-            insert into ai_runs (id, chat_id, user_message_id, locale, market, finished_at)
+            insert into ai_runs (
+              id, chat_id, user_message_id, locale, market, acceptance_scope, finished_at
+            )
             values
-              (${evaluationRunId}, ${evaluationChatId}, ${evaluationMessageId}, 'en-US', 'US', now()),
-              (${ordinaryRunId}, ${ordinaryChatId}, ${ordinaryMessageId}, 'en-US', 'US', now())
+              (
+                ${evaluationRunId}, ${evaluationChatId}, ${evaluationMessageId}, 'en-US', 'US',
+                ${sql.json(
+                  testAcceptanceScope({
+                    userId: evaluationUserId,
+                    chatId: evaluationChatId,
+                    companyId: evaluationCompanyId,
+                  }),
+                )}, now()
+              ),
+              (
+                ${ordinaryRunId}, ${ordinaryChatId}, ${ordinaryMessageId}, 'en-US', 'US',
+                ${sql.json(
+                  testAcceptanceScope({
+                    userId: ordinaryUserId,
+                    chatId: ordinaryChatId,
+                    companyId: ordinaryCompanyId,
+                  }),
+                )}, now()
+              )
           `;
           yield* sql`
             insert into ai_evaluation_sessions (
               id, artifact_version, golden_set_version, fixture_sha256_hex, status
-            ) values (${evaluationSessionId}, 2, 2, ${"a".repeat(64)}, 'preparing')
+            ) values (${evaluationSessionId}, 3, 3, ${"a".repeat(64)}, 'preparing')
           `;
           yield* sql`
             insert into ai_evaluation_case_runs (
@@ -4171,6 +11440,36 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             ) values (
               ${evaluationSessionId}, 'append-only-case', 'specialized',
               ${evaluationRunId}, '{}'::jsonb, 'seeded'
+            )
+          `;
+          yield* sql`
+            insert into public_sources (
+              source_id, display_name, publisher_name, description,
+              ingestion_method, discovery_url, average_chars_per_item
+            ) values (
+              ${publicSourceId}, 'Evaluation evidence source', 'Evaluation publisher',
+              'Exact document exposure fixture', 'manual',
+              ${`https://evaluation-evidence.example/${publicDocumentId}`}, 100
+            )
+          `;
+          yield* sql`
+            insert into public_source_raw_artifacts (
+              id, source_id, canonical_url, fetched_at, media_type, body, body_hash
+            ) values (
+              ${publicArtifactId}, ${publicSourceId},
+              ${`https://evaluation-evidence.example/${publicDocumentId}`},
+              now(), 'text/html', ${publicText}, ${publicHash}
+            )
+          `;
+          yield* sql`
+            insert into public_source_documents (
+              document_id, source_id, raw_artifact_id, canonical_url, title, text,
+              language, discovered_at, fetched_at, document_type, content_hash, text_char_count
+            ) values (
+              ${publicDocumentId}, ${publicSourceId}, ${publicArtifactId},
+              ${`https://evaluation-evidence.example/${publicDocumentId}`},
+              'Evaluation evidence', ${publicText}, 'en-US', now(), now(), 'article',
+              ${publicHash}, ${publicText.length}
             )
           `;
 
@@ -4194,8 +11493,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 exposure_stage, visible_token_count
               ) values (
                 ${runId}, 'evidence-task', 0, 0, 0,
-                'document', 'document:doc-1', 'version-1:content',
-                'internal_search_preview', 1
+                'memory', 'memory:doc-1', 'revision-1',
+                'memory_tool_result', 1
               )
             `;
             yield* sql`
@@ -4226,15 +11525,15 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               run_id, task_id, loop_iteration, attempt, provider_request_index,
               source_kind, logical_source_identity, content_item_identity,
               exposure_stage, visible_token_count,
-              document_source_id, document_id, document_version_id,
-              document_content_hash, document_ranges
+              document_source_id, document_id, version_id,
+              content_hash, document_ranges
             ) values (
               ${evaluationRunId}, 'reconstructable-inspection', 0, 0, 0,
-              'document', 'public:source-1',
-              'public:source-1:document-1:version-1:range-a',
+              'document', ${`public:${publicSourceId}`},
+              ${`${publicDocumentId}:range-a`},
               'internal_inspection', 3,
-              'public:source-1', 'document-1', 'version-1', ${"a".repeat(64)},
-              ${JSON.stringify([{ charStart: 0, charEnd: 3 }])}::jsonb
+              ${`public:${publicSourceId}`}, ${publicDocumentId}, ${publicDocumentId}, ${publicHash},
+              ${JSON.stringify([{ charStart: 0, charEnd: publicText.length }])}::jsonb
             )
           `;
           const reconstructionFailures = [
@@ -4245,7 +11544,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 exposure_stage, visible_token_count
               ) values (
                 ${evaluationRunId}, 'missing-reconstruction', 0, 0, 0,
-                'document', 'public:source-1', 'missing', 'internal_inspection', 1
+                'document', ${`public:${publicSourceId}`}, 'missing', 'internal_inspection', 1
               )
             `),
             yield* Effect.flip(sql`
@@ -4253,12 +11552,12 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 run_id, task_id, loop_iteration, attempt, provider_request_index,
                 source_kind, logical_source_identity, content_item_identity,
                 exposure_stage, visible_token_count,
-                document_source_id, document_id, document_version_id,
-                document_content_hash, document_ranges
+                document_source_id, document_id, version_id,
+                content_hash, document_ranges
               ) values (
                 ${evaluationRunId}, 'overlapping-reconstruction', 0, 0, 0,
-                'document', 'public:source-1', 'overlapping', 'context_candidate_inspection', 1,
-                'public:source-1', 'document-1', 'version-1', ${"a".repeat(64)},
+                'document', ${`public:${publicSourceId}`}, 'overlapping', 'context_candidate_inspection', 1,
+                ${`public:${publicSourceId}`}, ${publicDocumentId}, ${publicDocumentId}, ${publicHash},
                 ${JSON.stringify([
                   { charStart: 0, charEnd: 3 },
                   { charStart: 2, charEnd: 4 },
@@ -4270,12 +11569,12 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 run_id, task_id, loop_iteration, attempt, provider_request_index,
                 source_kind, logical_source_identity, content_item_identity,
                 exposure_stage, visible_token_count,
-                document_source_id, document_id, document_version_id,
-                document_content_hash, document_ranges
+                document_source_id, document_id, version_id,
+                content_hash, document_ranges
               ) values (
                 ${evaluationRunId}, 'unscoped-reconstruction', 0, 0, 0,
                 'document', 'document:source-1', 'unscoped', 'internal_inspection', 1,
-                'document:source-1', 'document-1', 'version-1', ${"a".repeat(64)},
+                'document:source-1', ${publicDocumentId}, ${publicDocumentId}, ${publicHash},
                 ${JSON.stringify([{ charStart: 0, charEnd: 3 }])}::jsonb
               )
             `),
@@ -4284,12 +11583,26 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 run_id, task_id, loop_iteration, attempt, provider_request_index,
                 source_kind, logical_source_identity, content_item_identity,
                 exposure_stage, visible_token_count,
-                document_source_id, document_id, document_version_id,
-                document_content_hash
+                document_source_id, document_id, version_id,
+                content_hash, document_ranges
+              ) values (
+                ${evaluationRunId}, 'too-long-reconstruction', 0, 0, 0,
+                'document', ${`public:${publicSourceId}`}, 'too-long', 'internal_inspection', 1,
+                ${`public:${publicSourceId}`}, ${publicDocumentId}, ${publicDocumentId}, ${publicHash},
+                ${JSON.stringify([{ charStart: 0, charEnd: publicText.length + 1 }])}::jsonb
+              )
+            `),
+            yield* Effect.flip(sql`
+              insert into ai_source_exposures (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                source_kind, logical_source_identity, content_item_identity,
+                exposure_stage, visible_token_count,
+                document_source_id, document_id, version_id,
+                content_hash
               ) values (
                 ${evaluationRunId}, 'partial-reconstruction', 0, 0, 0,
-                'document', 'public:source-1', 'partial', 'answer_serialized', 1,
-                'public:source-1', 'document-1', 'version-1', ${"a".repeat(64)}
+                'document', ${`public:${publicSourceId}`}, 'partial', 'answer_serialized', 1,
+                ${`public:${publicSourceId}`}, ${publicDocumentId}, ${publicDocumentId}, ${publicHash}
               )
             `),
             yield* Effect.flip(sql`
@@ -4305,6 +11618,31 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               )
             `),
           ];
+          const sourceIdFailures = [];
+          for (const sourceId of [
+            "public:source:double-prefix",
+            "public:\u00a0source",
+            "public:\u2003source",
+            "public:\u2028source",
+            "public:\ufeffsource",
+          ]) {
+            sourceIdFailures.push(
+              yield* Effect.flip(sql`
+                insert into ai_source_exposures (
+                  run_id, task_id, loop_iteration, attempt, provider_request_index,
+                  source_kind, logical_source_identity, content_item_identity,
+                  exposure_stage, visible_token_count,
+                  document_source_id, document_id, version_id,
+                  content_hash, document_ranges
+                ) values (
+                  ${evaluationRunId}, 'invalid-source-id', 0, 0, 0,
+                  'document', ${sourceId}, 'invalid-source-id', 'internal_inspection', 1,
+                  ${sourceId}, ${publicDocumentId}, ${publicDocumentId}, ${publicHash},
+                  ${JSON.stringify([{ charStart: 0, charEnd: 3 }])}::jsonb
+                )
+              `),
+            );
+          }
 
           yield* sql`
             insert into ai_observations (
@@ -4322,8 +11660,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               exposure_stage, visible_token_count
             ) values (
               ${evaluationRunId}, 'evidence-task', 0, 0, 0,
-              'document', 'document:doc-1', 'version-1:content',
-              'internal_search_preview', 1
+              'memory', 'memory:doc-1', 'revision-1',
+              'memory_tool_result', 1
             ) on conflict do nothing
           `;
           yield* sql`
@@ -4421,7 +11759,13 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 (select count(*) from ai_external_tool_usage where run_id = ${ordinaryRunId})
               )::int as "ordinaryEvidence"
           `;
-          return { updateFailures, deleteFailures, reconstructionFailures, counts };
+          return {
+            updateFailures,
+            deleteFailures,
+            reconstructionFailures,
+            sourceIdFailures,
+            counts,
+          };
         }),
       );
 
@@ -4431,7 +11775,12 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         );
       }
       for (const failure of result.reconstructionFailures) {
-        expect(errorText(failure)).toContain("ai_source_exposures_document_reconstruction");
+        expect(errorText(failure)).toMatch(
+          /document exposure|ai_source_exposures_final_document_identity/,
+        );
+      }
+      for (const failure of result.sourceIdFailures) {
+        expect(errorText(failure)).toContain("document exposure source identity is not canonical");
       }
       expect(result.counts).toEqual({
         evaluationObservations: 1,

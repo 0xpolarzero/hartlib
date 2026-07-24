@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import { PgClient } from "@effect/sql-pg";
 import {
   deriveEffectiveWebPolicy,
@@ -12,6 +14,10 @@ export interface ChatRuntimeConfiguration {
   readonly webResearchProvider: "tinyfish" | null;
   readonly aiWebMaxDomainFilters: number;
 }
+
+const ACCEPTANCE_PROVIDER = "zai_coding_plan_official" as const;
+const ACCEPTANCE_FAST_MODEL = "glm-5-turbo" as const;
+const ACCEPTANCE_MAIN_MODEL = "glm-5-turbo" as const;
 
 export interface ChatRuntimeReadIdentity {
   readonly mode: "demo" | "clerk";
@@ -50,17 +56,17 @@ export interface RunRow {
 export interface SourceRow {
   readonly assistant_message_id: string;
   readonly source_key: string;
-  /** Hex-encoded run nonce, present for sources loaded from durable assistant messages. */
-  readonly citation_nonce_hex: string;
-  /** Indexed publisher document-version identity; null for public-source documents. */
-  readonly publisher_document_version_id: string | null;
+  /** Final per-answer handle namespace. */
+  readonly citation_namespace: string;
+  /** Indexed publisher extraction identity; null for public-source documents. */
+  readonly publisher_extraction_id: string | null;
   /** Publisher ownership resolved from the indexed version's issue/document joins. */
   readonly publisher_document_id?: string | null;
   readonly publisher_issue_id?: string | null;
   /** Canonical indexed evidence identity, populated for durable document rows. */
   readonly source_id?: string | null;
   readonly document_id?: string | null;
-  readonly document_version_id?: string | null;
+  readonly version_id?: string | null;
   readonly content_hash?: string | null;
   readonly canonical_url?: string | null;
   readonly source_identity_digest?: string | null;
@@ -344,7 +350,7 @@ export const loadChatRuntimeState = (
             select sources.assistant_message_id::text, sources.source_key, sources.kind,
                    sources.locator, sources.display_label,
                    sources.public_provenance,
-                   sources.publisher_document_version_id::text,
+                   sources.publisher_extraction_id::text as publisher_extraction_id,
                    case
                      when publisher_versions.id is not null
                        then 'publisher:' || publisher_issues.subscription_id::text
@@ -359,7 +365,7 @@ export const loadChatRuntimeState = (
                    case
                      when publisher_versions.id is not null then publisher_versions.id::text
                      else public_documents.document_id
-                   end as document_version_id,
+                   end as version_id,
                    case
                      when publisher_versions.id is not null then publisher_versions.content_hash
                      else public_documents.content_hash
@@ -368,22 +374,26 @@ export const loadChatRuntimeState = (
                    sources.source_identity_digest,
                    publisher_documents.id::text as publisher_document_id,
                    publisher_issues.id::text as publisher_issue_id,
-                   encode(runs.citation_nonce, 'hex') as citation_nonce_hex
+                   runs.citation_namespace
             from assistant_message_sources sources
             join chat_messages messages
               on messages.id = sources.assistant_message_id
             join ai_runs runs
               on runs.id = messages.assistant_ai_run_id
              and runs.assistant_message_id = messages.id
-            left join brief_document_versions publisher_versions
-              on publisher_versions.id = sources.publisher_document_version_id
+            left join brief_document_extractions publisher_extractions
+              on publisher_extractions.id = sources.publisher_extraction_id
             left join brief_documents publisher_documents
-              on publisher_documents.id = publisher_versions.brief_document_id
+              on publisher_documents.id = publisher_extractions.brief_document_id
+            left join brief_document_versions publisher_versions
+              on publisher_versions.brief_document_id = publisher_documents.id
+             and publisher_versions.id::text = sources.version_id
+             and publisher_versions.content_hash = sources.locator->>'contentHash'
             left join publisher_issues publisher_issues
               on publisher_issues.id = publisher_documents.issue_id
             left join public_source_documents public_documents
-              on public_documents.document_id = sources.document_version_id
-             and sources.publisher_document_version_id is null
+              on public_documents.document_id = sources.version_id
+             and sources.publisher_extraction_id is null
             where ${sql.in("sources.assistant_message_id", assistantMessageIds)}
             order by sources.assistant_message_id,
                      (substring(sources.source_key from '_([1-9][0-9]*)$'))::numeric,
@@ -466,26 +476,9 @@ export const withAuthorizedChatReadLease = <A, E, R>(
                 or ${identity.organizationId}::text is null
                 or company.clerk_organization_id = ${identity.organizationId}
               )
-              and not exists (
-                select 1
-                from chat_subscription_sources selected
-                where selected.chat_id = chat.id
-                  and not exists (
-                    select 1
-                    from client_employee_subscription_grants employee_grant
-                    join client_subscription_accesses access_row
-                      on access_row.id = employee_grant.access_id
-                     and access_row.client_company_id = employee_grant.client_company_id
-                    where employee_grant.access_id = selected.access_id
-                      and employee_grant.client_company_id = chat.company_id
-                      and employee_grant.user_id = ${identity.userId}
-                      and employee_grant.revoked_at is null
-                      and access_row.state in ('active', 'ending', 'paused')
-                  )
-              )
               and (
                 chat.user_id = ${identity.userId}
-                or (chat.shared_at is not null and chat.memory_mode = 'disabled')
+                or chat.shared_at is not null
               )
           ) as authorized
         `;
@@ -612,6 +605,63 @@ const insertMessageRunAndJob = (
   policy: EffectiveWebPolicy,
 ) =>
   Effect.gen(function* () {
+    const selectedPublisherRows = yield* sql<{
+      readonly subscriptionId: string;
+      readonly accessId: string;
+    }>`
+      select distinct selected.subscription_id::text as "subscriptionId",
+             selected.access_id::text as "accessId"
+      from chat_subscription_sources selected
+      join client_employee_subscription_grants grants
+        on grants.access_id = selected.access_id
+       and grants.client_company_id = selected.client_company_id
+       and grants.user_id = ${userId}
+       and grants.revoked_at is null
+      join client_subscription_accesses accesses
+        on accesses.id = selected.access_id
+       and accesses.client_company_id = selected.client_company_id
+       and accesses.subscription_id = selected.subscription_id
+       and accesses.state in ('active', 'ending', 'paused')
+      where selected.chat_id = ${chat.id}
+        and selected.client_company_id = ${chat.company_id}
+      order by selected.subscription_id::text, selected.access_id::text
+    `;
+    const selectedPublicRows = yield* sql<{ readonly sourceId: string }>`
+      select settings.source_id
+      from client_company_public_source_settings settings
+      where settings.client_company_id = ${chat.company_id}
+        and settings.enabled
+      order by settings.source_id
+    `;
+    const memoryRows =
+      chat.memory_mode === "private_owner"
+        ? yield* sql<{ readonly revisionId: string }>`
+            select memories.head_revision_id::text as "revisionId"
+            from user_memories memories
+            where memories.user_id = ${userId}
+              and memories.deleted_at is null
+              and memories.provenance_only_at is null
+              and memories.head_revision_id is not null
+            order by memories.head_revision_id::text
+          `
+        : [];
+    const acceptanceScope = {
+      userId,
+      chatId: chat.id,
+      companyId: chat.company_id,
+      subscriptionIds: [...new Set(selectedPublisherRows.map((row) => row.subscriptionId))].sort(),
+      accessIds: [...new Set(selectedPublisherRows.map((row) => row.accessId))].sort(),
+      publicSourceIds: [...new Set(selectedPublicRows.map((row) => row.sourceId))].sort(),
+      memoryMode: chat.memory_mode,
+      memoryRevisionIds: [...new Set(memoryRows.map((row) => row.revisionId))].sort(),
+      webRequested: input.webSearchEnabled,
+      webEnabled: policy.enabled,
+      provider: ACCEPTANCE_PROVIDER,
+      fastModelId: ACCEPTANCE_FAST_MODEL,
+      mainModelId: ACCEPTANCE_MAIN_MODEL,
+      webTransportProvider: policy.enabled ? policy.provider : null,
+      allowedDomains: policy.enabled ? policy.allowedDomains : null,
+    } as const;
     const messageRows = yield* sql<{ readonly id: string; readonly created_at: Date }>`
       insert into chat_messages (chat_id, author, content)
       values (${chat.id}, 'user', ${input.text})
@@ -620,11 +670,12 @@ const insertMessageRunAndJob = (
     const message = messageRows[0]!;
     const runRows = yield* sql<{ readonly id: string }>`
       insert into ai_runs (
-        chat_id, initiating_user_id, user_message_id, locale, market,
-        web_search_enabled, effective_web_policy
+        chat_id, initiating_user_id, user_message_id, locale, market, citation_namespace,
+        acceptance_scope
       ) values (
         ${chat.id}, ${userId}, ${message.id}, ${input.locale}, ${input.market},
-        ${input.webSearchEnabled}, ${sql.json(policy)}
+        ${`cn_${randomBytes(16).toString("base64url")}`},
+        ${sql.json(acceptanceScope)}
       )
       returning id::text
     `;
@@ -648,6 +699,10 @@ export const createUserMessageAndRun = (
     const sql = yield* PgClient.PgClient;
     return yield* sql.withTransaction(
       Effect.gen(function* () {
+        // Match migration 0064's shared side of the schema fence. A cutover
+        // cannot pass its active-run drain check while this transaction can
+        // still insert a new run.
+        yield* sql`select pg_advisory_xact_lock(hashtextextended('brief:ai-chat:smithers-schema', 0))`;
         yield* sql`select pg_advisory_xact_lock(hashtext(${`brief:user-memory:${userId}`}))`;
         const chat =
           chatId === undefined
@@ -779,7 +834,10 @@ export const readAuthorizedAiRunEventsAfter = (
   organizationId: string | null,
   runId: string,
   afterSeq: number,
-  configuration: Pick<ChatRuntimeConfiguration, "webResearchProvider" | "aiWebMaxDomainFilters"> = {
+  _configuration: Pick<
+    ChatRuntimeConfiguration,
+    "webResearchProvider" | "aiWebMaxDomainFilters"
+  > = {
     webResearchProvider: null,
     aiWebMaxDomainFilters: 0,
   },
@@ -793,285 +851,41 @@ export const readAuthorizedAiRunEventsAfter = (
       readonly seq: number | null;
       readonly event: unknown | null;
     }>`
-      with current_web_policy as (
-        select settings.company_id,
-               settings.web_search_enabled,
-               normalized.valid as allowlist_valid,
-               normalized.domains as allowed_domains
-        from client_company_ai_settings settings
-        left join lateral (
-          select
-            case
-              when settings.web_domain_allowlist is null then true
-              when cardinality(settings.web_domain_allowlist) = 0 then false
-              else coalesce(bool_and(
-                domain is not null
-                and domain ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
-                and length(domain) <= 253
-                and domain !~ '^[0-9]+(\\.[0-9]+){3}$'
-                and domain <> 'localhost'
-                and domain not like '%.localhost'
-                and domain not like '%.local'
-                and domain not like '%.localdomain'
-                and domain not like '%.internal'
-                and domain not like '%.corp'
-                and domain not like '%.lan'
-                and domain not like '%.home'
-                and domain not like '%.home.arpa'
-                and domain not like '%.test'
-                and domain not like '%.invalid'
-                and domain not like '%.example'
-              ), false)
-            end as valid,
-            case
-              when settings.web_domain_allowlist is null then null::text[]
-              when cardinality(settings.web_domain_allowlist) = 0 then '{}'::text[]
-              when coalesce(bool_and(
-                domain is not null
-                and domain ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
-                and length(domain) <= 253
-                and domain !~ '^[0-9]+(\\.[0-9]+){3}$'
-                and domain <> 'localhost'
-                and domain not like '%.localhost'
-                and domain not like '%.local'
-                and domain not like '%.localdomain'
-                and domain not like '%.internal'
-                and domain not like '%.corp'
-                and domain not like '%.lan'
-                and domain not like '%.home'
-                and domain not like '%.home.arpa'
-                and domain not like '%.test'
-                and domain not like '%.invalid'
-                and domain not like '%.example'
-              ), false) then array_agg(distinct domain order by domain)
-              else null::text[]
-            end as domains
-          from (
-            select lower(regexp_replace(trim(value), '\\.$', '')) as domain
-            from unnest(settings.web_domain_allowlist) values(value)
-          ) normalized_values
-        ) normalized on true
-      ), authorized as (
+      with authorized as (
         select run.id as run_id,
                (run.finished_at is not null or run.failed_at is not null) as terminal
         from ai_runs run
         join chats chat on chat.id = run.chat_id
-        join client_companies company on company.id = chat.company_id
-        where run.id = ${runId}
-          and chat.deleted_at is null
+        join client_companies company
+          on company.id = chat.company_id
           and company.recovery_deleted_at is null
           and company.purged_at is null
+        where run.id = ${runId}
+          and chat.deleted_at is null
+          and (${organizationId}::text is null or company.clerk_organization_id = ${organizationId})
+          and exists (
+            select 1 from platform_users viewer
+            where viewer.id = ${userId}
+              and viewer.recovery_deleted_at is null
+              and viewer.purged_at is null
+          )
           and (
-            ${organizationId}::text is null
-            or company.clerk_organization_id = ${organizationId}
-          )
+            chat.user_id = ${userId}
+            or (
+              chat.shared_at is not null
           and exists (
-            select 1
-            from platform_users users
-            where users.id = ${userId}
-              and users.recovery_deleted_at is null
-              and users.purged_at is null
-          )
-          and exists (
-            select 1
-            from platform_users creator
-            where creator.id = chat.user_id
-              and creator.recovery_deleted_at is null
-              and creator.purged_at is null
-          )
-          and exists (
-            select 1
-            from client_company_memberships membership
+                select 1 from client_company_memberships membership
             where membership.company_id = chat.company_id
               and membership.user_id = ${userId}
               and membership.revoked_at is null
           )
-          and not exists (
-            select 1
-            from chat_subscription_sources selected
-            where selected.chat_id = chat.id
-              and not exists (
-                select 1
-                from client_employee_subscription_grants employee_grant
-                join client_subscription_accesses access_row
-                  on access_row.id = employee_grant.access_id
-                where employee_grant.access_id = selected.access_id
-                  and employee_grant.client_company_id = chat.company_id
-                  and employee_grant.user_id = ${userId}
-                  and employee_grant.revoked_at is null
-                  and access_row.state in ('active', 'ending', 'paused')
-              )
-          )
-          -- Document provenance is a pair: a publisher issue and document must either both
-          -- be present or both be absent. Reject partial provenance instead of ignoring it.
-          and not exists (
-            select 1
-            from ai_source_exposures exposure
-            where exposure.run_id = run.id
-              and exposure.source_kind = 'document'
-              and (exposure.publisher_issue_id is null) <> (exposure.publisher_document_id is null)
-          )
-          and not exists (
-            select 1
-            from ai_source_exposures exposure
-            where exposure.run_id = run.id
-              and exposure.source_kind = 'document'
-              and exposure.publisher_issue_id is null
-              and exposure.publisher_document_id is null
-              and not exists (
-                select 1
-                from public_source_documents document
-                join client_company_public_source_settings settings
-                  on settings.source_id = document.source_id
-                 and settings.client_company_id = chat.company_id
-                 and settings.enabled
-                -- Keep this representation byte-for-byte aligned with
-                -- namespacedDocumentEvidenceIdentity: JSON.stringify([sourceId, documentId]).
-                -- to_json performs the JSON string escaping, so delimiters in either ID cannot
-                -- create an ambiguous identity.
-                where exposure.logical_source_identity = concat(
-                  'document:namespace:public:[',
-                  to_json('public:' || document.source_id)::text,
-                  ',',
-                  to_json(document.document_id)::text,
-                  ']'
                 )
               )
           )
-          and not (
-            chat.memory_mode = 'disabled'
-            and exists (
-              select 1
-              from ai_source_exposures exposure
-              where exposure.run_id = run.id
-                and exposure.source_kind = 'memory'
-            )
-          )
-          and not exists (
-            select 1
-            from ai_source_exposures exposure
-            where exposure.run_id = run.id
-              and exposure.source_kind = 'document'
-              and exposure.publisher_issue_id is not null
-              and exposure.publisher_document_id is not null
-              and not exists (
-                select 1
-                from publisher_issues issue
-                join publisher_subscriptions subscription
-                  on subscription.id = issue.subscription_id
-                join publisher_companies publisher_company
-                  on publisher_company.id = subscription.publisher_company_id
-                join brief_documents document
-                  on document.issue_id = issue.id
-                 and document.id::text = exposure.publisher_document_id
-                 and document.deleted_at is null
-                join issue_deliveries delivery
-                  on delivery.issue_id = issue.id
-                 and delivery.client_company_id = chat.company_id
-                join chat_subscription_sources selected
-                  on selected.chat_id = chat.id
-                 and selected.access_id = delivery.access_id
-                 and selected.client_company_id = delivery.client_company_id
-                join client_subscription_accesses access_row
-                  on access_row.id = selected.access_id
-                 and access_row.state in ('active', 'ending', 'paused')
-                join client_employee_subscription_grants employee_grant
-                  on employee_grant.access_id = selected.access_id
-                 and employee_grant.client_company_id = chat.company_id
-                  and employee_grant.user_id = ${userId}
-                  and employee_grant.revoked_at is null
-                where issue.id::text = exposure.publisher_issue_id
-                  -- Publisher identities include the subscription, issue, and document tuple;
-                  -- matching every component prevents a same-ID value from crossing namespaces.
-                  and exposure.logical_source_identity = concat(
-                    'document:namespace:publisher:[',
-                    to_json('publisher:' || issue.subscription_id::text)::text,
-                    ',',
-                    to_json(issue.id::text)::text,
-                    ',',
-                    to_json(document.id::text)::text,
-                    ',',
-                    to_json(document.id::text)::text,
-                    ']'
-                  )
-                  and issue.status = 'published'
-                  and issue.restricted_at is null
-                  and issue.deleted_at is null
-              )
-          )
-          and not exists (
-            select 1
-            from ai_source_exposures exposure
-            where exposure.run_id = run.id
-              and exposure.source_kind = 'memory'
-              and not exists (
-                select 1
-                from user_memories memory
-                join user_memory_revisions revision
-                  on revision.memory_id = memory.id
-                 and revision.id::text = exposure.content_item_identity
-                where memory.user_id = run.initiating_user_id
-                  and memory.deleted_at is null
-                  and memory.provenance_only_at is null
-                  and exposure.logical_source_identity = 'memory:' || memory.id::text
-              )
-          )
-          and (
-            not exists (
-              select 1 from ai_source_exposures exposure
-              where exposure.run_id = run.id and exposure.source_kind = 'web'
-            )
-            or (
-              run.web_search_enabled
-              and run.effective_web_policy->>'provider' = ${configuration.webResearchProvider}
-              and ${configuration.webResearchProvider} = 'tinyfish'
-              and ${configuration.aiWebMaxDomainFilters} >= 1
-              and exists (
-                select 1
-                from current_web_policy current_policy
-                where current_policy.company_id = chat.company_id
-                  and current_policy.web_search_enabled
-                  and current_policy.allowlist_valid
-                  and (
-                    current_policy.allowed_domains is null
-                    or cardinality(current_policy.allowed_domains) <= ${configuration.aiWebMaxDomainFilters}
-                  )
-                  and (
-                    (
-                      run.effective_web_policy->'allowedDomains' = 'null'::jsonb
-                      and current_policy.allowed_domains is null
-                    )
-                    or (
-                      jsonb_typeof(run.effective_web_policy->'allowedDomains') = 'array'
-                      and jsonb_array_length(run.effective_web_policy->'allowedDomains') > 0
-                      and (
-                        current_policy.allowed_domains is null
-                        or not exists (
-                          select 1
-                          from jsonb_array_elements_text(run.effective_web_policy->'allowedDomains') accepted_domain
-                          where not exists (
-                            select 1
-                            from unnest(current_policy.allowed_domains) current_domain
-                            where accepted_domain.value = current_domain
-                               or accepted_domain.value like '%.' || current_domain
-                          )
-                        )
-                      )
-                    )
-                  )
-            )
-          )
-          )
-          and (
-            chat.user_id = ${userId}
-            or (chat.shared_at is not null and chat.memory_mode = 'disabled')
-          )
-      )
       select authorized.run_id is not null as authorized,
              authorized.terminal,
              case when authorized.run_id is null then false else exists (
-               select 1
-               from ai_run_events terminal_events
+               select 1 from ai_run_events terminal_events
                where terminal_events.run_id = authorized.run_id
                  and terminal_events.seq > ${afterSeq}
                  and terminal_events.event->>'type' in ('done', 'error')
@@ -1087,16 +901,24 @@ export const readAuthorizedAiRunEventsAfter = (
       ) event_rows on authorized.run_id is not null
       order by event_rows.seq nulls first
     `;
+    const first = rows[0];
+    if (first?.authorized !== true) {
+      return {
+        authorized: false,
+        terminal: false,
+        replayableTerminal: false,
+        events: [],
+      } satisfies AuthorizedAiRunEventPoll;
+    }
     return {
-      authorized: rows[0]?.authorized === true,
-      terminal: rows[0]?.terminal === true,
-      replayableTerminal: rows[0]?.replayableTerminal === true,
+      authorized: true,
+      terminal: first.terminal === true,
+      replayableTerminal: first.replayableTerminal === true,
       events: rows.flatMap((row) =>
         row.seq === null || row.event === null ? [] : [{ seq: row.seq, event: row.event }],
       ),
     } satisfies AuthorizedAiRunEventPoll;
   });
-
 export const readRunStreamContext = (runId: string) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;

@@ -15,10 +15,11 @@ import {
 } from "../runtime/errors";
 import type {
   AnswerLaneResult,
-  ConversationResolution,
+  FinalSourceRecord,
+  PlanTurnResult,
   MemoryExtractionArtifact,
   MemoryReference,
-  NormalizedExecutionPlan,
+  InternalReference,
   TopicPacket,
   WebEvidence,
 } from "../runtime/types";
@@ -66,6 +67,8 @@ const NormalizedDocumentRangesSchema = z
     }
   });
 const Sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+const PublicDocumentSourceIdSchema = z.string().regex(/^public:[^:\s]+$/u);
+const PublisherDocumentSourceIdSchema = z.string().regex(/^publisher:[^:\s]+$/u);
 const ContextDecisionSchema = z.discriminatedUnion("action", [
   z.strictObject({ id: z.string(), action: z.literal("keep"), reason: z.string() }),
   z.strictObject({
@@ -92,27 +95,12 @@ const ConversationEntrySchema = z.union([
     retryable: z.boolean(),
   }),
 ]);
-const MemorySnapshotSchema = z.strictObject({
+const _MemorySnapshotSchema = z.strictObject({
   memoryId: z.string(),
   memoryRevisionId: z.string(),
   kind: z.enum(["profile", "preference", "instruction", "fact", "episode"]),
   content: z.string(),
 });
-const WebPolicySchema = z.union([
-  z.strictObject({
-    enabled: z.literal(false),
-    reason: z.enum(["deployment_unavailable", "company_disabled", "allowlist_unsupported"]),
-    allowlistActive: z.boolean(),
-  }),
-  z.strictObject({
-    enabled: z.literal(true),
-    provider: z.literal("tinyfish"),
-    allowedDomains: z.array(z.string()).nullable(),
-  }),
-]);
-const DocumentSourceIdSchema = z.string().regex(/^(?:public|publisher):[^:\s]+$/u);
-const PublicDocumentSourceIdSchema = z.string().regex(/^public:[^:\s]+$/u);
-const PublisherDocumentSourceIdSchema = z.string().regex(/^publisher:[^:\s]+$/u);
 const LoadedTurnSchema = z.strictObject({
   aiRunId: z.string(),
   chatId: z.string(),
@@ -122,47 +110,81 @@ const LoadedTurnSchema = z.strictObject({
   locale: z.string(),
   market: z.string(),
   currentDate: z.string(),
-  citationNonce: z.array(z.number().int().min(0).max(255)).length(16),
-  priorTerminalTurnCount: z.number().int().min(0),
-  conversation: z.array(ConversationEntrySchema),
-  memories: z.array(MemorySnapshotSchema),
+  citationNamespace: z.string().regex(/^cn_[A-Za-z0-9_-]{22}$/u),
   memoryMode: z.enum(["private_owner", "disabled"]),
-  sourceCatalog: z.array(
-    z.strictObject({
-      sourceId: DocumentSourceIdSchema,
-      displayName: z.string(),
-      country: z.string(),
-      language: z.string(),
-      ingestionType: z.string(),
-    }),
-  ),
   webRequested: z.boolean(),
-  webPolicy: WebPolicySchema,
+  acceptanceScope: z
+    .strictObject({
+      userId: z.string(),
+      chatId: z.string().uuid(),
+      companyId: z.string().uuid(),
+      subscriptionIds: z.array(z.string()),
+      accessIds: z.array(z.string()),
+      publicSourceIds: z.array(z.string()),
+      memoryMode: z.enum(["private_owner", "disabled"]),
+      memoryRevisionIds: z.array(z.string()),
+      webRequested: z.boolean(),
+      webEnabled: z.boolean(),
+      provider: z.literal("zai_coding_plan_official"),
+      fastModelId: z.string(),
+      mainModelId: z.string(),
+      webTransportProvider: z.literal("tinyfish").nullable(),
+      allowedDomains: z.array(z.string()).nullable(),
+    })
+    .readonly(),
 });
-const ConversationResolutionSchema = z.discriminatedUnion("mode", [
-  z.strictObject({
-    mode: z.literal("continue"),
-    retrievalQuestion: z.string(),
-    selectedTurnIds: z.array(z.string()),
-  }),
+// Provider output contains only logical document IDs.  Durable Smithers output
+// keeps the server-owned binding that retrieval resolved before the task ended.
+const BoundInternalReferenceSchema = z.union([
+  z
+    .strictObject({
+      kind: z.literal("document"),
+      documentId: z.string(),
+      versionId: z.string(),
+      publisherExtractionId: z.string().optional(),
+      source: z.union([
+        z.strictObject({ kind: z.literal("public"), sourceId: z.string() }),
+        z.strictObject({
+          kind: z.literal("publisher"),
+          sourceId: z.string(),
+          issueId: z.string(),
+          documentId: z.string(),
+        }),
+      ]),
+      ranges: z.array(CharacterRangeSchema).optional(),
+      purpose: z.string(),
+    })
+    .superRefine((reference, context) => {
+      if (
+        reference.source.kind === "publisher" &&
+        (reference.source.documentId !== reference.documentId ||
+          reference.publisherExtractionId === undefined)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "publisher source documentId must match reference",
+        });
+      }
+      if (reference.source.kind === "public" && reference.publisherExtractionId !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["publisherExtractionId"],
+          message: "public source cannot carry publisher extraction identity",
+        });
+      }
+    }),
+  z.strictObject({ kind: z.literal("chat_message"), messageId: z.string(), purpose: z.string() }),
+]);
+const PlanTurnWorkflowSchema = z.discriminatedUnion("mode", [
   z.strictObject({ mode: z.literal("clarify"), question: z.string() }),
-]);
-const ExecutionPlanSchema = z.discriminatedUnion("mode", [
-  z.strictObject({ mode: z.literal("single"), reason: z.string() }),
   z.strictObject({
-    mode: z.literal("fanout"),
-    reason: z.string(),
-    topics: z
-      .array(z.strictObject({ question: z.string(), relevantTurnIds: z.array(z.string()) }))
-      .min(2)
-      .max(3),
+    mode: z.literal("single"),
+    question: z.string(),
+    relevantTurnIds: z.array(z.string()),
   }),
-]);
-const NormalizedPlanSchema = z.discriminatedUnion("mode", [
-  z.strictObject({ mode: z.literal("single"), reason: z.string() }),
   z.strictObject({
     mode: z.literal("fanout"),
-    reason: z.string(),
+    question: z.string(),
     topics: z
       .array(
         z.strictObject({
@@ -175,38 +197,6 @@ const NormalizedPlanSchema = z.discriminatedUnion("mode", [
       .max(3),
   }),
 ]);
-const InternalReferenceSchema = z
-  .union([
-    z.strictObject({
-      kind: z.literal("document"),
-      documentId: z.string(),
-      documentVersionId: z.string(),
-      source: z.discriminatedUnion("kind", [
-        z.strictObject({ kind: z.literal("public"), sourceId: PublicDocumentSourceIdSchema }),
-        z.strictObject({
-          kind: z.literal("publisher"),
-          sourceId: PublisherDocumentSourceIdSchema,
-          issueId: z.string(),
-          documentId: z.string(),
-        }),
-      ]),
-      ranges: z.array(CharacterRangeSchema).optional(),
-      purpose: z.string(),
-    }),
-    z.strictObject({ kind: z.literal("chat_message"), messageId: z.string(), purpose: z.string() }),
-  ])
-  .superRefine((reference, context) => {
-    if (
-      reference.kind === "document" &&
-      reference.source.kind === "publisher" &&
-      reference.source.documentId !== reference.documentId
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "publisher source documentId must equal the outer documentId",
-      });
-    }
-  });
 const MemoryReferenceSchema = z.strictObject({
   memoryId: z.string(),
   memoryRevisionId: z.string(),
@@ -295,7 +285,8 @@ const DocumentCandidateSchema = z
     purpose: z.string(),
     sourceId: z.string(),
     documentId: z.string(),
-    documentVersionId: z.string(),
+    versionId: z.string(),
+    publisherExtractionId: z.string().trim().min(1).optional(),
     publisherIssueId: z.string().optional(),
     publisherDocumentId: z.string().optional(),
     contentHash: Sha256HexSchema,
@@ -317,6 +308,13 @@ const DocumentCandidateSchema = z
       return;
     }
     if (hasPublisherIssue) {
+      if (candidate.publisherExtractionId === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["publisherExtractionId"],
+          message: "publisher document candidates require an extraction binding",
+        });
+      }
       if (!PublisherDocumentSourceIdSchema.safeParse(candidate.sourceId).success) {
         context.addIssue({
           code: "custom",
@@ -390,7 +388,7 @@ const PublicDocumentLocatorSchema = z.strictObject({
   kind: z.literal("document"),
   sourceId: PublicDocumentSourceIdSchema,
   documentId: z.string(),
-  documentVersionId: z.string(),
+  versionId: z.string(),
   contentHash: Sha256HexSchema,
   ranges: NormalizedDocumentRangesSchema,
 });
@@ -399,9 +397,10 @@ const PublisherDocumentLocatorSchema = z
     kind: z.literal("document"),
     sourceId: PublisherDocumentSourceIdSchema,
     documentId: z.string(),
-    documentVersionId: z.string(),
+    versionId: z.string(),
     contentHash: Sha256HexSchema,
     ranges: NormalizedDocumentRangesSchema,
+    publisherExtractionId: z.string().trim().min(1),
     publisherIssueId: z.string().trim().min(1),
     publisherDocumentId: z.string().trim().min(1),
   })
@@ -480,8 +479,8 @@ const ContextSchema = z.strictObject({
       "context_plan_unfit",
       "context_budget_mismatch",
       "synthesis_budget_mismatch",
-      "source_access_revoked",
-      "web_policy_revoked",
+      "context_assembly_failed",
+      "unsupported_policy",
     ])
     .optional(),
 });
@@ -526,10 +525,8 @@ export const aiChatSchemas = {
   input: z.strictObject({ aiRunId: z.string() }),
   aiChatLoadTurn: z.strictObject({ value: LoadedTurnSchema }),
   aiChatMemory: z.strictObject({ value: MemoryExtractionSchema }),
-  aiChatResolution: z.strictObject({ value: ConversationResolutionSchema }),
-  aiChatPlan: z.strictObject({ value: ExecutionPlanSchema }),
-  aiChatNormalizedPlan: z.strictObject({ value: NormalizedPlanSchema }),
-  aiChatInternal: z.strictObject({ value: z.array(InternalReferenceSchema) }),
+  aiChatPlanTurn: z.strictObject({ value: PlanTurnWorkflowSchema }),
+  aiChatInternal: z.strictObject({ value: z.array(BoundInternalReferenceSchema) }),
   aiChatMemories: z.strictObject({ value: MemorySelectorResultSchema }),
   aiChatWeb: z.strictObject({ value: WebSelectorResultSchema }),
   aiChatAssembly: z.strictObject({ value: ContextAssemblySchema }),
@@ -623,8 +620,6 @@ const controlledFailure = (code: AiRunErrorCode): AnswerLaneResult => ({
 });
 
 const parseRunId = (input: unknown): string => aiChatRuntimeInputSchema.parse(input).aiRunId;
-const citationNonceHex = (nonce: readonly number[]): string =>
-  nonce.map((byte) => byte.toString(16).padStart(2, "0")).join("");
 
 export function buildAiChatWorkflow(
   api: CreateSmithersApi<AiChatSchemas>,
@@ -638,13 +633,10 @@ export function buildAiChatWorkflow(
   const workflow = smithers((ctx) => {
     const load = () =>
       ctx.output(outputs.aiChatLoadTurn, { nodeId: "load-turn" }).value as LoadedTurn;
-    const resolutionMaybe = ctx.outputMaybe(outputs.aiChatResolution, {
-      nodeId: "resolve-conversation",
-    })?.value as ConversationResolution | undefined;
-    const normalizedMaybe = ctx.outputMaybe(outputs.aiChatNormalizedPlan, {
-      nodeId: "normalize-execution-plan",
-    })?.value as NormalizedExecutionPlan | undefined;
-    const topics = normalizedMaybe?.mode === "fanout" ? normalizedMaybe.topics : [];
+    const planTurnMaybe = ctx.outputMaybe(outputs.aiChatPlanTurn, {
+      nodeId: "plan-turn",
+    })?.value as PlanTurnResult | undefined;
+    const topics = planTurnMaybe?.mode === "fanout" ? planTurnMaybe.topics : [];
 
     const ReductionLoop = ({ prefix, initialNode }: { prefix: string; initialNode: string }) => {
       const initial = ctx.outputMaybe(outputs.aiChatContext, { nodeId: initialNode })?.value as
@@ -728,17 +720,16 @@ export function buildAiChatWorkflow(
               timeoutMs={fast}
             >
               {async () => {
-                ctx.output(outputs.aiChatNormalizedPlan, { nodeId: "normalize-execution-plan" });
-                const resolution = ctx.output(outputs.aiChatResolution, {
-                  nodeId: "resolve-conversation",
-                }).value as Extract<ConversationResolution, { mode: "continue" }>;
+                const plan = ctx.output(outputs.aiChatPlanTurn, {
+                  nodeId: "plan-turn",
+                }).value as Extract<PlanTurnResult, { mode: "single" }>;
                 return {
-                  value: await runtime.operations.retrieveInternal(
+                  value: (await runtime.operations.retrieveInternal(
                     load(),
-                    resolution.retrievalQuestion,
+                    plan.question,
                     "single-retrieve-internal",
-                    resolution.selectedTurnIds,
-                  ),
+                    plan.relevantTurnIds,
+                  )) as readonly InternalReference[],
                 };
               }}
             </Task>
@@ -750,16 +741,13 @@ export function buildAiChatWorkflow(
               timeoutMs={fast}
             >
               {async () => {
-                void ctx.output(outputs.aiChatNormalizedPlan, {
-                  nodeId: "normalize-execution-plan",
-                });
-                const resolution = ctx.output(outputs.aiChatResolution, {
-                  nodeId: "resolve-conversation",
-                }).value as Extract<ConversationResolution, { mode: "continue" }>;
+                const plan = ctx.output(outputs.aiChatPlanTurn, {
+                  nodeId: "plan-turn",
+                }).value as Extract<PlanTurnResult, { mode: "single" }>;
                 return {
                   value: await runtime.operations.selectMemories(
                     load(),
-                    resolution.retrievalQuestion,
+                    plan.question,
                     "single-select-memories",
                   ),
                 };
@@ -773,13 +761,13 @@ export function buildAiChatWorkflow(
               timeoutMs={fast}
             >
               {async () => {
-                const resolution = ctx.output(outputs.aiChatResolution, {
-                  nodeId: "resolve-conversation",
-                }).value as Extract<ConversationResolution, { mode: "continue" }>;
+                const plan = ctx.output(outputs.aiChatPlanTurn, {
+                  nodeId: "plan-turn",
+                }).value as Extract<PlanTurnResult, { mode: "single" }>;
                 return {
                   value: await runtime.operations.retrieveWeb(
                     load(),
-                    resolution.retrievalQuestion,
+                    plan.question,
                     "single-retrieve-web",
                   ),
                 };
@@ -794,12 +782,12 @@ export function buildAiChatWorkflow(
             timeoutMs={fast}
           >
             {async () => {
-              const resolution = ctx.output(outputs.aiChatResolution, {
-                nodeId: "resolve-conversation",
-              }).value as Extract<ConversationResolution, { mode: "continue" }>;
+              const plan = ctx.output(outputs.aiChatPlanTurn, {
+                nodeId: "plan-turn",
+              }).value as Extract<PlanTurnResult, { mode: "single" }>;
               const selectors: SelectorBundle = {
                 internal: ctx.output(outputs.aiChatInternal, { nodeId: "single-retrieve-internal" })
-                  .value,
+                  .value as readonly InternalReference[],
                 memories: memorySelectorEntries(
                   ctx.output(outputs.aiChatMemories, { nodeId: "single-select-memories" }).value,
                 ),
@@ -815,12 +803,12 @@ export function buildAiChatWorkflow(
               return {
                 value: await runtime.operations.assembleContext(
                   load(),
-                  resolution.retrievalQuestion,
+                  plan.question,
                   selectors,
                   "single-assemble",
                   "single-answer",
                   undefined,
-                  resolution.selectedTurnIds,
+                  plan.relevantTurnIds,
                 ),
               };
             }}
@@ -939,9 +927,9 @@ export function buildAiChatWorkflow(
             timeoutMs={fast}
           >
             {async () => {
-              const plan = ctx.output(outputs.aiChatNormalizedPlan, {
-                nodeId: "normalize-execution-plan",
-              }).value as Extract<NormalizedExecutionPlan, { mode: "fanout" }>;
+              const plan = ctx.output(outputs.aiChatPlanTurn, {
+                nodeId: "plan-turn",
+              }).value as Extract<PlanTurnResult, { mode: "fanout" }>;
               const topic = plan.topics.find((candidate) => candidate.topicId === topicId);
               if (topic === undefined) {
                 throw new AiRuntimeError("invalid_workflow_output", "fanout topic missing", {
@@ -951,7 +939,7 @@ export function buildAiChatWorkflow(
               const selectors: SelectorBundle = {
                 internal: ctx.output(outputs.aiChatInternal, {
                   nodeId: `${prefix}-retrieve-internal`,
-                }).value,
+                }).value as readonly InternalReference[],
                 memories: memorySelectorEntries(
                   ctx.output(outputs.aiChatMemories, {
                     nodeId: `${prefix}-select-memories`,
@@ -1112,10 +1100,12 @@ export function buildAiChatWorkflow(
             timeoutMs={fast}
           >
             {async () => ({
-              value: runtime.operations.allocateFanout(
+              value: await runtime.operations.allocateFanout(
                 load(),
-                ctx.output(outputs.aiChatNormalizedPlan, { nodeId: "normalize-execution-plan" })
-                  .value as Extract<NormalizedExecutionPlan, { mode: "fanout" }>,
+                ctx.output(outputs.aiChatPlanTurn, { nodeId: "plan-turn" }).value as Extract<
+                  PlanTurnResult,
+                  { mode: "fanout" }
+                >,
               ),
             })}
           </Task>
@@ -1135,12 +1125,12 @@ export function buildAiChatWorkflow(
                   timeoutMs={fast}
                 >
                   {async () => ({
-                    value: await runtime.operations.retrieveInternal(
+                    value: (await runtime.operations.retrieveInternal(
                       load(),
                       topic.question,
                       `${prefix}-retrieve-internal`,
                       topic.relevantTurnIds,
-                    ),
+                    )) as readonly InternalReference[],
                   })}
                 </Task>,
                 <Task
@@ -1186,9 +1176,9 @@ export function buildAiChatWorkflow(
             timeoutMs={fast}
           >
             {async () => {
-              const plan = ctx.output(outputs.aiChatNormalizedPlan, {
-                nodeId: "normalize-execution-plan",
-              }).value as Extract<NormalizedExecutionPlan, { mode: "fanout" }>;
+              const plan = ctx.output(outputs.aiChatPlanTurn, {
+                nodeId: "plan-turn",
+              }).value as Extract<PlanTurnResult, { mode: "fanout" }>;
               const selectors = Object.fromEntries(
                 plan.topics.map((topic) => [
                   topic.topicId,
@@ -1287,14 +1277,14 @@ export function buildAiChatWorkflow(
               return {
                 value:
                   collected.status === "ok"
-                    ? runtime.operations.synthesisContext(
+                    ? await runtime.operations.synthesisContext(
                         load(),
                         collected.packets as TopicPacket[],
-                        collected.sourceMap,
+                        collected.sourceMap as FinalSourceRecord[],
                         collected.contexts as ContextState[],
                         ctx.output(outputs.aiChatAllocation, { nodeId: "fanout-allocate" }).value,
                       )
-                    : runtime.operations.synthesisContext(
+                    : await runtime.operations.synthesisContext(
                         load(),
                         [],
                         [],
@@ -1379,17 +1369,8 @@ export function buildAiChatWorkflow(
 
     const AnswerLane = () => (
       <Sequence>
-        <Task
-          id="resolve-conversation"
-          output={outputs.aiChatResolution}
-          retries={2}
-          retryPolicy={retryPolicy}
-          timeoutMs={fast}
-        >
-          {async () => ({ value: await runtime.operations.resolveConversation(load()) })}
-        </Task>
         <Branch
-          if={resolutionMaybe?.mode === "clarify"}
+          if={planTurnMaybe?.mode === "clarify"}
           then={
             <Task
               id="clarification-result"
@@ -1402,51 +1383,21 @@ export function buildAiChatWorkflow(
                 value: await runtime.operations.clarify(
                   load(),
                   (
-                    ctx.output(outputs.aiChatResolution, { nodeId: "resolve-conversation" })
-                      .value as Extract<ConversationResolution, { mode: "clarify" }>
+                    ctx.output(outputs.aiChatPlanTurn, { nodeId: "plan-turn" }).value as Extract<
+                      PlanTurnResult,
+                      { mode: "clarify" }
+                    >
                   ).question,
                 ),
               })}
             </Task>
           }
           else={
-            <Sequence>
-              <Task
-                id="plan-execution"
-                output={outputs.aiChatPlan}
-                retries={2}
-                retryPolicy={retryPolicy}
-                timeoutMs={fast}
-              >
-                {async () => ({
-                  value: await runtime.operations.planExecution(
-                    load(),
-                    ctx.output(outputs.aiChatResolution, { nodeId: "resolve-conversation" })
-                      .value as Extract<ConversationResolution, { mode: "continue" }>,
-                  ),
-                })}
-              </Task>
-              <Task
-                id="normalize-execution-plan"
-                output={outputs.aiChatNormalizedPlan}
-                retries={2}
-                retryPolicy={retryPolicy}
-                timeoutMs={fast}
-              >
-                {async () => ({
-                  value: runtime.operations.normalizePlan(
-                    ctx.output(outputs.aiChatPlan, { nodeId: "plan-execution" }).value,
-                    ctx.output(outputs.aiChatResolution, { nodeId: "resolve-conversation" })
-                      .value as Extract<ConversationResolution, { mode: "continue" }>,
-                  ),
-                })}
-              </Task>
-              <Branch
-                if={normalizedMaybe?.mode === "fanout"}
-                then={<FanoutAnswerFlow />}
-                else={<SingleAnswerFlow />}
-              />
-            </Sequence>
+            <Branch
+              if={planTurnMaybe?.mode === "fanout"}
+              then={<FanoutAnswerFlow />}
+              else={<SingleAnswerFlow />}
+            />
           }
         />
         <Task
@@ -1463,7 +1414,7 @@ export function buildAiChatWorkflow(
               ctx.output(outputs.aiChatAnswer, { nodeId: "fanout-result" })
             ).value as AnswerLaneResult;
             if (answer.status === "ok") {
-              assertFinalSourceMap(answer, citationNonceHex(load().citationNonce));
+              assertFinalSourceMap(answer, load().citationNamespace);
             }
             return { value: answer };
           }}
@@ -1483,48 +1434,76 @@ export function buildAiChatWorkflow(
           >
             {async () => ({ value: await runtime.operations.loadTurn(parseRunId(ctx.input)) })}
           </Task>
-          <Parallel id="turn-lanes" maxConcurrency={AI_CHAT_TURN_LANE_MAX_CONCURRENCY}>
-            <Task
-              id="memory-extract"
-              output={outputs.aiChatMemory}
-              retries={2}
-              retryPolicy={retryPolicy}
-              timeoutMs={fast}
-            >
-              {async () => ({ value: await runtime.operations.extractMemory(load()) })}
-            </Task>
-            <AnswerLane />
-          </Parallel>
           <Task
-            id="finalize"
-            output={outputs.aiChatFinalize}
+            id="plan-turn"
+            output={outputs.aiChatPlanTurn}
             retries={2}
             retryPolicy={retryPolicy}
             timeoutMs={fast}
           >
             {async () => {
-              const terminal = await runtime.operations.finalize(
-                load(),
-                ctx.output(outputs.aiChatAnswer, { nodeId: "answer-select" })
-                  .value as AnswerLaneResult,
-                MemoryExtractionSchema.parse(
-                  ctx.output(outputs.aiChatMemory, { nodeId: "memory-extract" }).value,
-                ) as MemoryExtractionArtifact,
-                `ai-chat:${load().aiRunId}`,
-              );
-              return terminal.status === "succeeded"
-                ? {
-                    status: "succeeded" as const,
-                    assistantMessageId: terminal.assistantMessageId,
-                    alreadyTerminal: terminal.alreadyTerminal,
-                  }
-                : {
-                    status: "failed" as const,
-                    code: terminal.code,
-                    alreadyTerminal: terminal.alreadyTerminal,
-                  };
+              const value = await runtime.operations.planTurn(load());
+              if (value.mode === "fanout") {
+                return {
+                  value: {
+                    ...value,
+                    topics: value.topics.map((topic) => ({ ...topic })),
+                  },
+                };
+              }
+              return { value };
             }}
           </Task>
+          {planTurnMaybe ? (
+            <Sequence>
+              <Parallel id="turn-lanes" maxConcurrency={AI_CHAT_TURN_LANE_MAX_CONCURRENCY}>
+                <Task
+                  id="memory-extract"
+                  output={outputs.aiChatMemory}
+                  retries={2}
+                  retryPolicy={retryPolicy}
+                  timeoutMs={fast}
+                >
+                  {async () => {
+                    return {
+                      value: await runtime.operations.extractMemory(load()),
+                    };
+                  }}
+                </Task>
+                <AnswerLane />
+              </Parallel>
+              <Task
+                id="finalize"
+                output={outputs.aiChatFinalize}
+                retries={2}
+                retryPolicy={retryPolicy}
+                timeoutMs={fast}
+              >
+                {async () => {
+                  const terminal = await runtime.operations.finalize(
+                    load(),
+                    ctx.output(outputs.aiChatAnswer, { nodeId: "answer-select" })
+                      .value as AnswerLaneResult,
+                    MemoryExtractionSchema.parse(
+                      ctx.output(outputs.aiChatMemory, { nodeId: "memory-extract" }).value,
+                    ) as MemoryExtractionArtifact,
+                    `ai-chat:${load().aiRunId}`,
+                  );
+                  return terminal.status === "succeeded"
+                    ? {
+                        status: "succeeded" as const,
+                        assistantMessageId: terminal.assistantMessageId,
+                        alreadyTerminal: terminal.alreadyTerminal,
+                      }
+                    : {
+                        status: "failed" as const,
+                        code: terminal.code,
+                        alreadyTerminal: terminal.alreadyTerminal,
+                      };
+                }}
+              </Task>
+            </Sequence>
+          ) : null}
         </Sequence>
       </Workflow>
     );

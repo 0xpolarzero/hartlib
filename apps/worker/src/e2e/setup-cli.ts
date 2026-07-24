@@ -56,6 +56,35 @@ const databaseUrlFor = (name: string): string => {
 
 const adminDatabaseUrl = databaseUrlFor("postgres");
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
+const citationNamespaceForSeed = (seed: string): string =>
+  `cn_${createHash("sha256").update(`citation:${seed}`).digest().subarray(0, 16).toString("base64url")}`;
+
+const acceptanceScopeForSeed = (args: {
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly subscriptionIds?: readonly string[];
+  readonly accessIds?: readonly string[];
+  readonly publicSourceIds?: readonly string[];
+  readonly webRequested?: boolean;
+  readonly webEnabled?: boolean;
+  readonly allowedDomains?: readonly string[] | null;
+}) => ({
+  userId: "demo-user",
+  chatId: args.chatId,
+  companyId: args.companyId,
+  subscriptionIds: [...(args.subscriptionIds ?? [])].sort(),
+  accessIds: [...(args.accessIds ?? [])].sort(),
+  publicSourceIds: [...(args.publicSourceIds ?? [])].sort(),
+  memoryMode: "private_owner" as const,
+  memoryRevisionIds: [],
+  webRequested: args.webRequested ?? false,
+  webEnabled: args.webEnabled ?? false,
+  provider: "zai_coding_plan_official",
+  fastModelId: "glm-5-turbo",
+  mainModelId: "glm-5-turbo",
+  webTransportProvider: args.webEnabled === true ? "tinyfish" : null,
+  allowedDomains: args.allowedDomains ?? null,
+});
 
 const runDb = <A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> =>
   Effect.runPromise(
@@ -298,13 +327,13 @@ const assertSeededCorpusSearchable = Effect.gen(function* () {
   const rows = yield* sql<{
     readonly sourceId: string;
     readonly documentId: string;
-    readonly documentVersionId: string;
+    readonly versionId: string;
     readonly canonicalUrl: string;
     readonly contentHash: string;
   }>`
     select d.source_id as "sourceId",
            d.document_id as "documentId",
-           d.document_id as "documentVersionId",
+           d.document_id as "versionId",
            d.canonical_url as "canonicalUrl",
            d.content_hash as "contentHash"
     from public_source_documents d
@@ -324,7 +353,7 @@ const assertSeededCorpusSearchable = Effect.gen(function* () {
     return {
       sourceId: expected.sourceId,
       documentId: expected.documentId,
-      documentVersionId: expected.documentId,
+      versionId: expected.documentId,
       canonicalUrl: expected.canonicalUrl,
       contentHash: createHash("sha256").update(corpusItem.text).digest("hex"),
     };
@@ -627,6 +656,7 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
   const documents = yield* sql<{
     readonly documentId: string;
     readonly versionId: string;
+    readonly extractionId: string;
     readonly title: string;
     readonly contentHash: string;
     readonly textCharCount: number;
@@ -634,12 +664,16 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
   }>`
     select documents.id::text as "documentId",
            versions.id::text as "versionId",
+           extractions.id::text as "extractionId",
            documents.title,
            versions.content_hash as "contentHash",
            versions.text_char_count::int as "textCharCount",
            issues.published_at as "publishedAt"
     from brief_documents documents
     join brief_document_versions versions on versions.id = documents.current_version_id
+    join brief_document_extractions extractions
+      on extractions.brief_document_id = documents.id
+     and extractions.input_sha256_hex = documents.sha256_hex
     join publisher_issues issues on issues.id = documents.issue_id
     where documents.issue_id = ${publisherPdfFixture.issueId}
       and documents.deleted_at is null
@@ -675,20 +709,28 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
   `;
       const [run] = yield* sql<{
         readonly id: string;
-        readonly citationNonce: string;
+        readonly citationNamespace: string;
       }>`
     insert into ai_runs (
       chat_id, initiating_user_id, user_message_id, locale, market,
-      web_search_enabled, effective_web_policy, started_at, finished_at
+      citation_namespace, acceptance_scope, started_at, finished_at
     ) values (
-      ${chat!.id}, 'demo-user', ${userMessage!.id}, 'en-US', 'US', false,
-      ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
+      ${chat!.id}, 'demo-user', ${userMessage!.id}, 'en-US', 'US',
+      ${citationNamespaceForSeed("publisher-pdf")},
+      ${sql.json(
+        acceptanceScopeForSeed({
+          chatId: chat!.id,
+          companyId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          subscriptionIds: [publisherPdfFixture.subscriptionId],
+          accessIds: [publisherPdfFixture.accessId],
+        }),
+      )},
       now(), now()
     )
     returning id::text,
-      translate(rtrim(encode(citation_nonce, 'base64'), '='), '+/', '-_') as "citationNonce"
+      citation_namespace as "citationNamespace"
   `;
-      const sourceKey = `k_${run!.citationNonce}_1`;
+      const sourceKey = `k_${run!.citationNamespace}_1`;
       const [message] = yield* sql<{ readonly id: string }>`
     insert into chat_messages (chat_id, author, content, assistant_ai_run_id)
     values (
@@ -707,7 +749,7 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
       yield* sql`
     insert into assistant_message_sources (
       assistant_message_id, source_key, kind, locator,
-      document_version_id, publisher_document_version_id,
+      version_id, publisher_extraction_id,
       display_label, public_provenance
     ) values (
       ${message!.id}, ${sourceKey}, 'document',
@@ -715,13 +757,13 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
         kind: "document",
         sourceId: `publisher:${publisherPdfFixture.subscriptionId}`,
         documentId: document.documentId,
-        documentVersionId: document.versionId,
+        versionId: document.versionId,
         contentHash: document.contentHash,
         ranges,
         publisherIssueId: publisherPdfFixture.issueId,
         publisherDocumentId: document.documentId,
       })},
-      ${document.versionId}, ${document.versionId}, ${document.title},
+      ${document.versionId}, ${document.extractionId}, ${document.title},
       ${sql.json({
         sourceName: "E2E PDF Publisher",
         issueTitle: publisherPdfFixture.issueTitle,
@@ -826,21 +868,14 @@ const seedActiveRun = (scope: "chat" | "user") =>
       values (${chatId}, 'user', 'Seeded active-run guard')
       returning id::text
     `;
-    const policy = yield* sql<{ readonly enabled: boolean }>`
-      select web_search_enabled as enabled
-      from client_company_ai_settings where company_id = ${primary.companyId}
-    `;
     const runs = yield* sql<{ readonly id: string }>`
       insert into ai_runs (
         chat_id, initiating_user_id, user_message_id, locale, market,
-        web_search_enabled, effective_web_policy
+        citation_namespace, acceptance_scope
       ) values (
-        ${chatId}, 'demo-user', ${messages[0]!.id}, 'fr-FR', 'FR', false,
-        ${sql.json(
-          policy[0]?.enabled === true
-            ? { enabled: true, provider: "tinyfish", allowedDomains: null }
-            : { enabled: false, reason: "company_disabled", allowlistActive: false },
-        )}
+        ${chatId}, 'demo-user', ${messages[0]!.id}, 'fr-FR', 'FR',
+        ${citationNamespaceForSeed(`active:${scope}`)},
+        ${sql.json(acceptanceScopeForSeed({ chatId, companyId: primary.companyId }))}
       )
       returning id::text
     `;
@@ -856,10 +891,6 @@ const seedPrunedStreamRun = Effect.gen(function* () {
   `;
   const primary = chats[0];
   if (primary === undefined) return yield* Effect.fail(new Error("demo chat is not initialized"));
-  const policy = yield* sql<{ readonly enabled: boolean }>`
-    select web_search_enabled as enabled
-    from client_company_ai_settings where company_id = ${primary.companyId}
-  `;
   const messages = yield* sql<{ readonly id: string }>`
     insert into chat_messages (chat_id, author, content)
     values (${primary.id}, 'user', 'Seeded pruned stream')
@@ -868,14 +899,12 @@ const seedPrunedStreamRun = Effect.gen(function* () {
   const runs = yield* sql<{ readonly id: string }>`
     insert into ai_runs (
       chat_id, initiating_user_id, user_message_id, locale, market,
-      web_search_enabled, effective_web_policy, started_at, next_event_seq
+      citation_namespace, acceptance_scope, started_at, next_event_seq
     ) values (
-      ${primary.id}, 'demo-user', ${messages[0]!.id}, 'en-US', 'US', false,
-      ${sql.json(
-        policy[0]?.enabled === true
-          ? { enabled: true, provider: "tinyfish", allowedDomains: null }
-          : { enabled: false, reason: "company_disabled", allowlistActive: false },
-      )}, now(), 5
+      ${primary.id}, 'demo-user', ${messages[0]!.id}, 'en-US', 'US',
+      ${citationNamespaceForSeed("pruned-stream")},
+      ${sql.json(acceptanceScopeForSeed({ chatId: primary.id, companyId: primary.companyId }))},
+      now(), 5
     )
     returning id::text
   `;
@@ -913,11 +942,6 @@ const seedFailedRun = (chatId: string, content: string) =>
     `;
     const chat = chats[0];
     if (chat === undefined) return yield* Effect.fail(new Error("failed-run chat is unavailable"));
-    const policy = yield* sql<{ readonly enabled: boolean }>`
-      select web_search_enabled as enabled
-      from client_company_ai_settings
-      where company_id = ${chat.companyId}
-    `;
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         const messages = yield* sql<{ readonly id: string }>`
@@ -928,15 +952,13 @@ const seedFailedRun = (chatId: string, content: string) =>
         const runs = yield* sql<{ readonly id: string }>`
           insert into ai_runs (
             chat_id, initiating_user_id, user_message_id, locale, market,
-            web_search_enabled, effective_web_policy, started_at, failed_at,
+            citation_namespace, acceptance_scope, started_at, failed_at,
             error_code, retryable, next_event_seq
           ) values (
-            ${chat.id}, 'demo-user', ${messages[0]!.id}, 'en-US', 'US', false,
-            ${sql.json(
-              policy[0]?.enabled === true
-                ? { enabled: true, provider: "tinyfish", allowedDomains: null }
-                : { enabled: false, reason: "company_disabled", allowlistActive: false },
-            )}, now(), now(), 'answer_failed', true, 3
+            ${chat.id}, 'demo-user', ${messages[0]!.id}, 'en-US', 'US',
+            ${citationNamespaceForSeed(`failed:${content}`)},
+            ${sql.json(acceptanceScopeForSeed({ chatId: chat.id, companyId: chat.companyId }))},
+            now(), now(), 'answer_failed', true, 3
           )
           returning id::text
         `;

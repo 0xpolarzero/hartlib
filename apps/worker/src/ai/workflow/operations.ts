@@ -23,10 +23,10 @@ import {
 } from "../prompts";
 import {
   appendAiRunEvent,
+  appendAiRunEventInTransaction,
   finalizeAiRun,
   insertAiObservation,
   insertAiSourceExposure,
-  markAiRunStarted,
   runAiProductState,
 } from "../product-state/repository";
 import type { AiDocumentExposureReconstruction } from "../product-state/observability";
@@ -60,10 +60,11 @@ import {
   isRetryableAiRunError,
   type AiRunErrorCode,
 } from "../runtime/errors";
-import { resolveRuntimeModel } from "../runtime/model-registry";
+import { resolveRuntimeModel, type RuntimeModelId } from "../runtime/model-registry";
 import type { PiBoundaryCoordinates } from "../runtime/pi-boundary";
 import {
   providerRequestSha256Hex,
+  serializeAnswerSource,
   stableJson,
   type CodeOwnedSourceExposureProof,
   type LiveProviderRequest,
@@ -107,7 +108,6 @@ import {
   validateTopicPacket,
 } from "../runtime/validators";
 import { WebBoundaryError } from "../web/errors";
-import { effectiveWebPolicy, recheckWebPolicy } from "../web/policy";
 
 export type CanonicalAiConfig = Pick<
   WorkerConfig,
@@ -224,6 +224,9 @@ export interface WebResearchBoundary {
     locale: Locale,
     market: Market,
     policy: EffectiveWebPolicy,
+    authorizePolicy: (
+      signal?: AbortSignal | undefined,
+    ) => Promise<Extract<EffectiveWebPolicy, { readonly enabled: true }>>,
     coordinates: PiBoundaryCoordinates,
     cursor?: string | undefined,
     signal?: AbortSignal | undefined,
@@ -241,6 +244,9 @@ export interface WebResearchBoundary {
   readonly fetch: (
     url: string,
     policy: EffectiveWebPolicy,
+    authorizePolicy: (
+      signal?: AbortSignal | undefined,
+    ) => Promise<Extract<EffectiveWebPolicy, { readonly enabled: true }>>,
     coordinates: PiBoundaryCoordinates,
     signal?: AbortSignal | undefined,
   ) => Promise<WebFetchedPage>;
@@ -258,8 +264,7 @@ export interface LoadedTurn {
   readonly citationNamespace: string;
   readonly memoryMode: "private_owner" | "disabled";
   readonly webRequested: boolean;
-  /** Immutable policy accepted with the ai_runs row. */
-  readonly webPolicy: EffectiveWebPolicy;
+  readonly acceptanceScope: RunAcceptanceScope;
 }
 
 export interface SelectorBundle {
@@ -317,8 +322,6 @@ export interface ContextState {
     | "context_plan_unfit"
     | "context_budget_mismatch"
     | "synthesis_budget_mismatch"
-    | "source_access_revoked"
-    | "web_policy_revoked"
     | undefined;
 }
 
@@ -337,19 +340,6 @@ export interface FanoutSourceKeySet {
     readonly candidateId: string;
     readonly sourceKey: string;
   }>;
-}
-
-interface LiveAuthorizationOptions {
-  readonly conversation?: readonly ConversationEntry[] | undefined;
-  readonly memories?: readonly MemorySnapshot[] | undefined;
-  readonly requireSourceCatalog?: boolean | undefined;
-  readonly requireWebPolicy?: boolean | undefined;
-}
-
-interface FrozenAuthorizationSnapshot {
-  readonly baseAllowed: boolean;
-  readonly sourceAllowed: readonly boolean[];
-  readonly webPolicyAllowed: boolean;
 }
 
 interface InternalProviderExposure {
@@ -482,8 +472,7 @@ const exactPreviewRanges = (item: DocumentPreview): readonly CharacterRange[] =>
 };
 
 const exactPreviewContentHash = (item: DocumentPreview): string => {
-  exactPreviewRanges(item);
-  return sha256Base64Url(item.snippet);
+  return sha256Base64Url(JSON.stringify(exactPreviewRanges(item)));
 };
 
 export const normalizeSelectedDocumentRanges = (
@@ -507,33 +496,40 @@ export const answerDeltaEmissionKey = (
 interface LoadRow {
   readonly aiRunId: string;
   readonly chatId: string;
+  readonly companyId: string;
   readonly initiatingUserId: string;
   readonly userMessageId: string;
   readonly userMessage: string;
   readonly locale: Locale;
   readonly market: Market;
+  readonly currentDate: string;
   readonly citationNamespace: string;
   readonly memoryMode: "private_owner" | "disabled";
   readonly webRequested: boolean;
-  readonly webPolicy: EffectiveWebPolicy;
+  readonly acceptanceScope: unknown;
 }
 
-const EffectiveWebPolicySchema = z.discriminatedUnion("enabled", [
-  z
-    .object({
-      enabled: z.literal(false),
-      reason: z.enum(["deployment_unavailable", "company_disabled", "allowlist_unsupported"]),
-      allowlistActive: z.boolean(),
-    })
-    .strict(),
-  z
-    .object({
-      enabled: z.literal(true),
-      provider: z.literal("tinyfish"),
-      allowedDomains: z.array(z.string().min(1)).nullable(),
-    })
-    .strict(),
-]);
+const AcceptanceScopeSchema = z
+  .object({
+    userId: z.string().min(1),
+    chatId: z.string().uuid(),
+    companyId: z.string().uuid(),
+    subscriptionIds: z.array(z.string().uuid()),
+    accessIds: z.array(z.string().uuid()),
+    publicSourceIds: z.array(z.string().min(1)),
+    memoryMode: z.enum(["private_owner", "disabled"]),
+    memoryRevisionIds: z.array(z.string().uuid()),
+    webRequested: z.boolean(),
+    webEnabled: z.boolean(),
+    provider: z.literal("zai_coding_plan_official"),
+    fastModelId: z.literal("glm-5-turbo"),
+    mainModelId: z.literal("glm-5-turbo"),
+    webTransportProvider: z.literal("tinyfish").nullable(),
+    allowedDomains: z.array(z.string().min(1)).nullable(),
+  })
+  .strict();
+
+export type RunAcceptanceScope = z.infer<typeof AcceptanceScopeSchema>;
 
 interface ConversationRow {
   readonly turnId: string;
@@ -842,11 +838,7 @@ const structuredRequestInput = (
 });
 
 const sourceText = (sourceKey: string, kind: string, label: string | null, text: string): string =>
-  [
-    `<source key="${sourceKey}" kind="${kind}"${label === null ? "" : ` label=${JSON.stringify(label)}`}>`,
-    text,
-    "</source>",
-  ].join("\n");
+  serializeAnswerSource({ key: sourceKey, kind, label, text });
 
 const candidateText = (candidate: AnswerCandidate): string => {
   if (candidate.kind === "web") return candidate.quote;
@@ -1206,7 +1198,13 @@ export class CanonicalWorkflowOperations {
   ) {}
 
   private db<A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
-    const signal = currentTaskAbortSignal();
+    return this.dbWithSignal(effect, currentTaskAbortSignal());
+  }
+
+  private dbWithSignal<A, E>(
+    effect: Effect.Effect<A, E, PgClient.PgClient>,
+    signal?: AbortSignal,
+  ): Promise<A> {
     return runAiProductState(
       this.connectionString,
       effect,
@@ -1359,516 +1357,40 @@ export class CanonicalWorkflowOperations {
     };
   }
 
-  private currentEffectiveWebPolicy(
-    enabled: boolean,
-    allowedDomains: readonly string[] | null,
-  ): EffectiveWebPolicy {
-    return effectiveWebPolicy({
-      enabled,
-      allowedDomains,
-      providerAvailable: this.config.webResearchProvider === "tinyfish",
-      maxDomainFilters: this.config.aiWebMaxDomainFilters,
-    });
-  }
-
-  private async liveWebPolicy(load: LoadedTurn): Promise<EffectiveWebPolicy> {
-    const rows = await this.db(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql<{
-          readonly enabled: boolean;
-          readonly domains: readonly string[] | null;
-        }>`
-          select settings.web_search_enabled as enabled,
-                 settings.web_domain_allowlist as domains
-          from ai_runs runs
-          join chats on chats.id = runs.chat_id
-          join client_company_ai_settings settings on settings.company_id = chats.company_id
-          where runs.id = ${load.aiRunId}
-          limit 1
-        `;
-      }),
-    );
-    const row = rows[0];
-    const current = this.currentEffectiveWebPolicy(row?.enabled === true, row?.domains ?? null);
-    try {
-      return recheckWebPolicy(load.webPolicy, current);
-    } catch {
-      throw controlledRuntimeFailure("web_policy_revoked");
-    }
-  }
-
-  private async currentAuthorizedSourceIds(load: LoadedTurn): Promise<readonly string[]> {
-    const rows = await this.db(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql<{ readonly sourceId: string }>`
-          with base as (
-            select runs.id, runs.chat_id, runs.initiating_user_id, chats.company_id
-            from ai_runs runs
-            join chats on chats.id = runs.chat_id and chats.deleted_at is null
-            join client_companies companies
-              on companies.id = chats.company_id
-             and companies.recovery_deleted_at is null
-             and companies.purged_at is null
-            join client_company_memberships memberships
-              on memberships.company_id = chats.company_id
-             and memberships.user_id = runs.initiating_user_id
-             and memberships.revoked_at is null
-            join platform_users users
-              on users.id = runs.initiating_user_id
-             and users.recovery_deleted_at is null
-             and users.purged_at is null
-            where runs.id = ${load.aiRunId}
-              and runs.chat_id = ${load.chatId}
-              and runs.initiating_user_id = ${load.initiatingUserId}
-              and runs.finished_at is null
-              and runs.failed_at is null
-              and (
-                (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
-                or chats.shared_at is not null
-              )
-          )
-          select 'public:' || settings.source_id as "sourceId"
-          from base
-          join client_company_public_source_settings settings
-            on settings.client_company_id = base.company_id and settings.enabled
-          union
-          select 'publisher:' || selected.subscription_id::text as "sourceId"
-          from base
-          join chat_subscription_sources selected on selected.chat_id = base.chat_id
-           and selected.client_company_id = base.company_id
-          join client_employee_subscription_grants grants
-            on grants.access_id = selected.access_id
-           and grants.client_company_id = selected.client_company_id
-           and grants.user_id = base.initiating_user_id
-           and grants.revoked_at is null
-          join client_subscription_accesses accesses
-            on accesses.id = selected.access_id
-           and accesses.client_company_id = selected.client_company_id
-           and accesses.subscription_id = selected.subscription_id
-           and accesses.state in ('active', 'ending', 'paused')
-        `;
-      }),
-    );
-    return rows.map((row) => row.sourceId);
+  private async savedScopeSourceIds(load: LoadedTurn): Promise<readonly string[]> {
+    return [
+      ...load.acceptanceScope.publicSourceIds.map((sourceId) => `public:${sourceId}`),
+      ...load.acceptanceScope.subscriptionIds.map(
+        (subscriptionId) => `publisher:${subscriptionId}`,
+      ),
+    ].sort();
   }
 
   private async resolveAuthorizedSourceIds(
     load: LoadedTurn,
     namedSource: string | undefined,
   ): Promise<readonly string[]> {
-    if (namedSource === undefined) return this.currentAuthorizedSourceIds(load);
+    if (namedSource === undefined) return this.savedScopeSourceIds(load);
     const normalizedName = namedSource.trim().toLocaleLowerCase();
     if (normalizedName === "") return [];
     const rows = await this.db(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return yield* sql<{ readonly sourceId: string }>`
-          with base as (
-            select runs.id, runs.chat_id, runs.initiating_user_id, chats.company_id
-            from ai_runs runs
-            join chats on chats.id = runs.chat_id and chats.deleted_at is null
-            join client_companies companies
-              on companies.id = chats.company_id
-             and companies.recovery_deleted_at is null
-             and companies.purged_at is null
-            join client_company_memberships memberships
-              on memberships.company_id = chats.company_id
-             and memberships.user_id = runs.initiating_user_id
-             and memberships.revoked_at is null
-            join platform_users users
-              on users.id = runs.initiating_user_id
-             and users.recovery_deleted_at is null
-             and users.purged_at is null
-            where runs.id = ${load.aiRunId}
-              and runs.chat_id = ${load.chatId}
-              and runs.initiating_user_id = ${load.initiatingUserId}
-              and runs.finished_at is null
-              and runs.failed_at is null
-              and (
-                (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
-                or chats.shared_at is not null
-              )
-          )
-          select 'public:' || settings.source_id as "sourceId"
-          from base
-          join client_company_public_source_settings settings
-            on settings.client_company_id = base.company_id and settings.enabled
-          join public_sources sources on sources.source_id = settings.source_id
-          where lower(btrim(sources.display_name)) = ${normalizedName}
+          select 'public:' || sources.source_id as "sourceId"
+          from public_sources sources
+          where sources.source_id = any(${load.acceptanceScope.publicSourceIds}::text[])
+            and lower(btrim(sources.display_name)) = ${normalizedName}
           union
-          select 'publisher:' || selected.subscription_id::text as "sourceId"
-          from base
-          join chat_subscription_sources selected on selected.chat_id = base.chat_id
-           and selected.client_company_id = base.company_id
-          join client_subscription_accesses accesses
-            on accesses.id = selected.access_id
-           and accesses.client_company_id = selected.client_company_id
-           and accesses.subscription_id = selected.subscription_id
-           and accesses.state in ('active', 'ending', 'paused')
-          join client_employee_subscription_grants grants
-            on grants.access_id = accesses.id
-           and grants.client_company_id = accesses.client_company_id
-           and grants.user_id = base.initiating_user_id
-           and grants.revoked_at is null
-          join publisher_subscriptions subscriptions
-            on subscriptions.id = selected.subscription_id
-          join publisher_companies companies
-            on companies.id = subscriptions.publisher_company_id
-          where lower(btrim(companies.name)) = ${normalizedName}
+          select 'publisher:' || subscriptions.id::text as "sourceId"
+          from publisher_subscriptions subscriptions
+          join publisher_companies companies on companies.id = subscriptions.publisher_company_id
+          where subscriptions.id::text = any(${load.acceptanceScope.subscriptionIds}::text[])
+            and lower(btrim(companies.name)) = ${normalizedName}
         `;
       }),
     );
     return rows.map((row) => row.sourceId);
-  }
-
-  private async assertLiveAuthorization(
-    load: LoadedTurn,
-    options: LiveAuthorizationOptions = {},
-  ): Promise<void> {
-    const messageIds = (options.conversation ?? []).flatMap((entry) => [
-      entry.userMessageId,
-      ...("assistantMessageId" in entry ? [entry.assistantMessageId] : []),
-    ]);
-    const memorySnapshots = options.memories ?? [];
-    const authorizedSourceIds = options.requireSourceCatalog
-      ? await this.currentAuthorizedSourceIds(load)
-      : [];
-    const currentEffectiveWebPolicy = (
-      enabled: boolean,
-      allowedDomains: readonly string[] | null,
-    ) => this.currentEffectiveWebPolicy(enabled, allowedDomains);
-    const rows = await this.db(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql<{
-          readonly baseAllowed: boolean;
-          readonly messagesAllowed: boolean;
-          readonly memoriesAllowed: boolean;
-          readonly catalogAllowed: boolean;
-          readonly webEnabled: boolean | null;
-          readonly webAllowedDomains: readonly string[] | null;
-        }>`
-          with base as (
-            select runs.id, runs.chat_id, runs.initiating_user_id, chats.company_id
-            from ai_runs runs
-            join chats
-              on chats.id = runs.chat_id
-             and chats.deleted_at is null
-            join chat_messages current_message
-              on current_message.id = runs.user_message_id
-             and current_message.chat_id = chats.id
-             and current_message.author = 'user'
-            join client_companies companies
-              on companies.id = chats.company_id
-             and companies.recovery_deleted_at is null
-             and companies.purged_at is null
-            join client_company_memberships memberships
-              on memberships.company_id = chats.company_id
-             and memberships.user_id = runs.initiating_user_id
-             and memberships.revoked_at is null
-            join platform_users users
-              on users.id = runs.initiating_user_id
-             and users.recovery_deleted_at is null
-             and users.purged_at is null
-            where runs.id = ${load.aiRunId}
-              and runs.chat_id = ${load.chatId}
-              and runs.initiating_user_id = ${load.initiatingUserId}
-              and runs.user_message_id = ${load.userMessageId}
-              and runs.finished_at is null
-              and runs.failed_at is null
-              and (
-                (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
-                or chats.shared_at is not null
-              )
-          ), requested_messages as (
-            select value as message_id
-            from jsonb_array_elements_text(${JSON.stringify(messageIds)}::jsonb)
-          ), requested_memories as (
-            select value as memory
-            from jsonb_array_elements(${JSON.stringify(memorySnapshots)}::jsonb)
-          ), requested_catalog as (
-            select value as source_id
-            from jsonb_array_elements_text(${JSON.stringify(authorizedSourceIds)}::jsonb)
-          )
-          select
-            exists(select 1 from base) as "baseAllowed",
-            not exists(
-              select 1 from requested_messages requested
-              where not exists(
-                select 1 from base
-                join chat_messages messages
-                  on messages.chat_id = base.chat_id
-                 and messages.id::text = requested.message_id
-              )
-            ) as "messagesAllowed",
-            not exists(
-              select 1 from requested_memories requested
-              where not exists(
-                select 1 from base
-                join user_memories memories
-                  on memories.user_id = base.initiating_user_id
-                 and memories.id::text = requested.memory->>'memoryId'
-                 and memories.head_revision_id::text = requested.memory->>'memoryRevisionId'
-                 and memories.kind = requested.memory->>'kind'
-                 and memories.content = requested.memory->>'content'
-                 and memories.deleted_at is null
-                 and memories.provenance_only_at is null
-              )
-            ) as "memoriesAllowed",
-            not exists(
-              select 1 from requested_catalog requested
-              where requested.source_id is null
-                or (
-                  requested.source_id !~ '^public:[^:[:space:]]+$'
-                  and requested.source_id !~ '^publisher:[^:[:space:]]+$'
-                )
-                or (
-                  requested.source_id ~ '^public:[^:[:space:]]+$'
-                  and not exists(
-                    select 1 from base
-                    join client_company_public_source_settings settings
-                      on settings.client_company_id = base.company_id
-                     and requested.source_id = 'public:' || settings.source_id
-                     and settings.enabled
-                    join public_sources sources on sources.source_id = settings.source_id
-                  )
-                ) or (
-                  requested.source_id ~ '^publisher:[^:[:space:]]+$'
-                  and not exists(
-                    select 1 from base
-                    join chat_subscription_sources selected on selected.chat_id = base.chat_id
-                    join client_subscription_accesses accesses
-                      on accesses.id = selected.access_id
-                     and accesses.client_company_id = selected.client_company_id
-                     and accesses.subscription_id = selected.subscription_id
-                     and accesses.state in ('active', 'ending', 'paused')
-                    join client_employee_subscription_grants grants
-                      on grants.access_id = accesses.id
-                     and grants.client_company_id = accesses.client_company_id
-                     and grants.user_id = base.initiating_user_id
-                     and grants.revoked_at is null
-                    join publisher_subscriptions subscriptions
-                      on subscriptions.id = selected.subscription_id
-                    join publisher_companies companies
-                      on companies.id = subscriptions.publisher_company_id
-                    where requested.source_id = 'publisher:' || selected.subscription_id::text
-                  )
-                )
-            ) as "catalogAllowed",
-            (
-              select settings.web_search_enabled
-              from base
-              join client_company_ai_settings settings on settings.company_id = base.company_id
-              limit 1
-            ) as "webEnabled",
-            (
-              select settings.web_domain_allowlist
-              from base
-              join client_company_ai_settings settings on settings.company_id = base.company_id
-              limit 1
-            ) as "webAllowedDomains"
-        `;
-      }),
-    );
-    const row = rows[0];
-    if (
-      row?.baseAllowed !== true ||
-      row.messagesAllowed !== true ||
-      row.memoriesAllowed !== true ||
-      row.catalogAllowed !== true
-    ) {
-      throw controlledRuntimeFailure("source_access_revoked");
-    }
-    if (options.requireWebPolicy) {
-      const current = currentEffectiveWebPolicy(
-        row.webEnabled === true,
-        row.webAllowedDomains ?? null,
-      );
-      try {
-        recheckWebPolicy(load.webPolicy, current);
-      } catch {
-        throw controlledRuntimeFailure("web_policy_revoked");
-      }
-    }
-  }
-
-  private async frozenAuthorizationSnapshot(
-    load: LoadedTurn,
-    sourceMap: readonly FinalSourceRecord[],
-  ): Promise<FrozenAuthorizationSnapshot> {
-    const locators = sourceMap.map((source) => ({
-      ...source.locator,
-      publicProvenance: source.publicProvenance,
-    }));
-    const currentEffectiveWebPolicy = (
-      enabled: boolean,
-      allowedDomains: readonly string[] | null,
-    ) => this.currentEffectiveWebPolicy(enabled, allowedDomains);
-    const rows = await this.db(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql<{
-          readonly baseAllowed: boolean;
-          readonly sourceAllowed: readonly boolean[];
-          readonly webSourceCount: number;
-          readonly webEnabled: boolean | null;
-          readonly webAllowedDomains: readonly string[] | null;
-        }>`
-          with base as (
-            select runs.id, runs.chat_id, runs.initiating_user_id, chats.company_id
-            from ai_runs runs
-            join chats on chats.id = runs.chat_id and chats.deleted_at is null
-            join chat_messages current_message
-              on current_message.id = runs.user_message_id
-             and current_message.chat_id = chats.id
-             and current_message.author = 'user'
-            join client_companies companies
-              on companies.id = chats.company_id
-             and companies.recovery_deleted_at is null
-             and companies.purged_at is null
-            join client_company_memberships memberships
-              on memberships.company_id = chats.company_id
-             and memberships.user_id = runs.initiating_user_id
-             and memberships.revoked_at is null
-            join platform_users users
-              on users.id = runs.initiating_user_id
-             and users.recovery_deleted_at is null
-             and users.purged_at is null
-            where runs.id = ${load.aiRunId}
-              and runs.chat_id = ${load.chatId}
-              and runs.initiating_user_id = ${load.initiatingUserId}
-              and runs.user_message_id = ${load.userMessageId}
-              and runs.finished_at is null
-              and runs.failed_at is null
-              and (
-                (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
-                or chats.shared_at is not null
-              )
-          ), requested as (
-            select value as source,
-                   value->'publicProvenance' as provenance,
-                   (ordinality - 1)::int as source_index
-            from jsonb_array_elements(${JSON.stringify(locators)}::jsonb) with ordinality
-          ), evaluated as (
-            select requested.source_index,
-              case requested.source->>'kind'
-                when 'document' then case
-                  when requested.source ? 'publisherIssueId' then exists(
-                    select 1 from base
-                    join chat_subscription_sources selected on selected.chat_id = base.chat_id
-                    join client_subscription_accesses accesses
-                      on accesses.id = selected.access_id
-                     and accesses.client_company_id = selected.client_company_id
-                     and accesses.subscription_id = selected.subscription_id
-                     and accesses.state in ('active', 'ending', 'paused')
-                    join client_employee_subscription_grants grants
-                      on grants.access_id = accesses.id
-                     and grants.client_company_id = accesses.client_company_id
-                     and grants.user_id = base.initiating_user_id
-                     and grants.revoked_at is null
-                    join issue_deliveries deliveries
-                      on deliveries.access_id = accesses.id
-                     and deliveries.client_company_id = selected.client_company_id
-                    join publisher_issues issues
-                              on issues.id = deliveries.issue_id
-                              and issues.subscription_id = selected.subscription_id
-                              and issues.id::text = requested.source->>'publisherIssueId'
-                              and ('publisher:' || selected.subscription_id::text) = requested.source->>'sourceId'
-                     and issues.status = 'published'
-                     and issues.restricted_at is null
-                     and issues.deleted_at is null
-                    join brief_documents documents
-                      on documents.issue_id = issues.id
-                     and documents.id::text = requested.source->>'publisherDocumentId'
-                     and documents.id::text = requested.source->>'documentId'
-                     and documents.deleted_at is null
-                    join brief_document_versions versions
-                              on versions.brief_document_id = documents.id
-                              and versions.id::text = requested.source->>'versionId'
-                              and versions.content_hash = requested.source->>'contentHash'
-                              and requested.provenance->>'citationUrl' =
-                                ('/v1/issues/' || issues.id::text || '/documents/' || documents.id::text || '/content')
-                  )
-                  else exists(
-                    select 1 from base
-                    join public_source_documents documents
-                              on documents.document_id = requested.source->>'documentId'
-                              and documents.document_id = requested.source->>'versionId'
-                              and documents.content_hash = requested.source->>'contentHash'
-                              and ('public:' || documents.source_id) = requested.source->>'sourceId'
-                              and requested.provenance->>'citationUrl' = documents.canonical_url
-                    join client_company_public_source_settings settings
-                      on settings.client_company_id = base.company_id
-                     and settings.source_id = documents.source_id
-                     and settings.enabled
-                  )
-                end
-                when 'chat_message' then exists(
-                  select 1 from base
-                  join chat_messages messages
-                    on messages.chat_id = base.chat_id
-                   and messages.id::text = requested.source->>'messageId'
-                )
-                when 'memory' then exists(
-                  select 1 from base
-                  join user_memories memories
-                    on memories.user_id = base.initiating_user_id
-                   and memories.id::text = requested.source->>'memoryId'
-                   and memories.head_revision_id::text = requested.source->>'memoryRevisionId'
-                   and memories.deleted_at is null
-                   and memories.provenance_only_at is null
-                )
-                when 'web' then exists(select 1 from base)
-                else false
-              end as allowed,
-              requested.source->>'kind' as kind
-            from requested
-          )
-          select
-            exists(select 1 from base) as "baseAllowed",
-            coalesce(array_agg(evaluated.allowed order by evaluated.source_index), '{}') as "sourceAllowed",
-            count(*) filter (where evaluated.kind = 'web')::int as "webSourceCount",
-            (
-              select settings.web_search_enabled
-              from base
-              join client_company_ai_settings settings on settings.company_id = base.company_id
-              limit 1
-            ) as "webEnabled",
-            (
-              select settings.web_domain_allowlist
-              from base
-              join client_company_ai_settings settings on settings.company_id = base.company_id
-              limit 1
-            ) as "webAllowedDomains"
-          from evaluated
-        `;
-      }),
-    );
-    const row = rows[0];
-    const webPolicyAllowed = (() => {
-      // A requested W path remains authorization-bearing even when it returns
-      // no evidence.  Otherwise revocation between selection and context
-      // freeze (or a later answer retry) can reach the model with an empty
-      // web source map and still stream deltas.
-      if (!load.webRequested && (row?.webSourceCount ?? 0) === 0) return true;
-      const current = currentEffectiveWebPolicy(
-        row?.webEnabled === true,
-        row?.webAllowedDomains ?? null,
-      );
-      try {
-        recheckWebPolicy(load.webPolicy, current);
-        return true;
-      } catch {
-        return false;
-      }
-    })();
-    return {
-      baseAllowed: row?.baseAllowed === true,
-      sourceAllowed: row?.sourceAllowed ?? [],
-      webPolicyAllowed,
-    };
   }
 
   private async taskExecutionCoordinates(
@@ -1878,24 +1400,77 @@ export class CanonicalWorkflowOperations {
     return requireCurrentTaskCoordinates(taskId);
   }
 
+  private async acceptancePolicy(
+    load: LoadedTurn,
+  ): Promise<Extract<EffectiveWebPolicy, { readonly enabled: true }> | undefined> {
+    if (!load.acceptanceScope.webEnabled) return;
+    if (load.acceptanceScope.webTransportProvider !== "tinyfish") {
+      throw new WebBoundaryError("unsupported_policy", "saved web provider is unavailable", false);
+    }
+    return {
+      enabled: true,
+      provider: load.acceptanceScope.webTransportProvider,
+      allowedDomains: load.acceptanceScope.allowedDomains,
+    };
+  }
+
+  private async validateSavedScope(
+    load: LoadedTurn,
+    sourceMap: readonly FinalSourceRecord[] = [],
+  ): Promise<{
+    readonly baseAllowed: boolean;
+    readonly sourceAllowed: readonly boolean[];
+    readonly webPolicyAllowed: boolean;
+  }> {
+    const scope = AcceptanceScopeSchema.parse(load.acceptanceScope);
+    const sourceAllowed = sourceMap.map((source) => {
+      if (source.locator.kind === "document") {
+        const sourceId = source.locator.sourceId;
+        return sourceId.startsWith("public:")
+          ? scope.publicSourceIds.includes(sourceId.slice("public:".length))
+          : sourceId.startsWith("publisher:")
+            ? scope.subscriptionIds.includes(sourceId.slice("publisher:".length))
+            : false;
+      }
+      if (source.locator.kind === "memory")
+        return (
+          scope.memoryMode === "private_owner" &&
+          scope.memoryRevisionIds.includes(source.locator.memoryRevisionId)
+        );
+      if (source.locator.kind === "web") return scope.webEnabled;
+      return true;
+    });
+    if (scope.userId !== load.initiatingUserId || scope.chatId !== load.chatId) {
+      throw new Error("ai run acceptance scope identity mismatch");
+    }
+    return {
+      baseAllowed: true,
+      sourceAllowed,
+      webPolicyAllowed: !scope.webRequested || scope.webEnabled,
+    };
+  }
+
   async loadTurn(aiRunId: string): Promise<LoadedTurn> {
-    const now = this.now;
     return this.db(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        const rows = yield* sql<LoadRow>`
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<LoadRow>`
           select
             runs.id::text as "aiRunId",
             runs.chat_id::text as "chatId",
+                chats.company_id::text as "companyId",
             runs.initiating_user_id as "initiatingUserId",
             runs.user_message_id::text as "userMessageId",
             messages.content as "userMessage",
             runs.locale,
             runs.market,
+                ((runs.created_at at time zone 'UTC')::date)::text as "currentDate",
             runs.citation_namespace as "citationNamespace",
-            chats.memory_mode as "memoryMode",
-            runs.web_search_enabled as "webRequested",
-            runs.effective_web_policy as "webPolicy"
+                runs.acceptance_scope as "acceptanceScope",
+                runs.acceptance_scope->>'memoryMode' as "memoryMode",
+                (runs.acceptance_scope->>'webRequested')::boolean as "webRequested"
           from ai_runs runs
           join chats on chats.id = runs.chat_id and chats.deleted_at is null
           join chat_messages messages
@@ -1906,14 +1481,6 @@ export class CanonicalWorkflowOperations {
             on companies.id = chats.company_id
            and companies.recovery_deleted_at is null
            and companies.purged_at is null
-          join client_company_memberships memberships
-            on memberships.company_id = chats.company_id
-           and memberships.user_id = runs.initiating_user_id
-           and memberships.revoked_at is null
-          join platform_users users
-            on users.id = runs.initiating_user_id
-           and users.recovery_deleted_at is null
-           and users.purged_at is null
           where runs.id = ${aiRunId}
             and runs.finished_at is null
             and runs.failed_at is null
@@ -1921,26 +1488,41 @@ export class CanonicalWorkflowOperations {
               (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
               or chats.shared_at is not null
             )
+              for update of runs
         `;
-        const run = rows[0];
-        if (run === undefined) return yield* Effect.fail(new Error(`ai run not found: ${aiRunId}`));
-        yield* markAiRunStarted(aiRunId);
-        const currentDate = now().toISOString().slice(0, 10);
-        const webPolicy = EffectiveWebPolicySchema.parse(run.webPolicy);
-        return {
-          aiRunId: run.aiRunId,
-          chatId: run.chatId,
-          initiatingUserId: run.initiatingUserId,
-          userMessageId: run.userMessageId,
-          userMessage: run.userMessage,
-          locale: run.locale,
-          market: run.market,
-          currentDate,
-          citationNamespace: run.citationNamespace,
-          memoryMode: run.memoryMode,
-          webRequested: run.webRequested,
-          webPolicy,
-        };
+            const run = rows[0];
+            if (run === undefined) {
+              return yield* Effect.fail(new Error(`ai run not found: ${aiRunId}`));
+            }
+            const acceptanceScope = AcceptanceScopeSchema.parse(run.acceptanceScope);
+            if (
+              acceptanceScope.userId !== run.initiatingUserId ||
+              acceptanceScope.chatId !== run.chatId ||
+              acceptanceScope.companyId !== run.companyId
+            ) {
+              return yield* Effect.fail(new Error("ai run acceptance scope identity mismatch"));
+            }
+            yield* appendAiRunEventInTransaction({
+              runId: aiRunId,
+              emissionKey: "run_started",
+              event: { type: "run_started" },
+            });
+            return {
+              aiRunId: run.aiRunId,
+              chatId: run.chatId,
+              initiatingUserId: run.initiatingUserId,
+              userMessageId: run.userMessageId,
+              userMessage: run.userMessage,
+              locale: run.locale,
+              market: run.market,
+              currentDate: run.currentDate,
+              citationNamespace: run.citationNamespace,
+              memoryMode: run.memoryMode,
+              webRequested: run.webRequested,
+              acceptanceScope,
+            };
+          }),
+        );
       }),
     );
   }
@@ -1950,8 +1532,9 @@ export class CanonicalWorkflowOperations {
       readonly currentDate: string;
     },
     entries: readonly ConversationEntry[],
+    modelId: RuntimeModelId,
   ): readonly ConversationEntry[] {
-    const model = resolveRuntimeModel(this.config.aiFastModel);
+    const model = resolveRuntimeModel(modelId);
     const selected: ConversationEntry[] = [];
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const entry = entries[index];
@@ -1959,7 +1542,7 @@ export class CanonicalWorkflowOperations {
       const candidate = [entry, ...selected];
       const request: LiveProviderRequest = {
         requestClass: "fast",
-        model: this.config.aiFastModel,
+        model: modelId,
         messages: [
           { role: "system", content: PlanTurnPrompt },
           {
@@ -2078,6 +1661,7 @@ export class CanonicalWorkflowOperations {
         currentDate: load.currentDate,
       },
       entries,
+      load.acceptanceScope.fastModelId,
     );
   }
 
@@ -2088,7 +1672,7 @@ export class CanonicalWorkflowOperations {
     const conversation = await this.currentPriorTurns(load);
     const output = await this.agents.structured({
       requestClass: "fast",
-      model: this.config.aiFastModel,
+      model: load.acceptanceScope.fastModelId,
       system: PlanTurnPrompt,
       user: JSON.stringify({
         currentMessage: load.userMessage,
@@ -2106,7 +1690,7 @@ export class CanonicalWorkflowOperations {
       coordinates,
       sourceExposureProofs: this.conversationExposureProofMarkers(load, conversation, true),
       onBeforeRequest: async (_request, requestCoordinates) => {
-        await this.assertLiveAuthorization(load, { conversation });
+        await this.validateSavedScope(load);
         await this.recordConversationExposures(load, taskId, conversation, requestCoordinates);
       },
     });
@@ -2129,13 +1713,8 @@ export class CanonicalWorkflowOperations {
                  memories.kind,
                  memories.content
           from user_memories memories
-          join ai_runs runs on runs.id = ${load.aiRunId}
-          join chats on chats.id = runs.chat_id and chats.deleted_at is null
-          join client_company_memberships memberships
-            on memberships.company_id = chats.company_id
-           and memberships.user_id = runs.initiating_user_id
-           and memberships.revoked_at is null
-          where memories.user_id = runs.initiating_user_id
+          where memories.user_id = ${load.acceptanceScope.userId}
+            and memories.head_revision_id::text = any(${load.acceptanceScope.memoryRevisionIds}::text[])
             and memories.deleted_at is null
             and memories.provenance_only_at is null
           order by memories.created_at, memories.id
@@ -2154,7 +1733,7 @@ export class CanonicalWorkflowOperations {
     const discoveredMemories = new Set<string>();
     const proposals = await this.agents.toolLoop({
       requestClass: "fast",
-      model: this.config.aiFastModel,
+      model: load.acceptanceScope.fastModelId,
       system: MemoryExtractorPrompt,
       user: JSON.stringify({
         currentUserMessage: load.userMessage,
@@ -2171,13 +1750,14 @@ export class CanonicalWorkflowOperations {
       sourceExposureProofs: this.conversationExposureProofMarkers(load, [], true),
       onBeforeRequest: async (_request, requestCoordinates) => {
         const exposed = [...visibleMemories.values()];
-        await this.assertLiveAuthorization(load, { memories: exposed });
+        await this.validateSavedScope(load);
         await this.recordConversationExposures(load, taskId, [], requestCoordinates);
         await this.recordMemoryExposures(
           load.aiRunId,
           taskId,
           exposed,
           "memory_tool_result",
+          load.acceptanceScope.fastModelId,
           requestCoordinates,
         );
       },
@@ -2196,7 +1776,7 @@ export class CanonicalWorkflowOperations {
         discoveredMemories,
       ),
     });
-    const liveMemories = await this.liveMemorySnapshots(load, activeMemories);
+    const liveMemories = await this.savedMemorySnapshots(load, activeMemories);
     const liveMemoryById = new Map(liveMemories.map((memory) => [memory.memoryId, memory]));
     for (const discovered of discoveredMemories) {
       const separator = discovered.indexOf(":");
@@ -2204,7 +1784,7 @@ export class CanonicalWorkflowOperations {
       const revisionId = separator < 0 ? "" : discovered.slice(separator + 1);
       const live = liveMemoryById.get(memoryId);
       if (live === undefined || live.memoryRevisionId !== revisionId) {
-        throw controlledRuntimeFailure("source_access_revoked");
+        throw controlledRuntimeFailure("memory_conflict");
       }
     }
     const result = validateMemoryProposals(proposals, liveMemories, discoveredMemories);
@@ -2233,83 +1813,20 @@ export class CanonicalWorkflowOperations {
     };
   }
 
-  private async liveMemorySnapshots(
+  private async savedMemorySnapshots(
     load: LoadedTurn,
     requested: readonly MemorySnapshot[],
     filter: { readonly terms?: string | undefined; readonly memoryId?: string | undefined } = {},
   ): Promise<readonly MemorySnapshot[]> {
-    const rows = await this.db(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql<{
-          readonly baseAllowed: boolean;
-          readonly memories: readonly MemorySnapshot[];
-        }>`
-          with base as (
-            select runs.chat_id, runs.initiating_user_id
-            from ai_runs runs
-            join chats on chats.id = runs.chat_id and chats.deleted_at is null
-            join client_companies companies
-              on companies.id = chats.company_id
-             and companies.recovery_deleted_at is null
-             and companies.purged_at is null
-            join client_company_memberships memberships
-              on memberships.company_id = chats.company_id
-             and memberships.user_id = runs.initiating_user_id
-             and memberships.revoked_at is null
-            join platform_users users
-              on users.id = runs.initiating_user_id
-             and users.recovery_deleted_at is null
-             and users.purged_at is null
-            where runs.id = ${load.aiRunId}
-              and runs.chat_id = ${load.chatId}
-              and runs.initiating_user_id = ${load.initiatingUserId}
-              and runs.finished_at is null
-              and runs.failed_at is null
-              and (
-                (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
-                or chats.shared_at is not null
-              )
-          ), requested as (
-            select value as memory, ordinality
-            from jsonb_array_elements(${JSON.stringify(requested)}::jsonb) with ordinality
-          ), authorized as (
-            select jsonb_build_object(
-                     'memoryId', memories.id::text,
-                     'memoryRevisionId', memories.head_revision_id::text,
-                     'kind', memories.kind,
-                     'content', memories.content
-                   ) as memory,
-                   requested.ordinality
-            from base
-            join requested on true
-            join user_memories memories
-              on memories.user_id = base.initiating_user_id
-             and memories.id::text = requested.memory->>'memoryId'
-             and memories.head_revision_id::text = requested.memory->>'memoryRevisionId'
-             and memories.kind = requested.memory->>'kind'
-             and memories.content = requested.memory->>'content'
-             and memories.deleted_at is null
-             and memories.provenance_only_at is null
-            where (${filter.memoryId ?? null}::text is null or memories.id::text = ${filter.memoryId ?? null})
-              and (
-                ${filter.terms ?? null}::text is null
-                or position(lower(${filter.terms ?? null}) in lower(memories.content)) > 0
-              )
-          )
-          select exists(select 1 from base) as "baseAllowed",
-                 coalesce(
-                   jsonb_agg(authorized.memory order by authorized.ordinality)
-                     filter (where authorized.memory is not null),
-                   '[]'::jsonb
-                 ) as memories
-          from authorized
-        `;
-      }),
+    if (load.acceptanceScope.memoryMode === "disabled") return [];
+    const allowed = new Set(load.acceptanceScope.memoryRevisionIds);
+    return requested.filter(
+      (memory) =>
+        allowed.has(memory.memoryRevisionId) &&
+        (filter.memoryId === undefined || memory.memoryId === filter.memoryId) &&
+        (filter.terms === undefined ||
+          memory.content.toLocaleLowerCase().includes(filter.terms.toLocaleLowerCase())),
     );
-    const row = rows[0];
-    if (row?.baseAllowed !== true) throw controlledRuntimeFailure("source_access_revoked");
-    return row.memories;
   }
 
   private memoryTools(
@@ -2348,7 +1865,7 @@ export class CanonicalWorkflowOperations {
         execute: async (args: Readonly<Record<string, unknown>>) => {
           const parsed = parseSearchMemoriesArguments(args);
           const terms = parsed.query.trim().toLocaleLowerCase();
-          const matches = await this.liveMemorySnapshots(load, activeMemories, { terms });
+          const matches = await this.savedMemorySnapshots(load, activeMemories, { terms });
           const offset = parsed.cursor ?? 0;
           const items: MemorySnapshot[] = [];
           for (
@@ -2361,7 +1878,7 @@ export class CanonicalWorkflowOperations {
             const tentative = [...items, memory];
             const tokens = this.visibleTokenCount(
               JSON.stringify({ items: tentative, complete: false, cursor: index + 1 }),
-              this.config.aiFastModel,
+              load.acceptanceScope.fastModelId,
             );
             if (tokens > this.config.aiFastOutputMaxTokens) break;
             items.push(memory);
@@ -2386,7 +1903,10 @@ export class CanonicalWorkflowOperations {
                 logicalSourceIdentity: memoryEvidenceIdentity(memory.memoryId),
                 contentItemIdentity: memory.memoryRevisionId,
                 stage: "memory_tool_result",
-                visibleTokenCount: this.visibleTokenCount(memory.content, this.config.aiFastModel),
+                visibleTokenCount: this.visibleTokenCount(
+                  memory.content,
+                  load.acceptanceScope.fastModelId,
+                ),
               }),
             ),
             ...(items.length === 0 && next < matches.length ? { nextItemTooLarge: true } : {}),
@@ -2409,14 +1929,14 @@ export class CanonicalWorkflowOperations {
           ) {
             return { found: false, complete: true };
           }
-          const live = (await this.liveMemorySnapshots(load, activeMemories, { memoryId }))[0];
+          const live = (await this.savedMemorySnapshots(load, activeMemories, { memoryId }))[0];
           if (live === undefined || live.memoryRevisionId !== memory.memoryRevisionId) {
             return { found: false, complete: true };
           }
           if (memory === undefined) return { found: false, complete: true };
           const tokens = this.visibleTokenCount(
             JSON.stringify({ found: true, complete: true, memory: live }),
-            this.config.aiFastModel,
+            load.acceptanceScope.fastModelId,
           );
           if (tokens > this.config.aiFastOutputMaxTokens) {
             return { found: true, complete: false, itemTooLarge: true, memoryId };
@@ -2433,7 +1953,10 @@ export class CanonicalWorkflowOperations {
                 logicalSourceIdentity: memoryEvidenceIdentity(live.memoryId),
                 contentItemIdentity: live.memoryRevisionId,
                 stage: "memory_tool_result",
-                visibleTokenCount: this.visibleTokenCount(live.content, this.config.aiFastModel),
+                visibleTokenCount: this.visibleTokenCount(
+                  live.content,
+                  load.acceptanceScope.fastModelId,
+                ),
               }),
             ],
           };
@@ -2455,6 +1978,7 @@ export class CanonicalWorkflowOperations {
     taskId: string,
     memories: readonly MemorySnapshot[],
     stage: string,
+    modelId: RuntimeModelId,
     coordinates: {
       readonly loopIteration: number;
       readonly attempt: number;
@@ -2477,7 +2001,7 @@ export class CanonicalWorkflowOperations {
             logicalSourceIdentity: memoryEvidenceIdentity(memory.memoryId),
             contentItemIdentity: memory.memoryRevisionId,
             exposureStage: stage,
-            visibleTokenCount: this.visibleTokenCount(memory.content, this.config.aiFastModel),
+            visibleTokenCount: this.visibleTokenCount(memory.content, modelId),
           }),
         ),
       ),
@@ -2531,7 +2055,7 @@ export class CanonicalWorkflowOperations {
     load: LoadedTurn,
     entries: readonly ConversationEntry[],
     includeCurrentUser: boolean,
-    modelId: string = this.config.aiFastModel,
+    modelId: string = load.acceptanceScope.fastModelId,
   ): readonly CodeOwnedSourceExposureProof[] {
     const messages = [
       ...(includeCurrentUser ? [{ messageId: load.userMessageId, content: load.userMessage }] : []),
@@ -2565,7 +2089,7 @@ export class CanonicalWorkflowOperations {
         load,
         context.selectedConversation,
         true,
-        this.config.aiMainModel,
+        load.acceptanceScope.mainModelId,
       ),
       ...context.candidates.map((candidate) => {
         const logicalSourceIdentity =
@@ -2595,7 +2119,7 @@ export class CanonicalWorkflowOperations {
             logicalSourceIdentity,
             contentItemIdentity,
             stage: "answer_serialized",
-            visibleTokenCount: this.visibleTokenCount(text, this.config.aiMainModel),
+            visibleTokenCount: this.visibleTokenCount(text, load.acceptanceScope.mainModelId),
           },
           text,
         );
@@ -2603,115 +2127,25 @@ export class CanonicalWorkflowOperations {
     ];
   }
 
-  private async assertLiveInternalReferences(
+  private async validateInternalReferences(
     load: LoadedTurn,
     references: readonly InternalReference[],
   ): Promise<void> {
-    const rows = await this.db(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql<{ readonly baseAllowed: boolean; readonly referencesAllowed: boolean }>`
-          with base as (
-            select runs.chat_id, runs.initiating_user_id, chats.company_id
-            from ai_runs runs
-            join chats on chats.id = runs.chat_id and chats.deleted_at is null
-            join client_companies companies
-              on companies.id = chats.company_id
-             and companies.recovery_deleted_at is null
-             and companies.purged_at is null
-            join client_company_memberships memberships
-              on memberships.company_id = chats.company_id
-             and memberships.user_id = runs.initiating_user_id
-             and memberships.revoked_at is null
-            join platform_users users
-              on users.id = runs.initiating_user_id
-             and users.recovery_deleted_at is null
-             and users.purged_at is null
-            where runs.id = ${load.aiRunId}
-              and runs.chat_id = ${load.chatId}
-              and runs.initiating_user_id = ${load.initiatingUserId}
-              and runs.finished_at is null
-              and runs.failed_at is null
-              and (
-                (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
-                or chats.shared_at is not null
-              )
-          ), requested as (
-            select value as reference
-            from jsonb_array_elements(${JSON.stringify(references)}::jsonb)
-          )
-          select exists(select 1 from base) as "baseAllowed",
-                 not exists(
-                   select 1 from requested
-                   where case requested.reference->>'kind'
-                     when 'chat_message' then not exists(
-                       select 1 from base
-                       join chat_messages messages
-                         on messages.chat_id = base.chat_id
-                        and messages.id::text = requested.reference->>'messageId'
-                     )
-                     when 'document' then not (
-                       (requested.reference->'source'->>'kind' = 'public'
-                        and requested.reference->'source'->>'sourceId' ~ '^public:[^:[:space:]]+$'
-                        and exists(
-                         select 1 from base
-                         join public_source_documents documents
-                           on documents.document_id = requested.reference->>'documentId'
-                          and documents.document_id = requested.reference->>'versionId'
-                          and requested.reference->'source'->>'sourceId' = 'public:' || documents.source_id
-                         join client_company_public_source_settings settings
-                           on settings.client_company_id = base.company_id
-                          and settings.source_id = documents.source_id
-                          and settings.enabled
-                       )) or (requested.reference->'source'->>'kind' = 'publisher'
-                        and requested.reference->'source'->>'sourceId' ~ '^publisher:[^:[:space:]]+$'
-                        and exists(
-                         select 1 from base
-                         join chat_subscription_sources selected on selected.chat_id = base.chat_id
-                         join client_subscription_accesses accesses
-                           on accesses.id = selected.access_id
-                          and accesses.client_company_id = selected.client_company_id
-                          and accesses.subscription_id = selected.subscription_id
-                          and accesses.state in ('active', 'ending', 'paused')
-                         join client_employee_subscription_grants grants
-                           on grants.access_id = accesses.id
-                          and grants.client_company_id = accesses.client_company_id
-                          and grants.user_id = base.initiating_user_id
-                          and grants.revoked_at is null
-                         join issue_deliveries deliveries
-                           on deliveries.access_id = accesses.id
-                          and deliveries.client_company_id = selected.client_company_id
-                         join publisher_issues issues
-                           on issues.id = deliveries.issue_id
-                          and issues.subscription_id = selected.subscription_id
-                          and issues.status = 'published'
-                          and issues.restricted_at is null
-                          and issues.deleted_at is null
-                          and issues.id::text = requested.reference->'source'->>'issueId'
-                          and requested.reference->'source'->>'sourceId' = 'publisher:' || selected.subscription_id::text
-                         join publisher_subscriptions subscriptions
-                           on subscriptions.id = issues.subscription_id
-                         join publisher_companies publisher_company
-                           on publisher_company.id = subscriptions.publisher_company_id
-                         join brief_documents documents
-                           on documents.issue_id = issues.id
-                          and documents.id::text = requested.reference->>'documentId'
-                          and documents.id::text = requested.reference->'source'->>'documentId'
-                          and documents.deleted_at is null
-                         join brief_document_versions versions
-                           on versions.brief_document_id = documents.id
-                          and versions.id::text = requested.reference->>'versionId'
-                          and versions.publisher_extraction_id::text = requested.reference->>'publisherExtractionId'
-                       ))
-                     )
-                     else true
-                   end
-                 ) as "referencesAllowed"
-        `;
-      }),
-    );
-    if (rows[0]?.baseAllowed !== true || rows[0]?.referencesAllowed !== true) {
-      throw controlledRuntimeFailure("source_access_revoked");
+    const allowed = new Set([
+      ...load.acceptanceScope.publicSourceIds.map((id) => `public:${id}`),
+      ...load.acceptanceScope.subscriptionIds.map((id) => `publisher:${id}`),
+    ]);
+    for (const reference of references) {
+      if (
+        reference.kind === "document" &&
+        !allowed.has(
+          reference.source.kind === "public"
+            ? `public:${reference.source.sourceId}`
+            : `publisher:${reference.source.sourceId}`,
+        )
+      ) {
+        throw controlledRuntimeFailure("context_assembly_failed");
+      }
     }
   }
 
@@ -2769,7 +2203,7 @@ export class CanonicalWorkflowOperations {
       context.selectedConversation,
       { ...execution, providerRequestSha256Hex: coordinates.providerRequestSha256Hex },
       {
-        modelId: this.config.aiMainModel,
+        modelId: load.acceptanceScope.mainModelId,
       },
     );
     await Promise.all(
@@ -2814,7 +2248,7 @@ export class CanonicalWorkflowOperations {
               : {}),
             contentItemIdentity,
             exposureStage: "answer_serialized",
-            visibleTokenCount: this.visibleTokenCount(content, this.config.aiMainModel),
+            visibleTokenCount: this.visibleTokenCount(content, load.acceptanceScope.mainModelId),
             ...(candidate.kind === "document"
               ? {
                   documentReconstruction: {
@@ -2835,12 +2269,12 @@ export class CanonicalWorkflowOperations {
     );
   }
 
-  private async authorizeFrozenContext(load: LoadedTurn, context: ContextState): Promise<void> {
-    const snapshot = await this.frozenAuthorizationSnapshot(load, context.sourceMap);
+  private async validateFrozenScope(load: LoadedTurn, context: ContextState): Promise<void> {
+    const snapshot = await this.validateSavedScope(load, context.sourceMap);
     if (!snapshot.baseAllowed || snapshot.sourceAllowed.some((allowed) => !allowed)) {
-      throw controlledRuntimeFailure("source_access_revoked");
+      throw new Error("saved acceptance scope does not contain the evidence");
     }
-    if (!snapshot.webPolicyAllowed) throw controlledRuntimeFailure("web_policy_revoked");
+    if (!snapshot.webPolicyAllowed) throw new Error("saved web scope is disabled");
   }
 
   async freezeContext(load: LoadedTurn, context: ContextState): Promise<ContextState> {
@@ -2863,74 +2297,16 @@ export class CanonicalWorkflowOperations {
         failureCode: "context_budget_mismatch",
       };
     }
-    const authorization = await this.frozenAuthorizationSnapshot(load, context.sourceMap);
-    if (!authorization.baseAllowed) {
-      return { ...context, status: "failed", failureCode: "source_access_revoked" };
+    const authorization = await this.validateSavedScope(load, context.sourceMap);
+    if (
+      !authorization.baseAllowed ||
+      !authorization.webPolicyAllowed ||
+      authorization.sourceAllowed.length !== context.sourceMap.length ||
+      authorization.sourceAllowed.some((allowed) => !allowed)
+    ) {
+      return { ...context, status: "failed", failureCode: "context_plan_unfit" };
     }
-    if (!authorization.webPolicyAllowed) {
-      return { ...context, status: "failed", failureCode: "web_policy_revoked" };
-    }
-    if (authorization.sourceAllowed.length !== context.sourceMap.length) {
-      return { ...context, status: "failed", failureCode: "source_access_revoked" };
-    }
-    if (authorization.sourceAllowed.every(Boolean)) {
-      return { ...context, inputTokens, usableInputTokens };
-    }
-    const revoked: Array<{ source: FinalSourceRecord; index: number }> = [];
-    for (const [index, source] of context.sourceMap.entries()) {
-      if (authorization.sourceAllowed[index] !== true) revoked.push({ source, index });
-    }
-    if (revoked.some(({ source }) => source.locator.kind === "web")) {
-      return { ...context, status: "failed", failureCode: "web_policy_revoked" };
-    }
-    const candidates = context.candidates.filter(
-      (_, index) => authorization.sourceAllowed[index] === true,
-    );
-    const sourceMap = context.sourceMap.filter(
-      (_, index) => authorization.sourceAllowed[index] === true,
-    );
-    const consumerTaskId =
-      context.sourceMap[0]?.uses[0]?.consumerTaskId ??
-      (context.topicId === undefined
-        ? "single-context-select"
-        : `topic-${context.topicId}-context-select`);
-    await Promise.all(
-      revoked.map(({ source }, index) =>
-        this.observe(
-          load,
-          consumerTaskId,
-          "candidate_rejected",
-          { candidateId: source.sourceKey, reason: "access_revoked" },
-          undefined,
-          `access-revoked-${index}`,
-        ),
-      ),
-    );
-    const rebuilt = this.measureContext(
-      load,
-      context.question,
-      candidates,
-      sourceMap,
-      [
-        ...context.gaps,
-        ...revoked.map(() => "an internal source was revoked before context freeze"),
-      ],
-      context.reductionRan,
-      context.topicId,
-      context.selectedConversation,
-      candidates,
-      sourceMap,
-      context.request.requestedOutputTokens,
-    );
-    await this.observe(
-      load,
-      consumerTaskId,
-      "context_measurement",
-      this.contextMeasurementPayload(rebuilt, consumerTaskId),
-      undefined,
-      "access-revoked-rebuild",
-    );
-    return rebuilt;
+    return { ...context, inputTokens, usableInputTokens };
   }
 
   async selectMemories(
@@ -2942,6 +2318,7 @@ export class CanonicalWorkflowOperations {
       await this.observe(load, taskId, "retrieval_manifest", {
         selectorRole: "memory",
         references: [],
+        noCallReason: "memory_mode_disabled",
       });
       return { status: "disabled", reason: "memory_mode_disabled" };
     }
@@ -2950,6 +2327,7 @@ export class CanonicalWorkflowOperations {
       await this.observe(load, taskId, "retrieval_manifest", {
         selectorRole: "memory",
         references: [],
+        noCallReason: "no_active_memories",
       });
       return { status: "enabled", entries: [] };
     }
@@ -2958,7 +2336,7 @@ export class CanonicalWorkflowOperations {
     const discoveredMemories = new Set<string>();
     const entries = await this.agents.toolLoop({
       requestClass: "fast",
-      model: this.config.aiFastModel,
+      model: load.acceptanceScope.fastModelId,
       system: MemorySelectorPrompt,
       user: JSON.stringify({
         question,
@@ -2989,7 +2367,7 @@ export class CanonicalWorkflowOperations {
       sourceExposureProofs: [],
       onBeforeRequest: async (_request, requestCoordinates) => {
         const exposed = [...visibleMemories.values()];
-        await this.assertLiveAuthorization(load, { memories: exposed });
+        await this.validateSavedScope(load);
         await this.recordConversationExposures(load, taskId, [], requestCoordinates, {
           includeCurrentUser: false,
         });
@@ -2998,6 +2376,7 @@ export class CanonicalWorkflowOperations {
           taskId,
           exposed,
           "memory_tool_result",
+          load.acceptanceScope.fastModelId,
           requestCoordinates,
         );
       },
@@ -3020,7 +2399,7 @@ export class CanonicalWorkflowOperations {
       ),
     );
     if (entries.some((entry) => !liveMemories.has(entry.memoryId + ":" + entry.memoryRevisionId))) {
-      throw controlledRuntimeFailure("source_access_revoked");
+      throw controlledRuntimeFailure("memory_conflict");
     }
     await this.observe(
       load,
@@ -3093,8 +2472,9 @@ export class CanonicalWorkflowOperations {
             ? reference.ranges
             : undefined;
       BoundInternalReferenceSchema.parse(candidate);
+      const { ranges: _previewRanges, ...candidateWithoutPreviewRanges } = candidate;
       return {
-        ...candidate,
+        ...candidateWithoutPreviewRanges,
         ...(requestedRanges === undefined ? {} : { ranges: requestedRanges }),
         purpose: reference.purpose,
       };
@@ -3147,7 +2527,7 @@ export class CanonicalWorkflowOperations {
           discoveredDocuments.size + discoveredMessages.size === 0));
     const modelReferences = await this.agents.toolLoop({
       requestClass: "fast",
-      model: this.config.aiFastModel,
+      model: load.acceptanceScope.fastModelId,
       system: InternalRetrievalPrompt,
       user: JSON.stringify({
         question,
@@ -3173,11 +2553,8 @@ export class CanonicalWorkflowOperations {
       ),
       onBeforeRequest: async (_request, requestCoordinates) => {
         const exposures = [...providerExposures.values()];
-        await this.assertLiveAuthorization(load, {
-          conversation: selectedConversation,
-          requireSourceCatalog: true,
-        });
-        await this.assertLiveInternalReferences(
+        await this.validateSavedScope(load);
+        await this.validateInternalReferences(
           load,
           exposures.map((exposure) => exposure.reference),
         );
@@ -3186,7 +2563,7 @@ export class CanonicalWorkflowOperations {
           taskId,
           selectedConversation,
           requestCoordinates,
-          { includeCurrentUser: false, modelId: this.config.aiFastModel },
+          { includeCurrentUser: false, modelId: load.acceptanceScope.fastModelId },
         );
         await this.recordInternalProviderExposures(load, taskId, exposures, requestCoordinates);
       },
@@ -3405,12 +2782,12 @@ export class CanonicalWorkflowOperations {
                 ) {
                   throw new Error("named-source lookupRef is invalid, expired, or already used");
                 }
-                await this.assertLiveAuthorization(load, { requireSourceCatalog: true });
-                const current = new Set(await this.currentAuthorizedSourceIds(load));
+                await this.validateSavedScope(load);
+                const current = new Set(await this.savedScopeSourceIds(load));
                 selectedSourceIds = lookup.sourceIds.filter((sourceId) => current.has(sourceId));
                 lookup.consumed = true;
               } else {
-                selectedSourceIds = await this.currentAuthorizedSourceIds(load);
+                selectedSourceIds = await this.savedScopeSourceIds(load);
               }
               const publicSourceIds = selectedSourceIds
                 .filter((sourceId) => isCanonicalPublicDocumentSourceId(sourceId))
@@ -3425,9 +2802,7 @@ export class CanonicalWorkflowOperations {
                         { ...query, sourceIds: publicSourceIds, limit: sentinelLimit },
                         {
                           access: {
-                            kind: "liveChatSourceIds",
-                            chatId: load.chatId,
-                            initiatingUserId: load.initiatingUserId,
+                            kind: "sourceIds",
                             sourceIds: publicSourceIds,
                           },
                           maxLimit: 51,
@@ -3464,6 +2839,7 @@ export class CanonicalWorkflowOperations {
               const bounded = this.boundedToolItems(ranked.slice(0, limit), cursor, {
                 hardLimitTruncated,
                 maximumResults: limit,
+                modelId: load.acceptanceScope.fastModelId,
                 sourceExposureMarker: (item) =>
                   providerVisibleExposureMarker({
                     sourceKind: "document",
@@ -3476,7 +2852,7 @@ export class CanonicalWorkflowOperations {
                     stage: "internal_search_preview",
                     visibleTokenCount: this.visibleTokenCount(
                       item.snippet,
-                      this.config.aiFastModel,
+                      load.acceptanceScope.fastModelId,
                     ),
                   }),
               });
@@ -3536,7 +2912,10 @@ export class CanonicalWorkflowOperations {
                       }
                     : {}),
                   stage: "internal_search_preview",
-                  visibleTokenCount: this.visibleTokenCount(item.snippet, this.config.aiFastModel),
+                  visibleTokenCount: this.visibleTokenCount(
+                    item.snippet,
+                    load.acceptanceScope.fastModelId,
+                  ),
                 };
                 providerExposures.set(
                   `${exposure.stage}:${exposure.contentItemIdentity}`,
@@ -3555,8 +2934,28 @@ export class CanonicalWorkflowOperations {
                 kind: "document" as const,
                 documentId: item.documentId,
                 snippet: item.snippet,
+                ranges: exactPreviewRanges(item),
                 title: item.title,
                 publishedAt: item.publishedAt?.toISOString() ?? null,
+                ["__briefSourceIdentity"]: {
+                  versionId: item.versionId,
+                  contentHash: item.contentHash,
+                  ranges: exactPreviewRanges(item),
+                  ...(item.publisherExtractionId === undefined
+                    ? {}
+                    : { publisherExtractionId: item.publisherExtractionId }),
+                  source:
+                    item.kind === "publisher"
+                      ? item.issueId === undefined
+                        ? undefined
+                        : {
+                            kind: "publisher" as const,
+                            sourceId: item.sourceId,
+                            issueId: item.issueId,
+                            documentId: item.documentId,
+                          }
+                      : { kind: "public" as const, sourceId: item.sourceId },
+                },
               }));
               return {
                 ...bounded,
@@ -3573,7 +2972,7 @@ export class CanonicalWorkflowOperations {
                     stage: "internal_search_preview",
                     visibleTokenCount: this.visibleTokenCount(
                       item.snippet,
-                      this.config.aiFastModel,
+                      load.acceptanceScope.fastModelId,
                     ),
                   }),
                 ),
@@ -3588,13 +2987,17 @@ export class CanonicalWorkflowOperations {
             const bounded = this.boundedToolItems(results.slice(0, limit), cursor, {
               hardLimitTruncated: results.length > limit,
               maximumResults: limit,
+              modelId: load.acceptanceScope.fastModelId,
               sourceExposureMarker: (item) =>
                 providerVisibleExposureMarker({
                   sourceKind: "chat_message",
                   logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
                   contentItemIdentity: item.messageId,
                   stage: "internal_inspection",
-                  visibleTokenCount: this.visibleTokenCount(item.snippet, this.config.aiFastModel),
+                  visibleTokenCount: this.visibleTokenCount(
+                    item.snippet,
+                    load.acceptanceScope.fastModelId,
+                  ),
                 }),
             });
             for (const item of bounded.items) discoveredMessages.add(item.messageId);
@@ -3609,7 +3012,10 @@ export class CanonicalWorkflowOperations {
                 logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
                 contentItemIdentity: item.messageId,
                 stage: "internal_inspection",
-                visibleTokenCount: this.visibleTokenCount(item.snippet, this.config.aiFastModel),
+                visibleTokenCount: this.visibleTokenCount(
+                  item.snippet,
+                  load.acceptanceScope.fastModelId,
+                ),
               };
               providerExposures.set(`${exposure.stage}:${exposure.contentItemIdentity}`, exposure);
             }
@@ -3621,15 +3027,28 @@ export class CanonicalWorkflowOperations {
               coordinates.providerRequestIndex,
             );
             searchProtocol.recordCompletedSearch();
+            const visibleItems = bounded.items.map((item) => ({
+              kind: "chat_message" as const,
+              messageId: item.messageId,
+              snippet: item.snippet,
+              ["__briefSourceIdentity"]: {
+                messageId: item.messageId,
+                contentHash: sha256Base64Url(item.content),
+              },
+            }));
             return {
               ...bounded,
+              items: visibleItems,
               __briefSourceExposures: bounded.items.map((item) =>
                 providerVisibleExposureMarker({
                   sourceKind: "chat_message",
                   logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
                   contentItemIdentity: item.messageId,
                   stage: "internal_inspection",
-                  visibleTokenCount: this.visibleTokenCount(item.snippet, this.config.aiFastModel),
+                  visibleTokenCount: this.visibleTokenCount(
+                    item.snippet,
+                    load.acceptanceScope.fastModelId,
+                  ),
                 }),
               ),
             };
@@ -3863,23 +3282,9 @@ export class CanonicalWorkflowOperations {
                    versions.search_vector,
                    websearch_to_tsquery(language_to_regconfig(versions.language), ${query.terms ?? ""})
                  ) else 0 end::float8 as score
-          from chat_subscription_sources selected
-          join client_subscription_accesses accesses
-            on accesses.id = selected.access_id
-           and accesses.client_company_id = selected.client_company_id
-           and accesses.subscription_id = selected.subscription_id
-           and accesses.state in ('active', 'ending', 'paused')
-          join client_employee_subscription_grants grants
-            on grants.access_id = accesses.id
-           and grants.client_company_id = accesses.client_company_id
-           and grants.user_id = ${load.initiatingUserId}
-           and grants.revoked_at is null
-          join issue_deliveries deliveries
-            on deliveries.access_id = accesses.id
-           and deliveries.client_company_id = selected.client_company_id
+          from issue_deliveries deliveries
           join publisher_issues issues
             on issues.id = deliveries.issue_id
-           and issues.subscription_id = selected.subscription_id
            and issues.status = 'published'
            and issues.restricted_at is null
            and issues.deleted_at is null
@@ -3893,29 +3298,22 @@ export class CanonicalWorkflowOperations {
             on versions.id = documents.current_version_id
            and versions.brief_document_id = documents.id
           join chats
-            on chats.id = selected.chat_id
+            on chats.id = ${load.chatId}
            and chats.deleted_at is null
           join client_companies client_companies
             on client_companies.id = chats.company_id
            and client_companies.recovery_deleted_at is null
            and client_companies.purged_at is null
-          join client_company_memberships memberships
-            on memberships.company_id = chats.company_id
-           and memberships.user_id = ${load.initiatingUserId}
-           and memberships.revoked_at is null
-          join platform_users users
-            on users.id = memberships.user_id
-           and users.recovery_deleted_at is null
-           and users.purged_at is null
           join ai_runs runs
             on runs.id = ${load.aiRunId}
            and runs.chat_id = chats.id
-           and runs.initiating_user_id = memberships.user_id
+           and runs.initiating_user_id = ${load.initiatingUserId}
            and runs.finished_at is null
            and runs.failed_at is null
-          where selected.chat_id = ${load.chatId}
+          where deliveries.access_id::text = any(${load.acceptanceScope.accessIds}::text[])
+            and deliveries.client_company_id = ${load.acceptanceScope.companyId}
             and (
-              (chats.shared_at is null and chats.user_id = memberships.user_id)
+              (chats.shared_at is null and chats.user_id = ${load.initiatingUserId})
               or chats.shared_at is not null
             )
             and subscriptions.id::text in (
@@ -4042,9 +3440,11 @@ export class CanonicalWorkflowOperations {
           readonly messageId: string;
           readonly author: string;
           readonly snippet: string;
+          readonly content: string;
         }>`
           select messages.id::text as "messageId", messages.author,
-                 left(messages.content, 300) as snippet
+                 left(messages.content, 300) as snippet,
+                 messages.content
           from chat_messages messages
           join chats on chats.id = messages.chat_id and chats.deleted_at is null
           join ai_runs runs
@@ -4057,14 +3457,6 @@ export class CanonicalWorkflowOperations {
             on companies.id = chats.company_id
            and companies.recovery_deleted_at is null
            and companies.purged_at is null
-          join client_company_memberships memberships
-            on memberships.company_id = chats.company_id
-           and memberships.user_id = runs.initiating_user_id
-           and memberships.revoked_at is null
-          join platform_users users
-            on users.id = runs.initiating_user_id
-           and users.recovery_deleted_at is null
-           and users.purged_at is null
           where messages.chat_id = ${load.chatId}
             and messages.id <> ${load.userMessageId}
             and not exists (
@@ -4073,7 +3465,7 @@ export class CanonicalWorkflowOperations {
               where excluded.value = messages.id::text
             )
             and (
-              (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
+              (chats.shared_at is null and chats.user_id = ${load.initiatingUserId})
               or chats.shared_at is not null
             )
             and messages.created_at <= (
@@ -4112,7 +3504,7 @@ export class CanonicalWorkflowOperations {
     boundPublisherDocumentVersions: ReadonlyMap<string, string>,
     onVisible: (exposure: InternalProviderExposure) => void,
   ): Promise<Readonly<Record<string, unknown>>> {
-    const fastModel = this.config.aiFastModel;
+    const fastModel = load.acceptanceScope.fastModelId;
     const fastOutputMaxTokens = this.config.aiFastOutputMaxTokens;
     const visibleTokenCount = (text: string) => this.visibleTokenCount(text, fastModel);
     return this.db(
@@ -4134,14 +3526,6 @@ export class CanonicalWorkflowOperations {
               on companies.id = chats.company_id
              and companies.recovery_deleted_at is null
              and companies.purged_at is null
-            join client_company_memberships memberships
-              on memberships.company_id = chats.company_id
-             and memberships.user_id = runs.initiating_user_id
-             and memberships.revoked_at is null
-            join platform_users users
-              on users.id = runs.initiating_user_id
-             and users.recovery_deleted_at is null
-             and users.purged_at is null
             where messages.id = ${reference.messageId}
               and messages.chat_id = ${load.chatId}
               and (
@@ -4227,18 +3611,6 @@ export class CanonicalWorkflowOperations {
             on public_company.id = public_chat.company_id
            and public_company.recovery_deleted_at is null
            and public_company.purged_at is null
-          join client_company_memberships public_membership
-            on public_membership.company_id = public_chat.company_id
-           and public_membership.user_id = public_run.initiating_user_id
-           and public_membership.revoked_at is null
-          join platform_users public_user
-            on public_user.id = public_run.initiating_user_id
-           and public_user.recovery_deleted_at is null
-           and public_user.purged_at is null
-          join client_company_public_source_settings public_settings
-            on public_settings.client_company_id = public_chat.company_id
-           and public_settings.source_id = public_source_documents.source_id
-           and public_settings.enabled
           where ${reference.source.kind === "public"}
             and public_source_documents.source_id = ${reference.source.kind === "public" ? reference.source.sourceId.slice("public:".length) : ""}
             and public_source_documents.document_id = ${reference.documentId}
@@ -4254,23 +3626,9 @@ export class CanonicalWorkflowOperations {
                  issues.id::text as "publisherIssueId",
                  documents.id::text as "publisherDocumentId",
                  versions.publisher_extraction_id::text as "publisherExtractionId"
-          from chat_subscription_sources selected
-          join client_subscription_accesses accesses
-            on accesses.id = selected.access_id
-           and accesses.client_company_id = selected.client_company_id
-           and accesses.subscription_id = selected.subscription_id
-           and accesses.state in ('active', 'ending', 'paused')
-          join client_employee_subscription_grants grants
-            on grants.access_id = accesses.id
-           and grants.client_company_id = accesses.client_company_id
-           and grants.user_id = ${load.initiatingUserId}
-           and grants.revoked_at is null
-          join issue_deliveries deliveries
-            on deliveries.access_id = accesses.id
-           and deliveries.client_company_id = selected.client_company_id
+          from issue_deliveries deliveries
           join publisher_issues issues
             on issues.id = deliveries.issue_id
-           and issues.subscription_id = selected.subscription_id
            and issues.status = 'published'
            and issues.restricted_at is null
            and issues.deleted_at is null
@@ -4288,7 +3646,7 @@ export class CanonicalWorkflowOperations {
             on versions.brief_document_id = documents.id
            and versions.id::text = ${reference.versionId}
           join chats publisher_chat
-            on publisher_chat.id = selected.chat_id
+            on publisher_chat.id = ${load.chatId}
            and publisher_chat.deleted_at is null
           join ai_runs publisher_run
             on publisher_run.id = ${load.aiRunId}
@@ -4300,17 +3658,10 @@ export class CanonicalWorkflowOperations {
             on publisher_client_company.id = publisher_chat.company_id
            and publisher_client_company.recovery_deleted_at is null
            and publisher_client_company.purged_at is null
-          join client_company_memberships publisher_membership
-            on publisher_membership.company_id = publisher_chat.company_id
-           and publisher_membership.user_id = publisher_run.initiating_user_id
-           and publisher_membership.revoked_at is null
-          join platform_users publisher_user
-            on publisher_user.id = publisher_run.initiating_user_id
-           and publisher_user.recovery_deleted_at is null
-           and publisher_user.purged_at is null
           where ${reference.source.kind === "publisher"}
-            and selected.subscription_id::text = ${reference.source.kind === "publisher" ? reference.source.sourceId.slice("publisher:".length) : ""}
-            and selected.chat_id = ${load.chatId}
+            and deliveries.access_id::text = any(${load.acceptanceScope.accessIds}::text[])
+            and deliveries.client_company_id = ${load.acceptanceScope.companyId}
+            and issues.subscription_id::text = ${reference.source.kind === "publisher" ? reference.source.sourceId.slice("publisher:".length) : ""}
             and (
               (publisher_chat.shared_at is null and publisher_chat.user_id = publisher_run.initiating_user_id)
               or publisher_chat.shared_at is not null
@@ -4383,6 +3734,14 @@ export class CanonicalWorkflowOperations {
           text,
           ranges,
           textCharCount: row.text.length,
+          ["__briefSourceIdentity"]: {
+            versionId: reference.versionId,
+            contentHash: row.contentHash,
+            ...(row.publisherExtractionId === null
+              ? {}
+              : { publisherExtractionId: row.publisherExtractionId }),
+            source: reference.source,
+          },
           __briefSourceExposures: [providerVisibleExposureMarker(exposure)],
         };
       }),
@@ -4400,14 +3759,17 @@ export class CanonicalWorkflowOperations {
       await this.observe(load, taskId, "retrieval_manifest", {
         selectorRole: "web",
         references: [],
+        noCallReason: "web_not_requested",
       });
       return { status: "disabled", reason: "not_requested" };
     }
-    const webPolicy = await this.liveWebPolicy(load);
-    if (!webPolicy.enabled || this.web === undefined) {
+    await this.validateSavedScope(load);
+    const webPolicy = await this.acceptancePolicy(load);
+    if (webPolicy === undefined || this.web === undefined) {
       await this.observe(load, taskId, "retrieval_manifest", {
         selectorRole: "web",
         references: [],
+        noCallReason: "web_policy_disabled",
       });
       return { status: "disabled", reason: "policy_disabled" };
     }
@@ -4415,6 +3777,7 @@ export class CanonicalWorkflowOperations {
       await this.observe(load, taskId, "retrieval_manifest", {
         selectorRole: "web",
         references: [],
+        noCallReason: "topic_not_web_eligible",
       });
       return { status: "enabled", entries: [] };
     }
@@ -4444,7 +3807,7 @@ export class CanonicalWorkflowOperations {
       z.object({ url: z.string().url() }).strict().parse(value);
     const entries = await this.agents.toolLoop({
       requestClass: "fast",
-      model: this.config.aiFastModel,
+      model: load.acceptanceScope.fastModelId,
       system: WebResearchPrompt,
       user: JSON.stringify({
         question,
@@ -4464,7 +3827,7 @@ export class CanonicalWorkflowOperations {
       coordinates: { taskId, attempt: execution.attempt, agentRole: "web_research" },
       sourceExposureProofs: [],
       onBeforeRequest: async (_request, requestCoordinates) => {
-        await this.assertLiveAuthorization(load, { requireWebPolicy: true });
+        await this.validateSavedScope(load);
         await this.recordConversationExposures(load, taskId, [], requestCoordinates, {
           includeCurrentUser: false,
         });
@@ -4558,11 +3921,7 @@ export class CanonicalWorkflowOperations {
             discoveredUrls: [...discoveredUrls.keys()],
           };
         }
-        if (
-          !(error instanceof WebBoundaryError) ||
-          error.code === "unsupported_policy" ||
-          error.code === "web_policy_revoked"
-        ) {
+        if (!(error instanceof WebBoundaryError)) {
           return undefined;
         }
         const parsed = z.object({ url: z.string().url() }).strict().safeParse(arguments_);
@@ -4642,13 +4001,13 @@ export class CanonicalWorkflowOperations {
                   "web search cannot continue after a complete non-empty result; fetch discovered URLs and terminate",
               };
             }
-            await this.assertLiveAuthorization(load, { requireWebPolicy: true });
-            const operationPolicy = await this.liveWebPolicy(load);
+            await this.validateSavedScope(load);
             const result = await this.web!.search(
               parsed.query,
               load.locale,
               load.market,
-              operationPolicy,
+              webPolicy,
+              async () => webPolicy,
               coordinates,
               parsed.cursor,
               signal,
@@ -4669,7 +4028,10 @@ export class CanonicalWorkflowOperations {
                 logicalSourceIdentity,
                 contentItemIdentity,
                 stage: "web_search_preview",
-                visibleTokenCount: this.visibleTokenCount(item.snippet, this.config.aiFastModel),
+                visibleTokenCount: this.visibleTokenCount(
+                  item.snippet,
+                  load.acceptanceScope.fastModelId,
+                ),
               });
             }
             completeSearchTurn = coordinates.providerRequestIndex;
@@ -4684,7 +4046,10 @@ export class CanonicalWorkflowOperations {
                   logicalSourceIdentity,
                   contentItemIdentity: `${logicalSourceIdentity}:${sha256Base64Url(item.snippet)}`,
                   stage: "web_search_preview",
-                  visibleTokenCount: this.visibleTokenCount(item.snippet, this.config.aiFastModel),
+                  visibleTokenCount: this.visibleTokenCount(
+                    item.snippet,
+                    load.acceptanceScope.fastModelId,
+                  ),
                 });
               }),
             };
@@ -4711,8 +4076,7 @@ export class CanonicalWorkflowOperations {
               return { complete: true, protocolError: "web fetch limit exceeded" };
             }
             const { url } = parseWebFetchArguments(args);
-            await this.assertLiveAuthorization(load, { requireWebPolicy: true });
-            const operationPolicy = await this.liveWebPolicy(load);
+            await this.validateSavedScope(load);
             const normalizedRequestedUrl = canonicalizeWebUrl(url);
             const discoveredTurn = discoveredUrls.get(normalizedRequestedUrl);
             if (
@@ -4724,14 +4088,20 @@ export class CanonicalWorkflowOperations {
                 "web fetch requires a canonical URL discovered by an earlier complete search turn",
               );
             }
-            const fetchedPage = await this.web!.fetch(url, operationPolicy, coordinates, signal);
+            const fetchedPage = await this.web!.fetch(
+              url,
+              webPolicy,
+              async () => webPolicy,
+              coordinates,
+              signal,
+            );
             throwIfAborted(signal);
             const page = {
               ...fetchedPage,
               text: boundedWebProviderText(
                 fetchedPage.text,
                 Math.max(1, this.config.aiFastOutputMaxTokens - 1_024),
-                (value) => this.visibleTokenCount(value, this.config.aiFastModel),
+                (value) => this.visibleTokenCount(value, load.acceptanceScope.fastModelId),
               ),
             } satisfies WebFetchedPage;
             fetched.set(canonicalizeWebUrl(page.url), page);
@@ -4741,7 +4111,10 @@ export class CanonicalWorkflowOperations {
               logicalSourceIdentity,
               contentItemIdentity,
               stage: "web_fetch",
-              visibleTokenCount: this.visibleTokenCount(page.text, this.config.aiFastModel),
+              visibleTokenCount: this.visibleTokenCount(
+                page.text,
+                load.acceptanceScope.fastModelId,
+              ),
             });
             throwIfAborted(signal);
             return {
@@ -4753,7 +4126,10 @@ export class CanonicalWorkflowOperations {
                   logicalSourceIdentity,
                   contentItemIdentity,
                   stage: "web_fetch",
-                  visibleTokenCount: this.visibleTokenCount(page.text, this.config.aiFastModel),
+                  visibleTokenCount: this.visibleTokenCount(
+                    page.text,
+                    load.acceptanceScope.fastModelId,
+                  ),
                 }),
               ],
             };
@@ -5106,6 +4482,7 @@ export class CanonicalWorkflowOperations {
     options: {
       readonly hardLimitTruncated?: boolean | undefined;
       readonly maximumResults?: number | undefined;
+      readonly modelId?: RuntimeModelId | undefined;
       readonly sourceExposureMarker?:
         | ((item: Item) => ReturnType<typeof providerVisibleExposureMarker>)
         | undefined;
@@ -5157,7 +4534,7 @@ export class CanonicalWorkflowOperations {
       if (
         this.visibleTokenCount(
           JSON.stringify(resultFor([...selected, item], index + 1)),
-          this.config.aiFastModel,
+          options.modelId ?? this.config.aiFastModel,
         ) > this.config.aiFastOutputMaxTokens
       ) {
         break;
@@ -5207,10 +4584,8 @@ export class CanonicalWorkflowOperations {
                      d.published_at as "publishedAt"
               from public_source_documents d
               join public_sources s on s.source_id = d.source_id
-              join client_company_public_source_settings public_settings
-                on public_settings.source_id = d.source_id and public_settings.enabled
               join chats public_chat
-                on public_chat.company_id = public_settings.client_company_id
+                on public_chat.company_id = ${load.acceptanceScope.companyId}
                and public_chat.id = ${load.chatId}
                and public_chat.deleted_at is null
               join ai_runs public_run
@@ -5223,14 +4598,6 @@ export class CanonicalWorkflowOperations {
                 on public_company.id = public_chat.company_id
                and public_company.recovery_deleted_at is null
                and public_company.purged_at is null
-              join client_company_memberships public_membership
-                on public_membership.company_id = public_chat.company_id
-               and public_membership.user_id = public_run.initiating_user_id
-               and public_membership.revoked_at is null
-              join platform_users public_user
-                on public_user.id = public_run.initiating_user_id
-               and public_user.recovery_deleted_at is null
-               and public_user.purged_at is null
               where ${reference.source.kind === "public"}
                 and d.source_id = ${reference.source.kind === "public" ? reference.source.sourceId.slice("public:".length) : ""}
                 and d.document_id = ${reference.documentId}
@@ -5240,7 +4607,7 @@ export class CanonicalWorkflowOperations {
                   or public_chat.shared_at is not null
                 )
               union all
-              select selected.subscription_id::text as "sourceId",
+              select subscriptions.id::text as "sourceId",
                      documents.id::text as "documentId",
                      versions.id::text as "versionId",
                      versions.publisher_extraction_id::text as "publisherExtractionId",
@@ -5252,23 +4619,9 @@ export class CanonicalWorkflowOperations {
                      issues.id::text as "issueId",
                      issues.title as "issueTitle",
                      issues.published_at as "publishedAt"
-              from chat_subscription_sources selected
-              join client_subscription_accesses accesses
-                on accesses.id = selected.access_id
-               and accesses.client_company_id = selected.client_company_id
-               and accesses.subscription_id = selected.subscription_id
-               and accesses.state in ('active', 'ending', 'paused')
-              join client_employee_subscription_grants grants
-                on grants.access_id = accesses.id
-               and grants.client_company_id = accesses.client_company_id
-               and grants.user_id = ${load.initiatingUserId}
-               and grants.revoked_at is null
-              join issue_deliveries deliveries
-                on deliveries.access_id = accesses.id
-               and deliveries.client_company_id = selected.client_company_id
+              from issue_deliveries deliveries
               join publisher_issues issues
                 on issues.id = deliveries.issue_id
-               and issues.subscription_id = selected.subscription_id
                and issues.status = 'published'
                and issues.restricted_at is null
                and issues.deleted_at is null
@@ -5284,7 +4637,7 @@ export class CanonicalWorkflowOperations {
                 on versions.brief_document_id = documents.id
                and versions.id::text = ${reference.versionId}
               join chats publisher_chat
-                on publisher_chat.id = selected.chat_id
+                on publisher_chat.id = ${load.chatId}
                and publisher_chat.deleted_at is null
               join ai_runs publisher_run
                 on publisher_run.id = ${load.aiRunId}
@@ -5296,18 +4649,11 @@ export class CanonicalWorkflowOperations {
                 on publisher_client_company.id = publisher_chat.company_id
                and publisher_client_company.recovery_deleted_at is null
                and publisher_client_company.purged_at is null
-              join client_company_memberships publisher_membership
-                on publisher_membership.company_id = publisher_chat.company_id
-               and publisher_membership.user_id = publisher_run.initiating_user_id
-               and publisher_membership.revoked_at is null
-              join platform_users publisher_user
-                on publisher_user.id = publisher_run.initiating_user_id
-               and publisher_user.recovery_deleted_at is null
-               and publisher_user.purged_at is null
               where ${reference.source.kind === "publisher"}
-                and selected.subscription_id::text = ${reference.source.kind === "publisher" ? reference.source.sourceId.slice("publisher:".length) : ""}
+                and deliveries.access_id::text = any(${load.acceptanceScope.accessIds}::text[])
+                and deliveries.client_company_id = ${load.acceptanceScope.companyId}
+                and issues.subscription_id::text = ${reference.source.kind === "publisher" ? reference.source.sourceId.slice("publisher:".length) : ""}
                 and issues.id::text = ${reference.source.kind === "publisher" ? reference.source.issueId : ""}
-                and selected.chat_id = ${load.chatId}
                 and (
                   (publisher_chat.shared_at is null and publisher_chat.user_id = publisher_run.initiating_user_id)
                   or publisher_chat.shared_at is not null
@@ -5392,14 +4738,6 @@ export class CanonicalWorkflowOperations {
                 on companies.id = chats.company_id
                and companies.recovery_deleted_at is null
                and companies.purged_at is null
-              join client_company_memberships memberships
-                on memberships.company_id = chats.company_id
-               and memberships.user_id = runs.initiating_user_id
-               and memberships.revoked_at is null
-              join platform_users users
-                on users.id = runs.initiating_user_id
-               and users.recovery_deleted_at is null
-               and users.purged_at is null
               where messages.id = ${reference.messageId}
                 and messages.chat_id = ${load.chatId}
                 and (
@@ -5438,7 +4776,7 @@ export class CanonicalWorkflowOperations {
         requested === undefined
           ? undefined
           : (
-              await this.liveMemorySnapshots(load, [requested], {
+              await this.savedMemorySnapshots(load, [requested], {
                 memoryId: reference.memoryId,
               })
             )[0];
@@ -5461,7 +4799,7 @@ export class CanonicalWorkflowOperations {
         });
     }
     if (load.webRequested || selectors.web.length > 0) {
-      await this.assertLiveAuthorization(load, { requireWebPolicy: true });
+      await this.validateSavedScope(load);
     }
     for (const evidence of selectors.web) {
       const quote = normalizeWebQuote(evidence.quote);
@@ -5651,19 +4989,19 @@ export class CanonicalWorkflowOperations {
         ? fullRequestInput(
             prompt,
             userInput(conversation, evidence),
-            this.config.aiMainModel,
+            load.acceptanceScope.mainModelId,
             requestedOutputTokens,
           )
         : structuredRequestInput(
             prompt,
             userInput(conversation, evidence),
-            this.config.aiMainModel,
+            load.acceptanceScope.mainModelId,
             requestedOutputTokens,
             "emit_topic_packet",
             "Emit a grounded topic packet.",
             z.toJSONSchema(TopicPacketSchema),
           );
-    const model = resolveRuntimeModel(this.config.aiMainModel);
+    const model = resolveRuntimeModel(load.acceptanceScope.mainModelId);
     const request = buildRequest(selectedConversation, visible);
     const inputTokens = model.countRequestTokens(request);
     const usableInputTokens = Math.min(
@@ -5770,7 +5108,7 @@ export class CanonicalWorkflowOperations {
         label: null,
         renderedTokenCount:
           conversationTokenCounts[index] ??
-          this.visibleTokenCount(JSON.stringify(entry), this.config.aiMainModel),
+          this.visibleTokenCount(JSON.stringify(entry), state.request.model),
         entry,
         text: JSON.stringify(entry),
       }),
@@ -5872,7 +5210,7 @@ export class CanonicalWorkflowOperations {
     };
     const raw = await this.agents.toolLoop({
       requestClass: "fast",
-      model: this.config.aiFastModel,
+      model: load.acceptanceScope.fastModelId,
       system: ContextReductionPrompt,
       user: JSON.stringify({
         question: state.question,
@@ -5901,7 +5239,7 @@ export class CanonicalWorkflowOperations {
           requestCoordinates.providerRequestIndex,
           requestCoordinates.providerRequestSha256Hex,
         );
-        await this.authorizeFrozenContext(load, state);
+        await this.validateFrozenScope(load, state);
         await this.recordConversationExposures(
           load,
           taskId,
@@ -6019,7 +5357,7 @@ export class CanonicalWorkflowOperations {
               attempt: terminalCoordinates.attempt,
               providerRequestIndex: terminalCoordinates.providerRequestIndex,
             },
-            modelId: this.config.aiFastModel,
+            modelId: load.acceptanceScope.fastModelId,
             requestSha256Hex: providerRequestDigest,
             providerInputTokens: completion.usage.inputTokens + completion.usage.cachedTokens,
             totalTokens: completion.usage.totalTokens,
@@ -6139,7 +5477,10 @@ export class CanonicalWorkflowOperations {
                             : webEvidenceIdentity(item.url, item.quote),
                     contentItemIdentity,
                     stage: "context_candidate_inspection",
-                    visibleTokenCount: this.visibleTokenCount(text, this.config.aiFastModel),
+                    visibleTokenCount: this.visibleTokenCount(
+                      text,
+                      load.acceptanceScope.fastModelId,
+                    ),
                   });
             const response = {
               found: true,
@@ -6176,6 +5517,41 @@ export class CanonicalWorkflowOperations {
                       : item.kind === "memory"
                         ? { memoryId: item.memoryId, memoryRevisionId: item.memoryRevisionId }
                         : {}),
+                    ["__briefSourceIdentity"]:
+                      item.kind === "document"
+                        ? {
+                            versionId: item.versionId,
+                            contentHash: item.contentHash,
+                            ...(item.publisherExtractionId === undefined
+                              ? {}
+                              : { publisherExtractionId: item.publisherExtractionId }),
+                            source:
+                              item.publisherIssueId !== undefined &&
+                              item.publisherDocumentId !== undefined
+                                ? {
+                                    kind: "publisher" as const,
+                                    sourceId: item.sourceId,
+                                    issueId: item.publisherIssueId,
+                                    documentId: item.publisherDocumentId,
+                                  }
+                                : { kind: "public" as const, sourceId: item.sourceId },
+                          }
+                        : item.kind === "chat_message"
+                          ? {
+                              messageId: item.messageId,
+                              contentHash: sha256Base64Url(item.text),
+                            }
+                          : item.kind === "memory"
+                            ? {
+                                memoryId: item.memoryId,
+                                memoryRevisionId: item.memoryRevisionId,
+                                contentHash: sha256Base64Url(item.text),
+                              }
+                            : {
+                                url: item.url,
+                                quoteHash: item.quoteHash,
+                                contentHash: sha256Base64Url(item.quote),
+                              },
                   }),
               ...(item.kind === "conversation_entry"
                 ? {
@@ -6198,7 +5574,10 @@ export class CanonicalWorkflowOperations {
                         logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
                         contentItemIdentity: messageId,
                         stage: "provider_input",
-                        visibleTokenCount: this.visibleTokenCount(content, this.config.aiFastModel),
+                        visibleTokenCount: this.visibleTokenCount(
+                          content,
+                          load.acceptanceScope.fastModelId,
+                        ),
                       }),
                     ),
                   }
@@ -6208,7 +5587,7 @@ export class CanonicalWorkflowOperations {
             };
             if (
               requiresExplicitInspectionRange(
-                this.visibleTokenCount(JSON.stringify(response), this.config.aiFastModel),
+                this.visibleTokenCount(JSON.stringify(response), load.acceptanceScope.fastModelId),
                 inspectionResponseAllowanceTokens,
               )
             ) {
@@ -6240,7 +5619,7 @@ export class CanonicalWorkflowOperations {
             providerExposures.set(contentItemIdentity, {
               candidate: item,
               contentItemIdentity,
-              visibleTokenCount: this.visibleTokenCount(text, this.config.aiFastModel),
+              visibleTokenCount: this.visibleTokenCount(text, load.acceptanceScope.fastModelId),
               ...(item.kind === "document"
                 ? {
                     documentReconstruction: {
@@ -6311,7 +5690,7 @@ export class CanonicalWorkflowOperations {
                     );
                     const visibleTokenCount = this.visibleTokenCount(
                       preview.text,
-                      this.config.aiFastModel,
+                      load.acceptanceScope.fastModelId,
                     );
                     providerExposures.set(contentItemIdentity, {
                       candidate: item,
@@ -6341,7 +5720,29 @@ export class CanonicalWorkflowOperations {
             return {
               found: true,
               kind: item.kind,
+              ...(item.kind === "document" ? { documentId: item.documentId } : {}),
               ...(item.kind === "document" ? { versionId: item.versionId } : {}),
+              ...(item.kind === "document"
+                ? {
+                    ["__briefSourceIdentity"]: {
+                      versionId: item.versionId,
+                      contentHash: item.contentHash,
+                      ...(item.publisherExtractionId === undefined
+                        ? {}
+                        : { publisherExtractionId: item.publisherExtractionId }),
+                      source:
+                        item.publisherIssueId !== undefined &&
+                        item.publisherDocumentId !== undefined
+                          ? {
+                              kind: "publisher" as const,
+                              sourceId: item.sourceId,
+                              issueId: item.publisherIssueId,
+                              documentId: item.publisherDocumentId,
+                            }
+                          : { kind: "public" as const, sourceId: item.sourceId },
+                    },
+                  }
+                : {}),
               ...result,
               ...(previewExposures.length === 0
                 ? {}
@@ -6583,7 +5984,7 @@ export class CanonicalWorkflowOperations {
           throwIfAborted(signal);
         },
         async (request, requestCoordinates) => {
-          await this.authorizeFrozenContext(load, context);
+          await this.validateFrozenScope(load, context);
           await this.emitAnswerStart(load, context, "single", taskId, requestCoordinates);
           await this.recordContextExposures(load, context, taskId, requestCoordinates);
           await this.observe(
@@ -6689,7 +6090,7 @@ export class CanonicalWorkflowOperations {
     load: LoadedTurn,
     plan: Extract<PlanTurnResult, { mode: "fanout" }>,
   ): Promise<FanoutAllocation> {
-    const model = resolveRuntimeModel(this.config.aiMainModel);
+    const model = resolveRuntimeModel(load.acceptanceScope.mainModelId);
     const selectedTurnIds = new Set(plan.topics.flatMap((topic) => topic.relevantTurnIds));
     const selectedConversation = (await this.currentPriorTurns(load)).filter((entry) =>
       selectedTurnIds.has(entry.turnId),
@@ -6707,7 +6108,7 @@ export class CanonicalWorkflowOperations {
           gaps: [],
         })),
       }),
-      this.config.aiMainModel,
+      load.acceptanceScope.mainModelId,
       this.config.aiMainOutputMaxTokens,
     );
     const fixed = model.countRequestTokens(skeleton);
@@ -6720,7 +6121,9 @@ export class CanonicalWorkflowOperations {
       model.maximumOutputTokens,
       Math.floor((usable - fixed) / plan.topics.length),
     );
-    if (packetOutputTokens < topicPacketSchemaMinimumOutputTokens(this.config.aiMainModel)) {
+    if (
+      packetOutputTokens < topicPacketSchemaMinimumOutputTokens(load.acceptanceScope.mainModelId)
+    ) {
       throw controlledRuntimeFailure("synthesis_budget_mismatch");
     }
     return { packetOutputTokens, synthesisUsableInput: usable, fixedSynthesisInput: fixed };
@@ -6737,7 +6140,7 @@ export class CanonicalWorkflowOperations {
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
     const output = await this.agents.structured({
       requestClass: "main",
-      model: this.config.aiMainModel,
+      model: load.acceptanceScope.mainModelId,
       system: TopicAnswerPrompt,
       user: context.request.messages.find((message) => message.role === "user")?.content ?? "",
       outputToolName: "emit_topic_packet",
@@ -6749,7 +6152,7 @@ export class CanonicalWorkflowOperations {
       coordinates: taskCoordinates(taskId, "topic_answer", execution),
       sourceExposureProofs: this.contextExposureProofMarkers(load, context),
       onBeforeRequest: async (request, requestCoordinates) => {
-        await this.authorizeFrozenContext(load, context);
+        await this.validateFrozenScope(load, context);
         await this.recordContextExposures(load, context, taskId, requestCoordinates);
         await this.observe(
           load,
@@ -6816,10 +6219,10 @@ export class CanonicalWorkflowOperations {
         selectedConversation,
         packets,
       }),
-      this.config.aiMainModel,
+      load.acceptanceScope.mainModelId,
       this.config.aiMainOutputMaxTokens,
     );
-    const model = resolveRuntimeModel(this.config.aiMainModel);
+    const model = resolveRuntimeModel(load.acceptanceScope.mainModelId);
     const inputTokens = model.countRequestTokens(request);
     const usableInputTokens = Math.min(
       this.config.aiMainInputMaxTokens,
@@ -6838,7 +6241,7 @@ export class CanonicalWorkflowOperations {
           gaps: [],
         })),
       }),
-      this.config.aiMainModel,
+      load.acceptanceScope.mainModelId,
       this.config.aiMainOutputMaxTokens,
     );
     const measuredFixedInput = model.countRequestTokens(fixedRequest);
@@ -6924,14 +6327,14 @@ export class CanonicalWorkflowOperations {
           throwIfAborted(signal);
         },
         async (request, requestCoordinates) => {
-          await this.authorizeFrozenContext(load, context);
+          await this.validateFrozenScope(load, context);
           await this.emitAnswerStart(load, context, "synthesis", taskId, requestCoordinates);
           await this.recordConversationExposures(
             load,
             taskId,
             context.selectedConversation,
             requestCoordinates,
-            { modelId: this.config.aiMainModel },
+            { modelId: load.acceptanceScope.mainModelId },
           );
           await this.observe(
             load,
@@ -6969,197 +6372,64 @@ export class CanonicalWorkflowOperations {
     memory: MemoryExtractionArtifact,
     expectedSmithersRunId: string,
   ) {
-    const currentEffectiveWebPolicy = (
-      enabled: boolean,
-      allowedDomains: readonly string[] | null,
-    ) => this.currentEffectiveWebPolicy(enabled, allowedDomains);
     return this.db(
       finalizeAiRun({
-          runId: load.aiRunId,
-          expectedSmithersRunId,
-          coordinates: requireCurrentTaskCoordinates("finalize"),
-          answer,
-          memory,
-          authorize: ({ chatId, initiatingUserId, sourceMap }) =>
-            Effect.gen(function* () {
-              const sql = yield* PgClient.PgClient;
-              const rows = yield* sql<{
-                readonly baseAllowed: boolean;
-                readonly sourceAllowed: readonly boolean[];
-                readonly webSourceCount: number;
-                readonly acceptedWebPolicy: EffectiveWebPolicy | null;
-                readonly webEnabled: boolean | null;
-                readonly webAllowedDomains: readonly string[] | null;
-              }>`
-              with base as (
-                select runs.chat_id, runs.initiating_user_id, runs.effective_web_policy,
-                       chats.company_id
-                from ai_runs runs
-                join chats on chats.id = runs.chat_id and chats.deleted_at is null
-                join client_companies companies
-                  on companies.id = chats.company_id
-                 and companies.recovery_deleted_at is null
-                 and companies.purged_at is null
-                join client_company_memberships memberships
-                  on memberships.company_id = chats.company_id
-                 and memberships.user_id = runs.initiating_user_id
-                 and memberships.revoked_at is null
-                join platform_users users
-                  on users.id = runs.initiating_user_id
-                 and users.recovery_deleted_at is null
-                 and users.purged_at is null
-                where runs.id = ${load.aiRunId}
-                  and runs.chat_id = ${chatId}
-                  and runs.initiating_user_id = ${initiatingUserId}
-                  and runs.finished_at is null
-                  and runs.failed_at is null
-                  and (
-                    (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
-                    or chats.shared_at is not null
-                  )
-              ), requested as (
-                select value->'locator' as source,
-                       value->'publicProvenance' as provenance,
-                       (ordinality - 1)::int as source_index
-                from jsonb_array_elements(${JSON.stringify(
-                  sourceMap.map((source) => ({
-                    locator: source.locator,
-                    publicProvenance: source.publicProvenance,
-                  })),
-                )}::jsonb)
-                     with ordinality
-              ), evaluated as (
-                select requested.source_index,
-                       requested.source->>'kind' as kind,
-                       case requested.source->>'kind'
-                         when 'document' then case
-                           when requested.source ? 'publisherIssueId' then exists(
-                             select 1 from base
-                             join chat_subscription_sources selected on selected.chat_id = base.chat_id
-                             join client_subscription_accesses accesses
-                               on accesses.id = selected.access_id
-                              and accesses.client_company_id = selected.client_company_id
-                              and accesses.subscription_id = selected.subscription_id
-                              and accesses.state in ('active', 'ending', 'paused')
-                             join client_employee_subscription_grants grants
-                               on grants.access_id = accesses.id
-                              and grants.client_company_id = accesses.client_company_id
-                              and grants.user_id = base.initiating_user_id
-                              and grants.revoked_at is null
-                             join issue_deliveries deliveries
-                               on deliveries.access_id = accesses.id
-                              and deliveries.client_company_id = selected.client_company_id
-                             join publisher_issues issues
-                               on issues.id = deliveries.issue_id
-                              and issues.subscription_id = selected.subscription_id
-                              and issues.id::text = requested.source->>'publisherIssueId'
-                              and ('publisher:' || selected.subscription_id::text) = requested.source->>'sourceId'
-                              and issues.status = 'published'
-                              and issues.restricted_at is null
-                              and issues.deleted_at is null
-                             join publisher_subscriptions subscriptions
-                               on subscriptions.id = issues.subscription_id
-             join publisher_companies publisher_company
-               on publisher_company.id = subscriptions.publisher_company_id
-                             join brief_documents documents
-                               on documents.issue_id = issues.id
-                              and documents.id::text = requested.source->>'publisherDocumentId'
-                              and documents.id::text = requested.source->>'documentId'
-                              and documents.deleted_at is null
-                             join brief_document_versions versions
-                               on versions.brief_document_id = documents.id
-                              and versions.id::text = requested.source->>'versionId'
-                              and versions.content_hash = requested.source->>'contentHash'
-                           )
-                           else exists(
-                             select 1 from base
-                             join public_source_documents documents
-                               on documents.document_id = requested.source->>'documentId'
-                              and documents.document_id = requested.source->>'versionId'
-                              and documents.content_hash = requested.source->>'contentHash'
-                              and ('public:' || documents.source_id) = requested.source->>'sourceId'
-                             join client_company_public_source_settings settings
-                               on settings.client_company_id = base.company_id
-                              and settings.source_id = documents.source_id
-                              and settings.enabled
-                           )
-                         end
-                         when 'chat_message' then exists(
-                           select 1 from base
-                           join chat_messages messages
-                             on messages.chat_id = base.chat_id
-                            and messages.id::text = requested.source->>'messageId'
-                         )
-                         when 'memory' then exists(
-                           select 1 from base
-                           join user_memories memories
-                             on memories.user_id = base.initiating_user_id
-                            and memories.id::text = requested.source->>'memoryId'
-                            and memories.deleted_at is null
-                            and memories.provenance_only_at is null
-                           join user_memory_revisions revisions
-                             on revisions.memory_id = memories.id
-                            and revisions.id::text = requested.source->>'memoryRevisionId'
-                            and revisions.state_after->>'deleted' = 'false'
-                         )
-                         when 'web' then exists(select 1 from base)
-                         else false
-                       end as allowed
-                from requested
-              )
-              select exists(select 1 from base) as "baseAllowed",
-                     coalesce(array_agg(evaluated.allowed order by evaluated.source_index), '{}')
-                       as "sourceAllowed",
-                     count(*) filter (where evaluated.kind = 'web')::int as "webSourceCount",
-                     (select effective_web_policy from base limit 1) as "acceptedWebPolicy",
-                     (
-                       select settings.web_search_enabled
-                       from base
-                       join client_company_ai_settings settings on settings.company_id = base.company_id
-                       limit 1
-                     ) as "webEnabled",
-                     (
-                       select settings.web_domain_allowlist
-                       from base
-                       join client_company_ai_settings settings on settings.company_id = base.company_id
-                       limit 1
-                     ) as "webAllowedDomains"
-              from evaluated
+        runId: load.aiRunId,
+        expectedSmithersRunId,
+        coordinates: requireCurrentTaskCoordinates("finalize"),
+        answer,
+        memory,
+        authorize: ({ runId, chatId, initiatingUserId, sourceMap }) =>
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            const rows = yield* sql<{ readonly scope: unknown }>`
+              select acceptance_scope as scope
+              from ai_runs
+              where id = ${runId}
+                and chat_id = ${chatId}
+                and initiating_user_id = ${initiatingUserId}
+                and finished_at is null
+                and failed_at is null
+              for update
             `;
-              const row = rows[0];
-              if (
-                row?.baseAllowed !== true ||
-                row.sourceAllowed.length !== sourceMap.length ||
-                row.sourceAllowed.some((allowed) => !allowed)
-              ) {
-                return { authorized: false as const, code: "source_access_revoked" as const };
+            const scope = AcceptanceScopeSchema.parse(rows[0]?.scope);
+            if (
+              scope.userId !== initiatingUserId ||
+              scope.chatId !== chatId ||
+              scope.userId !== load.initiatingUserId ||
+              scope.chatId !== load.chatId
+            ) {
+              return { authorized: false as const, code: "finalization_failed" as const };
+            }
+            const sourceAllowed = sourceMap.map((source) => {
+              if (source.locator.kind === "document") {
+                const sourceId = source.locator.sourceId;
+                return sourceId.startsWith("public:")
+                  ? scope.publicSourceIds.includes(sourceId.slice("public:".length))
+                  : sourceId.startsWith("publisher:")
+                    ? scope.subscriptionIds.includes(sourceId.slice("publisher:".length))
+                    : false;
               }
-              // A requested W path must retain its accepted policy snapshot and
-              // recheck it at finalization even when W validly returned no
-              // evidence. Checking only the final source map would let a later
-              // company disablement finalize an empty requested-web answer.
-              if (load.webRequested || row.webSourceCount > 0) {
-                if (row.acceptedWebPolicy === null) {
-                  return { authorized: false as const, code: "web_policy_revoked" as const };
-                }
-                let accepted: EffectiveWebPolicy;
-                try {
-                  accepted = EffectiveWebPolicySchema.parse(row.acceptedWebPolicy);
-                } catch {
-                  return { authorized: false as const, code: "web_policy_revoked" as const };
-                }
-                const current = currentEffectiveWebPolicy(
-                  row.webEnabled === true,
-                  row.webAllowedDomains ?? null,
+              if (source.locator.kind === "memory") {
+                return (
+                  scope.memoryMode === "private_owner" &&
+                  scope.memoryRevisionIds.includes(source.locator.memoryRevisionId)
                 );
-                try {
-                  recheckWebPolicy(accepted, current);
-                } catch {
-                  return { authorized: false as const, code: "web_policy_revoked" as const };
-                }
               }
-              return { authorized: true as const };
-            }),
+              if (source.locator.kind === "web") return scope.webEnabled;
+              return true;
+            });
+            if (!scope.webRequested && sourceMap.some((source) => source.locator.kind === "web")) {
+              return { authorized: false as const, code: "finalization_failed" as const };
+            }
+            if (
+              sourceAllowed.length !== sourceMap.length ||
+              sourceAllowed.some((allowed) => !allowed)
+            ) {
+              return { authorized: false as const, code: "finalization_failed" as const };
+            }
+            return { authorized: true as const };
+          }),
       }),
     );
   }
