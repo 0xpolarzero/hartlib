@@ -676,18 +676,34 @@ authorizes code to take an arbitrary leading slice.
 
 ## B: Memory Selector
 
-B selects memories for relevance on every `private_owner` memory-mode path where active memories exist, even when every memory would fit. Its purpose is to keep irrelevant personal context away from the answer model, not merely to handle overflow. B's persisted selector output is a strict union: `{status:"disabled",reason:"memory_mode_disabled"}` when the chat's memory mode is `disabled`, or `{status:"enabled",entries:MemoryReference[]}` (including an empty `entries` array) when selection is enabled. Saved memories are user-private, so B returns typed `disabled` without a model call when the chat's memory mode is `disabled`; such an answer can never reveal or cite one participant's private memory.
+B selects memories for relevance on every `private_owner` memory-mode path where
+the acceptance scope contains eligible revisions, even when every memory would
+fit. Its purpose is to keep irrelevant personal context away from the answer
+model, not merely to handle overflow. B's persisted selector output is a strict
+union: `{status:"disabled",reason:"memory_mode_disabled"}` when the chat's
+memory mode is `disabled`, or `{status:"enabled",entries:MemoryReference[]}`
+(including an empty `entries` array) when selection is enabled. Saved memories
+are user-private, so B returns typed `disabled` without a model call when the
+chat's memory mode is `disabled`; such an answer can never reveal or cite one
+participant's private memory.
 
 A chat's memory mode is fixed as `private_owner` or `disabled` before its first accepted turn and is immutable afterward. A chat can be promoted to shared only when its mode has always been `disabled`; a `private_owner` chat, including one with memory-grounded history, cannot be shared. The demo's canonical chat uses `private_owner`; the schema permits additional chats for the same user without weakening those per-chat memory rules. This prevents later sharing from exposing an old memory-grounded answer.
 
 B receives the retrieval or topic question and uses a bounded `search_memories` /
-`inspect_memory` / `emit_memory_manifest` tool loop over current active
-revisions read and authorized by Brief code. It never receives a preloaded
-memory inventory. There is no code-generated semantic shortlist: queries and
-final selection remain B's decisions, search responses report truncation and
-cursors explicitly, and every tool result is exact-token bounded.
+`inspect_memory` / `emit_memory_manifest` tool loop over the exact memory
+revision IDs captured in the immutable acceptance scope. Brief code reads those
+immutable revisions and validates their owner, scope, and integrity; it never
+re-reads a current memory head or active-memory setting to authorize the
+accepted run. B never receives a preloaded memory inventory. There is no
+code-generated semantic shortlist: queries and final selection remain B's
+decisions, search responses report truncation and cursors explicitly, and every
+tool result is exact-token bounded.
 
-B emits an ordered list of `{ memoryId, memoryRevisionId }` pairs and may select none. Code rejects invented, foreign, deleted, stale-revision, or duplicate references.
+B emits an ordered list of `{ memoryId, memoryRevisionId }` pairs and may select
+none. Code rejects invented, foreign, or duplicate references. A captured
+revision remains eligible when a later edit, deletion, or new head changes the
+current memory state; a missing, purged, or corrupted captured revision fails
+closed as an integrity error.
 
 B does not create, update, or summarize memories. Extraction and writes belong to the parallel memory lane.
 

@@ -231,7 +231,7 @@ The platform sends the configured AI provider only the role-specific context req
 
 - plan-turn receives the current message and a bounded live read of recent complete user/assistant turns or terminal failed user-only turns; failed drafts are never included.
 - A receives the resolved/topic question and authorized internal search previews or inspected ranges through Brief tools.
-- B receives the resolved/topic question and bounded results from its authorized search/inspect tool loop over the current active set; code does not create a semantic shortlist.
+- B receives the resolved/topic question and bounded results from its authorized search/inspect tool loop over the exact memory revisions captured in the immutable acceptance scope; code does not create a semantic shortlist or reauthorize against the current memory head.
 - W receives the resolved/topic question and search/fetch results from allowed web domains.
 - O receives compact candidate metadata and only the candidate content it explicitly inspects through Brief tools.
 - direct/topic answer agents receive only their exact fitted prompt.
