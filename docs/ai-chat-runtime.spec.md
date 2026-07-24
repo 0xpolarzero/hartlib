@@ -1234,12 +1234,13 @@ Memory selection for an answer and memory extraction from the current message ar
 `memory-extract` receives only:
 
 - the current user-authored message
-- access to the initiating user's current active-memory search and inspection boundary, for exact deduplication and update targeting
+- access to the initiating user's saved memory-revision IDs and immutable revision content through the memory search and inspection boundary, for exact deduplication and update targeting
 
-The extractor reads current active revisions through the same authorization-safe
-`search_memories` and `inspect_memory` boundary. It never receives assistant
-text, retrieved documents, web content, topic packets, or non-memory tool
-output.
+The extractor reads only the acceptance-saved revisions through the same
+authorization-safe `search_memories` and `inspect_memory` boundary. It never
+uses a current active-memory head or setting to choose, deduplicate, or target
+a proposal, and it never receives assistant text, retrieved documents, web
+content, topic packets, or non-memory tool output.
 
 The forced structured output is:
 
@@ -1961,7 +1962,7 @@ Pure tests cover:
 
 - plan-turn strict union validation, first-turn invocation, prior-turn selection, and fanout normalization
 - internal query compilation and authorization injection
-- B ownership and active-memory validation
+- B ownership and saved memory-revision scope validation
 - W allowlist enforcement and quote provenance
 - deterministic deduplication, source-key assignment, and render order
 - exact provider-shaped counting for every fast/main call, tool schema, and accumulated transcript
@@ -1972,14 +1973,14 @@ Pure tests cover:
 - citation parsing and synthesis key preservation
 - memory normalization, zero-to-many proposal validation, deduplication, update ownership, and revisions
 - stream emission-key idempotency, replay, and answer-attempt reset behavior
-- open-stream closure on user/company/chat deletion or selected-source revocation before later events
+- open-stream replay plus proof that later ordinary membership, source, or policy changes do not alter an accepted run; exceptional account, purge, legal, and identity denials remain covered
 
 Postgres integration tests cover:
 
 - transactional message/run/job creation and the one-active-run indexes per chat and initiating user
 - same-chat older-message search and deleted-message exclusion
 - source authorization at search and hydration time
-- final-context and finalization-time authorization revocation handling
+- final-context and finalization integrity handling, including later ordinary authorization changes that must not reject an accepted run
 - idempotent source exposures, observations, usage, finalization, and memory writes
 - idempotent web search/fetch operation accounting including empty and failed calls
 - immutable memory-revision source provenance when parallel extraction updates the same memory

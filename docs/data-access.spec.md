@@ -236,11 +236,11 @@ The platform sends the configured AI provider only the role-specific context req
 - O receives compact candidate metadata and only the candidate content it explicitly inspects through Brief tools.
 - direct/topic answer agents receive only their exact fitted prompt.
 - synthesis receives bounded topic claim packets and source keys, not the original full documents.
-- memory extraction receives only the current user message and bounded results from its authorized memory search/inspect tools.
+- memory extraction receives only the current user message and bounded results from its authorized search/inspect tools over the exact memory revision IDs captured in the immutable acceptance scope; it does not read the current memory head or active-memory setting.
 
-The main answer, topic-answer, and synthesis agents have no retrieval tools. Brief validates the saved acceptance scope before every internal fetch and validates exact evidence identities before final serialization.
+The main answer, topic-answer, and synthesis agents have no retrieval tools. Brief validates the saved acceptance scope before every internal fetch and validates exact immutable evidence identities before final serialization.
 
-The chat turn keeps current authorized internal search scope in Brief code. No
+The chat turn keeps the saved authorized internal search scope in Brief code. No
 broad source list enters provider input. A model-visible document reference
 contains only `documentId`. For public evidence, code binds it to the exact
 public document row, immutable version identity, lowercase content hash, source
@@ -253,17 +253,20 @@ content-bearing document preview, including a search preview, carries the
 complete source namespace, document ID, immutable version, exact text hash,
 and normalized ranges.
 The server creates one random per-answer `citationNamespace` at request
-acceptance. It scopes local citation handles only; exact evidence identity and
-current access still validate every claim.
+acceptance. It scopes local citation handles only; the saved scope and exact
+immutable evidence identity validate every claim.
 
 Brief validates the saved user, company, membership and grant identities, chat scope,
-source enablement, publisher subscription and issue state, document version,
-memory owner and revision, accepted web policy, and domain allowlist
+source IDs, publisher subscription and issue identities, document versions,
+memory revision IDs, accepted web state, provider contract, and domain allowlist
 immediately before every content-bearing provider request and each content
-exposure. A current denial fails closed even when an earlier read allowed the
-source. Finalization validates the complete final evidence set inside one save
-transaction before applying memory proposals, usage, source maps, messages, and
-the terminal event, while holding the canonical locks in the documented order.
+exposure. These are saved-scope and exact-integrity checks, not reads of current
+membership, grant, source, subscription, memory, or web-policy state. Later
+ordinary changes affect later accepted runs only; account deletion, purge, legal
+restriction, and exact identity mismatch remain explicit exceptional denies.
+Finalization validates the complete final evidence set inside one save transaction
+before applying memory proposals, usage, source maps, messages, and the terminal
+event, while holding the canonical locks in the documented order.
 
 Web search/fetch services receive the minimum query and URL data required for the requested web path. Company domain allowlists are enforced before a request leaves Brief. Selected web quotations and provenance are stored with the chat; full fetched pages remain transient unless they are already canonical platform content under another ingestion contract. Web research is disabled in any deployment that has no approved `WebResearchService` adapter.
 
