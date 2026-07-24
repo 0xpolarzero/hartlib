@@ -13626,6 +13626,10 @@ alter table ai_runs
       (acceptance_scope->>'webEnabled')::boolean
       or acceptance_scope->'allowedDomains' = 'null'::jsonb
     )
+    and (
+      (acceptance_scope->>'webRequested')::boolean
+      or not (acceptance_scope->>'webEnabled')::boolean
+    )
   );
 
 create or replace function brief_ai_scope_array_canonical(p_scope jsonb, p_key text)
