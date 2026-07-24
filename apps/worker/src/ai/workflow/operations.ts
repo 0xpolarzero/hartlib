@@ -3,7 +3,10 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   isCanonicalPublicDocumentSourceId,
   isCanonicalPublisherDocumentSourceId,
+  parseRunAcceptanceScope,
+  type AiProviderServiceId,
   type PublicContextConsumer,
+  type RunAcceptanceScope,
 } from "@brief/shared";
 import { PgClient } from "@effect/sql-pg";
 import { Effect } from "effect";
@@ -128,7 +131,7 @@ export type CanonicalAiConfig = Pick<
   | "aiContextReductionMaxIterations"
   | "aiMemoryToolResultMaxItems"
   | "webResearchProvider"
->;
+> & { readonly providerServiceId?: AiProviderServiceId };
 
 export interface WebSearchResult {
   readonly url: string;
@@ -508,28 +511,6 @@ interface LoadRow {
   readonly webRequested: boolean;
   readonly acceptanceScope: unknown;
 }
-
-const AcceptanceScopeSchema = z
-  .object({
-    userId: z.string().min(1),
-    chatId: z.string().uuid(),
-    companyId: z.string().uuid(),
-    subscriptionIds: z.array(z.string().uuid()),
-    accessIds: z.array(z.string().uuid()),
-    publicSourceIds: z.array(z.string().min(1)),
-    memoryMode: z.enum(["private_owner", "disabled"]),
-    memoryRevisionIds: z.array(z.string().uuid()),
-    webRequested: z.boolean(),
-    webEnabled: z.boolean(),
-    provider: z.literal("zai_coding_plan_official"),
-    fastModelId: z.literal("glm-5-turbo"),
-    mainModelId: z.literal("glm-5-turbo"),
-    webTransportProvider: z.literal("tinyfish").nullable(),
-    allowedDomains: z.array(z.string().min(1)).nullable(),
-  })
-  .strict();
-
-export type RunAcceptanceScope = z.infer<typeof AcceptanceScopeSchema>;
 
 interface ConversationRow {
   readonly turnId: string;
@@ -1189,13 +1170,17 @@ const immutableSourceIdentity = (source: FinalSourceRecord): string => {
 };
 
 export class CanonicalWorkflowOperations {
+  private readonly providerServiceId: AiProviderServiceId;
+
   constructor(
     private readonly connectionString: string,
     private readonly config: CanonicalAiConfig,
     private readonly agents: CanonicalAgentClient,
     private readonly web?: WebResearchBoundary | undefined,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.providerServiceId = config.providerServiceId ?? "zai_coding_plan_official";
+  }
 
   private db<A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
     return this.dbWithSignal(effect, currentTaskAbortSignal());
@@ -1422,7 +1407,10 @@ export class CanonicalWorkflowOperations {
     readonly sourceAllowed: readonly boolean[];
     readonly webPolicyAllowed: boolean;
   }> {
-    const scope = AcceptanceScopeSchema.parse(load.acceptanceScope);
+    const scope = parseRunAcceptanceScope(load.acceptanceScope);
+    if (scope.provider !== this.providerServiceId) {
+      throw new Error("ai run acceptance scope provider differs from worker provider");
+    }
     const sourceAllowed = sourceMap.map((source) => {
       if (source.locator.kind === "document") {
         const sourceId = source.locator.sourceId;
@@ -1443,6 +1431,32 @@ export class CanonicalWorkflowOperations {
     if (scope.userId !== load.initiatingUserId || scope.chatId !== load.chatId) {
       throw new Error("ai run acceptance scope identity mismatch");
     }
+    const tenantAvailable = await this.db(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{ readonly available: boolean }>`
+          select exists(
+            select 1
+            from ai_runs runs
+            join chats chat on chat.id = runs.chat_id
+            join client_companies company on company.id = chat.company_id
+            join platform_users users on users.id = runs.initiating_user_id
+            where runs.id = ${load.aiRunId}
+              and runs.chat_id = ${load.chatId}
+              and runs.initiating_user_id = ${load.initiatingUserId}
+              and chat.user_id = ${load.initiatingUserId}
+              and chat.deleted_at is null
+              and company.id = ${scope.companyId}::uuid
+              and company.recovery_deleted_at is null
+              and company.purged_at is null
+              and users.recovery_deleted_at is null
+              and users.purged_at is null
+          ) as available
+        `;
+        return rows[0]?.available === true;
+      }),
+    );
+    if (!tenantAvailable) throw controlledRuntimeFailure("context_assembly_failed");
     return {
       baseAllowed: true,
       sourceAllowed,
@@ -1451,6 +1465,7 @@ export class CanonicalWorkflowOperations {
   }
 
   async loadTurn(aiRunId: string): Promise<LoadedTurn> {
+    const expectedProviderServiceId = this.providerServiceId;
     return this.db(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -1494,13 +1509,18 @@ export class CanonicalWorkflowOperations {
             if (run === undefined) {
               return yield* Effect.fail(new Error(`ai run not found: ${aiRunId}`));
             }
-            const acceptanceScope = AcceptanceScopeSchema.parse(run.acceptanceScope);
+            const acceptanceScope = parseRunAcceptanceScope(run.acceptanceScope);
             if (
               acceptanceScope.userId !== run.initiatingUserId ||
               acceptanceScope.chatId !== run.chatId ||
               acceptanceScope.companyId !== run.companyId
             ) {
               return yield* Effect.fail(new Error("ai run acceptance scope identity mismatch"));
+            }
+            if (acceptanceScope.provider !== expectedProviderServiceId) {
+              return yield* Effect.fail(
+                new Error("ai run acceptance scope provider differs from worker provider"),
+              );
             }
             yield* appendAiRunEventInTransaction({
               runId: aiRunId,
@@ -2138,11 +2158,7 @@ export class CanonicalWorkflowOperations {
     for (const reference of references) {
       if (
         reference.kind === "document" &&
-        !allowed.has(
-          reference.source.kind === "public"
-            ? `public:${reference.source.sourceId}`
-            : `publisher:${reference.source.sourceId}`,
-        )
+        !allowed.has(reference.source.sourceId)
       ) {
         throw controlledRuntimeFailure("context_assembly_failed");
       }
@@ -2297,7 +2313,15 @@ export class CanonicalWorkflowOperations {
         failureCode: "context_budget_mismatch",
       };
     }
-    const authorization = await this.validateSavedScope(load, context.sourceMap);
+    let authorization: Awaited<ReturnType<CanonicalWorkflowOperations["validateSavedScope"]>>;
+    try {
+      authorization = await this.validateSavedScope(load, context.sourceMap);
+    } catch (error) {
+      if (isAiRuntimeError(error)) {
+        return { ...context, status: "failed", failureCode: "context_plan_unfit" };
+      }
+      throw error;
+    }
     if (
       !authorization.baseAllowed ||
       !authorization.webPolicyAllowed ||
@@ -3283,6 +3307,10 @@ export class CanonicalWorkflowOperations {
                    websearch_to_tsquery(language_to_regconfig(versions.language), ${query.terms ?? ""})
                  ) else 0 end::float8 as score
           from issue_deliveries deliveries
+          join issue_delivery_recipients recipients
+            on recipients.issue_id = deliveries.issue_id
+           and recipients.client_company_id = deliveries.client_company_id
+           and recipients.user_id = ${load.initiatingUserId}
           join publisher_issues issues
             on issues.id = deliveries.issue_id
            and issues.status = 'published'
@@ -3627,6 +3655,10 @@ export class CanonicalWorkflowOperations {
                  documents.id::text as "publisherDocumentId",
                  versions.publisher_extraction_id::text as "publisherExtractionId"
           from issue_deliveries deliveries
+          join issue_delivery_recipients recipients
+            on recipients.issue_id = deliveries.issue_id
+           and recipients.client_company_id = deliveries.client_company_id
+           and recipients.user_id = ${load.initiatingUserId}
           join publisher_issues issues
             on issues.id = deliveries.issue_id
            and issues.status = 'published'
@@ -4620,6 +4652,10 @@ export class CanonicalWorkflowOperations {
                      issues.title as "issueTitle",
                      issues.published_at as "publishedAt"
               from issue_deliveries deliveries
+              join issue_delivery_recipients recipients
+                on recipients.issue_id = deliveries.issue_id
+               and recipients.client_company_id = deliveries.client_company_id
+               and recipients.user_id = ${load.initiatingUserId}
               join publisher_issues issues
                 on issues.id = deliveries.issue_id
                and issues.status = 'published'
@@ -6392,13 +6428,34 @@ export class CanonicalWorkflowOperations {
                 and failed_at is null
               for update
             `;
-            const scope = AcceptanceScopeSchema.parse(rows[0]?.scope);
+            const scope = parseRunAcceptanceScope(rows[0]?.scope);
             if (
               scope.userId !== initiatingUserId ||
               scope.chatId !== chatId ||
               scope.userId !== load.initiatingUserId ||
               scope.chatId !== load.chatId
             ) {
+              return { authorized: false as const, code: "finalization_failed" as const };
+            }
+            const available = yield* sql<{ readonly available: boolean }>`
+              select exists(
+                select 1
+                from ai_runs runs
+                join chats chat on chat.id = runs.chat_id
+                join client_companies company on company.id = chat.company_id
+                join platform_users users on users.id = runs.initiating_user_id
+                where runs.id = ${runId}
+                  and runs.chat_id = ${chatId}
+                  and runs.initiating_user_id = ${initiatingUserId}
+                  and chat.user_id = ${initiatingUserId}
+                  and company.id = ${scope.companyId}::uuid
+                  and company.recovery_deleted_at is null
+                  and company.purged_at is null
+                  and users.recovery_deleted_at is null
+                  and users.purged_at is null
+              ) as available
+            `;
+            if (available[0]?.available !== true) {
               return { authorized: false as const, code: "finalization_failed" as const };
             }
             const sourceAllowed = sourceMap.map((source) => {

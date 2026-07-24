@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { makeRunAcceptanceScope } from "@brief/shared";
 
 import { runMigrations } from "./migrate";
 
@@ -153,47 +154,6 @@ const provisionClientUser = (userId: string) =>
     `;
     return companyId;
   });
-
-type TestAcceptanceScope = {
-  readonly userId: string;
-  readonly chatId: string;
-  readonly companyId: string;
-  readonly subscriptionIds: readonly string[];
-  readonly accessIds: readonly string[];
-  readonly publicSourceIds: readonly string[];
-  readonly memoryMode: "private_owner" | "disabled";
-  readonly memoryRevisionIds: readonly string[];
-  readonly webRequested: boolean;
-  readonly webEnabled: boolean;
-  readonly provider: "zai_coding_plan_official";
-  readonly fastModelId: "glm-5-turbo";
-  readonly mainModelId: "glm-5-turbo";
-  readonly webTransportProvider: "tinyfish" | null;
-  readonly allowedDomains: readonly string[] | null;
-};
-
-const testAcceptanceScope = (args: {
-  readonly userId: string;
-  readonly chatId: string;
-  readonly companyId: string;
-  readonly memoryMode?: "private_owner" | "disabled";
-}): TestAcceptanceScope => ({
-  userId: args.userId,
-  chatId: args.chatId,
-  companyId: args.companyId,
-  subscriptionIds: [],
-  accessIds: [],
-  publicSourceIds: [],
-  memoryMode: args.memoryMode ?? "disabled",
-  memoryRevisionIds: [],
-  webRequested: false,
-  webEnabled: false,
-  provider: "zai_coding_plan_official",
-  fastModelId: "glm-5-turbo",
-  mainModelId: "glm-5-turbo",
-  webTransportProvider: null,
-  allowedDomains: null,
-});
 
 function applyMigrationsThrough(lastMigration: string) {
   return Effect.gen(function* () {
@@ -684,7 +644,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     const messageId = crypto.randomUUID();
     const runId = crypto.randomUUID();
     const otherChatId = crypto.randomUUID();
-    const scope = testAcceptanceScope({ userId, chatId, companyId });
+    const scope = makeRunAcceptanceScope({ userId, chatId, companyId, memoryMode: "disabled" });
 
     const result = await runDb(
       isolatedDatabaseUrl(),
@@ -732,8 +692,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           `),
         ]);
         yield* sql`
-          insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)
-          values (${runId}, ${chatId}, ${messageId}, 'en-US', 'US', ${sql.json(scope)})
+          insert into ai_runs (id, chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope)
+          values (${runId}, ${chatId}, ${userId}, ${messageId}, 'en-US', 'US', ${sql.json(scope)})
         `;
         yield* sql`
           update client_company_ai_settings
@@ -879,7 +839,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 acceptance_scope, citation_nonce, effective_web_policy, failed_at, error_code, retryable
               ) values (
                 ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
-                ${sql.json(testAcceptanceScope({ userId: ids.user, chatId: ids.chat, companyId: ids.company }))},
+                ${sql.json(makeRunAcceptanceScope({ userId: ids.user, chatId: ids.chat, companyId: ids.company }))},
                 decode(${nonce.toString("base64")}, 'base64'),
                 ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
                 now(), 'failed_fixture', true
@@ -1749,7 +1709,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 acceptance_scope, citation_nonce, effective_web_policy, finished_at
               ) values (
                 ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
-                ${sql.json(testAcceptanceScope({ userId: ids.user, chatId: ids.chat, companyId: ids.company }))},
+                ${sql.json(makeRunAcceptanceScope({ userId: ids.user, chatId: ids.chat, companyId: ids.company }))},
                 decode(${nonce.toString("base64")}, 'base64'),
                 ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
                 now()
@@ -3090,7 +3050,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               ${upgradeRunId}, ${upgradeChatId}, ${upgradeUserId}, ${upgradeUserMessageId},
               'en-US', 'US',
               ${sql.json(
-                testAcceptanceScope({
+                makeRunAcceptanceScope({
                   userId: upgradeUserId,
                   chatId: upgradeChatId,
                   companyId: upgradeCompanyId,
@@ -5034,7 +4994,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             ) values (
               ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
               ${sql.json(
-                testAcceptanceScope({
+                makeRunAcceptanceScope({
                   userId: ids.user,
                   chatId: ids.chat,
                   companyId: ids.company,
@@ -10336,18 +10296,20 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             on conflict (id) do nothing
           `;
         yield* sql`
-            insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)
+            insert into ai_runs (id, chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope)
             values (
               'bbbbbbbb-0000-0000-0000-000000000003',
               'bbbbbbbb-0000-0000-0000-000000000001',
+              ${userId},
               'bbbbbbbb-0000-0000-0000-000000000002',
               'fr-FR',
               'FR',
               ${sql.json(
-                testAcceptanceScope({
+                makeRunAcceptanceScope({
                   userId,
                   chatId: "bbbbbbbb-0000-0000-0000-000000000001",
                   companyId,
+                  memoryMode: "disabled",
                 }),
               )}
             )
@@ -10355,18 +10317,20 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           `;
 
         const failure = yield* Effect.flip(sql`
-            insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)
+            insert into ai_runs (id, chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope)
             values (
               'bbbbbbbb-0000-0000-0000-000000000004',
               'bbbbbbbb-0000-0000-0000-000000000001',
+              ${userId},
               'bbbbbbbb-0000-0000-0000-000000000005',
               'fr-FR',
               'FR',
               ${sql.json(
-                testAcceptanceScope({
+                makeRunAcceptanceScope({
                   userId,
                   chatId: "bbbbbbbb-0000-0000-0000-000000000001",
                   companyId,
+                  memoryMode: "disabled",
                 }),
               )}
             )
@@ -10378,18 +10342,20 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             where id = 'bbbbbbbb-0000-0000-0000-000000000003'
           `;
         yield* sql`
-            insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)
+            insert into ai_runs (id, chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope)
             values (
               'bbbbbbbb-0000-0000-0000-000000000004',
               'bbbbbbbb-0000-0000-0000-000000000001',
+              ${userId},
               'bbbbbbbb-0000-0000-0000-000000000005',
               'fr-FR',
               'FR',
               ${sql.json(
-                testAcceptanceScope({
+                makeRunAcceptanceScope({
                   userId,
                   chatId: "bbbbbbbb-0000-0000-0000-000000000001",
                   companyId,
+                  memoryMode: "disabled",
                 }),
               )}
             )
@@ -10452,10 +10418,11 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           values (
             ${firstChatId}, ${initiatingUserId}, ${firstMessageId}, 'en-US', 'US',
             ${sql.json(
-              testAcceptanceScope({
+                makeRunAcceptanceScope({
                 userId: initiatingUserId,
                 chatId: firstChatId,
                 companyId: initiatingCompanyId,
+                memoryMode: "disabled",
               }),
             )}
           )
@@ -10468,10 +10435,11 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           values (
             ${secondChatId}, ${initiatingUserId}, ${secondMessageId}, 'en-US', 'US',
             ${sql.json(
-              testAcceptanceScope({
+                makeRunAcceptanceScope({
                 userId: initiatingUserId,
                 chatId: secondChatId,
                 companyId: otherCompanyId,
+                memoryMode: "disabled",
               }),
             )}
           )
@@ -10488,10 +10456,11 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           values (
             ${secondChatId}, ${initiatingUserId}, ${secondMessageId}, 'en-US', 'US',
             ${sql.json(
-              testAcceptanceScope({
+              makeRunAcceptanceScope({
                 userId: initiatingUserId,
                 chatId: secondChatId,
                 companyId: otherCompanyId,
+                memoryMode: "disabled",
               }),
             )}
           )
@@ -10584,17 +10553,19 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           values ('dddddddd-0000-0000-0000-000000000002', 'dddddddd-0000-0000-0000-000000000001', 'user', 'Memory revision cascade test')
         `;
           yield* sql`
-          insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope, finished_at)
+          insert into ai_runs (id, chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope, finished_at)
           values (
             'dddddddd-0000-0000-0000-000000000003',
             'dddddddd-0000-0000-0000-000000000001',
+            ${userId},
             'dddddddd-0000-0000-0000-000000000002',
             'fr-FR', 'FR',
             ${sql.json(
-              testAcceptanceScope({
+              makeRunAcceptanceScope({
                 userId,
                 chatId: "dddddddd-0000-0000-0000-000000000001",
                 companyId,
+                memoryMode: "disabled",
               }),
             )},
             now()
@@ -11749,26 +11720,28 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           `;
           yield* sql`
             insert into ai_runs (
-              id, chat_id, user_message_id, locale, market, acceptance_scope, finished_at
+              id, chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope, finished_at
             )
             values
               (
-                ${evaluationRunId}, ${evaluationChatId}, ${evaluationMessageId}, 'en-US', 'US',
+                ${evaluationRunId}, ${evaluationChatId}, ${evaluationUserId}, ${evaluationMessageId}, 'en-US', 'US',
                 ${sql.json(
-                  testAcceptanceScope({
+                  makeRunAcceptanceScope({
                     userId: evaluationUserId,
                     chatId: evaluationChatId,
                     companyId: evaluationCompanyId,
+                    memoryMode: "disabled",
                   }),
                 )}, now()
               ),
               (
-                ${ordinaryRunId}, ${ordinaryChatId}, ${ordinaryMessageId}, 'en-US', 'US',
+                ${ordinaryRunId}, ${ordinaryChatId}, ${ordinaryUserId}, ${ordinaryMessageId}, 'en-US', 'US',
                 ${sql.json(
-                  testAcceptanceScope({
+                  makeRunAcceptanceScope({
                     userId: ordinaryUserId,
                     chatId: ordinaryChatId,
                     companyId: ordinaryCompanyId,
+                    memoryMode: "disabled",
                   }),
                 )}, now()
               )

@@ -435,6 +435,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
             authMode: "clerk",
             webResearchProvider: null,
             aiWebMaxDomainFilters: 10,
+            aiProviderServiceId: "zai_coding_plan_official",
           },
           "org_publisher",
           fixture.ownerPrivateChatId,

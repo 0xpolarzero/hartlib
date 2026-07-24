@@ -138,20 +138,6 @@ export const listUserMemories = (userId: string) =>
     );
   });
 
-const findActiveRun = (userId: string) =>
-  Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
-    const rows = yield* sql<ActiveRunRow>`
-      select id::text
-      from ai_runs
-      where initiating_user_id = ${userId}
-        and finished_at is null and failed_at is null
-      order by created_at
-      limit 1
-    `;
-    return rows[0] ?? null;
-  });
-
 const readUserMemoryWithRevisionsQuery = (userId: string, memoryId: string, forUpdate: boolean) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
@@ -189,12 +175,6 @@ export const readUserMemoryWithRevisions = (userId: string, memoryId: string, fo
     );
   });
 
-const mutationGuard = (userId: string) =>
-  Effect.gen(function* () {
-    yield* lockUserMemoryLease(userId);
-    return yield* findActiveRun(userId);
-  });
-
 export type MemoryMutationResult =
   | { readonly status: "ok"; readonly memory: MemoryRecord }
   | { readonly status: "not_found" }
@@ -214,8 +194,7 @@ export const revertUserMemory = (userId: string, memoryId: string, revisionId: s
     const sql = yield* PgClient.PgClient;
     return yield* sql.withTransaction(
       Effect.gen(function* () {
-        const active = yield* mutationGuard(userId);
-        if (active !== null) return { status: "active_run", runId: active.id } as const;
+        yield* lockUserMemoryLease(userId);
         const loaded = yield* readUserMemoryWithRevisions(userId, memoryId, true);
         if (loaded === null) return { status: "not_found" } as const;
         const { memory, revisions } = loaded;
@@ -267,8 +246,7 @@ export const deleteUserMemory = (userId: string, memoryId: string) =>
     const sql = yield* PgClient.PgClient;
     return yield* sql.withTransaction(
       Effect.gen(function* () {
-        const active = yield* mutationGuard(userId);
-        if (active !== null) return { status: "active_run", runId: active.id } as const;
+        yield* lockUserMemoryLease(userId);
         const loaded = yield* readUserMemoryWithRevisions(userId, memoryId, true);
         if (loaded === null || loaded.memory.provenance_only_at !== null) {
           return { status: "not_found" } as const;

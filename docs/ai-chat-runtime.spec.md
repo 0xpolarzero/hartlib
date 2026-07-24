@@ -1284,7 +1284,7 @@ Finalization reparses the artifact, recomputes its digest, and requires the exac
 
 Finalization applies proposals transactionally under a user-scoped memory lock. Every create, update, user deletion, and revert appends `user_memory_revisions`; ordinary product operations never rewrite history. A create revision has a null prior revision and null `state_before`; an update names the exact snapshotted head revision and carries its exact typed `state_before`. In both cases `state_after` must equal the resulting live head, including kind, content, deletion flag, source-message/run provenance, and head revision. The extractor can propose creates and updates only. After the user's 30-day deletion window, the retention GC may delete unreferenced revisions and redact non-provenance fields from referenced revisions as specified below. The active-memory exact-deduplication key is database-enforced per user, kind, and trimmed content, so retries or concurrent product operations cannot create duplicates.
 
-AI run acceptance enforces one active run both per chat and per initiating user. This serializes the user-global memory lane across that user's chats, while the per-chat guard still serializes shared conversation order. Manual memory mutation uses the same user-scoped lock and is rejected while that user has an active run. Finalization validates each target's expected head revision before applying it; an impossible stale target fails `memory_conflict` rather than overwriting newer content.
+AI run acceptance enforces one active run both per chat and per initiating user. This serializes the user-global memory lane across that user's chats, while the per-chat guard still serializes shared conversation order. Manual memory mutation uses the same user-scoped lock, so it waits for acceptance to linearize and then may proceed without changing the saved run scope. Finalization validates each target's expected head revision before applying it; an impossible stale target fails `memory_conflict` rather than overwriting newer content.
 
 Memory extraction has finite retries and no `continueOnFail`. A permanent extraction failure means the turn cannot emit `done`. This prevents a following accepted message from racing ahead of the prior turn's memory state.
 
@@ -1742,7 +1742,7 @@ Each assistant message has:
 
 The browser recognizes a publisher-document citation only when it is the exact relative `/v1/issues/{issueId}/documents/{documentId}/content` route. It resolves that route against the configured API origin through the same authenticated transport as other product API calls, follows the short-lived signed redirect with request and response `Referrer-Policy: no-referrer`, and accepts only a non-empty `application/pdf` response. The cross-origin signed-object requests never receive the Clerk `Authorization` header. The pending tab establishes its own `no-referrer` policy and detaches its opener before navigation. A redirected response opens the validated final signed URL; a short-lived, revoked local object URL is used only if the route contract explicitly permits and returns a direct PDF response. The canonical publisher route currently declares redirect-only success, so an unexpected direct response fails closed. Public-document and web citations remain ordinary canonical links. A blocked popup, authorization failure, unsafe redirect, invalid media type, or fetch failure closes the pending tab and renders a localized error.
 
-The memories panel lists active and user-deleted memories with append-only revisions and supports explicit delete and compensating revert actions. Model extraction is create/update-only; it cannot delete a memory. Delete and revert use the same user-scoped memory lock as AI finalization and return `409` while that user has an active AI run.
+The memories panel lists active and user-deleted memories with append-only revisions and supports explicit delete and compensating revert actions. Model extraction is create/update-only; it cannot delete a memory. Delete and revert use the same user-scoped memory lock as AI finalization and wait for acceptance or finalization to release it; they do not change an already accepted run's scope.
 
 All web, source-kind, clarification, context-failure, memory-failure, memory tombstone/revert, provisional-draft, and unsaved-turn chrome is localized in both catalogs.
 
@@ -1944,7 +1944,7 @@ If a user-visible model attempt fails retryably after emitting deltas, the next 
 
 Memory extraction failure prevents `done`. A successful memory extraction is applied even when the answer lane returns a controlled failure.
 
-A stale memory update target after user-scoped locking fails `memory_conflict`; it never overwrites the newer head revision. The per-user active-run guard makes this exceptional rather than an ordinary next-message race.
+A stale memory update target after user-scoped locking fails `memory_conflict`; it never overwrites the newer head revision. The acceptance lock makes the scope choice atomic, while later memory changes remain an ordinary next-message race handled by the snapshotted revision checks.
 
 A worker crash requeues the job after the stale heartbeat, resumes the same
 final-schema Smithers run, and continues from completed final-schema task

@@ -6,6 +6,7 @@ import {
   canonicalPublicSourceHttpsUrl,
   isCanonicalPublicDocumentSourceId,
   isCanonicalPublisherDocumentSourceId,
+  parseRunAcceptanceScope,
   publisherIssueAdvisoryLockKey,
 } from "@brief/shared";
 
@@ -25,7 +26,6 @@ import {
 import { PublicProvenanceSchema } from "../runtime/source-schemas";
 import {
   providerVisibleSourceExposureProofSha256Hex,
-  type ProviderVisibleSourceExposureProofBinding,
   type ProviderVisibleSourceExposureMarker,
 } from "../runtime/provider-request";
 import type {
@@ -42,6 +42,8 @@ import {
 } from "./memory";
 import {
   appendAggregateAiRunUsageInTransaction,
+  assertCanonicalDocumentExposureIdentity,
+  deriveAggregateAiRunUsage,
   insertAiObservation,
   type AggregateAiRunUsage,
 } from "./observability";
@@ -57,6 +59,7 @@ interface RunRow {
   readonly finishedAt: Date | null;
   readonly failedAt: Date | null;
   readonly citationNamespace: string;
+  readonly acceptanceScope: unknown;
 }
 
 /**
@@ -92,7 +95,7 @@ export type FinalizationAuthorizationResult =
   | { readonly authorized: true }
   | {
       readonly authorized: false;
-      readonly code: "source_access_revoked" | "web_policy_revoked";
+      readonly code: "finalization_failed";
     };
 
 export type FinalizationAuthorization = (input: {
@@ -120,6 +123,28 @@ const MemoryExtractionObservationPayloadSchema = z
     proposalCount: z.number().int().nonnegative(),
     discardedCount: z.number().int().nonnegative(),
     extractionSha256Hex: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+
+const MemoryApplicationObservationPayloadSchema = z
+  .object({
+    extractionTaskId: z.string().trim().min(1),
+    extractionLoopIteration: z.number().int().nonnegative(),
+    extractionAttempt: z.number().int().nonnegative(),
+    extractionObservationKey: z.string().trim().min(1),
+    extractionSha256Hex: z.string().regex(/^[a-f0-9]{64}$/),
+    proposalCount: z.number().int().nonnegative(),
+    discardedCount: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const MemoryWrittenObservationPayloadSchema = z
+  .object({
+    ordinal: z.number().int().nonnegative(),
+    memoryId: z.string().uuid(),
+    revisionId: z.string().uuid(),
+    previousRevisionId: z.string().uuid().nullable(),
+    action: z.enum(["create", "update"]),
   })
   .strict();
 
@@ -464,8 +489,57 @@ const RetrievalManifestSchema = z
   .object({
     selectorRole: z.enum(["internal", "memory", "web", "general_planner"]),
     references: z.array(RetrievalReferenceSchema),
+    noCallReason: z
+      .enum([
+        "memory_mode_disabled",
+        "no_active_memories",
+        "web_not_requested",
+        "web_policy_disabled",
+        "topic_not_web_eligible",
+      ])
+      .optional(),
+  })
+  .strict()
+  .superRefine((manifest, context) => {
+    if (manifest.noCallReason === undefined) return;
+    if (manifest.references.length !== 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["noCallReason"],
+        message: "a no-call retrieval manifest cannot carry references",
+      });
+    }
+    const expectedRole =
+      manifest.noCallReason === "memory_mode_disabled" ||
+      manifest.noCallReason === "no_active_memories"
+        ? "memory"
+        : "web";
+    if (manifest.selectorRole !== expectedRole) {
+      context.addIssue({
+        code: "custom",
+        path: ["noCallReason"],
+        message: "the no-call reason does not belong to this selector role",
+      });
+    }
+  });
+
+const RetrievalNoCallSealPayloadSchema = z
+  .object({
+    selectorTaskId: z.string().trim().min(1),
+    selectorLoopIteration: z.number().int().nonnegative(),
+    selectorAttempt: z.number().int().nonnegative(),
+    selectorObservationKey: z.string().trim().min(1),
+    noCallReason: z.enum([
+      "memory_mode_disabled",
+      "no_active_memories",
+      "web_not_requested",
+      "web_policy_disabled",
+      "topic_not_web_eligible",
+    ]),
   })
   .strict();
+
+type RetrievalNoCallReason = z.infer<typeof RetrievalNoCallSealPayloadSchema>["noCallReason"];
 
 const ProviderSerializationProofBindingSchema = z
   .object({
@@ -521,11 +595,14 @@ export type TerminalAiRunResult =
     };
 
 const validateDurableObservability = (
-  runId: string,
+  run: RunRow,
   answer: AnswerLaneResult,
+  finalizationCoordinates: FinalizeAiRunInput["coordinates"],
 ): Effect.Effect<void, SqlError | Error, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
+    const runId = run.id;
+    const acceptanceScope = parseRunAcceptanceScope(run.acceptanceScope);
     const observationRows = yield* sql<{
       readonly observationKey: string;
       readonly kind: string;
@@ -570,6 +647,7 @@ const validateDurableObservability = (
     const allowedObservationKinds = new Set([
       "turn_plan",
       "retrieval_manifest",
+      "retrieval_no_call_seal",
       "candidate_rejected",
       "provider_request_measurement",
       "source_exposure_attestation",
@@ -612,8 +690,7 @@ const validateDurableObservability = (
     if (
       terminalPlans.some(
         (plan) =>
-          (plan.emittingTask === "evaluation-general-planner") !==
-          isGeneralPlannerEvaluationRun,
+          (plan.emittingTask === "evaluation-general-planner") !== isGeneralPlannerEvaluationRun,
       )
     ) {
       return yield* Effect.fail(new Error("turn_plan owner does not match the run topology"));
@@ -684,6 +761,53 @@ const validateDurableObservability = (
     const retrievalRows = observationRows.filter(
       (observation) => observation.kind === "retrieval_manifest",
     );
+    const noCallSealRows = observationRows.filter(
+      (observation) => observation.kind === "retrieval_no_call_seal",
+    );
+    const noCallSealsBySelectorObservation = new Map<
+      string,
+      z.infer<typeof RetrievalNoCallSealPayloadSchema>
+    >();
+    for (const row of noCallSealRows) {
+      const parsed = RetrievalNoCallSealPayloadSchema.safeParse(row.payload);
+      const expectedObservationKey = parsed.success
+        ? [
+            "retrieval_no_call_seal",
+            parsed.data.selectorTaskId,
+            parsed.data.selectorLoopIteration,
+            parsed.data.selectorAttempt,
+          ].join(":")
+        : "";
+      if (
+        !parsed.success ||
+        row.emittingTask !== "finalize" ||
+        row.observationKey !== expectedObservationKey ||
+        parsed.data.selectorObservationKey !==
+          [
+            parsed.data.selectorTaskId,
+            parsed.data.selectorLoopIteration,
+            parsed.data.selectorAttempt,
+            "retrieval_manifest",
+            "result",
+          ].join(":") ||
+        noCallSealsBySelectorObservation.has(parsed.data.selectorObservationKey)
+      ) {
+        return yield* Effect.fail(new Error("retrieval no-call seal is not exact"));
+      }
+      noCallSealsBySelectorObservation.set(parsed.data.selectorObservationKey, parsed.data);
+    }
+    const terminalReplay = run.finishedAt !== null || run.failedAt !== null;
+    const historicalNoCallReasonsByTask = new Map<string, RetrievalNoCallReason>();
+    for (const seal of noCallSealsBySelectorObservation.values()) {
+      const previous = historicalNoCallReasonsByTask.get(seal.selectorTaskId);
+      if (previous !== undefined && previous !== seal.noCallReason) {
+        return yield* Effect.fail(new Error("retrieval no-call seal has conflicting reasons"));
+      }
+      historicalNoCallReasonsByTask.set(seal.selectorTaskId, seal.noCallReason);
+    }
+    if (!terminalReplay && noCallSealRows.length > 0) {
+      return yield* Effect.fail(new Error("active run carries a forged retrieval no-call seal"));
+    }
     const terminalRetrievalRows = new Map<string, (typeof observationRows)[number]>();
     for (const row of retrievalRows) {
       const parsed = RetrievalManifestSchema.safeParse(row.payload);
@@ -703,39 +827,59 @@ const validateDurableObservability = (
         terminalRetrievalRows.set(row.emittingTask, row);
       }
     }
+    const expectedRetrievalOwners =
+      terminalPlan.emittingTask === "evaluation-general-planner"
+        ? ["evaluation-general-planner"]
+        : parsedPlan.data.mode === "single"
+          ? ["single-retrieve-internal", "single-select-memories", "single-retrieve-web"]
+          : parsedPlan.data.mode === "fanout"
+            ? parsedPlan.data.topics.flatMap((topic) => [
+                `topic-${topic.topicId}-retrieve-internal`,
+                `topic-${topic.topicId}-select-memories`,
+                `topic-${topic.topicId}-retrieve-web`,
+              ])
+            : [];
+    const expectedRetrievalRoles = new Map(
+      expectedRetrievalOwners.map(
+        (owner) =>
+          [
+            owner,
+            owner === "evaluation-general-planner"
+              ? "general_planner"
+              : owner.endsWith("retrieve-internal")
+                ? "internal"
+                : owner.endsWith("select-memories")
+                  ? "memory"
+                  : "web",
+          ] as const,
+      ),
+    );
+    const expectedRetrievalOwnerSet = new Set(expectedRetrievalOwners);
+    for (const row of retrievalRows) {
+      if (!expectedRetrievalOwnerSet.has(row.emittingTask)) {
+        return yield* Effect.fail(
+          new Error(
+            `retrieval manifest has an owner outside the selected route: ${row.emittingTask}`,
+          ),
+        );
+      }
+      if (
+        RetrievalManifestSchema.parse(row.payload).selectorRole !==
+        expectedRetrievalRoles.get(row.emittingTask)
+      ) {
+        return yield* Effect.fail(
+          new Error(`retrieval manifest role differs for ${row.emittingTask}`),
+        );
+      }
+    }
     if (parsedPlan.data.mode === "clarify") {
       if (retrievalRows.length > 0) {
         return yield* Effect.fail(new Error("clarification cannot carry a retrieval manifest"));
       }
-    } else if (answer.status === "ok") {
-      const expectedRetrievalOwners =
-        terminalPlan.emittingTask === "evaluation-general-planner"
-          ? ["evaluation-general-planner"]
-          : answer.mode === "single"
-            ? ["single-retrieve-internal", "single-select-memories", "single-retrieve-web"]
-            : parsedPlan.data.mode === "fanout"
-              ? parsedPlan.data.topics.flatMap((topic) => [
-                  `topic-${topic.topicId}-retrieve-internal`,
-                  `topic-${topic.topicId}-select-memories`,
-                  `topic-${topic.topicId}-retrieve-web`,
-                ])
-              : [];
+    } else {
       for (const owner of expectedRetrievalOwners) {
-        const row = terminalRetrievalRows.get(owner);
-        if (row === undefined) {
+        if (terminalRetrievalRows.get(owner) === undefined) {
           return yield* Effect.fail(new Error(`missing retrieval manifest for ${owner}`));
-        }
-        const parsed = RetrievalManifestSchema.parse(row.payload);
-        const expectedRole =
-          owner === "evaluation-general-planner"
-            ? "general_planner"
-            : owner.endsWith("retrieve-internal")
-              ? "internal"
-              : owner.endsWith("select-memories")
-                ? "memory"
-                : "web";
-        if (parsed.selectorRole !== expectedRole) {
-          return yield* Effect.fail(new Error(`retrieval manifest role differs for ${owner}`));
         }
       }
     }
@@ -753,6 +897,8 @@ const validateDurableObservability = (
       readonly contentHash: string | null;
       readonly documentSourceId: string | null;
       readonly documentId: string | null;
+      readonly publisherIssueId: string | null;
+      readonly publisherDocumentId: string | null;
       readonly documentRanges:
         | readonly { readonly charStart: number; readonly charEnd: number }[]
         | null;
@@ -766,6 +912,8 @@ const validateDurableObservability = (
              visible_token_count as "visibleTokenCount",
              version_id as "versionId", content_hash as "contentHash",
              document_source_id as "documentSourceId", document_id as "documentId",
+             publisher_issue_id::text as "publisherIssueId",
+             publisher_document_id::text as "publisherDocumentId",
              document_ranges as "documentRanges",
              publisher_extraction_id::text as "publisherExtractionId"
       from ai_source_exposures where run_id = ${runId}
@@ -786,6 +934,36 @@ const validateDurableObservability = (
         ) {
           return yield* Effect.fail(
             new Error("document exposure lacks its exact reconstruction binding"),
+          );
+        }
+        try {
+          assertCanonicalDocumentExposureIdentity({
+            sourceKind: "document",
+            logicalSourceIdentity: exposure.logicalSourceIdentity,
+            contentItemIdentity: exposure.contentItemIdentity,
+            requireCanonicalDocumentIdentity: true,
+            ...(exposure.publisherIssueId === null || exposure.publisherDocumentId === null
+              ? {}
+              : {
+                  publisherIssueId: exposure.publisherIssueId,
+                  publisherDocumentId: exposure.publisherDocumentId,
+                }),
+            documentReconstruction: {
+              sourceId: exposure.documentSourceId,
+              documentId: exposure.documentId,
+              versionId: exposure.versionId,
+              contentHash: exposure.contentHash,
+              ranges: exposure.documentRanges,
+              ...(exposure.publisherExtractionId === null
+                ? {}
+                : { publisherExtractionId: exposure.publisherExtractionId }),
+            },
+          });
+        } catch (error) {
+          return yield* Effect.fail(
+            error instanceof Error
+              ? error
+              : new Error("document exposure identity does not match its reconstruction"),
           );
         }
       } else if (
@@ -1101,9 +1279,8 @@ const validateDurableObservability = (
         if (
           !parsedBindings.success ||
           parsedBindings.data.length !== sourceExposureProofs.length ||
-          new Set(
-            parsedBindings.data.map((binding) => binding.providerSerializationProofSha256Hex),
-          ).size !== parsedBindings.data.length ||
+          new Set(parsedBindings.data.map((binding) => binding.providerSerializationProofSha256Hex))
+            .size !== parsedBindings.data.length ||
           JSON.stringify(
             parsedBindings.data
               .map((binding) => binding.providerSerializationProofSha256Hex)
@@ -1213,6 +1390,9 @@ const validateDurableObservability = (
       if (!canonicalProviderTaskId(usage.taskId)) {
         return yield* Effect.fail(new Error("provider usage has a foreign task owner"));
       }
+      if (usage.providerServiceId !== acceptanceScope.provider) {
+        return yield* Effect.fail(new Error("provider usage differs from accepted provider"));
+      }
       if (canonicalProviderTaskRoles.get(usage.taskId) !== undefined) {
         // The task-to-role map is shared by measurements and usage.  A row
         // with a copied coordinate but a different role is not a retry.
@@ -1252,6 +1432,126 @@ const validateDurableObservability = (
       ) {
         return yield* Effect.fail(new Error(`usage token totals differ from measurement: ${key}`));
       }
+    }
+    const externalUsageRows = yield* sql<{
+      readonly taskId: string;
+      readonly loopIteration: number;
+      readonly attempt: number;
+      readonly toolRequestIndex: number;
+      readonly providerServiceId: string;
+      readonly operation: "web_search" | "web_fetch";
+      readonly status: "ok" | "empty" | "failed";
+      readonly resultCount: number;
+      readonly responseBytes: number;
+      readonly billedUnits: number | null;
+      readonly durationMs: number;
+    }>`
+      select task_id as "taskId", loop_iteration as "loopIteration", attempt,
+             tool_request_index as "toolRequestIndex",
+             provider_service_id as "providerServiceId", operation, status,
+             result_count as "resultCount", response_bytes::float8 as "responseBytes",
+             billed_units::float8 as "billedUnits", duration_ms::float8 as "durationMs"
+      from ai_external_tool_usage
+      where run_id = ${runId}
+    `;
+    const externalUsageEvents = yield* sql<{
+      readonly emissionKey: string;
+      readonly emittedByTask: string | null;
+      readonly event: Record<string, unknown>;
+    }>`
+      select emission_key as "emissionKey", emitted_by_task as "emittedByTask", event
+      from ai_run_events
+      where run_id = ${runId}
+        and (
+          emission_key like 'usage:request:web_search:%'
+          or emission_key like 'usage:request:web_fetch:%'
+          or (
+            event->>'type' = 'usage'
+            and event->>'scope' = 'request'
+            and event->>'kind' in ('web_search', 'web_fetch')
+          )
+        )
+    `;
+    const expectedExternalEventKeys = new Set<string>();
+    const externalUsageGroups = new Map<string, number[]>();
+    const isNonnegativeSafeInteger = (value: unknown): value is number =>
+      typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+    for (const usage of externalUsageRows) {
+      if (
+        !expectedRetrievalOwnerSet.has(usage.taskId) ||
+        (!usage.taskId.endsWith("retrieve-web") && usage.taskId !== "evaluation-general-planner")
+      ) {
+        return yield* Effect.fail(new Error("external usage has a foreign task owner"));
+      }
+      const expectedProviderServiceId =
+        usage.operation === "web_search" ? "tinyfish_search_official" : "brief_fetch";
+      if (
+        usage.providerServiceId !== expectedProviderServiceId ||
+        !["ok", "empty", "failed"].includes(usage.status) ||
+        !isNonnegativeSafeInteger(usage.loopIteration) ||
+        !isNonnegativeSafeInteger(usage.attempt) ||
+        !isNonnegativeSafeInteger(usage.toolRequestIndex) ||
+        !isNonnegativeSafeInteger(usage.resultCount) ||
+        !isNonnegativeSafeInteger(usage.responseBytes) ||
+        !isNonnegativeSafeInteger(usage.durationMs) ||
+        (usage.billedUnits !== null &&
+          (!Number.isFinite(usage.billedUnits) || usage.billedUnits < 0))
+      ) {
+        return yield* Effect.fail(new Error("external usage row is not canonical"));
+      }
+      const groupKey = [usage.taskId, usage.loopIteration, usage.attempt].join(":");
+      externalUsageGroups.set(groupKey, [
+        ...(externalUsageGroups.get(groupKey) ?? []),
+        usage.toolRequestIndex,
+      ]);
+      const eventKey = [
+        "usage",
+        "request",
+        usage.operation,
+        usage.taskId,
+        usage.loopIteration,
+        usage.attempt,
+        usage.toolRequestIndex,
+      ].join(":");
+      if (expectedExternalEventKeys.has(eventKey)) {
+        return yield* Effect.fail(new Error("duplicate external usage coordinates"));
+      }
+      expectedExternalEventKeys.add(eventKey);
+      const matchingEvents = externalUsageEvents.filter((event) => event.emissionKey === eventKey);
+      const expectedEvent = {
+        type: "usage",
+        scope: "request",
+        kind: usage.operation,
+        attempt: usage.attempt,
+        status: usage.status,
+        resultCount: usage.resultCount,
+        responseBytes: usage.responseBytes,
+        billedUnits: usage.billedUnits,
+        durationMs: usage.durationMs,
+      };
+      if (
+        matchingEvents.length !== 1 ||
+        matchingEvents[0]!.emittedByTask !== usage.taskId ||
+        canonicalJson(matchingEvents[0]!.event) !== canonicalJson(expectedEvent)
+      ) {
+        return yield* Effect.fail(
+          new Error("external usage row lacks its exact durable request event"),
+        );
+      }
+    }
+    for (const [groupKey, indexes] of externalUsageGroups) {
+      const ordered = [...indexes].sort((left, right) => left - right);
+      if (ordered.some((value, index) => value !== index)) {
+        return yield* Effect.fail(
+          new Error(`external usage indices are not contiguous: ${groupKey}`),
+        );
+      }
+    }
+    if (
+      externalUsageEvents.length !== expectedExternalEventKeys.size ||
+      externalUsageEvents.some((event) => !expectedExternalEventKeys.has(event.emissionKey))
+    ) {
+      return yield* Effect.fail(new Error("external request event has no exact usage row"));
     }
     const usageCoordinates = new Set(
       usageRows.map((usage) =>
@@ -1318,30 +1618,220 @@ const validateDurableObservability = (
       /\b(current|latest|official|public|web|online|today|recent|status|update|live|price|actual)\b|\b(actuel(?:le|s)?|dernier(?:e|s)?|officiel(?:le|s)?|public(?:s)?|marché|prix|récent(?:e|s)?|mise à jour|en ligne)\b/iu.test(
         question.normalize("NFC"),
       );
+    const externalRequestEventBelongsToTask = (
+      event: (typeof externalUsageEvents)[number],
+      taskId: string,
+    ): boolean => {
+      if (event.emittedByTask === taskId) return true;
+      const match = /^usage:request:(?:web_search|web_fetch):([^:]+):/u.exec(event.emissionKey);
+      return match?.[1] === taskId;
+    };
     const documentedNoCallRetrieval = (row: (typeof observationRows)[number]): boolean => {
       if (row.kind !== "retrieval_manifest") return false;
       const parsed = RetrievalManifestSchema.safeParse(row.payload);
-      if (!parsed.success || parsed.data.references.length !== 0) return false;
-      if (row.observationKey !== `${row.emittingTask}:0:0:retrieval_manifest:result`) return false;
-      if (row.loopIteration !== 0 || row.attempt !== 0) return false;
-      if (row.emittingTask.endsWith("select-memories")) {
-        return selectorState.memoryMode === "disabled" || selectorState.activeMemoryCount === 0;
+      if (
+        !parsed.success ||
+        parsed.data.references.length !== 0 ||
+        parsed.data.noCallReason === undefined
+      ) {
+        return false;
       }
-      if (row.emittingTask.endsWith("retrieve-web")) {
-        if (row.emittingTask.startsWith("topic-")) {
+      if (
+        !Number.isSafeInteger(row.loopIteration) ||
+        row.loopIteration < 0 ||
+        !Number.isSafeInteger(row.attempt) ||
+        row.attempt < 0 ||
+        row.observationKey !==
+          `${row.emittingTask}:${row.loopIteration}:${row.attempt}:retrieval_manifest:result`
+      ) {
+        return false;
+      }
+      if (
+        allMeasurementKeysFor(row.emittingTask).length !== 0 ||
+        usageRows.some((usage) => usage.taskId === row.emittingTask) ||
+        externalUsageRows.some((usage) => usage.taskId === row.emittingTask) ||
+        externalUsageEvents.some((event) =>
+          externalRequestEventBelongsToTask(event, row.emittingTask),
+        )
+      ) {
+        return false;
+      }
+      if (
+        terminalReplay &&
+        historicalNoCallReasonsByTask.get(row.emittingTask) === parsed.data.noCallReason
+      ) {
+        return true;
+      }
+      switch (parsed.data.noCallReason) {
+        case "memory_mode_disabled":
+          return (
+            row.emittingTask.endsWith("select-memories") && selectorState.memoryMode === "disabled"
+          );
+        case "no_active_memories":
+          return (
+            row.emittingTask.endsWith("select-memories") &&
+            selectorState.memoryMode === "private_owner" &&
+            (terminalReplay || selectorState.activeMemoryCount === 0)
+          );
+        case "web_not_requested":
+          return row.emittingTask.endsWith("retrieve-web") && !selectorState.webRequested;
+        case "web_policy_disabled":
+          return (
+            row.emittingTask.endsWith("retrieve-web") &&
+            selectorState.webRequested &&
+            !selectorState.webPolicyEnabled
+          );
+        case "topic_not_web_eligible": {
+          if (
+            !row.emittingTask.startsWith("topic-") ||
+            !row.emittingTask.endsWith("retrieve-web") ||
+            !selectorState.webRequested ||
+            !selectorState.webPolicyEnabled
+          ) {
+            return false;
+          }
           const topicId = row.emittingTask.slice("topic-".length, -"-retrieve-web".length);
           const topic =
             parsedPlan.data.mode === "fanout"
               ? parsedPlan.data.topics.find((candidate) => candidate.topicId === topicId)
               : undefined;
-          if (topic !== undefined && !topicRequestsWebEvidenceForFinalization(topic.question)) {
-            return true;
-          }
+          return topic !== undefined && !topicRequestsWebEvidenceForFinalization(topic.question);
         }
-        return !selectorState.webRequested || !selectorState.webPolicyEnabled;
       }
-      return false;
     };
+    const requiredNoCallReasonFor = (taskId: string): RetrievalNoCallReason | undefined => {
+      // A terminal replay uses the reason sealed during the first locked
+      // finalization when one exists. Current active memories may have changed
+      // since then, so an unsealed private-owner memory task is treated as a
+      // historical provider call below.
+      if (terminalReplay) {
+        const historicalReason = historicalNoCallReasonsByTask.get(taskId);
+        if (historicalReason !== undefined) return historicalReason;
+        // A private-owner memory can be deleted after a provider-backed
+        // selector call. Without a seal, treat that replay as a historical
+        // call rather than deriving a new no-call reason from current rows.
+        // The disabled mode is immutable and remains an exact no-call state.
+        if (taskId.endsWith("select-memories")) {
+          return selectorState.memoryMode === "disabled" ? "memory_mode_disabled" : undefined;
+        }
+      }
+      if (taskId.endsWith("select-memories")) {
+        if (selectorState.memoryMode === "disabled") return "memory_mode_disabled";
+        if (selectorState.memoryMode === "private_owner" && selectorState.activeMemoryCount === 0) {
+          return "no_active_memories";
+        }
+        return undefined;
+      }
+      if (!taskId.endsWith("retrieve-web")) return undefined;
+      if (!selectorState.webRequested) return "web_not_requested";
+      if (!selectorState.webPolicyEnabled) return "web_policy_disabled";
+      if (!taskId.startsWith("topic-")) return undefined;
+      const topicId = taskId.slice("topic-".length, -"-retrieve-web".length);
+      const topic =
+        parsedPlan.data.mode === "fanout"
+          ? parsedPlan.data.topics.find((candidate) => candidate.topicId === topicId)
+          : undefined;
+      if (topic !== undefined && !topicRequestsWebEvidenceForFinalization(topic.question)) {
+        return "topic_not_web_eligible";
+      }
+      return undefined;
+    };
+    const noCallRowsToSeal: (typeof observationRows)[number][] = [];
+    for (const row of retrievalRows) {
+      const parsed = RetrievalManifestSchema.parse(row.payload);
+      const requiredReason = requiredNoCallReasonFor(row.emittingTask);
+      if (requiredReason !== undefined && parsed.noCallReason !== requiredReason) {
+        return yield* Effect.fail(
+          new Error("retrieval manifest has an invalid durable no-call reason"),
+        );
+      }
+      if (parsed.noCallReason !== undefined) {
+        if (!documentedNoCallRetrieval(row)) {
+          return yield* Effect.fail(
+            new Error("retrieval manifest has an invalid durable no-call reason"),
+          );
+        }
+        const seal = noCallSealsBySelectorObservation.get(row.observationKey);
+        if (terminalReplay) {
+          if (
+            seal === undefined ||
+            seal.selectorTaskId !== row.emittingTask ||
+            seal.selectorLoopIteration !== row.loopIteration ||
+            seal.selectorAttempt !== row.attempt ||
+            seal.noCallReason !== parsed.noCallReason
+          ) {
+            return yield* Effect.fail(
+              new Error("retrieval manifest lacks its exact durable no-call seal"),
+            );
+          }
+        } else {
+          noCallRowsToSeal.push(row);
+        }
+        continue;
+      }
+      const rowMeasurementKey = latestMeasurementKeyFor(
+        row.emittingTask,
+        row.loopIteration,
+        row.attempt,
+      );
+      if (rowMeasurementKey === undefined) {
+        return yield* Effect.fail(
+          new Error("retrieval manifest attempt lacks its latest provider measurement"),
+        );
+      }
+      const matchingUsage = usageRows.filter((usage) => usageKeyFor(usage) === rowMeasurementKey);
+      if (matchingUsage.length !== 1) {
+        return yield* Effect.fail(
+          new Error("retrieval manifest attempt lacks its exact provider usage"),
+        );
+      }
+    }
+    for (const owner of expectedRetrievalOwners) {
+      const requiredReason = requiredNoCallReasonFor(owner);
+      if (requiredReason === undefined) continue;
+      const row = terminalRetrievalRows.get(owner);
+      if (row === undefined) {
+        return yield* Effect.fail(new Error(`missing retrieval manifest for ${owner}`));
+      }
+      const manifest = RetrievalManifestSchema.safeParse(row.payload);
+      if (!manifest.success || manifest.data.noCallReason !== requiredReason) {
+        return yield* Effect.fail(
+          new Error("retrieval manifest has an invalid durable no-call reason"),
+        );
+      }
+    }
+    const noCallRetrievalRowCount = retrievalRows.filter(
+      (row) => RetrievalManifestSchema.parse(row.payload).noCallReason !== undefined,
+    ).length;
+    if (terminalReplay && noCallSealsBySelectorObservation.size !== noCallRetrievalRowCount) {
+      return yield* Effect.fail(new Error("retrieval no-call seal has no exact manifest"));
+    }
+    if (!terminalReplay) {
+      for (const row of noCallRowsToSeal) {
+        const manifest = RetrievalManifestSchema.parse(row.payload);
+        yield* insertAiObservation({
+          runId,
+          chatId: run.chatId,
+          emittingTask: "finalize",
+          loopIteration: finalizationCoordinates.loopIteration,
+          attempt: finalizationCoordinates.attempt,
+          observationKey: [
+            "retrieval_no_call_seal",
+            row.emittingTask,
+            row.loopIteration,
+            row.attempt,
+          ].join(":"),
+          kind: "retrieval_no_call_seal",
+          payload: {
+            selectorTaskId: row.emittingTask,
+            selectorLoopIteration: row.loopIteration,
+            selectorAttempt: row.attempt,
+            selectorObservationKey: row.observationKey,
+            noCallReason: manifest.noCallReason!,
+          },
+        });
+      }
+    }
     const latestOutputRows = new Map<string, (typeof observationRows)[number]>();
     for (const row of observationRows) {
       if (
@@ -1349,7 +1839,6 @@ const validateDurableObservability = (
           "turn_plan",
           "retrieval_manifest",
           "topic_packet",
-          "context_decision",
           "context_reducer_terminal",
           "memory_extraction_result",
           "context_serialized",
@@ -1505,10 +1994,27 @@ const validateDurableObservability = (
     }
 
     const terminalUsageKeys = new Set([planMeasurementKey]);
+    const contextMeasureTaskIdsFor = (consumerTaskId: string): readonly string[] => {
+      if (consumerTaskId === "single-answer") {
+        return ["single-measure", "single-reduce-measure"];
+      }
+      if (/^topic-t[123]-answer$/u.test(consumerTaskId)) {
+        const topicId = consumerTaskId.slice("topic-".length, -"-answer".length);
+        return [`topic-${topicId}-measure`, `topic-${topicId}-reduce-measure`];
+      }
+      if (consumerTaskId === "fanout-synthesis") {
+        return ["fanout-synthesis-measure"];
+      }
+      if (consumerTaskId === "evaluation-general-planner") {
+        return ["evaluation-general-planner"];
+      }
+      return [];
+    };
+
     const failedContextLedgerMeasurementError = (
       serialized: (typeof observationRows)[number],
       usageKey: string,
-      measureTaskId: string,
+      measureTaskIds: readonly string[],
       consumerTaskId: string,
     ): string | null => {
       const parsed = RestrictedContextLedgerSchema.safeParse(
@@ -1518,52 +2024,128 @@ const validateDurableObservability = (
       if (!parsed.success || measurement === undefined) {
         return "context serialization lacks its strict measurement ledger";
       }
+      if (measureTaskIds.length === 0) {
+        return "context serialization lacks its path-specific context measurement";
+      }
+      const expectedMeasureTaskSet = new Set(measureTaskIds);
+      const foreignPathMeasurement = observationRows.find(
+        (observation) =>
+          observation.kind === "context_measurement" &&
+          !expectedMeasureTaskSet.has(observation.emittingTask) &&
+          [
+            "single-measure",
+            "single-reduce-measure",
+            "fanout-synthesis-measure",
+            "topic-t1-measure",
+            "topic-t1-reduce-measure",
+            "topic-t2-measure",
+            "topic-t2-reduce-measure",
+            "topic-t3-measure",
+            "topic-t3-reduce-measure",
+          ].includes(observation.emittingTask) &&
+          observation.payload.consumerTaskId === consumerTaskId,
+      );
+      if (foreignPathMeasurement !== undefined) {
+        return "context path measurement has a foreign measure owner";
+      }
       const pathMeasurements = observationRows.filter(
         (observation) =>
           observation.kind === "context_measurement" &&
-          observation.emittingTask === measureTaskId &&
-          observation.payload.consumerTaskId === consumerTaskId &&
-          observation.loopIteration === serialized.loopIteration &&
-          observation.attempt === serialized.attempt,
+          expectedMeasureTaskSet.has(observation.emittingTask),
       );
-      if (pathMeasurements.length !== 1) {
-        return "context serialization lacks one exact path-specific context measurement";
+      if (pathMeasurements.length === 0) {
+        return "context serialization lacks its path-specific context measurement";
       }
-      const pathMeasurement = pathMeasurements[0]!;
-      const payload = z
-        .object({
-          consumerTaskId: z.string().trim().min(1),
-          topicId: z.enum(["t1", "t2", "t3"]).optional(),
-          mandatoryInputTokens: z.number().int().nonnegative(),
-          discretionaryInputTokens: z.number().int().nonnegative(),
-          totalInputTokens: z.number().int().nonnegative(),
-          requestedOutputTokens: z.number().int().positive(),
-          usableInputTokens: z.number().int().positive(),
-          contextWindow: z.number().int().positive(),
-          status: z.enum(["ready", "needs_reduction"]),
-          reductionRan: z.boolean(),
-          reductionFeedback: z.array(z.string()),
-          restrictedContextLedger: RestrictedContextLedgerSchema,
-        })
-        .strict()
-        .safeParse(pathMeasurement.payload);
-      if (!payload.success || payload.data.consumerTaskId !== consumerTaskId) {
-        return "context path measurement payload is not exact";
+      const pathCoordinates = new Set<string>();
+      const parsedPathMeasurements: Array<{
+        readonly row: (typeof observationRows)[number];
+        readonly payload: {
+          readonly consumerTaskId: string;
+          readonly mandatoryInputTokens: number;
+          readonly discretionaryInputTokens: number;
+          readonly totalInputTokens: number;
+          readonly requestedOutputTokens: number;
+          readonly usableInputTokens: number;
+          readonly contextWindow: number;
+          readonly status: "ready" | "needs_reduction";
+          readonly restrictedContextLedger: z.infer<typeof RestrictedContextLedgerSchema>;
+        };
+      }> = [];
+      for (const pathMeasurement of pathMeasurements) {
+        const coordinate = `${pathMeasurement.emittingTask}:${pathMeasurement.loopIteration}:${pathMeasurement.attempt}`;
+        if (pathCoordinates.has(coordinate)) {
+          return "context serialization has duplicate path-specific context measurements";
+        }
+        pathCoordinates.add(coordinate);
+        const payload = z
+          .object({
+            consumerTaskId: z.string().trim().min(1),
+            topicId: z.enum(["t1", "t2", "t3"]).optional(),
+            mandatoryInputTokens: z.number().int().nonnegative(),
+            discretionaryInputTokens: z.number().int().nonnegative(),
+            totalInputTokens: z.number().int().nonnegative(),
+            requestedOutputTokens: z.number().int().positive(),
+            usableInputTokens: z.number().int().positive(),
+            contextWindow: z.number().int().positive(),
+            status: z.enum(["ready", "needs_reduction"]),
+            reductionRan: z.boolean(),
+            reductionFeedback: z.array(z.string()),
+            restrictedContextLedger: RestrictedContextLedgerSchema,
+          })
+          .strict()
+          .safeParse(pathMeasurement.payload);
+        if (!payload.success) {
+          return "context path measurement payload is not exact";
+        }
+        if (payload.data.consumerTaskId !== consumerTaskId) {
+          return "context path measurement consumer is not exact";
+        }
+        parsedPathMeasurements.push({ row: pathMeasurement, payload: payload.data });
       }
-      if (canonicalJson(payload.data.restrictedContextLedger) !== canonicalJson(parsed.data)) {
+      const reductionMeasureTaskId = measureTaskIds[1];
+      const terminalPathMeasurements =
+        reductionMeasureTaskId === undefined
+          ? parsedPathMeasurements.filter((entry) => entry.row.emittingTask === measureTaskIds[0])
+          : parsedPathMeasurements.filter(
+                (entry) => entry.row.emittingTask === reductionMeasureTaskId,
+              ).length > 0
+            ? parsedPathMeasurements.filter(
+                (entry) => entry.row.emittingTask === reductionMeasureTaskId,
+              )
+            : parsedPathMeasurements.filter(
+                (entry) => entry.row.emittingTask === measureTaskIds[0],
+              );
+      const terminalPathMeasurement = terminalPathMeasurements
+        .sort(
+          (left, right) =>
+            left.row.loopIteration - right.row.loopIteration ||
+            left.row.attempt - right.row.attempt ||
+            left.row.emittingTask.localeCompare(right.row.emittingTask),
+        )
+        .at(-1)!;
+      if (
+        canonicalJson(terminalPathMeasurement.payload.restrictedContextLedger) !==
+        canonicalJson(parsed.data)
+      ) {
         return "context ledger differs from its path-specific context measurement";
       }
       if (
-        payload.data.totalInputTokens !== parsed.data.inputTokens ||
-        payload.data.totalInputTokens !== measurement.inputTokens ||
-        payload.data.requestedOutputTokens !== parsed.data.requestedOutputTokens ||
-        payload.data.requestedOutputTokens !== measurement.requestedOutputTokens ||
-        payload.data.usableInputTokens !== parsed.data.usableInputTokens ||
-        payload.data.usableInputTokens !== measurement.usableInputTokens ||
-        payload.data.contextWindow !== measurement.contextWindow ||
-        payload.data.status !== "ready" ||
-        payload.data.discretionaryInputTokens !==
-          Math.max(0, payload.data.totalInputTokens - payload.data.mandatoryInputTokens)
+        terminalPathMeasurement.payload.totalInputTokens !== parsed.data.inputTokens ||
+        terminalPathMeasurement.payload.totalInputTokens !== measurement.inputTokens ||
+        terminalPathMeasurement.payload.requestedOutputTokens !==
+          parsed.data.requestedOutputTokens ||
+        terminalPathMeasurement.payload.requestedOutputTokens !==
+          measurement.requestedOutputTokens ||
+        terminalPathMeasurement.payload.usableInputTokens !== parsed.data.usableInputTokens ||
+        terminalPathMeasurement.payload.usableInputTokens !== measurement.usableInputTokens ||
+        terminalPathMeasurement.payload.contextWindow !== measurement.contextWindow ||
+        terminalPathMeasurement.payload.status !== "ready" ||
+        terminalPathMeasurement.payload.discretionaryInputTokens !==
+          Math.max(
+            0,
+            terminalPathMeasurement.payload.totalInputTokens -
+              terminalPathMeasurement.payload.mandatoryInputTokens,
+          )
       ) {
         return "context path measurement token ledger differs from its provider measurement";
       }
@@ -1576,11 +2158,6 @@ const validateDurableObservability = (
         : answer.mode === "single"
           ? "single-answer"
           : "fanout-synthesis";
-      const expectedContextMeasureTask = evaluationTopology
-        ? "evaluation-general-planner"
-        : answer.mode === "single"
-          ? "single-measure"
-          : "fanout-synthesis-measure";
       const expectedSerializedConsumer = evaluationTopology
         ? answer.mode === "synthesis"
           ? "fanout-synthesis"
@@ -1680,7 +2257,7 @@ const validateDurableObservability = (
       const contextLedgerMeasurementError = (
         serialized: ObservationRow,
         usageKey: string,
-        measureTaskId: string,
+        measureTaskIds: readonly string[],
         consumerTaskId: string,
       ): string | null => {
         const parsed = RestrictedContextLedgerSchema.safeParse(
@@ -1700,11 +2277,34 @@ const validateDurableObservability = (
         ) {
           return "context ledger differs from its provider measurement";
         }
+        if (measureTaskIds.length === 0) {
+          return "context ledger lacks its path-specific context measurement";
+        }
+        const expectedMeasureTaskSet = new Set(measureTaskIds);
+        const foreignPathMeasurement = observationRows.find(
+          (observation) =>
+            observation.kind === "context_measurement" &&
+            !expectedMeasureTaskSet.has(observation.emittingTask) &&
+            [
+              "single-measure",
+              "single-reduce-measure",
+              "fanout-synthesis-measure",
+              "topic-t1-measure",
+              "topic-t1-reduce-measure",
+              "topic-t2-measure",
+              "topic-t2-reduce-measure",
+              "topic-t3-measure",
+              "topic-t3-reduce-measure",
+            ].includes(observation.emittingTask) &&
+            observation.payload.consumerTaskId === consumerTaskId,
+        );
+        if (foreignPathMeasurement !== undefined) {
+          return "context path measurement has a foreign measure owner";
+        }
         const pathMeasurements = observationRows.filter(
           (observation) =>
             observation.kind === "context_measurement" &&
-            observation.emittingTask === measureTaskId &&
-            observation.payload.consumerTaskId === consumerTaskId,
+            expectedMeasureTaskSet.has(observation.emittingTask),
         );
         if (pathMeasurements.length === 0) {
           return "context ledger lacks its path-specific context measurement";
@@ -1726,7 +2326,7 @@ const validateDurableObservability = (
           };
         }> = [];
         for (const pathMeasurement of pathMeasurements) {
-          const coordinate = `${pathMeasurement.loopIteration}:${pathMeasurement.attempt}`;
+          const coordinate = `${pathMeasurement.emittingTask}:${pathMeasurement.loopIteration}:${pathMeasurement.attempt}`;
           if (pathCoordinates.has(coordinate)) {
             return "context ledger has duplicate path-specific measurements";
           }
@@ -1753,11 +2353,25 @@ const validateDurableObservability = (
           }
           parsedPathMeasurements.push({ row: pathMeasurement, payload: payload.data });
         }
-        const terminalMeasurement = parsedPathMeasurements
+        const reductionMeasureTaskId = measureTaskIds[1];
+        const terminalMeasurements =
+          reductionMeasureTaskId === undefined
+            ? parsedPathMeasurements.filter((entry) => entry.row.emittingTask === measureTaskIds[0])
+            : parsedPathMeasurements.filter(
+                  (entry) => entry.row.emittingTask === reductionMeasureTaskId,
+                ).length > 0
+              ? parsedPathMeasurements.filter(
+                  (entry) => entry.row.emittingTask === reductionMeasureTaskId,
+                )
+              : parsedPathMeasurements.filter(
+                  (entry) => entry.row.emittingTask === measureTaskIds[0],
+                );
+        const terminalMeasurement = terminalMeasurements
           .sort(
             (left, right) =>
               left.row.loopIteration - right.row.loopIteration ||
-              left.row.attempt - right.row.attempt,
+              left.row.attempt - right.row.attempt ||
+              left.row.emittingTask.localeCompare(right.row.emittingTask),
           )
           .at(-1)!;
         const measuredLedger = RestrictedContextLedgerSchema.safeParse(
@@ -1779,7 +2393,11 @@ const validateDurableObservability = (
           terminalMeasurement.payload.contextWindow !== measurement.contextWindow ||
           terminalMeasurement.payload.status !== "ready" ||
           terminalMeasurement.payload.discretionaryInputTokens !==
-            Math.max(0, terminalMeasurement.payload.totalInputTokens - terminalMeasurement.payload.mandatoryInputTokens)
+            Math.max(
+              0,
+              terminalMeasurement.payload.totalInputTokens -
+                terminalMeasurement.payload.mandatoryInputTokens,
+            )
         ) {
           return "context path measurement token ledger differs from its provider measurement";
         }
@@ -2152,7 +2770,7 @@ const validateDurableObservability = (
           const topicMeasurementError = contextLedgerMeasurementError(
             topicRow,
             topicUsageKey,
-            `topic-${topic.topicId}-measure`,
+            contextMeasureTaskIdsFor(topicTask),
             topicTask,
           );
           if (topicMeasurementError !== null) {
@@ -2207,7 +2825,7 @@ const validateDurableObservability = (
         const synthesisMeasurementError = contextLedgerMeasurementError(
           row,
           key,
-          expectedContextMeasureTask,
+          contextMeasureTaskIdsFor(expectedContextTask),
           expectedContextTask,
         );
         if (synthesisMeasurementError !== null) {
@@ -2226,7 +2844,7 @@ const validateDurableObservability = (
         const ledgerMeasurementError = contextLedgerMeasurementError(
           row,
           key,
-          expectedContextMeasureTask,
+          contextMeasureTaskIdsFor(expectedContextTask),
           expectedContextTask,
         );
         if (ledgerMeasurementError !== null) {
@@ -2347,22 +2965,15 @@ const validateDurableObservability = (
         ) {
           return yield* Effect.fail(new Error("failed context ledger differs from measurement"));
         }
-        const measureTaskId =
-          expectedRequestKind === "direct"
-            ? "single-measure"
-            : expectedRequestKind === "topic"
-              ? `topic-${row.payload.topicId as string}-measure`
-              : "fanout-synthesis-measure";
+        const measureTaskIds = contextMeasureTaskIdsFor(row.emittingTask);
         const pathMeasurementError = failedContextLedgerMeasurementError(
           row,
           usageKey,
-          measureTaskId,
+          measureTaskIds,
           row.emittingTask,
         );
         if (pathMeasurementError !== null) {
-          return yield* Effect.fail(
-            new Error(`failed context ledger ${pathMeasurementError}`),
-          );
+          return yield* Effect.fail(new Error(`failed context ledger ${pathMeasurementError}`));
         }
         if (usageCoordinates.has(usageKey)) terminalUsageKeys.add(usageKey);
       }
@@ -2393,7 +3004,8 @@ const loadRunForUpdate = (
         retryable,
         finished_at as "finishedAt",
         failed_at as "failedAt",
-        citation_namespace as "citationNamespace"
+        citation_namespace as "citationNamespace",
+        acceptance_scope as "acceptanceScope"
       from ai_runs
       where id = ${runId}
       for update
@@ -2518,6 +3130,488 @@ const existingTerminalResult = (row: RunRow): TerminalAiRunResult | null => {
 
   return null;
 };
+
+const validateTerminalProductLedger = (
+  run: RunRow,
+  answer: AnswerLaneResult,
+  memoryArtifact: MemoryExtractionArtifact,
+): Effect.Effect<void, SqlError | Error, PgClient.PgClient> =>
+  Effect.gen(function* () {
+    if (
+      (run.finishedAt !== null && run.assistantMessageId === null) ||
+      (run.failedAt !== null && (run.errorCode === null || run.retryable === null)) ||
+      (run.finishedAt !== null && run.failedAt !== null)
+    ) {
+      return yield* Effect.fail(new Error("terminal run state is incomplete or conflicting"));
+    }
+    const terminal = existingTerminalResult(run);
+    if (terminal === null) return;
+    if (run.finishedAt !== null && answer.status !== "ok") {
+      return yield* Effect.fail(new Error("terminal success replay has a failed answer"));
+    }
+    if (run.failedAt !== null) {
+      if (
+        answer.status === "failed" &&
+        (answer.code !== run.errorCode || answer.retryable !== run.retryable)
+      ) {
+        return yield* Effect.fail(new Error("terminal failure replay differs from its run state"));
+      }
+      if (answer.status !== "failed") {
+        return yield* Effect.fail(new Error("terminal failure replay has a different answer"));
+      }
+    }
+
+    const sql = yield* PgClient.PgClient;
+    const observations = yield* sql<{
+      readonly kind: string;
+      readonly emittingTask: string;
+      readonly loopIteration: number;
+      readonly attempt: number;
+      readonly observationKey: string;
+      readonly payload: Record<string, unknown>;
+    }>`
+      select kind, emitting_task as "emittingTask", loop_iteration as "loopIteration", attempt,
+             observation_key as "observationKey", payload
+      from ai_observations
+      where run_id = ${run.id}
+    `;
+    const applicationRows = observations.filter((row) => row.kind === "memory_application");
+    if (applicationRows.length !== 1) {
+      return yield* Effect.fail(new Error("terminal ledger lacks one memory application"));
+    }
+    const applicationRow = applicationRows[0]!;
+    const application = MemoryApplicationObservationPayloadSchema.safeParse(applicationRow.payload);
+    const extractionSha256Hex = memoryExtractionSha256Hex(memoryArtifact.result);
+    if (
+      applicationRow.emittingTask !== "finalize" ||
+      applicationRow.observationKey !==
+        `finalize:${applicationRow.loopIteration}:${applicationRow.attempt}:memory_application:result` ||
+      !application.success ||
+      application.data.extractionTaskId !== memoryArtifact.producer.taskId ||
+      application.data.extractionLoopIteration !== memoryArtifact.producer.loopIteration ||
+      application.data.extractionAttempt !== memoryArtifact.producer.attempt ||
+      application.data.extractionObservationKey !== memoryArtifact.producer.observationKey ||
+      application.data.extractionSha256Hex !== extractionSha256Hex ||
+      application.data.proposalCount !== memoryArtifact.result.proposals.length ||
+      application.data.discardedCount !== memoryArtifact.result.discardedCount
+    ) {
+      return yield* Effect.fail(new Error("terminal memory application is not exact"));
+    }
+    const terminalCoordinates = {
+      loopIteration: applicationRow.loopIteration,
+      attempt: applicationRow.attempt,
+    };
+
+    const writtenRows = observations.filter((row) => row.kind === "memory_written");
+    if (writtenRows.length !== memoryArtifact.result.proposals.length) {
+      return yield* Effect.fail(new Error("terminal memory write ledger is incomplete"));
+    }
+    const writtenByOrdinal = new Map<
+      number,
+      z.infer<typeof MemoryWrittenObservationPayloadSchema>
+    >();
+    for (const row of writtenRows) {
+      const parsed = MemoryWrittenObservationPayloadSchema.safeParse(row.payload);
+      if (
+        row.emittingTask !== "finalize" ||
+        row.loopIteration !== terminalCoordinates.loopIteration ||
+        row.attempt !== terminalCoordinates.attempt ||
+        !parsed.success ||
+        row.observationKey !==
+          `memory_written:${parsed.success ? parsed.data.ordinal : "invalid"}` ||
+        writtenByOrdinal.has(parsed.success ? parsed.data.ordinal : -1)
+      ) {
+        return yield* Effect.fail(new Error("terminal memory write ledger is not exact"));
+      }
+      writtenByOrdinal.set(parsed.data.ordinal, parsed.data);
+    }
+    for (const [ordinal, proposal] of memoryArtifact.result.proposals.entries()) {
+      const write = writtenByOrdinal.get(ordinal);
+      if (
+        write === undefined ||
+        (proposal.targetMemoryId === undefined && write.action !== "create") ||
+        (proposal.targetMemoryId !== undefined &&
+          (write.action !== "update" ||
+            write.memoryId !== proposal.targetMemoryId ||
+            write.previousRevisionId !== proposal.expectedHeadRevisionId))
+      ) {
+        return yield* Effect.fail(new Error("terminal memory write does not match its proposal"));
+      }
+    }
+    const revisionRows = yield* sql<{
+      readonly revisionId: string;
+      readonly memoryId: string;
+      readonly action: string;
+      readonly userId: string;
+      readonly stateBefore: unknown;
+      readonly stateAfter: unknown;
+      readonly runId: string | null;
+    }>`
+      select revisions.id::text as "revisionId", revisions.memory_id::text as "memoryId",
+             revisions.action, memories.user_id as "userId",
+             revisions.state_before as "stateBefore", revisions.state_after as "stateAfter",
+             revisions.run_id::text as "runId"
+      from user_memory_revisions revisions
+      join user_memories memories on memories.id = revisions.memory_id
+      where memories.user_id = ${run.initiatingUserId}
+      order by revisions.id
+    `;
+    const runRevisionRows = revisionRows.filter((row) => row.runId === run.id);
+    if (runRevisionRows.length !== writtenRows.length) {
+      return yield* Effect.fail(new Error("terminal memory revisions do not match writes"));
+    }
+    const revisionById = new Map(revisionRows.map((row) => [row.revisionId, row]));
+    const referencedRevisionIds = new Set<string>();
+    for (const write of writtenByOrdinal.values()) {
+      const revision = revisionById.get(write.revisionId);
+      if (
+        revision === undefined ||
+        revision.runId !== run.id ||
+        referencedRevisionIds.has(write.revisionId) ||
+        revision.memoryId !== write.memoryId ||
+        revision.action !== write.action ||
+        revision.userId !== run.initiatingUserId
+      ) {
+        return yield* Effect.fail(new Error("terminal memory write lacks its exact revision"));
+      }
+      referencedRevisionIds.add(write.revisionId);
+      const proposal = memoryArtifact.result.proposals[write.ordinal]!;
+      const expectedAfter = {
+        kind: proposal.kind,
+        content: proposal.content.trim(),
+        deleted: false,
+      };
+      if (canonicalJson(revision.stateAfter) !== canonicalJson(expectedAfter)) {
+        return yield* Effect.fail(
+          new Error("terminal memory revision state differs from its proposal"),
+        );
+      }
+      if (write.action === "create") {
+        if (revision.stateBefore !== null || write.previousRevisionId !== null) {
+          return yield* Effect.fail(new Error("terminal memory create revision has prior state"));
+        }
+      } else {
+        const previous = revisionById.get(write.previousRevisionId ?? "");
+        if (
+          previous === undefined ||
+          canonicalJson(revision.stateBefore) !== canonicalJson(previous.stateAfter)
+        ) {
+          return yield* Effect.fail(
+            new Error("terminal memory update revision lacks its prior state"),
+          );
+        }
+      }
+    }
+    if (
+      referencedRevisionIds.size !== runRevisionRows.length ||
+      runRevisionRows.some((row) => !referencedRevisionIds.has(row.revisionId))
+    ) {
+      return yield* Effect.fail(new Error("terminal memory revisions do not match writes"));
+    }
+
+    const events = yield* sql<{
+      readonly emissionKey: string;
+      readonly emittedByTask: string | null;
+      readonly event: Record<string, unknown>;
+    }>`
+      select emission_key as "emissionKey", emitted_by_task as "emittedByTask", event
+      from ai_run_events
+      where run_id = ${run.id}
+        and emission_key in ('memory_updated', 'usage:run', 'terminal')
+    `;
+    const eventFor = (emissionKey: string) =>
+      events.filter((event) => event.emissionKey === emissionKey);
+    const memoryUpdatedRows = eventFor("memory_updated");
+    const usageRows = eventFor("usage:run");
+    const terminalRows = eventFor("terminal");
+    const expectedMemoryUpdatedEvent = {
+      type: "memory_updated",
+      created: memoryArtifact.result.proposals.filter(
+        (proposal) => proposal.targetMemoryId === undefined,
+      ).length,
+      updated: memoryArtifact.result.proposals.filter(
+        (proposal) => proposal.targetMemoryId !== undefined,
+      ).length,
+      discarded: memoryArtifact.result.discardedCount,
+    };
+    const expectedUsageEvent = {
+      type: "usage",
+      scope: "run",
+      ...(yield* deriveAggregateAiRunUsage(run.id)),
+    };
+    if (
+      memoryUpdatedRows.length !== 1 ||
+      usageRows.length !== 1 ||
+      terminalRows.length !== 1 ||
+      memoryUpdatedRows[0]!.emittedByTask !== "finalize" ||
+      usageRows[0]!.emittedByTask !== "finalize" ||
+      canonicalJson(memoryUpdatedRows[0]!.event) !== canonicalJson(expectedMemoryUpdatedEvent) ||
+      canonicalJson(usageRows[0]!.event) !== canonicalJson(expectedUsageEvent)
+    ) {
+      return yield* Effect.fail(new Error("terminal event ledger is incomplete or inconsistent"));
+    }
+    const terminalEvent = terminalRows[0]!;
+    if (terminalEvent.emittedByTask !== "finalize") {
+      return yield* Effect.fail(new Error("terminal event has a foreign owner"));
+    }
+    if (run.finishedAt !== null) {
+      if (answer.status !== "ok") {
+        return yield* Effect.fail(new Error("terminal success replay has a failed answer"));
+      }
+      if (
+        canonicalJson(terminalEvent.event) !==
+        canonicalJson({ type: "done", assistantMessageId: run.assistantMessageId })
+      ) {
+        return yield* Effect.fail(new Error("terminal success event is not exact"));
+      }
+      assertFinalSourceMap(answer, run.citationNamespace);
+      const assistantRows = yield* sql<{
+        readonly id: string;
+        readonly author: string;
+        readonly content: string;
+        readonly runId: string | null;
+        readonly chatId: string;
+      }>`
+        select id::text, chat_id::text as "chatId", author, content,
+               assistant_ai_run_id::text as "runId"
+        from chat_messages
+        where assistant_ai_run_id = ${run.id}
+      `;
+      if (
+        assistantRows.length !== 1 ||
+        assistantRows[0]!.id !== run.assistantMessageId ||
+        assistantRows[0]!.author !== "assistant" ||
+        assistantRows[0]!.chatId !== run.chatId ||
+        assistantRows[0]!.runId !== run.id ||
+        assistantRows[0]!.content !== answer.content
+      ) {
+        return yield* Effect.fail(new Error("terminal assistant message is not exact"));
+      }
+      const assistantMessageId = assistantRows[0]!.id;
+      const sourceRows = yield* sql<{
+        readonly sourceKey: string;
+        readonly kind: string;
+        readonly locator: unknown;
+        readonly label: string | null;
+        readonly publicProvenance: unknown;
+        readonly versionId: string | null;
+        readonly publisherExtractionId: string | null;
+        readonly documentSourceId: string | null;
+        readonly documentId: string | null;
+        readonly contentHash: string | null;
+        readonly messageId: string | null;
+        readonly memoryRevisionId: string | null;
+      }>`
+        select source_key as "sourceKey", kind, locator, display_label as label,
+               public_provenance as "publicProvenance", version_id::text as "versionId",
+               publisher_extraction_id::text as "publisherExtractionId",
+               document_source_id as "documentSourceId", document_id as "documentId",
+               content_hash as "contentHash", message_id::text as "messageId",
+               memory_revision_id::text as "memoryRevisionId"
+        from assistant_message_sources
+        where assistant_message_id = ${assistantMessageId}
+      `;
+      if (sourceRows.length !== answer.sourceMap.length) {
+        return yield* Effect.fail(new Error("terminal source ledger is incomplete"));
+      }
+      const expectedSources = new Map(answer.sourceMap.map((source) => [source.sourceKey, source]));
+      for (const row of sourceRows) {
+        const expected = expectedSources.get(row.sourceKey);
+        const expectedIndexedIdentity =
+          expected?.locator.kind === "document"
+            ? {
+                versionId: expected.locator.versionId,
+                publisherExtractionId: expected.locator.publisherExtractionId ?? null,
+                documentSourceId: expected.locator.sourceId,
+                documentId: expected.locator.documentId,
+                contentHash: expected.locator.contentHash,
+                messageId: null,
+                memoryRevisionId: null,
+              }
+            : expected?.locator.kind === "chat_message"
+              ? {
+                  versionId: null,
+                  publisherExtractionId: null,
+                  documentSourceId: null,
+                  documentId: null,
+                  contentHash: null,
+                  messageId: expected.locator.messageId,
+                  memoryRevisionId: null,
+                }
+              : expected?.locator.kind === "memory"
+                ? {
+                    versionId: null,
+                    publisherExtractionId: null,
+                    documentSourceId: null,
+                    documentId: null,
+                    contentHash: null,
+                    messageId: null,
+                    memoryRevisionId: expected.locator.memoryRevisionId,
+                  }
+                : {
+                    versionId: null,
+                    publisherExtractionId: null,
+                    documentSourceId: null,
+                    documentId: null,
+                    contentHash: null,
+                    messageId: null,
+                    memoryRevisionId: null,
+                  };
+        if (
+          expected === undefined ||
+          expectedIndexedIdentity === undefined ||
+          row.kind !== expected.locator.kind ||
+          canonicalJson(row.locator) !== canonicalJson(expected.locator) ||
+          row.label !== expected.label ||
+          canonicalJson(row.publicProvenance) !== canonicalJson(expected.publicProvenance) ||
+          row.versionId !== expectedIndexedIdentity.versionId ||
+          row.publisherExtractionId !== expectedIndexedIdentity.publisherExtractionId ||
+          row.documentSourceId !== expectedIndexedIdentity.documentSourceId ||
+          row.documentId !== expectedIndexedIdentity.documentId ||
+          row.contentHash !== expectedIndexedIdentity.contentHash ||
+          row.messageId !== expectedIndexedIdentity.messageId ||
+          row.memoryRevisionId !== expectedIndexedIdentity.memoryRevisionId
+        ) {
+          return yield* Effect.fail(new Error("terminal source ledger differs from the answer"));
+        }
+      }
+      const useRows = yield* sql<{
+        readonly sourceKey: string;
+        readonly consumerTaskId: string;
+        readonly topicId: string | null;
+        readonly renderedTokenCount: number;
+        readonly contextOrder: number;
+        readonly ranges: unknown;
+      }>`
+        select source_key as "sourceKey", consumer_task_id as "consumerTaskId",
+               topic_id as "topicId", rendered_token_count as "renderedTokenCount",
+               context_order as "contextOrder", ranges
+        from assistant_message_source_uses
+        where assistant_message_id = ${assistantMessageId}
+      `;
+      const expectedUses = answer.sourceMap.flatMap((source) =>
+        source.uses.map((use) => ({
+          sourceKey: source.sourceKey,
+          consumerTaskId: use.consumerTaskId,
+          topicId: use.topicId ?? null,
+          renderedTokenCount: use.renderedTokenCount,
+          contextOrder: use.contextOrder,
+          ranges: use.ranges,
+        })),
+      );
+      if (useRows.length !== expectedUses.length) {
+        return yield* Effect.fail(new Error("terminal source-use ledger is incomplete"));
+      }
+      const useKey = (use: {
+        readonly sourceKey: string;
+        readonly consumerTaskId: string;
+        readonly topicId: string | null;
+        readonly renderedTokenCount: number;
+        readonly contextOrder: number;
+        readonly ranges: unknown;
+      }) =>
+        `${use.sourceKey}:${use.consumerTaskId}:${use.topicId ?? ""}:${use.contextOrder}:${use.renderedTokenCount}:${canonicalJson(use.ranges)}`;
+      const expectedUseKeys = new Set(expectedUses.map(useKey));
+      if (
+        new Set(useRows.map(useKey)).size !== useRows.length ||
+        useRows.some((row) => !expectedUseKeys.has(useKey(row)))
+      ) {
+        return yield* Effect.fail(new Error("terminal source-use ledger differs from the answer"));
+      }
+      const parsedCitations = parseCurrentTurnCitations(
+        answer.content,
+        new Set(answer.sourceMap.map((source) => source.sourceKey)),
+      );
+      const citationRows = observations.filter((row) => row.kind === "citation");
+      const defectRows = observations.filter((row) => row.kind === "citation_defect");
+      if (
+        citationRows.length !== parsedCitations.citations.length ||
+        defectRows.length !== parsedCitations.defects.length
+      ) {
+        return yield* Effect.fail(new Error("terminal citation ledger is incomplete"));
+      }
+      const citationKeys = new Set<string>();
+      for (const row of citationRows) {
+        const payload = z
+          .object({ assistantMessageId: z.string().uuid(), sourceKey: z.string().trim().min(1) })
+          .strict()
+          .safeParse(row.payload);
+        if (
+          row.emittingTask !== "finalize" ||
+          row.loopIteration !== terminalCoordinates.loopIteration ||
+          row.attempt !== terminalCoordinates.attempt ||
+          !payload.success ||
+          payload.data.assistantMessageId !== assistantMessageId ||
+          citationKeys.has(row.observationKey) ||
+          !parsedCitations.citations.some(
+            (citation) =>
+              `citation:${citation.tagIndex}:${citation.keyIndex}` === row.observationKey &&
+              citation.sourceKey === payload.data.sourceKey,
+          )
+        ) {
+          return yield* Effect.fail(new Error("terminal citation ledger is not exact"));
+        }
+        citationKeys.add(row.observationKey);
+      }
+      const defectKeys = new Set<string>();
+      for (const row of defectRows) {
+        const payload = z
+          .object({
+            token: z.string().min(1).max(256),
+            reason: z.enum(["malformed", "unknown_source_key"]),
+          })
+          .strict()
+          .safeParse(row.payload);
+        if (
+          row.emittingTask !== "finalize" ||
+          row.loopIteration !== terminalCoordinates.loopIteration ||
+          row.attempt !== terminalCoordinates.attempt ||
+          !payload.success ||
+          defectKeys.has(row.observationKey) ||
+          !parsedCitations.defects.some(
+            (defect) =>
+              `citation_defect:${defect.tagIndex}:${defect.defectSlot}` === row.observationKey &&
+              defect.token === payload.data.token &&
+              defect.reason === payload.data.reason,
+          )
+        ) {
+          return yield* Effect.fail(new Error("terminal citation-defect ledger is not exact"));
+        }
+        defectKeys.add(row.observationKey);
+      }
+    } else {
+      if (
+        canonicalJson(terminalEvent.event) !==
+        canonicalJson({
+          type: "error",
+          code: run.errorCode,
+          retryable: run.retryable,
+        })
+      ) {
+        return yield* Effect.fail(new Error("terminal failure event is not exact"));
+      }
+      const assistantRows = yield* sql<{ readonly id: string }>`
+        select id::text from chat_messages where assistant_ai_run_id = ${run.id}
+      `;
+      const sourceRows = yield* sql<{ readonly sourceKey: string }>`
+        select source_key as "sourceKey"
+        from assistant_message_sources sources
+        join chat_messages messages on messages.id = sources.assistant_message_id
+        where messages.assistant_ai_run_id = ${run.id}
+      `;
+      const citationRows = observations.filter(
+        (row) => row.kind === "citation" || row.kind === "citation_defect",
+      );
+      if (
+        run.assistantMessageId !== null ||
+        assistantRows.length !== 0 ||
+        sourceRows.length !== 0 ||
+        citationRows.length !== 0
+      ) {
+        return yield* Effect.fail(new Error("failed terminal ledger carries success rows"));
+      }
+    }
+  });
 
 const sourceIdentity = (source: FinalSourceRecord): string => {
   const locator = source.locator;
@@ -2987,6 +4081,7 @@ export const finalizeAiRun = (
       Effect.gen(function* () {
         const executionScope = yield* lockRunExecutionScope(input.runId);
         const run = yield* loadRunForUpdate(input.runId);
+        const acceptanceScope = parseRunAcceptanceScope(run.acceptanceScope);
         if (
           run.chatId !== executionScope.chatId ||
           run.initiatingUserId !== executionScope.initiatingUserId
@@ -3002,9 +4097,6 @@ export const finalizeAiRun = (
             ),
           );
         }
-        const terminal = existingTerminalResult(run);
-        if (terminal !== null) return terminal;
-
         // Acquire every publisher restriction lane before any authorization
         // query. The lane remains held until this transaction commits, so a
         // restriction either linearizes before finalization (and is observed
@@ -3013,7 +4105,12 @@ export const finalizeAiRun = (
           yield* lockPublisherIssueLanes(input.answer.sourceMap);
         }
 
-        yield* validateDurableObservability(run.id, input.answer);
+        // A terminal run is replayable only while its complete product ledger
+        // still matches the answer and consumed memory artifact.  Validate
+        // those terminal rows before the replay branch and before any other
+        // finalization work can treat the row as idempotent.
+        yield* validateTerminalProductLedger(run, input.answer, memoryArtifact);
+        yield* validateDurableObservability(run, input.answer, input.coordinates);
 
         const extractionSha256Hex = memoryExtractionSha256Hex(memoryArtifact.result);
         if (extractionSha256Hex !== memoryArtifact.producer.extractionSha256Hex) {
@@ -3163,6 +4260,7 @@ export const finalizeAiRun = (
           memoryUsage.providerRequestIndex !== producerMeasurement.providerRequestIndex ||
           memoryUsage.agentRole !== producerMeasurement.agentRole ||
           memoryUsage.modelId !== producerMeasurement.modelId ||
+          memoryUsage.providerServiceId !== acceptanceScope.provider ||
           !["zai_coding_plan_official", "deterministic_test", "openai_compatible_custom"].includes(
             memoryUsage.providerServiceId,
           ) ||
@@ -3174,6 +4272,9 @@ export const finalizeAiRun = (
             new Error("memory extraction result lacks its exact provider usage"),
           );
         }
+
+        const terminal = existingTerminalResult(run);
+        if (terminal !== null) return terminal;
 
         yield* insertAiObservation({
           runId: run.id,

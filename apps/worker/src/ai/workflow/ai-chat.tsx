@@ -1,5 +1,6 @@
 /** @jsxImportSource smithers-orchestrator */
 import { z } from "zod";
+import { parseRunAcceptanceScope, type RunAcceptanceScope } from "@brief/shared";
 
 import type { WorkerConfig } from "../../config";
 import { assertFinalSourceMap } from "../product-state/finalization";
@@ -113,25 +114,14 @@ const LoadedTurnSchema = z.strictObject({
   citationNamespace: z.string().regex(/^cn_[A-Za-z0-9_-]{22}$/u),
   memoryMode: z.enum(["private_owner", "disabled"]),
   webRequested: z.boolean(),
-  acceptanceScope: z
-    .strictObject({
-      userId: z.string(),
-      chatId: z.string().uuid(),
-      companyId: z.string().uuid(),
-      subscriptionIds: z.array(z.string()),
-      accessIds: z.array(z.string()),
-      publicSourceIds: z.array(z.string()),
-      memoryMode: z.enum(["private_owner", "disabled"]),
-      memoryRevisionIds: z.array(z.string()),
-      webRequested: z.boolean(),
-      webEnabled: z.boolean(),
-      provider: z.literal("zai_coding_plan_official"),
-      fastModelId: z.string(),
-      mainModelId: z.string(),
-      webTransportProvider: z.literal("tinyfish").nullable(),
-      allowedDomains: z.array(z.string()).nullable(),
-    })
-    .readonly(),
+  acceptanceScope: z.custom<RunAcceptanceScope>((value) => {
+    try {
+      parseRunAcceptanceScope(value);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }),
 });
 // Provider output contains only logical document IDs.  Durable Smithers output
 // keeps the server-owned binding that retrieval resolved before the task ended.

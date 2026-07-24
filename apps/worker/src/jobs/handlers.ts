@@ -4,6 +4,7 @@ import {
   type PublicSourceId,
 } from "@brief/source-ingestion";
 import { PgClient } from "@effect/sql-pg";
+import { parseRunAcceptanceScope } from "@brief/shared";
 import { Cause, Effect } from "effect";
 import { z } from "zod";
 import { loadDatabaseUrl } from "@brief/config";
@@ -19,7 +20,6 @@ import {
   ZAI_CODING_PLAN_PROVIDER_SERVICE_ID,
 } from "../ai/runtime/model-registry";
 import {
-  awaitWithTaskAbort,
   currentTaskAbortSignal,
   forwardAbortSignal,
   throwIfAborted,
@@ -32,7 +32,6 @@ import {
   isRetryableAiRunError,
   type AiRunErrorCode,
 } from "../ai/runtime/errors";
-import type { EffectiveWebPolicy } from "../ai/runtime/types";
 import {
   createSmithersStorage,
   runWithAiChatSmithersProducerFence,
@@ -66,7 +65,6 @@ import {
   WebBoundaryError,
   type WebOperationAccounting,
 } from "../ai/web";
-import { effectiveWebPolicy, recheckWebPolicy } from "../ai/web/policy";
 import { deleteSmithersRowsForRun, purgeAiRuntimeRetention } from "../ai/workflow/smithers-cleanup";
 import { purgeUserMemoryTombstones } from "../ai/product-state/retention";
 import { loadWorkerConfig } from "../config";
@@ -515,41 +513,7 @@ const markRunFailedForUnexpectedError = (
     deleteSmithersRowsForRunIfFenced(connectionString, aiRunId, deriveAiChatSmithersRunId(aiRunId)),
   );
 
-export const loadCurrentWebPolicy = (
-  connectionString: string,
-  aiRunId: string,
-  config: WorkerConfig,
-  signal?: AbortSignal,
-): Promise<EffectiveWebPolicy> =>
-  runAiWorkflowDb(
-    connectionString,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
-      const rows = yield* sql<{
-        readonly enabled: boolean;
-        readonly allowedDomains: readonly string[] | null;
-      }>`
-        select
-          settings.web_search_enabled as enabled,
-          settings.web_domain_allowlist as "allowedDomains"
-        from ai_runs runs
-        join chats on chats.id = runs.chat_id
-        join client_company_ai_settings settings on settings.company_id = chats.company_id
-        where runs.id = ${aiRunId}
-      `;
-      const settings = rows[0];
-      return effectiveWebPolicy({
-        enabled: settings?.enabled === true,
-        allowedDomains: settings?.allowedDomains ?? null,
-        providerAvailable:
-          config.webResearchProvider === "tinyfish" && config.tinyfishApiKey.trim() !== "",
-        maxDomainFilters: config.aiWebMaxDomainFilters,
-      });
-    }),
-    signal === undefined ? undefined : { signal },
-  );
-
-const makeWebResearchBoundary = (
+export const makeWebResearchBoundary = (
   connectionString: string,
   aiRunId: string,
   config: WorkerConfig,
@@ -608,16 +572,24 @@ const makeWebResearchBoundary = (
     });
     throwIfAborted(signal);
   };
-  const loadPolicy = (signal?: AbortSignal) =>
-    loadCurrentWebPolicy(connectionString, aiRunId, config, signal);
-
   if (config.nodeEnv === "test" && config.aiE2eFakeProvider) {
     const text =
       "Deterministic web evidence reports that French solar-grid monitoring should track connection queues and storage availability.";
     return {
-      search: async (_query, _locale, _market, acceptedPolicy, coordinates, _cursor, signal) => {
+      search: async (
+        _query,
+        _locale,
+        _market,
+        acceptedPolicy,
+        _authorizePolicy,
+        coordinates,
+        _cursor,
+        signal,
+      ) => {
         throwIfAborted(signal);
-        recheckWebPolicy(acceptedPolicy, await awaitWithTaskAbort(loadPolicy(signal), signal));
+        if (!acceptedPolicy.enabled || acceptedPolicy.provider !== "tinyfish") {
+          throw new WebBoundaryError("unsupported_policy", "saved web provider is unavailable", false);
+        }
         throwIfAborted(signal);
         await persist(
           coordinates,
@@ -651,9 +623,11 @@ const makeWebResearchBoundary = (
           },
         };
       },
-      fetch: async (url, acceptedPolicy, coordinates, signal) => {
+      fetch: async (url, acceptedPolicy, _authorizePolicy, coordinates, signal) => {
         throwIfAborted(signal);
-        recheckWebPolicy(acceptedPolicy, await awaitWithTaskAbort(loadPolicy(signal), signal));
+        if (!acceptedPolicy.enabled || acceptedPolicy.provider !== "tinyfish") {
+          throw new WebBoundaryError("unsupported_policy", "saved web provider is unavailable", false);
+        }
         throwIfAborted(signal);
         await persist(
           coordinates,
@@ -681,7 +655,16 @@ const makeWebResearchBoundary = (
   }
 
   return {
-    search: async (query, locale, market, acceptedPolicy, coordinates, _cursor, signal) => {
+    search: async (
+      query,
+      locale,
+      market,
+      acceptedPolicy,
+      authorizePolicy,
+      coordinates,
+      _cursor,
+      signal,
+    ) => {
       try {
         throwIfAborted(signal);
         const response = await searchTinyfishWeb(query, 10, {
@@ -689,7 +672,7 @@ const makeWebResearchBoundary = (
           locale,
           market,
           acceptedPolicy,
-          loadCurrentPolicy: () => loadPolicy(signal),
+          authorizePolicy,
           maxDomainFilters: config.aiWebMaxDomainFilters,
           signal,
         });
@@ -723,12 +706,12 @@ const makeWebResearchBoundary = (
         throw error;
       }
     },
-    fetch: async (url, acceptedPolicy, coordinates, signal) => {
+    fetch: async (url, acceptedPolicy, authorizePolicy, coordinates, signal) => {
       try {
         throwIfAborted(signal);
         const page = await safeFetchPage(url, {
           acceptedPolicy,
-          loadCurrentPolicy: () => loadPolicy(signal),
+          authorizePolicy,
           signal,
         });
         throwIfAborted(signal);
@@ -881,16 +864,28 @@ export const makeDurableProviderBoundary = (
         throwIfAborted(signal);
         await runAiWorkflowDb(
           connectionString,
-          insertAiRunUsage({
-            runId: aiRunId,
-            taskId: coordinates.taskId,
-            loopIteration: coordinates.loopIteration,
-            attempt: coordinates.attempt,
-            providerRequestIndex: coordinates.providerRequestIndex,
-            agentRole: coordinates.agentRole,
-            modelId,
-            providerServiceId,
-            usage,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            const rows = yield* sql<{ readonly scope: unknown }>`
+              select acceptance_scope as scope from ai_runs where id = ${aiRunId} for share
+            `;
+            const scope = parseRunAcceptanceScope(rows[0]?.scope);
+            if (scope.provider !== providerServiceId) {
+              return yield* Effect.fail(
+                new Error("ai run acceptance scope provider differs from worker provider"),
+              );
+            }
+            yield* insertAiRunUsage({
+              runId: aiRunId,
+              taskId: coordinates.taskId,
+              loopIteration: coordinates.loopIteration,
+              attempt: coordinates.attempt,
+              providerRequestIndex: coordinates.providerRequestIndex,
+              agentRole: coordinates.agentRole,
+              modelId,
+              providerServiceId,
+              usage,
+            });
           }),
           signal === undefined ? undefined : { signal },
         );
@@ -940,9 +935,10 @@ export const makeCanonicalOperations = (
   webResearchBoundary?: WebResearchBoundary,
 ): CanonicalWorkflowOperations => {
   const boundary = makeDurableProviderBoundary(connectionString, aiRunId, config);
+  const providerServiceId = providerServiceIdForConfig(config);
   return new CanonicalWorkflowOperations(
     connectionString,
-    config,
+    { ...config, providerServiceId },
     new CanonicalAgentClient(boundary),
     webResearchBoundary ?? makeWebResearchBoundary(connectionString, aiRunId, config),
   );

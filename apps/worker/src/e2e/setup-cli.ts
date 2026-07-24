@@ -1,7 +1,8 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
-import { loadE2eDatabaseUrl } from "@brief/config";
+import { loadE2eDatabaseUrl, ZAI_CODING_PLAN_BASE_URL } from "@brief/config";
+import { makeRunAcceptanceScope } from "@brief/shared";
 import { runPublicSourceIngestionBatch } from "../source-ingestion/orchestrator";
 import { makePgPublicSourceIngestionRepository } from "../source-ingestion/pg-repository";
 import { PublicSourceIngestionRepository } from "../source-ingestion/repository";
@@ -58,6 +59,12 @@ const adminDatabaseUrl = databaseUrlFor("postgres");
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const citationNamespaceForSeed = (seed: string): string =>
   `cn_${createHash("sha256").update(`citation:${seed}`).digest().subarray(0, 16).toString("base64url")}`;
+const seedProvider =
+  process.env.AI_E2E_FAKE_PROVIDER === "true"
+    ? ("deterministic_test" as const)
+    : (process.env.AI_BASE_URL ?? ZAI_CODING_PLAN_BASE_URL) === ZAI_CODING_PLAN_BASE_URL
+      ? ("zai_coding_plan_official" as const)
+      : ("openai_compatible_custom" as const);
 
 const acceptanceScopeForSeed = (args: {
   readonly chatId: string;
@@ -68,23 +75,21 @@ const acceptanceScopeForSeed = (args: {
   readonly webRequested?: boolean;
   readonly webEnabled?: boolean;
   readonly allowedDomains?: readonly string[] | null;
-}) => ({
-  userId: "demo-user",
-  chatId: args.chatId,
-  companyId: args.companyId,
-  subscriptionIds: [...(args.subscriptionIds ?? [])].sort(),
-  accessIds: [...(args.accessIds ?? [])].sort(),
-  publicSourceIds: [...(args.publicSourceIds ?? [])].sort(),
-  memoryMode: "private_owner" as const,
-  memoryRevisionIds: [],
-  webRequested: args.webRequested ?? false,
-  webEnabled: args.webEnabled ?? false,
-  provider: "zai_coding_plan_official",
-  fastModelId: "glm-5-turbo",
-  mainModelId: "glm-5-turbo",
-  webTransportProvider: args.webEnabled === true ? "tinyfish" : null,
-  allowedDomains: args.allowedDomains ?? null,
-});
+}) =>
+  makeRunAcceptanceScope({
+    userId: "demo-user",
+    chatId: args.chatId,
+    companyId: args.companyId,
+    subscriptionIds: args.subscriptionIds ?? [],
+    accessIds: args.accessIds ?? [],
+    publicSourceIds: args.publicSourceIds ?? [],
+    memoryMode: "private_owner",
+    provider: seedProvider,
+    webRequested: args.webRequested ?? false,
+    webEnabled: args.webEnabled ?? false,
+    webTransportProvider: args.webEnabled === true ? "tinyfish" : null,
+    allowedDomains: args.allowedDomains ?? null,
+  });
 
 const runDb = <A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> =>
   Effect.runPromise(

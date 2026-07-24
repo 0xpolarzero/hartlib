@@ -13678,16 +13678,19 @@ begin
   -- Updates may still change lifecycle fields, but they must not consult live
   -- grants, source settings, memory state, provider settings, or web policy.
   if tg_op = 'UPDATE' then
-    if (new.acceptance_scope->>'userId') is distinct from new.initiating_user_id::text
-       or (new.acceptance_scope->>'chatId') is distinct from new.chat_id::text
-       or not exists (
-         select 1 from chats chat
-         where chat.id = new.chat_id
-           and (new.acceptance_scope->>'companyId') = chat.company_id::text
-           and chat.user_id = new.initiating_user_id
-       ) then
-      raise exception 'AI run acceptance scope tenant binding is invalid'
-        using errcode = '23514', constraint = 'ai_runs_acceptance_scope_binding';
+    if new.initiating_user_id is distinct from old.initiating_user_id
+       or new.chat_id is distinct from old.chat_id then
+      if (new.acceptance_scope->>'userId') is distinct from new.initiating_user_id::text
+         or (new.acceptance_scope->>'chatId') is distinct from new.chat_id::text
+         or not exists (
+           select 1 from chats chat
+           where chat.id = new.chat_id
+             and (new.acceptance_scope->>'companyId') = chat.company_id::text
+             and chat.user_id = new.initiating_user_id
+         ) then
+        raise exception 'AI run acceptance scope tenant binding is invalid'
+          using errcode = '23514', constraint = 'ai_runs_acceptance_scope_binding';
+      end if;
     end if;
     return new;
   end if;

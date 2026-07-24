@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 
 import {
   AiRunEvent as PublicAiRunEventSchema,
+  makeRunAcceptanceScope,
+  parseRunAcceptanceScope,
+  type AiProviderServiceId,
+  type RunAcceptanceScope,
   type AiRunEvent as PublicAiRunEvent,
   type PublicContextConsumer,
 } from "@brief/shared";
@@ -15,6 +19,7 @@ import {
   handleAiChatRunJob,
   makeCanonicalOperations,
   makeDurableProviderBoundary,
+  providerServiceIdForConfig,
 } from "../../jobs/handlers";
 import type { JobRecord } from "../../jobs/types";
 import {
@@ -823,27 +828,16 @@ export const isEvaluationSmithersExecutionActiveError = (
 ): error is EvaluationSmithersExecutionActiveError =>
   error instanceof EvaluationSmithersExecutionActiveError;
 
-const EvaluationAcceptanceScopeSchema = z
-  .object({
-    userId: z.string().min(1),
-    chatId: z.uuid(),
-    companyId: z.uuid(),
-    subscriptionIds: z.array(z.string()).readonly(),
-    accessIds: z.array(z.string()).readonly(),
-    publicSourceIds: z.array(z.string()).readonly(),
-    memoryMode: z.enum(["private_owner", "disabled"]),
-    memoryRevisionIds: z.array(z.string()).readonly(),
-    webRequested: z.boolean(),
-    webEnabled: z.boolean(),
-    provider: z.literal("zai_coding_plan_official"),
-    fastModelId: z.literal("glm-5-turbo"),
-    mainModelId: z.literal("glm-5-turbo"),
-    webTransportProvider: z.literal("tinyfish").nullable(),
-    allowedDomains: z.array(z.string()).nullable(),
-  })
-  .strict();
+const EvaluationAcceptanceScopeSchema = z.custom<RunAcceptanceScope>((value) => {
+  try {
+    parseRunAcceptanceScope(value);
+    return true;
+  } catch {
+    return false;
+  }
+});
 
-type EvaluationAcceptanceScope = z.infer<typeof EvaluationAcceptanceScopeSchema>;
+type EvaluationAcceptanceScope = RunAcceptanceScope;
 
 const DurableRunSnapshotSchema = z
   .object({
@@ -1265,6 +1259,7 @@ const seedOneCase = (
   sessionId: string,
   fixture: GoldenEvaluationCase,
   topology: EvaluationTopology,
+  providerServiceId: AiProviderServiceId = "zai_coding_plan_official",
 ): Promise<EvaluationSeedManifest> => {
   const manifest = buildSeedManifest(sessionId, fixture, topology);
   const sourceById = new Map(fixture.evidence.map((source) => [source.sourceId, source] as const));
@@ -1289,7 +1284,7 @@ const seedOneCase = (
       yield* sql.withTransaction(
         Effect.gen(function* () {
           const acceptanceScopeForRun = (webRequested: boolean): EvaluationAcceptanceScope =>
-            EvaluationAcceptanceScopeSchema.parse({
+            makeRunAcceptanceScope({
               userId: manifest.userId,
               chatId: manifest.chatId,
               companyId: manifest.companyId,
@@ -1316,9 +1311,7 @@ const seedOneCase = (
                 .sort(),
               webRequested,
               webEnabled: webRequested && fixture.webPolicyEnabled,
-              provider: "zai_coding_plan_official",
-              fastModelId: "glm-5-turbo",
-              mainModelId: "glm-5-turbo",
+              provider: providerServiceId,
               webTransportProvider: webRequested && fixture.webPolicyEnabled ? "tinyfish" : null,
               allowedDomains:
                 webRequested && fixture.webPolicyEnabled ? evaluationWebAllowlist : null,
@@ -1431,7 +1424,7 @@ const seedOneCase = (
               ) on conflict (id) do nothing
             `;
             yield* sql`
-              insert into chat_messages (
+            insert into chat_messages (
                 id, chat_id, author, content, assistant_ai_run_id, created_at
               ) values (
                 ${binding.assistantMessageId}, ${manifest.chatId}, 'assistant',
@@ -1587,11 +1580,14 @@ export const createEvaluationSession = async (
 const seedEvaluationSessionWithLeaseHeld = async (
   connectionString: string,
   sessionId: string,
+  providerServiceId: AiProviderServiceId = "zai_coding_plan_official",
 ): Promise<readonly EvaluationSeedManifest[]> => {
   const manifests: EvaluationSeedManifest[] = [];
   for (const fixture of CanonicalGoldenEvaluationSet.cases) {
     for (const topology of ["specialized", "general_planner"] as const) {
-      manifests.push(await seedOneCase(connectionString, sessionId, fixture, topology));
+      manifests.push(
+        await seedOneCase(connectionString, sessionId, fixture, topology, providerServiceId),
+      );
     }
   }
   return manifests;
@@ -1600,9 +1596,10 @@ const seedEvaluationSessionWithLeaseHeld = async (
 export const seedEvaluationSession = (
   connectionString: string,
   sessionId: string,
+  providerServiceId: AiProviderServiceId = "zai_coding_plan_official",
 ): Promise<readonly EvaluationSeedManifest[]> =>
   withEvaluationSessionExecutionLease(connectionString, sessionId, () =>
-    seedEvaluationSessionWithLeaseHeld(connectionString, sessionId),
+    seedEvaluationSessionWithLeaseHeld(connectionString, sessionId, providerServiceId),
   );
 
 const loadCaseRuns = (
@@ -1910,6 +1907,7 @@ const persistBaselineOutput = async (
   connectionString: string,
   row: CaseRunRow,
   output: GeneralPlannerProviderOutput,
+  providerServiceId: AiProviderServiceId,
 ): Promise<void> => {
   GeneralPlannerProviderOutputSchema.parse(output);
   const smithersRunId = `ai-evaluation-general-planner:${row.sessionId}:${row.caseId}`;
@@ -2129,7 +2127,7 @@ const persistBaselineOutput = async (
               providerRequestIndex: 0,
               agentRole: "topic_answer",
               modelId: topicMeasurement.modelId,
-              providerServiceId: "zai_coding_plan_official",
+              providerServiceId,
               usage: {
                 inputTokens: topicMeasurement.inputTokens,
                 outputTokens: 2,
@@ -2587,7 +2585,12 @@ const executeBaseline = async (
       } finally {
         await storage.close();
       }
-      await persistBaselineOutput(connectionString, row, output);
+      await persistBaselineOutput(
+        connectionString,
+        row,
+        output,
+        providerServiceIdForConfig(config),
+      );
     });
   } catch (error) {
     if (isEvaluationSmithersExecutionActiveError(error)) throw error;
@@ -4732,7 +4735,11 @@ export const prepareAndExecuteEvaluationSession = async (
   preflightCanonicalEvaluationExecution(connectionString, config);
   const sessionId = await createEvaluationSession(connectionString, requestedSessionId);
   await withEvaluationSessionExecutionLease(connectionString, sessionId, async () => {
-    await seedEvaluationSessionWithLeaseHeld(connectionString, sessionId);
+    await seedEvaluationSessionWithLeaseHeld(
+      connectionString,
+      sessionId,
+      providerServiceIdForConfig(config),
+    );
     await executeEvaluationSessionWithLeaseHeld(connectionString, sessionId, config);
   });
   return sessionId;
@@ -7326,18 +7333,6 @@ const expectedTerminalContextEvidence = (
         (candidate) => candidate.sourceKey === rawDurableSource?.sourceKey,
       );
       if (source === undefined || durableSource === undefined) {
-        console.error(
-          "baseline source debug",
-          row.caseId,
-          selection.sourceId,
-          rawDurableSource,
-          durableSource,
-          evidence.sources.map((candidate) => ({
-            key: candidate.sourceKey,
-            mapped: mapDurableSource(manifest, candidate),
-            kind: candidate.kind,
-          })),
-        );
         throw new Error(`${row.topology}/${row.caseId} baseline source order is incomplete`);
       }
       const selectedText =

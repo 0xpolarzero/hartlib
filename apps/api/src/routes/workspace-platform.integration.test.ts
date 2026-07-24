@@ -58,6 +58,25 @@ const urlFor = (database: string): string => {
 };
 const isolatedUrl = () => urlFor(databaseName);
 const quote = (value: string) => `"${value.replaceAll('"', '""')}"`;
+const namespacedPublisherDocumentIdentity = (
+  subscriptionId: string,
+  issueId: string,
+  documentId: string,
+): string =>
+  `document:namespace:publisher:${JSON.stringify([
+    `publisher:${subscriptionId}`,
+    issueId,
+    documentId,
+    documentId,
+  ])}`;
+const documentContentItemIdentity = (
+  logicalSourceIdentity: string,
+  versionId: string,
+  ranges: readonly { readonly charStart: number; readonly charEnd: number }[],
+): string =>
+  `${logicalSourceIdentity}:${versionId}:${createHash("sha256")
+    .update(JSON.stringify(ranges), "utf8")
+    .digest("base64url")}`;
 const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>, database = databaseName) =>
   Effect.runPromise(
     effect.pipe(
@@ -1099,6 +1118,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             authMode: "clerk",
             webResearchProvider: null,
             aiWebMaxDomainFilters: 10,
+            aiProviderServiceId: "zai_coding_plan_official",
           },
           memberIdentity.organizationId,
           chats.privateId,
@@ -3744,9 +3764,27 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             `;
             const runs = yield* sql<{ readonly id: string }>`
               insert into ai_runs (
-                chat_id, initiating_user_id, user_message_id, locale, market, finished_at
+                chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope, finished_at
               ) values (
-                ${chatId}, 'member-user', ${messages[0]!.id}, 'en-US', 'US', now()
+                ${chatId}, 'member-user', ${messages[0]!.id}, 'en-US', 'US',
+                ${sql.json({
+                  userId: "member-user",
+                  chatId,
+                  companyId: clientCompanyId,
+                  subscriptionIds: [],
+                  accessIds: [],
+                  publicSourceIds: [],
+                  memoryMode: "private_owner",
+                  memoryRevisionIds: [],
+                  webRequested: false,
+                  webEnabled: false,
+                  provider: "zai_coding_plan_official",
+                  fastModelId: "glm-5-turbo",
+                  mainModelId: "glm-5-turbo",
+                  webTransportProvider: null,
+                  allowedDomains: null,
+                })},
+                now()
               )
               returning id::text
             `;
@@ -4213,6 +4251,10 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
     );
     expect(state).toEqual({ state: "ending", finalizers: 1, reminders: 4 });
     const metricsIssueId = crypto.randomUUID();
+    const metricsDocuments = [
+      { id: crypto.randomUUID(), text: "Metrics document A evidence" },
+      { id: crypto.randomUUID(), text: "Metrics document B evidence" },
+    ] as const;
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -4220,6 +4262,59 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           insert into publisher_issues (
             id, subscription_id, title, status, created_by_user_id
           ) values (${metricsIssueId}, ${subscriptionId}, 'Metrics issue', 'draft', 'admin-user')
+        `;
+        for (const document of metricsDocuments) {
+          const pdfHash = "a".repeat(64);
+          const contentHash = createHash("sha256").update(document.text, "utf8").digest("hex");
+          const jobId = crypto.randomUUID();
+          const extractionId = crypto.randomUUID();
+          const versionId = crypto.randomUUID();
+          yield* sql`
+            insert into brief_documents (
+              id, issue_id, title, original_file_name, object_key, media_type,
+              byte_size, sha256_hex, upload_completed_at, created_by_user_id
+            ) values (
+              ${document.id}, ${metricsIssueId}, ${document.text}, ${`${document.id}.pdf`},
+              ${`metrics/${document.id}.pdf`}, 'application/pdf', 1, ${pdfHash}, now(), 'admin-user'
+            )
+          `;
+          yield* sql`
+            insert into jobs (id, kind, payload)
+            values (${jobId}, 'extract_pdf_text', '{}'::jsonb)
+          `;
+          yield* sql`
+            insert into brief_document_extractions (
+              id, brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+            ) values (
+              ${extractionId}, ${document.id}, ${pdfHash},
+              ${JSON.stringify([{ pageNumber: 1, text: document.text }])}::jsonb,
+              ${document.text.length}, ${jobId}
+            )
+          `;
+          yield* sql`
+            insert into brief_document_versions (
+              id, brief_document_id, publisher_extraction_id, content_hash, language,
+              canonical_text, text_char_count, page_ranges
+            ) values (
+              ${versionId}, ${document.id}, ${extractionId}, ${contentHash}, 'en-US',
+              ${document.text}, ${document.text.length},
+              ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: document.text.length }])}::jsonb
+            )
+          `;
+          yield* sql`
+            update brief_documents set current_version_id = ${versionId}
+            where id = ${document.id}
+          `;
+        }
+        yield* sql`
+          update publisher_issues
+          set status = 'published', publication_at = now(), published_at = now()
+          where id = ${metricsIssueId}
+        `;
+        yield* sql`
+          insert into issue_deliveries (
+            issue_id, subscription_id, access_id, client_company_id, historical
+          ) values (${metricsIssueId}, ${subscriptionId}, ${accessId}, ${clientCompanyId}, false)
         `;
         yield* sql`
           insert into client_company_memberships (company_id, user_id, role)
@@ -4242,34 +4337,64 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           const inserted = yield* sql<{ id: string }>`
             insert into ai_runs (
               chat_id, initiating_user_id, user_message_id, locale, market,
-              web_search_enabled, effective_web_policy
+              acceptance_scope
             ) values (
-              ${chatId}, ${userId}, ${messages[0]!.id}, 'fr-FR', 'FR', false,
-              ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })}
+              ${chatId}, ${userId}, ${messages[0]!.id}, 'fr-FR', 'FR',
+              ${sql.json({
+                userId,
+                chatId,
+                companyId: clientCompanyId,
+                subscriptionIds: [],
+                accessIds: [],
+                publicSourceIds: [],
+                memoryMode: "private_owner",
+                memoryRevisionIds: [],
+                webRequested: false,
+                webEnabled: false,
+                provider: "zai_coding_plan_official",
+                fastModelId: "glm-5-turbo",
+                mainModelId: "glm-5-turbo",
+                webTransportProvider: null,
+                allowedDomains: null,
+              })}
             ) returning id::text
           `;
           runs.push(inserted[0]!.id);
         }
         for (const exposure of [
-          { runId: runs[0]!, task: "a", documentId: "document-a", tokens: 10 },
-          { runId: runs[0]!, task: "b", documentId: "document-a", tokens: 20 },
-          { runId: runs[0]!, task: "c", documentId: "document-b", tokens: 30 },
-          { runId: runs[1]!, task: "a", documentId: "document-a", tokens: 40 },
+          { runId: runs[0]!, requestIndex: 0, document: metricsDocuments[0]!, tokens: 10 },
+          { runId: runs[0]!, requestIndex: 1, document: metricsDocuments[0]!, tokens: 20 },
+          { runId: runs[0]!, requestIndex: 0, document: metricsDocuments[1]!, tokens: 30 },
+          { runId: runs[1]!, requestIndex: 0, document: metricsDocuments[0]!, tokens: 40 },
         ]) {
+          const version = yield* sql<{ readonly id: string; readonly extractionId: string }>`
+            select id::text, publisher_extraction_id::text as "extractionId"
+            from brief_document_versions
+            where brief_document_id = ${exposure.document.id}
+          `;
+          const contentHash = createHash("sha256")
+            .update(exposure.document.text, "utf8")
+            .digest("hex");
+          const logicalSourceIdentity = namespacedPublisherDocumentIdentity(
+            subscriptionId,
+            metricsIssueId,
+            exposure.document.id,
+          );
+          const ranges = [{ charStart: 0, charEnd: exposure.document.text.length }] as const;
           yield* sql`
             insert into ai_source_exposures (
               run_id, task_id, loop_iteration, attempt, provider_request_index,
               source_kind, logical_source_identity, publisher_issue_id,
               publisher_document_id, content_item_identity, exposure_stage,
               visible_token_count, document_source_id, document_id,
-              document_version_id, document_content_hash, document_ranges
+              version_id, content_hash, publisher_extraction_id, document_ranges
             ) values (
-              ${exposure.runId}, ${exposure.task}, 0, 0, 0, 'document',
-              ${`publisher-document:${exposure.documentId}`}, ${metricsIssueId},
-              ${exposure.documentId}, ${exposure.documentId}, 'provider_context',
-              ${exposure.tokens}, ${`publisher:${subscriptionId}`},
-              ${exposure.documentId}, ${exposure.documentId}, ${"a".repeat(64)},
-              ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
+              ${exposure.runId}, 'single-retrieve-internal', 0, 0, ${exposure.requestIndex}, 'document',
+              ${logicalSourceIdentity}, ${metricsIssueId},
+              ${exposure.document.id}, ${documentContentItemIdentity(logicalSourceIdentity, version[0]!.id, ranges)}, 'internal_inspection',
+              ${exposure.tokens}, ${`publisher:${subscriptionId}`}, ${exposure.document.id},
+              ${version[0]!.id}, ${contentHash}, ${version[0]!.extractionId},
+              ${JSON.stringify(ranges)}::jsonb
             )
           `;
         }
@@ -4282,21 +4407,16 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
       `/v1/publisher-subscriptions/${subscriptionId}/ai-pull-metrics`,
     );
     expect(metrics.status).toBe(200);
+    const expectedMetrics = [...metricsDocuments]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((document) => ({
+        issueId: metricsIssueId,
+        documentId: document.id,
+        runPullCount: document.id === metricsDocuments[0]!.id ? 2 : 1,
+        visibleTokenCount: document.id === metricsDocuments[0]!.id ? 70 : 30,
+      }));
     await expect(metrics.json()).resolves.toEqual({
-      metrics: [
-        {
-          issueId: metricsIssueId,
-          documentId: "document-a",
-          runPullCount: 2,
-          visibleTokenCount: 70,
-        },
-        {
-          issueId: metricsIssueId,
-          documentId: "document-b",
-          runPullCount: 1,
-          visibleTokenCount: 30,
-        },
-      ],
+      metrics: expectedMetrics,
       issueTotals: [{ issueId: metricsIssueId, runPullCount: 2 }],
     });
   });

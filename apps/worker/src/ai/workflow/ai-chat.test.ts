@@ -1,4 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
+import { makeRunAcceptanceScope } from "@brief/shared";
 import { Effect, Redacted } from "effect";
 import { Effect as Effect3 } from "effect3";
 import { SmithersDb } from "smithers-orchestrator";
@@ -201,23 +202,14 @@ const load: LoadedTurn = {
   citationNamespace: "cn_" + "A".repeat(22),
   memoryMode: "disabled",
   webRequested: false,
-  acceptanceScope: {
+  acceptanceScope: makeRunAcceptanceScope({
     userId: "workflow-user",
     chatId: "00000000-0000-4000-8000-000000000001",
     companyId: "00000000-0000-4000-8000-000000000002",
-    subscriptionIds: [],
-    accessIds: [],
-    publicSourceIds: [],
     memoryMode: "disabled",
-    memoryRevisionIds: [],
     webRequested: false,
     webEnabled: false,
-    provider: "zai_coding_plan_official",
-    fastModelId: "glm-5-turbo",
-    mainModelId: "glm-5-turbo",
-    webTransportProvider: null,
-    allowedDomains: null,
-  },
+  }),
 };
 const request = {
   requestClass: "main" as const,

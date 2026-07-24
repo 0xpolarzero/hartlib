@@ -1,5 +1,202 @@
 import { Schema } from "effect";
 
+import { normalizeDomainAllowlist } from "./web-policy";
+
+export type AiProviderServiceId =
+  | "zai_coding_plan_official"
+  | "deterministic_test"
+  | "openai_compatible_custom";
+
+export interface RunAcceptanceScope {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly subscriptionIds: readonly string[];
+  readonly accessIds: readonly string[];
+  readonly publicSourceIds: readonly string[];
+  readonly memoryMode: "private_owner" | "disabled";
+  readonly memoryRevisionIds: readonly string[];
+  readonly webRequested: boolean;
+  readonly webEnabled: boolean;
+  readonly provider: AiProviderServiceId;
+  readonly fastModelId: "glm-5-turbo";
+  readonly mainModelId: "glm-5-turbo";
+  readonly webTransportProvider: "tinyfish" | null;
+  readonly allowedDomains: readonly string[] | null;
+}
+
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
+const acceptanceScopeKeys = new Set([
+  "userId",
+  "chatId",
+  "companyId",
+  "subscriptionIds",
+  "accessIds",
+  "publicSourceIds",
+  "memoryMode",
+  "memoryRevisionIds",
+  "webRequested",
+  "webEnabled",
+  "provider",
+  "fastModelId",
+  "mainModelId",
+  "webTransportProvider",
+  "allowedDomains",
+]);
+
+const canonicalStrings = (value: unknown, field: string): readonly string[] => {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item === "")) {
+    throw new Error(`acceptance scope ${field} must be a non-empty string array`);
+  }
+  const values = [...(value as readonly string[])];
+  const sorted = [...values].sort();
+  if (new Set(values).size !== values.length || values.some((item, index) => item !== sorted[index])) {
+    throw new Error(`acceptance scope ${field} must be sorted and unique`);
+  }
+  return values;
+};
+
+/** Decode the one strict acceptance snapshot shape used by API, worker, and fixtures. */
+export const parseRunAcceptanceScope = (value: unknown): RunAcceptanceScope => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("acceptance scope must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).some((key) => !acceptanceScopeKeys.has(key)) ||
+    acceptanceScopeKeys.size !== Object.keys(record).length
+  ) {
+    throw new Error("acceptance scope has unknown or missing keys");
+  }
+  if (typeof record.userId !== "string" || record.userId.trim() === "") {
+    throw new Error("acceptance scope userId is invalid");
+  }
+  if (typeof record.chatId !== "string" || !uuidPattern.test(record.chatId)) {
+    throw new Error("acceptance scope chatId is invalid");
+  }
+  if (typeof record.companyId !== "string" || !uuidPattern.test(record.companyId)) {
+    throw new Error("acceptance scope companyId is invalid");
+  }
+  const subscriptionIds = canonicalStrings(record.subscriptionIds, "subscriptionIds");
+  if (subscriptionIds.some((item) => !uuidPattern.test(item))) {
+    throw new Error("acceptance scope subscriptionIds are invalid");
+  }
+  const accessIds = canonicalStrings(record.accessIds, "accessIds");
+  if (accessIds.some((item) => !uuidPattern.test(item))) {
+    throw new Error("acceptance scope accessIds are invalid");
+  }
+  const publicSourceIds = canonicalStrings(record.publicSourceIds, "publicSourceIds");
+  const memoryRevisionIds = canonicalStrings(record.memoryRevisionIds, "memoryRevisionIds");
+  if (memoryRevisionIds.some((item) => !uuidPattern.test(item))) {
+    throw new Error("acceptance scope memoryRevisionIds are invalid");
+  }
+  if (record.memoryMode !== "private_owner" && record.memoryMode !== "disabled") {
+    throw new Error("acceptance scope memoryMode is invalid");
+  }
+  if (record.memoryMode === "disabled" && memoryRevisionIds.length > 0) {
+    throw new Error("disabled memory cannot carry revisions");
+  }
+  if (typeof record.webRequested !== "boolean" || typeof record.webEnabled !== "boolean") {
+    throw new Error("acceptance scope web state is invalid");
+  }
+  if (!record.webRequested && record.webEnabled) {
+    throw new Error("web cannot be enabled when it was not requested");
+  }
+  if (
+    record.provider !== "zai_coding_plan_official" &&
+    record.provider !== "deterministic_test" &&
+    record.provider !== "openai_compatible_custom"
+  ) {
+    throw new Error("acceptance scope provider is invalid");
+  }
+  if (record.fastModelId !== "glm-5-turbo" || record.mainModelId !== "glm-5-turbo") {
+    throw new Error("acceptance scope model is invalid");
+  }
+  const webTransportProvider = record.webTransportProvider;
+  const allowedDomains = record.allowedDomains;
+  if (record.webEnabled && webTransportProvider !== "tinyfish") {
+    throw new Error("enabled web scope requires tinyfish");
+  }
+  if (!record.webEnabled && webTransportProvider !== null) {
+    throw new Error("disabled web scope cannot carry a transport provider");
+  }
+  if (allowedDomains !== null && !Array.isArray(allowedDomains)) {
+    throw new Error("acceptance scope allowedDomains is invalid");
+  }
+  if (
+    allowedDomains !== null &&
+    (allowedDomains as readonly unknown[]).some(
+      (domain) => typeof domain !== "string" || domain === "",
+    )
+  ) {
+    throw new Error("acceptance scope allowedDomains is invalid");
+  }
+  if (!record.webEnabled && allowedDomains !== null) {
+    throw new Error("disabled web scope cannot carry domains");
+  }
+  if (allowedDomains !== null) {
+    const normalized = normalizeDomainAllowlist(allowedDomains as readonly string[]);
+    if (!normalized.ok || JSON.stringify(normalized.domains) !== JSON.stringify(allowedDomains)) {
+      throw new Error("acceptance scope allowedDomains must be canonical");
+    }
+  }
+  return {
+    userId: record.userId,
+    chatId: record.chatId,
+    companyId: record.companyId,
+    subscriptionIds,
+    accessIds,
+    publicSourceIds,
+    memoryMode: record.memoryMode,
+    memoryRevisionIds,
+    webRequested: record.webRequested,
+    webEnabled: record.webEnabled,
+    provider: record.provider,
+    fastModelId: record.fastModelId,
+    mainModelId: record.mainModelId,
+    webTransportProvider,
+    allowedDomains,
+  } as RunAcceptanceScope;
+};
+
+export const makeRunAcceptanceScope = (args: {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly subscriptionIds?: readonly string[];
+  readonly accessIds?: readonly string[];
+  readonly publicSourceIds?: readonly string[];
+  readonly memoryMode?: "private_owner" | "disabled";
+  readonly memoryRevisionIds?: readonly string[];
+  readonly webRequested?: boolean;
+  readonly webEnabled?: boolean;
+  readonly provider?: AiProviderServiceId;
+  readonly webTransportProvider?: "tinyfish" | null;
+  readonly allowedDomains?: readonly string[] | null;
+}): RunAcceptanceScope => {
+  const webRequested = args.webRequested ?? false;
+  const webEnabled = args.webEnabled ?? false;
+  return parseRunAcceptanceScope({
+    userId: args.userId,
+    chatId: args.chatId,
+    companyId: args.companyId,
+    subscriptionIds: [...(args.subscriptionIds ?? [])].sort(),
+    accessIds: [...(args.accessIds ?? [])].sort(),
+    publicSourceIds: [...(args.publicSourceIds ?? [])].sort(),
+    memoryMode: args.memoryMode ?? "private_owner",
+    memoryRevisionIds: [...(args.memoryRevisionIds ?? [])].sort(),
+    webRequested,
+    webEnabled,
+    provider: args.provider ?? "zai_coding_plan_official",
+    fastModelId: "glm-5-turbo",
+    mainModelId: "glm-5-turbo",
+    webTransportProvider: webEnabled ? (args.webTransportProvider ?? "tinyfish") : null,
+    allowedDomains: webEnabled ? (args.allowedDomains ?? null) : null,
+  });
+};
+
 export const AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT = 8;
 export const AI_WEB_MAX_DOMAIN_FILTERS_HARD_MAX = 32;
 
@@ -306,6 +503,7 @@ export const RequestWebUsage = Schema.Struct({
   resultCount: Schema.Number,
   responseBytes: Schema.Number,
   billedUnits: Schema.NullOr(Schema.Number),
+  durationMs: Schema.Number,
 });
 
 export const RunUsage = Schema.Struct({

@@ -3,7 +3,9 @@ import { randomBytes } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import {
   deriveEffectiveWebPolicy,
+  makeRunAcceptanceScope,
   normalizeDomainAllowlist,
+  type AiProviderServiceId,
   type EffectiveWebPolicy,
 } from "@brief/shared";
 import { Effect } from "effect";
@@ -13,11 +15,8 @@ export interface ChatRuntimeConfiguration {
   readonly authMode: "demo" | "clerk";
   readonly webResearchProvider: "tinyfish" | null;
   readonly aiWebMaxDomainFilters: number;
+  readonly aiProviderServiceId: AiProviderServiceId;
 }
-
-const ACCEPTANCE_PROVIDER = "zai_coding_plan_official" as const;
-const ACCEPTANCE_FAST_MODEL = "glm-5-turbo" as const;
-const ACCEPTANCE_MAIN_MODEL = "glm-5-turbo" as const;
 
 export interface ChatRuntimeReadIdentity {
   readonly mode: "demo" | "clerk";
@@ -603,6 +602,7 @@ const insertMessageRunAndJob = (
   userId: string,
   input: CreateChatRunInput,
   policy: EffectiveWebPolicy,
+  providerServiceId: AiProviderServiceId,
 ) =>
   Effect.gen(function* () {
     const selectedPublisherRows = yield* sql<{
@@ -633,7 +633,7 @@ const insertMessageRunAndJob = (
       order by selected.subscription_id::text, selected.access_id::text
     `;
     const selectedPublicRows = yield* sql<{ readonly sourceId: string }>`
-      select settings.source_id
+      select settings.source_id as "sourceId"
       from client_company_public_source_settings settings
       where settings.client_company_id = ${chat.company_id}
         and settings.enabled
@@ -651,27 +651,25 @@ const insertMessageRunAndJob = (
             order by memories.head_revision_id::text
           `
         : [];
-    const acceptanceScope = {
+    const acceptanceScope = makeRunAcceptanceScope({
       userId,
       chatId: chat.id,
       companyId: chat.company_id,
-      subscriptionIds: [...new Set(selectedPublisherRows.map((row) => row.subscriptionId))].sort(),
-      accessIds: [...new Set(selectedPublisherRows.map((row) => row.accessId))].sort(),
-      publicSourceIds: [...new Set(selectedPublicRows.map((row) => row.sourceId))].sort(),
+      subscriptionIds: [...new Set(selectedPublisherRows.map((row) => row.subscriptionId))],
+      accessIds: [...new Set(selectedPublisherRows.map((row) => row.accessId))],
+      publicSourceIds: [...new Set(selectedPublicRows.map((row) => row.sourceId))],
       memoryMode: chat.memory_mode,
-      memoryRevisionIds: [...new Set(memoryRows.map((row) => row.revisionId))].sort(),
+      memoryRevisionIds: [...new Set(memoryRows.map((row) => row.revisionId))],
       webRequested: input.webSearchEnabled,
       // Web is an explicit per-request choice. A company policy can only
       // authorize a requested path; it must not turn web on for a request
       // that opted out. Keep the disabled representation canonical so the
       // database and worker cannot mistake policy capability for acceptance.
       webEnabled: input.webSearchEnabled && policy.enabled,
-      provider: ACCEPTANCE_PROVIDER,
-      fastModelId: ACCEPTANCE_FAST_MODEL,
-      mainModelId: ACCEPTANCE_MAIN_MODEL,
+      provider: providerServiceId,
       webTransportProvider: input.webSearchEnabled && policy.enabled ? policy.provider : null,
       allowedDomains: input.webSearchEnabled && policy.enabled ? policy.allowedDomains : null,
-    } as const;
+    });
     const messageRows = yield* sql<{ readonly id: string; readonly created_at: Date }>`
       insert into chat_messages (chat_id, author, content)
       values (${chat.id}, 'user', ${input.text})
@@ -807,7 +805,14 @@ export const createUserMessageAndRun = (
         }
         const active = yield* findActiveRunConflict(userId, chat.id, organizationId);
         if (active !== null) return { kind: "conflict", active, chat } as const;
-        return yield* insertMessageRunAndJob(sql, chat, userId, input, policy);
+        return yield* insertMessageRunAndJob(
+          sql,
+          chat,
+          userId,
+          input,
+          policy,
+          config.aiProviderServiceId,
+        );
       }),
     );
   });

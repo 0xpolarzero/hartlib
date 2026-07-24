@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { publisherIssueAdvisoryLockKey } from "@brief/shared";
+import { makeRunAcceptanceScope, publisherIssueAdvisoryLockKey } from "@brief/shared";
 
 import { runMigrations } from "../../db/migrate";
 import {
@@ -133,57 +133,6 @@ interface Fixture {
   readonly memoryMode: "private_owner" | "disabled";
 }
 
-type TestAcceptanceScope = {
-  readonly userId: string;
-  readonly chatId: string;
-  readonly companyId: string;
-  readonly subscriptionIds: readonly string[];
-  readonly accessIds: readonly string[];
-  readonly publicSourceIds: readonly string[];
-  readonly memoryMode: "private_owner" | "disabled";
-  readonly memoryRevisionIds: readonly string[];
-  readonly webRequested: boolean;
-  readonly webEnabled: boolean;
-  readonly provider: "zai_coding_plan_official";
-  readonly fastModelId: "glm-5-turbo";
-  readonly mainModelId: "glm-5-turbo";
-  readonly webTransportProvider: "tinyfish" | null;
-  readonly allowedDomains: readonly string[] | null;
-};
-
-const testAcceptanceScope = (args: {
-  readonly userId: string;
-  readonly chatId: string;
-  readonly companyId: string;
-  readonly memoryMode?: "private_owner" | "disabled";
-  readonly subscriptionIds?: readonly string[];
-  readonly accessIds?: readonly string[];
-  readonly publicSourceIds?: readonly string[];
-  readonly memoryRevisionIds?: readonly string[];
-  readonly webRequested?: boolean;
-  readonly webEnabled?: boolean;
-  readonly allowedDomains?: readonly string[] | null;
-}): TestAcceptanceScope => {
-  const webEnabled = (args.webRequested ?? false) && (args.webEnabled ?? false);
-  return {
-    userId: args.userId,
-    chatId: args.chatId,
-    companyId: args.companyId,
-    subscriptionIds: [...(args.subscriptionIds ?? [])].sort(),
-    accessIds: [...(args.accessIds ?? [])].sort(),
-    publicSourceIds: [...(args.publicSourceIds ?? [])].sort(),
-    memoryMode: args.memoryMode ?? "private_owner",
-    memoryRevisionIds: [...(args.memoryRevisionIds ?? [])].sort(),
-    webRequested: args.webRequested ?? false,
-    webEnabled,
-    provider: "zai_coding_plan_official",
-    fastModelId: "glm-5-turbo",
-    mainModelId: "glm-5-turbo",
-    webTransportProvider: webEnabled ? "tinyfish" : null,
-    allowedDomains: webEnabled ? (args.allowedDomains ?? null) : null,
-  };
-};
-
 type TurnPlanMode = "clarify" | "single" | "fanout";
 
 const newCitationNamespace = (): string =>
@@ -256,7 +205,7 @@ const createFixture = (
         'en-US',
         'US',
         ${sql.json(
-          testAcceptanceScope({
+          makeRunAcceptanceScope({
             userId,
             chatId,
             companyId,
@@ -380,7 +329,7 @@ const createNextRun = (fixture: Fixture, content: string, mode: TurnPlanMode = "
       values (
         ${fixture.chatId}, ${fixture.userId}, ${userMessageId}, 'en-US', 'US',
         ${sql.json(
-          testAcceptanceScope({
+          makeRunAcceptanceScope({
             userId: fixture.userId,
             chatId: fixture.chatId,
             companyId: fixture.companyId,
@@ -5904,7 +5853,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               values (
                 ${fixture.chatId}, ${fixture.userId}, ${ids.messageId}, 'en-US', 'US',
                 ${sql.json(
-                  testAcceptanceScope({
+                  makeRunAcceptanceScope({
                     userId: fixture.userId,
                     chatId: fixture.chatId,
                     companyId: fixture.companyId,

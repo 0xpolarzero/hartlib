@@ -210,6 +210,8 @@ const ApiEnvironment = Schema.Struct({
   AI_STREAM_POLL_MS: NumberWithDefault(300),
   AI_STREAM_KEEPALIVE_MS: NumberWithDefault(15_000),
   TINYFISH_API_KEY: StringWithDefault(""),
+  AI_E2E_FAKE_PROVIDER: BooleanWithDefault(false),
+  AI_BASE_URL: StringWithDefault(ZAI_CODING_PLAN_BASE_URL),
   AI_WEB_MAX_DOMAIN_FILTERS: NumberWithDefault(AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT),
   AUTH_MODE: Schema.optional(Schema.String),
   DEMO_USER_ID: StringWithDefault("demo-user"),
@@ -242,6 +244,10 @@ export interface ApiConfig {
   readonly aiStreamKeepAliveMs: number;
   readonly webResearchProvider: "tinyfish" | null;
   readonly aiWebMaxDomainFilters: number;
+  readonly aiProviderServiceId:
+    | "zai_coding_plan_official"
+    | "deterministic_test"
+    | "openai_compatible_custom";
   readonly authMode: "demo" | "clerk";
   readonly demoUserId: string;
   readonly clerkSecretKey: string;
@@ -280,6 +286,10 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
       "AI_STREAM_KEEPALIVE_MS",
       raw.AI_STREAM_KEEPALIVE_MS,
       WORKER_NUMERIC_SETTING_HARD_MAXIMA.AI_STREAM_KEEPALIVE_MS,
+    );
+    const aiBaseUrl = yield* parseCredentialFreeHttpsBaseUrl(
+      "AI_BASE_URL",
+      raw.AI_BASE_URL.trim() === "" ? ZAI_CODING_PLAN_BASE_URL : raw.AI_BASE_URL.trim(),
     );
     const publisherObjectStorageEndpoint = yield* parseObjectStorageEndpoint(
       "RAILWAY_BUCKET_ENDPOINT",
@@ -385,6 +395,12 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
       aiStreamKeepAliveMs: raw.AI_STREAM_KEEPALIVE_MS,
       webResearchProvider: raw.TINYFISH_API_KEY.trim() === "" ? null : "tinyfish",
       aiWebMaxDomainFilters: raw.AI_WEB_MAX_DOMAIN_FILTERS,
+      aiProviderServiceId:
+        raw.AI_E2E_FAKE_PROVIDER
+          ? "deterministic_test"
+          : aiBaseUrl === ZAI_CODING_PLAN_BASE_URL
+            ? "zai_coding_plan_official"
+            : "openai_compatible_custom",
       authMode,
       demoUserId: raw.DEMO_USER_ID,
       clerkSecretKey: raw.CLERK_SECRET_KEY,
