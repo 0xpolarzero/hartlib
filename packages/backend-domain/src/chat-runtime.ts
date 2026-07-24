@@ -616,7 +616,13 @@ const insertMessageRunAndJob = (
         on grants.access_id = selected.access_id
        and grants.client_company_id = selected.client_company_id
        and grants.user_id = ${userId}
-       and grants.revoked_at is null
+       and grants.granted_at <= now()
+       and (grants.revoked_at is null or grants.revoked_at > now())
+      join client_company_memberships membership
+        on membership.company_id = grants.client_company_id
+       and membership.user_id = grants.user_id
+       and membership.revoked_at is null
+       and membership.created_at <= now()
       join client_subscription_accesses accesses
         on accesses.id = selected.access_id
        and accesses.client_company_id = selected.client_company_id
@@ -655,12 +661,16 @@ const insertMessageRunAndJob = (
       memoryMode: chat.memory_mode,
       memoryRevisionIds: [...new Set(memoryRows.map((row) => row.revisionId))].sort(),
       webRequested: input.webSearchEnabled,
-      webEnabled: policy.enabled,
+      // Web is an explicit per-request choice. A company policy can only
+      // authorize a requested path; it must not turn web on for a request
+      // that opted out. Keep the disabled representation canonical so the
+      // database and worker cannot mistake policy capability for acceptance.
+      webEnabled: input.webSearchEnabled && policy.enabled,
       provider: ACCEPTANCE_PROVIDER,
       fastModelId: ACCEPTANCE_FAST_MODEL,
       mainModelId: ACCEPTANCE_MAIN_MODEL,
-      webTransportProvider: policy.enabled ? policy.provider : null,
-      allowedDomains: policy.enabled ? policy.allowedDomains : null,
+      webTransportProvider: input.webSearchEnabled && policy.enabled ? policy.provider : null,
+      allowedDomains: input.webSearchEnabled && policy.enabled ? policy.allowedDomains : null,
     } as const;
     const messageRows = yield* sql<{ readonly id: string; readonly created_at: Date }>`
       insert into chat_messages (chat_id, author, content)
@@ -715,6 +725,7 @@ export const createUserMessageAndRun = (
                 join client_company_memberships membership
                   on membership.company_id = chat.company_id and membership.user_id = ${userId}
                  and membership.revoked_at is null
+                 and membership.created_at <= now()
                 where chat.id = ${chatId} and chat.user_id = ${userId}
                   and chat.deleted_at is null
                   and company.recovery_deleted_at is null
@@ -731,9 +742,12 @@ export const createUserMessageAndRun = (
                         from client_employee_subscription_grants grant_row
                         join client_subscription_accesses access_row
                           on access_row.id = grant_row.access_id
+                         and access_row.client_company_id = grant_row.client_company_id
                         where grant_row.access_id = selected.access_id
+                          and grant_row.client_company_id = chat.company_id
                           and grant_row.user_id = ${userId}
-                          and grant_row.revoked_at is null
+                          and grant_row.granted_at <= now()
+                          and (grant_row.revoked_at is null or grant_row.revoked_at > now())
                           and access_row.state in ('active', 'ending', 'paused')
                       )
                   )
@@ -753,6 +767,7 @@ export const createUserMessageAndRun = (
             where membership.company_id = ${chat.company_id}
               and membership.user_id = ${userId}
               and membership.revoked_at is null
+              and membership.created_at <= now()
               and company.recovery_deleted_at is null and company.purged_at is null
               and (
                 ${organizationId}::text is null
@@ -768,10 +783,12 @@ export const createUserMessageAndRun = (
                     from client_employee_subscription_grants grant_row
                     join client_subscription_accesses access_row
                       on access_row.id = grant_row.access_id
+                     and access_row.client_company_id = grant_row.client_company_id
                     where grant_row.access_id = selected.access_id
                       and grant_row.client_company_id = membership.company_id
                       and grant_row.user_id = membership.user_id
-                      and grant_row.revoked_at is null
+                      and grant_row.granted_at <= now()
+                      and (grant_row.revoked_at is null or grant_row.revoked_at > now())
                       and access_row.state in ('active', 'ending', 'paused')
                   )
               )
