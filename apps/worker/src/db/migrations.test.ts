@@ -154,12 +154,30 @@ const provisionClientUser = (userId: string) =>
     return companyId;
   });
 
+type TestAcceptanceScope = {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly subscriptionIds: readonly string[];
+  readonly accessIds: readonly string[];
+  readonly publicSourceIds: readonly string[];
+  readonly memoryMode: "private_owner" | "disabled";
+  readonly memoryRevisionIds: readonly string[];
+  readonly webRequested: boolean;
+  readonly webEnabled: boolean;
+  readonly provider: "zai_coding_plan_official";
+  readonly fastModelId: "glm-5-turbo";
+  readonly mainModelId: "glm-5-turbo";
+  readonly webTransportProvider: "tinyfish" | null;
+  readonly allowedDomains: readonly string[] | null;
+};
+
 const testAcceptanceScope = (args: {
   readonly userId: string;
   readonly chatId: string;
   readonly companyId: string;
   readonly memoryMode?: "private_owner" | "disabled";
-}) => ({
+}): TestAcceptanceScope => ({
   userId: args.userId,
   chatId: args.chatId,
   companyId: args.companyId,
@@ -3071,11 +3089,13 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             ) values (
               ${upgradeRunId}, ${upgradeChatId}, ${upgradeUserId}, ${upgradeUserMessageId},
               'en-US', 'US',
-              ${sql.json(testAcceptanceScope({
-                userId: upgradeUserId,
-                chatId: upgradeChatId,
-                companyId: upgradeCompanyId,
-              }))},
+              ${sql.json(
+                testAcceptanceScope({
+                  userId: upgradeUserId,
+                  chatId: upgradeChatId,
+                  companyId: upgradeCompanyId,
+                }),
+              )},
               decode(${upgradeNonce.toString("base64")}, 'base64'),
               ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })}, now()
             )
@@ -5013,12 +5033,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               acceptance_scope, citation_nonce, effective_web_policy, finished_at
             ) values (
               ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
-              ${sql.json(testAcceptanceScope({
-                userId: ids.user,
-                chatId: ids.chat,
-                companyId: ids.company,
-                memoryMode: "private_owner",
-              }))},
+              ${sql.json(
+                testAcceptanceScope({
+                  userId: ids.user,
+                  chatId: ids.chat,
+                  companyId: ids.company,
+                  memoryMode: "private_owner",
+                }),
+              )},
               decode(${nonce.toString("base64")}, 'base64'),
               ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
               now()

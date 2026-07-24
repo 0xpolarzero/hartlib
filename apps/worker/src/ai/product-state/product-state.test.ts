@@ -5,7 +5,23 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { publisherIssueAdvisoryLockKey } from "@brief/shared";
 
 import { runMigrations } from "../../db/migrate";
-import { memoryExtractionSha256Hex } from "../runtime/canonicalization";
+import {
+  chatMessageEvidenceIdentity,
+  memoryEvidenceIdentity,
+  memoryExtractionSha256Hex,
+  namespacedDocumentEvidenceIdentity,
+  sha256Base64Url,
+  webEvidenceIdentity,
+} from "../runtime/canonicalization";
+import {
+  providerRequestSourceExposureProofs,
+  providerRequestSourceExposureProofBindings,
+  providerRequestSha256Hex,
+  providerVisibleSourceExposureProofSha256Hex,
+  type CodeOwnedSourceExposureProof,
+  type ProviderVisibleSourceExposureProofBinding,
+} from "../runtime/provider-request";
+import { resolveRegisteredModel } from "../runtime/model-registry";
 import type {
   AnswerLaneResult,
   FinalSourceRecord,
@@ -112,14 +128,94 @@ interface Fixture {
   readonly chatId: string;
   readonly userMessageId: string;
   readonly runId: string;
+  readonly citationNamespace: string;
+  readonly mode: TurnPlanMode;
+  readonly memoryMode: "private_owner" | "disabled";
 }
 
-const createFixture = (suffix: string): Effect.Effect<Fixture, unknown, PgClient.PgClient> =>
+type TestAcceptanceScope = {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly subscriptionIds: readonly string[];
+  readonly accessIds: readonly string[];
+  readonly publicSourceIds: readonly string[];
+  readonly memoryMode: "private_owner" | "disabled";
+  readonly memoryRevisionIds: readonly string[];
+  readonly webRequested: boolean;
+  readonly webEnabled: boolean;
+  readonly provider: "zai_coding_plan_official";
+  readonly fastModelId: "glm-5-turbo";
+  readonly mainModelId: "glm-5-turbo";
+  readonly webTransportProvider: "tinyfish" | null;
+  readonly allowedDomains: readonly string[] | null;
+};
+
+const testAcceptanceScope = (args: {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly memoryMode?: "private_owner" | "disabled";
+  readonly subscriptionIds?: readonly string[];
+  readonly accessIds?: readonly string[];
+  readonly publicSourceIds?: readonly string[];
+  readonly memoryRevisionIds?: readonly string[];
+  readonly webRequested?: boolean;
+  readonly webEnabled?: boolean;
+  readonly allowedDomains?: readonly string[] | null;
+}): TestAcceptanceScope => {
+  const webEnabled = (args.webRequested ?? false) && (args.webEnabled ?? false);
+  return {
+    userId: args.userId,
+    chatId: args.chatId,
+    companyId: args.companyId,
+    subscriptionIds: [...(args.subscriptionIds ?? [])].sort(),
+    accessIds: [...(args.accessIds ?? [])].sort(),
+    publicSourceIds: [...(args.publicSourceIds ?? [])].sort(),
+    memoryMode: args.memoryMode ?? "private_owner",
+    memoryRevisionIds: [...(args.memoryRevisionIds ?? [])].sort(),
+    webRequested: args.webRequested ?? false,
+    webEnabled,
+    provider: "zai_coding_plan_official",
+    fastModelId: "glm-5-turbo",
+    mainModelId: "glm-5-turbo",
+    webTransportProvider: webEnabled ? "tinyfish" : null,
+    allowedDomains: webEnabled ? (args.allowedDomains ?? null) : null,
+  };
+};
+
+type TurnPlanMode = "clarify" | "single" | "fanout";
+
+const newCitationNamespace = (): string =>
+  `cn_${crypto.randomUUID().replaceAll("-", "").slice(0, 22)}`;
+
+const turnPlanPayload = (mode: TurnPlanMode) =>
+  mode === "clarify"
+    ? { mode, question: "current question" }
+    : mode === "single"
+      ? { mode, question: "current question", relevantTurnIds: [] }
+      : {
+          mode,
+          question: "current question",
+          topics: [
+            { topicId: "t1" as const, question: "first topic", relevantTurnIds: [] },
+            { topicId: "t2" as const, question: "second topic", relevantTurnIds: [] },
+          ],
+        };
+
+const createFixture = (
+  suffix: string,
+  mode: TurnPlanMode = "single",
+  memoryMode: "private_owner" | "disabled" = "private_owner",
+  webRequested = true,
+  webEnabled = webRequested,
+): Effect.Effect<Fixture, unknown, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const companyId = crypto.randomUUID();
     const chatId = crypto.randomUUID();
     const userId = `product-state-${suffix}-${crypto.randomUUID()}`;
+    const citationNamespace = newCitationNamespace();
 
     yield* sql`
       insert into client_companies (id, name)
@@ -134,8 +230,8 @@ const createFixture = (suffix: string): Effect.Effect<Fixture, unknown, PgClient
       values (${companyId}, true)
     `;
     yield* sql`
-      insert into chats (id, company_id, user_id)
-      values (${chatId}, ${companyId}, ${userId})
+      insert into chats (id, company_id, user_id, memory_mode)
+      values (${chatId}, ${companyId}, ${userId}, ${memoryMode})
     `;
     const messages = yield* sql<{ readonly id: string }>`
       insert into chat_messages (chat_id, author, content)
@@ -150,9 +246,8 @@ const createFixture = (suffix: string): Effect.Effect<Fixture, unknown, PgClient
         user_message_id,
         locale,
         market,
-        web_search_enabled,
-        effective_web_policy,
-        citation_nonce
+        acceptance_scope,
+        citation_namespace
       )
       values (
         ${chatId},
@@ -160,9 +255,17 @@ const createFixture = (suffix: string): Effect.Effect<Fixture, unknown, PgClient
         ${userMessageId},
         'en-US',
         'US',
-        false,
-        ${sql.json({ enabled: true, provider: "tinyfish", allowedDomains: null })},
-        decode(${"00".repeat(16)}, 'hex')
+        ${sql.json(
+          testAcceptanceScope({
+            userId,
+            chatId,
+            companyId,
+            memoryMode,
+            webRequested,
+            webEnabled,
+          }),
+        )},
+        ${citationNamespace}
       )
       returning id::text
     `;
@@ -178,12 +281,12 @@ const createFixture = (suffix: string): Effect.Effect<Fixture, unknown, PgClient
         observation_key, kind, payload
       )
       values (
-        ${runId}, ${chatId}, 'resolve-conversation', 0, 0,
-        'fixture:conversation_resolution', 'conversation_resolution',
-        ${sql.json({ mode: "continue", selectedTurnIds: [] })}
+        ${runId}, ${chatId}, 'plan-turn', 0, 0,
+        'fixture:turn_plan', 'turn_plan',
+        ${sql.json(turnPlanPayload(mode))}
       )
     `;
-    return { companyId, userId, chatId, userMessageId, runId };
+    return { companyId, userId, chatId, userMessageId, runId, citationNamespace, mode, memoryMode };
   });
 
 const persistMemoryArtifact = (
@@ -191,6 +294,46 @@ const persistMemoryArtifact = (
   result: MemoryExtractionResult,
 ): Effect.Effect<MemoryExtractionArtifact, unknown, PgClient.PgClient> =>
   Effect.gen(function* () {
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId: fixture.chatId,
+      emittingTask: "memory-extract",
+      loopIteration: 0,
+      attempt: 1,
+      observationKey: "product-state-test:memory-measurement",
+      kind: "provider_request_measurement",
+      payload: {
+        providerRequestIndex: 0,
+        agentRole: "memory_extractor",
+        modelId: "glm-5-turbo",
+        requestSha256Hex: "c".repeat(64),
+        sourceExposureProofSha256Hexes: [],
+        sourceExposureProofBindings: [],
+        inputTokens: 10,
+        requestedOutputTokens: 2048,
+        usableInputTokens: 6144,
+        contextWindow: 8192,
+        passed: true,
+      },
+    });
+    yield* insertAiRunUsage({
+      runId: fixture.runId,
+      taskId: "memory-extract",
+      loopIteration: 0,
+      attempt: 1,
+      providerRequestIndex: 0,
+      agentRole: "memory_extractor",
+      modelId: "glm-5-turbo",
+      providerServiceId: "zai_coding_plan_official",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 4,
+        cachedTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 14,
+        stopReason: "stop",
+      },
+    });
     const extractionSha256Hex = memoryExtractionSha256Hex(result);
     const observationKey = `product-state-test:memory-extraction:${extractionSha256Hex}`;
     yield* insertAiObservation({
@@ -219,9 +362,10 @@ const persistMemoryArtifact = (
     };
   });
 
-const createNextRun = (fixture: Fixture, content: string) =>
+const createNextRun = (fixture: Fixture, content: string, mode: TurnPlanMode = "single") =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
+    const citationNamespace = newCitationNamespace();
     const messages = yield* sql<{ readonly id: string }>`
       insert into chat_messages (chat_id, author, content)
       values (${fixture.chatId}, 'user', ${content})
@@ -231,12 +375,21 @@ const createNextRun = (fixture: Fixture, content: string) =>
     const runs = yield* sql<{ readonly id: string }>`
       insert into ai_runs (
         chat_id, initiating_user_id, user_message_id, locale, market,
-        web_search_enabled, effective_web_policy, citation_nonce
+        acceptance_scope, citation_namespace
       )
       values (
-        ${fixture.chatId}, ${fixture.userId}, ${userMessageId}, 'en-US', 'US', false,
-        ${sql.json({ enabled: true, provider: "tinyfish", allowedDomains: null })},
-        decode(${"00".repeat(16)}, 'hex')
+        ${fixture.chatId}, ${fixture.userId}, ${userMessageId}, 'en-US', 'US',
+        ${sql.json(
+          testAcceptanceScope({
+            userId: fixture.userId,
+            chatId: fixture.chatId,
+            companyId: fixture.companyId,
+            memoryMode: fixture.memoryMode,
+            webRequested: true,
+            webEnabled: true,
+          }),
+        )},
+        ${citationNamespace}
       )
       returning id::text
     `;
@@ -252,38 +405,816 @@ const createNextRun = (fixture: Fixture, content: string) =>
         observation_key, kind, payload
       )
       values (
-        ${runId}, ${fixture.chatId}, 'resolve-conversation', 0, 0,
-        'fixture:conversation_resolution', 'conversation_resolution',
-        ${sql.json({ mode: "continue", selectedTurnIds: [] })}
+        ${runId}, ${fixture.chatId}, 'plan-turn', 0, 0,
+        'fixture:turn_plan', 'turn_plan',
+        ${sql.json(turnPlanPayload(mode))}
       )
     `;
-    return { ...fixture, userMessageId, runId };
+    return { ...fixture, userMessageId, runId, citationNamespace, mode };
   });
 
-const seedSingleObservability = (fixture: Fixture) =>
+const sourceKeyFor = (fixture: Pick<Fixture, "citationNamespace">, ordinal = 1): string =>
+  `k_${fixture.citationNamespace}_${ordinal}`;
+
+const seedSingleObservability = (
+  fixture: Fixture,
+  options: {
+    readonly requestSha256Hex?: string;
+    readonly answerRequestSha256Hex?: string;
+    readonly sourceExposureProofSha256Hexes?: readonly string[];
+    readonly planSourceExposureProofSha256Hexes?: readonly string[];
+    readonly answerSourceExposureProofSha256Hexes?: readonly string[];
+    readonly planSourceExposureProofBindings?: readonly {
+      readonly providerSerializationProofSha256Hex: string;
+      readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+    }[];
+    readonly answerSourceExposureProofBindings?: readonly {
+      readonly providerSerializationProofSha256Hex: string;
+      readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+    }[];
+    readonly includeAnswerMeasurement?: boolean;
+    readonly includeAnswerContext?: boolean;
+    readonly includeMemorySelectorMeasurement?: boolean;
+    readonly contextSources?: readonly {
+      readonly sourceKey: string;
+      readonly candidateId?: string;
+      readonly kind: "document" | "chat_message" | "memory" | "web";
+      readonly ranges: readonly { readonly charStart: number; readonly charEnd: number }[];
+      readonly label?: string | null;
+      readonly documentSourceId?: string;
+      readonly documentId?: string;
+      readonly versionId?: string;
+      readonly contentHash?: string;
+      readonly publisherIssueId?: string;
+      readonly publisherDocumentId?: string;
+      readonly publisherExtractionId?: string;
+      readonly contentItemIdentity?: string;
+    }[];
+  } = {},
+) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
-    for (const kind of [
-      "execution_plan",
-      "retrieval_manifest",
-      "context_measurement",
-      "context_serialized",
-    ]) {
+    const contextSources = options.contextSources ?? [];
+    const selectorStateRows = yield* sql<{
+      readonly memoryMode: "private_owner" | "disabled";
+      readonly webRequested: boolean;
+      readonly webPolicyEnabled: boolean;
+      readonly activeMemoryCount: number;
+    }>`
+      select runs.acceptance_scope->>'memoryMode' as "memoryMode",
+             coalesce((runs.acceptance_scope->>'webRequested')::boolean, false) as "webRequested",
+             coalesce((runs.acceptance_scope->>'webEnabled')::boolean, false) as "webPolicyEnabled",
+             (
+               select count(*)::int
+               from user_memories memories
+               where memories.user_id = runs.initiating_user_id
+                 and memories.deleted_at is null
+                 and memories.provenance_only_at is null
+                 and memories.kind is not null
+                 and memories.content is not null
+                 and memories.head_revision_id is not null
+             ) as "activeMemoryCount"
+      from ai_runs runs
+      join chats on chats.id = runs.chat_id
+      where runs.id = ${fixture.runId}
+    `;
+    const selectorState = selectorStateRows[0]!;
+    const answerExposureInputs = contextSources.map((source, sourceOrdinal) => ({
+      runId: fixture.runId,
+      taskId: "single-answer",
+      loopIteration: 0,
+      attempt: 0,
+      providerRequestIndex: 0,
+      providerRequestSha256Hex: options.answerRequestSha256Hex ?? "b".repeat(64),
+      sourceKind: source.kind,
+      logicalSourceIdentity: source.candidateId ?? `candidate:${source.sourceKey}`,
+      contentItemIdentity:
+        source.contentItemIdentity ??
+        (source.kind === "chat_message"
+          ? fixture.userMessageId
+          : source.kind === "document"
+            ? `${source.candidateId ?? `candidate:${source.sourceKey}`}:${source.versionId ?? "fixture-version"}:${sha256Base64Url(JSON.stringify(source.ranges))}`
+            : source.sourceKey),
+      exposureStage: "answer_serialized",
+      visibleTokenCount: 3,
+      ...(source.publisherIssueId === undefined
+        ? {}
+        : { publisherIssueId: source.publisherIssueId }),
+      ...(source.publisherDocumentId === undefined
+        ? {}
+        : { publisherDocumentId: source.publisherDocumentId }),
+      providerSerializationProofBinding: {
+        messageIndex: 0,
+        sourceOrdinal,
+        serializedField: `messages[0].content.evidence.source[${sourceOrdinal}](${source.sourceKey})`,
+        orderedSourceDescriptor: `fixture:${source.sourceKey}`,
+      },
+      ...(source.kind === "document"
+        ? {
+            documentReconstruction: {
+              sourceId: source.documentSourceId ?? "public:fixture-source",
+              documentId: source.documentId ?? "fixture-document",
+              versionId: source.versionId ?? "fixture-version",
+              contentHash: source.contentHash ?? "f".repeat(64),
+              ranges: source.ranges,
+              ...(source.publisherExtractionId === undefined
+                ? {}
+                : { publisherExtractionId: source.publisherExtractionId }),
+            },
+          }
+        : {}),
+    }));
+    const answerExposureProofs = answerExposureInputs.map((source) =>
+      providerVisibleSourceExposureProofSha256Hex(
+        {
+          sourceKind: source.sourceKind,
+          logicalSourceIdentity: source.logicalSourceIdentity,
+          contentItemIdentity: source.contentItemIdentity,
+          exposureStage: source.exposureStage,
+          visibleTokenCount: source.visibleTokenCount,
+        },
+        source.providerSerializationProofBinding,
+      ),
+    );
+    const answerExposureBindings = answerExposureInputs.map((source, index) => ({
+      providerSerializationProofSha256Hex: answerExposureProofs[index]!,
+      providerSerializationProofBinding: source.providerSerializationProofBinding,
+    }));
+    const bindingsFor = (
+      proofs: readonly string[],
+      explicit: readonly {
+        readonly providerSerializationProofSha256Hex: string;
+        readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+      }[] = [],
+    ) =>
+      [...answerExposureBindings, ...explicit].filter((binding) =>
+        proofs.includes(binding.providerSerializationProofSha256Hex),
+      );
+    const planProofs =
+      options.planSourceExposureProofSha256Hexes ?? options.sourceExposureProofSha256Hexes ?? [];
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId: fixture.chatId,
+      emittingTask: "plan-turn",
+      loopIteration: 0,
+      attempt: 0,
+      observationKey: "fixture:plan-turn:measurement",
+      kind: "provider_request_measurement",
+      payload: {
+        providerRequestIndex: 0,
+        agentRole: "plan_turn",
+        modelId: "glm-5-turbo",
+        requestSha256Hex: options.requestSha256Hex ?? "a".repeat(64),
+        sourceExposureProofSha256Hexes:
+          options.planSourceExposureProofSha256Hexes ??
+          options.sourceExposureProofSha256Hexes ??
+          [],
+        sourceExposureProofBindings: bindingsFor(
+          planProofs,
+          options.planSourceExposureProofBindings,
+        ),
+        inputTokens: 10,
+        requestedOutputTokens: 2048,
+        usableInputTokens: 6144,
+        contextWindow: 8192,
+        passed: true,
+      },
+    });
+    yield* insertAiRunUsage({
+      runId: fixture.runId,
+      taskId: "plan-turn",
+      loopIteration: 0,
+      attempt: 0,
+      providerRequestIndex: 0,
+      agentRole: "plan_turn",
+      modelId: "glm-5-turbo",
+      providerServiceId: "zai_coding_plan_official",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 4,
+        cachedTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 14,
+        stopReason: "stop",
+      },
+    });
+    if (fixture.mode === "clarify") return;
+    if (options.includeAnswerMeasurement !== false) {
+      yield* insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: "single-answer",
+        loopIteration: 0,
+        attempt: 0,
+        observationKey: "fixture:single-answer:measurement",
+        kind: "provider_request_measurement",
+        payload: {
+          providerRequestIndex: 0,
+          agentRole: "direct_answer",
+          modelId: "glm-5-turbo",
+          requestSha256Hex: options.answerRequestSha256Hex ?? "b".repeat(64),
+          sourceExposureProofSha256Hexes:
+            options.answerSourceExposureProofSha256Hexes ??
+            options.sourceExposureProofSha256Hexes ??
+            answerExposureProofs,
+          sourceExposureProofBindings: bindingsFor(
+            options.answerSourceExposureProofSha256Hexes ??
+              options.sourceExposureProofSha256Hexes ??
+              answerExposureProofs,
+            options.answerSourceExposureProofBindings,
+          ),
+          inputTokens: 10,
+          requestedOutputTokens: 2048,
+          usableInputTokens: 6144,
+          contextWindow: 8192,
+          passed: true,
+        },
+      });
+      yield* insertAiRunUsage({
+        runId: fixture.runId,
+        taskId: "single-answer",
+        loopIteration: 0,
+        attempt: 0,
+        providerRequestIndex: 0,
+        agentRole: "direct_answer",
+        modelId: "glm-5-turbo",
+        providerServiceId: "zai_coding_plan_official",
+        usage: {
+          inputTokens: 10,
+          outputTokens: 4,
+          cachedTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 14,
+          stopReason: "stop",
+        },
+      });
+    }
+    for (const [taskId, selectorRole] of [
+      ["single-retrieve-internal", "internal"],
+      ["single-select-memories", "memory"],
+      ["single-retrieve-web", "web"],
+    ] as const) {
+      const noCallReason =
+        selectorRole === "memory"
+          ? selectorState.memoryMode === "disabled"
+            ? "memory_mode_disabled"
+            : options.includeMemorySelectorMeasurement === false ||
+                selectorState.activeMemoryCount === 0
+              ? "no_active_memories"
+              : undefined
+          : selectorRole === "web" && !selectorState.webRequested
+            ? "web_not_requested"
+            : selectorRole === "web" && !selectorState.webPolicyEnabled
+              ? "web_policy_disabled"
+              : undefined;
+      if (noCallReason !== undefined) {
+        yield* sql`
+          insert into ai_observations (
+            run_id, chat_id, emitting_task, loop_iteration, attempt,
+            observation_key, kind, payload
+          )
+          values (
+            ${fixture.runId}, ${fixture.chatId}, ${taskId}, 0, 0,
+            ${`${taskId}:0:0:retrieval_manifest:result`}, 'retrieval_manifest',
+            ${sql.json({
+              selectorRole,
+              references: [],
+              noCallReason,
+            })}
+          )
+        `;
+        continue;
+      }
+      const agentRole =
+        selectorRole === "internal"
+          ? "internal_retrieval"
+          : selectorRole === "memory"
+            ? "memory_selector"
+            : "web_research";
+      yield* insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: taskId,
+        loopIteration: 0,
+        attempt: 0,
+        observationKey: `fixture:${taskId}:measurement`,
+        kind: "provider_request_measurement",
+        payload: {
+          providerRequestIndex: 0,
+          agentRole,
+          modelId: "glm-5-turbo",
+          requestSha256Hex: "e".repeat(64),
+          sourceExposureProofSha256Hexes: [],
+          sourceExposureProofBindings: [],
+          inputTokens: 10,
+          requestedOutputTokens: 2048,
+          usableInputTokens: 6144,
+          contextWindow: 8192,
+          passed: true,
+        },
+      });
+      yield* insertAiRunUsage({
+        runId: fixture.runId,
+        taskId,
+        loopIteration: 0,
+        attempt: 0,
+        providerRequestIndex: 0,
+        agentRole,
+        modelId: "glm-5-turbo",
+        providerServiceId: "zai_coding_plan_official",
+        usage: {
+          inputTokens: 10,
+          outputTokens: 4,
+          cachedTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 14,
+          stopReason: "stop",
+        },
+      });
       yield* sql`
         insert into ai_observations (
           run_id, chat_id, emitting_task, loop_iteration, attempt,
           observation_key, kind, payload
         )
         values (
-          ${fixture.runId}, ${fixture.chatId}, 'fixture', 0, 0,
-          ${`fixture:${kind}`}, ${kind}, '{}'::jsonb
+          ${fixture.runId}, ${fixture.chatId}, ${taskId}, 0, 0,
+          ${`fixture:${taskId}:retrieval_manifest`}, 'retrieval_manifest',
+          ${sql.json({ selectorRole, references: [] })}
         )
+      `;
+    }
+    for (const exposure of answerExposureInputs) {
+      yield* insertAiSourceExposure(exposure);
+    }
+    const contextLedger = {
+      requestKind: "direct",
+      modelId: "glm-5-turbo",
+      requestSha256Hex: options.answerRequestSha256Hex ?? "b".repeat(64),
+      inputTokens: 10,
+      usableInputTokens: 6144,
+      requestedOutputTokens: 2048,
+      selectedConversation: [],
+      question: "current question",
+      gaps: [],
+      sources: contextSources.map((source, index) => ({
+        candidateId: source.candidateId ?? `fixture-candidate-${index}`,
+        sourceKey: source.sourceKey,
+        kind: source.kind,
+        purpose: "fixture",
+        label: source.label ?? (source.kind === "chat_message" ? "Question" : "Fixture source"),
+        ranges: source.ranges,
+      })),
+    };
+    if (options.includeAnswerContext !== false) {
+      yield* sql`
+      insert into ai_observations (
+        run_id, chat_id, emitting_task, loop_iteration, attempt,
+        observation_key, kind, payload
+      )
+      values (
+        ${fixture.runId}, ${fixture.chatId}, 'single-measure', 0, 0,
+        'fixture:context_measurement', 'context_measurement',
+        ${sql.json({
+          consumerTaskId: "single-answer",
+          mandatoryInputTokens: 10,
+          discretionaryInputTokens: 0,
+          totalInputTokens: 10,
+          requestedOutputTokens: 2048,
+          usableInputTokens: 6144,
+          contextWindow: 8192,
+          status: "ready",
+          reductionRan: false,
+          reductionFeedback: [],
+          restrictedContextLedger: contextLedger,
+        })}
+      )
+      `;
+      yield* sql`
+      insert into ai_observations (
+        run_id, chat_id, emitting_task, loop_iteration, attempt,
+        observation_key, kind, payload
+      )
+      values (
+        ${fixture.runId}, ${fixture.chatId}, 'single-answer', 0, 0,
+        'fixture:context_serialized', 'context_serialized',
+        ${sql.json({
+          consumerTaskId: "single-answer",
+          sourceKeys: contextSources.map((source) => source.sourceKey),
+          restrictedContextLedger: contextLedger,
+          terminalUsageCoordinate: {
+            taskId: "single-answer",
+            loopIteration: 0,
+            attempt: 0,
+            providerRequestIndex: 0,
+          },
+        })}
+      )
       `;
     }
   });
 
+const failedDirectContextLedger = (requestSha256Hex: string) => ({
+  requestKind: "direct" as const,
+  modelId: "glm-5-turbo",
+  requestSha256Hex,
+  inputTokens: 10,
+  usableInputTokens: 6144,
+  requestedOutputTokens: 2048,
+  selectedConversation: [],
+  question: "current question",
+  gaps: [],
+  sources: [],
+});
+
+const failedTopicContextLedger = (requestSha256Hex: string) => ({
+  requestKind: "topic" as const,
+  topicId: "t1" as const,
+  modelId: "glm-5-turbo",
+  requestSha256Hex,
+  inputTokens: 10,
+  usableInputTokens: 6144,
+  requestedOutputTokens: 2048,
+  selectedConversation: [],
+  question: "first topic",
+  gaps: [],
+  sources: [],
+});
+
+const insertProviderMeasurementAndUsage = (
+  fixture: Fixture,
+  options: {
+    readonly taskId: string;
+    readonly agentRole: string;
+    readonly loopIteration: number;
+    readonly attempt: number;
+    readonly requestSha256Hex: string;
+    readonly withUsage?: boolean;
+  },
+) =>
+  Effect.gen(function* () {
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId: fixture.chatId,
+      emittingTask: options.taskId,
+      loopIteration: options.loopIteration,
+      attempt: options.attempt,
+      observationKey: `fixture:${options.taskId}:measurement:${options.loopIteration}:${options.attempt}`,
+      kind: "provider_request_measurement",
+      payload: {
+        providerRequestIndex: 0,
+        agentRole: options.agentRole,
+        modelId: "glm-5-turbo",
+        requestSha256Hex: options.requestSha256Hex,
+        sourceExposureProofSha256Hexes: [],
+        sourceExposureProofBindings: [],
+        inputTokens: 10,
+        requestedOutputTokens: 2048,
+        usableInputTokens: 6144,
+        contextWindow: 8192,
+        passed: true,
+      },
+    });
+    if (options.withUsage === false) return;
+    yield* insertAiRunUsage({
+      runId: fixture.runId,
+      taskId: options.taskId,
+      loopIteration: options.loopIteration,
+      attempt: options.attempt,
+      providerRequestIndex: 0,
+      agentRole: options.agentRole,
+      modelId: "glm-5-turbo",
+      providerServiceId: "zai_coding_plan_official",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 4,
+        cachedTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 14,
+        stopReason: "stop",
+      },
+    });
+  });
+
+const insertProviderMeasurementAndUsageAfterTerminal = (
+  fixture: Fixture,
+  options: {
+    readonly taskId: string;
+    readonly agentRole: string;
+    readonly loopIteration: number;
+    readonly attempt: number;
+    readonly requestSha256Hex: string;
+  },
+) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    yield* sql`
+      insert into ai_observations (
+        run_id, chat_id, emitting_task, loop_iteration, attempt,
+        observation_key, kind, payload
+      )
+      values (
+        ${fixture.runId}, ${fixture.chatId}, ${options.taskId},
+        ${options.loopIteration}, ${options.attempt},
+        ${`forged:${options.taskId}:${options.loopIteration}:${options.attempt}:measurement`},
+        'provider_request_measurement',
+        ${sql.json({
+          providerRequestIndex: 0,
+          agentRole: options.agentRole,
+          modelId: "glm-5-turbo",
+          requestSha256Hex: options.requestSha256Hex,
+          sourceExposureProofSha256Hexes: [],
+          sourceExposureProofBindings: [],
+          inputTokens: 10,
+          requestedOutputTokens: 2048,
+          usableInputTokens: 6144,
+          contextWindow: 8192,
+          passed: true,
+        })}
+      )
+    `;
+    yield* sql`
+      insert into ai_run_usage (
+        run_id, task_id, loop_iteration, attempt, provider_request_index,
+        agent_role, model_id, provider_service_id,
+        input_tokens, output_tokens, cached_tokens, reasoning_tokens,
+        total_tokens, stop_reason
+      )
+      values (
+        ${fixture.runId}, ${options.taskId}, ${options.loopIteration}, ${options.attempt}, 0,
+        ${options.agentRole}, 'glm-5-turbo', 'zai_coding_plan_official',
+        10, 4, 0, 0, 14, 'stop'
+      )
+    `;
+  });
+
+const seedFanoutFailureBase = (fixture: Fixture) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const stateRows = yield* sql<{
+      readonly webRequested: boolean;
+      readonly webPolicyEnabled: boolean;
+    }>`
+      select coalesce((acceptance_scope->>'webRequested')::boolean, false) as "webRequested",
+             coalesce((acceptance_scope->>'webEnabled')::boolean, false) as "webPolicyEnabled"
+      from ai_runs
+      where id = ${fixture.runId}
+    `;
+    const state = stateRows[0]!;
+    const webNoCallReason = !state.webRequested
+      ? "web_not_requested"
+      : !state.webPolicyEnabled
+        ? "web_policy_disabled"
+        : "topic_not_web_eligible";
+    yield* insertProviderMeasurementAndUsage(fixture, {
+      taskId: "plan-turn",
+      agentRole: "plan_turn",
+      loopIteration: 0,
+      attempt: 0,
+      requestSha256Hex: "a".repeat(64),
+    });
+    for (const topicId of ["t1", "t2"] as const) {
+      const internalTaskId = `topic-${topicId}-retrieve-internal`;
+      yield* insertProviderMeasurementAndUsage(fixture, {
+        taskId: internalTaskId,
+        agentRole: "internal_retrieval",
+        loopIteration: 0,
+        attempt: 0,
+        requestSha256Hex: `${topicId === "t1" ? "b" : "c"}`.repeat(64),
+      });
+      yield* insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: internalTaskId,
+        loopIteration: 0,
+        attempt: 0,
+        observationKey: `${internalTaskId}:0:0:retrieval_manifest:result`,
+        kind: "retrieval_manifest",
+        payload: { selectorRole: "internal", references: [] },
+      });
+      for (const [suffix, selectorRole] of [
+        ["select-memories", "memory"],
+        ["retrieve-web", "web"],
+      ] as const) {
+        const taskId = `topic-${topicId}-${suffix}`;
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: taskId,
+          loopIteration: 0,
+          attempt: 0,
+          observationKey: `${taskId}:0:0:retrieval_manifest:result`,
+          kind: "retrieval_manifest",
+          payload: {
+            selectorRole,
+            references: [],
+            noCallReason: selectorRole === "memory" ? "no_active_memories" : webNoCallReason,
+          },
+        });
+      }
+    }
+  });
+
+const seedFailedReducedContext = (
+  fixture: Fixture,
+  options:
+    | {
+        readonly answerTaskId: "single-answer";
+        readonly answerAttempt: number;
+        readonly initialLedger: ReturnType<typeof failedDirectContextLedger>;
+        readonly reducedLedger: ReturnType<typeof failedDirectContextLedger>;
+        readonly initialAttempt?: number;
+        readonly reducedLoopIteration?: number;
+        readonly reducedAttempt?: number;
+      }
+    | {
+        readonly answerTaskId: "topic-t1-answer";
+        readonly answerAttempt: number;
+        readonly initialLedger: ReturnType<typeof failedTopicContextLedger>;
+        readonly reducedLedger: ReturnType<typeof failedTopicContextLedger>;
+        readonly initialAttempt?: number;
+        readonly reducedLoopIteration?: number;
+        readonly reducedAttempt?: number;
+      },
+) =>
+  Effect.gen(function* () {
+    if (fixture.mode === "single") {
+      yield* seedSingleObservability(fixture, {
+        includeAnswerMeasurement: false,
+        includeAnswerContext: false,
+      });
+    } else {
+      yield* seedFanoutFailureBase(fixture);
+    }
+    yield* insertProviderMeasurementAndUsage(fixture, {
+      taskId: options.answerTaskId,
+      agentRole: options.answerTaskId === "single-answer" ? "direct_answer" : "topic_answer",
+      loopIteration: 0,
+      attempt: options.answerAttempt,
+      requestSha256Hex: options.reducedLedger.requestSha256Hex,
+      withUsage: false,
+    });
+    const initialTaskId =
+      options.answerTaskId === "single-answer" ? "single-measure" : "topic-t1-measure";
+    const reducedTaskId =
+      options.answerTaskId === "single-answer"
+        ? "single-reduce-measure"
+        : "topic-t1-reduce-measure";
+    const topicId = options.answerTaskId === "single-answer" ? undefined : "t1";
+    const insertContextMeasurement = (
+      taskId: string,
+      loopIteration: number,
+      attempt: number,
+      ledger:
+        | ReturnType<typeof failedDirectContextLedger>
+        | ReturnType<typeof failedTopicContextLedger>,
+      status: "needs_reduction" | "ready",
+      reductionRan: boolean,
+    ) =>
+      insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: taskId,
+        loopIteration,
+        attempt,
+        observationKey: `fixture:${taskId}:context-measurement:${loopIteration}:${attempt}`,
+        kind: "context_measurement",
+        payload: {
+          consumerTaskId: options.answerTaskId,
+          ...(topicId === undefined ? {} : { topicId }),
+          mandatoryInputTokens: 10,
+          discretionaryInputTokens: Math.max(0, ledger.inputTokens - 10),
+          totalInputTokens: ledger.inputTokens,
+          requestedOutputTokens: ledger.requestedOutputTokens,
+          usableInputTokens: ledger.usableInputTokens,
+          contextWindow: 8192,
+          status,
+          reductionRan,
+          reductionFeedback: [],
+          restrictedContextLedger: ledger,
+        },
+      });
+    yield* insertContextMeasurement(
+      initialTaskId,
+      0,
+      options.initialAttempt ?? 1,
+      options.initialLedger,
+      "needs_reduction",
+      false,
+    );
+    yield* insertContextMeasurement(
+      reducedTaskId,
+      options.reducedLoopIteration ?? 1,
+      options.reducedAttempt ?? 2,
+      options.reducedLedger,
+      "ready",
+      true,
+    );
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId: fixture.chatId,
+      emittingTask: options.answerTaskId,
+      loopIteration: 0,
+      attempt: options.answerAttempt,
+      observationKey: `fixture:${options.answerTaskId}:context-serialized`,
+      kind: "context_serialized",
+      payload: {
+        consumerTaskId: options.answerTaskId,
+        ...(topicId === undefined ? {} : { topicId }),
+        sourceKeys: [],
+        restrictedContextLedger: options.reducedLedger,
+        terminalUsageCoordinate: {
+          taskId: options.answerTaskId,
+          loopIteration: 0,
+          attempt: options.answerAttempt,
+          providerRequestIndex: 0,
+        },
+      },
+    });
+  });
+
+const seedFailedSingleAnswerObservability = (
+  fixture: Fixture,
+  options: {
+    readonly answerAttempt: number;
+    readonly measureLoopIteration: number;
+    readonly measureAttempt: number;
+  },
+) =>
+  Effect.gen(function* () {
+    yield* seedSingleObservability(fixture, {
+      includeAnswerMeasurement: false,
+      includeAnswerContext: false,
+    });
+    const requestSha256Hex = "9".repeat(64);
+    const restrictedContextLedger = failedDirectContextLedger(requestSha256Hex);
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId: fixture.chatId,
+      emittingTask: "single-answer",
+      loopIteration: 0,
+      attempt: options.answerAttempt,
+      observationKey: "fixture:failed-answer:measurement",
+      kind: "provider_request_measurement",
+      payload: {
+        providerRequestIndex: 0,
+        agentRole: "direct_answer",
+        modelId: "glm-5-turbo",
+        requestSha256Hex,
+        sourceExposureProofSha256Hexes: [],
+        sourceExposureProofBindings: [],
+        inputTokens: 10,
+        requestedOutputTokens: 2048,
+        usableInputTokens: 6144,
+        contextWindow: 8192,
+        passed: true,
+      },
+    });
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId: fixture.chatId,
+      emittingTask: "single-measure",
+      loopIteration: options.measureLoopIteration,
+      attempt: options.measureAttempt,
+      observationKey: "fixture:failed-answer:context-measurement",
+      kind: "context_measurement",
+      payload: {
+        consumerTaskId: "single-answer",
+        mandatoryInputTokens: 10,
+        discretionaryInputTokens: 0,
+        totalInputTokens: 10,
+        requestedOutputTokens: 2048,
+        usableInputTokens: 6144,
+        contextWindow: 8192,
+        status: "ready",
+        reductionRan: false,
+        reductionFeedback: [],
+        restrictedContextLedger,
+      },
+    });
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId: fixture.chatId,
+      emittingTask: "single-answer",
+      loopIteration: 0,
+      attempt: options.answerAttempt,
+      observationKey: "fixture:failed-answer:context-serialized",
+      kind: "context_serialized",
+      payload: {
+        consumerTaskId: "single-answer",
+        sourceKeys: [],
+        restrictedContextLedger,
+        terminalUsageCoordinate: {
+          taskId: "single-answer",
+          loopIteration: 0,
+          attempt: options.answerAttempt,
+          providerRequestIndex: 0,
+        },
+      },
+    });
+  });
+
 const sourceFor = (fixture: Fixture): FinalSourceRecord => ({
-  sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+  sourceKey: sourceKeyFor(fixture),
   locator: { kind: "chat_message", messageId: fixture.userMessageId },
   label: "Question",
   publicProvenance: {},
@@ -297,11 +1228,37 @@ const sourceFor = (fixture: Fixture): FinalSourceRecord => ({
   ],
 });
 
+const candidateIdForSource = (source: FinalSourceRecord): string => {
+  const locator = source.locator;
+  switch (locator.kind) {
+    case "document":
+      return namespacedDocumentEvidenceIdentity(
+        locator.publisherIssueId === undefined
+          ? { kind: "public", sourceId: locator.sourceId }
+          : {
+              kind: "publisher",
+              sourceId: locator.sourceId,
+              issueId: locator.publisherIssueId,
+              documentId: locator.publisherDocumentId!,
+            },
+        locator.documentId,
+      );
+    case "chat_message":
+      return chatMessageEvidenceIdentity(locator.messageId);
+    case "memory":
+      return memoryEvidenceIdentity(locator.memoryId);
+    case "web":
+      return webEvidenceIdentity(locator.url, locator.quote);
+  }
+  throw new Error("unknown source kind");
+};
+
 interface PublisherSourceFixture {
   readonly subscriptionId: string;
   readonly issueId: string;
   readonly documentId: string;
   readonly versionId: string;
+  readonly extractionId: string;
   readonly contentHash: string;
 }
 
@@ -338,15 +1295,30 @@ const createPublisherSourceFixture = (
         byte_size, sha256_hex, upload_completed_at, created_by_user_id
       ) values (
         ${documentId}, ${issueId}, 'Fence document', 'fence.pdf',
-        ${`fence/${documentId}.pdf`}, 'application/pdf', 1, ${"d".repeat(64)}, now(), ${fixture.userId}
+        ${`fence/${documentId}.pdf`}, 'application/pdf', 1, ${contentHash}, now(), ${fixture.userId}
       )
+  `;
+    const jobs = yield* sql<{ readonly id: string }>`
+      insert into jobs (kind, payload)
+      values ('extract_pdf_text', '{}'::jsonb)
+      returning id::text
+    `;
+    const extractions = yield* sql<{ readonly id: string }>`
+      insert into brief_document_extractions (
+        brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+      ) values (
+        ${documentId}, ${contentHash},
+        '[{"pageNumber":1,"text":"Fence source text"}]'::jsonb,
+        17, ${jobs[0]!.id}
+      )
+      returning id::text
     `;
     yield* sql`
       insert into brief_document_versions (
-        id, brief_document_id, content_hash, language, canonical_text,
+        id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
         text_char_count, page_ranges
       ) values (
-        ${versionId}, ${documentId}, ${contentHash}, 'english', 'Fence source text',
+        ${versionId}, ${documentId}, ${extractions[0]!.id}, ${contentHash}, 'english', 'Fence source text',
         17, '[{"pageNumber":1,"charStart":0,"charEnd":17}]'::jsonb
       )
     `;
@@ -355,20 +1327,82 @@ const createPublisherSourceFixture = (
     `;
     yield* sql`
       update publisher_issues
-      set status = 'published', publication_at = now(), published_at = now()
+      set status = 'published', publication_at = now(), published_at = now(), indexing_status = 'ready'
       where id = ${issueId}
     `;
-    return { subscriptionId, issueId, documentId, versionId, contentHash };
+    return {
+      subscriptionId,
+      issueId,
+      documentId,
+      versionId,
+      extractionId: extractions[0]!.id,
+      contentHash,
+    };
   });
 
-const publisherSourceFor = (source: PublisherSourceFixture): FinalSourceRecord => ({
-  sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+interface PublicExposureFixture {
+  readonly sourceId: string;
+  readonly documentId: string;
+  readonly contentHash: string;
+}
+
+const createPublicExposureFixture = (
+  fixture: Fixture,
+): Effect.Effect<PublicExposureFixture, unknown, PgClient.PgClient> =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const sourceId = `exposure-source-${crypto.randomUUID()}`;
+    const documentId = `exposure-document-${crypto.randomUUID()}`;
+    const canonicalUrl = `https://public.example/${documentId}`;
+    const text = "Public exposure evidence. ".repeat(6);
+    const contentHash = createHash("sha256").update(text, "utf8").digest("hex");
+    const rawArtifactId = crypto.randomUUID();
+    yield* sql`
+      insert into public_sources (
+        source_id, display_name, publisher_name, description, ingestion_method,
+        discovery_url, average_chars_per_item
+      ) values (
+        ${sourceId}, 'Exposure source', 'Exposure publisher', 'Exposure fixture',
+        'manual', ${canonicalUrl}, ${text.length}
+      )
+    `;
+    yield* sql`
+      insert into public_source_raw_artifacts (
+        id, source_id, canonical_url, fetched_at, media_type, body, body_hash
+      ) values (
+        ${rawArtifactId}, ${sourceId}, ${canonicalUrl}, now(), 'text/html', ${text}, ${contentHash}
+      )
+    `;
+    yield* sql`
+      insert into public_source_documents (
+        document_id, source_id, canonical_url, title, published_at,
+        discovered_at, fetched_at, language, document_type, text,
+        text_char_count, content_hash, raw_artifact_id
+      ) values (
+        ${documentId}, ${sourceId}, ${canonicalUrl}, 'Exposure document', now(),
+        now(), now(), 'en', 'article', ${text}, ${text.length}, ${contentHash}, ${rawArtifactId}
+      )
+    `;
+    yield* sql`
+      insert into client_company_public_source_settings (
+        client_company_id, source_id, enabled, updated_by_user_id
+      ) values (${fixture.companyId}, ${sourceId}, true, ${fixture.userId})
+    `;
+    return { sourceId, documentId, contentHash };
+  });
+
+const publisherSourceFor = (
+  source: PublisherSourceFixture,
+  fixture: Pick<Fixture, "citationNamespace">,
+): FinalSourceRecord => ({
+  sourceKey: sourceKeyFor(fixture),
   locator: {
     kind: "document",
-    sourceId: `publisher:${source.subscriptionId}`,
+    sourceId: `publisher:${source.subscriptionId}` as `publisher:${string}`,
     documentId: source.documentId,
-    documentVersionId: source.versionId,
+    versionId: source.versionId,
     contentHash: source.contentHash,
+    publisherExtractionId: source.extractionId,
     publisherIssueId: source.issueId,
     publisherDocumentId: source.documentId,
     ranges: [{ charStart: 0, charEnd: 8 }],
@@ -469,14 +1503,15 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
 
   it("deduplicates detailed usage and exposures while retaining attempts", async () => {
     const fixture = await runDb(createFixture("usage"));
+    const publicDocument = await runDb(createPublicExposureFixture(fixture));
     const usage = {
       runId: fixture.runId,
-      taskId: "conversation-resolver",
+      taskId: "plan-turn",
       loopIteration: 0,
       attempt: 0,
       providerRequestIndex: 0,
       providerRequestSha256Hex: "a".repeat(64),
-      agentRole: "conversation_resolver",
+      agentRole: "plan_turn",
       modelId: "glm-fast",
       providerServiceId: "zai_coding_plan_official",
       usage: {
@@ -516,16 +1551,20 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       providerRequestSha256Hex: "a".repeat(64),
       sourceKind: "document" as const,
       logicalSourceIdentity: "document:1",
-      publisherIssueId: "issue:1",
-      publisherDocumentId: "document:1",
       contentItemIdentity: "version:1:range:a",
       exposureStage: "selector_preview",
       visibleTokenCount: 8,
+      providerSerializationProofBinding: {
+        messageIndex: 0,
+        sourceOrdinal: 0,
+        serializedField: "messages[0].content.replay",
+        orderedSourceDescriptor: "fixture:document:1",
+      },
       documentReconstruction: {
-        sourceId: "public:source-1",
-        documentId: "document-1",
-        documentVersionId: "version-1",
-        contentHash: "a".repeat(64),
+        sourceId: `public:${publicDocument.sourceId}`,
+        documentId: publicDocument.documentId,
+        versionId: publicDocument.documentId,
+        contentHash: publicDocument.contentHash,
         ranges: [{ charStart: 0, charEnd: 8 }],
       },
     };
@@ -556,6 +1595,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
 
   it("rejects divergent replays for every bound observability field", async () => {
     const fixture = await runDb(createFixture("observability-replay"));
+    const publisher = await runDb(createPublisherSourceFixture(fixture));
+    const alternatePublisher = await runDb(createPublisherSourceFixture(fixture));
     const expectConflict = async (operation: Promise<unknown>): Promise<void> => {
       await expect(operation).rejects.toThrow(/replay conflicts with an existing immutable row/u);
     };
@@ -699,21 +1740,41 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       providerRequestSha256Hex: "b".repeat(64),
       sourceKind: "document" as const,
       logicalSourceIdentity: "document:replay",
-      publisherIssueId: "issue:replay",
-      publisherDocumentId: "document:replay",
+      publisherIssueId: publisher.issueId,
+      publisherDocumentId: publisher.documentId,
       contentItemIdentity: "version:replay:range:0-8",
       exposureStage: "context_candidate_inspection",
       visibleTokenCount: 8,
+      providerSerializationProofBinding: {
+        messageIndex: 0,
+        sourceOrdinal: 0,
+        serializedField: "messages[0].content.replay",
+        orderedSourceDescriptor: "fixture:document:replay",
+      },
       documentReconstruction: {
-        sourceId: "publisher:replay",
-        documentId: "document-replay",
-        documentVersionId: "version-replay",
-        contentHash: "c".repeat(64),
+        sourceId: `publisher:${publisher.subscriptionId}`,
+        documentId: publisher.documentId,
+        versionId: publisher.versionId,
+        contentHash: publisher.contentHash,
+        publisherExtractionId: publisher.extractionId,
         ranges: [{ charStart: 0, charEnd: 8 }],
       },
     };
     await expect(runDb(insertAiSourceExposure(exposure))).resolves.toBe(true);
     await expect(runDb(insertAiSourceExposure(exposure))).resolves.toBe(false);
+    await expect(
+      runDb(
+        insertAiSourceExposure({
+          ...exposure,
+          contentItemIdentity: "version:replay:missing-reconstruction",
+          documentReconstruction: undefined,
+          providerSerializationProofBinding: {
+            ...exposure.providerSerializationProofBinding,
+            publicDocumentId: publisher.documentId,
+          },
+        }),
+      ),
+    ).rejects.toThrow("document exposure reconstruction is required");
     for (const divergent of [
       { ...exposure, sourceKind: "memory" as const, documentReconstruction: undefined },
       { ...exposure, logicalSourceIdentity: "document:other" },
@@ -732,21 +1793,33 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         ...exposure,
         documentReconstruction: {
           ...exposure.documentReconstruction,
-          documentId: "document-other",
+          sourceId: `publisher:${alternatePublisher.subscriptionId}`,
+          documentId: alternatePublisher.documentId,
+          versionId: alternatePublisher.versionId,
+          contentHash: alternatePublisher.contentHash,
+          publisherExtractionId: alternatePublisher.extractionId,
         },
       },
       {
         ...exposure,
         documentReconstruction: {
           ...exposure.documentReconstruction,
-          documentVersionId: "version-other",
+          sourceId: `publisher:${alternatePublisher.subscriptionId}`,
+          documentId: alternatePublisher.documentId,
+          versionId: alternatePublisher.versionId,
+          contentHash: alternatePublisher.contentHash,
+          publisherExtractionId: alternatePublisher.extractionId,
         },
       },
       {
         ...exposure,
         documentReconstruction: {
           ...exposure.documentReconstruction,
-          contentHash: "e".repeat(64),
+          sourceId: `publisher:${alternatePublisher.subscriptionId}`,
+          documentId: alternatePublisher.documentId,
+          versionId: alternatePublisher.versionId,
+          contentHash: alternatePublisher.contentHash,
+          publisherExtractionId: alternatePublisher.extractionId,
         },
       },
       {
@@ -831,12 +1904,12 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     const fixture = await runDb(createFixture("usage-invalid"));
     const usage = {
       runId: fixture.runId,
-      taskId: "conversation-resolver",
+      taskId: "plan-turn",
       loopIteration: 0,
       attempt: 0,
       providerRequestIndex: 0,
       providerRequestSha256Hex: "a".repeat(64),
-      agentRole: "conversation_resolver",
+      agentRole: "plan_turn",
       modelId: "glm-fast",
       providerServiceId: "zai_coding_plan_official" as const,
       usage: {
@@ -873,7 +1946,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         attempt: 0,
         providerRequestIndex: 0,
         agentRole: "direct_answer",
-        modelId: "glm-5.2",
+        modelId: "glm-5-turbo",
         providerServiceId: "zai_coding_plan_official",
         usage: {
           inputTokens: 10,
@@ -901,12 +1974,13 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           providerRequestIndex: 0,
           agentRole: "direct_answer",
           modelId,
-          requestSha256Hex: "a".repeat(64),
+          requestSha256Hex: "b".repeat(64),
           sourceExposureProofSha256Hexes: [],
+          sourceExposureProofBindings: [],
           inputTokens: 10,
-          requestedOutputTokens: 4,
-          usableInputTokens: 100,
-          contextWindow: 100,
+          requestedOutputTokens: 2048,
+          usableInputTokens: 6144,
+          contextWindow: 8192,
           passed: true,
         },
       });
@@ -928,11 +2002,11 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     const missingMemory = await runDb(
       persistMemoryArtifact(missing, { proposals: [], discardedCount: 0 }),
     );
-    await runDb(seedSingleObservability(missing));
+    await runDb(seedSingleObservability(missing, { includeAnswerMeasurement: false }));
     await runDb(insertAiRunUsage(usageFor(missing)));
     const missingExit = await runDb(Effect.exit(finalizeAiRun(inputFor(missing, missingMemory))));
     expect(missingExit._tag).toBe("Failure");
-    await runDb(measurementFor(missing, "glm-5.2"));
+    await runDb(measurementFor(missing, "glm-5-turbo"));
     await expect(runDb(finalizeAiRun(inputFor(missing, missingMemory)))).resolves.toMatchObject({
       status: "succeeded",
     });
@@ -941,9 +2015,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     const mismatchMemory = await runDb(
       persistMemoryArtifact(mismatch, { proposals: [], discardedCount: 0 }),
     );
-    await runDb(seedSingleObservability(mismatch));
+    await runDb(seedSingleObservability(mismatch, { includeAnswerMeasurement: false }));
     await runDb(insertAiRunUsage(usageFor(mismatch)));
-    await runDb(measurementFor(mismatch, "glm-5-turbo"));
+    await runDb(measurementFor(mismatch, "glm-5.2"));
     const mismatchExit = await runDb(
       Effect.exit(finalizeAiRun(inputFor(mismatch, mismatchMemory))),
     );
@@ -953,24 +2027,1292 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     const duplicateMemory = await runDb(
       persistMemoryArtifact(duplicate, { proposals: [], discardedCount: 0 }),
     );
-    await runDb(seedSingleObservability(duplicate));
-    await runDb(measurementFor(duplicate, "glm-5.2", "measurement:first"));
-    await runDb(measurementFor(duplicate, "glm-5.2", "measurement:second"));
+    await runDb(seedSingleObservability(duplicate, { includeAnswerMeasurement: false }));
+    await runDb(measurementFor(duplicate, "glm-5-turbo", "measurement:first"));
+    await runDb(measurementFor(duplicate, "glm-5-turbo", "measurement:second"));
     const duplicateExit = await runDb(
       Effect.exit(finalizeAiRun(inputFor(duplicate, duplicateMemory))),
     );
     expect(duplicateExit._tag).toBe("Failure");
   });
 
+  it("rejects a single route with an extra canonical retrieval owner", async () => {
+    const fixture = await runDb(createFixture("single-extra-retrieval-owner"));
+    await runDb(seedSingleObservability(fixture));
+    await runDb(
+      insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: "topic-t1-retrieve-internal",
+        loopIteration: 0,
+        attempt: 0,
+        observationKey: "fixture:single-extra-retrieval-owner",
+        kind: "retrieval_manifest",
+        payload: { selectorRole: "internal", references: [] },
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/outside the selected route/u);
+  });
+
+  it("allows older retrieval attempts from the selected route owners", async () => {
+    const fixture = await runDb(createFixture("selected-route-retrieval-retry"));
+    await runDb(seedSingleObservability(fixture));
+    await runDb(
+      Effect.gen(function* () {
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "single-retrieve-internal",
+          loopIteration: 0,
+          attempt: 1,
+          observationKey: "fixture:single-retrieve-internal:retry-measurement",
+          kind: "provider_request_measurement",
+          payload: {
+            providerRequestIndex: 0,
+            agentRole: "internal_retrieval",
+            modelId: "glm-5-turbo",
+            requestSha256Hex: "8".repeat(64),
+            sourceExposureProofSha256Hexes: [],
+            sourceExposureProofBindings: [],
+            inputTokens: 10,
+            requestedOutputTokens: 2048,
+            usableInputTokens: 6144,
+            contextWindow: 8192,
+            passed: true,
+          },
+        });
+        yield* insertAiRunUsage({
+          runId: fixture.runId,
+          taskId: "single-retrieve-internal",
+          loopIteration: 0,
+          attempt: 1,
+          providerRequestIndex: 0,
+          agentRole: "internal_retrieval",
+          modelId: "glm-5-turbo",
+          providerServiceId: "zai_coding_plan_official",
+          usage: {
+            inputTokens: 10,
+            outputTokens: 4,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 14,
+            stopReason: "stop",
+          },
+        });
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "single-retrieve-internal",
+          loopIteration: 0,
+          attempt: 1,
+          observationKey: "fixture:single-retrieve-internal:retry-manifest",
+          kind: "retrieval_manifest",
+          payload: { selectorRole: "internal", references: [] },
+        });
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "succeeded" });
+  });
+
+  it("rejects an older retrieval attempt without its own provider proof", async () => {
+    const fixture = await runDb(createFixture("selected-route-retrieval-unproved-old-attempt"));
+    await runDb(seedSingleObservability(fixture));
+    await runDb(
+      Effect.gen(function* () {
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "single-retrieve-internal",
+          loopIteration: 0,
+          attempt: 1,
+          observationKey: "fixture:single-retrieve-internal:unproved-old-manifest",
+          kind: "retrieval_manifest",
+          payload: { selectorRole: "internal", references: [] },
+        });
+        yield* insertProviderMeasurementAndUsage(fixture, {
+          taskId: "single-retrieve-internal",
+          agentRole: "internal_retrieval",
+          loopIteration: 0,
+          attempt: 2,
+          requestSha256Hex: "9".repeat(64),
+        });
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "single-retrieve-internal",
+          loopIteration: 0,
+          attempt: 2,
+          observationKey: "fixture:single-retrieve-internal:proved-terminal-manifest",
+          kind: "retrieval_manifest",
+          payload: { selectorRole: "internal", references: [] },
+        });
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/retrieval manifest attempt lacks its latest provider measurement/u);
+  });
+
+  it("rejects an older retrieval attempt with the wrong selector role", async () => {
+    const fixture = await runDb(createFixture("selected-route-retrieval-wrong-old-role"));
+    await runDb(seedSingleObservability(fixture));
+    await runDb(
+      insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: "single-retrieve-internal",
+        loopIteration: 0,
+        attempt: 1,
+        observationKey: "fixture:selected-route-retrieval-wrong-old-role",
+        kind: "retrieval_manifest",
+        payload: { selectorRole: "web", references: [] },
+      }),
+    );
+    await runDb(
+      insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: "single-retrieve-internal",
+        loopIteration: 0,
+        attempt: 2,
+        observationKey: "fixture:selected-route-retrieval-correct-latest-role",
+        kind: "retrieval_manifest",
+        payload: { selectorRole: "internal", references: [] },
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/role differs/u);
+  });
+
+  it("rejects a fanout route with an extra canonical retrieval owner", async () => {
+    const fixture = await runDb(createFixture("fanout-extra-retrieval-owner", "fanout"));
+    await runDb(
+      Effect.gen(function* () {
+        for (const [taskId, selectorRole] of [
+          ["topic-t1-retrieve-internal", "internal"],
+          ["topic-t1-select-memories", "memory"],
+          ["topic-t1-retrieve-web", "web"],
+          ["topic-t2-retrieve-internal", "internal"],
+          ["topic-t2-select-memories", "memory"],
+          ["topic-t2-retrieve-web", "web"],
+          ["single-retrieve-internal", "internal"],
+        ] as const) {
+          yield* insertAiObservation({
+            runId: fixture.runId,
+            chatId: fixture.chatId,
+            emittingTask: taskId,
+            loopIteration: 0,
+            attempt: 0,
+            observationKey: `fixture:${taskId}:retrieval_manifest`,
+            kind: "retrieval_manifest",
+            payload: { selectorRole, references: [] },
+          });
+        }
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "synthesis", content: "Answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/outside the selected route/u);
+  });
+
+  it("rejects a controlled single failure with an extra canonical retrieval owner", async () => {
+    const fixture = await runDb(createFixture("single-extra-retrieval-owner-failure"));
+    await runDb(seedSingleObservability(fixture));
+    await runDb(
+      insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: "topic-t1-retrieve-internal",
+        loopIteration: 0,
+        attempt: 0,
+        observationKey: "fixture:single-extra-retrieval-owner-failure",
+        kind: "retrieval_manifest",
+        payload: { selectorRole: "internal", references: [] },
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "failed", code: "answer_failed", retryable: false },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/outside the selected route/u);
+  });
+
+  it("rejects a controlled fanout failure with an extra canonical retrieval owner", async () => {
+    const fixture = await runDb(createFixture("fanout-extra-retrieval-owner-failure", "fanout"));
+    await runDb(seedSingleObservability(fixture));
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          delete from ai_observations
+          where run_id = ${fixture.runId}
+            and kind = 'retrieval_manifest'
+        `;
+        for (const [taskId, selectorRole] of [
+          ["topic-t1-retrieve-internal", "internal"],
+          ["topic-t1-select-memories", "memory"],
+          ["topic-t1-retrieve-web", "web"],
+          ["topic-t2-retrieve-internal", "internal"],
+          ["topic-t2-select-memories", "memory"],
+          ["topic-t2-retrieve-web", "web"],
+          ["single-retrieve-internal", "internal"],
+        ] as const) {
+          yield* insertAiObservation({
+            runId: fixture.runId,
+            chatId: fixture.chatId,
+            emittingTask: taskId,
+            loopIteration: 0,
+            attempt: 0,
+            observationKey: `fixture:controlled-fanout:${taskId}`,
+            kind: "retrieval_manifest",
+            payload: { selectorRole, references: [] },
+          });
+        }
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "failed", code: "answer_failed", retryable: false },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/outside the selected route/u);
+  });
+
+  it("binds source exposure attestations to the exact provider request", async () => {
+    const fixture = await runDb(createFixture("exposure-request-digest"));
+    const exposure = {
+      runId: fixture.runId,
+      taskId: "plan-turn",
+      loopIteration: 0,
+      attempt: 0,
+      providerRequestIndex: 0,
+      providerRequestSha256Hex: "b".repeat(64),
+      sourceKind: "chat_message" as const,
+      logicalSourceIdentity: `chat_message:${fixture.userMessageId}`,
+      contentItemIdentity: fixture.userMessageId,
+      exposureStage: "provider_input",
+      visibleTokenCount: 1,
+      providerSerializationProofBinding: {
+        messageIndex: 0,
+        sourceOrdinal: 0,
+        serializedField: "messages[0].content.currentMessage",
+        orderedSourceDescriptor: `chat:${fixture.userMessageId}`,
+      },
+    };
+    const attestation = {
+      providerSerializationProofSha256Hex: providerVisibleSourceExposureProofSha256Hex(
+        {
+          sourceKind: exposure.sourceKind,
+          logicalSourceIdentity: exposure.logicalSourceIdentity,
+          contentItemIdentity: exposure.contentItemIdentity,
+          exposureStage: exposure.exposureStage,
+          visibleTokenCount: exposure.visibleTokenCount,
+        },
+        exposure.providerSerializationProofBinding,
+      ),
+    };
+    await runDb(insertAiSourceExposure(exposure));
+    await runDb(
+      seedSingleObservability(fixture, {
+        requestSha256Hex: "a".repeat(64),
+        sourceExposureProofSha256Hexes: [attestation.providerSerializationProofSha256Hex],
+        planSourceExposureProofBindings: [
+          {
+            providerSerializationProofSha256Hex: attestation.providerSerializationProofSha256Hex,
+            providerSerializationProofBinding: exposure.providerSerializationProofBinding,
+          },
+        ],
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: {
+            status: "ok",
+            mode: "single",
+            content: "Digest-bound answer",
+            sourceMap: [],
+          },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow("source exposure lacks its exact provider measurement");
+  });
+
+  it("requires the memory result's exact provider usage", async () => {
+    const fixture = await runDb(createFixture("memory-measurement-usage"));
+    await runDb(seedSingleObservability(fixture));
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          delete from ai_run_usage
+          where run_id = ${fixture.runId} and task_id = 'memory-extract'
+        `;
+      }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/provider measurement|provider usage/u);
+  });
+
+  it("binds a memory extraction result to the latest request in its tool loop", async () => {
+    const fixture = await runDb(createFixture("memory-multi-request"));
+    await runDb(seedSingleObservability(fixture));
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await runDb(
+      Effect.gen(function* () {
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "memory-extract",
+          loopIteration: 0,
+          attempt: 1,
+          observationKey: "memory-multi-request:measurement:1",
+          kind: "provider_request_measurement",
+          payload: {
+            providerRequestIndex: 1,
+            agentRole: "memory_extractor",
+            modelId: "glm-5-turbo",
+            requestSha256Hex: "d".repeat(64),
+            sourceExposureProofSha256Hexes: [],
+            sourceExposureProofBindings: [],
+            inputTokens: 11,
+            requestedOutputTokens: 2048,
+            usableInputTokens: 6144,
+            contextWindow: 8192,
+            passed: true,
+          },
+        });
+        yield* insertAiRunUsage({
+          runId: fixture.runId,
+          taskId: "memory-extract",
+          loopIteration: 0,
+          attempt: 1,
+          providerRequestIndex: 1,
+          agentRole: "memory_extractor",
+          modelId: "glm-5-turbo",
+          providerServiceId: "zai_coding_plan_official",
+          usage: {
+            inputTokens: 11,
+            outputTokens: 4,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 15,
+            stopReason: "toolUse",
+          },
+        });
+      }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "succeeded" });
+  });
+
+  it("consumes only the latest memory extraction result", async () => {
+    const fixture = await runDb(createFixture("memory-latest-result"));
+    await runDb(seedSingleObservability(fixture));
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    const extractionSha256Hex = memoryExtractionSha256Hex(memory.result);
+    await runDb(
+      Effect.gen(function* () {
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "memory-extract",
+          loopIteration: 0,
+          attempt: 2,
+          observationKey: "memory-latest-result:measurement",
+          kind: "provider_request_measurement",
+          payload: {
+            providerRequestIndex: 0,
+            agentRole: "memory_extractor",
+            modelId: "glm-5-turbo",
+            requestSha256Hex: "d".repeat(64),
+            sourceExposureProofSha256Hexes: [],
+            sourceExposureProofBindings: [],
+            inputTokens: 10,
+            requestedOutputTokens: 2048,
+            usableInputTokens: 6144,
+            contextWindow: 8192,
+            passed: true,
+          },
+        });
+        yield* insertAiRunUsage({
+          runId: fixture.runId,
+          taskId: "memory-extract",
+          loopIteration: 0,
+          attempt: 2,
+          providerRequestIndex: 0,
+          agentRole: "memory_extractor",
+          modelId: "glm-5-turbo",
+          providerServiceId: "zai_coding_plan_official",
+          usage: {
+            inputTokens: 10,
+            outputTokens: 4,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 14,
+            stopReason: "stop",
+          },
+        });
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "memory-extract",
+          loopIteration: 0,
+          attempt: 2,
+          observationKey: "memory-latest-result:result",
+          kind: "memory_extraction_result",
+          payload: {
+            proposalCount: 0,
+            discardedCount: 0,
+            extractionSha256Hex,
+          },
+        });
+      }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/latest extraction result/u);
+  });
+
+  it("rejects a serialized answer source without its exact exposure", async () => {
+    const fixture = await runDb(createFixture("answer-exposure-missing"));
+    const source = sourceFor(fixture);
+    await runDb(
+      seedSingleObservability(fixture, {
+        contextSources: [
+          {
+            sourceKey: source.sourceKey,
+            candidateId: candidateIdForSource(source),
+            kind: "chat_message",
+            ranges: [],
+            label: source.label,
+          },
+        ],
+      }),
+    );
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          delete from ai_source_exposures
+          where run_id = ${fixture.runId}
+            and task_id = 'single-answer'
+            and exposure_stage = 'answer_serialized'
+        `;
+        yield* sql`
+          delete from ai_observations
+          where run_id = ${fixture.runId}
+            and kind = 'source_exposure_attestation'
+            and emitting_task = 'single-answer'
+            and payload->>'exposureStage' = 'answer_serialized'
+        `;
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: {
+            status: "ok",
+            mode: "single",
+            content: `Answer [[cite:${source.sourceKey}]]`,
+            sourceMap: [source],
+          },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/answer_serialized exposure|provider measurement/u);
+  });
+
+  it("rejects a context ledger owned by an unrelated optional row", async () => {
+    const fixture = await runDb(createFixture("context-owner-mismatch"));
+    await runDb(seedSingleObservability(fixture));
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update ai_observations
+          set emitting_task = 'optional-context-row'
+          where run_id = ${fixture.runId}
+            and observation_key = 'fixture:context_measurement'
+        `;
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/path-specific context measurement/u);
+  });
+
+  it("does not let a later failed answer attempt hide an older output", async () => {
+    const fixture = await runDb(createFixture("later-failed-answer"));
+    await runDb(seedSingleObservability(fixture));
+    await runDb(
+      insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: "single-answer",
+        loopIteration: 0,
+        attempt: 1,
+        observationKey: "fixture:single-answer:retry-measurement",
+        kind: "provider_request_measurement",
+        payload: {
+          providerRequestIndex: 0,
+          agentRole: "direct_answer",
+          modelId: "glm-5-turbo",
+          requestSha256Hex: "d".repeat(64),
+          sourceExposureProofSha256Hexes: [],
+          sourceExposureProofBindings: [],
+          inputTokens: 10,
+          requestedOutputTokens: 2048,
+          usableInputTokens: 6144,
+          contextWindow: 8192,
+          passed: true,
+        },
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/latest provider measurement/u);
+  });
+
+  it("finalizes a location-bound sidecar exposure with its measurement", async () => {
+    const fixture = await runDb(createFixture("location-bound-sidecar"));
+    const visibleText = `Question ${"location-bound-sidecar"}`;
+    const marker: CodeOwnedSourceExposureProof = {
+      sourceKind: "chat_message" as const,
+      logicalSourceIdentity: `chat_message:${fixture.userMessageId}`,
+      contentItemIdentity: fixture.userMessageId,
+      exposureStage: "provider_input",
+      visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
+      visibleText,
+    };
+    const request = {
+      requestClass: "fast" as const,
+      model: "glm-5-turbo" as const,
+      messages: [
+        { role: "system" as const, content: "system" },
+        {
+          role: "user" as const,
+          content: JSON.stringify({
+            currentMessage: visibleText,
+            currentMessageId: fixture.userMessageId,
+          }),
+        },
+      ],
+      requestedOutputTokens: 128,
+      reasoning: "medium" as const,
+      sourceExposureProofs: [marker],
+    };
+    const requestBinding = providerRequestSourceExposureProofBindings(request, (text) =>
+      resolveRegisteredModel("glm-5-turbo").countTextTokens(text),
+    )[0]!;
+    const proof = providerRequestSourceExposureProofs(request, (text) =>
+      resolveRegisteredModel("glm-5-turbo").countTextTokens(text),
+    )[0]!;
+    await runDb(
+      seedSingleObservability(fixture, {
+        requestSha256Hex: providerRequestSha256Hex(request),
+        planSourceExposureProofSha256Hexes: [proof],
+        planSourceExposureProofBindings: [
+          {
+            providerSerializationProofSha256Hex: proof,
+            providerSerializationProofBinding: requestBinding.binding,
+          },
+        ],
+      }),
+    );
+    await runDb(
+      insertAiSourceExposure({
+        runId: fixture.runId,
+        taskId: "plan-turn",
+        loopIteration: 0,
+        attempt: 0,
+        providerRequestIndex: 0,
+        providerRequestSha256Hex: providerRequestSha256Hex(request),
+        ...marker,
+        providerSerializationProofBinding: requestBinding.binding,
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "succeeded" });
+  });
+
+  it("consumes the latest repeated-marker sidecar after measurement-first insertion", async () => {
+    const fixture = await runDb(createFixture("repeated-marker-measurement-first"));
+    const visibleText = `Question ${"repeated-marker-measurement-first"}`;
+    const marker: CodeOwnedSourceExposureProof = {
+      sourceKind: "chat_message",
+      logicalSourceIdentity: `chat_message:${fixture.userMessageId}`,
+      contentItemIdentity: fixture.userMessageId,
+      exposureStage: "provider_input",
+      visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
+      visibleText,
+    };
+    const request = {
+      requestClass: "fast" as const,
+      model: "glm-5-turbo" as const,
+      messages: [
+        { role: "system" as const, content: "system" },
+        {
+          role: "user" as const,
+          content: JSON.stringify({
+            currentMessage: visibleText,
+            currentMessageId: fixture.userMessageId,
+          }),
+        },
+        {
+          role: "user" as const,
+          content: JSON.stringify({
+            currentMessage: visibleText,
+            currentMessageId: fixture.userMessageId,
+          }),
+        },
+      ],
+      requestedOutputTokens: 128,
+      reasoning: "medium" as const,
+      sourceExposureProofs: [marker, marker],
+    };
+    const model = resolveRegisteredModel("glm-5-turbo");
+    const bindings = providerRequestSourceExposureProofBindings(request, model.countTextTokens);
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]?.binding.sourceOrdinal).toBe(1);
+    const proof = bindings[0]!;
+    const requestSha256Hex = providerRequestSha256Hex(request);
+
+    await runDb(
+      insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: "repeated-marker-task",
+        loopIteration: 0,
+        attempt: 0,
+        observationKey: "repeated-marker:measurement",
+        kind: "provider_request_measurement",
+        payload: {
+          providerRequestIndex: 0,
+          agentRole: "context_reducer",
+          modelId: "glm-5-turbo",
+          requestSha256Hex,
+          sourceExposureProofSha256Hexes: [proof.providerSerializationProofSha256Hex],
+          sourceExposureProofBindings: [
+            {
+              providerSerializationProofSha256Hex: proof.providerSerializationProofSha256Hex,
+              providerSerializationProofBinding: proof.binding,
+            },
+          ],
+          inputTokens: 10,
+          requestedOutputTokens: 128,
+          usableInputTokens: 6144,
+          contextWindow: 8192,
+          passed: true,
+        },
+      }),
+    );
+    await runDb(
+      insertAiRunUsage({
+        runId: fixture.runId,
+        taskId: "repeated-marker-task",
+        loopIteration: 0,
+        attempt: 0,
+        providerRequestIndex: 0,
+        agentRole: "context_reducer",
+        modelId: "glm-5-turbo",
+        providerServiceId: "zai_coding_plan_official",
+        usage: {
+          inputTokens: 10,
+          outputTokens: 1,
+          cachedTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 11,
+          stopReason: "stop",
+        },
+      }),
+    );
+    await expect(
+      runDb(
+        insertAiSourceExposure({
+          runId: fixture.runId,
+          taskId: "repeated-marker-task",
+          loopIteration: 0,
+          attempt: 0,
+          providerRequestIndex: 0,
+          providerRequestSha256Hex: requestSha256Hex,
+          ...marker,
+        }),
+      ),
+    ).resolves.toBe(true);
+    await expect(
+      runDb(
+        insertAiSourceExposure({
+          runId: fixture.runId,
+          taskId: "repeated-marker-task",
+          loopIteration: 0,
+          attempt: 0,
+          providerRequestIndex: 0,
+          providerRequestSha256Hex: requestSha256Hex,
+          ...marker,
+          providerSerializationProofBinding: proof.binding,
+        }),
+      ),
+    ).resolves.toBe(false);
+    const attestationBinding = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{ readonly binding: ProviderVisibleSourceExposureProofBinding }>`
+          select payload->'providerSerializationProofBinding' as binding
+          from ai_observations
+          where run_id = ${fixture.runId}
+            and emitting_task = 'repeated-marker-task'
+            and kind = 'source_exposure_attestation'
+        `;
+        return rows[0]?.binding;
+      }),
+    );
+    expect(attestationBinding?.sourceOrdinal).toBe(1);
+  });
+
+  it("finalizes valid retry and crash-resume histories from the terminal attempt", async () => {
+    const fixture = await runDb(createFixture("retry-resume"));
+    await runDb(seedSingleObservability(fixture));
+    await runDb(
+      Effect.gen(function* () {
+        const addObservation = (input: Parameters<typeof insertAiObservation>[0]) =>
+          insertAiObservation(input);
+        yield* addObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "plan-turn",
+          loopIteration: 0,
+          attempt: 1,
+          observationKey: "retry:turn-plan",
+          kind: "turn_plan",
+          payload: turnPlanPayload("single"),
+        });
+        yield* addObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "plan-turn",
+          loopIteration: 0,
+          attempt: 1,
+          observationKey: "retry:measurement",
+          kind: "provider_request_measurement",
+          payload: {
+            providerRequestIndex: 0,
+            agentRole: "plan_turn",
+            modelId: "glm-5-turbo",
+            requestSha256Hex: "c".repeat(64),
+            sourceExposureProofSha256Hexes: [],
+            sourceExposureProofBindings: [],
+            inputTokens: 10,
+            requestedOutputTokens: 2048,
+            usableInputTokens: 6144,
+            contextWindow: 8192,
+            passed: true,
+          },
+        });
+        yield* insertAiRunUsage({
+          runId: fixture.runId,
+          taskId: "plan-turn",
+          loopIteration: 0,
+          attempt: 1,
+          providerRequestIndex: 0,
+          agentRole: "plan_turn",
+          modelId: "glm-5-turbo",
+          providerServiceId: "zai_coding_plan_official",
+          usage: {
+            inputTokens: 10,
+            outputTokens: 4,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 14,
+            stopReason: "stop",
+          },
+        });
+        yield* addObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "single-answer",
+          loopIteration: 0,
+          attempt: 1,
+          observationKey: "retry:context",
+          kind: "context_serialized",
+          payload: {
+            consumerTaskId: "single-answer",
+            sourceKeys: [],
+            restrictedContextLedger: {
+              requestKind: "direct",
+              modelId: "glm-5-turbo",
+              requestSha256Hex: "d".repeat(64),
+              inputTokens: 10,
+              usableInputTokens: 6144,
+              requestedOutputTokens: 2048,
+              selectedConversation: [],
+              question: "current question",
+              gaps: [],
+              sources: [],
+            },
+            terminalUsageCoordinate: {
+              taskId: "single-answer",
+              loopIteration: 0,
+              attempt: 1,
+              providerRequestIndex: 0,
+            },
+          },
+        });
+        yield* addObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "single-measure",
+          loopIteration: 0,
+          attempt: 1,
+          observationKey: "retry:context-measurement",
+          kind: "context_measurement",
+          payload: {
+            consumerTaskId: "single-answer",
+            mandatoryInputTokens: 10,
+            discretionaryInputTokens: 0,
+            totalInputTokens: 10,
+            requestedOutputTokens: 2048,
+            usableInputTokens: 6144,
+            contextWindow: 8192,
+            status: "ready",
+            reductionRan: false,
+            reductionFeedback: [],
+            restrictedContextLedger: {
+              requestKind: "direct",
+              modelId: "glm-5-turbo",
+              requestSha256Hex: "d".repeat(64),
+              inputTokens: 10,
+              usableInputTokens: 6144,
+              requestedOutputTokens: 2048,
+              selectedConversation: [],
+              question: "current question",
+              gaps: [],
+              sources: [],
+            },
+          },
+        });
+        yield* addObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "single-answer",
+          loopIteration: 0,
+          attempt: 1,
+          observationKey: "retry:answer-measurement",
+          kind: "provider_request_measurement",
+          payload: {
+            providerRequestIndex: 0,
+            agentRole: "direct_answer",
+            modelId: "glm-5-turbo",
+            requestSha256Hex: "d".repeat(64),
+            sourceExposureProofSha256Hexes: [],
+            sourceExposureProofBindings: [],
+            inputTokens: 10,
+            requestedOutputTokens: 2048,
+            usableInputTokens: 6144,
+            contextWindow: 8192,
+            passed: true,
+          },
+        });
+        yield* insertAiRunUsage({
+          runId: fixture.runId,
+          taskId: "single-answer",
+          loopIteration: 0,
+          attempt: 1,
+          providerRequestIndex: 0,
+          agentRole: "direct_answer",
+          modelId: "glm-5-turbo",
+          providerServiceId: "zai_coding_plan_official",
+          usage: {
+            inputTokens: 10,
+            outputTokens: 4,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 14,
+            stopReason: "stop",
+          },
+        });
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: { loopIteration: 0, attempt: 2 },
+          answer: { status: "ok", mode: "single", content: "Retry answer", sourceMap: [] },
+          memory,
+          authorize,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "succeeded" });
+
+    const resumed = await runDb(createFixture("crash-resume"));
+    await runDb(seedSingleObservability(resumed));
+    await runDb(
+      insertAiObservation({
+        runId: resumed.runId,
+        chatId: resumed.chatId,
+        emittingTask: "plan-turn",
+        loopIteration: 0,
+        attempt: 1,
+        observationKey: "crash:orphan-measurement",
+        kind: "provider_request_measurement",
+        payload: {
+          providerRequestIndex: 0,
+          agentRole: "plan_turn",
+          modelId: "glm-5-turbo",
+          requestSha256Hex: "e".repeat(64),
+          sourceExposureProofSha256Hexes: [],
+          sourceExposureProofBindings: [],
+          inputTokens: 10,
+          requestedOutputTokens: 2048,
+          usableInputTokens: 6144,
+          contextWindow: 8192,
+          passed: true,
+        },
+      }),
+    );
+    await runDb(
+      Effect.gen(function* () {
+        yield* insertAiObservation({
+          runId: resumed.runId,
+          chatId: resumed.chatId,
+          emittingTask: "plan-turn",
+          loopIteration: 0,
+          attempt: 2,
+          observationKey: "crash:terminal-plan",
+          kind: "turn_plan",
+          payload: turnPlanPayload("single"),
+        });
+        yield* insertAiObservation({
+          runId: resumed.runId,
+          chatId: resumed.chatId,
+          emittingTask: "single-answer",
+          loopIteration: 0,
+          attempt: 2,
+          observationKey: "crash:terminal-context",
+          kind: "context_serialized",
+          payload: {
+            consumerTaskId: "single-answer",
+            sourceKeys: [],
+            restrictedContextLedger: {
+              requestKind: "direct",
+              modelId: "glm-5-turbo",
+              requestSha256Hex: "2".repeat(64),
+              inputTokens: 10,
+              usableInputTokens: 6144,
+              requestedOutputTokens: 2048,
+              selectedConversation: [],
+              question: "current question",
+              gaps: [],
+              sources: [],
+            },
+            terminalUsageCoordinate: {
+              taskId: "single-answer",
+              loopIteration: 0,
+              attempt: 2,
+              providerRequestIndex: 0,
+            },
+          },
+        });
+        yield* insertAiObservation({
+          runId: resumed.runId,
+          chatId: resumed.chatId,
+          emittingTask: "single-measure",
+          loopIteration: 0,
+          attempt: 2,
+          observationKey: "crash:context-measurement",
+          kind: "context_measurement",
+          payload: {
+            consumerTaskId: "single-answer",
+            mandatoryInputTokens: 10,
+            discretionaryInputTokens: 0,
+            totalInputTokens: 10,
+            requestedOutputTokens: 2048,
+            usableInputTokens: 6144,
+            contextWindow: 8192,
+            status: "ready",
+            reductionRan: false,
+            reductionFeedback: [],
+            restrictedContextLedger: {
+              requestKind: "direct",
+              modelId: "glm-5-turbo",
+              requestSha256Hex: "2".repeat(64),
+              inputTokens: 10,
+              usableInputTokens: 6144,
+              requestedOutputTokens: 2048,
+              selectedConversation: [],
+              question: "current question",
+              gaps: [],
+              sources: [],
+            },
+          },
+        });
+        for (const [taskId, role, digest] of [
+          ["plan-turn", "plan_turn", "1".repeat(64)],
+          ["single-answer", "direct_answer", "2".repeat(64)],
+        ] as const) {
+          yield* insertAiObservation({
+            runId: resumed.runId,
+            chatId: resumed.chatId,
+            emittingTask: taskId,
+            loopIteration: 0,
+            attempt: 2,
+            observationKey: `crash:${taskId}:measurement`,
+            kind: "provider_request_measurement",
+            payload: {
+              providerRequestIndex: 0,
+              agentRole: role,
+              modelId: "glm-5-turbo",
+              requestSha256Hex: digest,
+              sourceExposureProofSha256Hexes: [],
+              sourceExposureProofBindings: [],
+              inputTokens: 10,
+              requestedOutputTokens: 2048,
+              usableInputTokens: 6144,
+              contextWindow: 8192,
+              passed: true,
+            },
+          });
+          yield* insertAiRunUsage({
+            runId: resumed.runId,
+            taskId,
+            loopIteration: 0,
+            attempt: 2,
+            providerRequestIndex: 0,
+            agentRole: role,
+            modelId: "glm-5-turbo",
+            providerServiceId: "zai_coding_plan_official",
+            usage: {
+              inputTokens: 10,
+              outputTokens: 4,
+              cachedTokens: 0,
+              reasoningTokens: 0,
+              totalTokens: 14,
+              stopReason: "stop",
+            },
+          });
+        }
+      }),
+    );
+    const resumedMemory = await runDb(
+      persistMemoryArtifact(resumed, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: resumed.runId,
+          expectedSmithersRunId: `ai-chat:${resumed.runId}`,
+          coordinates: { loopIteration: 0, attempt: 3 },
+          answer: { status: "ok", mode: "single", content: "Resumed answer", sourceMap: [] },
+          memory: resumedMemory,
+          authorize,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "succeeded" });
+  });
+
   it("finalizes answer, memory, provenance, citations, and terminal event exactly once", async () => {
     const fixture = await runDb(createFixture("finalize"));
-    await runDb(seedSingleObservability(fixture));
     const source = sourceFor(fixture);
+    await runDb(
+      seedSingleObservability(fixture, {
+        includeAnswerMeasurement: true,
+        contextSources: [
+          {
+            sourceKey: source.sourceKey,
+            candidateId: candidateIdForSource(source),
+            kind: "chat_message",
+            ranges: [],
+            label: source.label,
+          },
+        ],
+      }),
+    );
     const answer: AnswerLaneResult = {
       status: "ok",
       mode: "single",
-      content:
-        "Answer [[cite:k_AAAAAAAAAAAAAAAAAAAAAA_1,k_BBBBBBBBBBBBBBBBBBBBBB_2,k_CCCCCCCCCCCCCCCCCCCCCC_3]]",
+      content: `Answer [[cite:${sourceKeyFor(fixture, 1)},${sourceKeyFor(fixture, 2)},${sourceKeyFor(fixture, 3)}]]`,
       sourceMap: [source],
     };
     const memory = await runDb(
@@ -1096,14 +3438,1037 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       },
     ]);
     expect(state.events.map((event) => event.key)).toEqual([
+      "usage:request:model:plan-turn:0:0:0",
+      "usage:request:model:single-answer:0:0:0",
+      "usage:request:model:single-retrieve-internal:0:0:0",
+      "usage:request:model:memory-extract:0:1:0",
       "memory_updated",
       "usage:run",
       "terminal",
     ]);
   });
 
+  it("revalidates every required durable ledger class before terminal replay", async () => {
+    for (const ledger of [
+      "turn_plan",
+      "retrieval_manifest",
+      "context_measurement",
+      "context_serialized",
+      "memory_extraction_result",
+      "memory_extraction_payload",
+      "provider_request_measurement",
+      "provider_usage",
+      "source_exposure",
+      "source_exposure_attestation",
+      "memory_application",
+      "memory_written",
+      "memory_updated_event",
+      "usage_event",
+      "terminal_event",
+      "memory_revision",
+      "source_use",
+      "source",
+      "citation",
+      "citation_defect",
+      "assistant_message",
+    ] as const) {
+      const fixture = await runDb(createFixture(`terminal-replay-${ledger}`));
+      const source = sourceFor(fixture);
+      await runDb(
+        seedSingleObservability(fixture, {
+          contextSources: [
+            {
+              sourceKey: source.sourceKey,
+              candidateId: candidateIdForSource(source),
+              kind: "chat_message",
+              ranges: [],
+              label: source.label,
+            },
+          ],
+        }),
+      );
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, {
+          proposals: [{ kind: "fact", content: "Replay proof" }],
+          discardedCount: 0,
+        }),
+      );
+      const input = {
+        runId: fixture.runId,
+        expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+        coordinates: finalizeCoordinates,
+        answer: {
+          status: "ok" as const,
+          mode: "single" as const,
+          content: `Answer [[cite:${source.sourceKey}]] [[cite:k_${fixture.citationNamespace}_999]]`,
+          sourceMap: [source],
+        },
+        memory,
+        authorize,
+      };
+      await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
+        status: "succeeded",
+        alreadyTerminal: false,
+      });
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          if (ledger === "provider_usage") {
+            yield* sql`
+              delete from ai_run_usage
+              where run_id = ${fixture.runId}
+                and task_id = 'single-answer'
+            `;
+          } else if (ledger === "source_exposure") {
+            yield* sql`
+              delete from ai_source_exposures
+              where run_id = ${fixture.runId}
+                and task_id = 'single-answer'
+            `;
+          } else if (ledger === "memory_extraction_payload") {
+            yield* sql`
+              update ai_observations
+              set payload = jsonb_set(payload, '{proposalCount}', '2'::jsonb)
+              where run_id = ${fixture.runId}
+                and kind = 'memory_extraction_result'
+            `;
+          } else if (ledger === "memory_application" || ledger === "memory_written") {
+            yield* sql`
+              delete from ai_observations
+              where run_id = ${fixture.runId}
+                and kind = ${ledger}
+            `;
+          } else if (
+            ledger === "memory_updated_event" ||
+            ledger === "usage_event" ||
+            ledger === "terminal_event"
+          ) {
+            const emissionKey =
+              ledger === "memory_updated_event"
+                ? "memory_updated"
+                : ledger === "usage_event"
+                  ? "usage:run"
+                  : "terminal";
+            yield* sql`
+              delete from ai_run_events
+              where run_id = ${fixture.runId}
+                and emission_key = ${emissionKey}
+            `;
+          } else if (ledger === "memory_revision") {
+            yield* sql`
+              update user_memory_revisions
+              set state_after = jsonb_set(state_after, '{content}', '"tampered"'::jsonb)
+              where run_id = ${fixture.runId}
+            `;
+          } else if (ledger === "citation" || ledger === "citation_defect") {
+            yield* sql`
+              delete from ai_observations
+              where run_id = ${fixture.runId}
+                and kind = ${ledger}
+            `;
+          } else if (ledger === "source_use") {
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`alter table assistant_message_source_uses disable trigger user`;
+                yield* sql`
+                  delete from assistant_message_source_uses
+                  where assistant_message_id in (
+                    select id from chat_messages where assistant_ai_run_id = ${fixture.runId}
+                  )
+                `;
+                yield* sql`alter table assistant_message_source_uses enable trigger user`;
+              }),
+            );
+          } else if (ledger === "source") {
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`alter table assistant_message_source_uses disable trigger user`;
+                yield* sql`
+                  delete from assistant_message_source_uses
+                  where assistant_message_id in (
+                    select id from chat_messages where assistant_ai_run_id = ${fixture.runId}
+                  )
+                `;
+                yield* sql`alter table assistant_message_source_uses enable trigger user`;
+                yield* sql`alter table assistant_message_sources disable trigger user`;
+                yield* sql`
+                  delete from assistant_message_sources
+                  where assistant_message_id in (
+                    select id from chat_messages where assistant_ai_run_id = ${fixture.runId}
+                  )
+                `;
+                yield* sql`alter table assistant_message_sources enable trigger user`;
+              }),
+            );
+          } else if (ledger === "assistant_message") {
+            yield* sql`
+              update chat_messages
+              set content = content || ' tampered'
+              where assistant_ai_run_id = ${fixture.runId}
+            `;
+          } else {
+            const kind =
+              ledger === "provider_request_measurement" ? "provider_request_measurement" : ledger;
+            yield* sql`
+              delete from ai_observations
+              where run_id = ${fixture.runId}
+                and kind = ${kind}
+                and (
+                  ${ledger} not in (
+                    'retrieval_manifest',
+                    'provider_request_measurement',
+                    'source_exposure_attestation'
+                  )
+                  or emitting_task = 'single-answer'
+                  or (
+                    ${ledger} = 'retrieval_manifest'
+                    and emitting_task = 'single-retrieve-internal'
+                  )
+                )
+            `;
+          }
+        }),
+      );
+
+      await expect(runDb(finalizeAiRun(input))).rejects.toThrow();
+    }
+  });
+
+  it("revalidates every external usage row and its exact request event on replay", async () => {
+    for (const corruption of [
+      "request-event-removed",
+      "usage-row-removed",
+      "status-changed",
+      "duration-changed",
+    ] as const) {
+      const fixture = await runDb(createFixture(`terminal-replay-external-${corruption}`));
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update ai_runs
+            set web_search_enabled = true
+            where id = ${fixture.runId}
+          `;
+          yield* seedSingleObservability(fixture);
+          yield* insertAiExternalToolUsage({
+            runId: fixture.runId,
+            taskId: "single-retrieve-web",
+            loopIteration: 0,
+            attempt: 0,
+            toolRequestIndex: 0,
+            providerServiceId: "tinyfish_search_official",
+            operation: "web_search",
+            status: "ok",
+            resultCount: 1,
+            responseBytes: 128,
+            billedUnits: null,
+            durationMs: 25,
+          });
+        }),
+      );
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+      const input = {
+        runId: fixture.runId,
+        expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+        coordinates: finalizeCoordinates,
+        answer: {
+          status: "ok" as const,
+          mode: "single" as const,
+          content: "Answer",
+          sourceMap: [],
+        },
+        memory,
+        authorize,
+      };
+      await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
+        status: "succeeded",
+        alreadyTerminal: false,
+      });
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          if (corruption === "request-event-removed") {
+            yield* sql`
+              delete from ai_run_events
+              where run_id = ${fixture.runId}
+                and emission_key =
+                  'usage:request:web_search:single-retrieve-web:0:0:0'
+            `;
+          } else if (corruption === "usage-row-removed") {
+            yield* sql`
+              delete from ai_external_tool_usage
+              where run_id = ${fixture.runId}
+                and task_id = 'single-retrieve-web'
+                and loop_iteration = 0
+                and attempt = 0
+                and tool_request_index = 0
+            `;
+            yield* sql`
+              update ai_run_events
+              set event = event || '{"web":{"searchCount":0,"fetchCount":0,"responseBytes":0,"billedUnits":0}}'::jsonb
+              where run_id = ${fixture.runId}
+                and emission_key = 'usage:run'
+            `;
+          } else if (corruption === "status-changed") {
+            yield* sql`
+              update ai_external_tool_usage
+              set status = 'empty'
+              where run_id = ${fixture.runId}
+                and task_id = 'single-retrieve-web'
+                and loop_iteration = 0
+                and attempt = 0
+                and tool_request_index = 0
+            `;
+          } else {
+            yield* sql`
+              update ai_external_tool_usage
+              set duration_ms = 26
+              where run_id = ${fixture.runId}
+                and task_id = 'single-retrieve-web'
+                and loop_iteration = 0
+                and attempt = 0
+                and tool_request_index = 0
+            `;
+          }
+        }),
+      );
+
+      await expect(runDb(finalizeAiRun(input))).rejects.toThrow(
+        /external (usage row lacks its exact durable request event|request event has no exact usage row)/u,
+      );
+    }
+  });
+
+  it("keeps a no-memory selector replay idempotent after a later run creates memory", async () => {
+    const fixture = await runDb(createFixture("terminal-replay-no-memory-call"));
+    await runDb(
+      seedSingleObservability(fixture, {
+        includeMemorySelectorMeasurement: false,
+      }),
+    );
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update ai_observations
+          set attempt = 1,
+              observation_key = 'single-select-memories:0:1:retrieval_manifest:result'
+          where run_id = ${fixture.runId}
+            and emitting_task = 'single-select-memories'
+            and kind = 'retrieval_manifest'
+        `;
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    const input = {
+      runId: fixture.runId,
+      expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+      coordinates: finalizeCoordinates,
+      answer: {
+        status: "ok" as const,
+        mode: "single" as const,
+        content: "Answer",
+        sourceMap: [],
+      },
+      memory,
+      authorize,
+    };
+
+    await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
+      status: "succeeded",
+      alreadyTerminal: false,
+    });
+
+    const later = await runDb(createNextRun(fixture, "Create the first memory", "clarify"));
+    await runDb(seedSingleObservability(later));
+    const laterMemory = await runDb(
+      persistMemoryArtifact(later, {
+        proposals: [{ kind: "fact", content: "Created by a later run" }],
+        discardedCount: 0,
+      }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: later.runId,
+          expectedSmithersRunId: `ai-chat:${later.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: {
+            status: "ok",
+            mode: "clarification",
+            content: "Saved",
+            sourceMap: [],
+          },
+          memory: laterMemory,
+          authorize,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "succeeded" });
+
+    await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
+      status: "succeeded",
+      alreadyTerminal: true,
+    });
+  });
+
+  it("replays a provider-backed memory selector after its memory is deleted", async () => {
+    const created = await runDb(createFixture("terminal-replay-memory-call-source", "clarify"));
+    await runDb(seedSingleObservability(created));
+    const createdArtifact = await runDb(
+      persistMemoryArtifact(created, {
+        proposals: [{ kind: "fact", content: "Delete after the selector call" }],
+        discardedCount: 0,
+      }),
+    );
+    await runDb(
+      finalizeAiRun({
+        runId: created.runId,
+        expectedSmithersRunId: `ai-chat:${created.runId}`,
+        coordinates: finalizeCoordinates,
+        answer: { status: "ok", mode: "clarification", content: "Saved", sourceMap: [] },
+        memory: createdArtifact,
+        authorize,
+      }),
+    );
+    const memory = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return (yield* sql<{ readonly id: string }>`
+          select id::text
+          from user_memories
+          where user_id = ${created.userId}
+        `)[0]!;
+      }),
+    );
+
+    const providerBacked = await runDb(createNextRun(created, "Read the saved memory"));
+    await runDb(seedSingleObservability(providerBacked));
+    const providerBackedArtifact = await runDb(
+      persistMemoryArtifact(providerBacked, { proposals: [], discardedCount: 0 }),
+    );
+    const input = {
+      runId: providerBacked.runId,
+      expectedSmithersRunId: `ai-chat:${providerBacked.runId}`,
+      coordinates: finalizeCoordinates,
+      answer: {
+        status: "ok" as const,
+        mode: "single" as const,
+        content: "Answer",
+        sourceMap: [],
+      },
+      memory: providerBackedArtifact,
+      authorize,
+    };
+    await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
+      status: "succeeded",
+      alreadyTerminal: false,
+    });
+
+    await runDb(deleteUserMemory(created.userId, memory.id));
+    await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
+      status: "succeeded",
+      alreadyTerminal: true,
+    });
+  });
+
+  it("rejects a replayed web call when immutable run state now requires a no-call reason", async () => {
+    const fixture = await runDb(createFixture("terminal-replay-web-call-forgery"));
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* seedSingleObservability(fixture);
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    const input = {
+      runId: fixture.runId,
+      expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+      coordinates: finalizeCoordinates,
+      answer: { status: "ok" as const, mode: "single" as const, content: "Answer", sourceMap: [] },
+      memory,
+      authorize,
+    };
+    await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
+      status: "succeeded",
+      alreadyTerminal: false,
+    });
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update ai_runs
+          set web_search_enabled = false
+          where id = ${fixture.runId}
+        `;
+      }),
+    );
+    await expect(runDb(finalizeAiRun(input))).rejects.toThrow(/invalid durable no-call reason/u);
+  });
+
+  it("replays a sealed no-memory selector after delete, run, and revert", async () => {
+    const created = await runDb(createFixture("terminal-replay-deleted-memory", "clarify"));
+    await runDb(seedSingleObservability(created));
+    const createdArtifact = await runDb(
+      persistMemoryArtifact(created, {
+        proposals: [{ kind: "fact", content: "Delete before the next run" }],
+        discardedCount: 0,
+      }),
+    );
+    await runDb(
+      finalizeAiRun({
+        runId: created.runId,
+        expectedSmithersRunId: `ai-chat:${created.runId}`,
+        coordinates: finalizeCoordinates,
+        answer: { status: "ok", mode: "clarification", content: "Saved", sourceMap: [] },
+        memory: createdArtifact,
+        authorize,
+      }),
+    );
+    const memory = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return (yield* sql<{ readonly id: string; readonly headRevisionId: string }>`
+            select id::text, head_revision_id::text as "headRevisionId"
+            from user_memories
+            where user_id = ${created.userId}
+          `)[0]!;
+      }),
+    );
+    await runDb(deleteUserMemory(created.userId, memory.id));
+
+    const noCall = await runDb(createNextRun(created, "Run while the memory is deleted"));
+    await runDb(
+      seedSingleObservability(noCall, {
+        includeMemorySelectorMeasurement: false,
+      }),
+    );
+    const noCallArtifact = await runDb(
+      persistMemoryArtifact(noCall, { proposals: [], discardedCount: 0 }),
+    );
+    const input = {
+      runId: noCall.runId,
+      expectedSmithersRunId: `ai-chat:${noCall.runId}`,
+      coordinates: finalizeCoordinates,
+      answer: {
+        status: "ok" as const,
+        mode: "single" as const,
+        content: "Answer",
+        sourceMap: [],
+      },
+      memory: noCallArtifact,
+      authorize,
+    };
+    await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
+      status: "succeeded",
+      alreadyTerminal: false,
+    });
+
+    await runDb(revertUserMemory(created.userId, memory.id, memory.headRevisionId));
+
+    await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
+      status: "succeeded",
+      alreadyTerminal: true,
+    });
+  });
+
+  it("rejects a no-memory manifest forged after retention removed later memory rows", async () => {
+    const fixture = await runDb(createFixture("terminal-replay-retention-forgery"));
+    await runDb(
+      seedSingleObservability(fixture, {
+        includeMemorySelectorMeasurement: false,
+      }),
+    );
+    const artifact = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    const input = {
+      runId: fixture.runId,
+      expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+      coordinates: finalizeCoordinates,
+      answer: {
+        status: "ok" as const,
+        mode: "single" as const,
+        content: "Answer",
+        sourceMap: [],
+      },
+      memory: artifact,
+      authorize,
+    };
+    await runDb(finalizeAiRun(input));
+
+    const later = await runDb(createNextRun(fixture, "Create memory for retention", "clarify"));
+    await runDb(seedSingleObservability(later));
+    const laterArtifact = await runDb(
+      persistMemoryArtifact(later, {
+        proposals: [{ kind: "fact", content: "Remove through retention" }],
+        discardedCount: 0,
+      }),
+    );
+    await runDb(
+      finalizeAiRun({
+        runId: later.runId,
+        expectedSmithersRunId: `ai-chat:${later.runId}`,
+        coordinates: finalizeCoordinates,
+        answer: { status: "ok", mode: "clarification", content: "Saved", sourceMap: [] },
+        memory: laterArtifact,
+        authorize,
+      }),
+    );
+    const memoryId = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return (yield* sql<{ readonly id: string }>`
+            select id::text
+            from user_memories
+            where user_id = ${fixture.userId}
+          `)[0]!.id;
+      }),
+    );
+    await runDb(deleteUserMemory(fixture.userId, memoryId));
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update user_memories
+          set deleted_at = now() - interval '31 days'
+          where id = ${memoryId}
+        `;
+      }),
+    );
+    await runDb(purgeUserMemoryTombstones());
+    await runDb(
+      insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: "single-select-memories",
+        loopIteration: 0,
+        attempt: 1,
+        observationKey: "single-select-memories:0:1:retrieval_manifest:result",
+        kind: "retrieval_manifest",
+        payload: {
+          selectorRole: "memory",
+          references: [],
+          noCallReason: "no_active_memories",
+        },
+      }),
+    );
+
+    await expect(runDb(finalizeAiRun(input))).rejects.toThrow(
+      /lacks its exact durable no-call seal/u,
+    );
+  });
+
+  it("rejects forged durable no-call memory reasons", async () => {
+    const first = await runDb(createFixture("forged-no-memory-history", "clarify"));
+    await runDb(seedSingleObservability(first));
+    const firstMemory = await runDb(
+      persistMemoryArtifact(first, {
+        proposals: [{ kind: "fact", content: "Already exists" }],
+        discardedCount: 0,
+      }),
+    );
+    await runDb(
+      finalizeAiRun({
+        runId: first.runId,
+        expectedSmithersRunId: `ai-chat:${first.runId}`,
+        coordinates: finalizeCoordinates,
+        answer: {
+          status: "ok",
+          mode: "clarification",
+          content: "Saved",
+          sourceMap: [],
+        },
+        memory: firstMemory,
+        authorize,
+      }),
+    );
+
+    const forgedHistory = await runDb(createNextRun(first, "Use memory"));
+    await runDb(
+      seedSingleObservability(forgedHistory, {
+        includeMemorySelectorMeasurement: false,
+      }),
+    );
+    const forgedHistoryMemory = await runDb(
+      persistMemoryArtifact(forgedHistory, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: forgedHistory.runId,
+          expectedSmithersRunId: `ai-chat:${forgedHistory.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory: forgedHistoryMemory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/invalid durable no-call reason/u);
+
+    const forgedProviderCall = await runDb(createFixture("forged-no-memory-provider-call"));
+    await runDb(
+      seedSingleObservability(forgedProviderCall, {
+        includeMemorySelectorMeasurement: false,
+      }),
+    );
+    await runDb(
+      insertProviderMeasurementAndUsage(forgedProviderCall, {
+        taskId: "single-select-memories",
+        agentRole: "memory_selector",
+        loopIteration: 0,
+        attempt: 0,
+        requestSha256Hex: "4".repeat(64),
+      }),
+    );
+    const forgedProviderMemory = await runDb(
+      persistMemoryArtifact(forgedProviderCall, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: forgedProviderCall.runId,
+          expectedSmithersRunId: `ai-chat:${forgedProviderCall.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory: forgedProviderMemory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/invalid durable no-call reason/u);
+  });
+
+  it("requires the exact no-call reason from the locked selector state", async () => {
+    const cases = [
+      {
+        reason: "memory_mode_disabled" as const,
+        taskId: "single-select-memories",
+        wrongReason: "no_active_memories" as const,
+        create: () => createFixture("no-call-required-memory-disabled", "single", "disabled"),
+        seed: (fixture: Fixture) => seedSingleObservability(fixture),
+        answer: {
+          status: "ok" as const,
+          mode: "single" as const,
+          content: "Answer",
+          sourceMap: [],
+        },
+      },
+      {
+        reason: "no_active_memories" as const,
+        taskId: "single-select-memories",
+        wrongReason: "memory_mode_disabled" as const,
+        create: () => createFixture("no-call-required-no-memory"),
+        seed: (fixture: Fixture) => seedSingleObservability(fixture),
+        answer: {
+          status: "ok" as const,
+          mode: "single" as const,
+          content: "Answer",
+          sourceMap: [],
+        },
+      },
+      {
+        reason: "web_not_requested" as const,
+        taskId: "single-retrieve-web",
+        wrongReason: "web_policy_disabled" as const,
+        create: () =>
+          createFixture("no-call-required-web-not-requested", "single", "private_owner", false),
+        seed: (fixture: Fixture) => seedSingleObservability(fixture),
+        answer: {
+          status: "ok" as const,
+          mode: "single" as const,
+          content: "Answer",
+          sourceMap: [],
+        },
+      },
+      {
+        reason: "web_policy_disabled" as const,
+        taskId: "single-retrieve-web",
+        wrongReason: "web_not_requested" as const,
+        create: () =>
+          createFixture(
+            "no-call-required-web-policy-disabled",
+            "single",
+            "private_owner",
+            true,
+            false,
+          ),
+        seed: (fixture: Fixture) =>
+          Effect.gen(function* () {
+            yield* seedSingleObservability(fixture);
+          }),
+        answer: {
+          status: "ok" as const,
+          mode: "single" as const,
+          content: "Answer",
+          sourceMap: [],
+        },
+      },
+      {
+        reason: "topic_not_web_eligible" as const,
+        taskId: "topic-t1-retrieve-web",
+        wrongReason: "web_not_requested" as const,
+        create: () =>
+          createFixture("no-call-required-topic", "fanout", "private_owner", true, true),
+        seed: (fixture: Fixture) =>
+          Effect.gen(function* () {
+            yield* seedFanoutFailureBase(fixture);
+          }),
+        answer: {
+          status: "failed" as const,
+          code: "synthesis_failed" as const,
+          retryable: false,
+        },
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      for (const mutation of ["omitted", "wrong"] as const) {
+        const fixture = await runDb(testCase.create());
+        await runDb(testCase.seed(fixture));
+        await runDb(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            if (mutation === "omitted") {
+              yield* sql`
+                update ai_observations
+                set payload = payload - 'noCallReason'
+                where run_id = ${fixture.runId}
+                  and emitting_task = ${testCase.taskId}
+                  and kind = 'retrieval_manifest'
+              `;
+            } else {
+              yield* sql`
+                update ai_observations
+                set payload = jsonb_set(payload, '{noCallReason}', to_jsonb(${testCase.wrongReason}::text))
+                where run_id = ${fixture.runId}
+                  and emitting_task = ${testCase.taskId}
+                  and kind = 'retrieval_manifest'
+              `;
+            }
+          }),
+        );
+        if (mutation === "omitted") {
+          await runDb(
+            insertProviderMeasurementAndUsage(fixture, {
+              taskId: testCase.taskId,
+              agentRole: testCase.taskId.endsWith("select-memories")
+                ? "memory_selector"
+                : testCase.taskId.endsWith("retrieve-web")
+                  ? "web_research"
+                  : "internal_retrieval",
+              loopIteration: 0,
+              attempt: 0,
+              requestSha256Hex: "4".repeat(64),
+            }),
+          );
+        }
+        const memory = await runDb(
+          persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+        );
+        await expect(
+          runDb(
+            finalizeAiRun({
+              runId: fixture.runId,
+              expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+              coordinates: finalizeCoordinates,
+              answer: testCase.answer,
+              memory,
+              authorize,
+            }),
+          ),
+        ).rejects.toThrow(/invalid durable no-call reason/u);
+      }
+
+      const replayFixture = await runDb(testCase.create());
+      await runDb(testCase.seed(replayFixture));
+      const replayMemory = await runDb(
+        persistMemoryArtifact(replayFixture, { proposals: [], discardedCount: 0 }),
+      );
+      const replayInput = {
+        runId: replayFixture.runId,
+        expectedSmithersRunId: `ai-chat:${replayFixture.runId}`,
+        coordinates: finalizeCoordinates,
+        answer: testCase.answer,
+        memory: replayMemory,
+        authorize,
+      };
+      await expect(runDb(finalizeAiRun(replayInput))).resolves.toMatchObject(
+        testCase.answer.status === "failed"
+          ? { status: "failed", code: testCase.answer.code, alreadyTerminal: false }
+          : { status: "succeeded", alreadyTerminal: false },
+      );
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update ai_observations
+            set payload = payload - 'noCallReason'
+            where run_id = ${replayFixture.runId}
+              and emitting_task = ${testCase.taskId}
+              and kind = 'retrieval_manifest'
+          `;
+        }),
+      );
+      await runDb(
+        insertProviderMeasurementAndUsageAfterTerminal(replayFixture, {
+          taskId: testCase.taskId,
+          agentRole: testCase.taskId.endsWith("select-memories")
+            ? "memory_selector"
+            : testCase.taskId.endsWith("retrieve-web")
+              ? "web_research"
+              : "internal_retrieval",
+          loopIteration: 0,
+          attempt: 0,
+          requestSha256Hex: "5".repeat(64),
+        }),
+      );
+      const replayUsage = await runDb(deriveAggregateAiRunUsage(replayFixture.runId));
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update ai_run_events
+            set event = ${sql.json({ type: "usage", scope: "run", ...replayUsage })}
+            where run_id = ${replayFixture.runId}
+              and emission_key = 'usage:run'
+          `;
+        }),
+      );
+      await expect(runDb(finalizeAiRun(replayInput))).rejects.toThrow(
+        /invalid durable no-call reason/u,
+      );
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(payload, '{noCallReason}', to_jsonb(${testCase.wrongReason}::text))
+            where run_id = ${replayFixture.runId}
+              and emitting_task = ${testCase.taskId}
+              and kind = 'retrieval_manifest'
+          `;
+        }),
+      );
+      await expect(runDb(finalizeAiRun(replayInput))).rejects.toThrow(
+        /invalid durable no-call reason|exact durable no-call seal/u,
+      );
+    }
+  });
+
+  it("rejects external usage on a sealed web no-call task during initial seal and replay", async () => {
+    const initial = await runDb(createFixture("no-call-web-external-initial"));
+    await runDb(seedSingleObservability(initial));
+    await runDb(
+      insertAiExternalToolUsage({
+        runId: initial.runId,
+        taskId: "single-retrieve-web",
+        loopIteration: 0,
+        attempt: 0,
+        toolRequestIndex: 0,
+        providerServiceId: "tinyfish_search_official",
+        operation: "web_search",
+        status: "ok",
+        resultCount: 1,
+        responseBytes: 128,
+        billedUnits: null,
+        durationMs: 25,
+      }),
+    );
+    const initialMemory = await runDb(
+      persistMemoryArtifact(initial, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: initial.runId,
+          expectedSmithersRunId: `ai-chat:${initial.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory: initialMemory,
+          authorize,
+        }),
+      ),
+    ).rejects.toThrow(/invalid durable no-call reason/u);
+
+    const replay = await runDb(createFixture("no-call-web-external-replay"));
+    await runDb(seedSingleObservability(replay));
+    const replayMemory = await runDb(
+      persistMemoryArtifact(replay, { proposals: [], discardedCount: 0 }),
+    );
+    const replayInput = {
+      runId: replay.runId,
+      expectedSmithersRunId: `ai-chat:${replay.runId}`,
+      coordinates: finalizeCoordinates,
+      answer: { status: "ok" as const, mode: "single" as const, content: "Answer", sourceMap: [] },
+      memory: replayMemory,
+      authorize,
+    };
+    await expect(runDb(finalizeAiRun(replayInput))).resolves.toMatchObject({
+      status: "succeeded",
+      alreadyTerminal: false,
+    });
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into ai_external_tool_usage (
+            run_id, task_id, loop_iteration, attempt, tool_request_index,
+            provider_service_id, operation, status, result_count, response_bytes,
+            billed_units, duration_ms
+          ) values (
+            ${replay.runId}, 'single-retrieve-web', 0, 1, 0,
+            'tinyfish_search_official', 'web_search', 'ok', 1, 128, null, 25
+          )
+        `;
+        yield* sql`
+          insert into ai_run_events (
+            run_id, seq, emission_key, event, emitted_by_task
+          )
+          select ${replay.runId}, coalesce(max(seq), 0) + 1,
+                 'usage:request:web_search:single-retrieve-web:0:1:0',
+                 ${sql.json({
+                   type: "usage",
+                   scope: "request",
+                   kind: "web_search",
+                   attempt: 1,
+                   status: "ok",
+                   resultCount: 1,
+                   responseBytes: 128,
+                   billedUnits: null,
+                   durationMs: 25,
+                 })},
+                 'single-retrieve-web'
+          from ai_run_events
+          where run_id = ${replay.runId}
+        `;
+      }),
+    );
+    const replayUsage = await runDb(deriveAggregateAiRunUsage(replay.runId));
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update ai_run_events
+          set event = ${sql.json({ type: "usage", scope: "run", ...replayUsage })}
+          where run_id = ${replay.runId}
+            and emission_key = 'usage:run'
+        `;
+      }),
+    );
+    await expect(runDb(finalizeAiRun(replayInput))).rejects.toThrow(
+      /invalid durable no-call reason/u,
+    );
+  });
+
   it("authorizes a cited memory revision before applying a same-turn update", async () => {
-    const fixture = await runDb(createFixture("memory-citation-update"));
+    const fixture = await runDb(createFixture("memory-citation-update", "clarify"));
+    await runDb(seedSingleObservability(fixture));
     const initialMemory = await runDb(
       persistMemoryArtifact(fixture, {
         proposals: [{ kind: "preference", content: "Use GWh" }],
@@ -1132,7 +4497,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       }),
     );
     const next = await runDb(createNextRun(fixture, "Update the energy unit"));
-    await runDb(seedSingleObservability(next));
     const updateMemory = await runDb(
       persistMemoryArtifact(next, {
         proposals: [
@@ -1147,7 +4511,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       }),
     );
     const source: FinalSourceRecord = {
-      sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+      sourceKey: sourceKeyFor(next),
       locator: { kind: "memory", memoryId: memory.id, memoryRevisionId: memory.revisionId },
       label: "Energy unit preference",
       publicProvenance: {},
@@ -1160,6 +4524,23 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         },
       ],
     };
+    await runDb(
+      seedSingleObservability(next, {
+        includeAnswerMeasurement: true,
+        contextSources: [
+          {
+            sourceKey: source.sourceKey,
+            candidateId: candidateIdForSource(source),
+            kind: "memory",
+            ranges: [],
+            label: source.label,
+            ...(source.locator.kind === "memory"
+              ? { contentItemIdentity: source.locator.memoryRevisionId }
+              : {}),
+          },
+        ],
+      }),
+    );
     const result = await runDb(
       finalizeAiRun({
         runId: next.runId,
@@ -1168,7 +4549,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         answer: {
           status: "ok",
           mode: "single",
-          content: "The saved preference is cited [[cite:k_AAAAAAAAAAAAAAAAAAAAAA_1]]",
+          content: `The saved preference is cited [[cite:${sourceKeyFor(next)}]]`,
           sourceMap: [source],
         },
         memory: updateMemory,
@@ -1177,7 +4558,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             const sql = yield* PgClient.PgClient;
             const cited = sourceMap[0]?.locator;
             if (cited?.kind !== "memory") {
-              return { authorized: false as const, code: "source_access_revoked" as const };
+              return { authorized: false as const, code: "finalization_failed" as const };
             }
             const rows = yield* sql<{ readonly authorized: boolean }>`
               select exists(
@@ -1189,7 +4570,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             `;
             return rows[0]?.authorized === true
               ? { authorized: true as const }
-              : { authorized: false as const, code: "source_access_revoked" as const };
+              : { authorized: false as const, code: "finalization_failed" as const };
           }),
       }),
     );
@@ -1215,6 +4596,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         const publisherContentHash = createHash("sha256")
           .update(publisherText, "utf8")
           .digest("hex");
+        let publisherExtractionId!: string;
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
@@ -1245,12 +4627,28 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                 1, ${"b".repeat(64)}, now(), ${fixture.userId}
               )
             `;
+            const [extraction] = yield* sql<{ readonly id: string }>`
+              insert into jobs (kind, payload)
+              values ('extract_pdf_text', '{}'::jsonb)
+              returning id::text
+            `;
+            const extractions = yield* sql<{ readonly id: string }>`
+              insert into brief_document_extractions (
+                brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+              ) values (
+                ${publisherDocumentId}, ${"b".repeat(64)},
+                ${JSON.stringify([{ pageNumber: 1, text: publisherText }])}::jsonb,
+                ${publisherText.length}, ${extraction!.id}
+              )
+              returning id::text
+            `;
+            publisherExtractionId = extractions[0]!.id;
             yield* sql`
               insert into brief_document_versions (
-                id, brief_document_id, content_hash, language, canonical_text,
+                id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
                 text_char_count, page_ranges
               ) values (
-                ${publicDocumentId}, ${publisherDocumentId}, ${publisherContentHash}, 'english',
+                ${publicDocumentId}, ${publisherDocumentId}, ${extractions[0]!.id}, ${publisherContentHash}, 'english',
                 ${publisherText}, ${publisherText.length},
                 '[{"pageNumber":1,"charStart":0,"charEnd":24}]'::jsonb
               )
@@ -1305,23 +4703,23 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           publicDocumentId,
           publisherIssueId,
           publisherDocumentId,
+          publisherExtractionId,
           publicContentHash,
           publisherContentHash,
           canonicalUrl,
         };
       }),
     );
-    await runDb(seedSingleObservability(fixture));
     const memory = await runDb(
       persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
     );
     const source: FinalSourceRecord = {
-      sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+      sourceKey: sourceKeyFor(fixture),
       locator: {
         kind: "document",
         sourceId: `public:${collision.sourceId}`,
         documentId: collision.publicDocumentId,
-        documentVersionId: collision.publicDocumentId,
+        versionId: collision.publicDocumentId,
         contentHash: collision.publicContentHash,
         ranges: [{ charStart: 0, charEnd: 8 }],
       },
@@ -1339,6 +4737,28 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         },
       ],
     };
+    await runDb(
+      seedSingleObservability(fixture, {
+        includeAnswerMeasurement: true,
+        contextSources: [
+          {
+            sourceKey: source.sourceKey,
+            candidateId: candidateIdForSource(source),
+            kind: "document",
+            label: source.label,
+            ranges: source.locator.kind === "document" ? source.locator.ranges : [],
+            ...(source.locator.kind === "document"
+              ? {
+                  documentSourceId: source.locator.sourceId,
+                  documentId: source.locator.documentId,
+                  versionId: source.locator.versionId,
+                  contentHash: source.locator.contentHash,
+                }
+              : {}),
+          },
+        ],
+      }),
+    );
     await expect(
       runDb(
         finalizeAiRun({
@@ -1348,7 +4768,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           answer: {
             status: "ok",
             mode: "single",
-            content: "Public [[cite:k_AAAAAAAAAAAAAAAAAAAAAA_1]]",
+            content: `Public [[cite:${sourceKeyFor(fixture)}]]`,
             sourceMap: [source],
           },
           memory,
@@ -1360,35 +4780,36 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return (yield* sql<{
-          readonly documentVersionId: string;
-          readonly publisherDocumentVersionId: string | null;
+          readonly versionId: string;
+          readonly publisherExtractionId: string | null;
         }>`
-          select document_version_id as "documentVersionId",
-                 publisher_document_version_id::text as "publisherDocumentVersionId"
+          select version_id as "versionId",
+                 publisher_extraction_id::text as "publisherExtractionId"
           from assistant_message_sources
           where assistant_message_id = (select assistant_message_id from ai_runs where id = ${fixture.runId})
         `)[0]!;
       }),
     );
     expect(persisted).toEqual({
-      documentVersionId: collision.publicDocumentId,
-      publisherDocumentVersionId: null,
+      versionId: collision.publicDocumentId,
+      publisherExtractionId: null,
     });
 
     const malformed = await runDb(createFixture("document-identity-malformed"));
-    await runDb(seedSingleObservability(malformed));
     const malformedMemory = await runDb(
       persistMemoryArtifact(malformed, { proposals: [], discardedCount: 0 }),
     );
     const wrongIssueId = crypto.randomUUID();
     const malformedSource: FinalSourceRecord = {
       ...source,
+      sourceKey: sourceKeyFor(malformed),
       locator: {
         kind: "document",
-        sourceId: `publisher:${collision.subscriptionId}`,
+        sourceId: `publisher:${collision.subscriptionId}` as `publisher:${string}`,
         documentId: collision.publisherDocumentId,
-        documentVersionId: collision.publicDocumentId,
+        versionId: collision.publicDocumentId,
         contentHash: collision.publisherContentHash,
+        publisherExtractionId: collision.publisherExtractionId,
         publisherIssueId: wrongIssueId,
         publisherDocumentId: collision.publisherDocumentId,
         ranges: [{ charStart: 0, charEnd: 8 }],
@@ -1401,6 +4822,32 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         publishedAt: new Date().toISOString(),
       },
     };
+    await runDb(
+      seedSingleObservability(malformed, {
+        includeAnswerMeasurement: true,
+        contextSources: [
+          {
+            sourceKey: malformedSource.sourceKey,
+            candidateId: candidateIdForSource(malformedSource),
+            kind: "document",
+            label: malformedSource.label,
+            ranges:
+              malformedSource.locator.kind === "document" ? malformedSource.locator.ranges : [],
+            ...(malformedSource.locator.kind === "document"
+              ? {
+                  documentSourceId: malformedSource.locator.sourceId,
+                  publisherIssueId: collision.publisherIssueId,
+                  publisherDocumentId: malformedSource.locator.publisherDocumentId,
+                }
+              : {}),
+            documentId: collision.publisherDocumentId,
+            versionId: collision.publicDocumentId,
+            contentHash: collision.publisherContentHash,
+            publisherExtractionId: collision.publisherExtractionId,
+          },
+        ],
+      }),
+    );
     await expect(
       runDb(
         finalizeAiRun({
@@ -1421,7 +4868,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
   });
 
   it("blocks success finalization between full chat projection queries", async () => {
-    const fixture = await runDb(createFixture("projection-finalization"));
+    const fixture = await runDb(createFixture("projection-finalization", "clarify"));
+    await runDb(seedSingleObservability(fixture));
     let signalBetweenQueries!: () => void;
     const betweenQueries = new Promise<void>((resolve) => {
       signalBetweenQueries = resolve;
@@ -1546,11 +4994,38 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
   it("observes a publisher restriction committed before finalization", async () => {
     const fixture = await runDb(createFixture("publisher-restriction-first"));
     const publisher = await runDb(createPublisherSourceFixture(fixture));
-    await runDb(seedSingleObservability(fixture));
     const memory = await runDb(
       persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
     );
-    const source = publisherSourceFor(publisher);
+    const source = publisherSourceFor(publisher, fixture);
+    await runDb(
+      seedSingleObservability(fixture, {
+        includeAnswerMeasurement: true,
+        contextSources: [
+          {
+            sourceKey: source.sourceKey,
+            candidateId: candidateIdForSource(source),
+            kind: "document",
+            label: source.label,
+            ranges: source.locator.kind === "document" ? source.locator.ranges : [],
+            ...(source.locator.kind === "document"
+              ? {
+                  documentSourceId: source.locator.sourceId,
+                  documentId: source.locator.documentId,
+                  versionId: source.locator.versionId,
+                  contentHash: source.locator.contentHash,
+                  publisherIssueId: source.locator.publisherIssueId,
+                  publisherDocumentId: source.locator.publisherDocumentId,
+                }
+              : {}),
+            ...(source.locator.kind === "document" &&
+            source.locator.publisherExtractionId !== undefined
+              ? { publisherExtractionId: source.locator.publisherExtractionId }
+              : {}),
+          },
+        ],
+      }),
+    );
     let signalHeld!: () => void;
     const held = new Promise<void>((resolve) => {
       signalHeld = resolve;
@@ -1584,44 +5059,50 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     );
     await held;
 
+    const finalizationInput = {
+      runId: fixture.runId,
+      expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+      coordinates: finalizeCoordinates,
+      answer: {
+        status: "ok" as const,
+        mode: "single" as const,
+        content: "Restricted source",
+        sourceMap: [source],
+      },
+      memory,
+      authorize: ({ sourceMap }: { readonly sourceMap: readonly FinalSourceRecord[] }) =>
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const issueId =
+            sourceMap[0]?.locator.kind === "document"
+              ? sourceMap[0].locator.publisherIssueId
+              : undefined;
+          const rows = yield* sql<{ readonly restricted: boolean }>`
+            select restricted_at is not null as restricted
+            from publisher_issues
+            where id = ${issueId ?? publisher.issueId}
+          `;
+          return rows[0]?.restricted === true
+            ? { authorized: false as const, code: "finalization_failed" as const }
+            : { authorized: true as const };
+        }),
+    };
     const finalization = runDbAs(
       "brief-finalization-behind-publisher-restriction",
-      finalizeAiRun({
-        runId: fixture.runId,
-        expectedSmithersRunId: `ai-chat:${fixture.runId}`,
-        coordinates: finalizeCoordinates,
-        answer: {
-          status: "ok",
-          mode: "single",
-          content: "Restricted source",
-          sourceMap: [source],
-        },
-        memory,
-        authorize: ({ sourceMap }) =>
-          Effect.gen(function* () {
-            const sql = yield* PgClient.PgClient;
-            const issueId =
-              sourceMap[0]?.locator.kind === "document"
-                ? sourceMap[0].locator.publisherIssueId
-                : undefined;
-            const rows = yield* sql<{ readonly restricted: boolean }>`
-              select restricted_at is not null as restricted
-              from publisher_issues
-              where id = ${issueId ?? publisher.issueId}
-            `;
-            return rows[0]?.restricted === true
-              ? { authorized: false as const, code: "source_access_revoked" as const }
-              : { authorized: true as const };
-          }),
-      }),
+      finalizeAiRun(finalizationInput),
     );
     await waitForDatabaseLock("brief-finalization-behind-publisher-restriction");
     release();
     await restrictionHolder;
     await expect(finalization).resolves.toMatchObject({
       status: "failed",
-      code: "source_access_revoked",
+      code: "finalization_failed",
       alreadyTerminal: false,
+    });
+    await expect(runDb(finalizeAiRun(finalizationInput))).resolves.toMatchObject({
+      status: "failed",
+      code: "finalization_failed",
+      alreadyTerminal: true,
     });
     const state = await runDb(
       Effect.gen(function* () {
@@ -1642,11 +5123,37 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
   it("holds the publisher restriction lane through a successful finalization", async () => {
     const fixture = await runDb(createFixture("publisher-finalization-first"));
     const publisher = await runDb(createPublisherSourceFixture(fixture));
-    await runDb(seedSingleObservability(fixture));
     const memory = await runDb(
       persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
     );
-    const source = publisherSourceFor(publisher);
+    const source = publisherSourceFor(publisher, fixture);
+    await runDb(
+      seedSingleObservability(fixture, {
+        includeAnswerMeasurement: true,
+        contextSources: [
+          {
+            sourceKey: source.sourceKey,
+            candidateId: candidateIdForSource(source),
+            kind: "document",
+            label: source.label,
+            ranges: source.locator.kind === "document" ? source.locator.ranges : [],
+            ...(source.locator.kind === "document"
+              ? {
+                  documentSourceId: source.locator.sourceId,
+                  documentId: source.locator.documentId,
+                  versionId: source.locator.versionId,
+                  contentHash: source.locator.contentHash,
+                  publisherIssueId: source.locator.publisherIssueId,
+                  publisherDocumentId: source.locator.publisherDocumentId,
+                  ...(source.locator.publisherExtractionId === undefined
+                    ? {}
+                    : { publisherExtractionId: source.locator.publisherExtractionId }),
+                }
+              : {}),
+          },
+        ],
+      }),
+    );
     let signalAuthorization!: () => void;
     const authorizationEntered = new Promise<void>((resolve) => {
       signalAuthorization = resolve;
@@ -1664,7 +5171,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         answer: {
           status: "ok",
           mode: "single",
-          content: "Authorized source [[cite:k_AAAAAAAAAAAAAAAAAAAAAA_1]]",
+          content: `Authorized source [[cite:${sourceKeyFor(fixture)}]]`,
           sourceMap: [source],
         },
         memory,
@@ -1676,7 +5183,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               from publisher_issues where id = ${publisher.issueId}
             `;
             if (rows[0]?.restricted !== false) {
-              return { authorized: false as const, code: "source_access_revoked" as const };
+              return { authorized: false as const, code: "finalization_failed" as const };
             }
             yield* Effect.sync(signalAuthorization);
             yield* Effect.promise(() => authorizationReleased);
@@ -1725,7 +5232,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                  issues.restricted_at is not null as restricted
           from ai_runs runs
           join assistant_message_sources sources on sources.assistant_message_id = runs.assistant_message_id
-          join brief_document_versions versions on versions.id = sources.publisher_document_version_id
+          join brief_document_versions versions on versions.id::text = sources.version_id
           join brief_documents documents on documents.id = versions.brief_document_id
           join publisher_issues issues on issues.id = documents.issue_id
           where runs.id = ${fixture.runId}
@@ -1739,7 +5246,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
   });
 
   it("linearizes an export message snapshot before a concurrently finishing answer", async () => {
-    const fixture = await runDb(createFixture("export-finalization"));
+    const fixture = await runDb(createFixture("export-finalization", "clarify"));
+    await runDb(seedSingleObservability(fixture));
     const exportId = crypto.randomUUID();
     let signalSnapshotCaptured!: () => void;
     const snapshotCaptured = new Promise<void>((resolve) => {
@@ -1896,6 +5404,12 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
 
   it("applies memory on controlled failure and fatal failure remains memory-free", async () => {
     const controlled = await runDb(createFixture("controlled-failure"));
+    await runDb(
+      seedSingleObservability(controlled, {
+        includeAnswerMeasurement: false,
+        includeAnswerContext: false,
+      }),
+    );
     const controlledMemory = await runDb(
       persistMemoryArtifact(controlled, {
         proposals: [{ kind: "preference", content: "Prefers French" }],
@@ -1952,14 +5466,229 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     const fatalState = state.find((row) => row.runId === fatal.runId)!;
     expect(controlledState.memoryCount).toBe(1);
     expect(controlledState.retryable).toBe(false);
-    expect(controlledState.keys).toEqual(["memory_updated", "usage:run", "terminal"]);
+    expect(controlledState.keys).toEqual([
+      "usage:request:model:plan-turn:0:0:0",
+      "usage:request:model:single-retrieve-internal:0:0:0",
+      "usage:request:model:memory-extract:0:1:0",
+      "memory_updated",
+      "usage:run",
+      "terminal",
+    ]);
     expect(fatalState.memoryCount).toBe(0);
     expect(fatalState.retryable).toBe(false);
     expect(fatalState.keys).toEqual(["usage:run", "terminal"]);
   });
 
+  it("binds failed answer context to the measure task's own retry coordinates", async () => {
+    const fixture = await runDb(createFixture("failed-context-independent-retries"));
+    await runDb(
+      seedFailedSingleAnswerObservability(fixture, {
+        answerAttempt: 3,
+        measureLoopIteration: 1,
+        measureAttempt: 1,
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "failed", code: "answer_failed", retryable: false },
+          memory,
+          authorize,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      status: "failed",
+      code: "answer_failed",
+      alreadyTerminal: false,
+    });
+  });
+
+  it("binds a reduced direct failed answer to the terminal reduce measurement", async () => {
+    const fixture = await runDb(createFixture("failed-context-direct-reduced"));
+    const initialLedger = {
+      ...failedDirectContextLedger("5".repeat(64)),
+      inputTokens: 7000,
+    };
+    const reducedLedger = failedDirectContextLedger("6".repeat(64));
+    await runDb(
+      seedFailedReducedContext(fixture, {
+        answerTaskId: "single-answer",
+        answerAttempt: 4,
+        initialLedger,
+        reducedLedger,
+        initialAttempt: 5,
+        reducedLoopIteration: 0,
+        reducedAttempt: 0,
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "failed", code: "answer_failed", retryable: false },
+          memory,
+          authorize,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      status: "failed",
+      code: "answer_failed",
+      alreadyTerminal: false,
+    });
+  });
+
+  it("binds a reduced topic failed answer to its topic reduce measurement", async () => {
+    const fixture = await runDb(createFixture("failed-context-topic-reduced", "fanout"));
+    const initialLedger = {
+      ...failedTopicContextLedger("7".repeat(64)),
+      inputTokens: 7000,
+    };
+    const reducedLedger = failedTopicContextLedger("8".repeat(64));
+    await runDb(
+      seedFailedReducedContext(fixture, {
+        answerTaskId: "topic-t1-answer",
+        answerAttempt: 5,
+        initialLedger,
+        reducedLedger,
+        initialAttempt: 5,
+        reducedLoopIteration: 0,
+        reducedAttempt: 0,
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "failed", code: "topic_answer_failed", retryable: false },
+          memory,
+          authorize,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      status: "failed",
+      code: "topic_answer_failed",
+      alreadyTerminal: false,
+    });
+  });
+
+  it("rejects failed answer context with the wrong measure owner, consumer, or latest row", async () => {
+    for (const variant of ["task", "consumer", "latest", "newer-consumer", "newer-task"] as const) {
+      const fixture = await runDb(createFixture(`failed-context-${variant}`));
+      await runDb(
+        seedFailedSingleAnswerObservability(fixture, {
+          answerAttempt: 3,
+          measureLoopIteration: 0,
+          measureAttempt: 1,
+        }),
+      );
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          if (variant === "task") {
+            yield* sql`
+              update ai_observations
+              set emitting_task = 'topic-t1-measure'
+              where run_id = ${fixture.runId}
+                and observation_key = 'fixture:failed-answer:context-measurement'
+            `;
+          } else if (variant === "consumer") {
+            yield* sql`
+              update ai_observations
+              set payload = jsonb_set(payload, '{consumerTaskId}', '"topic-t1-answer"'::jsonb)
+              where run_id = ${fixture.runId}
+                and observation_key = 'fixture:failed-answer:context-measurement'
+            `;
+          } else if (variant === "latest") {
+            yield* insertAiObservation({
+              runId: fixture.runId,
+              chatId: fixture.chatId,
+              emittingTask: "single-measure",
+              loopIteration: 0,
+              attempt: 2,
+              observationKey: "fixture:failed-answer:later-context-measurement",
+              kind: "context_measurement",
+              payload: {
+                consumerTaskId: "single-answer",
+                mandatoryInputTokens: 10,
+                discretionaryInputTokens: 0,
+                totalInputTokens: 10,
+                requestedOutputTokens: 2048,
+                usableInputTokens: 6144,
+                contextWindow: 8192,
+                status: "ready",
+                reductionRan: false,
+                reductionFeedback: [],
+                restrictedContextLedger: failedDirectContextLedger("7".repeat(64)),
+              },
+            });
+          } else {
+            yield* insertAiObservation({
+              runId: fixture.runId,
+              chatId: fixture.chatId,
+              emittingTask: variant === "newer-task" ? "topic-t1-measure" : "single-measure",
+              loopIteration: 1,
+              attempt: 0,
+              observationKey: `fixture:failed-answer:newer-${variant}`,
+              kind: "context_measurement",
+              payload: {
+                consumerTaskId: variant === "newer-consumer" ? "topic-t1-answer" : "single-answer",
+                mandatoryInputTokens: 10,
+                discretionaryInputTokens: 0,
+                totalInputTokens: 10,
+                requestedOutputTokens: 2048,
+                usableInputTokens: 6144,
+                contextWindow: 8192,
+                status: "ready",
+                reductionRan: false,
+                reductionFeedback: [],
+                restrictedContextLedger: failedDirectContextLedger("7".repeat(64)),
+              },
+            });
+          }
+        }),
+      );
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+
+      await expect(
+        runDb(
+          finalizeAiRun({
+            runId: fixture.runId,
+            expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+            coordinates: finalizeCoordinates,
+            answer: { status: "failed", code: "answer_failed", retryable: false },
+            memory,
+            authorize,
+          }),
+        ),
+      ).rejects.toThrow(
+        /path-specific context measurement|context ledger differs|context path measurement consumer|foreign measure owner/u,
+      );
+    }
+  });
+
   it("fences success and controlled failure before any terminal mutation when Smithers identity is stale", async () => {
-    const success = await runDb(createFixture("stale-smithers-success"));
+    const success = await runDb(createFixture("stale-smithers-success", "clarify"));
     const successMemory = await runDb(
       persistMemoryArtifact(success, {
         proposals: [{ kind: "fact", content: "Must not be written" }],
@@ -2048,15 +5777,16 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     for (const row of state) {
       expect(row.assistantCount).toBe(0);
       expect(row.memoryCount).toBe(0);
-      expect(row.usageCount).toBe(0);
-      expect(row.eventCount).toBe(0);
+      expect(row.usageCount).toBe(1);
+      expect(row.eventCount).toBe(1);
       expect(row.finishedAt).toBeNull();
       expect(row.failedAt).toBeNull();
     }
   });
 
   it("rejects stale memory heads and manual mutation during an active run", async () => {
-    const fixture = await runDb(createFixture("memory-lock"));
+    const fixture = await runDb(createFixture("memory-lock", "clarify"));
+    await runDb(seedSingleObservability(fixture));
     const originalMemory = await runDb(
       persistMemoryArtifact(fixture, {
         proposals: [{ kind: "fact", content: "Original" }],
@@ -2083,7 +5813,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         return row!;
       }),
     );
-    const next = await runDb(createNextRun(fixture, "Update memory"));
+    const next = await runDb(createNextRun(fixture, "Update memory", "clarify"));
+    await runDb(seedSingleObservability(next));
     const activeDelete = await runDb(Effect.flip(deleteUserMemory(next.userId, memory.id)));
     expect(activeDelete).toBeInstanceOf(ActiveAiRunError);
 
@@ -2124,7 +5855,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
   });
 
   it("shares the exact API acceptance lock with worker memory mutation", async () => {
-    const fixture = await runDb(createFixture("cross-service-lock"));
+    const fixture = await runDb(createFixture("cross-service-lock", "clarify"));
+    await runDb(seedSingleObservability(fixture));
     const lockedMemory = await runDb(
       persistMemoryArtifact(fixture, {
         proposals: [{ kind: "fact", content: "Locked" }],
@@ -2168,11 +5900,18 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             const [run] = yield* sql<{ readonly id: string }>`
               insert into ai_runs (
                 chat_id, initiating_user_id, user_message_id, locale, market,
-                web_search_enabled, effective_web_policy
+                acceptance_scope
               )
               values (
-                ${fixture.chatId}, ${fixture.userId}, ${ids.messageId}, 'en-US', 'US', false,
-                ${sql.json({ enabled: true, provider: "tinyfish", allowedDomains: null })}
+                ${fixture.chatId}, ${fixture.userId}, ${ids.messageId}, 'en-US', 'US',
+                ${sql.json(
+                  testAcceptanceScope({
+                    userId: fixture.userId,
+                    chatId: fixture.chatId,
+                    companyId: fixture.companyId,
+                    memoryMode: fixture.memoryMode,
+                  }),
+                )}
               )
               returning id::text
             `;
@@ -2190,7 +5929,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
   });
 
   it("redacts referenced expired tombstones and hard-deletes unreferenced tombstones", async () => {
-    const fixture = await runDb(createFixture("retention"));
+    const fixture = await runDb(createFixture("retention", "clarify"));
+    await runDb(seedSingleObservability(fixture));
     const retainedMemory = await runDb(
       persistMemoryArtifact(fixture, {
         proposals: [{ kind: "fact", content: "Retain me" }],
@@ -2218,12 +5958,11 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       }),
     );
     const citeRun = await runDb(createNextRun(fixture, "Cite memory"));
-    await runDb(seedSingleObservability(citeRun));
     const citeMemory = await runDb(
       persistMemoryArtifact(citeRun, { proposals: [], discardedCount: 0 }),
     );
     const memorySource: FinalSourceRecord = {
-      sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+      sourceKey: sourceKeyFor(citeRun),
       locator: {
         kind: "memory",
         memoryId: memory.id,
@@ -2241,6 +5980,23 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       ],
     };
     await runDb(
+      seedSingleObservability(citeRun, {
+        includeAnswerMeasurement: true,
+        contextSources: [
+          {
+            sourceKey: memorySource.sourceKey,
+            candidateId: candidateIdForSource(memorySource),
+            kind: "memory",
+            ranges: [],
+            label: memorySource.label,
+            ...(memorySource.locator.kind === "memory"
+              ? { contentItemIdentity: memorySource.locator.memoryRevisionId }
+              : {}),
+          },
+        ],
+      }),
+    );
+    await runDb(
       finalizeAiRun({
         runId: citeRun.runId,
         expectedSmithersRunId: `ai-chat:${citeRun.runId}`,
@@ -2248,7 +6004,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         answer: {
           status: "ok",
           mode: "single",
-          content: "Remember [[cite:k_AAAAAAAAAAAAAAAAAAAAAA_1]]",
+          content: `Remember [[cite:${sourceKeyFor(citeRun)}]]`,
           sourceMap: [memorySource],
         },
         memory: citeMemory,
@@ -2257,7 +6013,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     );
     await runDb(deleteUserMemory(fixture.userId, memory.id));
 
-    const unreferenced = await runDb(createFixture("retention-unreferenced"));
+    const unreferenced = await runDb(createFixture("retention-unreferenced", "clarify"));
+    await runDb(seedSingleObservability(unreferenced));
     const unreferencedMemory = await runDb(
       persistMemoryArtifact(unreferenced, {
         proposals: [{ kind: "fact", content: "Delete me" }],
@@ -2354,8 +6111,16 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
-          insert into chat_messages (id, chat_id, author, content)
-          values (${assistantMessageId}, ${fixture.chatId}, 'assistant', 'Retained memory evidence')
+          insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id)
+          values (
+            ${assistantMessageId}, ${fixture.chatId}, 'assistant', 'Retained memory evidence',
+            ${fixture.runId}
+          )
+        `;
+            yield* sql`
+          update ai_runs
+          set assistant_message_id = ${assistantMessageId}
+          where id = ${fixture.runId}
         `;
             yield* sql`
           insert into user_memories (
@@ -2480,7 +6245,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             assistant_message_id, source_key, kind, locator, memory_revision_id
           )
           select ${assistantMessageId},
-                 'k_AAAAAAAAAAAAAAAAAAAAAA_' || ordinal::text,
+                 ${`k_${fixture.citationNamespace}_`} || ordinal::text,
                  'memory',
                  jsonb_build_object(
                    'kind', 'memory', 'memoryId', memory_id::text,
@@ -2495,7 +6260,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             rendered_token_count, context_order, ranges
           )
           select ${assistantMessageId},
-                 'k_AAAAAAAAAAAAAAAAAAAAAA_' || ordinal::text,
+                 ${`k_${fixture.citationNamespace}_`} || ordinal::text,
                  'single-answer', 1, ordinal - 1, '[]'::jsonb
           from generate_series(1, 501) ordinal
         `;
@@ -2607,7 +6372,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               id, artifact_version, golden_set_version, fixture_sha256_hex,
               execution_config_sha256_hex, provider_endpoint_identity, status, completed_at
             ) values (
-              ${evaluation.sessionId}, 2, 2, ${"a".repeat(64)}, ${"b".repeat(64)},
+              ${evaluation.sessionId}, 3, 3, ${"a".repeat(64)}, ${"b".repeat(64)},
               ${TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY},
               ${evaluation.status},
               ${evaluation.status === "complete" ? new Date() : null}
@@ -2871,10 +6636,11 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           ), runs as (
             insert into ai_runs (
               chat_id, initiating_user_id, user_message_id, locale, market,
-              failed_at, error_code, retryable
+              acceptance_scope, failed_at, error_code, retryable
             )
             select ${eventFixture.chatId}, ${eventFixture.userId}, messages.id,
-                   'en-US', 'US', now() - interval '24 hours 1 second',
+                   'en-US', 'US', (select acceptance_scope from ai_runs where id = ${eventFixture.runId}),
+                   now() - interval '24 hours 1 second',
                    'answer_failed', false
             from messages
             returning id

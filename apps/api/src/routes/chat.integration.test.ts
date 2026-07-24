@@ -5,6 +5,7 @@ import {
   readUserMemoryWithRevisions,
 } from "@brief/backend-domain/memories";
 import { ConfigProvider, Effect, Redacted } from "effect";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { RequestAuthenticator } from "../auth";
@@ -44,6 +45,66 @@ const namespacedPublisherDocumentIdentity = (
     documentId,
     documentId,
   ])}`;
+
+const documentContentItemIdentity = (
+  logicalSourceIdentity: string,
+  versionId: string,
+  ranges: readonly { readonly charStart: number; readonly charEnd: number }[],
+): string =>
+  `${logicalSourceIdentity}:${versionId}:${createHash("sha256")
+    .update(JSON.stringify(ranges), "utf8")
+    .digest("base64url")}`;
+
+type TestAcceptanceScope = {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly subscriptionIds: readonly string[];
+  readonly accessIds: readonly string[];
+  readonly publicSourceIds: readonly string[];
+  readonly memoryMode: "private_owner" | "disabled";
+  readonly memoryRevisionIds: readonly string[];
+  readonly webRequested: boolean;
+  readonly webEnabled: boolean;
+  readonly provider: "zai_coding_plan_official";
+  readonly fastModelId: "glm-5-turbo";
+  readonly mainModelId: "glm-5-turbo";
+  readonly webTransportProvider: "tinyfish" | null;
+  readonly allowedDomains: readonly string[] | null;
+};
+
+const testAcceptanceScope = (args: {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly memoryMode?: "private_owner" | "disabled";
+  readonly subscriptionIds?: readonly string[];
+  readonly accessIds?: readonly string[];
+  readonly publicSourceIds?: readonly string[];
+  readonly memoryRevisionIds?: readonly string[];
+  readonly webRequested?: boolean;
+  readonly webEnabled?: boolean;
+  readonly allowedDomains?: readonly string[] | null;
+}): TestAcceptanceScope => {
+  const webEnabled = (args.webRequested ?? false) && (args.webEnabled ?? false);
+  return {
+    userId: args.userId,
+    chatId: args.chatId,
+    companyId: args.companyId,
+    subscriptionIds: [...(args.subscriptionIds ?? [])].sort(),
+    accessIds: [...(args.accessIds ?? [])].sort(),
+    publicSourceIds: [...(args.publicSourceIds ?? [])].sort(),
+    memoryMode: args.memoryMode ?? "private_owner",
+    memoryRevisionIds: [...(args.memoryRevisionIds ?? [])].sort(),
+    webRequested: args.webRequested ?? false,
+    webEnabled,
+    provider: "zai_coding_plan_official",
+    fastModelId: "glm-5-turbo",
+    mainModelId: "glm-5-turbo",
+    webTransportProvider: webEnabled ? "tinyfish" : null,
+    allowedDomains: webEnabled ? (args.allowedDomains ?? null) : null,
+  };
+};
 
 const runDb = <A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> =>
   Effect.runPromise(
@@ -326,7 +387,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql`truncate table client_companies cascade`;
-        yield* sql`delete from jobs`;
+        yield* sql`truncate table jobs cascade`;
         yield* sql`delete from user_memories`;
       }),
     );
@@ -394,14 +455,23 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           values (${chat.chat.id}, 'user', 'Finalize while demo reload is projecting')
           returning id::text
         `;
+        const [chatRow] = yield* sql<{ readonly companyId: string }>`
+          select company_id::text as "companyId" from chats where id = ${chat.chat.id}
+        `;
         yield* sql`
           insert into ai_runs (
             id,
             chat_id, initiating_user_id, user_message_id, locale, market,
-            web_search_enabled, effective_web_policy, smithers_run_id
+            acceptance_scope, smithers_run_id
           ) values (
-            ${runId}, ${chat.chat.id}, 'demo-user', ${message!.id}, 'en-US', 'US', false,
-            ${sql.json({ enabled: true, provider: "tinyfish", allowedDomains: null })},
+            ${runId}, ${chat.chat.id}, 'demo-user', ${message!.id}, 'en-US', 'US',
+            ${sql.json(
+              testAcceptanceScope({
+                userId: "demo-user",
+                chatId: chat.chat.id,
+                companyId: chatRow!.companyId,
+              }),
+            )},
             ${`ai-chat:${runId}`}
           )
         `;
@@ -410,9 +480,71 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
             run_id, chat_id, emitting_task, loop_iteration, attempt,
             observation_key, kind, payload
           ) values (
-            ${runId}, ${chat.chat.id}, 'resolve-conversation', 0, 0,
-            'demo-route:conversation-resolution', 'conversation_resolution',
-            ${sql.json({ mode: "continue", selectedTurnIds: [] })}
+            ${runId}, ${chat.chat.id}, 'plan-turn', 0, 0,
+            'demo-route:turn-plan', 'turn_plan',
+            ${sql.json({ mode: "clarify", question: "answered" })}
+          )
+        `;
+        yield* sql`
+          insert into ai_observations (
+            run_id, chat_id, emitting_task, loop_iteration, attempt,
+            observation_key, kind, payload
+          ) values (
+            ${runId}, ${chat.chat.id}, 'plan-turn', 0, 0,
+            'demo-route:plan-measurement', 'provider_request_measurement',
+            ${sql.json({
+              providerRequestIndex: 0,
+              agentRole: "plan_turn",
+              modelId: "glm-5-turbo",
+              requestSha256Hex: "a".repeat(64),
+              sourceExposureProofSha256Hexes: [],
+              inputTokens: 10,
+              requestedOutputTokens: 2048,
+              usableInputTokens: 6144,
+              contextWindow: 8192,
+              passed: true,
+            })}
+          )
+        `;
+        yield* sql`
+          insert into ai_run_usage (
+            run_id, task_id, loop_iteration, attempt, provider_request_index,
+            agent_role, model_id, provider_service_id, input_tokens, output_tokens, cached_tokens,
+            reasoning_tokens, total_tokens, stop_reason
+          ) values (
+            ${runId}, 'plan-turn', 0, 0, 0, 'plan_turn', 'glm-5-turbo', 'zai_coding_plan_official',
+            10, 4, 0, 0, 14, 'stop'
+          )
+        `;
+        yield* sql`
+          insert into ai_observations (
+            run_id, chat_id, emitting_task, loop_iteration, attempt,
+            observation_key, kind, payload
+          ) values (
+            ${runId}, ${chat.chat.id}, 'memory-extract', 0, 0,
+            'demo-route:memory-measurement', 'provider_request_measurement',
+            ${sql.json({
+              providerRequestIndex: 0,
+              agentRole: "memory_extractor",
+              modelId: "glm-5-turbo",
+              requestSha256Hex: "b".repeat(64),
+              sourceExposureProofSha256Hexes: [],
+              inputTokens: 10,
+              requestedOutputTokens: 2048,
+              usableInputTokens: 6144,
+              contextWindow: 8192,
+              passed: true,
+            })}
+          )
+        `;
+        yield* sql`
+          insert into ai_run_usage (
+            run_id, task_id, loop_iteration, attempt, provider_request_index,
+            agent_role, model_id, provider_service_id, input_tokens, output_tokens, cached_tokens,
+            reasoning_tokens, total_tokens, stop_reason
+          ) values (
+            ${runId}, 'memory-extract', 0, 0, 0, 'memory_extractor', 'glm-5-turbo', 'zai_coding_plan_official',
+            10, 4, 0, 0, 14, 'stop'
           )
         `;
         yield* sql`
@@ -618,7 +750,12 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return (yield* sql<{ policy: unknown; web: boolean; jobs: number }>`
-          select r.effective_web_policy policy, r.web_search_enabled web,
+          select jsonb_build_object(
+                   'enabled', (r.acceptance_scope->>'webEnabled')::boolean,
+                   'provider', r.acceptance_scope->>'webTransportProvider',
+                   'allowedDomains', r.acceptance_scope->'allowedDomains'
+                 ) policy,
+                 (r.acceptance_scope->>'webRequested')::boolean web,
                  (select count(*)::int from jobs where payload->>'aiRunId' = r.id::text) jobs
           from ai_runs r where r.id = ${accepted.run.id}
         `)[0]!;
@@ -650,9 +787,21 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           insert into chat_messages (chat_id, author, content)
           values (${chat.chat.id}, 'user', 'other user') returning id::text
         `;
+        const [chatRow] = yield* sql<{ readonly companyId: string }>`
+          select company_id::text as "companyId" from chats where id = ${chat.chat.id}
+        `;
         return (yield* sql<{ id: string }>`
-          insert into ai_runs (chat_id, initiating_user_id, user_message_id, locale, market)
-          values (${chat.chat.id}, 'other-user', ${messages[0]!.id}, 'en-US', 'US')
+          insert into ai_runs (chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope)
+          values (
+            ${chat.chat.id}, 'demo-user', ${messages[0]!.id}, 'en-US', 'US',
+            ${sql.json(
+              testAcceptanceScope({
+                userId: "demo-user",
+                chatId: chat.chat.id,
+                companyId: chatRow!.companyId,
+              }),
+            )}
+          )
           returning id::text
         `)[0]!.id;
       }),
@@ -680,19 +829,28 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           id: string;
         }>`insert into client_companies (name) values ('Other') returning id::text`;
         const companyId = companies[0]!.id;
-        yield* sql`insert into client_company_memberships (company_id, user_id, role) values (${companyId}, 'other-user', 'admin')`;
+        yield* sql`insert into client_company_memberships (company_id, user_id, role) values (${companyId}, 'demo-user', 'admin')`;
         yield* sql`insert into client_company_ai_settings (company_id) values (${companyId})`;
         const chats = yield* sql<{ id: string }>`
           insert into chats (user_id, company_id, memory_mode)
-          values ('other-user', ${companyId}, 'private_owner') returning id::text
+          values ('demo-user', ${companyId}, 'private_owner') returning id::text
         `;
         const messages = yield* sql<{ id: string }>`
           insert into chat_messages (chat_id, author, content)
           values (${chats[0]!.id}, 'user', 'cross-chat') returning id::text
         `;
         return (yield* sql<{ id: string }>`
-          insert into ai_runs (chat_id, initiating_user_id, user_message_id, locale, market)
-          values (${chats[0]!.id}, 'demo-user', ${messages[0]!.id}, 'en-US', 'US')
+          insert into ai_runs (chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope)
+          values (
+            ${chats[0]!.id}, 'demo-user', ${messages[0]!.id}, 'en-US', 'US',
+            ${sql.json(
+              testAcceptanceScope({
+                userId: "demo-user",
+                chatId: chats[0]!.id,
+                companyId,
+              }),
+            )}
+          )
           returning id::text
         `)[0]!.id;
       }),
@@ -721,11 +879,24 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           insert into chat_messages (chat_id, author, content)
           values (${chat.chat.id}, 'user', 'failed') returning id::text
         `;
+        const [chatRow] = yield* sql<{ readonly companyId: string }>`
+          select company_id::text as "companyId" from chats where id = ${chat.chat.id}
+        `;
         yield* sql`
           insert into ai_runs (
             chat_id, initiating_user_id, user_message_id, locale, market,
-            failed_at, error_code, retryable
-          ) values (${chat.chat.id}, 'demo-user', ${user[0]!.id}, 'en-US', 'US', now(), 'context_plan_unfit', true)
+            acceptance_scope, failed_at, error_code, retryable
+          ) values (
+            ${chat.chat.id}, 'demo-user', ${user[0]!.id}, 'en-US', 'US',
+            ${sql.json(
+              testAcceptanceScope({
+                userId: "demo-user",
+                chatId: chat.chat.id,
+                companyId: chatRow!.companyId,
+              }),
+            )},
+            now(), 'context_plan_unfit', true
+          )
         `;
         const answeredUser = yield* sql<{ id: string }>`
           insert into chat_messages (chat_id, author, content)
@@ -733,17 +904,26 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         `;
         const run = yield* sql<{ id: string }>`
           insert into ai_runs (
-            chat_id, initiating_user_id, user_message_id, locale, market, finished_at, citation_nonce
+            chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope,
+            finished_at, citation_namespace
           )
           values (
-            ${chat.chat.id}, 'demo-user', ${answeredUser[0]!.id}, 'en-US', 'US', now(),
-            decode(${"00".repeat(16)}, 'hex')
+            ${chat.chat.id}, 'demo-user', ${answeredUser[0]!.id}, 'en-US', 'US',
+            ${sql.json(
+              testAcceptanceScope({
+                userId: "demo-user",
+                chatId: chat.chat.id,
+                companyId: chatRow!.companyId,
+              }),
+            )},
+            now(),
+            ${"cn_" + "A".repeat(22)}
           ) returning id::text
         `;
         const assistant = yield* sql<{ id: string }>`
           insert into chat_messages (chat_id, author, content, assistant_ai_run_id)
           values (
-            ${chat.chat.id}, 'assistant', 'Answer [[cite:k_AAAAAAAAAAAAAAAAAAAAAA_1]]', ${run[0]!.id}
+            ${chat.chat.id}, 'assistant', 'Answer [[cite:k_cn_AAAAAAAAAAAAAAAAAAAAAA_1]]', ${run[0]!.id}
           ) returning id::text
         `;
         yield* sql`update ai_runs set assistant_message_id = ${assistant[0]!.id} where id = ${run[0]!.id}`;
@@ -751,7 +931,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           insert into assistant_message_sources (
             assistant_message_id, source_key, kind, locator, display_label, public_provenance
           ) values (
-            ${assistant[0]!.id}, 'k_AAAAAAAAAAAAAAAAAAAAAA_1', 'web',
+            ${assistant[0]!.id}, 'k_cn_AAAAAAAAAAAAAAAAAAAAAA_1', 'web',
             ${sql.json({ kind: "web", url: "https://example.com/", title: "Example", domain: "example.com", quote: "Quote", quoteHash: "60zevYK_EZRK8EDTD4qmiPv0yDb0bdjEFUrfQNwoasY", capturedAt: "2026-07-10T00:00:00.000Z" })},
             'Example', ${sql.json({ citationUrl: "https://example.com/" })}
           )
@@ -759,7 +939,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         yield* sql`
           insert into assistant_message_source_uses (
             assistant_message_id, source_key, consumer_task_id, rendered_token_count, context_order, ranges
-          ) values (${assistant[0]!.id}, 'k_AAAAAAAAAAAAAAAAAAAAAA_1', 'single-answer', 11, 0, '[]'::jsonb)
+          ) values (${assistant[0]!.id}, 'k_cn_AAAAAAAAAAAAAAAAAAAAAA_1', 'single-answer', 11, 0, '[]'::jsonb)
         `;
       }),
     );
@@ -775,7 +955,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         }),
         expect.objectContaining({
           citations: [
-            expect.objectContaining({ sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1", kind: "web" }),
+            expect.objectContaining({ sourceKey: "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1", kind: "web" }),
           ],
           sourcesRead: [expect.objectContaining({ tokenCount: 11 })],
         }),
@@ -881,14 +1061,18 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           yield* sql`
             insert into ai_runs (
               id, chat_id, initiating_user_id, user_message_id, locale, market,
-              web_search_enabled, effective_web_policy
+              acceptance_scope
             ) values (
               ${runId}, ${chatId}, ${`${ownerId}-${name}`}, ${messageId}, 'en-US', 'US',
-              ${webSearchEnabled},
               ${sql.json(
-                webSearchEnabled
-                  ? { enabled: true, provider: "tinyfish", allowedDomains: null }
-                  : { enabled: false, reason: "deployment_unavailable", allowlistActive: false },
+                testAcceptanceScope({
+                  userId: `${ownerId}-${name}`,
+                  chatId,
+                  companyId,
+                  memoryMode: name.startsWith("shared") ? "disabled" : "private_owner",
+                  webRequested: webSearchEnabled,
+                  webEnabled: webSearchEnabled,
+                }),
               )}
             )
           `;
@@ -1336,6 +1520,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         `)[0]!;
         const canonicalUrl = `https://example.test/${documentId}`;
         const text = "Authorized public source stream evidence ".repeat(10);
+        const ranges = [{ charStart: 0, charEnd: text.length }] as const;
+        const contentHash = createHash("sha256").update(text, "utf8").digest("hex");
         yield* sql`
           insert into public_sources (
             source_id, display_name, publisher_name, description, ingestion_method,
@@ -1372,11 +1558,14 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         yield* sql`
           insert into ai_source_exposures (
             run_id, task_id, loop_iteration, attempt, provider_request_index, source_kind,
-            logical_source_identity, content_item_identity, exposure_stage, visible_token_count
-          ) values (
-            ${accepted.run.id}, 'internal-selector', 0, 0, 0, 'document',
-            ${namespacedPublicDocumentIdentity(sourceId, documentId)}, ${`${documentId}:preview`},
-            'internal_search_preview', 12
+            logical_source_identity, content_item_identity, exposure_stage, visible_token_count,
+            document_source_id, document_id, version_id, content_hash, document_ranges
+            ) values (
+              ${accepted.run.id}, 'single-retrieve-internal', 0, 0, 0, 'document',
+            ${namespacedPublicDocumentIdentity(sourceId, documentId)},
+            ${documentContentItemIdentity(namespacedPublicDocumentIdentity(sourceId, documentId), documentId, ranges)},
+            'internal_inspection', 12, ${`public:${sourceId}`}, ${documentId}, ${documentId},
+            ${contentHash}, ${JSON.stringify(ranges)}::jsonb
           )
         `;
         yield* sql`
@@ -1433,6 +1622,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     const sourceId = `stream-source-${crypto.randomUUID()}`;
     const documentId = `stream-document-${crypto.randomUUID()}`;
     const artifactId = crypto.randomUUID();
+    const text = "Namespaced public exposure evidence ".repeat(4);
+    const contentHash = createHash("sha256").update(text, "utf8").digest("hex");
     await runDb(
       isolatedUrl(),
       Effect.gen(function* () {
@@ -1441,7 +1632,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           select company_id::text as id from chats where id = ${chat.chat.id}
         `)[0]!;
         const canonicalUrl = `https://example.test/${documentId}`;
-        const text = "Namespaced public exposure evidence ".repeat(4);
         yield* sql`
           insert into public_sources (
             source_id, display_name, publisher_name, description, ingestion_method,
@@ -1486,15 +1676,23 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         isolatedUrl(),
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
+          const document = yield* sql<{ readonly contentHash: string }>`
+            select content_hash as "contentHash"
+            from public_source_documents
+            where document_id = ${documentId}
+          `;
+          const ranges = [{ charStart: 0, charEnd: text.length }] as const;
           yield* sql`
             insert into ai_source_exposures (
               run_id, task_id, loop_iteration, attempt, provider_request_index, source_kind,
               logical_source_identity, publisher_document_id, content_item_identity,
-              exposure_stage, visible_token_count
+              exposure_stage, visible_token_count, document_source_id, document_id,
+              version_id, content_hash, document_ranges
             ) values (
-              ${runId}, 'internal-selector', 0, 0, 0, 'document',
-              ${identity}, ${publisherDocumentId}, ${`${documentId}:preview`},
-              'internal_search_preview', 12
+              ${runId}, 'single-retrieve-internal', 0, 0, 0, 'document',
+              ${identity}, ${publisherDocumentId}, ${documentContentItemIdentity(identity, documentId, ranges)},
+              'internal_inspection', 12, ${`public:${sourceId}`}, ${documentId}, ${documentId},
+              ${document[0]!.contentHash}, ${JSON.stringify(ranges)}::jsonb
             )
           `;
           yield* sql`
@@ -1544,12 +1742,13 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
       webSearchEnabled: false,
     });
     const partial = await body<{ run: { id: string } }>(partialResponse);
-    await seedExposure(
-      partial.run.id,
-      namespacedPublicDocumentIdentity(sourceId, documentId),
-      crypto.randomUUID(),
-    );
-    expect((await route(request("GET", `/v1/ai-runs/${partial.run.id}/stream`))).status).toBe(404);
+    await expect(
+      seedExposure(
+        partial.run.id,
+        namespacedPublicDocumentIdentity(sourceId, documentId),
+        crypto.randomUUID(),
+      ),
+    ).rejects.toThrow();
     await terminalRun(partial.run.id);
   });
 
@@ -1566,6 +1765,10 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     const documentId = crypto.randomUUID();
     const publicSourceId = `publisher-namespace-public-${crypto.randomUUID()}`;
     const publicArtifactId = crypto.randomUUID();
+    const publisherText = "Publisher namespace evidence";
+    const publisherContentHash = createHash("sha256").update(publisherText, "utf8").digest("hex");
+    const extractionJobId = crypto.randomUUID();
+    const extractionId = crypto.randomUUID();
     await runDb(
       isolatedUrl(),
       Effect.gen(function* () {
@@ -1653,13 +1856,25 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
             now(), 'demo-user', 'en-US'
           )
         `;
-        const publisherText = "Publisher namespace evidence";
+        yield* sql`
+          insert into jobs (id, kind, payload)
+          values (${extractionJobId}, 'extract_pdf_text', '{}'::jsonb)
+        `;
+        yield* sql`
+          insert into brief_document_extractions (
+            id, brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+          ) values (
+            ${extractionId}, ${documentId}, ${"a".repeat(64)},
+            ${JSON.stringify([{ pageNumber: 1, text: publisherText }])}::jsonb,
+            ${publisherText.length}, ${extractionJobId}
+          )
+        `;
         yield* sql`
           insert into brief_document_versions (
-            id, brief_document_id, content_hash, language, canonical_text,
+            id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${versionId}, ${documentId}, encode(digest(convert_to(${publisherText}, 'UTF8'), 'sha256'), 'hex'), 'en-US', ${publisherText},
+            ${versionId}, ${documentId}, ${extractionId}, ${publisherContentHash}, 'en-US', ${publisherText},
             ${publisherText.length},
             ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: publisherText.length }])}::jsonb
           )
@@ -1687,15 +1902,19 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         isolatedUrl(),
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
+          const ranges = [{ charStart: 0, charEnd: publisherText.length }] as const;
           yield* sql`
             insert into ai_source_exposures (
               run_id, task_id, loop_iteration, attempt, provider_request_index, source_kind,
               logical_source_identity, publisher_issue_id, publisher_document_id,
-              content_item_identity, exposure_stage, visible_token_count
+              content_item_identity, exposure_stage, visible_token_count, document_source_id,
+              document_id, version_id, content_hash, publisher_extraction_id, document_ranges
             ) values (
-              ${runId}, 'internal-selector', 0, 0, 0, 'document', ${identity},
-              ${issueId}, ${documentId}, ${`${documentId}:preview`},
-              'internal_search_preview', 12
+              ${runId}, 'single-retrieve-internal', 0, 0, 0, 'document', ${identity},
+              ${issueId}, ${documentId}, ${documentContentItemIdentity(identity, versionId, ranges)},
+              'internal_inspection', 12, ${`publisher:${subscriptionId}`}, ${documentId},
+              ${versionId}, ${publisherContentHash}, ${extractionId},
+              ${JSON.stringify(ranges)}::jsonb
             )
           `;
           yield* sql`

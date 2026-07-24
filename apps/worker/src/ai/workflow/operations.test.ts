@@ -762,6 +762,52 @@ const config = (mainInputTokens: number): CanonicalAiConfig => ({
 
 const citationNamespace = "cn_AAAAAAAAAAAAAAAAAAAAAA";
 
+type TestAcceptanceScope = {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly subscriptionIds: string[];
+  readonly accessIds: string[];
+  readonly publicSourceIds: string[];
+  readonly memoryMode: "private_owner" | "disabled";
+  readonly memoryRevisionIds: string[];
+  readonly webRequested: boolean;
+  readonly webEnabled: boolean;
+  readonly provider: "zai_coding_plan_official";
+  readonly fastModelId: "glm-5-turbo";
+  readonly mainModelId: "glm-5-turbo";
+  readonly webTransportProvider: "tinyfish" | null;
+  readonly allowedDomains: string[] | null;
+};
+
+const testAcceptanceScope = (args: {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly memoryMode?: "private_owner" | "disabled";
+  readonly webRequested?: boolean;
+  readonly webEnabled?: boolean;
+}): TestAcceptanceScope => {
+  const webEnabled = (args.webRequested ?? false) && (args.webEnabled ?? false);
+  return {
+    userId: args.userId,
+    chatId: args.chatId,
+    companyId: args.companyId,
+    subscriptionIds: [],
+    accessIds: [],
+    publicSourceIds: [],
+    memoryMode: args.memoryMode ?? "disabled",
+    memoryRevisionIds: [],
+    webRequested: args.webRequested ?? false,
+    webEnabled,
+    provider: "zai_coding_plan_official",
+    fastModelId: "glm-5-turbo",
+    mainModelId: "glm-5-turbo",
+    webTransportProvider: webEnabled ? "tinyfish" : null,
+    allowedDomains: null,
+  };
+};
+
 const load = (_historyText: string): LoadedTurn => {
   const aiRunId = crypto.randomUUID();
   const chatId = crypto.randomUUID();
@@ -777,23 +823,11 @@ const load = (_historyText: string): LoadedTurn => {
     citationNamespace,
     memoryMode: "disabled",
     webRequested: false,
-    acceptanceScope: {
+    acceptanceScope: testAcceptanceScope({
       userId: "fanout-allocation-user",
       chatId,
       companyId: "00000000-0000-4000-8000-000000000002",
-      subscriptionIds: [],
-      accessIds: [],
-      publicSourceIds: [],
-      memoryMode: "disabled",
-      memoryRevisionIds: [],
-      webRequested: false,
-      webEnabled: false,
-      provider: "zai_coding_plan_official",
-      fastModelId: "glm-5-turbo",
-      mainModelId: "glm-5-turbo",
-      webTransportProvider: null,
-      allowedDomains: null,
-    },
+    }),
   };
 };
 

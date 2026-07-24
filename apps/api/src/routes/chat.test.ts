@@ -8,11 +8,11 @@ import {
 } from "../domain/chat";
 
 const at = (value: string) => new Date(value);
-const citationNonce = "A".repeat(22);
-const citationNonceHex = "00".repeat(16);
+const citationNamespace = "cn_" + "A".repeat(22);
+const citationNamespaceHex = citationNamespace;
 const documentSourceId = "public:test-source";
 const documentId = "test-document";
-const documentVersionId = "test-document-version";
+const versionId = "test-document-version";
 const documentContentHash = "a".repeat(64);
 
 describe("creditLimitReached", () => {
@@ -145,7 +145,7 @@ describe("chatMessagesResponseFromRows", () => {
         {
           id: "assistant-message",
           author: "assistant",
-          content: `A claim [[cite:k_${citationNonce}_1]]. Unknown [[cite:k_unknown]].`,
+          content: `A claim [[cite:k_${citationNamespace}_1]]. Unknown [[cite:k_unknown]].`,
           created_at: at("2026-07-10T10:00:02.000Z"),
         },
       ],
@@ -165,12 +165,12 @@ describe("chatMessagesResponseFromRows", () => {
       [
         {
           assistant_message_id: "assistant-message",
-          source_key: `k_${citationNonce}_1`,
-          citation_nonce_hex: citationNonceHex,
-          publisher_document_version_id: null,
+          source_key: `k_${citationNamespace}_1`,
+          citation_namespace: citationNamespaceHex,
+          publisher_extraction_id: null,
           source_id: documentSourceId,
           document_id: documentId,
-          document_version_id: documentVersionId,
+          version_id: versionId,
           content_hash: documentContentHash,
           canonical_url: "https://example.com/document",
           kind: "document",
@@ -178,7 +178,7 @@ describe("chatMessagesResponseFromRows", () => {
             kind: "document",
             sourceId: documentSourceId,
             documentId,
-            documentVersionId,
+            versionId,
             contentHash: documentContentHash,
             ranges: [{ pageNumber: 2, charStart: 10, charEnd: 50 }],
           },
@@ -195,7 +195,7 @@ describe("chatMessagesResponseFromRows", () => {
       [
         {
           assistant_message_id: "assistant-message",
-          source_key: `k_${citationNonce}_1`,
+          source_key: `k_${citationNamespace}_1`,
           topic_id: "t2",
           consumer_task_id: "topic-t2-answer",
           rendered_token_count: 40,
@@ -204,7 +204,7 @@ describe("chatMessagesResponseFromRows", () => {
         },
         {
           assistant_message_id: "assistant-message",
-          source_key: `k_${citationNonce}_1`,
+          source_key: `k_${citationNamespace}_1`,
           topic_id: "t1",
           consumer_task_id: "topic-t1-answer",
           rendered_token_count: 60,
@@ -220,10 +220,10 @@ describe("chatMessagesResponseFromRows", () => {
     });
     expect(response[1]).toMatchObject({
       author: "assistant",
-      citations: [{ sourceKey: `k_${citationNonce}_1`, kind: "document" }],
+      citations: [{ sourceKey: `k_${citationNamespace}_1`, kind: "document" }],
       sourcesRead: [
         {
-          sourceKey: `k_${citationNonce}_1`,
+          sourceKey: `k_${citationNamespace}_1`,
           kind: "document",
           tokenCount: 100,
           topicIds: ["t1", "t2"],
@@ -237,11 +237,11 @@ describe("chatMessagesResponseFromRows", () => {
     const sourceRow = (sourceKey: string, citationUrl = "https://example.com/document") => ({
       assistant_message_id: "assistant-message",
       source_key: sourceKey,
-      citation_nonce_hex: citationNonceHex,
-      publisher_document_version_id: null,
+      citation_namespace: citationNamespaceHex,
+      publisher_extraction_id: null,
       source_id: documentSourceId,
       document_id: documentId,
-      document_version_id: documentVersionId,
+      version_id: versionId,
       content_hash: documentContentHash,
       canonical_url: "https://example.com/document",
       kind: "document" as const,
@@ -249,7 +249,7 @@ describe("chatMessagesResponseFromRows", () => {
         kind: "document",
         sourceId: documentSourceId,
         documentId,
-        documentVersionId,
+        versionId,
         contentHash: documentContentHash,
         ranges: [{ charStart: 0, charEnd: 8 }],
       },
@@ -276,21 +276,25 @@ describe("chatMessagesResponseFromRows", () => {
       ],
       [],
       [
-        sourceRow(`k_${citationNonce}_10`),
-        sourceRow(`k_${citationNonce}_2`),
-        sourceRow(`k_${citationNonce}_11`),
+        sourceRow(`k_${citationNamespace}_10`),
+        sourceRow(`k_${citationNamespace}_2`),
+        sourceRow(`k_${citationNamespace}_11`),
       ],
       [
-        useRow(`k_${citationNonce}_10`, 1),
-        useRow(`k_${citationNonce}_2`, 0),
-        useRow(`k_${citationNonce}_11`, 2),
+        useRow(`k_${citationNamespace}_10`, 1),
+        useRow(`k_${citationNamespace}_2`, 0),
+        useRow(`k_${citationNamespace}_11`, 2),
       ],
     );
     expect(
       (projected[0] as { sourcesRead: readonly { sourceKey: string }[] }).sourcesRead.map(
         (source) => source.sourceKey,
       ),
-    ).toEqual([`k_${citationNonce}_2`, `k_${citationNonce}_10`, `k_${citationNonce}_11`]);
+    ).toEqual([
+      `k_${citationNamespace}_2`,
+      `k_${citationNamespace}_10`,
+      `k_${citationNamespace}_11`,
+    ]);
 
     expect(() =>
       chatMessagesResponseFromRows(
@@ -303,8 +307,8 @@ describe("chatMessagesResponseFromRows", () => {
           },
         ],
         [],
-        [sourceRow(`k_${citationNonce}_bad`)],
-        [useRow(`k_${citationNonce}_bad`, 0)],
+        [sourceRow(`k_${citationNamespace}_bad`)],
+        [useRow(`k_${citationNamespace}_bad`, 0)],
       ),
     ).toThrow("invalid persisted source key");
     expect(() =>
@@ -318,8 +322,8 @@ describe("chatMessagesResponseFromRows", () => {
           },
         ],
         [],
-        [sourceRow(`k_${citationNonce}_1`, "http://example.com/document")],
-        [useRow(`k_${citationNonce}_1`, 0)],
+        [sourceRow(`k_${citationNamespace}_1`, "http://example.com/document")],
+        [useRow(`k_${citationNamespace}_1`, 0)],
       ),
     ).toThrow("invalid persisted source citationUrl");
   });

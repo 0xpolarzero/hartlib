@@ -823,6 +823,28 @@ export const isEvaluationSmithersExecutionActiveError = (
 ): error is EvaluationSmithersExecutionActiveError =>
   error instanceof EvaluationSmithersExecutionActiveError;
 
+const EvaluationAcceptanceScopeSchema = z
+  .object({
+    userId: z.string().min(1),
+    chatId: z.uuid(),
+    companyId: z.uuid(),
+    subscriptionIds: z.array(z.string()).readonly(),
+    accessIds: z.array(z.string()).readonly(),
+    publicSourceIds: z.array(z.string()).readonly(),
+    memoryMode: z.enum(["private_owner", "disabled"]),
+    memoryRevisionIds: z.array(z.string()).readonly(),
+    webRequested: z.boolean(),
+    webEnabled: z.boolean(),
+    provider: z.literal("zai_coding_plan_official"),
+    fastModelId: z.literal("glm-5-turbo"),
+    mainModelId: z.literal("glm-5-turbo"),
+    webTransportProvider: z.literal("tinyfish").nullable(),
+    allowedDomains: z.array(z.string()).nullable(),
+  })
+  .strict();
+
+type EvaluationAcceptanceScope = z.infer<typeof EvaluationAcceptanceScopeSchema>;
+
 const DurableRunSnapshotSchema = z
   .object({
     id: z.uuid(),
@@ -833,25 +855,7 @@ const DurableRunSnapshotSchema = z
     market: z.enum(["FR", "US"]),
     webSearchEnabled: z.boolean(),
     effectiveWebPolicy: EffectiveWebPolicySchema,
-    acceptanceScope: z
-      .object({
-        userId: z.string().min(1),
-        chatId: z.uuid(),
-        companyId: z.uuid(),
-        subscriptionIds: z.array(z.string()).readonly(),
-        accessIds: z.array(z.string()).readonly(),
-        publicSourceIds: z.array(z.string()).readonly(),
-        memoryMode: z.enum(["private_owner", "disabled"]),
-        memoryRevisionIds: z.array(z.string()).readonly(),
-        webRequested: z.boolean(),
-        webEnabled: z.boolean(),
-        provider: z.literal("zai_coding_plan_official"),
-        fastModelId: z.string().min(1),
-        mainModelId: z.string().min(1),
-        webTransportProvider: z.literal("tinyfish").nullable(),
-        allowedDomains: z.array(z.string()).nullable(),
-      })
-      .strict(),
+    acceptanceScope: EvaluationAcceptanceScopeSchema,
     smithersRunId: z.string().min(1),
     createdAt: z.iso.datetime(),
     startedAt: z.iso.datetime(),
@@ -1284,6 +1288,42 @@ const seedOneCase = (
 
       yield* sql.withTransaction(
         Effect.gen(function* () {
+          const acceptanceScopeForRun = (webRequested: boolean): EvaluationAcceptanceScope =>
+            EvaluationAcceptanceScopeSchema.parse({
+              userId: manifest.userId,
+              chatId: manifest.chatId,
+              companyId: manifest.companyId,
+              subscriptionIds: manifest.sourceBindings
+                .filter(
+                  (source): source is Extract<typeof source, { kind: "document" }> =>
+                    source.kind === "document" && source.source.kind === "publisher",
+                )
+                .map((source) => source.source.sourceId.slice("publisher:".length))
+                .sort(),
+              accessIds: [],
+              publicSourceIds: manifest.sourceBindings.some(
+                (source) => source.kind === "document" && source.source.kind === "public",
+              )
+                ? [sourceId]
+                : [],
+              memoryMode: "private_owner",
+              memoryRevisionIds: manifest.sourceBindings
+                .filter(
+                  (source): source is Extract<typeof source, { kind: "memory" }> =>
+                    source.kind === "memory",
+                )
+                .map((source) => source.memoryRevisionId)
+                .sort(),
+              webRequested,
+              webEnabled: webRequested && fixture.webPolicyEnabled,
+              provider: "zai_coding_plan_official",
+              fastModelId: "glm-5-turbo",
+              mainModelId: "glm-5-turbo",
+              webTransportProvider: webRequested && fixture.webPolicyEnabled ? "tinyfish" : null,
+              allowedDomains:
+                webRequested && fixture.webPolicyEnabled ? evaluationWebAllowlist : null,
+            });
+
           yield* sql`
             insert into platform_users (id, primary_email, display_name, clerk_user_id)
             values (
@@ -1387,39 +1427,7 @@ const seedOneCase = (
                 ${binding.aiRunId}, ${manifest.chatId}, ${manifest.userId},
                 ${binding.userMessageId}, ${deriveAiChatSmithersRunId(binding.aiRunId)},
                 ${fixture.locale}, ${fixture.market}, ${citationNamespaceForRun(binding.aiRunId)}, ${createdAt},
-                ${JSON.stringify({
-                  userId: manifest.userId,
-                  chatId: manifest.chatId,
-                  companyId: manifest.companyId,
-                  subscriptionIds: manifest.sourceBindings
-                    .filter(
-                      (source): source is Extract<typeof source, { kind: "document" }> =>
-                        source.kind === "document" && source.source.kind === "publisher",
-                    )
-                    .map((source) => source.source.sourceId.slice("publisher:".length))
-                    .sort(),
-                  accessIds: [],
-                  publicSourceIds: manifest.sourceBindings.some(
-                    (source) => source.kind === "document",
-                  )
-                    ? [sourceId]
-                    : [],
-                  memoryMode: "private_owner",
-                  memoryRevisionIds: manifest.sourceBindings
-                    .filter(
-                      (source): source is Extract<typeof source, { kind: "memory" }> =>
-                        source.kind === "memory",
-                    )
-                    .map((source) => source.memoryRevisionId)
-                    .sort(),
-                  webRequested: false,
-                  webEnabled: false,
-                  provider: "zai_coding_plan_official",
-                  fastModelId: "glm-5-turbo",
-                  mainModelId: "glm-5-turbo",
-                  webTransportProvider: null,
-                  allowedDomains: null,
-                })}::jsonb
+                ${JSON.stringify(acceptanceScopeForRun(false))}::jsonb
               ) on conflict (id) do nothing
             `;
             yield* sql`
@@ -1522,39 +1530,7 @@ const seedOneCase = (
             ) values (
               ${manifest.aiRunId}, ${manifest.chatId}, ${manifest.userId}, ${manifest.userMessageId},
               ${fixture.locale}, ${fixture.market}, ${citationNamespaceForRun(manifest.aiRunId)}, '2026-07-10T10:00:00.000Z',
-              ${JSON.stringify({
-                userId: manifest.userId,
-                chatId: manifest.chatId,
-                companyId: manifest.companyId,
-                subscriptionIds: manifest.sourceBindings
-                  .filter(
-                    (source): source is Extract<typeof source, { kind: "document" }> =>
-                      source.kind === "document" && source.source.kind === "publisher",
-                  )
-                  .map((source) => source.source.sourceId.slice("publisher:".length))
-                  .sort(),
-                accessIds: [],
-                publicSourceIds: manifest.sourceBindings.some(
-                  (source) => source.kind === "document",
-                )
-                  ? [sourceId]
-                  : [],
-                memoryMode: "private_owner",
-                memoryRevisionIds: manifest.sourceBindings
-                  .filter(
-                    (source): source is Extract<typeof source, { kind: "memory" }> =>
-                      source.kind === "memory",
-                  )
-                  .map((source) => source.memoryRevisionId)
-                  .sort(),
-                webRequested: fixture.webRequested,
-                webEnabled: fixture.webPolicyEnabled,
-                provider: "zai_coding_plan_official",
-                fastModelId: "glm-5-turbo",
-                mainModelId: "glm-5-turbo",
-                webTransportProvider: fixture.webPolicyEnabled ? "tinyfish" : null,
-                allowedDomains: evaluationWebAllowlist,
-              })}::jsonb
+              ${JSON.stringify(acceptanceScopeForRun(fixture.webRequested))}::jsonb
             ) on conflict (id) do nothing
           `;
           yield* sql`

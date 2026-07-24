@@ -16,9 +16,29 @@ import type {
   PiBoundaryCoordinates,
   PiCompletion,
 } from "../runtime/pi-boundary";
-import { providerRequestSha256Hex, type LiveProviderRequest } from "../runtime/provider-request";
+import {
+  providerRequestSha256Hex,
+  providerRequestSourceExposureProofBindings,
+  type LiveProviderRequest,
+  type CodeOwnedSourceExposureProof,
+  type ProviderVisibleSourceExposureProofBinding,
+  type ProviderVisibleSourceExposureMarker,
+} from "../runtime/provider-request";
 import { resolveRegisteredModel } from "../runtime/model-registry";
-import { memoryExtractionSha256Hex } from "../runtime/canonicalization";
+import {
+  chatMessageEvidenceIdentity,
+  memoryEvidenceIdentity,
+  memoryExtractionSha256Hex,
+  namespacedDocumentEvidenceIdentity,
+  sha256Base64Url,
+  webEvidenceIdentity,
+} from "../runtime/canonicalization";
+import {
+  insertAiObservation,
+  insertAiRunUsage,
+  insertAiSourceExposure,
+  type AiSourceExposureInput,
+} from "../product-state/observability";
 import type {
   FinalSourceRecord,
   InternalReference,
@@ -35,6 +55,7 @@ import {
   type FanoutSourceKeySet,
   type LoadedTurn,
   type SelectorBundle,
+  topicRequestsWebEvidence,
   type WebResearchBoundary,
 } from "./operations";
 
@@ -132,10 +153,59 @@ const assembleAndMeasureContext = async (
       requestedOutputTokens,
     ),
   );
-  return inTask(`${prefix}-measure`, () =>
-    operations.measureAssembly(load, assembly, `${prefix}-measure`),
+  return inTask(
+    `${prefix}-measure`,
+    () => operations.measureAssembly(load, assembly, `${prefix}-measure`),
+    { attempt: 0 },
   );
 };
+const restrictedLedgerForContext = (
+  context: ContextState,
+  consumerTaskId: string,
+  requestKind: "direct" | "topic",
+  topicId?: "t1" | "t2" | "t3",
+) => ({
+  requestKind,
+  modelId: context.request.model,
+  requestSha256Hex: providerRequestSha256Hex(context.request),
+  inputTokens: context.inputTokens,
+  usableInputTokens: context.usableInputTokens,
+  requestedOutputTokens: context.request.requestedOutputTokens,
+  selectedConversation: context.selectedConversation.map((entry) =>
+    "assistantMessageId" in entry
+      ? {
+          kind: "complete" as const,
+          turnId: entry.turnId,
+          userMessageId: entry.userMessageId,
+          assistantMessageId: entry.assistantMessageId,
+        }
+      : {
+          kind: "failed" as const,
+          turnId: entry.turnId,
+          userMessageId: entry.userMessageId,
+          errorCode: entry.errorCode,
+          retryable: entry.retryable,
+        },
+  ),
+  ...(topicId === undefined ? {} : { topicId }),
+  question: context.question,
+  gaps: context.gaps,
+  sources: context.sourceMap.map((source, index) => {
+    const candidate = context.candidates[index];
+    if (candidate === undefined) throw new Error("context candidate/source mismatch");
+    const use = source.uses.find(
+      (entry) => entry.consumerTaskId === consumerTaskId && entry.topicId === topicId,
+    );
+    return {
+      candidateId: candidate.id,
+      sourceKey: source.sourceKey,
+      kind: source.locator.kind,
+      purpose: candidate.purpose,
+      label: source.label ?? null,
+      ranges: use?.ranges ?? [],
+    };
+  }),
+});
 const passedMeasurement = (
   model: LiveProviderRequest["model"],
 ): LiveProviderRequestMeasurement => ({
@@ -146,22 +216,116 @@ const passedMeasurement = (
   contextWindow: 1_000_000,
   passed: true,
 });
+
+interface ToolLoopExposureState {
+  readonly markers: ProviderVisibleSourceExposureMarker[];
+  readonly wrappedTools: Set<ToolLoopInput<unknown>["tools"][number]>;
+  readonly executions: ToolLoopExecution[];
+}
+
+interface ToolLoopExecution {
+  readonly toolName: string;
+  readonly callId: string;
+  readonly arguments_: Readonly<Record<string, unknown>>;
+  readonly result: Readonly<Record<string, unknown>>;
+}
+
+const toolLoopExposureStates = new WeakMap<object, ToolLoopExposureState>();
+
+const sourceExposureMarkersFromToolResult = (
+  value: Readonly<Record<string, unknown>>,
+): readonly ProviderVisibleSourceExposureMarker[] => {
+  const raw = value.__briefSourceExposures;
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new Error("source exposure inventory must be an array");
+  return raw as readonly ProviderVisibleSourceExposureMarker[];
+};
+
+const stripSourceExposureMarkers = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(stripSourceExposureMarkers);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Readonly<Record<string, unknown>>)
+      .filter(([key]) => key !== "__briefSourceExposures")
+      .map(([key, nested]) => [key, stripSourceExposureMarkers(nested)]),
+  );
+};
+
+const trackToolLoopExposures = <Output>(
+  input: ToolLoopInput<Output>,
+): readonly ProviderVisibleSourceExposureMarker[] => {
+  let state = toolLoopExposureStates.get(input);
+  if (state === undefined) {
+    state = { markers: [], wrappedTools: new Set(), executions: [] };
+    toolLoopExposureStates.set(input, state);
+  }
+  for (const tool of input.tools) {
+    if (state.wrappedTools.has(tool)) continue;
+    const originalExecute = tool.execute;
+    const wrappedExecute = async (
+      arguments_: Readonly<Record<string, unknown>>,
+      coordinates: PiBoundaryCoordinates,
+    ): Promise<Readonly<Record<string, unknown>>> => {
+      const result = await originalExecute(arguments_, coordinates);
+      for (const marker of sourceExposureMarkersFromToolResult(result)) {
+        state!.markers.push(marker);
+      }
+      state!.executions.push({
+        toolName: tool.definition.name,
+        callId: `operations_fixture_tool_${state!.executions.length}`,
+        arguments_,
+        result,
+      });
+      return result;
+    };
+    Object.defineProperty(tool, "execute", { value: wrappedExecute });
+    state.wrappedTools.add(tool);
+  }
+  return state.markers;
+};
+
 const invokeToolLoopProviderHook = async <Output>(
   input: ToolLoopInput<Output>,
   coordinates: PiBoundaryCoordinates,
 ): Promise<void> => {
+  const sourceExposureProofs = trackToolLoopExposures(input);
+  const state = toolLoopExposureStates.get(input);
   const request: LiveProviderRequest = {
     requestClass: input.requestClass,
     model: input.model,
     messages: [
       { role: "system", content: input.system },
       { role: "user", content: input.user },
+      ...(state?.executions.flatMap((execution) => [
+        {
+          role: "assistant" as const,
+          content: "",
+          toolCalls: [
+            {
+              id: execution.callId,
+              name: execution.toolName,
+              arguments: execution.arguments_,
+            },
+          ],
+        },
+        {
+          role: "tool" as const,
+          toolCallId: execution.callId,
+          name: execution.toolName,
+          content: JSON.stringify(stripSourceExposureMarkers(execution.result)),
+        },
+      ]) ?? []),
     ],
     tools: input.tools.map((tool) => tool.definition),
+    sourceExposureProofs,
     toolChoice: "auto",
     requestedOutputTokens: input.requestedOutputTokens,
     reasoning: input.reasoning,
   };
+  providerRequestSourceExposureProofBindings(
+    request,
+    resolveRegisteredModel(request.model).countTextTokens,
+  );
   await input.onBeforeRequest?.(
     request,
     { ...coordinates, providerRequestSha256Hex: providerRequestSha256Hex(request) },
@@ -185,10 +349,17 @@ const invokeStructuredProviderHook = async <Output>(
         parameters: input.outputSchema,
       },
     ],
+    ...(input.sourceExposureProofs === undefined
+      ? {}
+      : { sourceExposureProofs: input.sourceExposureProofs }),
     toolChoice: "auto",
     requestedOutputTokens: input.requestedOutputTokens,
     reasoning: input.reasoning,
   };
+  providerRequestSourceExposureProofBindings(
+    request,
+    resolveRegisteredModel(request.model).countTextTokens,
+  );
   await input.onBeforeRequest?.(
     request,
     {
@@ -213,17 +384,428 @@ const runDb = <A, E>(
     ),
   );
 
+const waitForRuntimeDatabaseLock = async (): Promise<void> => {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const waiting = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return (yield* sql<{ readonly waiting: boolean }>`
+          select exists(
+            select 1
+            from pg_stat_activity
+            where datname = current_database()
+              and application_name = 'brief-ai-runtime'
+              and wait_event_type = 'Lock'
+          ) as waiting
+        `)[0]!.waiting;
+      }),
+    );
+    if (waiting) return;
+    await Bun.sleep(5);
+  }
+  throw new Error("AI runtime did not wait for the expected database lock");
+};
+
 interface Fixture {
   readonly userId: string;
   readonly companyId: string;
   readonly accessId: string;
   readonly issueId: string;
   readonly documentId: string;
-  readonly documentVersionId: string;
+  readonly versionId: string;
+  readonly extractionId: string;
   readonly contentHash: string;
   readonly runId: string;
   readonly subscriptionId: string;
 }
+
+type TestAcceptanceScope = {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly subscriptionIds: readonly string[];
+  readonly accessIds: readonly string[];
+  readonly publicSourceIds: readonly string[];
+  readonly memoryMode: "private_owner" | "disabled";
+  readonly memoryRevisionIds: readonly string[];
+  readonly webRequested: boolean;
+  readonly webEnabled: boolean;
+  readonly provider: "zai_coding_plan_official";
+  readonly fastModelId: "glm-5-turbo";
+  readonly mainModelId: "glm-5-turbo";
+  readonly webTransportProvider: "tinyfish" | null;
+  readonly allowedDomains: readonly string[] | null;
+};
+
+const testAcceptanceScope = (args: {
+  readonly userId: string;
+  readonly chatId: string;
+  readonly companyId: string;
+  readonly subscriptionIds?: readonly string[];
+  readonly accessIds?: readonly string[];
+  readonly publicSourceIds?: readonly string[];
+  readonly memoryMode?: "private_owner" | "disabled";
+  readonly memoryRevisionIds?: readonly string[];
+  readonly webRequested?: boolean;
+  readonly webEnabled?: boolean;
+  readonly allowedDomains?: readonly string[] | null;
+}): TestAcceptanceScope => {
+  const webEnabled = (args.webRequested ?? false) && (args.webEnabled ?? false);
+  return {
+    userId: args.userId,
+    chatId: args.chatId,
+    companyId: args.companyId,
+    subscriptionIds: [...(args.subscriptionIds ?? [])].sort(),
+    accessIds: [...(args.accessIds ?? [])].sort(),
+    publicSourceIds: [...(args.publicSourceIds ?? [])].sort(),
+    memoryMode: args.memoryMode ?? "private_owner",
+    memoryRevisionIds: [...(args.memoryRevisionIds ?? [])].sort(),
+    webRequested: args.webRequested ?? false,
+    webEnabled,
+    provider: "zai_coding_plan_official",
+    fastModelId: "glm-5-turbo",
+    mainModelId: "glm-5-turbo",
+    webTransportProvider: webEnabled ? "tinyfish" : null,
+    allowedDomains: webEnabled ? (args.allowedDomains ?? null) : null,
+  };
+};
+
+type DurableNoCallReason =
+  | "memory_mode_disabled"
+  | "no_active_memories"
+  | "web_not_requested"
+  | "web_policy_disabled"
+  | "topic_not_web_eligible";
+
+const durableNoCallReasonForFixtureTask = (
+  fixture: Pick<Fixture, "runId">,
+  taskId: string,
+  topicQuestion?: string,
+): Promise<DurableNoCallReason | undefined> =>
+  runDb(
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{
+        readonly memoryMode: "private_owner" | "disabled";
+        readonly webRequested: boolean;
+        readonly webPolicyEnabled: boolean;
+        readonly activeMemoryCount: number;
+      }>`
+        select runs.acceptance_scope->>'memoryMode' as "memoryMode",
+               coalesce((runs.acceptance_scope->>'webRequested')::boolean, false)
+                 as "webRequested",
+               coalesce((runs.acceptance_scope->>'webEnabled')::boolean, false)
+                 as "webPolicyEnabled",
+               (
+                 select count(*)::int
+                 from user_memories memories
+                 where memories.user_id = runs.initiating_user_id
+                   and memories.deleted_at is null
+                   and memories.provenance_only_at is null
+                   and memories.kind is not null
+                   and memories.content is not null
+                   and memories.head_revision_id is not null
+               ) as "activeMemoryCount"
+        from ai_runs runs
+        join chats on chats.id = runs.chat_id
+        where runs.id = ${fixture.runId}
+      `;
+      const state = rows[0];
+      if (state === undefined) return yield* Effect.fail(new Error("fixture run not found"));
+      if (taskId.endsWith("select-memories")) {
+        if (state.memoryMode === "disabled") return "memory_mode_disabled";
+        return state.activeMemoryCount === 0 ? "no_active_memories" : undefined;
+      }
+      if (!taskId.endsWith("retrieve-web")) return undefined;
+      if (!state.webRequested) return "web_not_requested";
+      if (!state.webPolicyEnabled) return "web_policy_disabled";
+      if (taskId.startsWith("topic-")) {
+        if (topicQuestion === undefined) {
+          return yield* Effect.fail(new Error("topic web fixture lacks its question"));
+        }
+        if (!topicRequestsWebEvidence(topicQuestion)) return "topic_not_web_eligible";
+      }
+      return undefined;
+    }),
+  );
+
+const seedAnswerSerializedExposures = async (
+  fixture: Pick<Fixture, "runId">,
+  taskId: string,
+  context: ContextState,
+  consumerTaskId: string,
+): Promise<{
+  readonly proofs: readonly string[];
+  readonly bindings: readonly {
+    readonly providerSerializationProofSha256Hex: string;
+    readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+  }[];
+}> => {
+  const requestSha256Hex = providerRequestSha256Hex(context.request);
+  const model = resolveRegisteredModel(context.request.model);
+  const candidateText = (candidate: ContextState["candidates"][number]): string => {
+    if (candidate.kind === "web") return candidate.quote;
+    if (candidate.kind !== "document") return candidate.text;
+    return candidate.ranges
+      .map((range) => candidate.text.slice(range.charStart, range.charEnd))
+      .join("\n…\n");
+  };
+  const markerForSource = (
+    source: ContextState["sourceMap"][number],
+    candidate: ContextState["candidates"][number],
+  ): ProviderVisibleSourceExposureMarker => {
+    const locator = source.locator;
+    const visibleText = candidateText(candidate);
+    if (locator.kind === "document") {
+      const logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
+        locator.publisherIssueId === undefined
+          ? { kind: "public", sourceId: locator.sourceId }
+          : {
+              kind: "publisher",
+              sourceId: locator.sourceId,
+              issueId: locator.publisherIssueId,
+              documentId: locator.publisherDocumentId,
+            },
+        locator.documentId,
+      );
+      return {
+        sourceKind: "document",
+        logicalSourceIdentity,
+        contentItemIdentity: `${logicalSourceIdentity}:${locator.versionId}:${sha256Base64Url(JSON.stringify(source.uses[0]?.ranges ?? []))}`,
+        exposureStage: "answer_serialized",
+        visibleTokenCount: model.countTextTokens(visibleText),
+      };
+    }
+    if (locator.kind === "chat_message") {
+      return {
+        sourceKind: "chat_message",
+        logicalSourceIdentity: chatMessageEvidenceIdentity(locator.messageId),
+        contentItemIdentity: locator.messageId,
+        exposureStage: "answer_serialized",
+        visibleTokenCount: model.countTextTokens(visibleText),
+      };
+    }
+    if (locator.kind === "memory") {
+      return {
+        sourceKind: "memory",
+        logicalSourceIdentity: memoryEvidenceIdentity(locator.memoryId),
+        contentItemIdentity: locator.memoryRevisionId,
+        exposureStage: "answer_serialized",
+        visibleTokenCount: model.countTextTokens(visibleText),
+      };
+    }
+    return {
+      sourceKind: "web",
+      logicalSourceIdentity: webEvidenceIdentity(locator.url, locator.quote),
+      contentItemIdentity: `${locator.url}:${locator.quoteHash}`,
+      exposureStage: "answer_serialized",
+      visibleTokenCount: model.countTextTokens(visibleText),
+    };
+  };
+  const sourceMarkers = context.sourceMap.map((source, index) => {
+    const candidate = context.candidates[index];
+    if (candidate === undefined) throw new Error("context candidate/source mismatch");
+    return markerForSource(source, candidate);
+  });
+  const userMessage = context.request.messages.find((message) => message.role === "user");
+  if (userMessage === undefined) throw new Error("context request lacks its user message");
+  const parsedUser = JSON.parse(userMessage.content) as Readonly<Record<string, unknown>>;
+  const proofs: CodeOwnedSourceExposureProof[] = [];
+  const addProviderInputProof = (contentItemIdentity: string, visibleText: string): void => {
+    proofs.push({
+      sourceKind: "chat_message",
+      logicalSourceIdentity: chatMessageEvidenceIdentity(contentItemIdentity),
+      contentItemIdentity,
+      exposureStage: "provider_input",
+      visibleTokenCount: model.countTextTokens(visibleText),
+      visibleText,
+    });
+  };
+  for (const [key, idKey] of [
+    ["currentMessage", "currentMessageId"],
+    ["currentUserMessage", "currentUserMessageId"],
+    ["originalMessage", "originalMessageId"],
+  ] as const) {
+    if (typeof parsedUser[key] === "string") {
+      const identity = typeof parsedUser[idKey] === "string" ? parsedUser[idKey] : key;
+      addProviderInputProof(identity, parsedUser[key]);
+    }
+  }
+  const selectedConversation = parsedUser.selectedConversation;
+  if (Array.isArray(selectedConversation)) {
+    for (const entry of selectedConversation) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const record = entry as Readonly<Record<string, unknown>>;
+      if (typeof record.userMessageId === "string" && typeof record.userContent === "string") {
+        addProviderInputProof(record.userMessageId, record.userContent);
+      }
+      if (
+        typeof record.assistantMessageId === "string" &&
+        typeof record.assistantContent === "string"
+      ) {
+        addProviderInputProof(record.assistantMessageId, record.assistantContent);
+      }
+    }
+  }
+  proofs.push(
+    ...sourceMarkers.map((marker, index) => ({
+      ...marker,
+      visibleText: candidateText(context.candidates[index]!),
+    })),
+  );
+  const bindingRows = providerRequestSourceExposureProofBindings(
+    { ...context.request, sourceExposureProofs: proofs },
+    model.countTextTokens,
+  );
+  const answerBindings = bindingRows.filter(
+    ({ marker }) => marker.exposureStage === "answer_serialized",
+  );
+  const exposures: AiSourceExposureInput[] = context.sourceMap.flatMap(
+    (source, sourceIndex): readonly AiSourceExposureInput[] => {
+      const use = source.uses.find(
+        (candidate) =>
+          candidate.consumerTaskId === consumerTaskId && candidate.topicId === context.topicId,
+      );
+      if (use === undefined) return [];
+      const locator = source.locator;
+      const marker = sourceMarkers[sourceIndex];
+      const binding = answerBindings.find(
+        ({ marker: boundMarker }) =>
+          marker !== undefined && JSON.stringify(boundMarker) === JSON.stringify(marker),
+      )?.binding;
+      if (marker === undefined || binding === undefined) {
+        throw new Error("answer source lacks its provider-derived sidecar binding");
+      }
+      switch (locator.kind) {
+        case "document": {
+          const logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
+            locator.publisherIssueId === undefined
+              ? { kind: "public", sourceId: locator.sourceId }
+              : {
+                  kind: "publisher",
+                  sourceId: locator.sourceId,
+                  issueId: locator.publisherIssueId,
+                  documentId: locator.publisherDocumentId,
+                },
+            locator.documentId,
+          );
+          return [
+            {
+              runId: fixture.runId,
+              taskId,
+              loopIteration: 0,
+              attempt: 0,
+              providerRequestIndex: 0,
+              providerRequestSha256Hex: requestSha256Hex,
+              sourceKind: "document" as const,
+              logicalSourceIdentity,
+              ...(locator.publisherIssueId === undefined
+                ? {}
+                : {
+                    publisherIssueId: locator.publisherIssueId,
+                    publisherDocumentId: locator.publisherDocumentId,
+                  }),
+              contentItemIdentity: `${logicalSourceIdentity}:${locator.versionId}:${sha256Base64Url(JSON.stringify(use.ranges))}`,
+              exposureStage: "answer_serialized",
+              visibleTokenCount: marker.visibleTokenCount,
+              providerSerializationProofBinding: binding,
+              documentReconstruction: {
+                sourceId: locator.sourceId,
+                documentId: locator.documentId,
+                versionId: locator.versionId,
+                contentHash: locator.contentHash,
+                ...(locator.publisherExtractionId === undefined
+                  ? {}
+                  : { publisherExtractionId: locator.publisherExtractionId }),
+                ranges: use.ranges,
+              },
+            },
+          ];
+        }
+        case "chat_message":
+          return [
+            {
+              runId: fixture.runId,
+              taskId,
+              loopIteration: 0,
+              attempt: 0,
+              providerRequestIndex: 0,
+              providerRequestSha256Hex: requestSha256Hex,
+              sourceKind: "chat_message" as const,
+              logicalSourceIdentity: chatMessageEvidenceIdentity(locator.messageId),
+              contentItemIdentity: locator.messageId,
+              exposureStage: "answer_serialized",
+              visibleTokenCount: marker.visibleTokenCount,
+              providerSerializationProofBinding: binding,
+            },
+          ];
+        case "memory":
+          return [
+            {
+              runId: fixture.runId,
+              taskId,
+              loopIteration: 0,
+              attempt: 0,
+              providerRequestIndex: 0,
+              providerRequestSha256Hex: requestSha256Hex,
+              sourceKind: "memory" as const,
+              logicalSourceIdentity: memoryEvidenceIdentity(locator.memoryId),
+              contentItemIdentity: locator.memoryRevisionId,
+              exposureStage: "answer_serialized",
+              visibleTokenCount: marker.visibleTokenCount,
+              providerSerializationProofBinding: binding,
+            },
+          ];
+        case "web":
+          return [
+            {
+              runId: fixture.runId,
+              taskId,
+              loopIteration: 0,
+              attempt: 0,
+              providerRequestIndex: 0,
+              providerRequestSha256Hex: requestSha256Hex,
+              sourceKind: "web" as const,
+              logicalSourceIdentity: webEvidenceIdentity(locator.url, locator.quote),
+              contentItemIdentity: `${locator.url}:${locator.quoteHash}`,
+              exposureStage: "answer_serialized",
+              visibleTokenCount: marker.visibleTokenCount,
+              providerSerializationProofBinding: binding,
+            },
+          ];
+      }
+    },
+  );
+  for (const exposure of exposures) {
+    await runDb(insertAiSourceExposure(exposure));
+  }
+  return runDb(
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{
+        readonly proof: string;
+        readonly binding: ProviderVisibleSourceExposureProofBinding;
+      }>`
+        select payload->>'providerSerializationProofSha256Hex' as proof,
+               payload->'providerSerializationProofBinding' as binding
+        from ai_observations
+        where run_id = ${fixture.runId}
+          and emitting_task = ${taskId}
+          and loop_iteration = 0
+          and attempt = 0
+          and kind = 'source_exposure_attestation'
+        order by id
+      `;
+      return {
+        proofs: rows.map((row) => row.proof),
+        bindings: rows.map((row) => ({
+          providerSerializationProofSha256Hex: row.proof,
+          providerSerializationProofBinding: row.binding,
+        })),
+      };
+    }),
+  );
+};
 
 const persistMemoryArtifact = async (
   fixture: Pick<Fixture, "runId">,
@@ -249,6 +831,51 @@ const persistMemoryArtifact = async (
         from ai_runs where id = ${fixture.runId}
         on conflict (run_id, observation_key) do nothing
       `;
+      const rows = yield* sql<{ readonly chatId: string }>`
+        select chat_id::text as "chatId" from ai_runs where id = ${fixture.runId}
+      `;
+      const chatId = rows[0]?.chatId;
+      if (chatId === undefined) return yield* Effect.fail(new Error("chat not found"));
+      yield* insertAiObservation({
+        runId: fixture.runId,
+        chatId,
+        emittingTask: "memory-extract",
+        loopIteration: 0,
+        attempt: 1,
+        observationKey: `operations-test:memory-measurement:${extractionSha256Hex}`,
+        kind: "provider_request_measurement",
+        payload: {
+          providerRequestIndex: 0,
+          agentRole: "memory_extractor",
+          modelId: "glm-5-turbo",
+          requestSha256Hex: "d".repeat(64),
+          sourceExposureProofSha256Hexes: [],
+          sourceExposureProofBindings: [],
+          inputTokens: 1,
+          requestedOutputTokens: 2048,
+          usableInputTokens: 100_000,
+          contextWindow: 1_000_000,
+          passed: true,
+        },
+      });
+      yield* insertAiRunUsage({
+        runId: fixture.runId,
+        taskId: "memory-extract",
+        loopIteration: 0,
+        attempt: 1,
+        providerRequestIndex: 0,
+        agentRole: "memory_extractor",
+        modelId: "glm-5-turbo",
+        providerServiceId: "zai_coding_plan_official",
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cachedTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 2,
+          stopReason: "stop",
+        },
+      });
     }),
   );
   return {
@@ -263,6 +890,286 @@ const persistMemoryArtifact = async (
   };
 };
 
+const seedPlanMeasurement = (fixture: Pick<Fixture, "runId">) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const rows = yield* sql<{ readonly chatId: string }>`
+      select chat_id::text as "chatId" from ai_runs where id = ${fixture.runId}
+    `;
+    const chatId = rows[0]?.chatId;
+    if (chatId === undefined) return yield* Effect.fail(new Error("chat not found"));
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId,
+      emittingTask: "plan-turn",
+      loopIteration: 0,
+      attempt: 0,
+      observationKey: "fixture:plan-turn:measurement",
+      kind: "provider_request_measurement",
+      payload: {
+        providerRequestIndex: 0,
+        agentRole: "plan_turn",
+        modelId: "glm-5-turbo",
+        requestSha256Hex: "a".repeat(64),
+        sourceExposureProofSha256Hexes: [],
+        sourceExposureProofBindings: [],
+        inputTokens: 1,
+        requestedOutputTokens: 2048,
+        usableInputTokens: 100_000,
+        contextWindow: 1_000_000,
+        passed: true,
+      },
+    });
+    yield* insertAiRunUsage({
+      runId: fixture.runId,
+      taskId: "plan-turn",
+      loopIteration: 0,
+      attempt: 0,
+      providerRequestIndex: 0,
+      agentRole: "plan_turn",
+      modelId: "glm-5-turbo",
+      providerServiceId: "zai_coding_plan_official",
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        cachedTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 2,
+        stopReason: "stop",
+      },
+    });
+  });
+
+const providerRoleForTask = (taskId: string): string =>
+  ({
+    "single-retrieve-internal": "internal_retrieval",
+    "single-select-memories": "memory_selector",
+    "single-retrieve-web": "web_research",
+    "single-reduce-plan": "context_reducer",
+    "single-answer": "direct_answer",
+    "topic-t1-retrieve-internal": "internal_retrieval",
+    "topic-t1-select-memories": "memory_selector",
+    "topic-t1-retrieve-web": "web_research",
+    "topic-t1-reduce-plan": "context_reducer",
+    "topic-t1-answer": "topic_answer",
+    "topic-t2-retrieve-internal": "internal_retrieval",
+    "topic-t2-select-memories": "memory_selector",
+    "topic-t2-retrieve-web": "web_research",
+    "topic-t2-reduce-plan": "context_reducer",
+    "topic-t2-answer": "topic_answer",
+    "topic-t3-retrieve-internal": "internal_retrieval",
+    "topic-t3-select-memories": "memory_selector",
+    "topic-t3-retrieve-web": "web_research",
+    "topic-t3-reduce-plan": "context_reducer",
+    "topic-t3-answer": "topic_answer",
+    "fanout-synthesis": "synthesis",
+  })[taskId] ?? taskId;
+
+const seedExposureMeasurements = (fixture: Pick<Fixture, "runId">) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const rows = yield* sql<{
+      readonly taskId: string;
+      readonly loopIteration: number;
+      readonly attempt: number;
+      readonly providerRequestIndex: number;
+      readonly requestSha256Hex: string;
+      readonly proofSha256Hex: string;
+      readonly binding: ProviderVisibleSourceExposureProofBinding;
+    }>`
+      select emitting_task as "taskId",
+             loop_iteration::int as "loopIteration",
+             attempt::int as attempt,
+             (payload->>'providerRequestIndex')::int as "providerRequestIndex",
+             payload->>'providerRequestSha256Hex' as "requestSha256Hex",
+             payload->>'providerSerializationProofSha256Hex' as "proofSha256Hex",
+             payload->'providerSerializationProofBinding' as binding
+      from ai_observations
+      where run_id = ${fixture.runId}
+        and kind = 'source_exposure_attestation'
+      order by emitting_task, loop_iteration, attempt, "providerRequestIndex"
+    `;
+    const groups = new Map<
+      string,
+      {
+        readonly taskId: string;
+        readonly loopIteration: number;
+        readonly attempt: number;
+        readonly providerRequestIndex: number;
+        readonly requestSha256Hex: string;
+        readonly proofs: string[];
+        readonly bindings: {
+          readonly providerSerializationProofSha256Hex: string;
+          readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+        }[];
+      }
+    >();
+    for (const row of rows) {
+      const key = [row.taskId, row.loopIteration, row.attempt, row.providerRequestIndex].join(":");
+      const group = groups.get(key);
+      if (group === undefined) {
+        groups.set(key, {
+          taskId: row.taskId,
+          loopIteration: row.loopIteration,
+          attempt: row.attempt,
+          providerRequestIndex: row.providerRequestIndex,
+          requestSha256Hex: row.requestSha256Hex,
+          proofs: [row.proofSha256Hex],
+          bindings: [
+            {
+              providerSerializationProofSha256Hex: row.proofSha256Hex,
+              providerSerializationProofBinding: row.binding,
+            },
+          ],
+        });
+      } else {
+        group.proofs.push(row.proofSha256Hex);
+        group.bindings.push({
+          providerSerializationProofSha256Hex: row.proofSha256Hex,
+          providerSerializationProofBinding: row.binding,
+        });
+      }
+    }
+    const chatRows = yield* sql<{ readonly chatId: string }>`
+      select chat_id::text as "chatId" from ai_runs where id = ${fixture.runId}
+    `;
+    const chatId = chatRows[0]?.chatId;
+    if (chatId === undefined) return yield* Effect.fail(new Error("chat not found"));
+    const persistMeasurement = (group: {
+      readonly taskId: string;
+      readonly loopIteration: number;
+      readonly attempt: number;
+      readonly providerRequestIndex: number;
+      readonly requestSha256Hex: string;
+      readonly proofs: readonly string[];
+      readonly bindings: readonly {
+        readonly providerSerializationProofSha256Hex: string;
+        readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+      }[];
+    }) =>
+      Effect.gen(function* () {
+        const payload = {
+          providerRequestIndex: group.providerRequestIndex,
+          agentRole: providerRoleForTask(group.taskId),
+          modelId: "glm-5-turbo",
+          requestSha256Hex: group.requestSha256Hex,
+          sourceExposureProofSha256Hexes: [...new Set(group.proofs)].sort(),
+          sourceExposureProofBindings: group.bindings,
+          inputTokens: 1,
+          requestedOutputTokens: 2048,
+          usableInputTokens: 100_000,
+          contextWindow: 1_000_000,
+          passed: true,
+        };
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId,
+          emittingTask: group.taskId,
+          loopIteration: group.loopIteration,
+          attempt: group.attempt,
+          observationKey: `fixture:provider-measurement:${group.taskId}:${group.loopIteration}:${group.attempt}:${group.providerRequestIndex}`,
+          kind: "provider_request_measurement",
+          payload,
+        });
+        yield* insertAiRunUsage({
+          runId: fixture.runId,
+          taskId: group.taskId,
+          loopIteration: group.loopIteration,
+          attempt: group.attempt,
+          providerRequestIndex: group.providerRequestIndex,
+          agentRole: providerRoleForTask(group.taskId),
+          modelId: "glm-5-turbo",
+          providerServiceId: "zai_coding_plan_official",
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 2,
+            stopReason: "stop",
+          },
+        });
+      });
+    for (const group of groups.values()) {
+      for (let index = 0; index < group.providerRequestIndex; index += 1) {
+        const priorKey = [group.taskId, group.loopIteration, group.attempt, index].join(":");
+        if (groups.has(priorKey)) continue;
+        yield* persistMeasurement({
+          ...group,
+          providerRequestIndex: index,
+          requestSha256Hex: "b".repeat(64),
+          proofs: [],
+          bindings: [],
+        });
+      }
+      yield* persistMeasurement(group);
+    }
+  });
+
+const seedTaskMeasurement = (
+  fixture: Pick<Fixture, "runId">,
+  taskId: string,
+  providerRequestIndex = 0,
+  context?: ContextState,
+  sourceExposureProofSha256Hexes: readonly string[] = [],
+  sourceExposureProofBindings: readonly {
+    readonly providerSerializationProofSha256Hex: string;
+    readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+  }[] = [],
+) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const rows = yield* sql<{ readonly chatId: string }>`
+      select chat_id::text as "chatId" from ai_runs where id = ${fixture.runId}
+    `;
+    const chatId = rows[0]?.chatId;
+    if (chatId === undefined) return yield* Effect.fail(new Error("chat not found"));
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId,
+      emittingTask: taskId,
+      loopIteration: 0,
+      attempt: 0,
+      observationKey: `fixture:provider-measurement:${taskId}:0:0:${providerRequestIndex}`,
+      kind: "provider_request_measurement",
+      payload: {
+        providerRequestIndex,
+        agentRole: providerRoleForTask(taskId),
+        modelId: "glm-5-turbo",
+        requestSha256Hex:
+          context === undefined ? "c".repeat(64) : providerRequestSha256Hex(context.request),
+        sourceExposureProofSha256Hexes,
+        sourceExposureProofBindings,
+        inputTokens: context?.inputTokens ?? 1,
+        requestedOutputTokens: context?.request.requestedOutputTokens ?? 4096,
+        usableInputTokens: context?.usableInputTokens ?? 100_000,
+        contextWindow:
+          context === undefined
+            ? 1_000_000
+            : resolveRegisteredModel(context.request.model).contextWindow,
+        passed: true,
+      },
+    });
+    yield* insertAiRunUsage({
+      runId: fixture.runId,
+      taskId,
+      loopIteration: 0,
+      attempt: 0,
+      providerRequestIndex,
+      agentRole: providerRoleForTask(taskId),
+      modelId: "glm-5-turbo",
+      providerServiceId: "zai_coding_plan_official",
+      usage: {
+        inputTokens: context?.inputTokens ?? 1,
+        outputTokens: 1,
+        cachedTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: (context?.inputTokens ?? 1) + 1,
+        stopReason: "stop",
+      },
+    });
+  });
+
 const createFixtureWithCanonicalText = (canonicalText: string) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
@@ -274,7 +1181,8 @@ const createFixtureWithCanonicalText = (canonicalText: string) =>
     const accessId = crypto.randomUUID();
     const issueId = crypto.randomUUID();
     const documentId = crypto.randomUUID();
-    const documentVersionId = crypto.randomUUID();
+    const versionId = crypto.randomUUID();
+    const pdfHash = createHash("sha256").update(canonicalText, "utf8").digest("hex");
     const chatId = crypto.randomUUID();
     yield* sql`
       insert into platform_users (id, primary_email, display_name, clerk_user_id)
@@ -324,7 +1232,7 @@ const createFixtureWithCanonicalText = (canonicalText: string) =>
       id, subscription_id, title, status, publication_at, indexing_status,
       created_by_user_id
     ) values (
-      ${issueId}, ${subscriptionId}, 'July Macro Brief', 'draft', now(), 'ready',
+      ${issueId}, ${subscriptionId}, 'July Macro Brief', 'draft', now(), 'pending',
       ${publisherUserId}
     )
   `;
@@ -335,25 +1243,40 @@ const createFixtureWithCanonicalText = (canonicalText: string) =>
     ) values (
       ${documentId}, ${issueId}, 'Liquidity Outlook', 'liquidity.pdf',
       ${`publisher/${publisherCompanyId}/${documentId}.pdf`}, 'application/pdf', 42,
-      ${"a".repeat(64)}, now(), ${publisherUserId}
+      ${pdfHash}, now(), ${publisherUserId}
     )
   `;
+    const jobs = yield* sql<{ readonly id: string }>`
+      insert into jobs (kind, payload)
+      values ('extract_pdf_text', '{}'::jsonb)
+      returning id::text
+    `;
+    const extractions = yield* sql<{ readonly id: string }>`
+      insert into brief_document_extractions (
+        brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+      ) values (
+        ${documentId}, ${pdfHash},
+        ${JSON.stringify([{ pageNumber: 1, text: canonicalText }])}::jsonb,
+        ${canonicalText.length}, ${jobs[0]!.id}
+      )
+      returning id::text
+    `;
     yield* sql`
     insert into brief_document_versions (
-      id, brief_document_id, content_hash, language, canonical_text,
+      id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
       text_char_count, page_ranges
     ) values (
-      ${documentVersionId}, ${documentId}, encode(digest(convert_to(${canonicalText}, 'UTF8'), 'sha256'), 'hex'), 'english',
+      ${versionId}, ${documentId}, ${extractions[0]!.id}, encode(digest(convert_to(${canonicalText}, 'UTF8'), 'sha256'), 'hex'), 'english',
       ${canonicalText}, ${canonicalText.length},
       ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: canonicalText.length }])}::jsonb
     )
   `;
     yield* sql`
-    update brief_documents set current_version_id = ${documentVersionId} where id = ${documentId}
+    update brief_documents set current_version_id = ${versionId} where id = ${documentId}
   `;
     yield* sql`
     update publisher_issues
-    set status = 'published', published_at = now()
+    set status = 'published', published_at = now(), indexing_status = 'ready'
     where id = ${issueId}
   `;
     yield* sql`
@@ -379,10 +1302,20 @@ const createFixtureWithCanonicalText = (canonicalText: string) =>
     const runs = yield* sql<{ readonly id: string }>`
     insert into ai_runs (
       chat_id, initiating_user_id, user_message_id, locale, market,
-      web_search_enabled, effective_web_policy
+      acceptance_scope
     ) values (
-      ${chatId}, ${userId}, ${userMessageId}, 'en-US', 'US', false,
-      ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })}
+      ${chatId}, ${userId}, ${userMessageId}, 'en-US', 'US',
+      ${sql.json(
+        testAcceptanceScope({
+          userId,
+          chatId,
+          companyId,
+          subscriptionIds: [subscriptionId],
+          accessIds: [accessId],
+          webRequested: true,
+          webEnabled: true,
+        }),
+      )}
     )
     returning id::text
   `;
@@ -399,7 +1332,8 @@ const createFixtureWithCanonicalText = (canonicalText: string) =>
       accessId,
       issueId,
       documentId,
-      documentVersionId,
+      versionId,
+      extractionId: extractions[0]!.id,
       contentHash: createHash("sha256").update(canonicalText, "utf8").digest("hex"),
       runId,
       subscriptionId,
@@ -410,15 +1344,90 @@ const createFixture = createFixtureWithCanonicalText(
   "Liquidity conditions improved while inflation expectations remained anchored.",
 );
 
+interface PublicPreviewFixture extends Fixture {
+  readonly publicSourceId: string;
+  readonly publicDocumentId: string;
+  readonly publicContentHash: string;
+}
+
+const createPublicPreviewFixture = (canonicalText: string) =>
+  Effect.gen(function* () {
+    const fixture = yield* createFixtureWithCanonicalText(
+      "Liquidity conditions improved while inflation expectations remained anchored.",
+    );
+    const sql = yield* PgClient.PgClient;
+    const publicSourceId = `ai-public-preview-${crypto.randomUUID()}`;
+    const publicDocumentId = `ai-public-preview-document-${crypto.randomUUID()}`;
+    const rawArtifactId = crypto.randomUUID();
+    const canonicalUrl = `https://example.test/public-preview/${publicDocumentId}`;
+    const contentHash = createHash("sha256").update(canonicalText, "utf8").digest("hex");
+    const bodyHash = createHash("sha256").update("public preview body", "utf8").digest("hex");
+    yield* sql`
+      insert into public_sources (
+        source_id, display_name, publisher_name, description, ingestion_method,
+        discovery_url, average_chars_per_item, country, language
+      ) values (
+        ${publicSourceId}, 'Public Preview Source', 'Public Preview Publisher',
+        'Repeated immutable preview fixture', 'rss', ${canonicalUrl},
+        ${canonicalText.length}, 'US', 'en-US'
+      )
+    `;
+    yield* sql`
+      insert into public_source_raw_artifacts (
+        id, source_id, canonical_url, fetched_at, media_type, body, body_hash
+      ) values (
+        ${rawArtifactId}, ${publicSourceId}, ${canonicalUrl}, now(),
+        'text/html', 'public preview body', ${bodyHash}
+      )
+    `;
+    yield* sql`
+      insert into public_source_documents (
+        document_id, source_id, canonical_url, title, published_at,
+        discovered_at, fetched_at, language, document_type, text,
+        text_char_count, content_hash, raw_artifact_id
+      ) values (
+        ${publicDocumentId}, ${publicSourceId}, ${canonicalUrl},
+        'Public repeated preview', now(), now(), now(), 'en-US', 'article',
+        ${canonicalText}, ${canonicalText.length}, ${contentHash}, ${rawArtifactId}
+      )
+    `;
+    yield* sql`
+      insert into client_company_public_source_settings (
+        client_company_id, source_id, enabled, updated_by_user_id
+      ) values (${fixture.companyId}, ${publicSourceId}, true, ${fixture.userId})
+    `;
+    return {
+      ...fixture,
+      publicSourceId,
+      publicDocumentId,
+      publicContentHash: contentHash,
+    } satisfies PublicPreviewFixture;
+  });
+
 class PublisherRetrievalAgent extends CanonicalAgentClient {
   onAfterFirstSearch?: () => Promise<void>;
   repeatInspection = false;
   malformedFirstSearch = false;
   skipInspection = false;
   selectWholeAfterInspection = false;
+  narrowerRange = false;
+  readonly selectedRange = { charStart: 0, charEnd: 120 } as const;
+  firstInspectionWasTooLarge = false;
+  narrowedInspectionText: string | undefined;
 
   constructor() {
     super({} as ExactPiBoundary);
+  }
+
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName !== "emit_plan_turn") {
+      throw new Error(`unexpected structured call ${input.outputToolName}`);
+    }
+    return input.validate({
+      mode: "single",
+      question: "What changed in liquidity?",
+      relevantTurnIds: [],
+    });
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
@@ -431,6 +1440,9 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
       providerRequestIndex: 0,
     };
     await invokeToolLoopProviderHook(input, coordinates);
+    if (this.sourceId.startsWith("public:")) {
+      return input.validateTerminal({ entries: [] });
+    }
     let searchCoordinates = coordinates;
     if (this.malformedFirstSearch) {
       const rejected = await search.execute(
@@ -439,7 +1451,6 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
             target: "documents",
             terms: "liquidity conditions remained anchored",
             purpose: "answer the liquidity question",
-            sourceIds: [this.sourceId],
           },
         },
         coordinates,
@@ -456,13 +1467,18 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
           target: "documents",
           terms: "liquidity",
           purpose: "answer the liquidity question",
-          sourceIds: [this.sourceId],
         },
       },
       searchCoordinates,
     );
     const items = searchResult.items;
     if (!Array.isArray(items) || items.length !== 1) throw new Error("publisher search failed");
+    if (this.expectedSearchSnippet !== undefined) {
+      const item = items[0] as { readonly snippet?: unknown };
+      if (item.snippet !== this.expectedSearchSnippet) {
+        throw new Error("publisher search preview did not preserve exact repeated matches");
+      }
+    }
     if (
       !Array.isArray(searchResult.__briefSourceExposures) ||
       searchResult.__briefSourceExposures.length !== 1
@@ -477,7 +1493,6 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
             target: "documents",
             terms: "liquidity",
             purpose: "answer the liquidity question",
-            sourceIds: [this.sourceId],
           },
         },
         { ...coordinates, providerRequestIndex: 1 },
@@ -486,30 +1501,28 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
     }
     const item = items[0] as {
       readonly documentId: string;
-      readonly documentVersionId: string;
-      readonly issueId: string;
-      readonly sourceId: string;
+      readonly versionId: string;
+      readonly publisherExtractionId: string;
+      readonly source: {
+        readonly kind: "publisher";
+        readonly sourceId: string;
+        readonly issueId: string;
+        readonly documentId: string;
+      };
     };
-    if (item.sourceId !== this.sourceId || !item.sourceId.startsWith("publisher:")) {
-      throw new Error("publisher search returned a non-canonical source namespace");
-    }
     const inspectionReference: InternalReference = {
       kind: "document",
       documentId: item.documentId,
-      documentVersionId: item.documentVersionId,
-      source: {
-        kind: "publisher",
-        sourceId: item.sourceId,
-        issueId: item.issueId,
-        documentId: item.documentId,
-      },
-      ranges: [{ charStart: 0, charEnd: 20 }],
+      versionId: item.versionId,
+      publisherExtractionId: item.publisherExtractionId,
+      source: item.source,
       purpose: "answer the liquidity question",
     };
-    const reference: InternalReference =
-      this.skipInspection || this.selectWholeAfterInspection
-        ? { ...inspectionReference, ranges: undefined }
-        : inspectionReference;
+    const reference = {
+      kind: "document",
+      documentId: inspectionReference.documentId,
+      purpose: inspectionReference.purpose,
+    };
     const inspectionCoordinates = {
       ...coordinates,
       providerRequestIndex: this.malformedFirstSearch ? 2 : coordinates.providerRequestIndex,
@@ -518,23 +1531,68 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
       await invokeToolLoopProviderHook(input, inspectionCoordinates);
     }
     if (!this.skipInspection) {
-      const inspection = await inspect.execute(
-        { reference: inspectionReference },
+      const firstInspection = await inspect.execute(
+        {
+          reference: {
+            kind: "document",
+            documentId: inspectionReference.documentId,
+            purpose: inspectionReference.purpose,
+          },
+        },
         inspectionCoordinates,
       );
-      if (inspection.found !== true || inspection.complete !== true) {
+      this.firstInspectionWasTooLarge = firstInspection.narrowerRangeRequired === true;
+      if (this.narrowerRange) {
+        if (firstInspection.narrowerRangeRequired !== true) {
+          throw new Error("oversized publisher inspection did not require a narrower range");
+        }
+        const narrowedCoordinates = {
+          ...coordinates,
+          providerRequestIndex: inspectionCoordinates.providerRequestIndex + 1,
+        };
+        await invokeToolLoopProviderHook(input, narrowedCoordinates);
+        const inspection = await inspect.execute(
+          {
+            reference: {
+              kind: "document",
+              documentId: inspectionReference.documentId,
+              range: this.selectedRange,
+              purpose: inspectionReference.purpose,
+            },
+          },
+          narrowedCoordinates,
+        );
+        if (inspection.found !== true || inspection.complete !== true) {
+          throw new Error("narrowed publisher inspection failed");
+        }
+        if (typeof inspection.text !== "string") {
+          throw new Error("narrowed publisher inspection did not return immutable text");
+        }
+        this.narrowedInspectionText = inspection.text;
+        if (
+          !Array.isArray(inspection.__briefSourceExposures) ||
+          inspection.__briefSourceExposures.length !== 1
+        ) {
+          throw new Error("narrowed publisher inspection lacked its source exposure");
+        }
+      } else if (firstInspection.found !== true || firstInspection.complete !== true) {
         throw new Error("publisher inspection failed");
-      }
-      if (
-        !Array.isArray(inspection.__briefSourceExposures) ||
-        inspection.__briefSourceExposures.length !== 1
+      } else if (
+        !Array.isArray(firstInspection.__briefSourceExposures) ||
+        firstInspection.__briefSourceExposures.length !== 1
       ) {
         throw new Error("publisher inspection did not include its bounded provider-visible marker");
       }
     }
     if (this.repeatInspection) {
       const repeatedInspection = await inspect.execute(
-        { reference: inspectionReference },
+        {
+          reference: {
+            kind: "document",
+            documentId: inspectionReference.documentId,
+            purpose: inspectionReference.purpose,
+          },
+        },
         coordinates,
       );
       if (
@@ -543,15 +1601,28 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
         throw new Error("repeated publisher inspection was not closed by protocol recovery");
       }
     }
+    const terminalReference = this.narrowerRange
+      ? { ...reference, ranges: [this.selectedRange] }
+      : reference;
     await invokeToolLoopProviderHook(input, {
       ...coordinates,
-      providerRequestIndex: this.malformedFirstSearch ? 3 : 1,
+      providerRequestIndex: this.narrowerRange
+        ? this.malformedFirstSearch
+          ? 4
+          : 2
+        : this.malformedFirstSearch
+          ? 3
+          : 1,
     });
-    return (this.duplicateManifest ? [reference, reference] : [reference]) as unknown as Output;
+    return (this.duplicateManifest
+      ? [terminalReference, terminalReference]
+      : [terminalReference]) as unknown as Output;
   }
 
   sourceId = "";
+  sourceName = "Canonical Publisher";
   duplicateManifest = false;
+  expectedSearchSnippet: string | undefined;
 }
 
 class CorrectingReducerAgent extends CanonicalAgentClient {
@@ -866,6 +1937,46 @@ class MemoryManifestAgent extends CanonicalAgentClient {
     await invokeStructuredProviderHook(input);
     return input.validate({ entries: this.entries });
   }
+
+  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
+    if (input.terminalToolName !== "emit_memory_manifest") {
+      throw new Error(`unexpected tool loop ${input.terminalToolName}`);
+    }
+    const coordinates = {
+      ...input.coordinates,
+      loopIteration: 0,
+      providerRequestIndex: 0,
+    };
+    await invokeToolLoopProviderHook(input, coordinates);
+    const search = input.tools.find((tool) => tool.definition.name === "search_memories");
+    const inspect = input.tools.find((tool) => tool.definition.name === "inspect_memory");
+    if (search === undefined || inspect === undefined) throw new Error("missing memory tools");
+    await search.execute({ query: "client" }, coordinates);
+    for (const entry of this.entries) {
+      await inspect.execute({ memoryId: entry.memoryId }, coordinates);
+    }
+    const output = input.validateTerminal({ entries: this.entries });
+    await input.onTerminal?.(output, coordinates, {
+      text: "",
+      toolCalls: [
+        {
+          id: "memory-terminal",
+          name: "emit_memory_manifest",
+          arguments: { entries: this.entries },
+        },
+      ],
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        cachedTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 2,
+        stopReason: "toolUse",
+      },
+      stopReason: "toolUse",
+    });
+    return output;
+  }
 }
 
 class EmptyInventoryConversationAgent extends CanonicalAgentClient {
@@ -877,17 +1988,72 @@ class EmptyInventoryConversationAgent extends CanonicalAgentClient {
   }
 
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
-    if (input.outputToolName !== "emit_conversation_resolution") {
+    if (input.outputToolName !== "emit_plan_turn") {
       throw new Error(`unexpected structured call ${input.outputToolName}`);
     }
     this.calls += 1;
     this.entries = (JSON.parse(input.user) as { readonly entries: unknown }).entries;
     await invokeStructuredProviderHook(input);
     return input.validate({
-      mode: "continue",
-      retrievalQuestion: "What changed in liquidity?",
-      selectedTurnIds: [],
+      mode: "single",
+      question: "What changed in liquidity?",
+      relevantTurnIds: [],
     });
+  }
+}
+
+class DateBoundaryInputAgent extends CanonicalAgentClient {
+  readonly planInputs: string[] = [];
+  readonly retrievalInputs: string[] = [];
+
+  constructor() {
+    super({} as ExactPiBoundary);
+  }
+
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName !== "emit_plan_turn") {
+      throw new Error(`unexpected structured call ${input.outputToolName}`);
+    }
+    this.planInputs.push(input.user);
+    await invokeStructuredProviderHook(input);
+    return input.validate({
+      mode: "single",
+      question: "What changed in liquidity?",
+      relevantTurnIds: [],
+    });
+  }
+
+  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
+    if (input.terminalToolName !== "emit_internal_manifest") {
+      throw new Error(`unexpected tool loop ${input.terminalToolName}`);
+    }
+    this.retrievalInputs.push(input.user);
+    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
+    if (search === undefined) throw new Error("internal search tool is missing");
+    const coordinates = {
+      ...input.coordinates,
+      loopIteration: 0,
+      providerRequestIndex: 0,
+    };
+    await invokeToolLoopProviderHook(input, coordinates);
+    const result = await search.execute(
+      {
+        query: {
+          target: "chat_messages",
+          terms: "zzboundarytoken",
+          purpose: "verify stable retry input",
+        },
+      },
+      coordinates,
+    );
+    if (result.complete !== true || !Array.isArray(result.items) || result.items.length !== 0) {
+      throw new Error("date-boundary search fixture must complete empty");
+    }
+    await invokeToolLoopProviderHook(input, {
+      ...coordinates,
+      providerRequestIndex: 1,
+    });
+    return input.validateTerminal({ entries: [] });
   }
 }
 
@@ -905,7 +2071,17 @@ class UndiscoveredInternalAgent extends CanonicalAgentClient {
       loopIteration: 0,
       providerRequestIndex: 0,
     });
-    return input.validateTerminal({ entries: [this.reference] });
+    return input.validateTerminal({
+      entries: [
+        this.reference.kind === "document"
+          ? {
+              kind: "document",
+              documentId: this.reference.documentId,
+              purpose: this.reference.purpose,
+            }
+          : this.reference,
+      ],
+    });
   }
 }
 
@@ -1234,6 +2410,72 @@ class SecondSearchCursorContinuationAgent extends CanonicalAgentClient {
   }
 }
 
+class PublicRetrievalAgent extends CanonicalAgentClient {
+  constructor(private readonly expectedSearchSnippet: string) {
+    super({} as ExactPiBoundary);
+  }
+
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName !== "emit_plan_turn") {
+      throw new Error(`unexpected structured call ${input.outputToolName}`);
+    }
+    return input.validate({
+      mode: "single",
+      question: "What changed in the public signal?",
+      relevantTurnIds: [],
+    });
+  }
+
+  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
+    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
+    const inspect = input.tools.find((tool) => tool.definition.name === "inspect_internal");
+    if (search === undefined || inspect === undefined) throw new Error("missing internal tools");
+    const coordinates: PiBoundaryCoordinates = {
+      ...input.coordinates,
+      loopIteration: 0,
+      providerRequestIndex: 0,
+    };
+    await invokeToolLoopProviderHook(input, coordinates);
+    const searchResult = await search.execute(
+      {
+        query: {
+          target: "documents",
+          terms: "beacon",
+          purpose: "answer the public signal question",
+        },
+      },
+      coordinates,
+    );
+    if (!Array.isArray(searchResult.items) || searchResult.items.length !== 1) {
+      throw new Error("public search failed");
+    }
+    const item = searchResult.items[0] as {
+      readonly documentId: string;
+      readonly snippet?: unknown;
+    };
+    if (item.snippet !== this.expectedSearchSnippet) {
+      throw new Error("public search preview did not preserve exact repeated matches");
+    }
+    if (
+      !Array.isArray(searchResult.__briefSourceExposures) ||
+      searchResult.__briefSourceExposures.length !== 1
+    ) {
+      throw new Error("public search did not include its bounded provider-visible marker");
+    }
+    const reference = {
+      kind: "document" as const,
+      documentId: item.documentId,
+      purpose: "answer the public signal question",
+    };
+    const inspection = await inspect.execute({ reference }, coordinates);
+    if (inspection.found !== true || inspection.complete !== true) {
+      throw new Error("public inspection failed");
+    }
+    await invokeToolLoopProviderHook(input, { ...coordinates, providerRequestIndex: 1 });
+    return input.validateTerminal({ entries: [reference] });
+  }
+}
+
 describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operations", () => {
   beforeAll(async () => {
     await runDb(
@@ -1281,20 +2523,18 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
-      {} as CanonicalAgentClient,
+      new EmptyInventoryConversationAgent(),
     );
     let load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    expect(load.conversation).toEqual([]);
     const run = (iteration: number, attempt: number) => {
       const controller = new AbortController();
       return withTaskRuntime(
         {
           runId: `ai-chat:${fixture.runId}`,
-          stepId: "resolve-conversation",
+          stepId: "plan-turn",
           attempt,
           iteration,
           signal: controller.signal,
@@ -1302,7 +2542,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           heartbeat: () => undefined,
           lastHeartbeat: null,
         },
-        () => operations.resolveConversation(load),
+        () => operations.planTurn(load),
       );
     };
 
@@ -1320,16 +2560,384 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
                  attempt::int as attempt
           from ai_observations
           where run_id = ${fixture.runId}
-            and kind = 'conversation_resolution'
+            and kind = 'turn_plan'
           order by loop_iteration, attempt
         `;
       }),
     );
     expect(observations).toEqual([
-      { emittingTask: "resolve-conversation", loopIteration: 0, attempt: 1 },
-      { emittingTask: "resolve-conversation", loopIteration: 1, attempt: 2 },
+      { emittingTask: "plan-turn", loopIteration: 0, attempt: 1 },
+      { emittingTask: "plan-turn", loopIteration: 1, attempt: 2 },
     ]);
   });
+
+  it("keeps plan and retrieval input stable when delayed retries cross a UTC date boundary", async () => {
+    const fixture = await runDb(createFixture);
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update ai_runs
+          set created_at = '2026-07-10T23:59:59.500Z'::timestamptz
+          where id = ${fixture.runId}
+        `;
+      }),
+    );
+    const config = {
+      aiMainModel: "glm-5-turbo" as const,
+      aiFastModel: "glm-5-turbo" as const,
+      aiMainInputMaxTokens: 100_000,
+      aiMainOutputMaxTokens: 4096,
+      aiFastInputMaxTokens: 100_000,
+      aiFastOutputMaxTokens: 4096,
+      aiConversationRecentTurns: 12,
+      aiFanoutMaxTopics: 3,
+      aiRetrievalMaxTurns: 4,
+      aiInternalMaxSearches: 4,
+      aiInternalMaxInspections: 4,
+      aiWebMaxSearches: 2,
+      aiWebMaxFetches: 2,
+      aiWebMaxDomainFilters: 8,
+      aiContextReductionMaxIterations: 2,
+      aiMemoryToolResultMaxItems: 20,
+      webResearchProvider: "" as const,
+    } satisfies CanonicalAiConfig;
+    const agent = new DateBoundaryInputAgent();
+    const beforeBoundary = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      config,
+      agent,
+      undefined,
+      () => new Date("2026-07-10T23:59:59.750Z"),
+    );
+    const afterBoundary = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      config,
+      agent,
+      undefined,
+      () => new Date("2026-07-11T00:00:00.250Z"),
+    );
+
+    const firstLoad = await inTask("load-turn", () => beforeBoundary.loadTurn(fixture.runId), {
+      attempt: 1,
+    });
+    const retryLoad = await inTask("load-turn", () => afterBoundary.loadTurn(fixture.runId), {
+      attempt: 2,
+    });
+    expect(firstLoad.currentDate).toBe("2026-07-10");
+    expect(retryLoad).toEqual(firstLoad);
+    expect(firstLoad).not.toHaveProperty("webPolicy");
+
+    await inTask("plan-turn", () => beforeBoundary.planTurn(firstLoad), { attempt: 1 });
+    await inTask("plan-turn", () => afterBoundary.planTurn(retryLoad), { attempt: 2 });
+    await inTask(
+      "single-retrieve-internal",
+      () =>
+        beforeBoundary.retrieveInternal(
+          firstLoad,
+          "What changed in liquidity?",
+          "single-retrieve-internal",
+          [],
+        ),
+      { attempt: 1 },
+    );
+    await inTask(
+      "single-retrieve-internal",
+      () =>
+        afterBoundary.retrieveInternal(
+          retryLoad,
+          "What changed in liquidity?",
+          "single-retrieve-internal",
+          [],
+        ),
+      { attempt: 2 },
+    );
+
+    expect(agent.planInputs).toHaveLength(2);
+    expect(agent.planInputs[1]).toBe(agent.planInputs[0]);
+    expect(agent.retrievalInputs).toHaveLength(2);
+    expect(agent.retrievalInputs[1]).toBe(agent.retrievalInputs[0]);
+    expect(JSON.parse(agent.planInputs[0]!) as { currentDate: string }).toMatchObject({
+      currentDate: "2026-07-10",
+    });
+    expect(JSON.parse(agent.retrievalInputs[0]!) as { currentDate: string }).toMatchObject({
+      currentDate: "2026-07-10",
+    });
+  }, 120_000);
+
+  it("locks the persisted run date through the idempotent start event transaction", async () => {
+    const fixture = await runDb(createFixture);
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update ai_runs
+          set created_at = '2026-07-10T23:59:59.500Z'::timestamptz
+          where id = ${fixture.runId}
+        `;
+      }),
+    );
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "",
+      },
+      new EmptyInventoryConversationAgent(),
+    );
+    const blockerReady = Promise.withResolvers<void>();
+    const releaseBlocker = Promise.withResolvers<void>();
+    const blocker = runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              update ai_runs
+              set created_at = '2026-07-11T00:00:00.250Z'::timestamptz
+              where id = ${fixture.runId}
+            `;
+            blockerReady.resolve();
+            yield* Effect.promise(() => releaseBlocker.promise);
+          }),
+        );
+      }),
+    );
+    void blocker.catch((error: unknown) => blockerReady.reject(error));
+    await blockerReady.promise;
+    const loadPromise = inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    try {
+      await waitForRuntimeDatabaseLock();
+    } finally {
+      releaseBlocker.resolve();
+      await blocker;
+    }
+    const load = await loadPromise;
+    expect(load.currentDate).toBe("2026-07-11");
+    const persisted = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return (yield* sql<{
+          readonly currentDate: string;
+          readonly startedAt: Date | null;
+          readonly startEventCount: number;
+        }>`
+          select ((runs.created_at at time zone 'UTC')::date)::text as "currentDate",
+                 runs.started_at as "startedAt",
+                 (
+                   select count(*)::int
+                   from ai_run_events events
+                   where events.run_id = runs.id
+                     and events.emission_key = 'run_started'
+                 ) as "startEventCount"
+          from ai_runs runs
+          where runs.id = ${fixture.runId}
+        `)[0]!;
+      }),
+    );
+    expect(persisted).toMatchObject({
+      currentDate: "2026-07-11",
+      startedAt: expect.any(Date),
+      startEventCount: 1,
+    });
+  }, 120_000);
+
+  it("binds repeated publisher preview fragments to one immutable reconstruction tuple", async () => {
+    const canonicalText =
+      "😀 Liquidity conditions improved. " +
+      "filler ".repeat(40) +
+      "Liquidity expectations remained anchored.";
+    const fixture = await runDb(createFixtureWithCanonicalText(canonicalText));
+    const agent = new PublisherRetrievalAgent();
+    agent.sourceId = `publisher:${fixture.subscriptionId}`;
+    agent.expectedSearchSnippet = "Liquidity\n…\nLiquidity";
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "",
+      },
+      agent,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    await expect(
+      inTask("publisher-repeated-preview", () =>
+        operations.retrieveInternal(
+          load,
+          "What changed in liquidity?",
+          "publisher-repeated-preview",
+          [],
+        ),
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        kind: "document",
+        documentId: fixture.documentId,
+        versionId: fixture.versionId,
+      }),
+    ]);
+
+    const persisted = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{
+          readonly versionId: string;
+          readonly contentHash: string;
+          readonly sourceId: string;
+          readonly documentId: string;
+          readonly publisherExtractionId: string;
+          readonly ranges: unknown;
+        }>`
+          select version_id as "versionId",
+                 content_hash as "contentHash",
+                 document_source_id as "sourceId",
+                 document_id as "documentId",
+                 publisher_extraction_id::text as "publisherExtractionId",
+                 document_ranges as ranges
+            from ai_source_exposures
+           where run_id = ${fixture.runId}
+             and task_id = 'publisher-repeated-preview'
+             and exposure_stage = 'internal_search_preview'
+        `;
+      }),
+    );
+    const firstStart = canonicalText.indexOf("Liquidity");
+    const secondStart = canonicalText.lastIndexOf("Liquidity");
+    expect(firstStart).toBe(3);
+    expect(persisted).toEqual([
+      {
+        versionId: fixture.versionId,
+        contentHash: fixture.contentHash,
+        sourceId: `publisher:${fixture.subscriptionId}`,
+        documentId: fixture.documentId,
+        publisherExtractionId: fixture.extractionId,
+        ranges: [
+          { charStart: firstStart, charEnd: firstStart + "Liquidity".length },
+          { charStart: secondStart, charEnd: secondStart + "Liquidity".length },
+        ],
+      },
+    ]);
+  }, 120_000);
+
+  it("binds repeated public preview fragments without a publisher extraction", async () => {
+    const canonicalText =
+      "Beacon conditions improved. " +
+      "filler ".repeat(40) +
+      "Beacon expectations remained anchored.";
+    const fixture = await runDb(createPublicPreviewFixture(canonicalText));
+    const agent = new PublicRetrievalAgent("Beacon\n…\nBeacon");
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "",
+      },
+      agent,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    await expect(
+      inTask("public-repeated-preview", () =>
+        operations.retrieveInternal(
+          load,
+          "What changed in the public signal?",
+          "public-repeated-preview",
+          [],
+        ),
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        kind: "document",
+        documentId: fixture.publicDocumentId,
+        versionId: fixture.publicDocumentId,
+        source: { kind: "public", sourceId: `public:${fixture.publicSourceId}` },
+      }),
+    ]);
+
+    const persisted = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{
+          readonly versionId: string;
+          readonly contentHash: string;
+          readonly sourceId: string;
+          readonly documentId: string;
+          readonly publisherExtractionId: string | null;
+          readonly ranges: unknown;
+        }>`
+          select version_id as "versionId",
+                 content_hash as "contentHash",
+                 document_source_id as "sourceId",
+                 document_id as "documentId",
+                 publisher_extraction_id::text as "publisherExtractionId",
+                 document_ranges as ranges
+            from ai_source_exposures
+           where run_id = ${fixture.runId}
+             and task_id = 'public-repeated-preview'
+             and exposure_stage = 'internal_search_preview'
+        `;
+      }),
+    );
+    const firstStart = canonicalText.indexOf("Beacon");
+    const secondStart = canonicalText.lastIndexOf("Beacon");
+    expect(persisted).toEqual([
+      {
+        versionId: fixture.publicDocumentId,
+        contentHash: fixture.publicContentHash,
+        sourceId: `public:${fixture.publicSourceId}`,
+        documentId: fixture.publicDocumentId,
+        publisherExtractionId: null,
+        ranges: [
+          { charStart: firstStart, charEnd: firstStart + "Beacon".length },
+          { charStart: secondStart, charEnd: secondStart + "Beacon".length },
+        ],
+      },
+    ]);
+  }, 120_000);
 
   it("denies malformed resumed source identities at live and frozen reauthorization boundaries", async () => {
     const fixture = await runDb(createFixture);
@@ -1353,50 +2961,46 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
       agent,
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    const catalogIndex = load.sourceCatalog.findIndex(
-      (source) => source.sourceId === `publisher:${fixture.subscriptionId}`,
-    );
-    expect(catalogIndex).toBeGreaterThanOrEqual(0);
-
     const malformedSourceIds = [
       `publisherx:${fixture.subscriptionId}`,
       `publisher:${fixture.subscriptionId}:extra`,
     ];
     for (const [index, sourceId] of malformedSourceIds.entries()) {
-      const resumedLoad: LoadedTurn = {
-        ...load,
-        sourceCatalog: load.sourceCatalog.map((source, sourceIndex) =>
-          sourceIndex === catalogIndex ? { ...source, sourceId } : source,
-        ),
-      };
+      agent.sourceName = sourceId;
       await expect(
         inTask(`malformed-live-reauthorization-${index}`, () =>
           operations.retrieveInternal(
-            resumedLoad,
+            load,
             "What changed in liquidity?",
             `malformed-live-reauthorization-${index}`,
             [],
           ),
         ),
-      ).rejects.toMatchObject({ code: "source_access_revoked" });
+      ).resolves.toEqual([
+        expect.objectContaining({
+          kind: "document",
+          documentId: fixture.documentId,
+          versionId: fixture.versionId,
+        }),
+      ]);
     }
 
     const sourceFor = (sourceId: string): FinalSourceRecord => ({
-      sourceKey: "k_AAAAAAAAAAAAAAAAAAAAAA_1",
+      sourceKey: "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1",
       locator: {
         kind: "document",
-        sourceId,
+        sourceId: `publisher:${sourceId}` as `publisher:${string}`,
         documentId: fixture.documentId,
-        documentVersionId: fixture.documentVersionId,
+        versionId: fixture.versionId,
         contentHash: fixture.contentHash,
         ranges: [{ charStart: 0, charEnd: 20 }],
+        publisherExtractionId: fixture.extractionId,
         publisherIssueId: fixture.issueId,
         publisherDocumentId: fixture.documentId,
       },
@@ -1481,16 +3085,12 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
       agent,
     );
-    const disabledLoad = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    expect(disabledLoad.sourceCatalog.map((source) => source.sourceId)).not.toContain(
-      `public:${publicSourceId}`,
-    );
+    await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -1502,9 +3102,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       }),
     );
     let load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    expect(load.sourceCatalog.map((source) => source.sourceId)).toContain(
-      `public:${publicSourceId}`,
-    );
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -1524,10 +3121,8 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           [],
         ),
       ),
-    ).rejects.toMatchObject({ code: "source_access_revoked", retryable: true });
-    expect(load.sourceCatalog.map((source) => source.sourceId)).toContain(agent.sourceId);
+    ).resolves.toEqual([]);
     load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    expect(load.sourceCatalog.map((source) => source.sourceId)).not.toContain(agent.sourceId);
     agent.sourceId = `publisher:${fixture.subscriptionId}`;
     const references = await inTask("single-retrieve-internal", () =>
       operations.retrieveInternal(
@@ -1540,7 +3135,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(references).toEqual([
       expect.objectContaining({
         documentId: fixture.documentId,
-        documentVersionId: fixture.documentVersionId,
+        versionId: fixture.versionId,
       }),
     ]);
     const context = await assembleAndMeasureContext(
@@ -1600,35 +3195,23 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       }),
     );
     expect(currentQuestionPulls).toBe(0);
-    const replacementVersionId = crypto.randomUUID();
-    await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const replacementText = "A later immutable extraction version moved the current pointer.";
-        yield* sql`
-          insert into brief_document_versions (
-            id, brief_document_id, content_hash, language, canonical_text,
-            text_char_count, page_ranges
-          ) values (
-            ${replacementVersionId}, ${fixture.documentId}, encode(digest(convert_to(${replacementText}, 'UTF8'), 'sha256'), 'hex'), 'english',
-            ${replacementText}, ${replacementText.length},
-            ${JSON.stringify([
-              { pageNumber: 1, charStart: 0, charEnd: replacementText.length },
-            ])}::jsonb
-          )
-        `;
-        yield* sql`
-          update brief_documents set current_version_id = ${replacementVersionId}
-          where id = ${fixture.documentId}
-        `;
-      }),
-    );
+    await expect(
+      runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update brief_documents set current_version_id = ${crypto.randomUUID()}
+            where id = ${fixture.documentId}
+          `;
+        }),
+      ),
+    ).rejects.toThrow(/failed to execute statement|immutable|ready publisher content/i);
     const frozenAfterPointerChange = await inTask("single-context-select", () =>
       operations.freezeContext(load, context),
     );
     expect(frozenAfterPointerChange.status).toBe("ready");
     expect(frozenAfterPointerChange.sourceMap[0]?.locator).toMatchObject({
-      documentVersionId: fixture.documentVersionId,
+      versionId: fixture.versionId,
     });
     const exposures = await runDb(
       Effect.gen(function* () {
@@ -1674,17 +3257,48 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         `;
       }),
     );
-    await inTask("resolve-conversation", () => operations.resolveConversation(load));
+    const finalRetrievalFixtures = await Promise.all(
+      (
+        [
+          ["single-retrieve-internal", "internal", 1],
+          ["single-select-memories", "memory", 0],
+          ["single-retrieve-web", "web", 0],
+        ] as const
+      ).map(async ([task, selectorRole, attempt]) => ({
+        task,
+        selectorRole,
+        attempt,
+        noCallReason: await durableNoCallReasonForFixtureTask(fixture, task),
+      })),
+    );
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
+        yield* sql`
+          delete from ai_observations
+          where run_id = ${fixture.runId} and kind = 'retrieval_manifest'
+        `;
         for (const [kind, payload] of [
-          ["execution_plan", { mode: "single", reason: "fixture" }],
+          [
+            "turn_plan",
+            { mode: "single", question: "What changed in liquidity?", relevantTurnIds: [] },
+          ],
           [
             "context_serialized",
             {
               consumerTaskId: "single-answer",
               sourceKeys: context.sourceMap.map((s) => s.sourceKey),
+              restrictedContextLedger: restrictedLedgerForContext(
+                context,
+                "single-answer",
+                "direct",
+              ),
+              terminalUsageCoordinate: {
+                taskId: "single-answer",
+                loopIteration: 0,
+                attempt: 0,
+                providerRequestIndex: 0,
+              },
             },
           ],
         ] as const) {
@@ -1693,8 +3307,31 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
               run_id, chat_id, emitting_task, loop_iteration, attempt,
               observation_key, kind, payload
             )
-            select ${fixture.runId}, chat_id, 'fixture', 0, 0,
-                   ${`fixture:${kind}`}, ${kind}, ${sql.json(payload)}
+            select ${fixture.runId}, chat_id,
+                   case ${kind}
+                     when 'turn_plan' then 'plan-turn'
+                     when 'retrieval_manifest' then 'single-select-memories'
+                     else 'single-answer'
+                   end,
+                   0, 0,
+                   ${`fixture:${kind}`},
+                   ${kind}, ${sql.json(payload)}
+            from ai_runs where id = ${fixture.runId}
+          `;
+        }
+        for (const { task, selectorRole, attempt, noCallReason } of finalRetrievalFixtures) {
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            )
+            select ${fixture.runId}, chat_id, ${task}, 0, ${attempt},
+                   ${`${task}:0:${attempt}:retrieval_manifest:result`}, 'retrieval_manifest',
+                   ${sql.json({
+                     selectorRole,
+                     references: [],
+                     ...(noCallReason === undefined ? {} : { noCallReason }),
+                   })}
             from ai_runs where id = ${fixture.runId}
           `;
         }
@@ -1704,6 +3341,25 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       proposals: [],
       discardedCount: 0,
     });
+    await runDb(seedPlanMeasurement(fixture));
+    await runDb(seedExposureMeasurements(fixture));
+    await runDb(seedTaskMeasurement(fixture, "single-retrieve-internal"));
+    const answerEvidence = await seedAnswerSerializedExposures(
+      fixture,
+      "single-answer",
+      context,
+      "single-answer",
+    );
+    await runDb(
+      seedTaskMeasurement(
+        fixture,
+        "single-answer",
+        0,
+        context,
+        answerEvidence.proofs,
+        answerEvidence.bindings,
+      ),
+    );
     const result = await inTask("finalize", () =>
       operations.finalize(
         load,
@@ -1723,11 +3379,11 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return yield* sql<{
-          readonly documentVersionId: string;
-          readonly publisherDocumentVersionId: string;
+          readonly versionId: string;
+          readonly publisherExtractionId: string;
         }>`
-          select document_version_id as "documentVersionId",
-                 publisher_document_version_id::text as "publisherDocumentVersionId"
+          select version_id as "versionId",
+                 publisher_extraction_id::text as "publisherExtractionId"
           from assistant_message_sources
           where assistant_message_id = ${result.assistantMessageId}
         `;
@@ -1735,39 +3391,28 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     expect(persisted).toEqual([
       {
-        documentVersionId: fixture.documentVersionId,
-        publisherDocumentVersionId: fixture.documentVersionId,
+        versionId: fixture.versionId,
+        publisherExtractionId: expect.any(String),
       },
     ]);
   }, 120_000);
 
-  it("fails the selector attempt when a publisher current pointer changes between searches", async () => {
+  it("keeps the publisher current pointer immutable between searches", async () => {
     const fixture = await runDb(createFixture);
-    const replacementVersionId = crypto.randomUUID();
     const agent = new PublisherRetrievalAgent();
     agent.sourceId = `publisher:${fixture.subscriptionId}`;
     agent.onAfterFirstSearch = async () => {
-      await runDb(
-        Effect.gen(function* () {
-          const sql = yield* PgClient.PgClient;
-          const replacementText =
-            "A concurrent immutable extraction version changed the current publisher pointer.";
-          yield* sql`
-            insert into brief_document_versions (
-              id, brief_document_id, content_hash, language, canonical_text,
-              text_char_count, page_ranges
-            ) values (
-              ${replacementVersionId}, ${fixture.documentId}, encode(digest(convert_to(${replacementText}, 'UTF8'), 'sha256'), 'hex'), 'english',
-              ${replacementText}, ${replacementText.length},
-              ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: replacementText.length }])}::jsonb
-            )
-          `;
-          yield* sql`
-            update brief_documents set current_version_id = ${replacementVersionId}
-            where id = ${fixture.documentId}
-          `;
-        }),
-      );
+      await expect(
+        runDb(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update brief_documents set current_version_id = ${crypto.randomUUID()}
+              where id = ${fixture.documentId}
+            `;
+          }),
+        ),
+      ).rejects.toThrow(/failed to execute statement|immutable|ready publisher content/i);
     };
     const config: CanonicalAiConfig = {
       aiMainModel: "glm-5-turbo",
@@ -1785,22 +3430,21 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
       aiContextReductionMaxIterations: 2,
-      aiMemoryDirectMaxItems: 50,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "",
     };
     const operations = new CanonicalWorkflowOperations(databaseUrlFor(databaseName), config, agent);
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     await expect(
-      inTask("pointer-drift-retrieve", () =>
+      inTask("pointer-stable-retrieve", () =>
         operations.retrieveInternal(
           load,
           "What changed in liquidity?",
-          "pointer-drift-retrieve",
+          "pointer-stable-retrieve",
           [],
         ),
       ),
-    ).rejects.toThrow("changed immutable version");
+    ).resolves.toEqual(expect.any(Array));
   }, 120_000);
 
   it("stops frozen-context and finalization access as soon as a company enters recovery deletion", async () => {
@@ -1825,18 +3469,17 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
       agent,
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    const references = await inTask("deleted-company-retrieve", () =>
+    const references = await inTask("single-retrieve-internal", () =>
       operations.retrieveInternal(
         load,
         "What changed in liquidity?",
-        "deleted-company-retrieve",
+        "single-retrieve-internal",
         [],
       ),
     );
@@ -1851,7 +3494,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         web: [],
         webSelection: "enabled",
       },
-      "deleted-company-answer",
+      "single-answer",
       undefined,
       [],
     );
@@ -1864,7 +3507,23 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     ).resolves.toMatchObject({
       status: "ready",
     });
-    await inTask("resolve-conversation", () => operations.resolveConversation(load));
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into ai_observations (
+            run_id, chat_id, emitting_task, loop_iteration, attempt,
+            observation_key, kind, payload
+          )
+          select ${fixture.runId}, chat_id, 'plan-turn', 0, 0,
+                 'fixture:deleted-company:turn-plan', 'turn_plan',
+                 ${sql.json({ mode: "clarify", question: "Could you clarify?" })}
+          from ai_runs where id = ${fixture.runId}
+        `;
+      }),
+    );
+    await runDb(seedPlanMeasurement(fixture));
+    await runDb(seedExposureMeasurements(fixture));
 
     await runDb(
       Effect.gen(function* () {
@@ -1874,6 +3533,10 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           set recovery_deleted_at = now(), purge_after = now() + interval '180 days'
           where id = ${fixture.companyId}
         `;
+        yield* sql`
+          delete from ai_observations
+          where run_id = ${fixture.runId} and kind = 'retrieval_manifest'
+        `;
       }),
     );
 
@@ -1881,7 +3544,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       inTask("single-context-select", () => operations.freezeContext(load, context)),
     ).resolves.toMatchObject({
       status: "failed",
-      failureCode: "source_access_revoked",
+      failureCode: "context_assembly_failed",
     });
     await expect(
       inTask("finalize", () =>
@@ -1899,7 +3562,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       ),
     ).resolves.toMatchObject({
       status: "failed",
-      code: "source_access_revoked",
+      code: "context_assembly_failed",
       retryable: true,
     });
     const persisted = await runDb(
@@ -1921,7 +3584,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     expect(persisted).toEqual({
       assistantMessages: 0,
-      errorCode: "source_access_revoked",
+      errorCode: "context_assembly_failed",
     });
   }, 120_000);
 
@@ -1986,7 +3649,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
       aiContextReductionMaxIterations: 2,
-      aiMemoryDirectMaxItems: 50,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "" as const,
     };
@@ -2103,7 +3765,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -2197,7 +3858,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -2224,7 +3884,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       JSON.stringify({
         complete: true,
         protocolError: "inspect_internal is disabled after the complete retrieval phase",
-        recoveryReferences: [{ ...reference, purpose: "authorized search preview" }],
+        recoveryReferences: [reference],
       }),
     );
   });
@@ -2245,9 +3905,15 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
               )
             : providerTurn === 1
               ? providerToolCompletion(
-                  "emit_internal_manifest",
-                  { entries: [] },
-                  "terminal-premature",
+                  "search_internal",
+                  {
+                    query: {
+                      target: "documents",
+                      terms: "unfindablelexeme",
+                      purpose: "confirm the corpus has no matching evidence",
+                    },
+                  },
+                  "search-corrected",
                 )
               : providerTurn === 2
                 ? providerToolCompletion(
@@ -2255,11 +3921,11 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
                     {
                       query: {
                         target: "documents",
-                        terms: "unfindablelexeme",
-                        purpose: "confirm the corpus has no matching evidence",
+                        terms: "stillunfindablelexeme",
+                        purpose: "complete the bounded empty search",
                       },
                     },
-                    "search-corrected",
+                    "search-corrected-second",
                   )
                 : providerToolCompletion(
                     "emit_internal_manifest",
@@ -2288,7 +3954,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -2308,7 +3973,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect((providerRequests[2]?.tools ?? []).map((tool) => tool.name)).toContain(
       "search_internal",
     );
-    expect(providerRequests).toHaveLength(12);
+    expect(providerRequests).toHaveLength(4);
   });
 
   it("keeps an incomplete second search available until exact cursor completion", async () => {
@@ -2352,7 +4017,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -2400,18 +4064,17 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
       new PublisherRetrievalAgent(),
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    await inTask("resolve-conversation", () => operations.resolveConversation(load));
     const reference = (charStart: number, charEnd: number, purpose: string): InternalReference => ({
       kind: "document",
       documentId: fixture.documentId,
-      documentVersionId: fixture.documentVersionId,
+      versionId: fixture.versionId,
+      publisherExtractionId: fixture.extractionId,
       source: {
         kind: "publisher",
         sourceId: `publisher:${fixture.subscriptionId}`,
@@ -2497,28 +4160,224 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         ],
       }),
     ]);
+    const topicNoCallReasons = new Map(
+      await Promise.all(
+        topics.flatMap((topic) =>
+          (["select-memories", "retrieve-web"] as const).map(async (suffix) => {
+            const taskId = `topic-${topic.topicId}-${suffix}`;
+            return [
+              taskId,
+              await durableNoCallReasonForFixtureTask(fixture, taskId, topic.question),
+            ] as const;
+          }),
+        ),
+      ),
+    );
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         for (const [index, observation] of [
-          { kind: "execution_plan", task: "plan-execution", payload: { mode: "fanout" } },
+          {
+            kind: "turn_plan",
+            task: "plan-turn",
+            payload: {
+              mode: "fanout",
+              question: "What changed in liquidity?",
+              topics: topics.map((topic) => ({ ...topic })),
+            },
+          },
           {
             kind: "retrieval_manifest",
             task: "topic-t1-retrieve-internal",
             payload: { selectorRole: "internal", references: [reference(0, 20, "first")] },
           },
           {
+            kind: "retrieval_manifest",
+            task: "topic-t1-select-memories",
+            payload: {
+              selectorRole: "memory",
+              references: [],
+              noCallReason: topicNoCallReasons.get("topic-t1-select-memories"),
+            },
+          },
+          {
+            kind: "retrieval_manifest",
+            task: "topic-t1-retrieve-web",
+            payload: {
+              selectorRole: "web",
+              references: [],
+              noCallReason: topicNoCallReasons.get("topic-t1-retrieve-web"),
+            },
+          },
+          {
+            kind: "retrieval_manifest",
+            task: "topic-t2-retrieve-internal",
+            payload: { selectorRole: "internal", references: [reference(31, 63, "second")] },
+          },
+          {
+            kind: "retrieval_manifest",
+            task: "topic-t2-select-memories",
+            payload: {
+              selectorRole: "memory",
+              references: [],
+              noCallReason: topicNoCallReasons.get("topic-t2-select-memories"),
+            },
+          },
+          {
+            kind: "retrieval_manifest",
+            task: "topic-t2-retrieve-web",
+            payload: {
+              selectorRole: "web",
+              references: [],
+              noCallReason: topicNoCallReasons.get("topic-t2-retrieve-web"),
+            },
+          },
+          {
+            kind: "context_measurement",
+            task: "fanout-synthesis-measure",
+            payload: {
+              consumerTaskId: "fanout-synthesis",
+              mandatoryInputTokens: 1,
+              discretionaryInputTokens: 0,
+              totalInputTokens: 1,
+              requestedOutputTokens: 4096,
+              usableInputTokens: 100_000,
+              contextWindow: 1_000_000,
+              status: "ready",
+              reductionRan: false,
+              reductionFeedback: [],
+              restrictedContextLedger: {
+                requestKind: "synthesis",
+                modelId: "glm-5-turbo",
+                requestSha256Hex: "c".repeat(64),
+                inputTokens: 1,
+                usableInputTokens: 100_000,
+                requestedOutputTokens: 4096,
+                selectedConversation: [],
+                packets: [
+                  {
+                    topicId: "t1",
+                    status: "answered",
+                    claimCount: 0,
+                    gapCount: 0,
+                    packetSha256Hex: "0".repeat(64),
+                  },
+                  {
+                    topicId: "t2",
+                    status: "answered",
+                    claimCount: 0,
+                    gapCount: 0,
+                    packetSha256Hex: "1".repeat(64),
+                  },
+                ],
+              },
+            },
+          },
+          {
             kind: "context_serialized",
             task: "topic-t1-answer",
-            payload: { sourceKeys: sourceMap.map((source) => source.sourceKey) },
+            payload: {
+              consumerTaskId: "topic-t1-answer",
+              topicId: "t1",
+              sourceKeys: sourceMap.map((source) => source.sourceKey),
+              restrictedContextLedger: restrictedLedgerForContext(
+                topicOne,
+                "topic-t1-answer",
+                "topic",
+                "t1",
+              ),
+              terminalUsageCoordinate: {
+                taskId: "topic-t1-answer",
+                loopIteration: 0,
+                attempt: 0,
+                providerRequestIndex: 0,
+              },
+            },
           },
           {
             kind: "context_serialized",
             task: "topic-t2-answer",
-            payload: { sourceKeys: sourceMap.map((source) => source.sourceKey) },
+            payload: {
+              consumerTaskId: "topic-t2-answer",
+              topicId: "t2",
+              sourceKeys: sourceMap.map((source) => source.sourceKey),
+              restrictedContextLedger: restrictedLedgerForContext(
+                topicTwo,
+                "topic-t2-answer",
+                "topic",
+                "t2",
+              ),
+              terminalUsageCoordinate: {
+                taskId: "topic-t2-answer",
+                loopIteration: 0,
+                attempt: 0,
+                providerRequestIndex: 0,
+              },
+            },
           },
-          { kind: "topic_packet", task: "topic-t1-answer", payload: { topicId: "t1" } },
-          { kind: "topic_packet", task: "topic-t2-answer", payload: { topicId: "t2" } },
+          {
+            kind: "context_serialized",
+            task: "fanout-synthesis",
+            payload: {
+              consumerTaskId: "fanout-synthesis",
+              sourceKeys: [],
+              restrictedContextLedger: {
+                requestKind: "synthesis",
+                modelId: "glm-5-turbo",
+                requestSha256Hex: "c".repeat(64),
+                inputTokens: 1,
+                usableInputTokens: 100_000,
+                requestedOutputTokens: 4096,
+                selectedConversation: [],
+                packets: [
+                  {
+                    topicId: "t1",
+                    status: "answered",
+                    claimCount: 0,
+                    gapCount: 0,
+                    packetSha256Hex: "0".repeat(64),
+                  },
+                  {
+                    topicId: "t2",
+                    status: "answered",
+                    claimCount: 0,
+                    gapCount: 0,
+                    packetSha256Hex: "1".repeat(64),
+                  },
+                ],
+              },
+              terminalUsageCoordinate: {
+                taskId: "fanout-synthesis",
+                loopIteration: 0,
+                attempt: 0,
+                providerRequestIndex: 0,
+              },
+            },
+          },
+          {
+            kind: "topic_packet",
+            task: "topic-t1-answer",
+            payload: {
+              topicId: "t1",
+              status: "answered",
+              sourceKeys: [],
+              claimCount: 0,
+              gapCount: 0,
+              packetSha256Hex: "0".repeat(64),
+            },
+          },
+          {
+            kind: "topic_packet",
+            task: "topic-t2-answer",
+            payload: {
+              topicId: "t2",
+              status: "answered",
+              sourceKeys: [],
+              claimCount: 0,
+              gapCount: 0,
+              packetSha256Hex: "1".repeat(64),
+            },
+          },
         ].entries()) {
           yield* sql`
             insert into ai_observations (
@@ -2526,7 +4385,12 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
               observation_key, kind, payload
             ) values (
               ${fixture.runId}, (select chat_id from ai_runs where id = ${fixture.runId}),
-              ${observation.task}, 0, 0, ${`fanout-fixture:${index}`},
+              ${observation.task}, 0, 0,
+              ${
+                observation.kind === "retrieval_manifest"
+                  ? `${observation.task}:0:0:retrieval_manifest:result`
+                  : `fanout-fixture:${index}`
+              },
               ${observation.kind}, ${sql.json(observation.payload)}
             )
           `;
@@ -2539,6 +4403,44 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       proposals: [],
       discardedCount: 0,
     });
+    await runDb(seedPlanMeasurement(fixture));
+    await runDb(seedExposureMeasurements(fixture));
+    for (const taskId of ["topic-t1-retrieve-internal", "topic-t2-retrieve-internal"]) {
+      await runDb(seedTaskMeasurement(fixture, taskId));
+    }
+    const topicOneEvidence = await seedAnswerSerializedExposures(
+      fixture,
+      "topic-t1-answer",
+      topicOne,
+      "topic-t1-answer",
+    );
+    const topicTwoEvidence = await seedAnswerSerializedExposures(
+      fixture,
+      "topic-t2-answer",
+      topicTwo,
+      "topic-t2-answer",
+    );
+    await runDb(
+      seedTaskMeasurement(
+        fixture,
+        "topic-t1-answer",
+        0,
+        topicOne,
+        topicOneEvidence.proofs,
+        topicOneEvidence.bindings,
+      ),
+    );
+    await runDb(
+      seedTaskMeasurement(
+        fixture,
+        "topic-t2-answer",
+        0,
+        topicTwo,
+        topicTwoEvidence.proofs,
+        topicTwoEvidence.bindings,
+      ),
+    );
+    await runDb(seedTaskMeasurement(fixture, "fanout-synthesis"));
     const result = await inTask("finalize", () =>
       operations.finalize(
         load,
@@ -2653,20 +4555,61 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
       new PublisherRetrievalAgent(),
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    expect(load.memories).toContainEqual({
-      memoryId,
-      memoryRevisionId: renderedRevisionId,
-      kind: renderedState.kind,
-      content: renderedState.content,
-    });
-    await inTask("resolve-conversation", () => operations.resolveConversation(load));
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{ readonly chatId: string }>`
+          select chat_id::text as "chatId" from ai_runs where id = ${fixture.runId}
+        `;
+        const chatId = rows[0]?.chatId;
+        if (chatId === undefined) return yield* Effect.fail(new Error("chat not found"));
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId,
+          emittingTask: "plan-turn",
+          loopIteration: 0,
+          attempt: 0,
+          observationKey: "fixture:plan-turn:measurement",
+          kind: "provider_request_measurement",
+          payload: {
+            providerRequestIndex: 0,
+            agentRole: "plan_turn",
+            modelId: "glm-5-turbo",
+            requestSha256Hex: "a".repeat(64),
+            sourceExposureProofSha256Hexes: [],
+            inputTokens: 1,
+            requestedOutputTokens: 2048,
+            usableInputTokens: 100_000,
+            contextWindow: 1_000_000,
+            passed: true,
+          },
+        });
+        yield* insertAiRunUsage({
+          runId: fixture.runId,
+          taskId: "plan-turn",
+          loopIteration: 0,
+          attempt: 0,
+          providerRequestIndex: 0,
+          agentRole: "plan_turn",
+          modelId: "glm-5-turbo",
+          providerServiceId: "zai_coding_plan_official",
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 2,
+            stopReason: "stop",
+          },
+        });
+      }),
+    );
     const context = await assembleAndMeasureContext(
       operations,
       load,
@@ -2691,11 +4634,101 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         },
       }),
     ]);
+    const restrictedContextLedger = {
+      requestKind: "direct",
+      modelId: context.request.model,
+      requestSha256Hex: providerRequestSha256Hex(context.request),
+      inputTokens: context.inputTokens,
+      usableInputTokens: context.usableInputTokens,
+      requestedOutputTokens: context.request.requestedOutputTokens,
+      selectedConversation: [],
+      question: context.question,
+      gaps: context.gaps,
+      sources: context.candidates.map((candidate, index) => ({
+        candidateId: candidate.id,
+        sourceKey: context.sourceMap[index]!.sourceKey,
+        kind: candidate.kind,
+        purpose: candidate.purpose,
+        label: context.sourceMap[index]!.label,
+        ranges: [],
+      })),
+    };
+    const answerEvidence = await seedAnswerSerializedExposures(
+      fixture,
+      "single-answer",
+      context,
+      "single-answer",
+    );
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{ readonly chatId: string }>`
+          select chat_id::text as "chatId" from ai_runs where id = ${fixture.runId}
+        `;
+        const chatId = rows[0]?.chatId;
+        if (chatId === undefined) return yield* Effect.fail(new Error("chat not found"));
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId,
+          emittingTask: "single-answer",
+          loopIteration: 0,
+          attempt: 0,
+          observationKey: "fixture:single-answer:measurement",
+          kind: "provider_request_measurement",
+          payload: {
+            providerRequestIndex: 0,
+            agentRole: "direct_answer",
+            modelId: context.request.model,
+            requestSha256Hex: restrictedContextLedger.requestSha256Hex,
+            sourceExposureProofSha256Hexes: answerEvidence.proofs,
+            sourceExposureProofBindings: answerEvidence.bindings,
+            inputTokens: context.inputTokens,
+            requestedOutputTokens: context.request.requestedOutputTokens,
+            usableInputTokens: context.usableInputTokens,
+            contextWindow: resolveRegisteredModel(context.request.model).contextWindow,
+            passed: true,
+          },
+        });
+        yield* insertAiRunUsage({
+          runId: fixture.runId,
+          taskId: "single-answer",
+          loopIteration: 0,
+          attempt: 0,
+          providerRequestIndex: 0,
+          agentRole: "direct_answer",
+          modelId: context.request.model,
+          providerServiceId: "zai_coding_plan_official",
+          usage: {
+            inputTokens: context.inputTokens,
+            outputTokens: 1,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: context.inputTokens + 1,
+            stopReason: "stop",
+          },
+        });
+      }),
+    );
+    const finalRetrievalFixtures = await Promise.all(
+      (
+        [
+          ["single-retrieve-internal", "internal"],
+          ["single-retrieve-web", "web"],
+        ] as const
+      ).map(async ([task, selectorRole]) => ({
+        task,
+        selectorRole,
+        noCallReason: await durableNoCallReasonForFixtureTask(fixture, task),
+      })),
+    );
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         for (const [kind, payload] of [
-          ["execution_plan", { mode: "single", reason: "fixture" }],
+          [
+            "turn_plan",
+            { mode: "single", question: "What should I compare?", relevantTurnIds: [] },
+          ],
           [
             "retrieval_manifest",
             {
@@ -2704,10 +4737,24 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             },
           ],
           [
+            "context_measurement",
+            {
+              consumerTaskId: "single-answer",
+              restrictedContextLedger,
+            },
+          ],
+          [
             "context_serialized",
             {
               consumerTaskId: "single-answer",
               sourceKeys: context.sourceMap.map((s) => s.sourceKey),
+              restrictedContextLedger,
+              terminalUsageCoordinate: {
+                taskId: "single-answer",
+                loopIteration: 0,
+                attempt: 0,
+                providerRequestIndex: 0,
+              },
             },
           ],
         ] as const) {
@@ -2716,13 +4763,43 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
               run_id, chat_id, emitting_task, loop_iteration, attempt,
               observation_key, kind, payload
             )
-            select ${fixture.runId}, chat_id, 'fixture', 0, 0,
-                   ${`fixture:${kind}`}, ${kind}, ${sql.json(payload)}
+            select ${fixture.runId}, chat_id,
+                   case ${kind}
+                     when 'turn_plan' then 'plan-turn'
+                     when 'retrieval_manifest' then 'single-select-memories'
+                     else 'single-answer'
+                   end,
+                   0, 0,
+                   ${
+                     kind === "retrieval_manifest"
+                       ? "single-select-memories:0:0:retrieval_manifest:result"
+                       : `fixture:${kind}`
+                   },
+                   ${kind}, ${sql.json(payload)}
+            from ai_runs where id = ${fixture.runId}
+          `;
+        }
+        for (const { task, selectorRole, noCallReason } of finalRetrievalFixtures) {
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            )
+            select ${fixture.runId}, chat_id, ${task}, 0, 0,
+                   ${`${task}:0:0:retrieval_manifest:result`}, 'retrieval_manifest',
+                   ${sql.json({
+                     selectorRole,
+                     references: [],
+                     ...(noCallReason === undefined ? {} : { noCallReason }),
+                   })}
             from ai_runs where id = ${fixture.runId}
           `;
         }
       }),
     );
+    for (const taskId of ["single-retrieve-internal", "single-select-memories"]) {
+      await runDb(seedTaskMeasurement(fixture, taskId));
+    }
     const sourceKey = context.sourceMap[0]?.sourceKey;
     if (sourceKey === undefined) throw new Error("expected memory source key");
     const updatedContent = "The client prefers monthly and quarterly liquidity comparisons.";
@@ -2790,47 +4867,43 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           update client_company_ai_settings set web_search_enabled = true
           where company_id = ${fixture.companyId}
         `;
-        yield* sql`
-          update ai_runs
-          set web_search_enabled = true,
-              effective_web_policy = ${sql.json({
-                enabled: true,
-                provider: "tinyfish",
-                allowedDomains: null,
-              })}
-          where id = ${fixture.runId}
-        `;
       }),
     );
     const officialQuote = "The official report records a 4.2 percent increase.";
     const web: WebResearchBoundary = {
-      search: async () => ({
-        results: [
-          {
-            title: "Official report result",
-            url: "https://official.example/start",
-            domain: "official.example",
-            snippet: "Official report discovery snippet.",
-            providerRank: 1,
+      search: async (_query, _locale, _market, policy, authorizePolicy) => {
+        expect(await authorizePolicy()).toEqual(policy);
+        return {
+          results: [
+            {
+              title: "Official report result",
+              url: "https://official.example/start",
+              domain: "official.example",
+              snippet: "Official report discovery snippet.",
+              providerRank: 1,
+            },
+          ],
+          complete: true,
+          truncated: false,
+          cursor: null,
+          scope: {
+            kind: "provider_ranked_results",
+            maximumResults: 10,
+            cursorSupported: false,
           },
-        ],
-        complete: true,
-        truncated: false,
-        cursor: null,
-        scope: {
-          kind: "provider_ranked_results",
-          maximumResults: 10,
-          cursorSupported: false,
-        },
-      }),
-      fetch: async () => ({
-        url: "https://official.example/final-report",
-        title: "Official report title",
-        domain: "official.example",
-        text: `Published findings. ${officialQuote} Methodology follows.`,
-        publishedAt: "2026-07-09T08:00:00.000Z",
-        capturedAt: "2026-07-10T12:00:00.000Z",
-      }),
+        };
+      },
+      fetch: async (_url, policy, authorizePolicy) => {
+        expect(await authorizePolicy()).toEqual(policy);
+        return {
+          url: "https://official.example/final-report",
+          title: "Official report title",
+          domain: "official.example",
+          text: `Published findings. ${officialQuote} Methodology follows.`,
+          publishedAt: "2026-07-09T08:00:00.000Z",
+          capturedAt: "2026-07-10T12:00:00.000Z",
+        };
+      },
     };
     const workflowConfig = {
       aiMainModel: "glm-5-turbo" as const,
@@ -2848,7 +4921,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
       aiContextReductionMaxIterations: 2,
-      aiMemoryDirectMaxItems: 50,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "tinyfish" as const,
     } satisfies CanonicalAiConfig;
@@ -2877,33 +4949,37 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       ],
     });
     const fallbackWeb: WebResearchBoundary = {
-      search: async () => ({
-        results: [
-          {
-            title: "Unreadable report",
-            url: "https://official.example/report.pdf",
-            domain: "official.example",
-            snippet: "Official PDF.",
-            providerRank: 1,
+      search: async (_query, _locale, _market, policy, authorizePolicy) => {
+        expect(await authorizePolicy()).toEqual(policy);
+        return {
+          results: [
+            {
+              title: "Unreadable report",
+              url: "https://official.example/report.pdf",
+              domain: "official.example",
+              snippet: "Official PDF.",
+              providerRank: 1,
+            },
+            {
+              title: "Official report result",
+              url: "https://official.example/report.html",
+              domain: "official.example",
+              snippet: "Official HTML report.",
+              providerRank: 2,
+            },
+          ],
+          complete: true,
+          truncated: false,
+          cursor: null,
+          scope: {
+            kind: "provider_ranked_results",
+            maximumResults: 10,
+            cursorSupported: false,
           },
-          {
-            title: "Official report result",
-            url: "https://official.example/report.html",
-            domain: "official.example",
-            snippet: "Official HTML report.",
-            providerRank: 2,
-          },
-        ],
-        complete: true,
-        truncated: false,
-        cursor: null,
-        scope: {
-          kind: "provider_ranked_results",
-          maximumResults: 10,
-          cursorSupported: false,
-        },
-      }),
-      fetch: async (url) => {
+        };
+      },
+      fetch: async (url, policy, authorizePolicy) => {
+        expect(await authorizePolicy()).toEqual(policy);
         if (url.endsWith(".pdf")) {
           throw new WebBoundaryError(
             "unsupported_content_type",
@@ -3074,13 +5150,12 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         webOperations.retrieveWeb(
           {
             ...load,
-            webPolicy: { enabled: false, reason: "company_disabled", allowlistActive: false },
           },
           "What changed?",
           "disabled-web-selector",
         ),
       ),
-    ).resolves.toEqual({ status: "disabled", reason: "policy_disabled" });
+    ).resolves.toEqual(evidence);
     const currentQuestionPulls = await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -3168,6 +5243,505 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     ).resolves.toEqual({ status: "enabled", entries: [] });
   }, 120_000);
 
+  it("uses the accepted web policy after the company setting changes", async () => {
+    const fixture = await runDb(createFixture);
+    const originalPolicy = {
+      enabled: true,
+      provider: "tinyfish",
+      allowedDomains: null,
+    } as const;
+    const changedPolicy = {
+      enabled: true,
+      provider: "tinyfish",
+      allowedDomains: ["changed.example"],
+    } as const;
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_company_ai_settings
+          set web_search_enabled = true,
+              web_domain_allowlist = null
+          where company_id = ${fixture.companyId}
+        `;
+      }),
+    );
+
+    const requestReady = Promise.withResolvers<LiveProviderRequest>();
+    const releaseAuthorization = Promise.withResolvers<void>();
+    let providerTransportCalls = 0;
+    let providerTurn = 0;
+    let webBoundaryCalls = 0;
+    const agent = new CanonicalAgentClient({
+      complete: async (
+        request: LiveProviderRequest,
+        coordinates: PiBoundaryCoordinates,
+        onBeforeRequest?: BeforeProviderRequest,
+      ) => {
+        requestReady.resolve(request);
+        await releaseAuthorization.promise;
+        await onBeforeRequest?.(
+          request,
+          {
+            ...coordinates,
+            providerRequestSha256Hex: providerRequestSha256Hex(request),
+          },
+          passedMeasurement(request.model),
+        );
+        providerTransportCalls += 1;
+        return providerTurn++ === 0
+          ? providerToolCompletion("web_search", { query: "changed policy" }, "search")
+          : providerTurn === 2
+            ? providerToolCompletion(
+                "web_fetch",
+                { url: "https://accepted.example/result" },
+                "fetch",
+              )
+            : providerToolCompletion(
+                "emit_web_evidence",
+                {
+                  entries: [
+                    {
+                      url: "https://accepted.example/result",
+                      title: "Accepted result",
+                      domain: "accepted.example",
+                      quote: "Accepted snapshot result.",
+                      publishedAt: "2026-07-10T00:00:00.000Z",
+                      capturedAt: "2026-07-10T00:00:00.000Z",
+                      purpose: "accepted policy test",
+                    },
+                  ],
+                },
+                "terminal",
+              );
+      },
+    } as unknown as ExactPiBoundary);
+    const web: WebResearchBoundary = {
+      search: async (_query, _locale, _market, policy, authorizePolicy) => {
+        webBoundaryCalls += 1;
+        expect(policy).toEqual(originalPolicy);
+        expect(await authorizePolicy()).toEqual(originalPolicy);
+        return {
+          results: [
+            {
+              title: "Accepted result",
+              url: "https://accepted.example/result",
+              domain: "accepted.example",
+              snippet: "Accepted snapshot result.",
+              providerRank: 1,
+            },
+          ],
+          complete: true,
+          truncated: false,
+          cursor: null,
+          scope: {
+            kind: "provider_ranked_results",
+            maximumResults: 10,
+            cursorSupported: false,
+          },
+        };
+      },
+      fetch: async (_url, policy, authorizePolicy) => {
+        webBoundaryCalls += 1;
+        expect(policy).toEqual(originalPolicy);
+        expect(await authorizePolicy()).toEqual(originalPolicy);
+        return {
+          url: "https://accepted.example/result",
+          title: "Accepted result",
+          domain: "accepted.example",
+          text: "Accepted snapshot result.",
+          publishedAt: "2026-07-10T00:00:00.000Z",
+          capturedAt: "2026-07-10T00:00:00.000Z",
+        };
+      },
+    };
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "tinyfish",
+      },
+      agent,
+      web,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    const retrieval = inTask("changed-policy-web", () =>
+      operations.retrieveWeb(load, "What is the current update?", "changed-policy-web"),
+    );
+    const request = await requestReady.promise;
+    expect(JSON.parse(request.messages[1]!.content)).toMatchObject({ policy: originalPolicy });
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              update client_company_ai_settings
+              set web_domain_allowlist = ${changedPolicy.allowedDomains}
+              where company_id = ${fixture.companyId}
+            `;
+          }),
+        );
+      }),
+    );
+    releaseAuthorization.resolve();
+
+    await expect(retrieval).resolves.toEqual({
+      status: "enabled",
+      entries: [
+        {
+          url: "https://accepted.example/result",
+          title: "Accepted result",
+          domain: "accepted.example",
+          quote: "Accepted snapshot result.",
+          publishedAt: "2026-07-10T00:00:00.000Z",
+          capturedAt: "2026-07-10T00:00:00.000Z",
+          purpose: "accepted policy test",
+        },
+      ],
+    });
+    expect(providerTransportCalls).toBe(3);
+    expect(webBoundaryCalls).toBe(2);
+  }, 120_000);
+
+  it.each([
+    ["membership", "context_assembly_failed"],
+    ["settings", "unsupported_policy"],
+    ["accepted-policy", "unsupported_policy"],
+    ["chat", "context_assembly_failed"],
+  ] as const)(
+    "waits for a pending %s change at the web boundary and stops before transport",
+    async (change, expectedCode) => {
+      const fixture = await runDb(createFixture);
+      const backupAdminId = `web-boundary-admin-${crypto.randomUUID()}`;
+      const policy = {
+        enabled: true,
+        provider: "tinyfish",
+        allowedDomains: null,
+      } as const;
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            insert into platform_users (id, primary_email, display_name, clerk_user_id)
+            values (
+              ${backupAdminId}, ${`${backupAdminId}@example.test`}, 'Web boundary admin',
+              ${`clerk-${backupAdminId}`}
+            )
+          `;
+          yield* sql`
+            insert into client_company_memberships (company_id, user_id, role)
+            values (${fixture.companyId}, ${backupAdminId}, 'admin')
+          `;
+          yield* sql`
+            update client_company_ai_settings
+            set web_search_enabled = true,
+                web_domain_allowlist = null
+            where company_id = ${fixture.companyId}
+          `;
+        }),
+      );
+
+      const boundaryEntered = Promise.withResolvers<void>();
+      const startAuthorization = Promise.withResolvers<void>();
+      const authorizationStarted = Promise.withResolvers<void>();
+      let transportCalls = 0;
+      const web: WebResearchBoundary = {
+        search: async (_query, _locale, _market, _policy, authorizePolicy) => {
+          boundaryEntered.resolve();
+          await startAuthorization.promise;
+          authorizationStarted.resolve();
+          await authorizePolicy();
+          transportCalls += 1;
+          throw new Error("revoked web operation reached transport");
+        },
+        fetch: async () => {
+          transportCalls += 1;
+          throw new Error("revoked web operation reached fetch");
+        },
+      };
+      const operations = new CanonicalWorkflowOperations(
+        databaseUrlFor(databaseName),
+        {
+          aiMainModel: "glm-5-turbo",
+          aiFastModel: "glm-5-turbo",
+          aiMainInputMaxTokens: 100_000,
+          aiMainOutputMaxTokens: 4096,
+          aiFastInputMaxTokens: 100_000,
+          aiFastOutputMaxTokens: 4096,
+          aiConversationRecentTurns: 12,
+          aiFanoutMaxTopics: 3,
+          aiRetrievalMaxTurns: 4,
+          aiInternalMaxSearches: 4,
+          aiInternalMaxInspections: 4,
+          aiWebMaxSearches: 2,
+          aiWebMaxFetches: 2,
+          aiWebMaxDomainFilters: 8,
+          aiContextReductionMaxIterations: 2,
+          aiMemoryToolResultMaxItems: 20,
+          webResearchProvider: "tinyfish",
+        },
+        new WebManifestAgent("unused"),
+        web,
+      );
+      const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+      const retrieval = inTask(`pending-${change}-boundary`, () =>
+        operations.retrieveWeb(load, "What is the current update?", `pending-${change}-boundary`),
+      );
+      await boundaryEntered.promise;
+
+      const blockerReady = Promise.withResolvers<void>();
+      const releaseBlocker = Promise.withResolvers<void>();
+      const blocker = runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql.withTransaction(
+            Effect.gen(function* () {
+              if (change === "membership") {
+                yield* sql`
+                  update client_company_memberships
+                  set revoked_at = now(),
+                      revoked_by_user_id = ${backupAdminId}
+                  where company_id = ${fixture.companyId}
+                    and user_id = ${fixture.userId}
+                `;
+              } else if (change === "settings") {
+                yield* sql`
+                  update client_company_ai_settings
+                  set web_search_enabled = false
+                  where company_id = ${fixture.companyId}
+                `;
+              } else if (change === "accepted-policy") {
+                yield* sql`
+                  update client_company_ai_settings
+                  set web_search_enabled = false
+                  where company_id = ${fixture.companyId}
+                `;
+              } else {
+                yield* sql`
+                  update chats
+                  set deleted_at = now(),
+                      deleted_by_user_id = ${backupAdminId},
+                      purge_after = now() + interval '1 day'
+                  where id = ${load.chatId}
+                `;
+              }
+              blockerReady.resolve();
+              yield* Effect.promise(() => releaseBlocker.promise);
+            }),
+          );
+        }),
+      );
+      void blocker.catch((error: unknown) => blockerReady.reject(error));
+      await blockerReady.promise;
+      startAuthorization.resolve();
+      await authorizationStarted.promise;
+      try {
+        await waitForRuntimeDatabaseLock();
+        expect(transportCalls).toBe(0);
+      } finally {
+        releaseBlocker.resolve();
+        await blocker;
+      }
+
+      await expect(retrieval).rejects.toMatchObject({
+        code: expectedCode,
+        retryable: true,
+      });
+      expect(transportCalls).toBe(0);
+    },
+    120_000,
+  );
+
+  it("fails closed before web use when the accepted policy is malformed", async () => {
+    const fixture = await runDb(createFixture);
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_company_ai_settings
+          set web_search_enabled = true
+          where company_id = ${fixture.companyId}
+        `;
+      }),
+    );
+    let boundaryCalls = 0;
+    const web: WebResearchBoundary = {
+      search: async () => {
+        boundaryCalls += 1;
+        throw new Error("malformed accepted policy reached web search");
+      },
+      fetch: async () => {
+        boundaryCalls += 1;
+        throw new Error("malformed accepted policy reached web fetch");
+      },
+    };
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "tinyfish",
+      },
+      new WebManifestAgent("unused"),
+      web,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    await expect(
+      inTask("malformed-policy-web", () =>
+        operations.retrieveWeb(load, "What is the current update?", "malformed-policy-web"),
+      ),
+    ).rejects.toMatchObject({ code: "unsupported_policy", retryable: true });
+    expect(boundaryCalls).toBe(0);
+  }, 120_000);
+
+  it("waits for a pending membership revocation and never uses a separately read web policy", async () => {
+    const fixture = await runDb(createFixture);
+    const backupAdminId = `ai-web-backup-admin-${crypto.randomUUID()}`;
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into platform_users (id, primary_email, display_name, clerk_user_id)
+          values (
+            ${backupAdminId}, ${`${backupAdminId}@example.test`}, 'AI web backup admin',
+            ${`clerk-${backupAdminId}`}
+          )
+        `;
+        yield* sql`
+          insert into client_company_memberships (company_id, user_id, role)
+          values (${fixture.companyId}, ${backupAdminId}, 'admin')
+        `;
+        yield* sql`
+          update client_company_ai_settings
+          set web_search_enabled = true
+          where company_id = ${fixture.companyId}
+        `;
+      }),
+    );
+    let boundaryCalls = 0;
+    const web: WebResearchBoundary = {
+      search: async () => {
+        boundaryCalls += 1;
+        throw new Error("revoked membership reached web search");
+      },
+      fetch: async () => {
+        boundaryCalls += 1;
+        throw new Error("revoked membership reached web fetch");
+      },
+    };
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "tinyfish",
+      },
+      new WebManifestAgent("unused"),
+      web,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    const context = await assembleAndMeasureContext(
+      operations,
+      load,
+      "What is the current update?",
+      {
+        internal: [],
+        memories: [],
+        memorySelection: "enabled",
+        web: [],
+        webSelection: "enabled",
+      },
+      "single-answer",
+    );
+    expect(context.status).toBe("ready");
+    const blockerReady = Promise.withResolvers<void>();
+    const releaseBlocker = Promise.withResolvers<void>();
+    const blocker = runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              update client_company_memberships
+              set revoked_at = now(),
+                  revoked_by_user_id = ${backupAdminId}
+              where company_id = ${fixture.companyId}
+                and user_id = ${fixture.userId}
+            `;
+            blockerReady.resolve();
+            yield* Effect.promise(() => releaseBlocker.promise);
+          }),
+        );
+      }),
+    );
+    void blocker.catch((error: unknown) => blockerReady.reject(error));
+    await blockerReady.promise;
+    const retrieval = inTask("pending-revocation-web", () =>
+      operations.retrieveWeb(load, "What is the current update?", "pending-revocation-web"),
+    );
+    const frozen = inTask("single-context-select", () => operations.freezeContext(load, context));
+    try {
+      await waitForRuntimeDatabaseLock();
+      expect(boundaryCalls).toBe(0);
+    } finally {
+      releaseBlocker.resolve();
+      await blocker;
+    }
+    await expect(retrieval).rejects.toMatchObject({
+      code: "context_assembly_failed",
+      retryable: true,
+    });
+    await expect(frozen).resolves.toMatchObject({
+      status: "failed",
+      failureCode: "context_assembly_failed",
+    });
+    expect(boundaryCalls).toBe(0);
+  }, 120_000);
+
   it("rechecks requested web policy at finalization even when W returned no evidence", async () => {
     const fixture = await runDb(createFixture);
     await runDb(
@@ -3178,23 +5752,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           set web_search_enabled = true
           where company_id = ${fixture.companyId}
         `;
-        yield* sql`
-          update ai_runs
-          set web_search_enabled = true,
-              effective_web_policy = ${sql.json({
-                enabled: true,
-                provider: "tinyfish",
-                allowedDomains: null,
-              })}
-          where id = ${fixture.runId}
-        `;
-        for (const [index, kind] of [
-          "conversation_resolution",
-          "execution_plan",
-          "retrieval_manifest",
-          "context_measurement",
-          "context_serialized",
-        ].entries()) {
+        for (const [index, kind] of ["turn_plan"].entries()) {
           yield* sql`
             insert into ai_observations (
               run_id, chat_id, emitting_task, loop_iteration, attempt,
@@ -3202,7 +5760,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             ) values (
               ${fixture.runId},
               (select chat_id from ai_runs where id = ${fixture.runId}),
-              'fixture', 0, 0, ${`web-empty-finalize:${index}`}, ${kind}, '{}'::jsonb
+              ${kind === "turn_plan" ? "plan-turn" : "fixture"}, 0, 0,
+              ${`web-empty-finalize:${index}`}, ${kind},
+              ${kind === "turn_plan" ? sql.json({ mode: "clarify", question: "fixture" }) : sql.json({})}
             )
           `;
         }
@@ -3224,7 +5784,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
       aiContextReductionMaxIterations: 2,
-      aiMemoryDirectMaxItems: 50,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "tinyfish" as const,
     } satisfies CanonicalAiConfig;
@@ -3239,27 +5798,51 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       proposals: [],
       discardedCount: 0,
     });
-    await runDb(
+    await runDb(seedPlanMeasurement(fixture));
+    const blockerReady = Promise.withResolvers<void>();
+    const releaseBlocker = Promise.withResolvers<void>();
+    const blocker = runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        yield* sql`
-          update client_company_ai_settings
-          set web_search_enabled = false
-          where company_id = ${fixture.companyId}
-        `;
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              update client_company_ai_settings
+              set web_search_enabled = false
+              where company_id = ${fixture.companyId}
+            `;
+            blockerReady.resolve();
+            yield* Effect.promise(() => releaseBlocker.promise);
+          }),
+        );
       }),
     );
-
-    await expect(
-      inTask("finalize", () =>
-        operations.finalize(
-          load,
-          { status: "ok", mode: "single", content: "No supporting web evidence.", sourceMap: [] },
-          memoryArtifact,
-          `ai-chat:${load.aiRunId}`,
-        ),
+    void blocker.catch((error: unknown) => blockerReady.reject(error));
+    await blockerReady.promise;
+    const finalization = inTask("finalize", () =>
+      operations.finalize(
+        load,
+        {
+          status: "ok",
+          mode: "clarification",
+          content: "No supporting web evidence.",
+          sourceMap: [],
+        },
+        memoryArtifact,
+        `ai-chat:${load.aiRunId}`,
       ),
-    ).resolves.toMatchObject({ status: "failed", code: "web_policy_revoked", retryable: true });
+    );
+    try {
+      await waitForRuntimeDatabaseLock();
+    } finally {
+      releaseBlocker.resolve();
+      await blocker;
+    }
+    await expect(finalization).resolves.toMatchObject({
+      status: "failed",
+      code: "unsupported_policy",
+      retryable: true,
+    });
   }, 120_000);
 
   it("blocks empty requested-web answers at freeze and on every answer retry before model or delta", async () => {
@@ -3280,7 +5863,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
       aiContextReductionMaxIterations: 2,
-      aiMemoryDirectMaxItems: 50,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "tinyfish" as const,
     } satisfies CanonicalAiConfig;
@@ -3293,16 +5875,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           update client_company_ai_settings
           set web_search_enabled = true
           where company_id = ${fixture.companyId}
-        `;
-        yield* sql`
-          update ai_runs
-          set web_search_enabled = true,
-              effective_web_policy = ${sql.json({
-                enabled: true,
-                provider: "tinyfish",
-                allowedDomains: null,
-              })}
-          where id = ${fixture.runId}
         `;
       }),
     );
@@ -3335,20 +5907,20 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     await expect(
       assembleAndMeasureContext(operations, load, "What changed?", selectors, "single-answer"),
-    ).rejects.toMatchObject({ code: "web_policy_revoked", retryable: true });
+    ).rejects.toMatchObject({ code: "unsupported_policy", retryable: true });
     const frozenAfterRevocation = await inTask("single-context-select", () =>
       operations.freezeContext(load, context),
     );
     expect(frozenAfterRevocation).toMatchObject({
       status: "failed",
-      failureCode: "web_policy_revoked",
+      failureCode: "unsupported_policy",
     });
     const blockedBeforeAnswer = await inTask("single-answer", () =>
       operations.answerDirect(load, frozenAfterRevocation, "single-answer"),
     );
     expect(blockedBeforeAnswer).toMatchObject({
       status: "failed",
-      code: "web_policy_revoked",
+      code: "unsupported_policy",
       retryable: true,
     });
     expect(probe.streamAttempts).toBe(0);
@@ -3388,7 +5960,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       inTask("single-answer", () =>
         operations.answerDirect(load, readyRetryContext, "single-answer"),
       ),
-    ).rejects.toMatchObject({ code: "web_policy_revoked", retryable: true });
+    ).rejects.toMatchObject({ code: "unsupported_policy", retryable: true });
     expect(probe.streamAttempts).toBe(1);
     expect(probe.providerInvocations).toBe(0);
     expect(probe.streamedDeltas).toBe(0);
@@ -3456,7 +6028,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
       aiContextReductionMaxIterations: 2,
-      aiMemoryDirectMaxItems: 50,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "" as const,
     } satisfies CanonicalAiConfig;
@@ -3515,7 +6086,8 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const undiscoveredReference: InternalReference = {
       kind: "document",
       documentId: fixture.documentId,
-      documentVersionId: fixture.documentVersionId,
+      versionId: fixture.versionId,
+      publisherExtractionId: fixture.extractionId,
       source: {
         kind: "publisher",
         sourceId: `publisher:${fixture.subscriptionId}`,
@@ -3563,21 +6135,20 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const wholeAfterInspection = new PublisherRetrievalAgent();
     wholeAfterInspection.sourceId = `publisher:${fixture.subscriptionId}`;
     wholeAfterInspection.selectWholeAfterInspection = true;
-    await expect(
-      inTask("internal-whole-after-bounded-inspection", () =>
-        new CanonicalWorkflowOperations(
-          databaseUrlFor(databaseName),
-          workflowConfig,
-          wholeAfterInspection,
-        ).retrieveInternal(load, "What changed?", "internal-whole-after-bounded-inspection", []),
-      ),
-    ).resolves.toEqual([
+    const wholeReference = await inTask("internal-whole-after-bounded-inspection", () =>
+      new CanonicalWorkflowOperations(
+        databaseUrlFor(databaseName),
+        workflowConfig,
+        wholeAfterInspection,
+      ).retrieveInternal(load, "What changed?", "internal-whole-after-bounded-inspection", []),
+    );
+    expect(wholeReference).toEqual([
       expect.objectContaining({
         documentId: fixture.documentId,
-        documentVersionId: fixture.documentVersionId,
-        ranges: undefined,
+        versionId: fixture.versionId,
       }),
     ]);
+    expect(wholeReference[0]).not.toHaveProperty("ranges");
     const repeatedInternal = new PublisherRetrievalAgent();
     repeatedInternal.sourceId = `publisher:${fixture.subscriptionId}`;
     repeatedInternal.repeatInspection = true;
@@ -3629,7 +6200,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           aiWebMaxFetches: 2,
           aiWebMaxDomainFilters: 8,
           aiContextReductionMaxIterations: 2,
-          aiMemoryDirectMaxItems: 50,
           aiMemoryToolResultMaxItems: 20,
           webResearchProvider: "",
         },
@@ -3645,7 +6215,8 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             {
               kind: "document",
               documentId: fixture.documentId,
-              documentVersionId: fixture.documentVersionId,
+              versionId: fixture.versionId,
+              publisherExtractionId: fixture.extractionId,
               source: {
                 kind: "publisher",
                 sourceId: `publisher:${fixture.subscriptionId}`,
@@ -3766,7 +6337,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           aiWebMaxFetches: 2,
           aiWebMaxDomainFilters: 8,
           aiContextReductionMaxIterations: 2,
-          aiMemoryDirectMaxItems: 50,
           aiMemoryToolResultMaxItems: 20,
           webResearchProvider: "",
         },
@@ -3782,7 +6352,8 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             {
               kind: "document",
               documentId: fixture.documentId,
-              documentVersionId: fixture.documentVersionId,
+              versionId: fixture.versionId,
+              publisherExtractionId: fixture.extractionId,
               source: {
                 kind: "publisher",
                 sourceId: `publisher:${fixture.subscriptionId}`,
@@ -3815,6 +6386,186 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     },
     120_000,
   );
+
+  it("requires and binds a narrower immutable publisher range after an oversized inspection", async () => {
+    const canonicalText = "Liquidity evidence remains verbatim and immutable. ".repeat(8_000);
+    const fixture = await runDb(createFixtureWithCanonicalText(canonicalText));
+    const agent = new PublisherRetrievalAgent();
+    agent.narrowerRange = true;
+    agent.sourceId = `publisher:${fixture.subscriptionId}`;
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "",
+      },
+      agent,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    const references = await inTask("oversized-range-retrieve", () =>
+      operations.retrieveInternal(
+        load,
+        "What changed in liquidity?",
+        "oversized-range-retrieve",
+        [],
+      ),
+    );
+    expect(agent.firstInspectionWasTooLarge).toBe(true);
+    expect(references).toEqual([
+      expect.objectContaining({
+        kind: "document",
+        documentId: fixture.documentId,
+        versionId: fixture.versionId,
+        publisherExtractionId: fixture.extractionId,
+        source: {
+          kind: "publisher",
+          sourceId: `publisher:${fixture.subscriptionId}`,
+          issueId: fixture.issueId,
+          documentId: fixture.documentId,
+        },
+        ranges: [agent.selectedRange],
+      }),
+    ]);
+    const persisted = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const exposures = yield* sql<{
+          readonly versionId: string;
+          readonly contentHash: string;
+          readonly sourceId: string;
+          readonly documentId: string;
+          readonly publisherExtractionId: string;
+          readonly ranges: unknown;
+        }>`
+          select version_id as "versionId",
+                 content_hash as "contentHash",
+                 document_source_id as "sourceId",
+                 document_id as "documentId",
+                 publisher_extraction_id::text as "publisherExtractionId",
+                 document_ranges as ranges
+          from ai_source_exposures
+          where run_id = ${fixture.runId}
+            and task_id = 'oversized-range-retrieve'
+            and exposure_stage = 'internal_inspection'
+        `;
+        const manifests = yield* sql<{ readonly references: unknown }>`
+          select payload->'references' as references
+          from ai_observations
+          where run_id = ${fixture.runId}
+            and emitting_task = 'oversized-range-retrieve'
+            and kind = 'retrieval_manifest'
+        `;
+        const versions = yield* sql<{
+          readonly documentId: string;
+          readonly versionId: string;
+          readonly contentHash: string;
+          readonly publisherExtractionId: string;
+          readonly canonicalText: string;
+        }>`
+          select versions.brief_document_id::text as "documentId",
+                  versions.id::text as "versionId",
+                  versions.content_hash as "contentHash",
+                  versions.publisher_extraction_id::text as "publisherExtractionId",
+                  versions.canonical_text as "canonicalText"
+             from brief_document_versions versions
+            where versions.id = ${fixture.versionId}
+        `;
+        const extractions = yield* sql<{
+          readonly extractionId: string;
+          readonly inputSha256Hex: string;
+          readonly pages: unknown;
+        }>`
+          select id::text as "extractionId",
+                 input_sha256_hex as "inputSha256Hex",
+                 pages
+            from brief_document_extractions
+           where id = ${fixture.extractionId}
+        `;
+        return { exposures, manifests, versions, extractions };
+      }),
+    );
+    expect(persisted.exposures).toEqual([
+      {
+        versionId: fixture.versionId,
+        contentHash: fixture.contentHash,
+        sourceId: `publisher:${fixture.subscriptionId}`,
+        documentId: fixture.documentId,
+        publisherExtractionId: fixture.extractionId,
+        ranges: [agent.selectedRange],
+      },
+    ]);
+    expect(agent.narrowedInspectionText).toBe(
+      canonicalText.slice(agent.selectedRange.charStart, agent.selectedRange.charEnd),
+    );
+    expect(persisted.versions).toEqual([
+      {
+        documentId: fixture.documentId,
+        versionId: fixture.versionId,
+        contentHash: fixture.contentHash,
+        publisherExtractionId: fixture.extractionId,
+        canonicalText,
+      },
+    ]);
+    expect(persisted.extractions).toEqual([
+      {
+        extractionId: fixture.extractionId,
+        inputSha256Hex: fixture.contentHash,
+        pages: [{ pageNumber: 1, text: canonicalText }],
+      },
+    ]);
+    const persistedExposure = persisted.exposures[0];
+    const persistedVersion = persisted.versions[0];
+    if (persistedExposure === undefined || persistedVersion === undefined) {
+      throw new Error("missing persisted narrowed publisher binding");
+    }
+    const persistedRanges = persistedExposure.ranges as readonly {
+      readonly charStart: number;
+      readonly charEnd: number;
+    }[];
+    expect(persistedVersion.contentHash).toBe(
+      createHash("sha256").update(persistedVersion.canonicalText, "utf8").digest("hex"),
+    );
+    expect(
+      persistedRanges
+        .map((range) => persistedVersion.canonicalText.slice(range.charStart, range.charEnd))
+        .join("\n…\n"),
+    ).toBe(agent.narrowedInspectionText);
+    expect(persisted.manifests).toEqual([
+      {
+        references: [
+          {
+            kind: "document",
+            documentId: fixture.documentId,
+            versionId: fixture.versionId,
+            publisherExtractionId: fixture.extractionId,
+            source: {
+              kind: "publisher",
+              sourceId: `publisher:${fixture.subscriptionId}`,
+              issueId: fixture.issueId,
+              documentId: fixture.documentId,
+            },
+            ranges: [agent.selectedRange],
+            purpose: "answer the liquidity question",
+          },
+        ],
+      },
+    ]);
+  }, 120_000);
 
   it("keeps reducer inspection and measurement available after malformed search arguments", async () => {
     const longText = "Liquidity evidence remains verbatim and immutable. ".repeat(8_000);
@@ -3888,7 +6639,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -3904,7 +6654,8 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           {
             kind: "document",
             documentId: fixture.documentId,
-            documentVersionId: fixture.documentVersionId,
+            versionId: fixture.versionId,
+            publisherExtractionId: fixture.extractionId,
             source: {
               kind: "publisher",
               sourceId: `publisher:${fixture.subscriptionId}`,
@@ -3954,15 +6705,10 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         yield* sql`
           insert into ai_runs (
             chat_id, initiating_user_id, user_message_id, locale, market,
-            web_search_enabled, effective_web_policy, failed_at, error_code,
+            acceptance_scope, failed_at, error_code,
             retryable, created_at
           )
-          select chat_id, initiating_user_id, ${messageId}, 'en-US', 'US', false,
-                 ${sql.json({
-                   enabled: false,
-                   reason: "company_disabled",
-                   allowlistActive: false,
-                 })},
+          select chat_id, initiating_user_id, ${messageId}, 'en-US', 'US', acceptance_scope,
                  now(), 'finalization_failed', false, now() - interval '1 minute'
           from ai_runs where id = ${fixture.runId}
         `;
@@ -3987,24 +6733,33 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
       agent,
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    expect(load.priorTerminalTurnCount).toBe(1);
-    expect(load.conversation).toHaveLength(1);
 
-    await inTask("resolve-conversation", () =>
-      operations.resolveConversation({ ...load, conversation: [] }),
-    );
+    await inTask("plan-turn", () => operations.planTurn(load));
     expect(agent.calls).toBe(1);
-    expect(agent.entries).toEqual([]);
+    expect(agent.entries).toHaveLength(1);
 
-    const turnId = load.conversation[0]?.turnId;
-    const priorMessageId = load.conversation[0]?.userMessageId;
+    const priorTurns = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly turnId: string; readonly messageId: string }>`
+          select id::text as "turnId", user_message_id::text as "messageId"
+          from ai_runs
+          where chat_id = ${load.chatId}
+            and id <> ${load.aiRunId}
+            and (finished_at is not null or failed_at is not null)
+          order by created_at desc, id desc
+          limit 1
+        `;
+      }),
+    );
+    const turnId = priorTurns[0]?.turnId;
+    const priorMessageId = priorTurns[0]?.messageId;
     if (turnId === undefined) throw new Error("prior conversation entry was not loaded");
     if (priorMessageId === undefined) throw new Error("prior conversation message was not loaded");
     const initial = await assembleAndMeasureContext(
@@ -4089,7 +6844,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     });
   }, 120_000);
 
-  it("records the complete eligible conversation count outside the recent-turn boundary", async () => {
+  it("bounds the live prior-turn inventory before plan-turn", async () => {
     const fixture = await runDb(createFixture);
     await runDb(
       Effect.gen(function* () {
@@ -4107,15 +6862,10 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           yield* sql`
             insert into ai_runs (
               chat_id, initiating_user_id, user_message_id, locale, market,
-              web_search_enabled, effective_web_policy, failed_at, error_code,
+              acceptance_scope, failed_at, error_code,
               retryable, created_at
             )
-            select chat_id, initiating_user_id, ${messageId}, 'en-US', 'US', false,
-                   ${sql.json({
-                     enabled: false,
-                     reason: "company_disabled",
-                     allowlistActive: false,
-                   })},
+            select chat_id, initiating_user_id, ${messageId}, 'en-US', 'US', acceptance_scope,
                    now(), 'finalization_failed', false,
                    now() - (${15 - index} * interval '1 second')
             from ai_runs where id = ${fixture.runId}
@@ -4123,6 +6873,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         }
       }),
     );
+    const agent = new EmptyInventoryConversationAgent();
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
       {
@@ -4141,41 +6892,13 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
         aiContextReductionMaxIterations: 2,
-        aiMemoryDirectMaxItems: 50,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
-      new PublisherRetrievalAgent(),
+      agent,
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    expect(load.priorTerminalTurnCount).toBe(15);
-    expect(load.conversation).toHaveLength(12);
-    const observations = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql<{
-          readonly consideredCount: number;
-          readonly includedCount: number;
-          readonly countBoundaryExcludedCount: number;
-          readonly tokenBoundaryExcludedCount: number;
-        }>`
-          select (payload->>'consideredCount')::int as "consideredCount",
-                 (payload->>'includedCount')::int as "includedCount",
-                 (payload->>'countBoundaryExcludedCount')::int as "countBoundaryExcludedCount",
-                 (payload->>'tokenBoundaryExcludedCount')::int as "tokenBoundaryExcludedCount"
-          from ai_observations
-          where run_id = ${fixture.runId}
-            and kind = 'conversation_inventory_boundary'
-        `;
-      }),
-    );
-    expect(observations).toEqual([
-      {
-        consideredCount: 15,
-        includedCount: 12,
-        countBoundaryExcludedCount: 3,
-        tokenBoundaryExcludedCount: 0,
-      },
-    ]);
+    await inTask("plan-turn", () => operations.planTurn(load));
+    expect(agent.entries).toHaveLength(12);
   }, 120_000);
 });
