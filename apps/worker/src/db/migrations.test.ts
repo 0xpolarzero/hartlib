@@ -727,7 +727,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               id, chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope
             ) values (
               ${crypto.randomUUID()}, ${chatId}, 'forged-initiator', ${messageId}, 'en-US', 'US',
-              ${sql.json({ ...scope, userId: 'forged-initiator' })}
+              ${sql.json({ ...scope, userId: "forged-initiator" })}
             )
           `),
         ]);
@@ -1421,7 +1421,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           adminDatabaseUrl(),
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
-          yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName} and usename = current_user and pid <> pg_backend_pid()`;
+            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName} and usename = current_user and pid <> pg_backend_pid()`;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
           }),
         );
@@ -7458,7 +7458,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         adminDatabaseUrl(),
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName} and usename = current_user and pid <> pg_backend_pid()`;
+          yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName} and usename = current_user and pid <> pg_backend_pid()`;
           yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
         }),
       );
@@ -9745,7 +9745,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         expect(beforeForward.indexCount).toBe(1);
         expect(beforeForward.insertExit._tag).toBe("Failure");
 
-        const historicalMigrationFiles = [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })]
+        const historicalMigrationFiles = [
+          ...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname }),
+        ]
           .sort()
           .filter(
             (file) =>
@@ -9761,7 +9763,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 select name from schema_migrations where name = ${file}
               `;
               if (applied.length > 0) continue;
-              const body = yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text());
+              const body = yield* Effect.promise(() =>
+                Bun.file(new URL(file, migrationsUrl)).text(),
+              );
               yield* sql.unsafe(body).raw;
               yield* sql`insert into schema_migrations (name) values (${file})`;
             }
