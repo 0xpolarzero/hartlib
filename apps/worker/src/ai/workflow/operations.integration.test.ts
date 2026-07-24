@@ -5429,11 +5429,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     async (change, expectedCode) => {
       const fixture = await runDb(createFixture);
       const backupAdminId = `web-boundary-admin-${crypto.randomUUID()}`;
-      const policy = {
-        enabled: true,
-        provider: "tinyfish",
-        allowedDomains: null,
-      } as const;
       await runDb(
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;

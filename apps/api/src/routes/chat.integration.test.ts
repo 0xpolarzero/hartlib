@@ -1623,7 +1623,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     const documentId = `stream-document-${crypto.randomUUID()}`;
     const artifactId = crypto.randomUUID();
     const text = "Namespaced public exposure evidence ".repeat(4);
-    const contentHash = createHash("sha256").update(text, "utf8").digest("hex");
     await runDb(
       isolatedUrl(),
       Effect.gen(function* () {

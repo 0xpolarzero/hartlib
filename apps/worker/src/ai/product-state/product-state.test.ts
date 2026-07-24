@@ -3880,7 +3880,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     const fixture = await runDb(createFixture("terminal-replay-web-call-forgery"));
     await runDb(
       Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
         yield* seedSingleObservability(fixture);
       }),
     );
