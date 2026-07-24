@@ -48,6 +48,22 @@ import {
   type AggregateAiRunUsage,
 } from "./observability";
 
+/** @deprecated Accepted scope validation is now owned by finalization. */
+export type FinalizationAuthorizationResult =
+  | { readonly authorized: true }
+  | {
+      readonly authorized: false;
+      readonly code: "finalization_failed";
+    };
+
+/** @deprecated Kept only so old fixtures can compile; runtime never invokes it. */
+export type FinalizationAuthorization = (input: {
+  readonly runId: string;
+  readonly chatId: string;
+  readonly initiatingUserId: string;
+  readonly sourceMap: readonly FinalSourceRecord[];
+}) => Effect.Effect<FinalizationAuthorizationResult, Error, PgClient.PgClient>;
+
 interface RunRow {
   readonly id: string;
   readonly chatId: string;
@@ -91,27 +107,14 @@ interface RunExecutionScope {
   readonly initiatingUserId: string;
 }
 
-export type FinalizationAuthorizationResult =
-  | { readonly authorized: true }
-  | {
-      readonly authorized: false;
-      readonly code: "finalization_failed";
-    };
-
-export type FinalizationAuthorization = (input: {
-  readonly runId: string;
-  readonly chatId: string;
-  readonly initiatingUserId: string;
-  readonly sourceMap: readonly FinalSourceRecord[];
-}) => Effect.Effect<FinalizationAuthorizationResult, Error, PgClient.PgClient>;
-
 export interface FinalizeAiRunInput {
   readonly runId: string;
   /** The durable Smithers coordinate owned by the currently executing workflow. */
   readonly expectedSmithersRunId: string;
   readonly answer: AnswerLaneResult;
   readonly memory: MemoryExtractionArtifact;
-  readonly authorize: FinalizationAuthorization;
+  /** @deprecated The accepted scope is authoritative; this callback is ignored. */
+  readonly authorize?: FinalizationAuthorization | undefined;
   readonly coordinates: {
     readonly loopIteration: number;
     readonly attempt: number;
@@ -3899,12 +3902,16 @@ const persistAssistantSources = (
             join brief_documents documents
               on documents.id = extractions.brief_document_id
              and documents.id::text = ${publisherDocumentId}
+             and documents.deleted_at is null
             join brief_document_versions versions
               on versions.brief_document_id = documents.id
              and versions.id::text = ${source.locator.versionId}
              and versions.content_hash = ${source.locator.contentHash}
              and versions.publisher_extraction_id = extractions.id
-            join publisher_issues issues on issues.id = documents.issue_id
+            join publisher_issues issues
+              on issues.id = documents.issue_id
+             and issues.restricted_at is null
+             and issues.deleted_at is null
             join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
             where issues.id::text = ${publisherIssueId}
               and ('publisher:' || subscriptions.id::text) = ${source.locator.sourceId}
@@ -4084,9 +4091,33 @@ export const finalizeAiRun = (
         const acceptanceScope = parseRunAcceptanceScope(run.acceptanceScope);
         if (
           run.chatId !== executionScope.chatId ||
-          run.initiatingUserId !== executionScope.initiatingUserId
+          run.initiatingUserId !== executionScope.initiatingUserId ||
+          acceptanceScope.userId !== run.initiatingUserId ||
+          acceptanceScope.chatId !== run.chatId ||
+          acceptanceScope.companyId !== executionScope.companyId
         ) {
           return yield* Effect.fail(new Error("ai run execution scope changed"));
+        }
+        const tenantAvailable = yield* sql<{ readonly available: boolean }>`
+          select exists(
+            select 1
+            from ai_runs runs
+            join chats chat on chat.id = runs.chat_id
+            join client_companies company on company.id = chat.company_id
+            join platform_users users on users.id = runs.initiating_user_id
+            where runs.id = ${run.id}
+              and runs.chat_id = ${run.chatId}
+              and runs.initiating_user_id = ${run.initiatingUserId}
+              and chat.deleted_at is null
+              and company.id = ${acceptanceScope.companyId}::uuid
+              and company.recovery_deleted_at is null
+              and company.purged_at is null
+              and users.recovery_deleted_at is null
+              and users.purged_at is null
+          ) as available
+        `;
+        if (tenantAvailable[0]?.available !== true) {
+          return yield* Effect.fail(new Error("ai run execution scope is no longer available"));
         }
         if (run.smithersRunId !== input.expectedSmithersRunId) {
           return yield* Effect.fail(
@@ -4097,10 +4128,10 @@ export const finalizeAiRun = (
             ),
           );
         }
-        // Acquire every publisher restriction lane before any authorization
-        // query. The lane remains held until this transaction commits, so a
-        // restriction either linearizes before finalization (and is observed
-        // as revoked) or after the complete terminal answer write.
+        // Acquire every publisher restriction lane before immutable source
+        // writes. The lane remains held until this transaction commits, so a
+        // restriction either linearizes before finalization (and fails the
+        // source-integrity check) or after the complete terminal answer write.
         if (input.answer.status === "ok") {
           yield* lockPublisherIssueLanes(input.answer.sourceMap);
         }
@@ -4298,17 +4329,32 @@ export const finalizeAiRun = (
         let answer = input.answer;
         if (answer.status === "ok") {
           assertFinalSourceMap(answer, run.citationNamespace);
-          const authorization = yield* input.authorize({
-            runId: run.id,
-            chatId: run.chatId,
-            initiatingUserId: run.initiatingUserId,
-            sourceMap: answer.sourceMap,
+          const sourceAllowed = answer.sourceMap.map((source) => {
+            if (source.locator.kind === "document") {
+              const sourceId = source.locator.sourceId;
+              return sourceId.startsWith("public:")
+                ? acceptanceScope.publicSourceIds.includes(sourceId.slice("public:".length))
+                : sourceId.startsWith("publisher:")
+                  ? acceptanceScope.subscriptionIds.includes(sourceId.slice("publisher:".length))
+                  : false;
+            }
+            if (source.locator.kind === "memory") {
+              return (
+                acceptanceScope.memoryMode === "private_owner" &&
+                acceptanceScope.memoryRevisionIds.includes(source.locator.memoryRevisionId)
+              );
+            }
+            if (source.locator.kind === "web") return acceptanceScope.webEnabled;
+            return true;
           });
-          if (!authorization.authorized) {
+          if (
+            sourceAllowed.length !== answer.sourceMap.length ||
+            sourceAllowed.some((allowed) => !allowed)
+          ) {
             answer = {
               status: "failed",
-              code: authorization.code,
-              retryable: isRetryableAiRunError(authorization.code),
+              code: "finalization_failed",
+              retryable: isRetryableAiRunError("finalization_failed"),
             };
           }
         }

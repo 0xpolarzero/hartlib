@@ -1415,6 +1415,9 @@ export class CanonicalWorkflowOperations {
     if (scope.userId !== load.initiatingUserId || scope.chatId !== load.chatId) {
       throw new Error("ai run acceptance scope identity mismatch");
     }
+    // Account recovery, purge, and chat deletion remain exceptional runtime
+    // restrictions. They are not source or policy reauthorization and do not
+    // consult mutable grants, settings, or provider configuration.
     const tenantAvailable = await this.db(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -1428,7 +1431,6 @@ export class CanonicalWorkflowOperations {
             where runs.id = ${load.aiRunId}
               and runs.chat_id = ${load.chatId}
               and runs.initiating_user_id = ${load.initiatingUserId}
-              and chat.user_id = ${load.initiatingUserId}
               and chat.deleted_at is null
               and company.id = ${scope.companyId}::uuid
               and company.recovery_deleted_at is null
@@ -1704,32 +1706,61 @@ export class CanonicalWorkflowOperations {
     return result;
   }
 
-  private async loadActiveMemories(load: LoadedTurn): Promise<readonly MemorySnapshot[]> {
+  private async loadAcceptedMemorySnapshots(load: LoadedTurn): Promise<readonly MemorySnapshot[]> {
+    if (load.acceptanceScope.memoryMode === "disabled") return [];
+    const revisionIds = load.acceptanceScope.memoryRevisionIds;
     const rows = await this.db(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        return yield* sql<MemorySnapshot>`
+        return yield* sql<{
+          readonly memoryId: string;
+          readonly memoryRevisionId: string;
+          readonly stateAfter: unknown;
+        }>`
           select memories.id::text as "memoryId",
-                 memories.head_revision_id::text as "memoryRevisionId",
-                 memories.kind,
-                 memories.content
-          from user_memories memories
+                 revisions.id::text as "memoryRevisionId",
+                 revisions.state_after as "stateAfter"
+          from user_memory_revisions revisions
+          join user_memories memories on memories.id = revisions.memory_id
           where memories.user_id = ${load.acceptanceScope.userId}
-            and memories.head_revision_id::text = any(${load.acceptanceScope.memoryRevisionIds}::text[])
-            and memories.deleted_at is null
-            and memories.provenance_only_at is null
-          order by memories.created_at, memories.id
+            and revisions.id::text = any(${revisionIds}::text[])
+          order by revisions.id
         `;
       }),
     );
-    return rows;
+    if (rows.length !== revisionIds.length) {
+      throw controlledRuntimeFailure("context_assembly_failed");
+    }
+    const snapshots = rows.map((row): MemorySnapshot => {
+      const state = z
+        .object({
+          kind: z.enum(["profile", "preference", "instruction", "fact", "episode"]),
+          content: z.string().trim().min(1),
+          deleted: z.boolean(),
+        })
+        .strict()
+        .safeParse(row.stateAfter);
+      if (!state.success || state.data.deleted) {
+        throw controlledRuntimeFailure("context_assembly_failed");
+      }
+      return {
+        memoryId: row.memoryId,
+        memoryRevisionId: row.memoryRevisionId,
+        kind: state.data.kind,
+        content: state.data.content,
+      };
+    });
+    if (new Set(snapshots.map((memory) => memory.memoryRevisionId)).size !== revisionIds.length) {
+      throw controlledRuntimeFailure("context_assembly_failed");
+    }
+    return snapshots;
   }
 
   async extractMemory(load: LoadedTurn): Promise<MemoryExtractionArtifact> {
     const taskId = "memory-extract";
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
     const coordinates = taskCoordinates(taskId, "memory_extractor", execution);
-    const activeMemories = await this.loadActiveMemories(load);
+    const acceptedMemories = await this.loadAcceptedMemorySnapshots(load);
     const visibleMemories = new Map<string, MemorySnapshot>();
     const discoveredMemories = new Set<string>();
     const proposals = await this.agents.toolLoop({
@@ -1738,7 +1769,7 @@ export class CanonicalWorkflowOperations {
       system: MemoryExtractorPrompt,
       user: JSON.stringify({
         currentUserMessage: load.userMessage,
-        activeMemoryCount: activeMemories.length,
+        activeMemoryCount: acceptedMemories.length,
         toolBounds: {
           maximumTurns: this.config.aiRetrievalMaxTurns,
           maximumResultItems: this.config.aiMemoryToolResultMaxItems,
@@ -1766,7 +1797,7 @@ export class CanonicalWorkflowOperations {
       validateTerminal: (value) => MemoryProposalOutputSchema.parse(value).proposals,
       tools: this.memoryTools(
         load,
-        activeMemories,
+        acceptedMemories,
         "emit_memory_proposals",
         z.toJSONSchema(MemoryProposalOutputSchema),
         (memories) => {
@@ -1777,18 +1808,7 @@ export class CanonicalWorkflowOperations {
         discoveredMemories,
       ),
     });
-    const liveMemories = await this.savedMemorySnapshots(load, activeMemories);
-    const liveMemoryById = new Map(liveMemories.map((memory) => [memory.memoryId, memory]));
-    for (const discovered of discoveredMemories) {
-      const separator = discovered.indexOf(":");
-      const memoryId = separator < 0 ? discovered : discovered.slice(0, separator);
-      const revisionId = separator < 0 ? "" : discovered.slice(separator + 1);
-      const live = liveMemoryById.get(memoryId);
-      if (live === undefined || live.memoryRevisionId !== revisionId) {
-        throw controlledRuntimeFailure("memory_conflict");
-      }
-    }
-    const result = validateMemoryProposals(proposals, liveMemories, discoveredMemories);
+    const result = validateMemoryProposals(proposals, acceptedMemories, discoveredMemories);
     const extractionSha256Hex = memoryExtractionSha256Hex(result);
     const observationKey = `${taskId}:${coordinates.loopIteration}:${coordinates.attempt}:memory_extraction_result:result`;
     await this.observe(
@@ -1832,7 +1852,7 @@ export class CanonicalWorkflowOperations {
 
   private memoryTools(
     load: LoadedTurn,
-    activeMemories: readonly MemorySnapshot[],
+    acceptedMemories: readonly MemorySnapshot[],
     terminalName: string,
     terminalSchema: Readonly<Record<string, unknown>>,
     onVisible: (memories: readonly MemorySnapshot[]) => void,
@@ -1866,7 +1886,7 @@ export class CanonicalWorkflowOperations {
         execute: async (args: Readonly<Record<string, unknown>>) => {
           const parsed = parseSearchMemoriesArguments(args);
           const terms = parsed.query.trim().toLocaleLowerCase();
-          const matches = await this.savedMemorySnapshots(load, activeMemories, { terms });
+          const matches = await this.savedMemorySnapshots(load, acceptedMemories, { terms });
           const offset = parsed.cursor ?? 0;
           const items: MemorySnapshot[] = [];
           for (
@@ -1917,45 +1937,45 @@ export class CanonicalWorkflowOperations {
       {
         definition: {
           name: "inspect_memory",
-          description: "Inspect one complete active memory snapshot.",
+          description: "Inspect one complete accepted memory snapshot.",
           parameters: z.toJSONSchema(z.object({ memoryId: z.string().trim().min(1) }).strict()),
         },
         parseArguments: parseInspectMemoryArguments,
         execute: async (args: Readonly<Record<string, unknown>>) => {
           const { memoryId } = parseInspectMemoryArguments(args);
-          const memory = activeMemories.find((candidate) => candidate.memoryId === memoryId);
+          const memory = acceptedMemories.find((candidate) => candidate.memoryId === memoryId);
           if (
             memory === undefined ||
             ![...discovered].some((key) => key.startsWith(`${memoryId}:`))
           ) {
             return { found: false, complete: true };
           }
-          const live = (await this.savedMemorySnapshots(load, activeMemories, { memoryId }))[0];
-          if (live === undefined || live.memoryRevisionId !== memory.memoryRevisionId) {
+          const saved = (await this.savedMemorySnapshots(load, acceptedMemories, { memoryId }))[0];
+          if (saved === undefined || saved.memoryRevisionId !== memory.memoryRevisionId) {
             return { found: false, complete: true };
           }
           if (memory === undefined) return { found: false, complete: true };
           const tokens = this.visibleTokenCount(
-            JSON.stringify({ found: true, complete: true, memory: live }),
+            JSON.stringify({ found: true, complete: true, memory: saved }),
             load.acceptanceScope.fastModelId,
           );
           if (tokens > this.config.aiFastOutputMaxTokens) {
             return { found: true, complete: false, itemTooLarge: true, memoryId };
           }
-          discovered.add(`${live.memoryId}:${live.memoryRevisionId}`);
-          onVisible([live]);
+          discovered.add(`${saved.memoryId}:${saved.memoryRevisionId}`);
+          onVisible([saved]);
           return {
             found: true,
             complete: true,
-            memory: live,
+            memory: saved,
             __briefSourceExposures: [
               providerVisibleExposureMarker({
                 sourceKind: "memory",
-                logicalSourceIdentity: memoryEvidenceIdentity(live.memoryId),
-                contentItemIdentity: live.memoryRevisionId,
+                logicalSourceIdentity: memoryEvidenceIdentity(saved.memoryId),
+                contentItemIdentity: saved.memoryRevisionId,
                 stage: "memory_tool_result",
                 visibleTokenCount: this.visibleTokenCount(
-                  live.content,
+                  saved.content,
                   load.acceptanceScope.fastModelId,
                 ),
               }),
@@ -2137,10 +2157,7 @@ export class CanonicalWorkflowOperations {
       ...load.acceptanceScope.subscriptionIds.map((id) => `publisher:${id}`),
     ]);
     for (const reference of references) {
-      if (
-        reference.kind === "document" &&
-        !allowed.has(reference.source.sourceId)
-      ) {
+      if (reference.kind === "document" && !allowed.has(reference.source.sourceId)) {
         throw controlledRuntimeFailure("context_assembly_failed");
       }
     }
@@ -2327,8 +2344,8 @@ export class CanonicalWorkflowOperations {
       });
       return { status: "disabled", reason: "memory_mode_disabled" };
     }
-    const activeMemories = await this.loadActiveMemories(load);
-    if (activeMemories.length === 0) {
+    const acceptedMemories = await this.loadAcceptedMemorySnapshots(load);
+    if (acceptedMemories.length === 0) {
       await this.observe(load, taskId, "retrieval_manifest", {
         selectorRole: "memory",
         references: [],
@@ -2345,7 +2362,7 @@ export class CanonicalWorkflowOperations {
       system: MemorySelectorPrompt,
       user: JSON.stringify({
         question,
-        activeMemoryCount: activeMemories.length,
+        activeMemoryCount: acceptedMemories.length,
         toolBounds: {
           maximumTurns: this.config.aiRetrievalMaxTurns,
           maximumResultItems: this.config.aiMemoryToolResultMaxItems,
@@ -2353,7 +2370,7 @@ export class CanonicalWorkflowOperations {
       }),
       tools: this.memoryTools(
         load,
-        activeMemories,
+        acceptedMemories,
         "emit_memory_manifest",
         z.toJSONSchema(MemoryManifestOutputSchema),
         (memories) => {
@@ -2387,7 +2404,7 @@ export class CanonicalWorkflowOperations {
       },
     });
     const allowed = new Set(
-      activeMemories.map((memory) => `${memory.memoryId}:${memory.memoryRevisionId}`),
+      acceptedMemories.map((memory) => `${memory.memoryId}:${memory.memoryRevisionId}`),
     );
     const seen = new Set<string>();
     for (const entry of entries) {
@@ -2397,14 +2414,6 @@ export class CanonicalWorkflowOperations {
       }
       if (seen.has(identity)) throw new Error("memory selector emitted a duplicate reference");
       seen.add(identity);
-    }
-    const liveMemories = new Set(
-      (await this.loadActiveMemories(load)).map(
-        (memory) => memory.memoryId + ":" + memory.memoryRevisionId,
-      ),
-    );
-    if (entries.some((entry) => !liveMemories.has(entry.memoryId + ":" + entry.memoryRevisionId))) {
-      throw controlledRuntimeFailure("memory_conflict");
     }
     await this.observe(
       load,
@@ -4784,7 +4793,7 @@ export class CanonicalWorkflowOperations {
       }
     }
     for (const reference of selectors.memories) {
-      const requested = (await this.loadActiveMemories(load)).find(
+      const requested = (await this.loadAcceptedMemorySnapshots(load)).find(
         (item) =>
           item.memoryId === reference.memoryId &&
           item.memoryRevisionId === reference.memoryRevisionId,
@@ -6396,78 +6405,6 @@ export class CanonicalWorkflowOperations {
         coordinates: requireCurrentTaskCoordinates("finalize"),
         answer,
         memory,
-        authorize: ({ runId, chatId, initiatingUserId, sourceMap }) =>
-          Effect.gen(function* () {
-            const sql = yield* PgClient.PgClient;
-            const rows = yield* sql<{ readonly scope: unknown }>`
-              select acceptance_scope as scope
-              from ai_runs
-              where id = ${runId}
-                and chat_id = ${chatId}
-                and initiating_user_id = ${initiatingUserId}
-                and finished_at is null
-                and failed_at is null
-              for update
-            `;
-            const scope = decodeRunAcceptanceScope(rows[0]?.scope);
-            if (
-              scope.userId !== initiatingUserId ||
-              scope.chatId !== chatId ||
-              scope.userId !== load.initiatingUserId ||
-              scope.chatId !== load.chatId
-            ) {
-              return { authorized: false as const, code: "finalization_failed" as const };
-            }
-            const available = yield* sql<{ readonly available: boolean }>`
-              select exists(
-                select 1
-                from ai_runs runs
-                join chats chat on chat.id = runs.chat_id
-                join client_companies company on company.id = chat.company_id
-                join platform_users users on users.id = runs.initiating_user_id
-                where runs.id = ${runId}
-                  and runs.chat_id = ${chatId}
-                  and runs.initiating_user_id = ${initiatingUserId}
-                  and chat.user_id = ${initiatingUserId}
-                  and company.id = ${scope.companyId}::uuid
-                  and company.recovery_deleted_at is null
-                  and company.purged_at is null
-                  and users.recovery_deleted_at is null
-                  and users.purged_at is null
-              ) as available
-            `;
-            if (available[0]?.available !== true) {
-              return { authorized: false as const, code: "finalization_failed" as const };
-            }
-            const sourceAllowed = sourceMap.map((source) => {
-              if (source.locator.kind === "document") {
-                const sourceId = source.locator.sourceId;
-                return sourceId.startsWith("public:")
-                  ? scope.publicSourceIds.includes(sourceId.slice("public:".length))
-                  : sourceId.startsWith("publisher:")
-                    ? scope.subscriptionIds.includes(sourceId.slice("publisher:".length))
-                    : false;
-              }
-              if (source.locator.kind === "memory") {
-                return (
-                  scope.memoryMode === "private_owner" &&
-                  scope.memoryRevisionIds.includes(source.locator.memoryRevisionId)
-                );
-              }
-              if (source.locator.kind === "web") return scope.webEnabled;
-              return true;
-            });
-            if (!scope.webRequested && sourceMap.some((source) => source.locator.kind === "web")) {
-              return { authorized: false as const, code: "finalization_failed" as const };
-            }
-            if (
-              sourceAllowed.length !== sourceMap.length ||
-              sourceAllowed.some((allowed) => !allowed)
-            ) {
-              return { authorized: false as const, code: "finalization_failed" as const };
-            }
-            return { authorized: true as const };
-          }),
       }),
     );
   }

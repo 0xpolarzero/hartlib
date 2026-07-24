@@ -2222,40 +2222,6 @@ const persistBaselineOutput = async (
           loopIteration: producer.loopIteration,
           attempt: producer.attempt,
         },
-        authorize: ({ sourceMap: requested }) =>
-          Effect.gen(function* () {
-            const sql = yield* PgClient.PgClient;
-            const rows = yield* sql<{ readonly valid: boolean }>`
-              select not exists (
-                select 1 from jsonb_array_elements(${JSON.stringify(requested.map((source) => source.locator))}::jsonb) locator
-                where case locator->>'kind'
-                  when 'document' then not exists (
-                    select 1 from public_source_documents documents
-                    join client_company_public_source_settings settings
-                      on settings.source_id = documents.source_id and settings.enabled
-                    where documents.document_id = locator->>'documentId'
-                      and documents.content_hash = locator->>'contentHash'
-                      and settings.client_company_id = ${manifest.companyId}
-                  )
-                  when 'chat_message' then not exists (
-                    select 1 from chat_messages
-                    where id::text = locator->>'messageId' and chat_id = ${manifest.chatId}
-                  )
-                  when 'memory' then not exists (
-                    select 1 from user_memories
-                    where id::text = locator->>'memoryId'
-                      and head_revision_id::text = locator->>'memoryRevisionId'
-                      and user_id = ${manifest.userId}
-                  )
-                  when 'web' then not (${fixture.webRequested} and ${fixture.webPolicyEnabled})
-                  else true
-                end
-              ) as valid
-            `;
-            return rows[0]?.valid === true
-              ? { authorized: true as const }
-              : { authorized: false as const, code: "finalization_failed" as const };
-          }),
       });
       const serialized = canonicalJson(output);
       const digest = sha256Hex(serialized);
