@@ -294,6 +294,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           select pg_terminate_backend(pid)
           from pg_stat_activity
           where datname = ${isolatedDatabaseName}
+            and usename = current_user
             and pid <> pg_backend_pid()
         `;
         yield* sql.unsafe(`drop database if exists ${quoteIdentifier(isolatedDatabaseName)}`);
@@ -1402,7 +1403,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           adminDatabaseUrl(),
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
-            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+          yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName} and usename = current_user and pid <> pg_backend_pid()`;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
           }),
         );
@@ -1652,7 +1653,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           adminDatabaseUrl(),
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
-            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName} and usename = current_user and pid <> pg_backend_pid()`;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
           }),
         );
@@ -2058,7 +2059,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             yield* sql`
               select pg_terminate_backend(pid)
               from pg_stat_activity
-              where datname = ${databaseName} and pid <> pg_backend_pid()
+              where datname = ${databaseName}
+                and usename = current_user
+                and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
           }),
@@ -2814,7 +2817,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           adminDatabaseUrl(),
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
-            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName} and usename = current_user and pid <> pg_backend_pid()`;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
           }),
         );
@@ -4650,7 +4653,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             yield* sql`
               select pg_terminate_backend(pid)
               from pg_stat_activity
-              where datname = ${databaseName} and pid <> pg_backend_pid()
+              where datname = ${databaseName}
+                and usename = current_user
+                and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
           }),
@@ -7431,7 +7436,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         adminDatabaseUrl(),
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName}`;
+            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName} and usename = current_user and pid <> pg_backend_pid()`;
           yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
         }),
       );
@@ -8059,6 +8064,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               select pg_terminate_backend(pid)
               from pg_stat_activity
               where datname = ${upgradeDatabaseName}
+                and usename = current_user
                 and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(upgradeDatabaseName)}`);
@@ -8192,6 +8198,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               select pg_terminate_backend(pid)
               from pg_stat_activity
               where datname = ${corruptDatabaseName}
+                and usename = current_user
                 and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(corruptDatabaseName)}`);
@@ -8452,6 +8459,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               select pg_terminate_backend(pid)
               from pg_stat_activity
               where datname = ${smithersDatabaseName}
+                and usename = current_user
                 and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(smithersDatabaseName)}`);
@@ -8805,6 +8813,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               select pg_terminate_backend(pid)
               from pg_stat_activity
               where datname = ${exportDatabaseName}
+                and usename = current_user
                 and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(exportDatabaseName)}`);
@@ -8957,6 +8966,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               select pg_terminate_backend(pid)
               from pg_stat_activity
               where datname = ${legacyDatabaseName}
+                and usename = current_user
                 and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(legacyDatabaseName)}`);
@@ -9054,6 +9064,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               select pg_terminate_backend(pid)
               from pg_stat_activity
               where datname = ${ownershipDatabaseName}
+                and usename = current_user
                 and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(ownershipDatabaseName)}`);
@@ -9166,6 +9177,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               select pg_terminate_backend(pid)
               from pg_stat_activity
               where datname = ${payloadDatabaseName}
+                and usename = current_user
                 and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(payloadDatabaseName)}`);
@@ -9360,6 +9372,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               select pg_terminate_backend(pid)
               from pg_stat_activity
               where datname = ${pdfDatabaseName}
+                and usename = current_user
                 and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(pdfDatabaseName)}`);
@@ -9586,6 +9599,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               select pg_terminate_backend(pid)
               from pg_stat_activity
               where datname = ${fenceDatabaseName}
+                and usename = current_user
                 and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(fenceDatabaseName)}`);
@@ -9846,6 +9860,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               select pg_terminate_backend(pid)
               from pg_stat_activity
               where datname = ${duplicateDatabaseName}
+                and usename = current_user
                 and pid <> pg_backend_pid()
             `;
             yield* sql.unsafe(`drop database if exists ${quoteIdentifier(duplicateDatabaseName)}`);
