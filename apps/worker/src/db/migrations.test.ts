@@ -703,6 +703,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               ${sql.json({ ...scope, accessIds: [1] })}
             )
           `),
+          Effect.exit(sql`
+            insert into ai_runs (
+              id, chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope
+            ) values (
+              ${crypto.randomUUID()}, ${chatId}, 'forged-initiator', ${messageId}, 'en-US', 'US',
+              ${sql.json({ ...scope, userId: 'forged-initiator' })}
+            )
+          `),
         ]);
         yield* sql`
           insert into ai_runs (id, chat_id, user_message_id, locale, market, acceptance_scope)

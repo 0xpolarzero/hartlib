@@ -13680,6 +13680,7 @@ begin
          select 1 from chats chat
          where chat.id = new.chat_id
            and (new.acceptance_scope->>'companyId') = chat.company_id::text
+           and chat.user_id = new.initiating_user_id
        ) then
       raise exception 'AI run acceptance scope tenant binding is invalid'
         using errcode = '23514', constraint = 'ai_runs_acceptance_scope_binding';
