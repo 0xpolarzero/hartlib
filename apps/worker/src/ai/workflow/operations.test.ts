@@ -777,8 +777,6 @@ const load = (_historyText: string): LoadedTurn => {
     market: "US",
     currentDate: "2026-07-10",
     citationNamespace,
-    memoryMode: "disabled",
-    webRequested: false,
     acceptanceScope: makeRunAcceptanceScope({
       userId: "fanout-allocation-user",
       chatId,
@@ -1127,7 +1125,6 @@ describe("typed controlled operation failures", () => {
     const assembly = await operations.assembleContext(
       {
         ...load(""),
-        webRequested: false,
       },
       "question",
       {

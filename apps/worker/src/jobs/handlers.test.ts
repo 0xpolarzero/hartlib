@@ -6,6 +6,7 @@ import {
   publicSourceDefinitions,
   type PublicSourceId,
 } from "@brief/source-ingestion";
+import { makeRunAcceptanceScope } from "@brief/shared";
 
 import { runMigrations } from "../db/migrate";
 import type { WorkerConfig } from "../config";
@@ -116,6 +117,10 @@ const createAiRun = Effect.gen(function* () {
   const userId = `handler-user-${crypto.randomUUID()}`;
   const companyId = crypto.randomUUID();
   yield* sql`
+    insert into platform_users (id, primary_email, display_name, clerk_user_id)
+    values (${userId}, ${`${userId}@brief.test`}, 'Handler test user', ${`clerk-${userId}`})
+  `;
+  yield* sql`
     insert into client_companies (id, name)
     values (${companyId}, 'Handler test company')
   `;
@@ -139,8 +144,21 @@ const createAiRun = Effect.gen(function* () {
     returning id::text
   `;
   const runRows = yield* sql<{ readonly id: string }>`
-    insert into ai_runs (chat_id, user_message_id, locale, market)
-    values (${chatId}, ${messageRows[0]!.id}, 'en-US', 'US')
+    insert into ai_runs (
+      chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope
+    ) values (
+      ${chatId}, ${userId}, ${messageRows[0]!.id}, 'en-US', 'US',
+      ${sql.json(
+        makeRunAcceptanceScope({
+          userId,
+          chatId,
+          companyId,
+          memoryMode: "private_owner",
+          webRequested: false,
+          webEnabled: false,
+        }),
+      )}
+    )
     returning id::text
   `;
 

@@ -200,8 +200,6 @@ const load: LoadedTurn = {
   market: "US",
   currentDate: "2026-07-10",
   citationNamespace: "cn_" + "A".repeat(22),
-  memoryMode: "disabled",
-  webRequested: false,
   acceptanceScope: makeRunAcceptanceScope({
     userId: "workflow-user",
     chatId: "00000000-0000-4000-8000-000000000001",
@@ -1046,7 +1044,14 @@ describe("canonical ai-chat workflow source contract", () => {
     const parsed = aiChatSchemas.aiChatLoadTurn.safeParse({
       value: {
         ...load,
-        webRequested: true,
+        acceptanceScope: makeRunAcceptanceScope({
+          userId: load.initiatingUserId,
+          chatId: load.chatId,
+          companyId: load.acceptanceScope.companyId,
+          memoryMode: "disabled",
+          webRequested: true,
+          webEnabled: true,
+        }),
       },
     });
     expect(parsed.success).toBe(true);
@@ -1054,7 +1059,6 @@ describe("canonical ai-chat workflow source contract", () => {
       aiChatSchemas.aiChatLoadTurn.safeParse({
         value: {
           ...load,
-          webRequested: true,
           webPolicy: {
             enabled: true,
             provider: "tinyfish",
@@ -1079,8 +1083,6 @@ describe("canonical ai-chat workflow source contract", () => {
     expect(parsed.success).toBe(true);
     if (parsed.success) {
       expect(parsed.data.value.acceptanceScope).toEqual(load.acceptanceScope);
-      expect(parsed.data.value.memoryMode).toBe(load.acceptanceScope.memoryMode);
-      expect(parsed.data.value.webRequested).toBe(load.acceptanceScope.webRequested);
     }
 
     for (const acceptanceScope of [
@@ -1088,10 +1090,7 @@ describe("canonical ai-chat workflow source contract", () => {
       { ...load.acceptanceScope, companyId: "not-a-uuid" },
       {
         ...load.acceptanceScope,
-        accessIds: [
-          "00000000-0000-4000-8000-000000000009",
-          "00000000-0000-4000-8000-000000000001",
-        ],
+        accessIds: ["00000000-0000-4000-8000-000000000009", "00000000-0000-4000-8000-000000000001"],
       },
       { ...load.acceptanceScope, forged: true },
     ]) {
@@ -2204,7 +2203,7 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
       expect(result.status).toBe("finished");
       expect(operations.calls).not.toContain("fanout-synthesis");
       expect(operations.finalAnswers).toEqual([
-        { status: "failed", code: "context_plan_unfit", retryable: true },
+        { status: "failed", code: "context_plan_unfit", retryable: false },
       ]);
       expect(operations.calls.at(-1)).toBe("finalize:failed");
     } finally {

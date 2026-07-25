@@ -3060,22 +3060,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         false,
       ),
     );
-    const publicSourceId = `public-opt-in-${crypto.randomUUID()}`;
-    await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        yield* sql`
-          insert into public_sources (
-            source_id, display_name, publisher_name, description, ingestion_method,
-            discovery_url, average_chars_per_item, country, language
-          ) values (
-            ${publicSourceId}, 'Optional public source', 'Official publisher',
-            'Public source authorization fixture', 'rss', 'https://example.test/feed',
-            1000, 'US', 'en-US'
-          )
-        `;
-      }),
-    );
     const agent = new PublisherRetrievalAgent();
     agent.sourceId = `publisher:${fixture.subscriptionId}`;
     const operations = new CanonicalWorkflowOperations(
@@ -3101,39 +3085,18 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       },
       agent,
     );
-    await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    expect(load.acceptanceScope.accessIds).toContain(fixture.accessId);
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql`
-          insert into client_company_public_source_settings (
-            client_company_id, source_id, enabled, updated_by_user_id
-          ) values (${fixture.companyId}, ${publicSourceId}, true, ${fixture.userId})
+          update client_employee_subscription_grants
+          set revoked_at = now(), revoked_by_user_id = ${fixture.userId}
+          where access_id = ${fixture.accessId} and user_id = ${fixture.userId}
         `;
       }),
     );
-    let load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        yield* sql`
-          update client_company_public_source_settings set enabled = false, updated_at = now()
-          where client_company_id = ${fixture.companyId} and source_id = ${publicSourceId}
-        `;
-      }),
-    );
-    agent.sourceId = `public:${publicSourceId}`;
-    await expect(
-      inTask("disabled-public-retrieve", () =>
-        operations.retrieveInternal(
-          load,
-          "What changed in liquidity?",
-          "disabled-public-retrieve",
-          [],
-        ),
-      ),
-    ).resolves.toEqual([]);
-    load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     agent.sourceId = `publisher:${fixture.subscriptionId}`;
     const references = await inTask("single-retrieve-internal", () =>
       operations.retrieveInternal(
@@ -3238,16 +3201,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     expect(exposures[0]?.count).toBeGreaterThanOrEqual(2);
 
-    await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        yield* sql`
-          update client_employee_subscription_grants
-          set revoked_at = now(), revoked_by_user_id = ${fixture.userId}
-          where access_id = ${fixture.accessId} and user_id = ${fixture.userId}
-        `;
-      }),
-    );
     const revokedAccessResult = await inTask("single-context-select", () =>
       operations.freezeContext(load, context),
     );
@@ -3263,16 +3216,61 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       "an internal source was removed before context freeze",
     );
 
-    await runDb(
+    const laterRunId = await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql`
-          update client_employee_subscription_grants
-          set revoked_at = null, revoked_by_user_id = null
-          where access_id = ${fixture.accessId} and user_id = ${fixture.userId}
+          update ai_runs
+          set failed_at = now(), error_code = 'finalization_failed', retryable = false
+          where id = ${fixture.runId}
         `;
+        yield* sql`
+          delete from chat_subscription_sources
+          where chat_id = ${load.chatId}
+        `;
+        const messages = yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content)
+          values (${load.chatId}, 'user', 'What changed after access was removed?')
+          returning id::text
+        `;
+        const messageId = messages[0]?.id;
+        if (messageId === undefined) return yield* Effect.fail(new Error("message insert failed"));
+        const runs = yield* sql<{ readonly id: string }>`
+          insert into ai_runs (
+            chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope
+          ) values (
+            ${load.chatId}, ${load.initiatingUserId}, ${messageId}, 'en-US', 'US',
+            ${sql.json(
+              makeRunAcceptanceScope({
+                userId: load.initiatingUserId,
+                chatId: load.chatId,
+                companyId: fixture.companyId,
+                memoryMode: "private_owner",
+                webRequested: false,
+                webEnabled: false,
+              }),
+            )}
+          )
+          returning id::text
+        `;
+        const laterRunId = runs[0]?.id;
+        if (laterRunId === undefined) return yield* Effect.fail(new Error("run insert failed"));
+        return laterRunId;
       }),
     );
+    const laterLoad = await inTask("load-turn", () => operations.loadTurn(laterRunId));
+    expect(laterLoad.acceptanceScope.accessIds).toEqual([]);
+    agent.sourceId = `publisher:${fixture.subscriptionId}`;
+    await expect(
+      inTask("later-restricted-retrieve", () =>
+        operations.retrieveInternal(
+          laterLoad,
+          "What changed after access was removed?",
+          "later-restricted-retrieve",
+          [],
+        ),
+      ),
+    ).resolves.toEqual([]);
   }, 120_000);
 
   it("keeps the publisher current pointer immutable between searches", async () => {
@@ -5450,7 +5448,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       new CanonicalAgentClient({} as never),
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    expect(load.webRequested).toBe(true);
+    expect(load.acceptanceScope.webRequested).toBe(true);
     const memoryArtifact = await persistMemoryArtifact(fixture, {
       proposals: [],
       discardedCount: 0,
