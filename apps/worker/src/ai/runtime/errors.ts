@@ -111,6 +111,9 @@ const durableAiRuntimeErrorSchema = z.strictObject({
   name: z.literal("AiRuntimeError"),
   message: z.string().min(1).max(DURABLE_AI_RUNTIME_ERROR_MESSAGE_MAX_LENGTH),
   stack: z.string().max(DURABLE_AI_RUNTIME_ERROR_STACK_MAX_LENGTH).optional(),
+  code: z.string().optional(),
+  retryable: z.boolean().optional(),
+  providerStatus: z.number().int().nullable().optional(),
 });
 
 const durableAiRuntimeErrorMessagePattern =
