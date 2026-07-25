@@ -829,6 +829,110 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
     expect(recipientCompanies).toEqual(deliveredCompanies);
   }, 20_000);
 
+  it("excludes a company added after the publication set recheck", async () => {
+    const fixture = await runDb(
+      provisionFixture({ status: "scheduled", publicationAt: new Date(Date.now() - 60_000) }),
+    );
+    const fileStore = makeInMemoryPlatformFileStore({ [fixture.objectKey]: fixture.bytes });
+    const publishJob = await runDb(
+      createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
+    );
+    const barrierKey = "brief:test-publication-late-access-barrier";
+    let releaseBarrier!: () => void;
+    const barrierReleased = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    let signalBarrierHeld!: () => void;
+    const barrierHeld = new Promise<void>((resolve) => {
+      signalBarrierHeld = resolve;
+    });
+
+    try {
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            create or replace function brief_test_pause_publication_late_access()
+            returns trigger language plpgsql as $$
+            begin
+              if new.status = 'published' and old.status <> 'published' then
+                perform pg_advisory_xact_lock(hashtext('brief:test-publication-late-access-barrier'));
+              end if;
+              return new;
+            end;
+            $$
+          `;
+          yield* sql`
+            drop trigger if exists brief_test_pause_publication_late_access on publisher_issues
+          `;
+          yield* sql`
+            create trigger brief_test_pause_publication_late_access
+            before update of status on publisher_issues
+            for each row execute function brief_test_pause_publication_late_access()
+          `;
+        }),
+      );
+
+      const barrier = runDbAs(
+        "brief-publication-late-access-barrier",
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`select pg_advisory_xact_lock(hashtext(${barrierKey}))`;
+              yield* Effect.sync(signalBarrierHeld);
+              yield* Effect.promise(() => barrierReleased);
+            }),
+          );
+        }),
+      );
+      await barrierHeld;
+
+      const publication = runPlatformJob(publishJob, fileStore);
+      await waitForDatabaseLock("brief-ai-runtime");
+      const additionalAccess = await runDb(provisionAdditionalClientAccess(fixture));
+
+      releaseBarrier();
+      await barrier;
+      await expect(publication).resolves.toMatchObject({ status: "completed" });
+
+      const deliveredCompanies = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly clientCompanyId: string }>`
+            select client_company_id::text as "clientCompanyId"
+            from issue_deliveries
+            where issue_id = ${fixture.issueId}
+            order by client_company_id::text
+          `;
+        }),
+      );
+      const recipientCompanies = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly clientCompanyId: string }>`
+            select distinct client_company_id::text as "clientCompanyId"
+            from issue_delivery_recipients
+            where issue_id = ${fixture.issueId}
+            order by client_company_id::text
+          `;
+        }),
+      );
+      expect(deliveredCompanies).toEqual([{ clientCompanyId: fixture.clientCompanyId }]);
+      expect(recipientCompanies).toEqual(deliveredCompanies);
+      expect(additionalAccess.clientCompanyId).not.toBe(fixture.clientCompanyId);
+    } finally {
+      releaseBarrier();
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`drop trigger if exists brief_test_pause_publication_late_access on publisher_issues`;
+          yield* sql`drop function if exists brief_test_pause_publication_late_access()`;
+        }),
+      );
+    }
+  }, 20_000);
+
   it("fails closed when an exact access tuple expires before delivery insertion", async () => {
     const fixture = await runDb(
       provisionFixture({ status: "scheduled", publicationAt: new Date(Date.now() - 60_000) }),
