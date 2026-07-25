@@ -167,8 +167,22 @@ begin
             'AI chat schema cutover preflight row assistant_message_sources/%: stored source identity digest does not match retained fields',
             row_data.row_identity;
         end if;
+        if row_data.kind = 'document'
+          and jsonb_exists(row_data.locator, 'versionId')
+          and jsonb_exists(row_data.locator, 'publisherDocumentVersionId')
+          and row_data.locator->>'versionId' is distinct from row_data.locator->>'publisherDocumentVersionId' then
+          raise exception
+            'AI chat schema cutover preflight row assistant_message_sources/%: versionId conflicts with publisherDocumentVersionId',
+            row_data.row_identity;
+        end if;
+        if row_data.kind = 'document'
+          and coalesce(btrim(row_data.locator->>'versionId'), btrim(row_data.locator->>'publisherDocumentVersionId'), '') = '' then
+          raise exception
+            'AI chat schema cutover preflight row assistant_message_sources/%: document locator is not a closed canonical record',
+            row_data.row_identity;
+        end if;
         if row_data.kind = 'document' and (
-          row_data.document_version_id is null
+          (row_data.document_version_id is null and row_data.publisher_document_version_id is null)
           or row_data.message_id is not null
           or row_data.memory_revision_id is not null
         ) then
@@ -255,14 +269,14 @@ begin
        and public_documents.document_id = sources.locator->>'documentId'
        and public_documents.document_id = coalesce(
          sources.locator->>'versionId',
-         sources.locator->>'versionId'
+         sources.locator->>'publisherDocumentVersionId'
        )
       left join brief_document_versions publisher_versions
         on sources.kind = 'document'
        and sources.locator->>'sourceId' like 'publisher:%'
        and publisher_versions.id::text = coalesce(
          sources.locator->>'versionId',
-         sources.locator->>'versionId'
+         sources.locator->>'publisherDocumentVersionId'
        )
        and publisher_versions.brief_document_id::text = sources.locator->>'documentId'
       where sources.kind = 'document'
@@ -396,7 +410,7 @@ begin
             and public_documents.source_id::text = substring(row_data.source_locator->>'sourceId' from 8)
             and public_documents.document_id = row_data.source_locator->>'documentId'
             and public_documents.document_id = coalesce(
-              row_data.source_locator->>'versionId', row_data.source_locator->>'versionId'
+              row_data.source_locator->>'versionId', row_data.source_locator->>'publisherDocumentVersionId'
             )
             and (use_range->>'charEnd') ~ '^[0-9]+$'
             and (use_range->>'charEnd')::numeric <= (
@@ -412,7 +426,7 @@ begin
           from brief_document_versions publisher_versions
           where row_data.source_locator->>'sourceId' like 'publisher:%'
             and publisher_versions.id::text = coalesce(
-              row_data.source_locator->>'versionId', row_data.source_locator->>'versionId'
+              row_data.source_locator->>'versionId', row_data.source_locator->>'publisherDocumentVersionId'
             )
             and publisher_versions.brief_document_id::text = row_data.source_locator->>'documentId'
             and (use_range->>'charEnd') ~ '^[0-9]+$'
@@ -640,7 +654,7 @@ begin
           join publisher_issues issues on issues.id = documents.issue_id
           join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
           where versions.id::text = sources.publisher_document_version_id::text
-            and versions.id::text = coalesce(sources.locator->>'versionId', sources.locator->>'versionId', sources.publisher_document_version_id::text)
+            and versions.id::text = coalesce(sources.locator->>'versionId', sources.locator->>'publisherDocumentVersionId', sources.publisher_document_version_id::text)
             and versions.brief_document_id::text = sources.locator->>'documentId'
             and sources.locator->>'publisherIssueId' = issues.id::text
             and sources.locator->>'publisherDocumentId' = documents.id::text
@@ -1097,7 +1111,10 @@ begin
         or coalesce(btrim(row_data.locator->>'sourceId'), '') = ''
         or row_data.locator->>'sourceId' !~ '^((public|publisher):[^:[:space:]]+)$'
         or coalesce(btrim(row_data.locator->>'documentId'), '') = ''
-        or coalesce(btrim(coalesce(row_data.locator->>'versionId', row_data.locator->>'versionId')), '') = ''
+        or coalesce(btrim(coalesce(row_data.locator->>'versionId', row_data.locator->>'publisherDocumentVersionId')), '') = ''
+        or (jsonb_exists(row_data.locator, 'versionId')
+          and jsonb_exists(row_data.locator, 'publisherDocumentVersionId')
+          and row_data.locator->>'versionId' is distinct from row_data.locator->>'publisherDocumentVersionId')
         or row_data.locator->>'contentHash' !~ '^[0-9a-f]{64}$'
         or jsonb_typeof(row_data.locator->'ranges') is distinct from 'array'
         or jsonb_array_length(case when jsonb_typeof(row_data.locator->'ranges') = 'array'
@@ -1127,7 +1144,7 @@ begin
         or exists (
           select 1 from jsonb_object_keys(row_data.locator) key
           where key not in (
-            'kind', 'sourceId', 'documentId', 'versionId', 'versionId',
+            'kind', 'sourceId', 'documentId', 'versionId', 'publisherDocumentVersionId',
             'contentHash', 'ranges', 'publisherExtractionId',
             'publisherIssueId', 'publisherDocumentId'
           )
@@ -1477,11 +1494,11 @@ begin
        and sources.locator->>'sourceId' like 'public:%'
        and public_documents.source_id::text = substring(sources.locator->>'sourceId' from 8)
        and public_documents.document_id = sources.locator->>'documentId'
-       and public_documents.document_id = coalesce(sources.locator->>'versionId', sources.locator->>'versionId')
+       and public_documents.document_id = coalesce(sources.locator->>'versionId', sources.locator->>'publisherDocumentVersionId')
       left join brief_document_versions publisher_versions
         on sources.kind = 'document'
        and sources.locator->>'sourceId' like 'publisher:%'
-       and publisher_versions.id::text = coalesce(sources.locator->>'versionId', sources.locator->>'versionId')
+       and publisher_versions.id::text = coalesce(sources.locator->>'versionId', sources.locator->>'publisherDocumentVersionId')
        and publisher_versions.brief_document_id::text = sources.locator->>'documentId'
       where sources.kind = 'document'
         and exists (
@@ -5748,7 +5765,7 @@ begin
                     or (sources.kind = 'document'
                       and refs.value->>'documentId' = sources.locator->>'documentId'
                       and refs.value->>'versionId' = coalesce(
-                        sources.locator->>'versionId', sources.locator->>'versionId'))
+                        sources.locator->>'versionId', sources.locator->>'publisherDocumentVersionId'))
                     or (sources.kind = 'web'
                       and refs.value->>'url' = sources.locator->>'url')
                   )
@@ -5829,7 +5846,7 @@ begin
                       and exposures.document_source_id = sources.locator->>'sourceId'
                       and exposures.document_id = sources.locator->>'documentId'
                       and coalesce(to_jsonb(exposures)->>'document_version_id', to_jsonb(exposures)->>'version_id') =
-                        coalesce(sources.locator->>'versionId', sources.locator->>'versionId')
+                        coalesce(sources.locator->>'versionId', sources.locator->>'publisherDocumentVersionId')
                       and coalesce(to_jsonb(exposures)->>'document_content_hash', to_jsonb(exposures)->>'content_hash') =
                         sources.locator->>'contentHash'
                       and (exposures.exposure_stage <> 'answer_serialized'
@@ -5886,7 +5903,7 @@ begin
                           and exposures.document_source_id = sources.locator->>'sourceId'
                           and exposures.document_id = sources.locator->>'documentId'
                           and coalesce(to_jsonb(exposures)->>'document_version_id', to_jsonb(exposures)->>'version_id') =
-                            coalesce(sources.locator->>'versionId', sources.locator->>'versionId')
+                            coalesce(sources.locator->>'versionId', sources.locator->>'publisherDocumentVersionId')
                           and coalesce(to_jsonb(exposures)->>'document_content_hash', to_jsonb(exposures)->>'content_hash') =
                             sources.locator->>'contentHash'
                           and exposures.document_ranges is not distinct from uses.ranges
@@ -6164,7 +6181,7 @@ begin
                       and refs.value->>'messageId' = sources.locator->>'messageId')
                     or (sources.kind = 'document'
                       and refs.value->>'documentId' = sources.locator->>'documentId'
-                      and refs.value->>'versionId' = coalesce(sources.locator->>'versionId', sources.locator->>'versionId')
+                      and refs.value->>'versionId' = coalesce(sources.locator->>'versionId', sources.locator->>'publisherDocumentVersionId')
                       and (
                         refs.value->'ranges' is not distinct from sources.locator->'ranges'
                         or exists (
@@ -6230,7 +6247,7 @@ begin
                                 to_jsonb(sources)->>'document_version_id',
                                 to_jsonb(sources)->>'version_id',
                                 sources.locator->>'versionId',
-                                sources.locator->>'versionId'
+                                sources.locator->>'publisherDocumentVersionId'
                               )
                             )
                           ))
@@ -6930,7 +6947,7 @@ begin
               or (sources.kind = 'document'
                 and refs.value->>'documentId' = sources.locator->>'documentId'
                 and refs.value->>'versionId' = coalesce(
-                  sources.locator->>'versionId', sources.locator->>'versionId')
+                  sources.locator->>'versionId', sources.locator->>'publisherDocumentVersionId')
                 and (
                   refs.value->'ranges' is not distinct from uses.ranges
                   or exists (
@@ -7066,7 +7083,7 @@ begin
                           to_jsonb(sources)->>'document_version_id',
                           to_jsonb(sources)->>'version_id',
                           sources.locator->>'versionId',
-                          sources.locator->>'versionId'
+                          sources.locator->>'publisherDocumentVersionId'
                         )
                       )
                     ))
@@ -7403,8 +7420,8 @@ begin
       end loop;
   end if;
 
-  -- Locators are closed records.  The old versionId spelling is
-  -- accepted only on a document row in the legacy branch; the DDL below
+  -- Locators are closed records.  The transitional publisherDocumentVersionId
+  -- spelling is accepted only on a document row in the legacy branch; the DDL below
   -- converts it to versionId.  Every other unknown or cross-kind field blocks
   -- the cutover with the source's composite identity.
   for legacy_row in
@@ -7430,14 +7447,14 @@ begin
               or ascii(substr(legacy_row.locator->>'sourceId', positions.position, 1)) between 8192 and 8202
           )
           or coalesce(btrim(legacy_row.locator->>'documentId'), '') = ''
-          or coalesce(btrim(legacy_row.locator->>'versionId'), btrim(legacy_row.locator->>'versionId'), '') = ''
+          or coalesce(btrim(legacy_row.locator->>'versionId'), btrim(legacy_row.locator->>'publisherDocumentVersionId'), '') = ''
           or legacy_row.locator->>'contentHash' !~ '^[0-9a-f]{64}$'
-          or (jsonb_exists(legacy_row.locator, 'versionId') and jsonb_exists(legacy_row.locator, 'versionId')
-            and legacy_row.locator->>'versionId' is distinct from legacy_row.locator->>'versionId')
+          or (jsonb_exists(legacy_row.locator, 'versionId') and jsonb_exists(legacy_row.locator, 'publisherDocumentVersionId')
+            and legacy_row.locator->>'versionId' is distinct from legacy_row.locator->>'publisherDocumentVersionId')
           or exists (
             select 1 from jsonb_object_keys(legacy_row.locator) key
             where key not in (
-              'kind', 'sourceId', 'documentId', 'versionId', 'versionId',
+              'kind', 'sourceId', 'documentId', 'versionId', 'publisherDocumentVersionId',
               'contentHash', 'ranges', 'publisherIssueId', 'publisherDocumentId',
               'publisherExtractionId'
             )
@@ -7535,7 +7552,10 @@ begin
         legacy_row.locator->>'sourceId' !~ '^((public|publisher):[^:[:space:]]+)$'
         or position(chr(65279) in legacy_row.locator->>'sourceId') > 0
         or coalesce(btrim(legacy_row.locator->>'documentId'), '') = ''
-        or coalesce(btrim(legacy_row.locator->>'versionId'), btrim(legacy_row.locator->>'versionId'), '') = ''
+        or coalesce(btrim(legacy_row.locator->>'versionId'), btrim(legacy_row.locator->>'publisherDocumentVersionId'), '') = ''
+        or (jsonb_exists(legacy_row.locator, 'versionId')
+          and jsonb_exists(legacy_row.locator, 'publisherDocumentVersionId')
+          and legacy_row.locator->>'versionId' is distinct from legacy_row.locator->>'publisherDocumentVersionId')
         or legacy_row.locator->>'contentHash' !~ '^[0-9a-f]{64}$'
       ) then
         raise exception
@@ -10225,11 +10245,12 @@ begin
           'AI chat schema cutover preflight row assistant_message_sources/%: non-document row carries a document version identity',
           legacy_row.row_identity;
       end if;
-      if null = 'versionId'
+      if legacy_row.kind = 'document'
         and jsonb_exists(legacy_row.locator, 'versionId')
-        and legacy_row.locator->>'versionId' is distinct from legacy_row.locator->>'versionId' then
+        and jsonb_exists(legacy_row.locator, 'publisherDocumentVersionId')
+        and legacy_row.locator->>'versionId' is distinct from legacy_row.locator->>'publisherDocumentVersionId' then
         raise exception
-          'AI chat schema cutover preflight row assistant_message_sources/%: versionId conflicts with versionId',
+          'AI chat schema cutover preflight row assistant_message_sources/%: versionId conflicts with publisherDocumentVersionId',
           legacy_row.row_identity;
       end if;
       legacy_key := null;
@@ -10349,7 +10370,7 @@ begin
               from public_source_documents documents
               where documents.source_id::text = substring(legacy_row.locator->>'sourceId' from 8)
                 and documents.document_id = legacy_row.locator->>'documentId'
-                and documents.document_id = coalesce(legacy_row.locator->>'versionId', legacy_row.locator->>'versionId', legacy_row.document_version_id)
+                and documents.document_id = coalesce(legacy_row.locator->>'versionId', legacy_row.locator->>'publisherDocumentVersionId', legacy_row.document_version_id)
                 and documents.content_hash = legacy_row.locator->>'contentHash'
                 and documents.content_hash = encode(digest(convert_to(documents.text, 'UTF8'), 'sha256'), 'hex')
             ) then
@@ -10368,7 +10389,7 @@ begin
               join publisher_issues issues on issues.id = documents.issue_id
               join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
               where versions.id = legacy_row.publisher_document_version_id
-                and versions.id::text = coalesce(legacy_row.locator->>'versionId', legacy_row.locator->>'versionId', legacy_row.publisher_document_version_id::text)
+                and versions.id::text = coalesce(legacy_row.locator->>'versionId', legacy_row.locator->>'publisherDocumentVersionId', legacy_row.publisher_document_version_id::text)
                 and versions.brief_document_id::text = legacy_row.locator->>'documentId'
                 and legacy_row.locator->>'publisherIssueId' = issues.id::text
                 and legacy_row.locator->>'publisherDocumentId' = documents.id::text
@@ -10617,7 +10638,7 @@ begin
         and (coalesce(btrim(sources.locator->>'documentId'), '') = ''
           or coalesce(
             btrim(sources.locator->>'versionId'),
-            btrim(sources.locator->>'versionId'),
+            btrim(sources.locator->>'publisherDocumentVersionId'),
             ''
           ) = ''
           or sources.locator->>'contentHash' !~ '^[0-9a-f]{64}$')
@@ -10800,11 +10821,11 @@ begin
        and sources.locator->>'sourceId' like 'public:%'
        and public_documents.source_id::text = substring(sources.locator->>'sourceId' from 8)
        and public_documents.document_id = sources.locator->>'documentId'
-       and public_documents.document_id = coalesce(sources.locator->>'versionId', sources.locator->>'versionId')
+       and public_documents.document_id = coalesce(sources.locator->>'versionId', sources.locator->>'publisherDocumentVersionId')
       left join brief_document_versions publisher_versions
         on sources.kind = 'document'
        and sources.locator->>'sourceId' like 'publisher:%'
-       and publisher_versions.id::text = coalesce(sources.locator->>'versionId', sources.locator->>'versionId')
+       and publisher_versions.id::text = coalesce(sources.locator->>'versionId', sources.locator->>'publisherDocumentVersionId')
        and publisher_versions.brief_document_id::text = sources.locator->>'documentId'
       where sources.kind = 'document'
         and (
@@ -10830,7 +10851,7 @@ begin
       from assistant_message_sources sources
       left join public_source_documents documents
         on documents.document_id = sources.locator->>'documentId'
-       and documents.document_id = coalesce(sources.locator->>'versionId', sources.locator->>'versionId')
+       and documents.document_id = coalesce(sources.locator->>'versionId', sources.locator->>'publisherDocumentVersionId')
        and sources.locator->>'sourceId' = 'public:' || documents.source_id
       where sources.kind = 'document'
         and sources.locator->>'sourceId' like 'public:%'
@@ -12412,9 +12433,10 @@ update assistant_message_sources
 set locator = jsonb_set(
     locator - 'versionId' - 'publisherDocumentVersionId',
     '{versionId}',
-    coalesce(locator->'versionId', locator->'versionId'),
+    coalesce(locator->'versionId', locator->'publisherDocumentVersionId'),
     true)
-where kind = 'document' and jsonb_exists(locator, 'versionId');
+where kind = 'document'
+  and (jsonb_exists(locator, 'versionId') or jsonb_exists(locator, 'publisherDocumentVersionId'));
 update assistant_message_sources
 set document_source_id = locator->>'sourceId',
     document_id = locator->>'documentId',

@@ -3301,7 +3301,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 kind: "document",
                 sourceId: `publisher:${subscriptionId}`,
                 documentId,
-                versionId: versionId,
+                publisherDocumentVersionId: versionId,
                 contentHash,
                 ranges: reducedRanges,
                 publisherIssueId: issueId,
@@ -4137,6 +4137,55 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               and source_key = ${upgradeSourceKey}
           `;
           yield* sql`alter table assistant_message_sources enable trigger user`;
+          const oldPublisherLocator = {
+            kind: "document",
+            sourceId: `publisher:${subscriptionId}`,
+            documentId,
+            publisherDocumentVersionId: versionId,
+            contentHash,
+            ranges: reducedRanges,
+            publisherIssueId: issueId,
+            publisherDocumentId: documentId,
+          };
+          const conflictingPublisherLocator = {
+            ...oldPublisherLocator,
+            versionId: crypto.randomUUID(),
+          };
+          const { publisherDocumentVersionId: _ignored, ...incompletePublisherLocator } =
+            oldPublisherLocator;
+          for (const [locator, expected] of [
+            [conflictingPublisherLocator, "versionId conflicts with publisherDocumentVersionId"],
+            [incompletePublisherLocator, "document locator is not a closed canonical record"],
+          ] as const) {
+            yield* sql`alter table assistant_message_sources disable trigger user`;
+            yield* sql`
+              update assistant_message_sources
+              set locator = ${sql.json(locator)},
+                  source_identity_digest = assistant_message_source_identity_digest(
+                    assistant_message_id, source_key, kind, ${sql.json(locator)},
+                    document_version_id, publisher_document_version_id,
+                    message_id, memory_revision_id, display_label, public_provenance
+                  )
+              where assistant_message_id = ${upgradeAssistantMessageId}
+                and source_key = ${upgradeSourceKey}
+            `;
+            yield* sql`alter table assistant_message_sources enable trigger user`;
+            const blockedLocator = yield* Effect.exit(sql.unsafe(migration).raw);
+            expect(errorText(blockedLocator)).toContain(expected);
+            yield* sql`alter table assistant_message_sources disable trigger user`;
+            yield* sql`
+              update assistant_message_sources
+              set locator = ${sql.json(oldPublisherLocator)},
+                  source_identity_digest = assistant_message_source_identity_digest(
+                    assistant_message_id, source_key, kind, ${sql.json(oldPublisherLocator)},
+                    document_version_id, publisher_document_version_id,
+                    message_id, memory_revision_id, display_label, public_provenance
+                  )
+              where assistant_message_id = ${upgradeAssistantMessageId}
+                and source_key = ${upgradeSourceKey}
+            `;
+            yield* sql`alter table assistant_message_sources enable trigger user`;
+          }
           // The second run sees only canonical version_id/content_hash
           // exposure columns and must still accept the populated ledger.
           yield* sql.unsafe(migration).raw;
@@ -7643,6 +7692,103 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       );
     }
   }, 120_000);
+
+  it("proves every 0064 document locator upgrade case", async () => {
+    const migration = await Bun.file(
+      new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+    ).text();
+    expect(migration).toContain("versionId conflicts with publisherDocumentVersionId");
+    expect(migration).toContain("locator - 'versionId' - 'publisherDocumentVersionId'");
+    expect(migration).toContain(
+      "jsonb_exists(locator, 'versionId') or jsonb_exists(locator, 'publisherDocumentVersionId')",
+    );
+
+    const rows = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{
+          readonly name: string;
+          readonly normalizedVersionId: string | null;
+          readonly hasTransitionalKey: boolean;
+          readonly isConflict: boolean;
+          readonly isMissing: boolean;
+        }>`
+          with fixtures(name, locator) as (
+            values
+              ('old-only', '{"publisherDocumentVersionId":"v-old"}'::jsonb),
+              ('canonical-only', '{"versionId":"v-canonical"}'::jsonb),
+              ('equal-dual-key', '{"versionId":"v-equal","publisherDocumentVersionId":"v-equal"}'::jsonb),
+              ('conflicting-dual-key', '{"versionId":"v-one","publisherDocumentVersionId":"v-two"}'::jsonb),
+              ('missing-key', '{}'::jsonb)
+          ), normalized as (
+            select
+              name,
+              case
+                when locator ? 'versionId' or locator ? 'publisherDocumentVersionId' then
+                  jsonb_set(
+                    locator - 'versionId' - 'publisherDocumentVersionId',
+                    '{versionId}',
+                    coalesce(locator->'versionId', locator->'publisherDocumentVersionId'),
+                    true
+                  )
+                else locator
+              end as locator,
+              locator ? 'versionId' and locator ? 'publisherDocumentVersionId'
+                and locator->>'versionId' is distinct from locator->>'publisherDocumentVersionId' as is_conflict,
+              not (locator ? 'versionId' or locator ? 'publisherDocumentVersionId') as is_missing
+            from fixtures
+          )
+          select
+            name,
+            locator->>'versionId' as "normalizedVersionId",
+            locator ? 'publisherDocumentVersionId' as "hasTransitionalKey",
+            is_conflict as "isConflict",
+            is_missing as "isMissing"
+          from normalized
+          order by name
+        `;
+      }),
+    );
+
+    expect(rows).toEqual([
+      {
+        name: "canonical-only",
+        normalizedVersionId: "v-canonical",
+        hasTransitionalKey: false,
+        isConflict: false,
+        isMissing: false,
+      },
+      {
+        name: "conflicting-dual-key",
+        normalizedVersionId: "v-one",
+        hasTransitionalKey: false,
+        isConflict: true,
+        isMissing: false,
+      },
+      {
+        name: "equal-dual-key",
+        normalizedVersionId: "v-equal",
+        hasTransitionalKey: false,
+        isConflict: false,
+        isMissing: false,
+      },
+      {
+        name: "missing-key",
+        normalizedVersionId: null,
+        hasTransitionalKey: false,
+        isConflict: false,
+        isMissing: true,
+      },
+      {
+        name: "old-only",
+        normalizedVersionId: "v-old",
+        hasTransitionalKey: false,
+        isConflict: false,
+        isMissing: false,
+      },
+    ]);
+  });
 
   it("immutably binds assistant source and source-use tuples after citation persistence", async () => {
     const testUrl = isolatedDatabaseUrl();
