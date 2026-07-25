@@ -588,7 +588,11 @@ export const makeWebResearchBoundary = (
       ) => {
         throwIfAborted(signal);
         if (!acceptedPolicy.enabled || acceptedPolicy.provider !== "tinyfish") {
-          throw new WebBoundaryError("unsupported_policy", "saved web provider is unavailable", false);
+          throw new WebBoundaryError(
+            "unsupported_policy",
+            "saved web provider is unavailable",
+            false,
+          );
         }
         throwIfAborted(signal);
         await persist(
@@ -626,7 +630,11 @@ export const makeWebResearchBoundary = (
       fetch: async (url, acceptedPolicy, _authorizePolicy, coordinates, signal) => {
         throwIfAborted(signal);
         if (!acceptedPolicy.enabled || acceptedPolicy.provider !== "tinyfish") {
-          throw new WebBoundaryError("unsupported_policy", "saved web provider is unavailable", false);
+          throw new WebBoundaryError(
+            "unsupported_policy",
+            "saved web provider is unavailable",
+            false,
+          );
         }
         throwIfAborted(signal);
         await persist(
@@ -770,7 +778,6 @@ export const makeDurableProviderBoundary = (
   aiRunId: string,
   config: WorkerConfig,
 ): ExactPiBoundary | DeterministicE2eProviderBoundary => {
-  const providerServiceId = providerServiceIdForConfig(config);
   const boundaryOptions: PiBoundaryOptions = {
     apiKey: config.zaiApiKey,
     baseUrl: config.aiBaseUrl,
@@ -870,11 +877,6 @@ export const makeDurableProviderBoundary = (
               select acceptance_scope as scope from ai_runs where id = ${aiRunId} for share
             `;
             const scope = decodeRunAcceptanceScope(rows[0]?.scope);
-            if (scope.provider !== providerServiceId) {
-              return yield* Effect.fail(
-                new Error("ai run acceptance scope provider differs from worker provider"),
-              );
-            }
             yield* insertAiRunUsage({
               runId: aiRunId,
               taskId: coordinates.taskId,
@@ -883,7 +885,7 @@ export const makeDurableProviderBoundary = (
               providerRequestIndex: coordinates.providerRequestIndex,
               agentRole: coordinates.agentRole,
               modelId,
-              providerServiceId,
+              providerServiceId: scope.provider,
               usage,
             });
           }),

@@ -18,8 +18,6 @@ export interface LoadedTurn {
   readonly market: Market;
   readonly currentDate: string;
   readonly citationNamespace: string;
-  readonly memoryMode: "private_owner" | "disabled";
-  readonly webRequested: boolean;
   readonly acceptanceScope: RunAcceptanceScope;
 }
 

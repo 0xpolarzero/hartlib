@@ -111,8 +111,6 @@ const LoadedTurnSchema = z.strictObject({
   market: z.string(),
   currentDate: z.string(),
   citationNamespace: z.string().regex(/^cn_[A-Za-z0-9_-]{22}$/u),
-  memoryMode: z.enum(["private_owner", "disabled"]),
-  webRequested: z.boolean(),
   acceptanceScope: RunAcceptanceScopeSchema,
 });
 // Provider output contains only logical document IDs.  Durable Smithers output

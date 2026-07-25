@@ -8,6 +8,7 @@ import {
   isCanonicalPublisherDocumentSourceId,
   parseRunAcceptanceScope,
   publisherIssueAdvisoryLockKey,
+  type RunAcceptanceScope,
 } from "@brief/shared";
 
 import { isRetryableAiRunError, type AiRunErrorCode } from "../runtime/errors";
@@ -3880,6 +3881,7 @@ export const assertFinalSourceMap = (
 const persistAssistantSources = (
   assistantMessageId: string,
   sourceMap: readonly FinalSourceRecord[],
+  acceptanceScope: RunAcceptanceScope,
 ): Effect.Effect<void, SqlError | Error, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
@@ -3896,6 +3898,39 @@ const persistAssistantSources = (
           return yield* Effect.fail(new Error("publisher document identity is incomplete"));
         }
         if (publisherIssueId !== undefined && publisherDocumentId !== undefined) {
+          const deliveredRows = yield* sql<{ readonly accessId: string }>`
+            select deliveries.access_id::text as "accessId"
+            from issue_deliveries deliveries
+            join issue_delivery_recipients recipients
+              on recipients.issue_id = deliveries.issue_id
+             and recipients.client_company_id = deliveries.client_company_id
+             and recipients.user_id = ${acceptanceScope.userId}
+             and recipients.delivered_at = deliveries.delivered_at
+            join publisher_issues issues
+              on issues.id = deliveries.issue_id
+             and issues.id::text = ${publisherIssueId}
+             and issues.subscription_id::text = ${source.locator.sourceId.slice("publisher:".length)}
+             and issues.restricted_at is null
+             and issues.deleted_at is null
+            join brief_documents documents
+              on documents.issue_id = issues.id
+             and documents.id::text = ${publisherDocumentId}
+             and documents.deleted_at is null
+            join brief_document_versions versions
+              on versions.brief_document_id = documents.id
+             and versions.id::text = ${source.locator.versionId}
+             and versions.content_hash = ${source.locator.contentHash}
+             and versions.publisher_extraction_id::text = ${source.locator.publisherExtractionId ?? ""}
+            where deliveries.client_company_id = ${acceptanceScope.companyId}
+              and deliveries.access_id::text = any(${acceptanceScope.accessIds}::text[])
+              and deliveries.subscription_id::text = any(${acceptanceScope.subscriptionIds}::text[])
+            limit 1
+          `;
+          if (deliveredRows[0] === undefined) {
+            return yield* Effect.fail(
+              new Error("publisher document lacks its accepted historical recipient"),
+            );
+          }
           const publisherExtractions = yield* sql<{ readonly id: string }>`
             select versions.publisher_extraction_id::text as id
             from brief_document_extractions extractions
@@ -4427,7 +4462,7 @@ export const finalizeAiRun = (
           set assistant_message_id = ${assistantMessageId}
           where id = ${run.id}
         `;
-        yield* persistAssistantSources(assistantMessageId, answer.sourceMap);
+        yield* persistAssistantSources(assistantMessageId, answer.sourceMap, acceptanceScope);
         yield* persistCitationObservations(
           run,
           assistantMessageId,
@@ -4478,6 +4513,32 @@ export const failAiRun = (
           run.initiatingUserId !== executionScope.initiatingUserId
         ) {
           return yield* Effect.fail(new Error("ai run execution scope changed"));
+        }
+        const acceptanceScope = parseRunAcceptanceScope(run.acceptanceScope);
+        if (
+          acceptanceScope.userId !== run.initiatingUserId ||
+          acceptanceScope.chatId !== run.chatId ||
+          acceptanceScope.companyId !== executionScope.companyId
+        ) {
+          return yield* Effect.fail(new Error("ai run acceptance scope binding is invalid"));
+        }
+        const tenantAvailable = yield* sql<{ readonly available: boolean }>`
+          select exists(
+            select 1
+            from chats chat
+            join client_companies company on company.id = chat.company_id
+            join platform_users users on users.id = ${run.initiatingUserId}
+            where chat.id = ${run.chatId}
+              and chat.deleted_at is null
+              and company.id = ${acceptanceScope.companyId}::uuid
+              and company.recovery_deleted_at is null
+              and company.purged_at is null
+              and users.recovery_deleted_at is null
+              and users.purged_at is null
+          ) as available
+        `;
+        if (tenantAvailable[0]?.available !== true) {
+          return yield* Effect.fail(new Error("ai run execution scope is no longer available"));
         }
         if (expectedSmithersRunId !== undefined && run.smithersRunId !== expectedSmithersRunId) {
           return yield* Effect.fail(

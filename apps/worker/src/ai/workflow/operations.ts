@@ -1154,17 +1154,13 @@ const immutableSourceIdentity = (source: FinalSourceRecord): string => {
 };
 
 export class CanonicalWorkflowOperations {
-  private readonly providerServiceId: AiProviderServiceId;
-
   constructor(
     private readonly connectionString: string,
     private readonly config: CanonicalAiConfig,
     private readonly agents: CanonicalAgentClient,
     private readonly web?: WebResearchBoundary | undefined,
     private readonly now: () => Date = () => new Date(),
-  ) {
-    this.providerServiceId = config.providerServiceId ?? "zai_coding_plan_official";
-  }
+  ) {}
 
   private db<A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
     return this.dbWithSignal(effect, currentTaskAbortSignal());
@@ -1392,9 +1388,6 @@ export class CanonicalWorkflowOperations {
     readonly webPolicyAllowed: boolean;
   }> {
     const scope = decodeRunAcceptanceScope(load.acceptanceScope);
-    if (scope.provider !== this.providerServiceId) {
-      throw new Error("ai run acceptance scope provider differs from worker provider");
-    }
     const sourceAllowed = sourceMap.map((source) => {
       if (source.locator.kind === "document") {
         const sourceId = source.locator.sourceId;
@@ -1451,7 +1444,6 @@ export class CanonicalWorkflowOperations {
   }
 
   async loadTurn(aiRunId: string): Promise<LoadedTurn> {
-    const expectedProviderServiceId = this.providerServiceId;
     return this.db(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -1497,11 +1489,6 @@ export class CanonicalWorkflowOperations {
             ) {
               return yield* Effect.fail(new Error("ai run acceptance scope identity mismatch"));
             }
-            if (acceptanceScope.provider !== expectedProviderServiceId) {
-              return yield* Effect.fail(
-                new Error("ai run acceptance scope provider differs from worker provider"),
-              );
-            }
             if (!/^cn_[A-Za-z0-9_-]{22}$/u.test(run.citationNamespace)) {
               return yield* Effect.fail(new Error("ai run citation namespace is invalid"));
             }
@@ -1520,8 +1507,6 @@ export class CanonicalWorkflowOperations {
               market: run.market,
               currentDate: run.currentDate,
               citationNamespace: run.citationNamespace,
-              memoryMode: acceptanceScope.memoryMode,
-              webRequested: acceptanceScope.webRequested,
               acceptanceScope,
             };
           }),
@@ -2336,7 +2321,7 @@ export class CanonicalWorkflowOperations {
     question: string,
     taskId: string,
   ): Promise<MemorySelectorResult> {
-    if (load.memoryMode === "disabled") {
+    if (load.acceptanceScope.memoryMode === "disabled") {
       await this.observe(load, taskId, "retrieval_manifest", {
         selectorRole: "memory",
         references: [],
@@ -3757,7 +3742,7 @@ export class CanonicalWorkflowOperations {
   ): Promise<WebSelectorResult> {
     const signal = currentTaskAbortSignal();
     throwIfAborted(signal);
-    if (!load.webRequested) {
+    if (!load.acceptanceScope.webRequested) {
       await this.observe(load, taskId, "retrieval_manifest", {
         selectorRole: "web",
         references: [],
@@ -4255,7 +4240,9 @@ export class CanonicalWorkflowOperations {
       sourceMap,
       selectedConversation,
       gaps: [
-        ...(load.webRequested && selectors.web.length === 0 && selectors.webSelection === "enabled"
+        ...(load.acceptanceScope.webRequested &&
+        selectors.web.length === 0 &&
+        selectors.webSelection === "enabled"
           ? [WEB_EMPTY_RESULT_GAP]
           : []),
         ...[...materialized.rejections, ...conversationDeduplication.rejections].map(
@@ -4774,7 +4761,7 @@ export class CanonicalWorkflowOperations {
                 memoryId: reference.memoryId,
               })
             )[0];
-      if (memory !== undefined && load.memoryMode === "private_owner")
+      if (memory !== undefined && load.acceptanceScope.memoryMode === "private_owner")
         candidates.push({
           id: memoryEvidenceIdentity(memory.memoryId),
           kind: "memory",
@@ -4792,7 +4779,7 @@ export class CanonicalWorkflowOperations {
           reason: "inaccessible",
         });
     }
-    if (load.webRequested || selectors.web.length > 0) {
+    if (load.acceptanceScope.webRequested || selectors.web.length > 0) {
       await this.validateSavedScope(load);
     }
     for (const evidence of selectors.web) {
