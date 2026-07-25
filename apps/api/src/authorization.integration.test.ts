@@ -1827,6 +1827,23 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
               delete from client_company_memberships
               where company_id = ${fixture.clientCompanyId} and user_id = 'never-recipient'
             `;
+            yield* sql`
+              delete from client_subscription_accesses
+              where id = ${neverDeliveredAccessId}
+            `;
+            yield* sql`
+              delete from client_company_memberships
+              where company_id = ${neverDeliveredCompanyId}
+                and user_id = ${neverDeliveredUserId}
+            `;
+            yield* sql`
+              delete from client_companies
+              where id = ${neverDeliveredCompanyId}
+            `;
+            yield* sql`
+              delete from platform_users
+              where id = ${neverDeliveredUserId}
+            `;
           }),
         );
       }),
