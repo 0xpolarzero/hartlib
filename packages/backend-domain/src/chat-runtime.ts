@@ -66,6 +66,8 @@ export interface SourceRow {
   readonly publisher_issue_id?: string | null;
   /** Canonical indexed evidence identity, populated for durable document rows. */
   readonly source_id?: string | null;
+  /** Immutable canonical URL indexed for public-source documents. */
+  readonly canonical_url?: string | null;
   readonly document_id?: string | null;
   readonly version_id?: string | null;
   readonly content_hash?: string | null;
@@ -358,6 +360,7 @@ export const loadChatRuntimeState = (
                    sources.public_provenance,
                    sources.publisher_extraction_id::text as publisher_extraction_id,
                    sources.document_source_id as source_id,
+                   public_documents.canonical_url,
                    sources.document_id,
                    sources.version_id,
                    sources.content_hash,
@@ -379,6 +382,10 @@ export const loadChatRuntimeState = (
             join ai_runs runs
               on runs.id = messages.assistant_ai_run_id
              and runs.assistant_message_id = messages.id
+            left join public_source_documents public_documents
+              on sources.document_source_id like 'public:%'
+             and public_documents.source_id::text = substring(sources.document_source_id from 8)
+             and public_documents.document_id::text = sources.locator->>'documentId'
             where ${sql.in("sources.assistant_message_id", assistantMessageIds)}
             order by sources.assistant_message_id,
                      (substring(sources.source_key from '_([1-9][0-9]*)$'))::numeric,

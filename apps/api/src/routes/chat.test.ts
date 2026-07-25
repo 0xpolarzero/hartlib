@@ -190,6 +190,7 @@ describe("chatMessagesResponseFromRows", () => {
             citationUrl: "https://example.com/document",
             publishedAt: "2026-07-09T00:00:00.000Z",
           },
+          canonical_url: "https://example.com/document",
           source_identity_digest: integrityDigest,
           source_identity_valid: true,
         },
@@ -249,6 +250,7 @@ describe("chatMessagesResponseFromRows", () => {
       document_id: documentId,
       version_id: versionId,
       content_hash: documentContentHash,
+      canonical_url: citationUrl,
       kind: "document" as const,
       locator: {
         kind: "document",

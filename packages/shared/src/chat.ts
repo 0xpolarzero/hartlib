@@ -29,8 +29,7 @@ export interface RunAcceptanceScope {
   readonly allowedDomains: readonly string[] | null;
 }
 
-const uuidPattern =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 const acceptanceScopeKeys = new Set([
   "userId",
@@ -57,7 +56,10 @@ const canonicalStrings = (value: unknown, field: string): readonly string[] => {
   }
   const values = [...(value as readonly string[])];
   const sorted = [...values].sort();
-  if (new Set(values).size !== values.length || values.some((item, index) => item !== sorted[index])) {
+  if (
+    new Set(values).size !== values.length ||
+    values.some((item, index) => item !== sorted[index])
+  ) {
     throw new Error(`acceptance scope ${field} must be sorted and unique`);
   }
   return values;

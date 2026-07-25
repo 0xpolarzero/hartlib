@@ -82,6 +82,7 @@ const documentSource = (url: string, publisher = false): SourceRow => ({
   },
   display_label: null,
   source_id: publisher ? "publisher:publisher-source-1" : "public:public-source-1",
+  canonical_url: publisher ? null : url,
   document_id: publisher ? "223e4567-e89b-12d3-a456-426614174000" : "public-document-1",
   version_id: publisher ? "publisher-version-1" : "public-version-1",
   content_hash: documentContentHash,
@@ -295,6 +296,7 @@ describe("chat response reload boundaries", () => {
           citationUrl: "https://public.example/other",
         },
       },
+      { canonical_url: "https://public.example/other" },
     ]) {
       expect(() => reload([{ ...valid, ...mutation }]), JSON.stringify(mutation)).toThrow();
     }

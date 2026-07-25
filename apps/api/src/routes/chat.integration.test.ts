@@ -889,6 +889,173 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     );
   });
 
+  it("keeps saved answers readable after source, subscription, memory, and web setting changes", async () => {
+    const chat = await getChat();
+    const sourceKey = "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1";
+    const memory = await seedMemory("Remember the original preference");
+    const sourceId = `history-source-${crypto.randomUUID()}`;
+    const subscriptionId = crypto.randomUUID();
+    const accessId = crypto.randomUUID();
+    const publisherCompanyId = crypto.randomUUID();
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const companyId = (yield* sql<{ readonly id: string }>`
+          select company_id::text as id from chats where id = ${chat.chat.id}
+        `)[0]!.id;
+        const userMessage = (yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content)
+          values (${chat.chat.id}, 'user', 'Saved history fixture')
+          returning id::text
+        `)[0]!;
+        const run = (yield* sql<{ readonly id: string }>`
+          insert into ai_runs (
+            chat_id, initiating_user_id, user_message_id, locale, market,
+            acceptance_scope, finished_at, citation_namespace
+          ) values (
+            ${chat.chat.id}, 'demo-user', ${userMessage.id}, 'en-US', 'US',
+            ${sql.json(
+              makeRunAcceptanceScope({
+                userId: "demo-user",
+                chatId: chat.chat.id,
+                companyId,
+                memoryRevisionIds: [memory.revisionId],
+              }),
+            )},
+            now(), ${"cn_" + "A".repeat(22)}
+          )
+          returning id::text
+        `)[0]!;
+        const assistant = (yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content, assistant_ai_run_id)
+          values (
+            ${chat.chat.id}, 'assistant', ${`Saved answer [[cite:${sourceKey}]]`}, ${run.id}
+          )
+          returning id::text
+        `)[0]!;
+        yield* sql`
+          update ai_runs set assistant_message_id = ${assistant.id} where id = ${run.id}
+        `;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator, memory_revision_id,
+            display_label, public_provenance
+          ) values (
+            ${assistant.id}, ${sourceKey}, 'memory',
+            ${sql.json({ kind: "memory", memoryId: memory.memoryId, memoryRevisionId: memory.revisionId })},
+            ${memory.revisionId}, 'Saved preference', ${sql.json({})}
+          )
+        `;
+        yield* sql`
+          insert into assistant_message_source_uses (
+            assistant_message_id, source_key, consumer_task_id,
+            rendered_token_count, context_order, ranges
+          ) values (${assistant.id}, ${sourceKey}, 'single-answer', 4, 0, '[]'::jsonb)
+        `;
+        yield* sql`
+          insert into public_sources (
+            source_id, display_name, publisher_name, description,
+            ingestion_method, discovery_url, average_chars_per_item
+          ) values (
+            ${sourceId}, 'History source', 'History publisher', 'History fixture',
+            'rss', ${`https://history.example/${sourceId}/feed`}, 100
+          )
+        `;
+        yield* sql`
+          insert into client_company_public_source_settings (
+            client_company_id, source_id, enabled, updated_by_user_id
+          ) values (${companyId}, ${sourceId}, true, 'demo-user')
+        `;
+        yield* sql`
+          insert into publisher_companies (id, name)
+          values (${publisherCompanyId}, 'History publisher')
+        `;
+        yield* sql`
+          insert into publisher_subscriptions (
+            id, publisher_company_id, name, created_by_user_id
+          ) values (${subscriptionId}, ${publisherCompanyId}, 'History subscription', 'demo-user')
+        `;
+        yield* sql`
+          insert into client_subscription_accesses (
+            id, subscription_id, client_company_id, state, first_admin_email,
+            accepted_at, subscribed_at, created_by_user_id
+          ) values (
+            ${accessId}, ${subscriptionId}, ${companyId}, 'active',
+            'demo@example.test', now(), now(), 'demo-user'
+          )
+        `;
+        yield* sql`
+          insert into client_employee_subscription_grants (
+            access_id, client_company_id, user_id, granted_by_user_id
+          ) values (${accessId}, ${companyId}, 'demo-user', 'demo-user')
+        `;
+      }),
+    );
+
+    const before = await getChat();
+    expect(before.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          content: expect.stringContaining("Saved answer"),
+          citations: [expect.objectContaining({ sourceKey })],
+        }),
+      ]),
+    );
+
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const companyId = (yield* sql<{ readonly id: string }>`
+          select company_id::text as id from chats where id = ${chat.chat.id}
+        `)[0]!.id;
+        yield* sql`
+          update client_company_public_source_settings
+          set enabled = false, updated_by_user_id = 'demo-user'
+          where client_company_id = ${companyId} and source_id = ${sourceId}
+        `;
+        yield* sql`
+          update client_employee_subscription_grants
+          set revoked_at = now(), revoked_by_user_id = 'demo-user'
+          where access_id = ${accessId} and user_id = 'demo-user'
+        `;
+        yield* sql`
+          update client_subscription_accesses
+          set state = 'paused', delivery_end_at = now(), paused_at = now()
+          where id = ${accessId}
+        `;
+        yield* sql`
+          update client_company_ai_settings settings
+          set web_search_enabled = false, web_domain_allowlist = array['changed.example']
+          where settings.company_id = ${companyId}
+        `;
+        yield* sql`
+          update user_memories
+          set content = 'Changed preference', updated_at = now(), deleted_at = now()
+          where id = ${memory.memoryId}
+        `;
+      }),
+    );
+
+    const after = await getChat();
+    expect(after.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          content: expect.stringContaining("Saved answer"),
+          citations: [expect.objectContaining({ sourceKey })],
+        }),
+      ]),
+    );
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`delete from public_sources where source_id = ${sourceId}`;
+      }),
+    );
+  });
+
   it("replays canonical SSE after the cursor and closes at terminal", async () => {
     const acceptedResponse = await postMessage({
       text: "Stream",
@@ -1109,6 +1276,94 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     );
     streamUserId = viewerId;
     await expectNotFoundWithoutLeak(runIds.sharedNoWeb, eventText.sharedNoWeb);
+  });
+
+  it("denies unauthenticated, cross-company, and cross-chat stream viewers", async () => {
+    const chat = await getChat();
+    const acceptedResponse = await postMessage({
+      text: "Stream boundary fixture",
+      locale: "en-US",
+      market: "US",
+      webSearchEnabled: false,
+    });
+    const accepted = await body<{ run: { id: string } }>(acceptedResponse);
+    const crossChatViewer = `stream-cross-chat-${crypto.randomUUID()}`;
+    const crossCompanyViewer = `stream-cross-company-${crypto.randomUUID()}`;
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const companyId = (yield* sql<{ readonly id: string }>`
+          select company_id::text as id from chats where id = ${chat.chat.id}
+        `)[0]!.id;
+        yield* sql`
+          insert into platform_users (id, primary_email, display_name, clerk_user_id)
+          values
+            (${crossChatViewer}, ${`${crossChatViewer}@example.test`}, 'Cross chat viewer', ${`clerk:${crossChatViewer}`}),
+            (${crossCompanyViewer}, ${`${crossCompanyViewer}@example.test`}, 'Cross company viewer', ${`clerk:${crossCompanyViewer}`})
+        `;
+        yield* sql`
+          insert into client_company_memberships (company_id, user_id, role)
+          values (${companyId}, ${crossChatViewer}, 'member')
+        `;
+        const otherCompany = (yield* sql<{ readonly id: string }>`
+          insert into client_companies (name) values ('Stream other company') returning id::text
+        `)[0]!;
+        yield* sql`
+          insert into client_company_memberships (company_id, user_id, role)
+          values (${otherCompany.id}, ${crossCompanyViewer}, 'member')
+        `;
+        yield* sql`
+          insert into client_company_ai_settings (company_id) values (${otherCompany.id})
+        `;
+        yield* sql`
+          insert into ai_run_events (run_id, seq, emission_key, event)
+          values (
+            ${accepted.run.id}, 1, 'stream-boundary-fixture',
+            ${sql.json({ type: "text_delta", delta: "STREAM_BOUNDARY_SECRET" })}
+          )
+        `;
+      }),
+    );
+
+    let authMode: "unauthenticated" | "cross-company" | "cross-chat" = "unauthenticated";
+    const streamAuthenticator: RequestAuthenticator = {
+      authenticateRequest: async () => {
+        if (authMode === "unauthenticated") {
+          return { isAuthenticated: false, toAuth: () => null };
+        }
+        const userId = authMode === "cross-company" ? crossCompanyViewer : crossChatViewer;
+        return {
+          isAuthenticated: true,
+          toAuth: () => ({
+            userId,
+            orgId: null,
+            sessionId: `session:${userId}`,
+            factorVerificationAge: [0, 0],
+          }),
+        };
+      },
+    };
+    const streamRoutes = makeChatRoutes(pgLayer(), { streamAuthenticator });
+    const stream = () =>
+      Effect.runPromise(
+        routeRequest(streamRoutes, request("GET", `/v1/ai-runs/${accepted.run.id}/stream`)).pipe(
+          Effect.provide(clerkStreamConfigLayer),
+        ),
+      );
+    const expectDenied = async (status: 401 | 404): Promise<void> => {
+      const response = await stream();
+      expect(response.status).toBe(status);
+      expect(await body(response)).toEqual({
+        error: status === 401 ? "unauthorized" : "not_found",
+      });
+    };
+
+    await expectDenied(401);
+    authMode = "cross-company";
+    await expectDenied(404);
+    authMode = "cross-chat";
+    await expectDenied(404);
   });
 
   it("rejects a terminal stream after its replayable event ledger was pruned", async () => {
@@ -1670,9 +1925,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     });
     const malformed = await body<{ run: { id: string } }>(malformedResponse);
     await seedExposure(malformed.run.id, `document:namespace:public:not-json`);
-    const malformedStream = await route(
-      request("GET", `/v1/ai-runs/${malformed.run.id}/stream`),
-    );
+    const malformedStream = await route(request("GET", `/v1/ai-runs/${malformed.run.id}/stream`));
     expect(malformedStream.status).toBe(200);
     await malformedStream.body?.cancel();
     await terminalRun(malformed.run.id);
@@ -1958,9 +2211,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
       wrongIssue.run.id,
       namespacedPublisherDocumentIdentity(subscriptionId, crypto.randomUUID(), documentId),
     );
-    const wrongIssueStream = await route(
-      request("GET", `/v1/ai-runs/${wrongIssue.run.id}/stream`),
-    );
+    const wrongIssueStream = await route(request("GET", `/v1/ai-runs/${wrongIssue.run.id}/stream`));
     expect(wrongIssueStream.status).toBe(200);
     await wrongIssueStream.body?.cancel();
     await terminalRun(wrongIssue.run.id);
@@ -1991,9 +2242,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     });
     const malformed = await body<{ run: { id: string } }>(malformedResponse);
     await seedExposure(malformed.run.id, "document:namespace:publisher:not-json");
-    const malformedStream = await route(
-      request("GET", `/v1/ai-runs/${malformed.run.id}/stream`),
-    );
+    const malformedStream = await route(request("GET", `/v1/ai-runs/${malformed.run.id}/stream`));
     expect(malformedStream.status).toBe(200);
     await malformedStream.body?.cancel();
   });
@@ -2160,7 +2409,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     expect(malformedReplay.status).toBe(200);
     await malformedReplay.body?.cancel();
     await Bun.sleep(50);
-
   });
 
   it("keeps an open SSE stream after cited memory revocation", async () => {

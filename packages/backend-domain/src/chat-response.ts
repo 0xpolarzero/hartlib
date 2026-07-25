@@ -14,6 +14,7 @@ import type { MessageRow, RunRow, SourceRow, SourceUseRow } from "./chat-runtime
 /** Indexed fields selected by chat-runtime for exact durable document replay. */
 type IndexedDocumentSourceRow = SourceRow & {
   readonly source_id?: string | null;
+  readonly canonical_url?: string | null;
   readonly document_id?: string | null;
   readonly version_id?: string | null;
   readonly content_hash?: string | null;
@@ -169,6 +170,7 @@ const requiredDocumentCitationUrl = (
     const documentId = indexed.document_id;
     const versionId = indexed.version_id;
     const contentHash = indexed.content_hash;
+    const canonicalUrl = indexed.canonical_url;
     if (
       isCanonicalPublicDocumentSourceId(sourceId) &&
       documentId !== null &&
@@ -177,10 +179,13 @@ const requiredDocumentCitationUrl = (
       versionId !== undefined &&
       contentHash !== null &&
       contentHash !== undefined &&
+      canonicalUrl !== null &&
+      canonicalUrl !== undefined &&
       locator.documentId === documentId &&
       locator.versionId === versionId &&
       locator.contentHash === contentHash &&
-      canonicalPublicSourceHttpsUrl(value) === value
+      value === canonicalUrl &&
+      canonicalPublicSourceHttpsUrl(canonicalUrl) === canonicalUrl
     ) {
       return value;
     }
