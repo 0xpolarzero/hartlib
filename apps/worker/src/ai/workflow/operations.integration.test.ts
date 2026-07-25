@@ -2626,6 +2626,12 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     });
     expect(firstLoad.currentDate).toBe("2026-07-10");
     expect(retryLoad).toEqual(firstLoad);
+    expect(retryLoad.acceptanceScope).toEqual(firstLoad.acceptanceScope);
+    expect(retryLoad).toMatchObject({
+      aiRunId: fixture.runId,
+      chatId: firstLoad.acceptanceScope.chatId,
+      initiatingUserId: firstLoad.acceptanceScope.userId,
+    });
     expect(firstLoad).not.toHaveProperty("webPolicy");
 
     await inTask("plan-turn", () => beforeBoundary.planTurn(firstLoad), { attempt: 1 });
@@ -2939,7 +2945,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     ]);
   }, 120_000);
 
-  it("denies malformed resumed source identities at live and frozen reauthorization boundaries", async () => {
+  it("rejects malformed resumed source identities at retrieval and freeze integrity boundaries", async () => {
     const fixture = await runDb(createFixture);
     const agent = new PublisherRetrievalAgent();
     agent.sourceId = `publisher:${fixture.subscriptionId}`;
@@ -2974,11 +2980,11 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     for (const [index, sourceId] of malformedSourceIds.entries()) {
       agent.sourceName = sourceId;
       await expect(
-        inTask(`malformed-live-reauthorization-${index}`, () =>
+        inTask(`malformed-retrieval-boundary-${index}`, () =>
           operations.retrieveInternal(
             load,
             "What changed in liquidity?",
-            `malformed-live-reauthorization-${index}`,
+            `malformed-retrieval-boundary-${index}`,
             [],
           ),
         ),
@@ -3037,9 +3043,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         reductionRan: false,
       };
       await expect(
-        inTask(`malformed-frozen-reauthorization-${index}`, () =>
-          operations.freezeContext(load, context),
-        ),
+        inTask(`malformed-freeze-boundary-${index}`, () => operations.freezeContext(load, context)),
       ).resolves.toMatchObject({
         status: "failed",
         failureCode: "context_plan_unfit",
@@ -3047,7 +3051,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     }
   }, 120_000);
 
-  it("hydrates only selected delivered publisher versions and rechecks revoked access", async () => {
+  it("hydrates only selected delivered publisher versions from the accepted scope", async () => {
     const fixture = await runDb(
       createFixtureWithCanonicalText(
         "Liquidity conditions improved while inflation expectations remained anchored.",
@@ -3120,11 +3124,11 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     agent.sourceId = `public:${publicSourceId}`;
     await expect(
-      inTask("revoked-public-retrieve", () =>
+      inTask("disabled-public-retrieve", () =>
         operations.retrieveInternal(
           load,
           "What changed in liquidity?",
-          "revoked-public-retrieve",
+          "disabled-public-retrieve",
           [],
         ),
       ),
@@ -3256,7 +3260,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     ]);
     expect(revokedAccessResult.sourceMap).toHaveLength(1);
     expect(revokedAccessResult.gaps).not.toContain(
-      "an internal source was revoked before context freeze",
+      "an internal source was removed before context freeze",
     );
 
     await runDb(
@@ -3434,11 +3438,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           `ai-chat:${load.aiRunId}`,
         ),
       ),
-    ).resolves.toMatchObject({
-      status: "failed",
-      code: "finalization_failed",
-      retryable: true,
-    });
+    ).rejects.toThrow("ai run execution scope is no longer available");
     const persisted = await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -3458,7 +3458,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     expect(persisted).toEqual({
       assistantMessages: 0,
-      errorCode: "finalization_failed",
+      errorCode: null,
     });
   }, 120_000);
 
@@ -5399,90 +5399,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(boundaryCalls).toBe(1);
   }, 120_000);
 
-  it("waits for a pending membership revocation and never uses a separately read web policy", async () => {
-    const fixture = await runDb(createFixture);
-    const backupAdminId = `ai-web-backup-admin-${crypto.randomUUID()}`;
-    await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        yield* sql`
-          insert into platform_users (id, primary_email, display_name, clerk_user_id)
-          values (
-            ${backupAdminId}, ${`${backupAdminId}@example.test`}, 'AI web backup admin',
-            ${`clerk-${backupAdminId}`}
-          )
-        `;
-        yield* sql`
-          insert into client_company_memberships (company_id, user_id, role)
-          values (${fixture.companyId}, ${backupAdminId}, 'admin')
-        `;
-        yield* sql`
-          update client_company_ai_settings
-          set web_search_enabled = true
-          where company_id = ${fixture.companyId}
-        `;
-      }),
-    );
-    let boundaryCalls = 0;
-    const web: WebResearchBoundary = {
-      search: async () => {
-        boundaryCalls += 1;
-        throw new Error("revoked membership reached web search");
-      },
-      fetch: async () => {
-        boundaryCalls += 1;
-        throw new Error("revoked membership reached web fetch");
-      },
-    };
-    const operations = new CanonicalWorkflowOperations(
-      databaseUrlFor(databaseName),
-      {
-        aiMainModel: "glm-5-turbo",
-        aiFastModel: "glm-5-turbo",
-        aiMainInputMaxTokens: 100_000,
-        aiMainOutputMaxTokens: 4096,
-        aiFastInputMaxTokens: 100_000,
-        aiFastOutputMaxTokens: 4096,
-        aiConversationRecentTurns: 12,
-        aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
-        aiWebMaxSearches: 2,
-        aiWebMaxFetches: 2,
-        aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
-        aiMemoryToolResultMaxItems: 20,
-        webResearchProvider: "tinyfish",
-      },
-      new WebManifestAgent("unused"),
-      web,
-    );
-    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    const context = await assembleAndMeasureContext(
-      operations,
-      load,
-      "What is the current update?",
-      {
-        internal: [],
-        memories: [],
-        memorySelection: "enabled",
-        web: [],
-        webSelection: "enabled",
-      },
-      "single-answer",
-    );
-    expect(context.status).toBe("ready");
-    const retrieval = inTask("pending-revocation-web", () =>
-      operations.retrieveWeb(load, "What is the current update?", "pending-revocation-web"),
-    );
-    const frozen = inTask("single-context-select", () => operations.freezeContext(load, context));
-    await expect(retrieval).rejects.toThrow("revoked membership reached web search");
-    await expect(frozen).resolves.toMatchObject({ status: "ready" });
-    expect(boundaryCalls).toBe(1);
-  }, 120_000);
-
-  it("rechecks requested web policy at finalization even when W returned no evidence", async () => {
+  it("uses the accepted web policy at finalization even when W returned no evidence", async () => {
     const fixture = await runDb(createFixture);
     await runDb(
       Effect.gen(function* () {

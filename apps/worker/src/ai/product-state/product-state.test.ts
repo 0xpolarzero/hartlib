@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { makeRunAcceptanceScope, publisherIssueAdvisoryLockKey } from "@brief/shared";
+import { makeRunAcceptanceScope } from "@brief/shared";
 
 import { runMigrations } from "../../db/migrate";
 import {
@@ -158,6 +158,7 @@ const createFixture = (
   memoryMode: "private_owner" | "disabled" = "private_owner",
   webRequested = true,
   webEnabled = webRequested,
+  publicSourceIds: readonly string[] = [],
 ): Effect.Effect<Fixture, unknown, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
@@ -166,6 +167,13 @@ const createFixture = (
     const userId = `product-state-${suffix}-${crypto.randomUUID()}`;
     const citationNamespace = newCitationNamespace();
 
+    yield* sql`
+      insert into platform_users (id, primary_email, display_name, clerk_user_id)
+      values (
+        ${userId}, ${`${userId}@example.test`}, ${`Product state ${suffix}`},
+        ${`clerk-${userId}`}
+      )
+    `;
     yield* sql`
       insert into client_companies (id, name)
       values (${companyId}, ${`Product state ${suffix}`})
@@ -178,6 +186,13 @@ const createFixture = (
       insert into client_company_ai_settings (company_id, web_search_enabled)
       values (${companyId}, true)
     `;
+    for (const publicSourceId of publicSourceIds) {
+      yield* sql`
+        insert into client_company_public_source_settings (
+          client_company_id, source_id, enabled, updated_by_user_id
+        ) values (${companyId}, ${publicSourceId}, true, ${userId})
+      `;
+    }
     yield* sql`
       insert into chats (id, company_id, user_id, memory_mode)
       values (${chatId}, ${companyId}, ${userId}, ${memoryMode})
@@ -209,6 +224,7 @@ const createFixture = (
             userId,
             chatId,
             companyId,
+            publicSourceIds,
             memoryMode,
             webRequested,
             webEnabled,
@@ -321,6 +337,14 @@ const createNextRun = (fixture: Fixture, content: string, mode: TurnPlanMode = "
       returning id::text
     `;
     const userMessageId = messages[0]!.id;
+    const memoryRevisionRows = yield* sql<{ readonly revisionId: string }>`
+      select head_revision_id::text as "revisionId"
+      from user_memories
+      where user_id = ${fixture.userId}
+        and deleted_at is null
+        and provenance_only_at is null
+      order by id
+    `;
     const runs = yield* sql<{ readonly id: string }>`
       insert into ai_runs (
         chat_id, initiating_user_id, user_message_id, locale, market,
@@ -334,6 +358,7 @@ const createNextRun = (fixture: Fixture, content: string, mode: TurnPlanMode = "
             chatId: fixture.chatId,
             companyId: fixture.companyId,
             memoryMode: fixture.memoryMode,
+            memoryRevisionIds: memoryRevisionRows.map((row) => row.revisionId),
             webRequested: true,
             webEnabled: true,
           }),
@@ -3390,6 +3415,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       "usage:request:model:plan-turn:0:0:0",
       "usage:request:model:single-answer:0:0:0",
       "usage:request:model:single-retrieve-internal:0:0:0",
+      "usage:request:model:single-retrieve-web:0:0:0",
       "usage:request:model:memory-extract:0:1:0",
       "memory_updated",
       "usage:run",
@@ -3593,12 +3619,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       const fixture = await runDb(createFixture(`terminal-replay-external-${corruption}`));
       await runDb(
         Effect.gen(function* () {
-          const sql = yield* PgClient.PgClient;
-          yield* sql`
-            update ai_runs
-            set web_search_enabled = true
-            where id = ${fixture.runId}
-          `;
           yield* seedSingleObservability(fixture);
           yield* insertAiExternalToolUsage({
             runId: fixture.runId,
@@ -3823,41 +3843,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       status: "succeeded",
       alreadyTerminal: true,
     });
-  });
-
-  it("rejects a replayed web call when immutable run state now requires a no-call reason", async () => {
-    const fixture = await runDb(createFixture("terminal-replay-web-call-forgery"));
-    await runDb(
-      Effect.gen(function* () {
-        yield* seedSingleObservability(fixture);
-      }),
-    );
-    const memory = await runDb(
-      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
-    );
-    const input = {
-      runId: fixture.runId,
-      expectedSmithersRunId: `ai-chat:${fixture.runId}`,
-      coordinates: finalizeCoordinates,
-      answer: { status: "ok" as const, mode: "single" as const, content: "Answer", sourceMap: [] },
-      memory,
-      authorize,
-    };
-    await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
-      status: "succeeded",
-      alreadyTerminal: false,
-    });
-    await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        yield* sql`
-          update ai_runs
-          set web_search_enabled = false
-          where id = ${fixture.runId}
-        `;
-      }),
-    );
-    await expect(runDb(finalizeAiRun(input))).rejects.toThrow(/invalid durable no-call reason/u);
   });
 
   it("replays a sealed no-memory selector after delete, run, and revert", async () => {
@@ -4310,7 +4295,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
   });
 
   it("rejects external usage on a sealed web no-call task during initial seal and replay", async () => {
-    const initial = await runDb(createFixture("no-call-web-external-initial"));
+    const initial = await runDb(
+      createFixture("no-call-web-external-initial", "single", "private_owner", false, false),
+    );
     await runDb(seedSingleObservability(initial));
     await runDb(
       insertAiExternalToolUsage({
@@ -4344,7 +4331,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       ),
     ).rejects.toThrow(/invalid durable no-call reason/u);
 
-    const replay = await runDb(createFixture("no-call-web-external-replay"));
+    const replay = await runDb(
+      createFixture("no-call-web-external-replay", "single", "private_owner", false, false),
+    );
     await runDb(seedSingleObservability(replay));
     const replayMemory = await runDb(
       persistMemoryArtifact(replay, { proposals: [], discardedCount: 0 }),
@@ -4414,7 +4403,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     );
   });
 
-  it("authorizes a cited memory revision before applying a same-turn update", async () => {
+  it("persists a cited memory revision before applying a same-turn update", async () => {
     const fixture = await runDb(createFixture("memory-citation-update", "clarify"));
     await runDb(seedSingleObservability(fixture));
     const initialMemory = await runDb(
@@ -4430,7 +4419,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         coordinates: finalizeCoordinates,
         answer: { status: "ok", mode: "clarification", content: "Saved", sourceMap: [] },
         memory: initialMemory,
-        authorize,
       }),
     );
 
@@ -4501,32 +4489,34 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           sourceMap: [source],
         },
         memory: updateMemory,
-        authorize: ({ sourceMap }) =>
-          Effect.gen(function* () {
-            const sql = yield* PgClient.PgClient;
-            const cited = sourceMap[0]?.locator;
-            if (cited?.kind !== "memory") {
-              return { authorized: false as const, code: "finalization_failed" as const };
-            }
-            const rows = yield* sql<{ readonly authorized: boolean }>`
-              select exists(
-                select 1 from user_memories
-                where id = ${cited.memoryId}
-                  and head_revision_id = ${cited.memoryRevisionId}
-                  and user_id = ${fixture.userId}
-              ) as authorized
-            `;
-            return rows[0]?.authorized === true
-              ? { authorized: true as const }
-              : { authorized: false as const, code: "finalization_failed" as const };
-          }),
       }),
     );
     expect(result).toMatchObject({ status: "succeeded" });
   });
 
   it("uses publisher provenance to persist a public document whose ID collides with a publisher version", async () => {
-    const fixture = await runDb(createFixture("document-identity-collision"));
+    const sourceId = `collision-source-${crypto.randomUUID()}`;
+    const canonicalUrl = "https://public.example/colliding-document";
+    const text = "Public collision evidence. ".repeat(5);
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into public_sources (
+            source_id, display_name, publisher_name, description, ingestion_method,
+            discovery_url, average_chars_per_item
+          ) values (
+            ${sourceId}, 'Collision public source', 'Public publisher', 'Collision source',
+            'manual', ${canonicalUrl}, ${text.length}
+          )
+        `;
+      }),
+    );
+    const fixture = await runDb(
+      createFixture("document-identity-collision", "single", "private_owner", true, true, [
+        sourceId,
+      ]),
+    );
     const collision = await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -4536,9 +4526,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         const publisherDocumentId = crypto.randomUUID();
         const subscriptionId = crypto.randomUUID();
         const rawArtifactId = crypto.randomUUID();
-        const sourceId = `collision-source-${crypto.randomUUID()}`;
-        const canonicalUrl = "https://public.example/colliding-document";
-        const text = "Public collision evidence. ".repeat(5);
         const publisherText = "Publisher collision text";
         const publicContentHash = createHash("sha256").update(text, "utf8").digest("hex");
         const publisherContentHash = createHash("sha256")
@@ -4612,15 +4599,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               where id = ${publisherIssueId}
             `;
             yield* sql`
-              insert into public_sources (
-                source_id, display_name, publisher_name, description, ingestion_method,
-                discovery_url, average_chars_per_item
-              ) values (
-                ${sourceId}, 'Collision public source', 'Public publisher', 'Collision source',
-                'manual', ${canonicalUrl}, ${text.length}
-              )
-            `;
-            yield* sql`
               insert into public_source_raw_artifacts (
                 id, source_id, canonical_url, fetched_at, media_type, body, body_hash
               ) values (
@@ -4637,11 +4615,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                 ${publicDocumentId}, ${sourceId}, ${canonicalUrl}, 'Public collision document', now(),
                 now(), now(), 'en', 'article', ${text}, ${text.length}, ${publicContentHash}, ${rawArtifactId}
               )
-            `;
-            yield* sql`
-              insert into client_company_public_source_settings (
-                client_company_id, source_id, enabled, updated_by_user_id
-              ) values (${fixture.companyId}, ${sourceId}, true, ${fixture.userId})
             `;
           }),
         );
@@ -4939,260 +4912,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     });
   });
 
-  it("observes a publisher restriction committed before finalization", async () => {
-    const fixture = await runDb(createFixture("publisher-restriction-first"));
-    const publisher = await runDb(createPublisherSourceFixture(fixture));
-    const memory = await runDb(
-      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
-    );
-    const source = publisherSourceFor(publisher, fixture);
-    await runDb(
-      seedSingleObservability(fixture, {
-        includeAnswerMeasurement: true,
-        contextSources: [
-          {
-            sourceKey: source.sourceKey,
-            candidateId: candidateIdForSource(source),
-            kind: "document",
-            label: source.label,
-            ranges: source.locator.kind === "document" ? source.locator.ranges : [],
-            ...(source.locator.kind === "document"
-              ? {
-                  documentSourceId: source.locator.sourceId,
-                  documentId: source.locator.documentId,
-                  versionId: source.locator.versionId,
-                  contentHash: source.locator.contentHash,
-                  publisherIssueId: source.locator.publisherIssueId,
-                  publisherDocumentId: source.locator.publisherDocumentId,
-                }
-              : {}),
-            ...(source.locator.kind === "document" &&
-            source.locator.publisherExtractionId !== undefined
-              ? { publisherExtractionId: source.locator.publisherExtractionId }
-              : {}),
-          },
-        ],
-      }),
-    );
-    let signalHeld!: () => void;
-    const held = new Promise<void>((resolve) => {
-      signalHeld = resolve;
-    });
-    let release!: () => void;
-    const released = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const restrictionHolder = runDbAs(
-      "brief-publisher-restriction-holder",
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* sql`
-              select pg_advisory_xact_lock(
-                hashtextextended(${publisherIssueAdvisoryLockKey(publisher.issueId)}, 0)
-              )
-            `;
-            yield* sql`
-              update publisher_issues
-              set restricted_at = now(), restricted_by_user_id = ${fixture.userId},
-                  restricted_reason = 'Publisher fence test', updated_at = now()
-              where id = ${publisher.issueId}
-            `;
-            yield* Effect.sync(signalHeld);
-            yield* Effect.promise(() => released);
-          }),
-        );
-      }),
-    );
-    await held;
-
-    const finalizationInput = {
-      runId: fixture.runId,
-      expectedSmithersRunId: `ai-chat:${fixture.runId}`,
-      coordinates: finalizeCoordinates,
-      answer: {
-        status: "ok" as const,
-        mode: "single" as const,
-        content: "Restricted source",
-        sourceMap: [source],
-      },
-      memory,
-      authorize: ({ sourceMap }: { readonly sourceMap: readonly FinalSourceRecord[] }) =>
-        Effect.gen(function* () {
-          const sql = yield* PgClient.PgClient;
-          const issueId =
-            sourceMap[0]?.locator.kind === "document"
-              ? sourceMap[0].locator.publisherIssueId
-              : undefined;
-          const rows = yield* sql<{ readonly restricted: boolean }>`
-            select restricted_at is not null as restricted
-            from publisher_issues
-            where id = ${issueId ?? publisher.issueId}
-          `;
-          return rows[0]?.restricted === true
-            ? { authorized: false as const, code: "finalization_failed" as const }
-            : { authorized: true as const };
-        }),
-    };
-    const finalization = runDbAs(
-      "brief-finalization-behind-publisher-restriction",
-      finalizeAiRun(finalizationInput),
-    );
-    await waitForDatabaseLock("brief-finalization-behind-publisher-restriction");
-    release();
-    await restrictionHolder;
-    await expect(finalization).resolves.toMatchObject({
-      status: "failed",
-      code: "finalization_failed",
-      alreadyTerminal: false,
-    });
-    await expect(runDb(finalizeAiRun(finalizationInput))).resolves.toMatchObject({
-      status: "failed",
-      code: "finalization_failed",
-      alreadyTerminal: true,
-    });
-    const state = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return (yield* sql<{
-          readonly assistantMessageId: string | null;
-          readonly failed: boolean;
-        }>`
-          select assistant_message_id::text as "assistantMessageId",
-                 failed_at is not null as failed
-          from ai_runs where id = ${fixture.runId}
-        `)[0]!;
-      }),
-    );
-    expect(state).toEqual({ assistantMessageId: null, failed: true });
-  });
-
-  it("holds the publisher restriction lane through a successful finalization", async () => {
-    const fixture = await runDb(createFixture("publisher-finalization-first"));
-    const publisher = await runDb(createPublisherSourceFixture(fixture));
-    const memory = await runDb(
-      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
-    );
-    const source = publisherSourceFor(publisher, fixture);
-    await runDb(
-      seedSingleObservability(fixture, {
-        includeAnswerMeasurement: true,
-        contextSources: [
-          {
-            sourceKey: source.sourceKey,
-            candidateId: candidateIdForSource(source),
-            kind: "document",
-            label: source.label,
-            ranges: source.locator.kind === "document" ? source.locator.ranges : [],
-            ...(source.locator.kind === "document"
-              ? {
-                  documentSourceId: source.locator.sourceId,
-                  documentId: source.locator.documentId,
-                  versionId: source.locator.versionId,
-                  contentHash: source.locator.contentHash,
-                  publisherIssueId: source.locator.publisherIssueId,
-                  publisherDocumentId: source.locator.publisherDocumentId,
-                  ...(source.locator.publisherExtractionId === undefined
-                    ? {}
-                    : { publisherExtractionId: source.locator.publisherExtractionId }),
-                }
-              : {}),
-          },
-        ],
-      }),
-    );
-    let signalAuthorization!: () => void;
-    const authorizationEntered = new Promise<void>((resolve) => {
-      signalAuthorization = resolve;
-    });
-    let releaseAuthorization!: () => void;
-    const authorizationReleased = new Promise<void>((resolve) => {
-      releaseAuthorization = resolve;
-    });
-    const finalization = runDbAs(
-      "brief-publisher-finalization-holder",
-      finalizeAiRun({
-        runId: fixture.runId,
-        expectedSmithersRunId: `ai-chat:${fixture.runId}`,
-        coordinates: finalizeCoordinates,
-        answer: {
-          status: "ok",
-          mode: "single",
-          content: `Authorized source [[cite:${sourceKeyFor(fixture)}]]`,
-          sourceMap: [source],
-        },
-        memory,
-        authorize: () =>
-          Effect.gen(function* () {
-            const sql = yield* PgClient.PgClient;
-            const rows = yield* sql<{ readonly restricted: boolean }>`
-              select restricted_at is not null as restricted
-              from publisher_issues where id = ${publisher.issueId}
-            `;
-            if (rows[0]?.restricted !== false) {
-              return { authorized: false as const, code: "finalization_failed" as const };
-            }
-            yield* Effect.sync(signalAuthorization);
-            yield* Effect.promise(() => authorizationReleased);
-            return { authorized: true as const };
-          }),
-      }),
-    );
-    await authorizationEntered;
-
-    const restriction = runDbAs(
-      "brief-restriction-behind-publisher-finalization",
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* sql`
-              select pg_advisory_xact_lock(
-                hashtextextended(${publisherIssueAdvisoryLockKey(publisher.issueId)}, 0)
-              )
-            `;
-            const rows = yield* sql<{ readonly id: string }>`
-              update publisher_issues
-              set restricted_at = now(), restricted_by_user_id = ${fixture.userId},
-                  restricted_reason = 'Restriction after finalization', updated_at = now()
-              where id = ${publisher.issueId} and restricted_at is null
-              returning id::text
-            `;
-            return rows.length === 1;
-          }),
-        );
-      }),
-    );
-    await waitForDatabaseLock("brief-restriction-behind-publisher-finalization");
-    releaseAuthorization();
-    await expect(finalization).resolves.toMatchObject({ status: "succeeded" });
-    await expect(restriction).resolves.toBe(true);
-
-    const state = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return (yield* sql<{
-          readonly assistantMessageId: string | null;
-          readonly restricted: boolean;
-        }>`
-          select runs.assistant_message_id::text as "assistantMessageId",
-                 issues.restricted_at is not null as restricted
-          from ai_runs runs
-          join assistant_message_sources sources on sources.assistant_message_id = runs.assistant_message_id
-          join brief_document_versions versions on versions.id::text = sources.version_id
-          join brief_documents documents on documents.id = versions.brief_document_id
-          join publisher_issues issues on issues.id = documents.issue_id
-          where runs.id = ${fixture.runId}
-        `)[0]!;
-      }),
-    );
-    expect(state).toEqual({
-      assistantMessageId: expect.any(String),
-      restricted: true,
-    });
-  });
-
   it("linearizes an export message snapshot before a concurrently finishing answer", async () => {
     const fixture = await runDb(createFixture("export-finalization", "clarify"));
     await runDb(seedSingleObservability(fixture));
@@ -5417,6 +5136,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     expect(controlledState.keys).toEqual([
       "usage:request:model:plan-turn:0:0:0",
       "usage:request:model:single-retrieve-internal:0:0:0",
+      "usage:request:model:single-retrieve-web:0:0:0",
       "usage:request:model:memory-extract:0:1:0",
       "memory_updated",
       "usage:run",
@@ -5842,9 +5562,15 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
-              select pg_advisory_xact_lock(hashtext(${`brief:user-memory:${fixture.userId}`}))
+            select pg_advisory_xact_lock(hashtext(${`brief:user-memory:${fixture.userId}`}))
             `;
             yield* sql`select pg_sleep(0.3)`;
+            const [memoryHead] = yield* sql<{ readonly revisionId: string }>`
+              select head_revision_id::text as "revisionId"
+              from user_memories
+              where id = ${ids.memoryId}
+                and deleted_at is null
+            `;
             const [run] = yield* sql<{ readonly id: string }>`
               insert into ai_runs (
                 chat_id, initiating_user_id, user_message_id, locale, market,
@@ -5858,6 +5584,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                     chatId: fixture.chatId,
                     companyId: fixture.companyId,
                     memoryMode: fixture.memoryMode,
+                    memoryRevisionIds: memoryHead === undefined ? [] : [memoryHead.revisionId],
                   }),
                 )}
               )
