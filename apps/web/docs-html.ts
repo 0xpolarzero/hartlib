@@ -171,10 +171,11 @@ export const DOCS_HTML: string = `<!doctype html>
     provider and model identities, requested and effective web state, and the
     canonical domain allowlist. Later membership, grant, source-setting,
     memory, provider, or web-policy changes affect later runs only. Delivered
-    publication access is historical: raw content remains available only to
-    the exact recipients recorded at delivery, subject to account, purge,
-    retention, legal, and security restrictions. A later grant does not unlock
-    an earlier delivery.
+    publication access is historical but client viewers still need an unrevoked
+    current company membership and the exact recipient recorded at delivery. A
+    membership revocation denies that client viewer without changing the historical
+    row. Current subscription, grant, source-setting, and policy changes do not
+    revoke an earlier delivery, and a later grant does not unlock one.
   </p>
 
   <div class="toc">
@@ -646,7 +647,7 @@ data: {"type":"text_delta","delta":"Q3 "}
     <li><strong>Identity &amp; membership</strong> — caller and chat creator exist and are not soft-deleted; an active membership links caller to chat's company; organization id matches.</li>
     <li><strong>Accepted source scope</strong> — the run's immutable source and access IDs, exact memory revisions, provider values, web state, and domain allowlist remain the only inputs for retrieval and finalization. Current grants, source settings, memory heads, provider settings, and web policy do not replace them.</li>
     <li><strong>Exact evidence integrity</strong> — every saved document, version, hash, range, memory revision, and web quotation must match its immutable stored identity. A mismatch fails closed; it is not a current-access recheck.</li>
-    <li><strong>Historical publication delivery</strong> — raw publisher content uses the exact delivery-recipient record captured at delivery. Ordinary subscription, grant, source-setting, or policy changes neither revoke a delivered issue for that recipient nor grant it to a new viewer; account deletion, purge, retention, legal, and security restrictions remain explicit denials.</li>
+    <li><strong>Historical publication delivery</strong> — a client-company viewer needs an unrevoked current company membership and the exact delivery-recipient record captured at delivery. Membership revocation denies that viewer without changing the historical row. Ordinary subscription, grant, source-setting, or policy changes neither revoke a delivered issue for a current historical recipient nor grant it to a new viewer; publisher-owned views use the current publisher lane, and account deletion, purge, retention, legal, and security restrictions remain explicit denials.</li>
     <li><strong>Ownership or sharing</strong> — caller is the chat owner, or the chat is shared with memory disabled.</li>
   </ul>
   <p>

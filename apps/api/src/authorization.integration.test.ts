@@ -1487,6 +1487,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     await expect(readCitation("owner")).resolves.toMatchObject({ status: 302 });
     await expect(readCitation("publisher-admin")).resolves.toMatchObject({ status: 302 });
     await expect(readCitation("never-recipient")).resolves.toMatchObject({ status: 404 });
+    await expect(readCitation("viewer")).resolves.toMatchObject({ status: 302 });
 
     await runDb(
       url,
@@ -1505,6 +1506,12 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
             and user_id in ('owner', 'viewer')
         `;
         yield* sql`
+          update client_company_memberships
+          set revoked_at = now(), revoked_by_user_id = 'owner'
+          where company_id = ${fixture.clientCompanyId}
+            and user_id = 'viewer'
+        `;
+        yield* sql`
           update publisher_companies
           set delivery_enabled = false
           where id = ${fixture.publisherCompanyId}
@@ -1520,6 +1527,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     await expect(readCitation("owner")).resolves.toMatchObject({ status: 302 });
     await expect(readCitation("publisher-admin")).resolves.toMatchObject({ status: 302 });
     await expect(readCitation("never-recipient")).resolves.toMatchObject({ status: 404 });
+    await expect(readCitation("viewer")).resolves.toMatchObject({ status: 404 });
 
     await runDb(
       url,
@@ -1536,6 +1544,12 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           where access_id = ${fixture.accessId}
             and client_company_id = ${fixture.clientCompanyId}
             and user_id in ('owner', 'viewer')
+        `;
+        yield* sql`
+          update client_company_memberships
+          set revoked_at = null, revoked_by_user_id = null
+          where company_id = ${fixture.clientCompanyId}
+            and user_id = 'viewer'
         `;
         yield* sql`
           update publisher_companies
@@ -1999,7 +2013,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_USER_ID: "owner",
+                  DEMO_USER_ID: "viewer",
                   RAILWAY_BUCKET_ENDPOINT: "https://storage.test",
                   RAILWAY_BUCKET_NAME: "private",
                   RAILWAY_BUCKET_ACCESS_KEY_ID: "access",
@@ -2024,9 +2038,9 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
               )
             `;
             yield* sql`
-              update client_employee_subscription_grants
+              update client_company_memberships
               set revoked_at = now(), revoked_by_user_id = 'owner'
-              where access_id = ${fixture.accessId} and user_id = 'owner'
+              where company_id = ${fixture.clientCompanyId} and user_id = 'viewer'
             `;
           }),
         );
@@ -2059,14 +2073,24 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     releaseSigner();
     expect((await response).status).toBe(302);
     await revocation;
+    await expect(
+      runDb(
+        url,
+        selectAuthorizedPublisherDocument(
+          { userId: "viewer", organizationId: null, mode: "clerk" },
+          fixture.issueId,
+          fixture.documentId,
+        ),
+      ),
+    ).resolves.toBeNull();
     await runDb(
       url,
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql`
-          update client_employee_subscription_grants
+          update client_company_memberships
           set revoked_at = null, revoked_by_user_id = null
-          where access_id = ${fixture.accessId} and user_id = 'owner'
+          where company_id = ${fixture.clientCompanyId} and user_id = 'viewer'
         `;
       }),
     );

@@ -82,6 +82,10 @@ export const selectAuthorizedPublisherDocument = (
               on company.id = delivery.client_company_id
              and company.recovery_deleted_at is null
              and company.purged_at is null
+            join client_company_memberships membership
+              on membership.company_id = delivery.client_company_id
+             and membership.user_id = ${identity.userId}
+             and membership.revoked_at is null
             join issue_delivery_recipients recipient
               on recipient.issue_id = delivery.issue_id
              and recipient.client_company_id = delivery.client_company_id

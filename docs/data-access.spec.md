@@ -175,15 +175,17 @@ Shared chat viewers must belong to the same client company and have access to ev
 Shared answers contain no saved-memory source records or links. Saved memories and their revisions remain visible only to their owning user.
 
 Issue documents and chats require authenticated access. Delivery freezes both the
-client company and every entitled user in durable recipient records. A delivered-client
-issue detail uses the exact user, company, issue, and document record. Ordinary
-unsubscribe, source-setting, grant, and policy changes do not revoke that raw
-publication from a historical recipient. A user or company with no matching
-delivery record is denied even if it gains access later. Account deletion, purge,
-retention expiry, legal or security restriction, and exact identity mismatch remain
-exceptional denies.
+client company and every entitled user in durable recipient records. A client-company
+viewer needs an unrevoked current membership in the delivered company and the exact
+immutable `(issue, company, user)` recipient record. Membership revocation denies
+client-company reads without changing that historical row. Ordinary unsubscribe,
+source-setting, grant, and policy changes do not revoke publication from a current
+member who was a historical recipient. A user or company with no matching delivery
+record is denied even if it gains access later. Publisher-owned views use the current
+publisher membership lane. Account deletion, purge, retention expiry, legal or
+security restriction, and exact identity mismatch remain exceptional denies.
 
-Publisher PDF reads use `/v1/issues/{issueId}/documents/{documentId}/content`. The route requires authentication, a live account, exact issue/document identity, and durable historical delivery entitlement for the recipient (or the current publisher lane for publisher-owned views), then returns a private, non-cacheable signed object-store redirect with a five-minute lifetime; object keys and long-lived public URLs are never exposed.
+Publisher PDF reads use `/v1/issues/{issueId}/documents/{documentId}/content`. The route requires authentication, a live account, exact issue/document identity, an unrevoked current client-company membership plus durable historical delivery entitlement for the recipient (or the current publisher lane for publisher-owned views), then returns a private, non-cacheable signed object-store redirect with a five-minute lifetime; object keys and long-lived public URLs are never exposed.
 
 Delivery writes one immutable recipient row per `(issue, company, user)` in the
 same transaction as the delivery record. Existing company-level delivery rows
@@ -194,11 +196,12 @@ retained transaction order and remains ambiguous. Raw PDF, issue
 detail, archive, and delivered-citation routes require that exact recipient
 row, and rows remain immutable until account purge.
 
-Current subscription, grant, and source settings control catalog listings and
-future delivery. They do not grant historical delivery entitlement and cannot
-replace the exact delivery-recipient check on raw content. The archive may show
-only rows that the current viewer received, so a newly added employee cannot read
-an earlier company delivery.
+Current membership, subscription, grant, and source settings control current
+catalog listings and future delivery. A current membership cannot grant historical
+delivery entitlement and cannot replace the exact delivery-recipient check on raw
+content. A revoked membership denies the client-company viewer even when the
+historical recipient row remains. The archive may show only rows that the current
+viewer received, so a newly added employee cannot read an earlier company delivery.
 
 The issue/document rows, the complete sorted client-company lane set for every delivered company (discovered independently of the requester's current membership), applicable publisher lane, and live user/company rows remain locked through the bounded signing operation, so membership acceptance, revocation, or account deletion cannot commit between authorization and bearer URL issuance. Publication first derives one exact eligible access-row set (`active` or `ending` through its delivery end), locks every distinct client lane from that sorted set, rechecks the same set, and aborts for retry if it changed; issue deliveries and recipient snapshots use only that proven set. Chat lists and issue details take their applicable sorted membership lanes before the final projection. Full chat reads additionally lock the chat and chat-execution lane through every message, run, and visible-source query. Demo `GET /v1/chat` idempotently ensures the workspace and then uses this same authorized full-projection lease. AI success finalization and fatal failure handling take that same execution lane after the user-memory, chat-row, and company-membership locks and before the run-row lock, making terminal transition, revocation, unshare, deletion, and the entire projection one linearizable ordering. An accepted run's source map, source uses, and event stream are immutable projections and do not trigger current source or policy reauthorization.
 
@@ -473,8 +476,10 @@ Users should export chats before deleting them.
 
 When an employee loses access to one subscription, its current catalog and future
 deliveries become inaccessible to that employee. Raw issues delivered to that
-employee remain readable through the historical delivery record unless an
-exceptional restriction applies.
+employee remain readable through the historical delivery record while the employee
+has an unrevoked current company membership, unless an exceptional restriction
+applies. Revoking the company membership denies the client-company viewer even
+though the historical recipient row remains immutable.
 
 Shared chats remain visible to company users with subscription access.
 

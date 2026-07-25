@@ -322,13 +322,16 @@ Chat lists acquire the exact sorted viewer lanes before their projection. A full
 
 Issue delivery writes the immutable company delivery and one immutable recipient
 row for each then-entitled user in the same transaction. Delivered issue detail,
-archive, citation, and raw PDF routes require a live authenticated user plus the
-exact `(issue, client company, user)` recipient record and coherent document
-identity. A company delivery alone cannot authorize an employee. A later
-unsubscribe, grant, source setting, or policy change affects the current catalog
-and future delivery only. It cannot revoke a historical recipient or admit a
-user or company that never received the issue. Account deletion, content purge,
-retention expiry, and legal or security restriction remain explicit denies.
+archive, citation, and raw PDF routes require a live authenticated user, an
+unrevoked current membership in the delivered client company, the exact
+`(issue, client company, user)` recipient record, and coherent document identity.
+A company delivery alone cannot authorize an employee. Membership revocation
+denies the client-company viewer without changing the historical recipient row.
+A later unsubscribe, grant, source setting, or policy change affects the current
+catalog and future delivery only. It cannot revoke a historical recipient or admit
+a user or company that never received the issue. Publisher-owned views use the
+current publisher membership lane. Account deletion, content purge, retention
+expiry, and legal or security restriction remain explicit denies.
 Before that write, publication derives one exact eligible access-company set,
 locks every distinct client membership lane in the global sorted order, and
 rechecks the set. A changed set aborts the transaction for retry. Both company
