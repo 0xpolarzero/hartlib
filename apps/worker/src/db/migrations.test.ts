@@ -3042,6 +3042,16 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     const upgradeNonce = Buffer.from("publisher-0063-key").subarray(0, 16);
     const upgradeSourceKey = `k_${upgradeNonce.toString("base64url")}_1`;
     const sourceWithoutUseKey = `k_${upgradeNonce.toString("base64url")}_2`;
+    const locatorCaseNames = [
+      "old_only",
+      "canonical_only",
+      "equal_dual_key",
+      "conflicting_dual_key",
+      "missing_key",
+    ] as const;
+    const locatorCaseDatabaseNames = locatorCaseNames.map(
+      (caseName) => `brief_migrations_0064_locator_${caseName}_${process.pid}_${suffix}`,
+    );
     const pdfHash = "a".repeat(64);
     const canonicalText = "A retained publisher page with exact immutable text.";
     const internalManifestPayload = {
@@ -3167,6 +3177,19 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         ]),
       )
       .digest("hex")}`;
+    const migration = await Bun.file(
+      new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+    ).text();
+    const basePublisherLocator = {
+      kind: "document",
+      sourceId: `publisher:${subscriptionId}`,
+      documentId,
+      publisherDocumentVersionId: versionId,
+      contentHash,
+      ranges: reducedRanges,
+      publisherIssueId: issueId,
+      publisherDocumentId: documentId,
+    };
 
     try {
       await runDb(
@@ -3324,14 +3347,6 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               1, 0, ${JSON.stringify(reducedRanges)}::jsonb
             )
           `;
-          const migration = yield* Effect.promise(() =>
-            Bun.file(
-              new URL(
-                "../../../../db/migrations/0064_ai_chat_runtime_cutover.sql",
-                import.meta.url,
-              ),
-            ).text(),
-          );
           const firstCatalogWrite = migration.indexOf("create or replace function");
           expect(firstCatalogWrite).toBeGreaterThan(0);
           expect(migration.indexOf("AI chat schema cutover preflight row", firstCatalogWrite)).toBe(
@@ -4186,8 +4201,111 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             `;
             yield* sql`alter table assistant_message_sources enable trigger user`;
           }
-          // The successful run must write only canonical version_id/content_hash
-          // locator data and retain the exact publisher extraction binding.
+          // Keep the valid pre-cutover fixture open for the five locator-case
+          // databases below; the base database migrates after those proofs.
+        }),
+      );
+      const canonicalLocator = { ...basePublisherLocator, versionId };
+      const { publisherDocumentVersionId: _publisherDocumentVersionId, ...canonicalOnlyLocator } =
+        canonicalLocator;
+      const { versionId: _versionId, ...missingKeyLocator } = canonicalOnlyLocator;
+      const locatorCaseLocators = {
+        old_only: basePublisherLocator,
+        canonical_only: canonicalOnlyLocator,
+        equal_dual_key: {
+          ...canonicalOnlyLocator,
+          publisherDocumentVersionId: versionId,
+        },
+        conflicting_dual_key: {
+          ...canonicalOnlyLocator,
+          publisherDocumentVersionId: crypto.randomUUID(),
+        },
+        missing_key: missingKeyLocator,
+      } as const;
+      for (const [index, caseName] of locatorCaseNames.entries()) {
+        const caseDatabaseName = locatorCaseDatabaseNames[index]!;
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const adminSql = yield* PgClient.PgClient;
+            yield* adminSql`
+              select pg_terminate_backend(pid)
+              from pg_stat_activity
+              where datname = ${caseDatabaseName}
+                and pid <> pg_backend_pid()
+                and usename = current_user
+            `;
+            yield* adminSql.unsafe(`drop database if exists ${quoteIdentifier(caseDatabaseName)}`);
+            yield* adminSql.unsafe(
+              `create database ${quoteIdentifier(caseDatabaseName)} template ${quoteIdentifier(databaseName)}`,
+            );
+          }),
+        );
+        if (caseName !== "old_only") {
+          const locator = locatorCaseLocators[caseName];
+          await runDb(
+            databaseUrlForName(caseDatabaseName),
+            Effect.gen(function* () {
+              const caseSql = yield* PgClient.PgClient;
+              yield* caseSql`alter table assistant_message_sources disable trigger user`;
+              yield* caseSql`
+                update assistant_message_sources
+                set locator = ${caseSql.json(locator)},
+                    source_identity_digest = assistant_message_source_identity_digest(
+                      assistant_message_id, source_key, kind, ${caseSql.json(locator)},
+                      document_version_id, publisher_document_version_id,
+                      message_id, memory_revision_id, display_label, public_provenance
+                    )
+                where assistant_message_id = ${upgradeAssistantMessageId}
+                  and source_key = ${upgradeSourceKey}
+              `;
+              yield* caseSql`alter table assistant_message_sources enable trigger user`;
+            }),
+          );
+        }
+        const outcome = await runDb(
+          databaseUrlForName(caseDatabaseName),
+          Effect.gen(function* () {
+            const caseSql = yield* PgClient.PgClient;
+            return yield* Effect.exit(caseSql.unsafe(migration).raw);
+          }),
+        );
+        if (
+          caseName === "old_only" ||
+          caseName === "canonical_only" ||
+          caseName === "equal_dual_key"
+        ) {
+          expect(outcome._tag).toBe("Success");
+          const normalized = await runDb(
+            databaseUrlForName(caseDatabaseName),
+            Effect.gen(function* () {
+              const caseSql = yield* PgClient.PgClient;
+              return yield* caseSql<{
+                readonly versionId: string | null;
+                readonly publisherDocumentVersionId: string | null;
+              }>`
+                select
+                  locator->>'versionId' as "versionId",
+                  locator->>'publisherDocumentVersionId' as "publisherDocumentVersionId"
+                from assistant_message_sources
+                where assistant_message_id = ${upgradeAssistantMessageId}
+              `;
+            }),
+          );
+          expect(normalized).toEqual([{ versionId, publisherDocumentVersionId: null }]);
+        } else {
+          expect(outcome._tag).toBe("Failure");
+          expect(errorText(outcome)).toContain(
+            caseName === "conflicting_dual_key"
+              ? "versionId conflicts with publisherDocumentVersionId"
+              : "document locator is not a closed canonical record",
+          );
+        }
+      }
+      await runDb(
+        databaseUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
           yield* sql.unsafe(migration).raw;
           const finalSourceKey = `k_cn_${upgradeNonce.toString("base64url")}_1`;
           const [normalizedLocator] = yield* sql<{
@@ -4242,6 +4360,16 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         adminDatabaseUrl(),
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
+          for (const caseDatabaseName of locatorCaseDatabaseNames) {
+            yield* sql`
+              select pg_terminate_backend(pid)
+              from pg_stat_activity
+              where datname = ${caseDatabaseName}
+                and pid <> pg_backend_pid()
+                and usename = current_user
+            `;
+            yield* sql.unsafe(`drop database if exists ${quoteIdentifier(caseDatabaseName)}`);
+          }
           yield* sql`
             select pg_terminate_backend(pid)
             from pg_stat_activity
