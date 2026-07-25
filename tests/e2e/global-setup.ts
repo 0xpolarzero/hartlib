@@ -59,7 +59,7 @@ const runSetupScript = (command: "setup" | "teardown"): void => {
 
 const appendOutput = (managed: ManagedProcess, chunk: Buffer): void => {
   managed.output += chunk.toString();
-  const retainedBytes = process.env.BRIEF_E2E_DEBUG === "1" ? 2_000_000 : 30_000;
+  const retainedBytes = 30_000;
   if (managed.output.length > retainedBytes) {
     managed.output = managed.output.slice(-retainedBytes);
   }
@@ -348,23 +348,6 @@ export default async function globalSetup(_config: FullConfig) {
   }
 
   return async () => {
-    if (process.env.BRIEF_E2E_DEBUG === "1") {
-      const relevantWorkerOutput = worker.output
-        .split("\n")
-        .filter(
-          (line) =>
-            line.includes('"taskId":"single-retrieve-web"') ||
-            line.includes('"taskId":"single-retrieve-internal"') ||
-            line.includes('"phase":"internal_retrieval"') ||
-            line.includes('"status":"failed"') ||
-            line.includes('"level":"ERROR"') ||
-            line.includes("level=ERROR"),
-        )
-        .join("\n");
-      process.stderr.write(`\n--- relevant worker output ---\n${relevantWorkerOutput}\n`);
-      process.stderr.write(`\n--- api output ---\n${api.output}\n`);
-      process.stderr.write(`\n--- object-store output ---\n${objectStore.output}\n`);
-    }
     const stopped = await Promise.allSettled([
       stopProcess(web),
       stopProcess(demo),
