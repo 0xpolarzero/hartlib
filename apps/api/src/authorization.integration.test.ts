@@ -1641,6 +1641,9 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
 
   it("authorizes historical publisher documents from delivery-time recipient records", async () => {
     const url = databaseUrlFor(isolatedDatabaseName);
+    const neverDeliveredCompanyId = crypto.randomUUID();
+    const neverDeliveredUserId = `never-delivered-${crypto.randomUUID()}`;
+    const neverDeliveredAccessId = crypto.randomUUID();
     const select = (
       userId: string,
       issueId = fixture.issueId,
@@ -1708,6 +1711,38 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           )
         `;
         yield* sql`
+          insert into platform_users (id, primary_email, display_name, clerk_user_id)
+          values (
+            ${neverDeliveredUserId}, ${`${neverDeliveredUserId}@example.test`},
+            'Never Delivered', ${`clerk-${neverDeliveredUserId}`}
+          )
+        `;
+        yield* sql`
+          insert into client_companies (id, name)
+          values (${neverDeliveredCompanyId}, 'Never Delivered Company')
+        `;
+        yield* sql`
+          insert into client_company_memberships (company_id, user_id, role)
+          values (${neverDeliveredCompanyId}, ${neverDeliveredUserId}, 'member')
+        `;
+        yield* sql`
+          insert into client_subscription_accesses (
+            id, subscription_id, client_company_id, state, first_admin_email,
+            accepted_at, subscribed_at, created_by_user_id
+          ) values (
+            ${neverDeliveredAccessId}, ${fixture.subscriptionId}, ${neverDeliveredCompanyId},
+            'active', ${`${neverDeliveredUserId}@example.test`}, now(), now(), 'owner'
+          )
+        `;
+        yield* sql`
+          insert into client_employee_subscription_grants (
+            access_id, client_company_id, user_id, granted_by_user_id
+          ) values (
+            ${neverDeliveredAccessId}, ${neverDeliveredCompanyId},
+            ${neverDeliveredUserId}, 'owner'
+          )
+        `;
+        yield* sql`
           update client_subscription_accesses
           set state = 'paused', delivery_end_at = now(), paused_at = now(), updated_at = now()
           where id = ${fixture.accessId}
@@ -1741,6 +1776,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     await expect(select("viewer")).resolves.not.toBeNull();
     await expect(select("publisher-admin")).resolves.not.toBeNull();
     await expect(select("never-recipient")).resolves.toBeNull();
+    await expect(select(neverDeliveredUserId)).resolves.toBeNull();
     await expect(select("owner", fixture.issueId, legacyDocumentId)).resolves.toBeNull();
     await expect(select("owner", legacyIssueId, fixture.documentId)).resolves.toBeNull();
     await expect(
