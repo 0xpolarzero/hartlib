@@ -5,10 +5,10 @@ import { WebBoundaryError } from "./errors";
 import { isPrivateOrReservedAddress } from "./ip-policy";
 import {
   assertDomainAllowed,
+  assertSavedWebPolicy,
   canonicalAllowedDomains,
   effectiveWebPolicy,
   hostMatchesAllowedDomain,
-  recheckWebPolicy,
 } from "./policy";
 import {
   connectedPeerMatchesPin,
@@ -29,7 +29,9 @@ import {
   type TinyfishSearchOptions,
 } from "./tinyfish-search";
 
-const enabled = (allowedDomains: readonly string[] | null = null): EffectiveWebPolicy => ({
+const enabled = (
+  allowedDomains: readonly string[] | null = null,
+): Extract<EffectiveWebPolicy, { readonly enabled: true }> => ({
   enabled: true,
   provider: "tinyfish",
   allowedDomains,
@@ -112,23 +114,36 @@ describe("web policy boundary", () => {
     );
   });
 
-  it("revokes disabled or narrowed policy and never broadens the accepted snapshot", () => {
-    expect(() => recheckWebPolicy(enabled(null), enabled(["example.com"]))).toThrowError(
-      expect.objectContaining({ code: "web_policy_revoked" }),
-    );
+  it("rejects forged transport or non-canonical saved policy data", () => {
     expect(() =>
-      recheckWebPolicy(enabled(["example.com"]), {
+      assertSavedWebPolicy({
+        enabled: true,
+        provider: "tinyfish",
+        allowedDomains: ["news.example.com", "example.com"],
+      }),
+    ).toThrowError(expect.objectContaining({ code: "unsupported_policy" }));
+    expect(() =>
+      assertSavedWebPolicy({
+        enabled: true,
+        provider: "tinyfish",
+        allowedDomains: ["example.com"],
+        forged: true,
+      } as never),
+    ).toThrowError(expect.objectContaining({ code: "unsupported_policy" }));
+    expect(() =>
+      assertSavedWebPolicy({
         enabled: false,
         reason: "company_disabled",
-        allowlistActive: true,
+        allowlistActive: false,
       }),
-    ).toThrowError(expect.objectContaining({ code: "web_policy_revoked" }));
-    expect(recheckWebPolicy(enabled(["news.example.com"]), enabled(["example.com"]))).toEqual(
-      enabled(["news.example.com"]),
-    );
-    expect(recheckWebPolicy(enabled(["example.com"]), enabled(null))).toEqual(
-      enabled(["example.com"]),
-    );
+    ).toThrowError(expect.objectContaining({ code: "unsupported_policy" }));
+    expect(() =>
+      assertSavedWebPolicy({ enabled: true, provider: "tinyfish", allowedDomains: [] }),
+    ).toThrowError(expect.objectContaining({ code: "unsupported_policy" }));
+    const input = enabled(["example.com"]);
+    const detached = assertSavedWebPolicy(input);
+    (input.allowedDomains as string[]).push("attacker.test");
+    expect(detached.allowedDomains).toEqual(["example.com"]);
   });
 
   it("keeps company-disabled precedence and allowlist state when deployment is unavailable", () => {
@@ -316,7 +331,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("http://example.com/plaintext", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve,
         request,
       }),
@@ -331,7 +345,6 @@ describe("safe page fetch", () => {
   it("fetches supported public content and records only content-free accounting", async () => {
     const page = await safeFetchPage("https://Example.com/path#fragment", {
       acceptedPolicy: enabled(["example.com"]),
-      loadCurrentPolicy: async () => enabled(["example.com"]),
       resolve: publicResolver,
       now: () => new Date("2026-07-10T10:00:00.000Z"),
       request: vi.fn(
@@ -368,7 +381,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         request: requestReturning(
           new Response(stream, { headers: { "content-type": "text/plain" } }),
@@ -386,7 +398,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: async () => [{ address: "127.0.0.1", family: 4 }],
         request: requestMock,
       }),
@@ -406,7 +417,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(["example.com"]),
-        loadCurrentPolicy: async () => enabled(["example.com"]),
         resolve: publicResolver,
         request: requestMock,
       }),
@@ -424,7 +434,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com/start", {
         acceptedPolicy: enabled(["example.com"]),
-        loadCurrentPolicy: async () => enabled(["example.com"]),
         resolve: publicResolver,
         request: requestMock,
       }),
@@ -459,7 +468,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         request: requestMock,
       }),
@@ -477,7 +485,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(["example.com"]),
-        loadCurrentPolicy: async () => enabled(["example.com"]),
         resolve: async () => {
           lookupCount += 1;
           return lookupCount === 1
@@ -503,7 +510,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com/resource", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: async () => {
           resolution += 1;
           return resolution === 1
@@ -519,7 +525,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com/resource", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: async () => [
           { address: "93.184.216.34", family: 4 },
           { address: "127.0.0.1", family: 4 },
@@ -538,7 +543,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com/first", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: async () => {
           lookupCount += 1;
           return lookupCount === 1
@@ -551,19 +555,17 @@ describe("safe page fetch", () => {
     expect(requestMock).toHaveBeenCalledTimes(1);
   });
 
-  it("fails when policy narrows between redirect hops", async () => {
-    let checks = 0;
+  it("uses the saved policy for every redirect hop", async () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(null),
-        loadCurrentPolicy: async () => (++checks === 1 ? enabled(null) : enabled(["example.com"])),
         resolve: publicResolver,
         request: vi.fn(
           async () =>
             new Response(null, { status: 302, headers: { location: "https://example.com/next" } }),
         ),
       }),
-    ).rejects.toMatchObject({ code: "web_policy_revoked" });
+    ).rejects.toMatchObject({ code: "too_many_redirects" });
   });
 
   it("awaits and contains redirect-body cancellation failures", async () => {
@@ -576,7 +578,6 @@ describe("safe page fetch", () => {
     });
     const pending = safeFetchPage("https://example.com", {
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       resolve: publicResolver,
       request: requestReturning(new Response(delayedBody, { status: 302 })),
     });
@@ -600,7 +601,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         request: requestReturning(
           new Response(rejectingBody, { headers: { "content-type": "application/octet-stream" } }),
@@ -627,7 +627,6 @@ describe("safe page fetch", () => {
     });
     const pending = safeFetchPage("https://example.com", {
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       resolve: publicResolver,
       request: requestReturning(new Response(body, { status: 302 })),
       timeoutMs: 100,
@@ -659,7 +658,6 @@ describe("safe page fetch", () => {
     const body = new ReadableStream<Uint8Array>({ cancel: () => cancellation });
     const pending = safeFetchPage("https://example.com", {
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       resolve: publicResolver,
       request: requestReturning(new Response(body, { status: 302 })),
       timeoutMs: 10,
@@ -675,7 +673,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         maxBytes: 3,
         request: vi.fn(
@@ -686,7 +683,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         request: vi.fn(
           async () =>
@@ -706,7 +702,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         request: requestReturning(
           new Response("content", { headers: { "content-type": mediaType } }),
@@ -719,7 +714,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         request: requestReturning(new Response("", { headers: { "content-type": "text/plain" } })),
       }),
@@ -738,7 +732,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         request: requestReturning(new Response("failure", { status })),
       }),
@@ -760,7 +753,6 @@ describe("safe page fetch", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         responseMaxBytes: 3,
         fetch: vi.fn(
           async () =>
@@ -782,7 +774,6 @@ describe("safe page fetch", () => {
     try {
       await safeFetchPage("https://example.com/private-path", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         request: async () => {
           throw new Error("socket closed");
@@ -802,7 +793,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         maxBytes: 3,
         request: requestReturning(
@@ -823,7 +813,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         maxBytes: 3,
         request: requestReturning(
@@ -845,7 +834,6 @@ describe("safe page fetch", () => {
       await expect(
         safeFetchPage("https://example.com", {
           acceptedPolicy: enabled(),
-          loadCurrentPolicy: async () => enabled(),
           resolve: publicResolver,
           request: requestMock,
           ...option,
@@ -876,7 +864,6 @@ describe("safe page fetch", () => {
     );
     const result = safeFetchPage("https://example.com/start", {
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       resolve: publicResolver,
       timeoutMs: 10,
       request: requestMock,
@@ -896,7 +883,6 @@ describe("safe page fetch", () => {
     const requestMock = vi.fn<PinnedWebRequestTransport>();
     const result = safeFetchPage("https://example.com", {
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       resolve: async () => new Promise<readonly []>(() => undefined),
       timeoutMs: 10,
       request: requestMock,
@@ -912,7 +898,6 @@ describe("safe page fetch", () => {
     const requestMock = vi.fn<PinnedWebRequestTransport>();
     const result = safeFetchPage("https://example.com", {
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       resolve: async () => new Promise<readonly []>(() => undefined),
       request: requestMock,
       signal: controller.signal,
@@ -935,7 +920,6 @@ describe("safe page fetch", () => {
     });
     const result = safeFetchPage("https://example.com", {
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       resolve: async (_hostname, signal) => {
         receivedSignal = signal;
         return new Promise<readonly []>((_resolve, reject) => {
@@ -981,7 +965,6 @@ describe("safe page fetch", () => {
     );
     const result = safeFetchPage("https://example.com", {
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       resolve: publicResolver,
       request: requestMock,
       signal: controller.signal,
@@ -1016,7 +999,6 @@ describe("safe page fetch", () => {
     });
     const result = safeFetchPage("https://example.com", {
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       resolve: publicResolver,
       request: requestReturning(
         new Response(stream, { headers: { "content-type": "text/plain" } }),
@@ -1048,7 +1030,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         maxRedirects: 2,
         request: requestMock,
@@ -1066,7 +1047,6 @@ describe("safe page fetch", () => {
     await expect(
       safeFetchPage("https://example.com", {
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         resolve: publicResolver,
         timeoutMs: 5,
         request: vi.fn(
@@ -1084,7 +1064,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("   ", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         fetch: fetchMock,
       }),
     ).rejects.toMatchObject({ code: "provider_failure", operations: [] });
@@ -1093,7 +1072,6 @@ describe("structured Tinyfish discovery adapter", () => {
         searchTinyfish("query", count, {
           apiKey: "secret",
           acceptedPolicy: enabled(),
-          loadCurrentPolicy: async () => enabled(),
           fetch: fetchMock,
         }),
       ).rejects.toMatchObject({ code: "provider_failure", operations: [] });
@@ -1102,7 +1080,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: " ",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         fetch: fetchMock,
       }),
     ).rejects.toMatchObject({ code: "unsupported_policy", operations: [] });
@@ -1114,31 +1091,12 @@ describe("structured Tinyfish discovery adapter", () => {
         searchTinyfish("query", 5, {
           apiKey: "secret",
           acceptedPolicy: enabled(),
-          loadCurrentPolicy: async () => enabled(),
           fetch: fetchMock,
           ...localization,
         }),
       ).rejects.toMatchObject({ code: "provider_failure", operations: [] });
     }
     expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("rechecks policy before every provider call", async () => {
-    await expect(
-      searchTinyfish("query", 5, {
-        apiKey: "secret",
-        acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => ({
-          enabled: false,
-          reason: "company_disabled",
-          allowlistActive: false,
-        }),
-        fetch: vi.fn<WebFetch>(),
-      }),
-    ).rejects.toMatchObject({
-      code: "web_policy_revoked",
-      operations: [{ provider: "tinyfish", outcome: "failed", errorCode: "web_policy_revoked" }],
-    });
   });
 
   it("uses the fixed GET boundary and one site-scoped request per allowed domain", async () => {
@@ -1172,7 +1130,6 @@ describe("structured Tinyfish discovery adapter", () => {
       locale: "fr-FR",
       market: "FR",
       acceptedPolicy: enabled(["a.example.com", "b.example.com"]),
-      loadCurrentPolicy: async () => enabled(["a.example.com", "b.example.com"]),
       fetch: fetchMock,
     });
 
@@ -1195,7 +1152,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("é".repeat(TINYFISH_SEARCH_QUERY_MAX_BYTES / 2), 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         fetch: fetchMock,
       }),
     ).resolves.toMatchObject({ results: [], operations: [{ outcome: "empty" }] });
@@ -1205,7 +1161,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("é".repeat(TINYFISH_SEARCH_QUERY_MAX_BYTES / 2 + 1), 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         fetch: fetchMock,
       }),
     ).rejects.toMatchObject({ code: "provider_failure", retryable: false, operations: [] });
@@ -1213,7 +1168,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("x".repeat(TINYFISH_SEARCH_QUERY_MAX_BYTES), 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(["example.com"]),
-        loadCurrentPolicy: async () => enabled(["example.com"]),
         fetch: fetchMock,
       }),
     ).rejects.toMatchObject({ code: "provider_failure", retryable: false, operations: [] });
@@ -1261,8 +1215,7 @@ describe("structured Tinyfish discovery adapter", () => {
 
     const response = await searchTinyfish("query", 10, {
       apiKey: "secret",
-      acceptedPolicy: enabled(["news.example.com", "example.com"]),
-      loadCurrentPolicy: async () => enabled(["news.example.com", "example.com"]),
+      acceptedPolicy: enabled(["example.com", "news.example.com"]),
       fetch: fetchMock,
     });
     expect(response.results.map(({ url }) => url)).toEqual([
@@ -1282,7 +1235,6 @@ describe("structured Tinyfish discovery adapter", () => {
     const response = await searchTinyfish("query", 10, {
       apiKey: "secret",
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       fetch: vi.fn(async () =>
         Response.json({
           query: "query",
@@ -1330,7 +1282,6 @@ describe("structured Tinyfish discovery adapter", () => {
     const response = await searchTinyfish("query", 10, {
       apiKey: "secret",
       acceptedPolicy: enabled(["example.com"]),
-      loadCurrentPolicy: async () => enabled(["example.com"]),
       fetch: fetchMock,
     });
 
@@ -1361,7 +1312,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(["example.com", "news.example.com"]),
-        loadCurrentPolicy: async () => enabled(["example.com", "news.example.com"]),
         fetch: fetchMock,
       }),
     ).rejects.toMatchObject({
@@ -1372,40 +1322,6 @@ describe("structured Tinyfish discovery adapter", () => {
       ],
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("rechecks policy within each operation and preserves ordered completed accounting", async () => {
-    const loadCurrentPolicy = vi
-      .fn<() => Promise<EffectiveWebPolicy>>()
-      .mockResolvedValueOnce(enabled(["a.example.com", "b.example.com"]))
-      .mockResolvedValueOnce({
-        enabled: false,
-        reason: "company_disabled",
-        allowlistActive: true,
-      });
-    const fetchMock = vi.fn<WebFetch>(async (input) => {
-      const query = new URL(String(input)).searchParams.get("query") as string;
-      return providerResponse(
-        [{ title: "A", content: "A", link: "https://a.example.com/result" }],
-        query,
-      );
-    });
-    await expect(
-      searchTinyfish("query", 5, {
-        apiKey: "secret",
-        acceptedPolicy: enabled(["a.example.com", "b.example.com"]),
-        loadCurrentPolicy,
-        fetch: fetchMock,
-      }),
-    ).rejects.toMatchObject({
-      code: "web_policy_revoked",
-      operations: [
-        { outcome: "succeeded", resultCount: 1 },
-        { outcome: "failed", errorCode: "web_policy_revoked" },
-      ],
-    });
-    expect(loadCurrentPolicy).toHaveBeenCalledTimes(2);
-    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -1425,7 +1341,6 @@ describe("structured Tinyfish discovery adapter", () => {
         searchTinyfish("private query", 5, {
           apiKey: "secret",
           acceptedPolicy: enabled(),
-          loadCurrentPolicy: async () => enabled(),
           fetch: vi.fn(
             async () =>
               new Response(`provider echoed private query at ${status}`, {
@@ -1453,7 +1368,6 @@ describe("structured Tinyfish discovery adapter", () => {
     const pending = searchTinyfish("query", 5, {
       apiKey: "secret",
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       responseMaxBytes: 3,
       fetch: vi.fn(
         async () =>
@@ -1483,7 +1397,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         responseMaxBytes: 3,
         fetch: vi.fn(
           async () =>
@@ -1514,7 +1427,6 @@ describe("structured Tinyfish discovery adapter", () => {
     const pending = searchTinyfish("query", 5, {
       apiKey: "secret",
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       responseMaxBytes: 3,
       timeoutMs: 100,
       signal: controller.signal,
@@ -1554,7 +1466,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         fetch: fetchMock,
       }),
     ).rejects.toMatchObject({ code: "provider_failure", retryable: false });
@@ -1565,7 +1476,6 @@ describe("structured Tinyfish discovery adapter", () => {
     const empty = await searchTinyfish("nothing", 5, {
       apiKey: "secret",
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       fetch: vi.fn(async () => providerResponse([], "nothing")),
     });
     expect(empty).toMatchObject({
@@ -1576,7 +1486,6 @@ describe("structured Tinyfish discovery adapter", () => {
     const failure = searchTinyfish("failure", 5, {
       apiKey: "secret",
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       fetch: vi.fn(async () => new Response("unavailable", { status: 503 })),
     });
     await expect(failure).rejects.toMatchObject({
@@ -1592,7 +1501,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(["a.example.com", "b.example.com", "c.example.com"]),
-        loadCurrentPolicy: async () => enabled(["a.example.com", "b.example.com", "c.example.com"]),
         maxDomainFilters: 2,
         fetch: fetchMock,
       }),
@@ -1603,7 +1511,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         maxDomainFilters: TINYFISH_SEARCH_DOMAIN_FILTER_HARD_MAX + 1,
         fetch: fetchMock,
       }),
@@ -1632,7 +1539,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(["a.example.com", "b.example.com", "c.example.com"]),
-        loadCurrentPolicy: async () => enabled(["a.example.com", "b.example.com", "c.example.com"]),
         fetch: fetchMock,
       }),
     ).rejects.toMatchObject({
@@ -1661,7 +1567,6 @@ describe("structured Tinyfish discovery adapter", () => {
     const result = searchTinyfish("query", 5, {
       apiKey: "secret",
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       fetch: fetchMock,
       signal: controller.signal,
     });
@@ -1700,7 +1605,6 @@ describe("structured Tinyfish discovery adapter", () => {
     const result = searchTinyfish("query", 5, {
       apiKey: "secret",
       acceptedPolicy: enabled(["a.example.com", "b.example.com"]),
-      loadCurrentPolicy: async () => enabled(["a.example.com", "b.example.com"]),
       fetch: fetchMock,
       signal: controller.signal,
     });
@@ -1723,7 +1627,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(["example.com"]),
-        loadCurrentPolicy: async () => enabled(["example.com"]),
         fetch: vi.fn(async () =>
           providerResponse(
             [{ title: "Bad", content: "Bad", link: "https://attacker.test/result" }],
@@ -1739,7 +1642,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(["example.com"]),
-        loadCurrentPolicy: async () => enabled(["example.com"]),
         fetch: vi.fn(async () =>
           providerResponse(
             [{ title: "Plaintext", content: "Unsafe", link: "http://example.com/result" }],
@@ -1758,7 +1660,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         fetch: vi.fn(
           async () =>
             new Response('{"search_result":"wrong"}', {
@@ -1867,7 +1768,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         fetch: vi.fn(async () => Response.json(body)),
       }),
     ).rejects.toMatchObject({
@@ -1883,7 +1783,6 @@ describe("structured Tinyfish discovery adapter", () => {
     const response = await searchTinyfish("query", 5, {
       apiKey: "secret",
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       fetch: vi.fn(async () =>
         Response.json({
           query: "query",
@@ -1916,7 +1815,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         fetch: vi.fn(async () =>
           Response.json({
             query: "query",
@@ -1951,20 +1849,18 @@ describe("structured Tinyfish discovery adapter", () => {
         searchTinyfish("query", 5, {
           apiKey: "secret",
           acceptedPolicy: enabled(),
-          loadCurrentPolicy: async () => enabled(),
           fetch: vi.fn(async () => response),
         }),
       ).rejects.toMatchObject({ code: "invalid_provider_response", retryable: false });
     }
   });
 
-  it("applies one deadline across policy loading, transport headers, and body", async () => {
-    const fetchMock = vi.fn<WebFetch>();
+  it("applies one deadline across transport headers and body", async () => {
+    const fetchMock = vi.fn<WebFetch>(async () => new Promise<Response>(() => undefined));
     await expect(
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => new Promise<EffectiveWebPolicy>(() => undefined),
         timeoutMs: 5,
         fetch: fetchMock,
       }),
@@ -1973,7 +1869,7 @@ describe("structured Tinyfish discovery adapter", () => {
       retryable: true,
       operations: [{ outcome: "failed", errorCode: "fetch_timeout" }],
     });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("caps provider bodies and applies the timeout through body consumption", async () => {
@@ -1981,7 +1877,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         responseMaxBytes: 3,
         fetch: vi.fn(async () => providerResponse([])),
       }),
@@ -1996,7 +1891,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         timeoutMs: 5,
         fetch: vi.fn(
           async () => new Response(stream, { headers: { "content-type": "application/json" } }),
@@ -2010,7 +1904,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         fetch: vi.fn(
           async () =>
             new Response(null, {
@@ -2028,7 +1921,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         responseMaxBytes: 4,
         fetch: vi.fn(
           async () => new Response(oversized, { headers: { "content-type": "application/json" } }),
@@ -2042,7 +1934,6 @@ describe("structured Tinyfish discovery adapter", () => {
       searchTinyfish("query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         timeoutMs: 5,
         fetch: vi.fn(async () => new Promise<Response>(() => undefined)),
       }),
@@ -2071,7 +1962,6 @@ describe("structured Tinyfish discovery adapter", () => {
     const result = searchTinyfish("query", 5, {
       apiKey: "secret",
       acceptedPolicy: enabled(),
-      loadCurrentPolicy: async () => enabled(),
       fetch: vi.fn(
         async () => new Response(stream, { headers: { "content-type": "application/json" } }),
       ),
@@ -2111,7 +2001,6 @@ describe("structured Tinyfish discovery adapter", () => {
         searchTinyfish("query", 5, {
           apiKey: "secret",
           acceptedPolicy: enabled(),
-          loadCurrentPolicy: async () => enabled(),
           fetch: fetchMock,
           ...option,
         }),
@@ -2126,7 +2015,6 @@ describe("structured Tinyfish discovery adapter", () => {
       await searchTinyfish("sensitive transient query", 5, {
         apiKey: "secret",
         acceptedPolicy: enabled(),
-        loadCurrentPolicy: async () => enabled(),
         fetch: vi.fn(async () => {
           throw { echo: "sensitive transient query" };
         }),

@@ -232,9 +232,6 @@ export interface WebResearchBoundary {
     locale: Locale,
     market: Market,
     policy: EffectiveWebPolicy,
-    authorizePolicy: (
-      signal?: AbortSignal | undefined,
-    ) => Promise<Extract<EffectiveWebPolicy, { readonly enabled: true }>>,
     coordinates: PiBoundaryCoordinates,
     cursor?: string | undefined,
     signal?: AbortSignal | undefined,
@@ -252,9 +249,6 @@ export interface WebResearchBoundary {
   readonly fetch: (
     url: string,
     policy: EffectiveWebPolicy,
-    authorizePolicy: (
-      signal?: AbortSignal | undefined,
-    ) => Promise<Extract<EffectiveWebPolicy, { readonly enabled: true }>>,
     coordinates: PiBoundaryCoordinates,
     signal?: AbortSignal | undefined,
   ) => Promise<WebFetchedPage>;
@@ -1391,7 +1385,10 @@ export class CanonicalWorkflowOperations {
     return {
       enabled: true,
       provider: load.acceptanceScope.webTransportProvider,
-      allowedDomains: load.acceptanceScope.allowedDomains,
+      allowedDomains:
+        load.acceptanceScope.allowedDomains === null
+          ? null
+          : [...load.acceptanceScope.allowedDomains],
     };
   }
 
@@ -4001,7 +3998,6 @@ export class CanonicalWorkflowOperations {
               load.locale,
               load.market,
               webPolicy,
-              async () => webPolicy,
               coordinates,
               parsed.cursor,
               signal,
@@ -4085,7 +4081,6 @@ export class CanonicalWorkflowOperations {
             const fetchedPage = await this.web!.fetch(
               url,
               webPolicy,
-              async () => webPolicy,
               coordinates,
               signal,
             );

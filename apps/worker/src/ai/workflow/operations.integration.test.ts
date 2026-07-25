@@ -4733,8 +4733,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     const officialQuote = "The official report records a 4.2 percent increase.";
     const web: WebResearchBoundary = {
-      search: async (_query, _locale, _market, policy, authorizePolicy) => {
-        expect(await authorizePolicy()).toEqual(policy);
+      search: async (_query, _locale, _market, policy) => {
         return {
           results: [
             {
@@ -4755,8 +4754,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           },
         };
       },
-      fetch: async (_url, policy, authorizePolicy) => {
-        expect(await authorizePolicy()).toEqual(policy);
+      fetch: async (_url, policy) => {
         return {
           url: "https://official.example/final-report",
           title: "Official report title",
@@ -4811,8 +4809,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       ],
     });
     const fallbackWeb: WebResearchBoundary = {
-      search: async (_query, _locale, _market, policy, authorizePolicy) => {
-        expect(await authorizePolicy()).toEqual(policy);
+      search: async (_query, _locale, _market, policy) => {
         return {
           results: [
             {
@@ -4840,8 +4837,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           },
         };
       },
-      fetch: async (url, policy, authorizePolicy) => {
-        expect(await authorizePolicy()).toEqual(policy);
+      fetch: async (url, policy) => {
         if (url.endsWith(".pdf")) {
           throw new WebBoundaryError(
             "unsupported_content_type",
@@ -5179,10 +5175,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       },
     } as unknown as ExactPiBoundary);
     const web: WebResearchBoundary = {
-      search: async (_query, _locale, _market, policy, authorizePolicy) => {
+      search: async (_query, _locale, _market, policy) => {
         webBoundaryCalls += 1;
         expect(policy).toEqual(originalPolicy);
-        expect(await authorizePolicy()).toEqual(originalPolicy);
         return {
           results: [
             {
@@ -5203,10 +5198,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           },
         };
       },
-      fetch: async (_url, policy, authorizePolicy) => {
+      fetch: async (_url, policy) => {
         webBoundaryCalls += 1;
         expect(policy).toEqual(originalPolicy);
-        expect(await authorizePolicy()).toEqual(originalPolicy);
         return {
           url: "https://accepted.example/result",
           title: "Accepted result",
@@ -5291,11 +5285,10 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       const authorizationStarted = Promise.withResolvers<void>();
       let transportCalls = 0;
       const web: WebResearchBoundary = {
-        search: async (_query, _locale, _market, _policy, authorizePolicy) => {
+        search: async (_query, _locale, _market, _policy) => {
           boundaryEntered.resolve();
           await startAuthorization.promise;
           authorizationStarted.resolve();
-          await authorizePolicy();
           transportCalls += 1;
           throw new Error("revoked web operation reached transport");
         },

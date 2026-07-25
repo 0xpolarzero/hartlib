@@ -62,6 +62,7 @@ import {
 import {
   safeFetchPage,
   searchTinyfishWeb,
+  TINYFISH_SEARCH_DOMAIN_FILTER_HARD_MAX,
   TINYFISH_SEARCH_PROVIDER_SERVICE_ID,
   WebBoundaryError,
   type WebOperationAccounting,
@@ -582,7 +583,6 @@ export const makeWebResearchBoundary = (
         _locale,
         _market,
         acceptedPolicy,
-        _authorizePolicy,
         coordinates,
         _cursor,
         signal,
@@ -628,7 +628,7 @@ export const makeWebResearchBoundary = (
           },
         };
       },
-      fetch: async (url, acceptedPolicy, _authorizePolicy, coordinates, signal) => {
+      fetch: async (url, acceptedPolicy, coordinates, signal) => {
         throwIfAborted(signal);
         if (!acceptedPolicy.enabled || acceptedPolicy.provider !== "tinyfish") {
           throw new WebBoundaryError(
@@ -669,7 +669,6 @@ export const makeWebResearchBoundary = (
       locale,
       market,
       acceptedPolicy,
-      authorizePolicy,
       coordinates,
       _cursor,
       signal,
@@ -681,8 +680,7 @@ export const makeWebResearchBoundary = (
           locale,
           market,
           acceptedPolicy,
-          authorizePolicy,
-          maxDomainFilters: config.aiWebMaxDomainFilters,
+          maxDomainFilters: TINYFISH_SEARCH_DOMAIN_FILTER_HARD_MAX,
           signal,
         });
         throwIfAborted(signal);
@@ -715,12 +713,11 @@ export const makeWebResearchBoundary = (
         throw error;
       }
     },
-    fetch: async (url, acceptedPolicy, authorizePolicy, coordinates, signal) => {
+    fetch: async (url, acceptedPolicy, coordinates, signal) => {
       try {
         throwIfAborted(signal);
         const page = await safeFetchPage(url, {
           acceptedPolicy,
-          authorizePolicy,
           signal,
         });
         throwIfAborted(signal);

@@ -16,9 +16,8 @@ import { canonicalizeWebUrl } from "../runtime/canonicalization";
 import { forwardAbortSignal, taskAbortError, throwIfAborted } from "../runtime/task-cancellation";
 import { WebBoundaryError, toWebBoundaryError, withFailureAccounting } from "./errors";
 import { areEquivalentIpAddresses, isPrivateOrReservedAddress } from "./ip-policy";
-import { assertDomainAllowed, recheckWebPolicy } from "./policy";
+import { assertDomainAllowed, assertSavedWebPolicy } from "./policy";
 import type {
-  LoadEffectiveWebPolicy,
   PinnedWebRequest,
   PinnedWebRequestTransport,
   SafeFetchedPage,
@@ -36,7 +35,6 @@ export interface ResolvedAddress {
 
 export interface SafeFetchOptions {
   readonly acceptedPolicy: EffectiveWebPolicy;
-  readonly loadCurrentPolicy: LoadEffectiveWebPolicy;
   readonly request?: PinnedWebRequestTransport | undefined;
   /**
    * Resolves the complete answer set. Implementations must observe the signal
@@ -511,6 +509,7 @@ export const safeFetchPage = async (
   options: SafeFetchOptions,
 ): Promise<SafeFetchedPage> => {
   throwIfAborted(options.signal);
+  const accepted = assertSavedWebPolicy(options.acceptedPolicy);
   const startedAt = Date.now();
   const request = options.request ?? requestPinnedWebResponse;
   const resolve = options.resolve ?? defaultResolve;
@@ -552,8 +551,6 @@ export const safeFetchPage = async (
     }, timeoutMs);
 
     for (let redirectCount = 0; ; redirectCount += 1) {
-      const currentPolicy = await awaitWithDeadline(options.loadCurrentPolicy(), controller.signal);
-      const accepted = recheckWebPolicy(options.acceptedPolicy, currentPolicy);
       const parsed = new URL(currentUrl);
       assertDomainAllowed(parsed.hostname, accepted.allowedDomains);
       const pinned = await resolveAndValidateAddress(parsed.hostname, resolve, controller.signal);

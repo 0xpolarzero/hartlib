@@ -18,7 +18,6 @@ describe.skipIf(process.env.WEB_BOUNDARY_LIVE_CONTRACT_TESTS !== "1")(
     it("performs an HTTPS request through the production resolver and pinned TLS transport", async () => {
       const page = await safeFetchPage("https://example.com/", {
         acceptedPolicy: enabledPolicy,
-        loadCurrentPolicy: async () => enabledPolicy,
       });
       expect(page).toMatchObject({
         canonicalUrl: "https://example.com/",
@@ -39,7 +38,6 @@ describe.skipIf(process.env.WEB_BOUNDARY_LIVE_CONTRACT_TESTS !== "1")(
         ).toBeDefined();
         const page = await safeFetchPage("https://example.com/", {
           acceptedPolicy: enabledPolicy,
-          loadCurrentPolicy: async () => enabledPolicy,
           resolve: async () => [address!],
         });
         expect(page.operation.outcome).toBe("succeeded");
@@ -64,7 +62,6 @@ describe.skipIf(
       locale: "en-US",
       market: "US",
       acceptedPolicy: tinyfishPolicy,
-      loadCurrentPolicy: async () => tinyfishPolicy,
     });
 
     expect(response.operations).toEqual([

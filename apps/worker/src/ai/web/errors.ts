@@ -1,3 +1,5 @@
+import { isAiRuntimeError } from "../runtime/errors";
+
 export type WebBoundaryErrorCode =
   | "invalid_url"
   | "disallowed_domain"
@@ -15,8 +17,7 @@ export type WebBoundaryErrorCode =
   | "transport_failure"
   | "provider_failure"
   | "invalid_provider_response"
-  | "unsupported_policy"
-  | "web_policy_revoked";
+  | "unsupported_policy";
 
 export class WebBoundaryError extends Error {
   readonly name = "WebBoundaryError";
@@ -43,8 +44,9 @@ export class WebBoundaryError extends Error {
 export const toWebBoundaryError = (
   error: unknown,
   code: Extract<WebBoundaryErrorCode, "transport_failure" | "provider_failure">,
-): WebBoundaryError =>
-  error instanceof WebBoundaryError
+): WebBoundaryError => {
+  if (isAiRuntimeError(error)) throw error;
+  return error instanceof WebBoundaryError
     ? error
     : new WebBoundaryError(
         code,
@@ -53,6 +55,7 @@ export const toWebBoundaryError = (
           : "external web transport failed",
         true,
       );
+};
 
 export const withFailureAccounting = (
   error: WebBoundaryError,

@@ -1,6 +1,7 @@
 import type { EffectiveWebPolicy } from "../runtime/types";
 import { deriveEffectiveWebPolicy, normalizeDomainAllowlist } from "@brief/shared";
 import { WebBoundaryError } from "./errors";
+import type { EnabledWebPolicy } from "./types";
 
 export const canonicalAllowedDomains = (
   domains: readonly string[] | null,
@@ -10,6 +11,44 @@ export const canonicalAllowedDomains = (
     throw new WebBoundaryError("disallowed_domain", "web domain is invalid", false);
   }
   return normalized.domains;
+};
+
+/** Validate and detach the immutable policy supplied to one web operation. */
+export const assertSavedWebPolicy = (policy: EffectiveWebPolicy): EnabledWebPolicy => {
+  if (
+    policy === null ||
+    typeof policy !== "object" ||
+    policy.enabled !== true ||
+    policy.provider !== "tinyfish" ||
+    !("allowedDomains" in policy) ||
+    Object.keys(policy).length !== 3 ||
+    Object.keys(policy).some((key) => !["enabled", "provider", "allowedDomains"].includes(key)) ||
+    (policy.allowedDomains !== null &&
+      (!Array.isArray(policy.allowedDomains) ||
+        policy.allowedDomains.some((domain) => typeof domain !== "string")))
+  ) {
+    throw new WebBoundaryError(
+      "unsupported_policy",
+      "saved web policy does not authorize Tinyfish",
+      false,
+    );
+  }
+  const domains = canonicalAllowedDomains(policy.allowedDomains);
+  if (
+    domains !== null &&
+    (domains.length === 0 || JSON.stringify(domains) !== JSON.stringify(policy.allowedDomains))
+  ) {
+    throw new WebBoundaryError(
+      "unsupported_policy",
+      "saved web allowlist is not canonical",
+      false,
+    );
+  }
+  return {
+    enabled: true,
+    provider: "tinyfish",
+    allowedDomains: domains === null ? null : [...domains],
+  };
 };
 
 /**
@@ -61,55 +100,4 @@ export const assertDomainAllowed = (
       false,
     );
   }
-};
-
-const isStricter = (
-  acceptedDomains: readonly string[] | null,
-  currentDomains: readonly string[] | null,
-): boolean => {
-  if (currentDomains === null) return false;
-  if (acceptedDomains === null) return true;
-  const current = canonicalAllowedDomains(currentDomains);
-  return (
-    canonicalAllowedDomains(acceptedDomains)?.some(
-      (acceptedDomain) => !hostMatchesAllowedDomain(acceptedDomain, current),
-    ) ?? false
-  );
-};
-
-/**
- * The accepted snapshot remains the operation boundary. Current product state
- * is checked immediately before every external operation and can only revoke
- * or narrow access; a later expansion never broadens an in-flight run.
- */
-export const recheckWebPolicy = (
-  accepted: EffectiveWebPolicy,
-  current: EffectiveWebPolicy,
-): Extract<EffectiveWebPolicy, { readonly enabled: true }> => {
-  if (!accepted.enabled) {
-    throw new WebBoundaryError(
-      "unsupported_policy",
-      "web was not enabled when the run was accepted",
-      false,
-    );
-  }
-  if (!current.enabled || current.provider !== accepted.provider) {
-    throw new WebBoundaryError(
-      "web_policy_revoked",
-      "web access was revoked after acceptance",
-      true,
-    );
-  }
-  if (isStricter(accepted.allowedDomains, current.allowedDomains)) {
-    throw new WebBoundaryError(
-      "web_policy_revoked",
-      "web allowlist became stricter after acceptance",
-      true,
-    );
-  }
-  return {
-    enabled: true,
-    provider: accepted.provider,
-    allowedDomains: canonicalAllowedDomains(accepted.allowedDomains),
-  };
 };

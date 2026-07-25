@@ -9,9 +9,8 @@ import type { EffectiveWebPolicy, Locale, Market } from "../runtime/types";
 import { canonicalizeWebUrl } from "../runtime/canonicalization";
 import { forwardAbortSignal, taskAbortError, throwIfAborted } from "../runtime/task-cancellation";
 import { WebBoundaryError, toWebBoundaryError, withFailureAccounting } from "./errors";
-import { assertDomainAllowed, canonicalAllowedDomains, recheckWebPolicy } from "./policy";
+import { assertDomainAllowed, assertSavedWebPolicy, canonicalAllowedDomains } from "./policy";
 import type {
-  LoadEffectiveWebPolicy,
   WebFetch,
   WebOperationAccounting,
   WebSearchResponse,
@@ -49,7 +48,6 @@ export interface TinyfishSearchOptions {
   readonly locale: Locale;
   readonly market: Market;
   readonly acceptedPolicy: EffectiveWebPolicy;
-  readonly loadCurrentPolicy: LoadEffectiveWebPolicy;
   readonly fetch?: WebFetch | undefined;
   readonly timeoutMs?: number | undefined;
   readonly responseMaxBytes?: number | undefined;
@@ -355,6 +353,7 @@ const searchOneDomain = async (
   domain: string | undefined,
   language: string,
   location: string,
+  acceptedPolicy: Extract<EffectiveWebPolicy, { readonly enabled: true }>,
   options: TinyfishSearchOptions,
 ): Promise<{
   readonly results: readonly WebSearchResult[];
@@ -392,14 +391,7 @@ const searchOneDomain = async (
       controller.abort();
     }, timeoutMs);
 
-    const current = recheckWebPolicy(
-      options.acceptedPolicy,
-      await awaitWithDeadline(options.loadCurrentPolicy(), controller.signal),
-    );
-    if (current.provider !== "tinyfish") {
-      throw new WebBoundaryError("web_policy_revoked", "web access was revoked", true);
-    }
-    if (domain !== undefined) assertDomainAllowed(domain, current.allowedDomains);
+    if (domain !== undefined) assertDomainAllowed(domain, acceptedPolicy.allowedDomains);
 
     const url = new URL(TINYFISH_SEARCH_ENDPOINT);
     url.searchParams.set("query", query);
@@ -449,7 +441,7 @@ const searchOneDomain = async (
     const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
     if (mediaType !== "application/json") throw invalidProviderResponse();
 
-    const decoded = decodeProviderResponse(bytes, query, current.allowedDomains, domain);
+    const decoded = decodeProviderResponse(bytes, query, acceptedPolicy.allowedDomains, domain);
     throwIfAborted(options.signal);
     return {
       results: decoded.results,
@@ -519,14 +511,8 @@ export const searchTinyfishWeb = async (
   const language = languageForLocale(options.locale);
   const location = locationForMarket(options.market);
 
-  if (!options.acceptedPolicy.enabled || options.acceptedPolicy.provider !== "tinyfish") {
-    throw new WebBoundaryError(
-      "unsupported_policy",
-      "Tinyfish Search was not enabled for the accepted run",
-      false,
-    );
-  }
-  const domains = canonicalAllowedDomains(options.acceptedPolicy.allowedDomains) ?? [undefined];
+  const acceptedPolicy = assertSavedWebPolicy(options.acceptedPolicy);
+  const domains = canonicalAllowedDomains(acceptedPolicy.allowedDomains) ?? [undefined];
   const maxDomainFilters = options.maxDomainFilters ?? TINYFISH_SEARCH_DOMAIN_FILTER_DEFAULT_MAX;
   if (
     !Number.isSafeInteger(maxDomainFilters) ||
@@ -539,7 +525,7 @@ export const searchTinyfishWeb = async (
       false,
     );
   }
-  if (options.acceptedPolicy.allowedDomains !== null && domains.length > maxDomainFilters) {
+  if (acceptedPolicy.allowedDomains !== null && domains.length > maxDomainFilters) {
     throw new WebBoundaryError(
       "unsupported_policy",
       "the active web allowlist exceeds the adapter domain-filter limit",
@@ -565,7 +551,14 @@ export const searchTinyfishWeb = async (
     try {
       throwIfAborted(options.signal);
       responses.push(
-        await searchOneDomain(scopedQueries[index] as string, domain, language, location, options),
+        await searchOneDomain(
+          scopedQueries[index] as string,
+          domain,
+          language,
+          location,
+          acceptedPolicy,
+          options,
+        ),
       );
     } catch (error) {
       if (options.signal?.aborted) throw taskAbortError();

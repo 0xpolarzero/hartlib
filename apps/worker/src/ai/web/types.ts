@@ -1,7 +1,7 @@
 import type { EffectiveWebPolicy } from "../runtime/types";
 import type { WebBoundaryError } from "./errors";
 
-export type LoadEffectiveWebPolicy = () => Promise<EffectiveWebPolicy>;
+export type EnabledWebPolicy = Extract<EffectiveWebPolicy, { readonly enabled: true }>;
 export type WebFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 /** Z.AI remains readable only for historical operation rows; no executable adapter exists. */
