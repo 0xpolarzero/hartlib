@@ -10,6 +10,53 @@ import {
 } from "../runtime/validators";
 import { DeterministicE2eProviderBoundary } from "./deterministic-provider";
 
+it("cites only the one source available to fanout synthesis", async () => {
+  const chunks: string[] = [];
+  const sourceKey = "k_cn_1234567890123456789012_1";
+  await withTaskRuntime(
+    {
+      runId: "deterministic-fanout-synthesis-test",
+      stepId: "fanout-synthesis",
+      attempt: 1,
+      iteration: 0,
+      signal: new AbortController().signal,
+      db: {},
+      heartbeat: () => undefined,
+      lastHeartbeat: null,
+    },
+    () =>
+      new DeterministicE2eProviderBoundary({
+        fastLimits: { inputTokens: 100_000, outputTokens: 16_384 },
+        mainLimits: { inputTokens: 100_000, outputTokens: 16_384 },
+      }).stream(
+        {
+          requestClass: "main",
+          model: "glm-5-turbo",
+          messages: [
+            { role: "system", content: "synthesis" },
+            { role: "user", content: sourceKey },
+          ],
+          requestedOutputTokens: 2_048,
+          reasoning: "medium",
+        },
+        {
+          taskId: "fanout-synthesis",
+          loopIteration: 0,
+          attempt: 1,
+          providerRequestIndex: 0,
+          agentRole: "synthesis",
+        },
+        (delta) => {
+          chunks.push(delta);
+        },
+      ),
+  );
+  expect(chunks.join("")).toBe(
+    `Deterministic fanout synthesis grounded in both topic packets. [[cite:${sourceKey}]]`,
+  );
+  expect(chunks.join("")).not.toContain("_2");
+});
+
 const withTaskRuntime = (
   SmithersTaskRuntimeModule as unknown as {
     readonly withTaskRuntime: <Value>(

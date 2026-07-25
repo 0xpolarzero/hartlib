@@ -117,6 +117,9 @@ const keysFrom = (text: string): readonly string[] => [
   ...new Set(text.match(/k_[A-Za-z0-9_-]+_[1-9][0-9]*/gu) ?? []),
 ];
 
+const synthesisCitation = (sourceKeys: readonly string[]): string =>
+  sourceKeys.length === 0 ? "" : ` [[cite:${sourceKeys.join(",")}]]`;
+
 const outputFor = (
   request: ProviderRequest,
   coordinates: PiBoundaryCoordinates,
@@ -571,7 +574,7 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
     const directCitationKeys = citeEverySource ? sourceKeys : sourceKeys.slice(0, 1);
     const text =
       executionCoordinates.agentRole === "synthesis"
-        ? `Deterministic fanout synthesis grounded in both topic packets.${sourceKeys.length === 0 ? "" : ` [[cite:${sourceKeys.join(",")}]]`}`
+        ? `Deterministic fanout synthesis grounded in both topic packets.${synthesisCitation(sourceKeys)}`
         : `Deterministic direct answer grounded in the selected Brief evidence.${directCitationKeys.length === 0 ? "" : ` [[cite:${directCitationKeys.join(",")}]]`}`;
     const chunks = text.match(/.{1,12}/gu) ?? [text];
     for (const [index, chunk] of chunks.entries()) {

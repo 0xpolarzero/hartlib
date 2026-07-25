@@ -351,6 +351,29 @@ test.describe("deterministic canonical runtime", () => {
     ).toBe(true);
   });
 
+  test("one-source fanout finalizes with citations from that source only", async ({ page }) => {
+    disableE2eDemoPublicSource("e2e-fr-reseau");
+    await sendAndWait(page, "[fanout] Compare solar deployment and grid monitoring.");
+
+    const state = readE2eRuntimeState();
+    expect(state.runs[0]?.status).toBe("succeeded");
+    const runEvents = state.events.filter((event) => event.runId === state.runs[0]?.id);
+    const ready = runEvents.find((event) => event.type === "context_ready");
+    const sources = ready?.event.sourcesRead as Array<Record<string, unknown>>;
+    expect(sources).toHaveLength(1);
+    const sourceKey = sources[0]?.sourceKey;
+    expect(sourceKey).toEqual(expect.stringMatching(/^k_[A-Za-z0-9_-]+_1$/u));
+
+    const textDeltas = runEvents
+      .filter((event) => event.type === "text_delta")
+      .map((event) => event.event.delta)
+      .filter((delta): delta is string => typeof delta === "string")
+      .join("");
+    expect(textDeltas).toContain(`[[cite:${sourceKey}]]`);
+    expect(textDeltas).not.toMatch(/k_[A-Za-z0-9_-]+_2\b/u);
+    await expect(latestAssistant(page).getByTestId("citation-reference")).toHaveCount(1);
+  });
+
   test("web toggle reflects effective policy and the selected web path is required", async ({
     page,
   }) => {
