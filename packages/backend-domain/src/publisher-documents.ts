@@ -15,9 +15,8 @@ export interface PublisherDocumentIdentity {
 
 /**
  * Resolve the private file and its request-time authorization from one database
- * snapshot. Keeping these predicates in the same statement prevents an access
- * revocation or issue restriction committed between a separate authorization
- * query and the object-key lookup from being missed.
+ * snapshot. A delivered publication uses its immutable recipient record;
+ * current subscription, grant, and source settings do not revoke it.
  */
 export const selectAuthorizedPublisherDocument = (
   identity: PublisherDocumentIdentity,
@@ -79,23 +78,14 @@ export const selectAuthorizedPublisherDocument = (
           or exists (
             select 1
             from issue_deliveries delivery
-            join client_subscription_accesses access
-              on access.id = delivery.access_id
-             and access.client_company_id = delivery.client_company_id
-             and access.state in ('active', 'ending', 'paused')
             join client_companies company
               on company.id = delivery.client_company_id
              and company.recovery_deleted_at is null
              and company.purged_at is null
-            join client_company_memberships company_membership
-              on company_membership.company_id = delivery.client_company_id
-             and company_membership.user_id = ${identity.userId}
-             and company_membership.revoked_at is null
-            join client_employee_subscription_grants employee_grant
-             on employee_grant.access_id = delivery.access_id
-             and employee_grant.client_company_id = delivery.client_company_id
-             and employee_grant.user_id = ${identity.userId}
-             and employee_grant.revoked_at is null
+            join issue_delivery_recipients recipient
+              on recipient.issue_id = delivery.issue_id
+             and recipient.client_company_id = delivery.client_company_id
+             and recipient.user_id = ${identity.userId}
             where delivery.issue_id = issue.id
               and (
                 ${identity.mode} = 'demo'
