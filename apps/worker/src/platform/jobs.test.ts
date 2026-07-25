@@ -631,6 +631,15 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
     );
     let revocation: Promise<void> | undefined;
+    let releaseBarrier!: () => void;
+    const barrierReleased = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    let signalBarrierHeld!: () => void;
+    const barrierHeld = new Promise<void>((resolve) => {
+      signalBarrierHeld = resolve;
+    });
+    const barrierKey = "brief:test-delivery-recipient-barrier";
 
     try {
       await runDb(
@@ -640,7 +649,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
             create or replace function brief_test_pause_issue_delivery()
             returns trigger language plpgsql as $$
             begin
-              perform pg_sleep(0.8);
+              perform pg_advisory_xact_lock(hashtext('brief:test-delivery-recipient-barrier'));
               return new;
             end;
             $$
@@ -656,9 +665,23 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         }),
       );
 
+      const barrier = runDbAs(
+        "brief-delivery-recipient-barrier",
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`select pg_advisory_xact_lock(hashtext(${barrierKey}))`;
+              yield* Effect.sync(signalBarrierHeld);
+              yield* Effect.promise(() => barrierReleased);
+            }),
+          );
+        }),
+      );
+      await barrierHeld;
       const publication = runPlatformJob(publishJob, fileStore);
+      await waitForDatabaseLock("brief-ai-runtime");
       revocation = (async () => {
-        await Bun.sleep(100);
         await runDb(
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
@@ -682,11 +705,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         );
       })();
 
-      const revocationCommittedDuringSnapshot = await Promise.race([
-        revocation.then(() => true),
-        Bun.sleep(250).then(() => false),
-      ]);
-      expect(revocationCommittedDuringSnapshot).toBe(false);
+      await waitForDatabaseLock("brief-platform-jobs-test");
+      releaseBarrier();
+      await barrier;
       await expect(publication).resolves.toMatchObject({ status: "completed" });
       await revocation;
 
@@ -705,6 +726,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       );
       expect(recipientCount).toBe(1);
     } finally {
+      releaseBarrier();
       if (revocation !== undefined) await revocation.catch(() => undefined);
       await runDb(
         Effect.gen(function* () {
