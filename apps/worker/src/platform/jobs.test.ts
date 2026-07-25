@@ -1032,6 +1032,115 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
     }
   }, 20_000);
 
+  it("fails closed when an exact access tuple changes company before delivery insertion", async () => {
+    const fixture = await runDb(
+      provisionFixture({ status: "scheduled", publicationAt: new Date(Date.now() - 60_000) }),
+    );
+    const fileStore = makeInMemoryPlatformFileStore({ [fixture.objectKey]: fixture.bytes });
+    const publishJob = await runDb(
+      createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
+    );
+    const replacementCompanyId = crypto.randomUUID();
+    const barrierKey = "brief:test-publication-company-change-barrier";
+    let releaseBarrier!: () => void;
+    const barrierReleased = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    let signalBarrierHeld!: () => void;
+    const barrierHeld = new Promise<void>((resolve) => {
+      signalBarrierHeld = resolve;
+    });
+
+    try {
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            insert into client_companies (id, name)
+            values (${replacementCompanyId}, 'Changed platform client')
+          `;
+          yield* sql`
+            insert into client_company_ai_settings (company_id)
+            values (${replacementCompanyId})
+          `;
+          yield* sql`
+            create or replace function brief_test_pause_publication_company_change()
+            returns trigger language plpgsql as $$
+            begin
+              if new.status = 'published' and old.status <> 'published' then
+                perform pg_advisory_xact_lock(hashtext('brief:test-publication-company-change-barrier'));
+              end if;
+              return new;
+            end;
+            $$
+          `;
+          yield* sql`
+            drop trigger if exists brief_test_pause_publication_company_change on publisher_issues
+          `;
+          yield* sql`
+            create trigger brief_test_pause_publication_company_change
+            before update of status on publisher_issues
+            for each row execute function brief_test_pause_publication_company_change()
+          `;
+        }),
+      );
+
+      const barrier = runDbAs(
+        "brief-publication-company-change-barrier",
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`select pg_advisory_xact_lock(hashtext(${barrierKey}))`;
+              yield* Effect.sync(signalBarrierHeld);
+              yield* Effect.promise(() => barrierReleased);
+            }),
+          );
+        }),
+      );
+      await barrierHeld;
+
+      const publication = runPlatformJob(publishJob, fileStore);
+      await waitForDatabaseLock("brief-ai-runtime");
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`delete from client_employee_subscription_grants where access_id = ${fixture.accessId}`;
+          yield* sql`
+            update client_subscription_accesses
+            set client_company_id = ${replacementCompanyId}
+            where id = ${fixture.accessId}
+          `;
+        }),
+      );
+      releaseBarrier();
+      await barrier;
+      await expect(publication).rejects.toThrow();
+
+      const [state] = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly status: string; readonly deliveries: number }>`
+            select issues.status,
+                   (select count(*)::int from issue_deliveries where issue_id = ${fixture.issueId}) as deliveries
+            from publisher_issues issues
+            where issues.id = ${fixture.issueId}
+          `;
+        }),
+      );
+      expect(state).toEqual({ status: "scheduled", deliveries: 0 });
+    } finally {
+      releaseBarrier();
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`drop trigger if exists brief_test_pause_publication_company_change on publisher_issues`;
+          yield* sql`drop function if exists brief_test_pause_publication_company_change()`;
+        }),
+      );
+    }
+  }, 20_000);
+
   it("fails closed when an exact access tuple is deleted before delivery insertion", async () => {
     const fixture = await runDb(
       provisionFixture({ status: "scheduled", publicationAt: new Date(Date.now() - 60_000) }),
