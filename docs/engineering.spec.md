@@ -329,6 +329,11 @@ unsubscribe, grant, source setting, or policy change affects the current catalog
 and future delivery only. It cannot revoke a historical recipient or admit a
 user or company that never received the issue. Account deletion, content purge,
 retention expiry, and legal or security restriction remain explicit denies.
+Before that write, publication derives one exact eligible access-company set,
+locks every distinct client membership lane in the global sorted order, and
+rechecks the set. A changed set aborts the transaction for retry. Both company
+delivery rows and employee recipient rows use only that rechecked set; a broad
+discovery query may not feed a narrower insert query.
 
 Every authenticated administrative mutation, including platform-support actions and company-scoped export creation, writes an authorization audit outcome. Successful writes record `succeeded`; RBAC, MFA, tenant/scope, immutable-state, idempotency-conflict, and other business-rule rejections record `denied` with a bounded content-free reason code while preserving the route's canonical HTTP status. Unauthenticated request noise is not inserted. Audit rows are append-only and hash-chained in commit order so a later row commits the previous row hash; mutation and deletion of committed rows are database-rejected.
 

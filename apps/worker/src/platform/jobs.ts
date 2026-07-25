@@ -57,6 +57,22 @@ const sameOrderedIds = (
 ): boolean =>
   left.length === right.length && left.every((row, index) => row.id === right[index]?.id);
 
+const sameDeliveryAccesses = (
+  left: readonly {
+    readonly id: string;
+    readonly clientCompanyId: string;
+  }[],
+  right: readonly {
+    readonly id: string;
+    readonly clientCompanyId: string;
+  }[],
+): boolean =>
+  left.length === right.length &&
+  left.every(
+    (row, index) =>
+      row.id === right[index]?.id && row.clientCompanyId === right[index]?.clientCompanyId,
+  );
+
 type MembershipLaneKey = `client:${string}` | `publisher:${string}`;
 
 interface AccountRetentionChatScope {
@@ -523,20 +539,46 @@ const publishIssue = (
           }
         }
 
-        // Delivery snapshots must linearize with client membership and grant
-        // changes. Discover every company attached to this subscription and
-        // hold its lane before inserting the delivery or reading recipients;
-        // otherwise a revoke can commit between those two statements and
-        // erase a user who was entitled at delivered_at.
-        const deliveryCompanies = yield* sql<{ readonly id: string }>`
-          select distinct client_company_id::text as id
-          from client_subscription_accesses
-          where subscription_id = ${issue.subscriptionId}
-          order by client_company_id::text
+        // Delivery snapshots must linearize with access, membership, and
+        // grant changes. The eligible access rows are the one publication
+        // set: lock every company lane in that set, then prove the set did
+        // not drift before changing the issue or reading recipients.
+        const deliveryAccesses = yield* sql<{
+          readonly id: string;
+          readonly clientCompanyId: string;
+        }>`
+          select accesses.id::text,
+                 accesses.client_company_id::text as "clientCompanyId"
+          from client_subscription_accesses accesses
+          where accesses.subscription_id = ${issue.subscriptionId}
+            and (
+              accesses.state = 'active'
+              or (accesses.state = 'ending' and accesses.delivery_end_at > now())
+            )
+          order by accesses.client_company_id::text, accesses.id::text
         `;
         yield* lockMembershipLanes(
-          deliveryCompanies.map(({ id }) => `client:${id}` as MembershipLaneKey),
+          deliveryAccesses.map(
+            ({ clientCompanyId }) => `client:${clientCompanyId}` as MembershipLaneKey,
+          ),
         );
+        const recheckedDeliveryAccesses = yield* sql<{
+          readonly id: string;
+          readonly clientCompanyId: string;
+        }>`
+          select accesses.id::text,
+                 accesses.client_company_id::text as "clientCompanyId"
+          from client_subscription_accesses accesses
+          where accesses.subscription_id = ${issue.subscriptionId}
+            and (
+              accesses.state = 'active'
+              or (accesses.state = 'ending' and accesses.delivery_end_at > now())
+            )
+          order by accesses.client_company_id::text, accesses.id::text
+        `;
+        if (!sameDeliveryAccesses(deliveryAccesses, recheckedDeliveryAccesses)) {
+          return yield* Effect.fail(new Error("publication delivery access set changed"));
+        }
 
         if (historical) {
           yield* sql`
@@ -578,14 +620,10 @@ const publishIssue = (
                   ${historical},
                   ${jobId}
                 from client_subscription_accesses accesses
-                where accesses.subscription_id = ${issue.subscriptionId}
-                  and (
-                    accesses.state = 'active'
-                    or (
-                      accesses.state = 'ending'
-                      and accesses.delivery_end_at > now()
-                    )
-                  )
+                where ${sql.in(
+                  "accesses.id",
+                  deliveryAccesses.map(({ id }) => id),
+                )}
                 on conflict (issue_id, client_company_id) do nothing
                 returning
                   id::text,

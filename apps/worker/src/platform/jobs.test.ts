@@ -85,6 +85,54 @@ interface PlatformFixture {
   readonly bytes: Uint8Array;
 }
 
+const provisionAdditionalClientAccess = (fixture: PlatformFixture) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const clientCompanyId = crypto.randomUUID();
+    const accessId = crypto.randomUUID();
+    yield* sql`
+      insert into client_companies (id, name)
+      values (${clientCompanyId}, 'Concurrent platform client')
+    `;
+    yield* sql`
+      insert into client_company_memberships (company_id, user_id, role)
+      values (${clientCompanyId}, ${fixture.userId}, 'admin')
+    `;
+    yield* sql`
+      insert into client_company_ai_settings (company_id)
+      values (${clientCompanyId})
+    `;
+    yield* sql`
+      insert into client_subscription_accesses (
+        id,
+        subscription_id,
+        client_company_id,
+        state,
+        first_admin_email,
+        accepted_at,
+        subscribed_at,
+        created_by_user_id
+      )
+      values (
+        ${accessId},
+        ${fixture.subscriptionId},
+        ${clientCompanyId},
+        'active',
+        ${`${fixture.userId}+concurrent@example.test`},
+        now() - interval '2 days',
+        now() - interval '2 days',
+        ${fixture.userId}
+      )
+    `;
+    yield* sql`
+      insert into client_employee_subscription_grants (
+        access_id, client_company_id, user_id, granted_by_user_id
+      )
+      values (${accessId}, ${clientCompanyId}, ${fixture.userId}, ${fixture.userId})
+    `;
+    return { accessId, clientCompanyId };
+  });
+
 const provisionFixture = (options: {
   readonly status: "draft" | "scheduled";
   readonly publicationAt?: Date;
@@ -638,6 +686,86 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         }),
       );
     }
+  }, 20_000);
+
+  it("rejects a publication when a new eligible company commits before the set recheck", async () => {
+    const fixture = await runDb(
+      provisionFixture({ status: "scheduled", publicationAt: new Date(Date.now() - 60_000) }),
+    );
+    const fileStore = makeInMemoryPlatformFileStore({ [fixture.objectKey]: fixture.bytes });
+    const publishJob = await runDb(
+      createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
+    );
+
+    const laneHolder = runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              select pg_advisory_xact_lock(
+                hashtext(${`brief:client-members:${fixture.clientCompanyId}`})
+              )
+            `;
+            yield* sql`select pg_sleep(1.2)`;
+          }),
+        );
+      }),
+    );
+    await Bun.sleep(100);
+    const publication = runPlatformJob(publishJob, fileStore);
+    await Bun.sleep(200);
+    const additionalAccess = await runDb(provisionAdditionalClientAccess(fixture));
+
+    await laneHolder;
+    await expect(publication).rejects.toThrow(/delivery access set changed/);
+
+    const beforeRetry = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const [row] = yield* sql<{ readonly status: string; readonly deliveries: number }>`
+          select issues.status,
+                 (select count(*)::int from issue_deliveries where issue_id = issues.id) as deliveries
+          from publisher_issues issues
+          where issues.id = ${fixture.issueId}
+        `;
+        return row;
+      }),
+    );
+    expect(beforeRetry).toEqual({ status: "scheduled", deliveries: 0 });
+
+    await expect(runPlatformJob(publishJob, fileStore)).resolves.toMatchObject({
+      status: "completed",
+    });
+    const deliveredCompanies = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly clientCompanyId: string }>`
+          select client_company_id::text as "clientCompanyId"
+          from issue_deliveries
+          where issue_id = ${fixture.issueId}
+          order by client_company_id::text
+        `;
+      }),
+    );
+    const recipientCompanies = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly clientCompanyId: string }>`
+          select distinct client_company_id::text as "clientCompanyId"
+          from issue_delivery_recipients
+          where issue_id = ${fixture.issueId}
+          order by client_company_id::text
+        `;
+      }),
+    );
+    expect(deliveredCompanies).toEqual(
+      [
+        { clientCompanyId: additionalAccess.clientCompanyId },
+        { clientCompanyId: fixture.clientCompanyId },
+      ].sort((left, right) => left.clientCompanyId.localeCompare(right.clientCompanyId)),
+    );
+    expect(recipientCompanies).toEqual(deliveredCompanies);
   }, 20_000);
 
   it("enforces schedule, payload, and delivery-end gates", async () => {
