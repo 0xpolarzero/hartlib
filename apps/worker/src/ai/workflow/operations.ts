@@ -3330,10 +3330,6 @@ export class CanonicalWorkflowOperations {
            and runs.failed_at is null
           where deliveries.access_id::text = any(${load.acceptanceScope.accessIds}::text[])
             and deliveries.client_company_id = ${load.acceptanceScope.companyId}
-            and (
-              (chats.shared_at is null and chats.user_id = ${load.initiatingUserId})
-              or chats.shared_at is not null
-            )
             and subscriptions.id::text in (
               select value from jsonb_array_elements_text(${JSON.stringify(selectedSubscriptionIds)}::jsonb)
             )
@@ -3482,10 +3478,6 @@ export class CanonicalWorkflowOperations {
               from jsonb_array_elements_text(${JSON.stringify(excludedMessageIds)}::jsonb) excluded
               where excluded.value = messages.id::text
             )
-            and (
-              (chats.shared_at is null and chats.user_id = ${load.initiatingUserId})
-              or chats.shared_at is not null
-            )
             and messages.created_at <= (
               select created_at
               from chat_messages
@@ -3546,10 +3538,6 @@ export class CanonicalWorkflowOperations {
              and companies.purged_at is null
             where messages.id = ${reference.messageId}
               and messages.chat_id = ${load.chatId}
-              and (
-                (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
-                or chats.shared_at is not null
-              )
           `;
           const storedMessage = rows[0];
           const message =
@@ -3633,10 +3621,6 @@ export class CanonicalWorkflowOperations {
             and public_source_documents.source_id = ${reference.source.kind === "public" ? reference.source.sourceId.slice("public:".length) : ""}
             and public_source_documents.document_id = ${reference.documentId}
             and public_source_documents.document_id = ${reference.versionId}
-            and (
-              (public_chat.shared_at is null and public_chat.user_id = public_run.initiating_user_id)
-              or public_chat.shared_at is not null
-            )
           union all
           select versions.canonical_text as text,
                  versions.text_char_count as "textCharCount",
@@ -3684,10 +3668,6 @@ export class CanonicalWorkflowOperations {
             and deliveries.access_id::text = any(${load.acceptanceScope.accessIds}::text[])
             and deliveries.client_company_id = ${load.acceptanceScope.companyId}
             and issues.subscription_id::text = ${reference.source.kind === "publisher" ? reference.source.sourceId.slice("publisher:".length) : ""}
-            and (
-              (publisher_chat.shared_at is null and publisher_chat.user_id = publisher_run.initiating_user_id)
-              or publisher_chat.shared_at is not null
-            )
           limit 1
         `;
         const row = rows[0];
@@ -4624,10 +4604,6 @@ export class CanonicalWorkflowOperations {
                 and d.source_id = ${reference.source.kind === "public" ? reference.source.sourceId.slice("public:".length) : ""}
                 and d.document_id = ${reference.documentId}
                 and d.document_id = ${reference.versionId}
-                and (
-                  (public_chat.shared_at is null and public_chat.user_id = public_run.initiating_user_id)
-                  or public_chat.shared_at is not null
-                )
               union all
               select subscriptions.id::text as "sourceId",
                      documents.id::text as "documentId",
@@ -4680,10 +4656,6 @@ export class CanonicalWorkflowOperations {
                 and deliveries.client_company_id = ${load.acceptanceScope.companyId}
                 and issues.subscription_id::text = ${reference.source.kind === "publisher" ? reference.source.sourceId.slice("publisher:".length) : ""}
                 and issues.id::text = ${reference.source.kind === "publisher" ? reference.source.issueId : ""}
-                and (
-                  (publisher_chat.shared_at is null and publisher_chat.user_id = publisher_run.initiating_user_id)
-                  or publisher_chat.shared_at is not null
-                )
               limit 1
             `;
             return rows[0] ?? null;
@@ -4766,10 +4738,6 @@ export class CanonicalWorkflowOperations {
                and companies.purged_at is null
               where messages.id = ${reference.messageId}
                 and messages.chat_id = ${load.chatId}
-                and (
-                  (chats.shared_at is null and chats.user_id = runs.initiating_user_id)
-                  or chats.shared_at is not null
-                )
             `;
             return rows[0] ?? null;
           }),
