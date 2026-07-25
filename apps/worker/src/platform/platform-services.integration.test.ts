@@ -266,11 +266,23 @@ const seedDeliveredIssue = Effect.gen(function* () {
       ${issueId}, ${subscriptionId}, 'Notification issue', 'published', now(), now(), ${userId}
     )
   `;
-  yield* sql`
-    insert into issue_deliveries (
-      issue_id, subscription_id, access_id, client_company_id, historical
-    ) values (${issueId}, ${subscriptionId}, ${accessId}, ${companyId}, false)
-  `;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql`
+        insert into issue_deliveries (
+          issue_id, subscription_id, access_id, client_company_id, historical
+        ) values (${issueId}, ${subscriptionId}, ${accessId}, ${companyId}, false)
+      `;
+      yield* sql`
+        insert into issue_delivery_recipients (
+          issue_id, client_company_id, user_id, delivered_at
+        )
+        select issue_id, client_company_id, ${userId}, delivered_at
+        from issue_deliveries
+        where issue_id = ${issueId} and client_company_id = ${companyId}
+      `;
+    }),
+  );
   yield* sql`
     insert into notification_preferences (
       client_company_id, user_id, email_issue_published

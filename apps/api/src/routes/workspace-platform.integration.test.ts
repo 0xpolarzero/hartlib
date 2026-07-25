@@ -1501,7 +1501,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
     });
   });
 
-  it("returns an atomic issue-detail snapshot or denial while membership is revoked", async () => {
+  it("returns an immutable issue-detail snapshot after membership is revoked", async () => {
     const issueId = crypto.randomUUID();
     const documentId = crypto.randomUUID();
     await runDb(
@@ -1529,11 +1529,23 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           set status = 'published', publication_at = now(), published_at = now()
           where id = ${issueId}
         `;
-        yield* sql`
-          insert into issue_deliveries (
-            issue_id, subscription_id, access_id, client_company_id, historical
-          ) values (${issueId}, ${subscriptionId}, ${accessId}, ${clientCompanyId}, false)
-        `;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              insert into issue_deliveries (
+                issue_id, subscription_id, access_id, client_company_id, historical
+              ) values (${issueId}, ${subscriptionId}, ${accessId}, ${clientCompanyId}, false)
+            `;
+            yield* sql`
+              insert into issue_delivery_recipients (
+                issue_id, client_company_id, user_id, delivered_at
+              )
+              select issue_id, client_company_id, 'member-user', delivered_at
+              from issue_deliveries
+              where issue_id = ${issueId} and client_company_id = ${clientCompanyId}
+            `;
+          }),
+        );
       }),
     );
     const routes = makeClientWorkspaceRoutes(pgLayer());
@@ -1572,15 +1584,13 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
     const responses = await Promise.all(reads);
     await revocation;
     for (const response of responses) {
-      expect([200, 404]).toContain(response.status);
-      if (response.status === 200) {
-        await expect(response.json()).resolves.toMatchObject({
-          issue: { id: issueId },
-          documents: [{ id: documentId, issueId }],
-        });
-      }
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        issue: { id: issueId },
+        documents: [{ id: documentId, issueId }],
+      });
     }
-    expect((await call(routes, "member-user", "GET", `/v1/issues/${issueId}`)).status).toBe(404);
+    expect((await call(routes, "member-user", "GET", `/v1/issues/${issueId}`)).status).toBe(200);
   });
 
   it("recoverably deletes every draft issue object and cancels publication/extraction races", async () => {
@@ -3398,6 +3408,115 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
       }),
     );
     expect((await call([demoRoute], demoUserId, "GET", path)).status).toBe(404);
+  });
+
+  it("keeps delivered publisher archive citations after current delivery changes", async () => {
+    const issueId = crypto.randomUUID();
+    const documentId = crypto.randomUUID();
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into publisher_issues (
+            id, subscription_id, title, status, publication_at, published_at, created_by_user_id
+          ) values (
+            ${issueId}, ${subscriptionId}, 'Historical publisher issue', 'draft', null, null,
+            'admin-user'
+          )
+        `;
+        yield* sql`
+          insert into brief_documents (
+            id, issue_id, title, original_file_name, object_key, media_type,
+            byte_size, sha256_hex, upload_completed_at, created_by_user_id
+          ) values (
+            ${documentId}, ${issueId}, 'Historical publisher document', 'historical.pdf',
+            ${`publisher/${documentId}.pdf`}, 'application/pdf', 1, ${"a".repeat(64)},
+            now(), 'admin-user'
+          )
+        `;
+        yield* sql`
+          update publisher_issues
+          set status = 'published', publication_at = now(), published_at = now()
+          where id = ${issueId}
+        `;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              insert into issue_deliveries (
+                issue_id, subscription_id, access_id, client_company_id, historical
+              ) values (${issueId}, ${subscriptionId}, ${accessId}, ${clientCompanyId}, false)
+            `;
+            yield* sql`
+              insert into issue_delivery_recipients (
+                issue_id, client_company_id, user_id, delivered_at
+              )
+              select issue_id, client_company_id, 'member-user', delivered_at
+              from issue_deliveries
+              where issue_id = ${issueId} and client_company_id = ${clientCompanyId}
+            `;
+          }),
+        );
+      }),
+    );
+
+    const routes = makeClientWorkspaceRoutes(pgLayer());
+    const before = await call(
+      routes,
+      "member-user",
+      "GET",
+      `/v1/client-companies/${clientCompanyId}/archive`,
+    );
+    expect(before.status).toBe(200);
+    await expect(before.json()).resolves.toMatchObject({
+      items: [
+        expect.objectContaining({
+          sourceKind: "publisher",
+          subscriptionId,
+          issueId,
+          documentId,
+          contentPath: `/v1/issues/${issueId}/documents/${documentId}/content`,
+        }),
+      ],
+    });
+
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_subscription_accesses
+          set state = 'paused', delivery_end_at = now(), paused_at = now()
+          where id = ${accessId}
+        `;
+        yield* sql`
+          update client_employee_subscription_grants
+          set revoked_at = now(), revoked_by_user_id = 'admin-user'
+          where access_id = ${accessId} and client_company_id = ${clientCompanyId}
+            and user_id = 'member-user'
+        `;
+        yield* sql`
+          update publisher_subscriptions set delivery_enabled = false where id = ${subscriptionId}
+        `;
+        yield* sql`
+          update publisher_companies
+          set delivery_enabled = false
+          where id = (
+            select publisher_company_id from publisher_subscriptions
+            where id = ${subscriptionId}
+          )
+        `;
+      }),
+    );
+
+    const after = await call(
+      routes,
+      "member-user",
+      "GET",
+      `/v1/client-companies/${clientCompanyId}/archive`,
+    );
+    expect(after.status).toBe(200);
+    await expect(after.json()).resolves.toMatchObject({
+      items: [expect.objectContaining({ issueId, documentId, sourceKind: "publisher" })],
+    });
   });
 
   it("paginates a high-cardinality archive in SQL with a stable bounded window", async () => {

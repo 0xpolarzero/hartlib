@@ -201,6 +201,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           values
             ('owner', 'owner@example.test', 'Owner', 'clerk_owner'),
             ('viewer', 'viewer@example.test', 'Viewer', 'clerk_viewer'),
+            ('never-recipient', 'never-recipient@example.test', 'Never Recipient', 'clerk_never_recipient'),
             ('publisher-admin', 'publisher@example.test', 'Publisher Admin', 'clerk_publisher'),
             ('lifecycle-owner', 'lifecycle@example.test', 'Lifecycle Owner', 'clerk_lifecycle'),
             ('support-user', 'support@example.test', 'Support User', 'clerk_support'),
@@ -267,13 +268,28 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           set status = 'published', publication_at = now()
           where id = ${ids.issueId}
         `;
-        yield* sql`
-          insert into issue_deliveries (
-            issue_id, subscription_id, access_id, client_company_id, historical
-          ) values (
-            ${ids.issueId}, ${ids.subscriptionId}, ${ids.accessId}, ${ids.clientCompanyId}, false
-          )
-        `;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              insert into issue_deliveries (
+                issue_id, subscription_id, access_id, client_company_id, historical
+              ) values (
+                ${ids.issueId}, ${ids.subscriptionId}, ${ids.accessId}, ${ids.clientCompanyId}, false
+              )
+            `;
+            yield* sql`
+              insert into issue_delivery_recipients (
+                issue_id, client_company_id, user_id, delivered_at
+              )
+              select delivery.issue_id, delivery.client_company_id, recipients.user_id,
+                     delivery.delivered_at
+              from issue_deliveries delivery
+              cross join (values ('owner'::text), ('viewer'::text)) recipients(user_id)
+              where delivery.issue_id = ${ids.issueId}
+                and delivery.client_company_id = ${ids.clientCompanyId}
+            `;
+          }),
+        );
         yield* sql`
           insert into chats (id, user_id, company_id, memory_mode)
           values
@@ -1513,50 +1529,160 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     expect(wildcard.headers.get("access-control-allow-origin")).toBeNull();
   });
 
-  it("requires a currently readable client access state for delivered publisher documents", async () => {
+  it("authorizes historical publisher documents from delivery-time recipient records", async () => {
     const url = databaseUrlFor(isolatedDatabaseName);
-    const selectForOwner = () =>
+    const select = (
+      userId: string,
+      issueId = fixture.issueId,
+      documentId = fixture.documentId,
+      organizationId: string | null = null,
+    ) =>
       runDb(
         url,
         selectAuthorizedPublisherDocument(
-          { userId: "owner", organizationId: null, mode: "clerk" },
-          fixture.issueId,
-          fixture.documentId,
+          { userId, organizationId, mode: "clerk" },
+          issueId,
+          documentId,
         ),
       );
-    await expect(selectForOwner()).resolves.not.toBeNull();
+    await expect(select("owner")).resolves.not.toBeNull();
+    await expect(select("viewer")).resolves.not.toBeNull();
+    await expect(select("publisher-admin")).resolves.not.toBeNull();
+
+    const legacyIssueId = crypto.randomUUID();
+    const legacyDocumentId = crypto.randomUUID();
     await runDb(
       url,
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql`
+          insert into publisher_issues (
+            id, subscription_id, title, status, publication_at, published_at, created_by_user_id
+          ) values (
+            ${legacyIssueId}, ${fixture.subscriptionId}, 'Legacy issue without recipients',
+            'draft', null, null, 'publisher-admin'
+          )
+        `;
+        yield* sql`
+          insert into brief_documents (
+            id, issue_id, title, original_file_name, object_key, media_type,
+            byte_size, sha256_hex, upload_completed_at, created_by_user_id
+          ) values (
+            ${legacyDocumentId}, ${legacyIssueId}, 'Legacy document', 'legacy.pdf',
+            ${`issues/${legacyIssueId}/legacy.pdf`}, 'application/pdf', 1, ${"a".repeat(64)},
+            now(), 'publisher-admin'
+          )
+        `;
+        yield* sql`
+          update publisher_issues
+          set status = 'published', publication_at = now(), published_at = now()
+          where id = ${legacyIssueId}
+        `;
+        yield* sql`
+          insert into issue_deliveries (
+            issue_id, subscription_id, access_id, client_company_id, historical
+          ) values (
+            ${legacyIssueId}, ${fixture.subscriptionId}, ${fixture.accessId},
+            ${fixture.clientCompanyId}, false
+          )
+        `;
+        yield* sql`
+          insert into client_company_memberships (company_id, user_id, role)
+          values (${fixture.clientCompanyId}, 'never-recipient', 'member')
+        `;
+        yield* sql`
+          insert into client_employee_subscription_grants (
+            access_id, client_company_id, user_id, granted_by_user_id
+          ) values (
+            ${fixture.accessId}, ${fixture.clientCompanyId}, 'never-recipient', 'owner'
+          )
+        `;
+        yield* sql`
           update client_subscription_accesses
-          set state = 'invited', accepted_at = null, subscribed_at = null, updated_at = now()
+          set state = 'paused', delivery_end_at = now(), paused_at = now(), updated_at = now()
           where id = ${fixture.accessId}
+        `;
+        yield* sql`
+          update client_employee_subscription_grants
+          set revoked_at = now(), revoked_by_user_id = 'owner'
+          where access_id = ${fixture.accessId}
+            and client_company_id = ${fixture.clientCompanyId}
+            and user_id in ('owner', 'viewer')
+        `;
+        yield* sql`
+          update publisher_companies
+          set delivery_enabled = false
+          where id = (
+            select publisher_company_id from publisher_subscriptions
+            where id = ${fixture.subscriptionId}
+          )
+        `;
+        yield* sql`
+          update publisher_subscriptions
+          set delivery_enabled = false
+          where id = ${fixture.subscriptionId}
         `;
       }),
     );
-    await expect(selectForOwner()).resolves.toBeNull();
-    // Publisher authorization is independent of the delivered-client lane.
+
+    // Unsubscribe, revoke the current grants, and stop future delivery. None
+    // of those changes can revoke a user frozen into the delivery snapshot.
+    await expect(select("owner")).resolves.not.toBeNull();
+    await expect(select("viewer")).resolves.not.toBeNull();
+    await expect(select("publisher-admin")).resolves.not.toBeNull();
+    await expect(select("never-recipient")).resolves.toBeNull();
+    await expect(select("owner", fixture.issueId, legacyDocumentId)).resolves.toBeNull();
+    await expect(select("owner", legacyIssueId, fixture.documentId)).resolves.toBeNull();
     await expect(
-      runDb(
-        url,
-        selectAuthorizedPublisherDocument(
-          { userId: "publisher-admin", organizationId: null, mode: "clerk" },
-          fixture.issueId,
-          fixture.documentId,
-        ),
-      ),
-    ).resolves.not.toBeNull();
+      select("owner", fixture.issueId, fixture.documentId, "org-foreign"),
+    ).resolves.toBeNull();
+
     await runDb(
       url,
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql`
           update client_subscription_accesses
-          set state = 'active', accepted_at = now(), subscribed_at = now(), updated_at = now()
+          set state = 'active', delivery_end_at = null, paused_at = null,
+              accepted_at = coalesce(accepted_at, now()),
+              subscribed_at = coalesce(subscribed_at, now()), updated_at = now()
           where id = ${fixture.accessId}
         `;
+        yield* sql`
+          update client_employee_subscription_grants
+          set revoked_at = null, revoked_by_user_id = null
+          where access_id = ${fixture.accessId}
+            and client_company_id = ${fixture.clientCompanyId}
+            and user_id in ('owner', 'viewer')
+        `;
+        yield* sql`
+          update publisher_companies
+          set delivery_enabled = true
+          where id = (
+            select publisher_company_id from publisher_subscriptions
+            where id = ${fixture.subscriptionId}
+          )
+        `;
+        yield* sql`
+          update publisher_subscriptions
+          set delivery_enabled = true
+          where id = ${fixture.subscriptionId}
+        `;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`set local brief.allow_account_purge = 'on'`;
+            yield* sql`
+              delete from client_employee_subscription_grants
+              where access_id = ${fixture.accessId}
+                and client_company_id = ${fixture.clientCompanyId}
+                and user_id = 'never-recipient'
+            `;
+            yield* sql`
+              delete from client_company_memberships
+              where company_id = ${fixture.clientCompanyId} and user_id = 'never-recipient'
+            `;
+          }),
+        );
       }),
     );
   });

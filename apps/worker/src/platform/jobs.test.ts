@@ -407,7 +407,16 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
                 and payload->>'documentId' = ${scheduled.documentId}
             ) as extractions
         `;
-        return { issue, counts };
+        const recipients = yield* sql<{
+          readonly userId: string;
+          readonly deliveredAt: Date;
+        }>`
+          select user_id as "userId", delivered_at as "deliveredAt"
+          from issue_delivery_recipients
+          where issue_id = ${scheduled.issueId}
+          order by user_id
+        `;
+        return { issue, counts, recipients };
       }),
     );
     expect(publishedState.issue).toMatchObject({ status: "published", indexingStatus: "pending" });
@@ -418,6 +427,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       notifications: 1,
       extractions: 1,
     });
+    expect(publishedState.recipients).toEqual([
+      { userId: scheduled.userId, deliveredAt: expect.any(Date) },
+    ]);
 
     const notificationJob = await runDb(
       findJob("send_platform_notification", "issueId", scheduled.issueId),
