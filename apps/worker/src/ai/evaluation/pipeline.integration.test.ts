@@ -337,9 +337,12 @@ const canonicalEvaluationWorkerConfig = (
     ...overrides,
   }) as WorkerConfig;
 
+const testProviderBoundary = (): ExactPiBoundary =>
+  ({ bindAcceptedProviderProfile: () => undefined }) as unknown as ExactPiBoundary;
+
 class OlderChatEvaluationAgent extends CanonicalAgentClient {
   constructor(private readonly expectedMessageId: string) {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {

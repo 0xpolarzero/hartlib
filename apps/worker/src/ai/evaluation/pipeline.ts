@@ -1312,6 +1312,11 @@ const seedOneCase = (
               webRequested,
               webEnabled: webRequested && fixture.webPolicyEnabled,
               provider: providerServiceId,
+              ...(providerServiceId === "deterministic_test"
+                ? {
+                    providerEndpointIdentity: `deterministic_test:${ZAI_CODING_PLAN_BASE_URL}`,
+                  }
+                : {}),
               webTransportProvider: webRequested && fixture.webPolicyEnabled ? "tinyfish" : null,
               allowedDomains:
                 webRequested && fixture.webPolicyEnabled ? evaluationWebAllowlist : null,

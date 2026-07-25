@@ -112,6 +112,9 @@ const inTask = <Value>(
   );
 };
 
+const testProviderBoundary = (): ExactPiBoundary =>
+  ({ bindAcceptedProviderProfile: () => undefined }) as unknown as ExactPiBoundary;
+
 const providerToolCompletion = (
   name: string,
   arguments_: Readonly<Record<string, unknown>>,
@@ -1416,7 +1419,7 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
   narrowedInspectionText: string | undefined;
 
   constructor() {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
@@ -1472,7 +1475,9 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
       searchCoordinates,
     );
     const items = searchResult.items;
-    if (!Array.isArray(items) || items.length !== 1) throw new Error("publisher search failed");
+    if (!Array.isArray(items)) throw new Error("publisher search failed");
+    if (items.length === 0) return input.validateTerminal({ entries: [] });
+    if (items.length !== 1) throw new Error("publisher search returned multiple documents");
     if (this.expectedSearchSnippet !== undefined) {
       const item = items[0] as { readonly snippet?: unknown };
       if (item.snippet !== this.expectedSearchSnippet) {
@@ -1630,7 +1635,7 @@ class CorrectingReducerAgent extends CanonicalAgentClient {
   private callCount = 0;
 
   constructor(private readonly firstPlan: "invalid" | "oversized") {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
@@ -1670,7 +1675,7 @@ type ReducerProtocolProbeMode = "valid" | "invalid-after-success" | "unmeasured"
 
 class ReducerProtocolProbeAgent extends CanonicalAgentClient {
   constructor(private readonly mode: ReducerProtocolProbeMode) {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
@@ -1754,7 +1759,7 @@ class WebManifestAgent extends CanonicalAgentClient {
       | "fetch-fallback"
       | "empty-after-fetch" = "valid",
   ) {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
@@ -1887,7 +1892,7 @@ class AuthorizationProbeAgent extends CanonicalAgentClient {
   streamedDeltas = 0;
 
   constructor() {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async stream(
@@ -1927,7 +1932,7 @@ class AuthorizationProbeAgent extends CanonicalAgentClient {
 
 class MemoryManifestAgent extends CanonicalAgentClient {
   constructor(private readonly entries: readonly MemoryReference[]) {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
@@ -1984,7 +1989,7 @@ class EmptyInventoryConversationAgent extends CanonicalAgentClient {
   entries: unknown = null;
 
   constructor() {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
@@ -2007,7 +2012,7 @@ class DateBoundaryInputAgent extends CanonicalAgentClient {
   readonly retrievalInputs: string[] = [];
 
   constructor() {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
@@ -2059,7 +2064,7 @@ class DateBoundaryInputAgent extends CanonicalAgentClient {
 
 class UndiscoveredInternalAgent extends CanonicalAgentClient {
   constructor(private readonly reference: InternalReference) {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
@@ -2091,7 +2096,7 @@ class ChatRetrievalAgent extends CanonicalAgentClient {
   inspectedContent = "";
 
   constructor(private readonly beforeMessageId?: string) {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
@@ -2150,7 +2155,7 @@ class ExhaustedInternalSearchAgent extends CanonicalAgentClient {
   terminalReady = false;
 
   constructor() {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
@@ -2200,7 +2205,7 @@ class ExhaustedNonEmptyInternalSearchAgent extends CanonicalAgentClient {
   terminalReady = false;
 
   constructor() {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
@@ -2278,7 +2283,7 @@ class MalformedInspectionRecoveryAgent extends CanonicalAgentClient {
   recoveredReferenceCount = 0;
 
   constructor() {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
@@ -2325,7 +2330,7 @@ class SecondSearchCursorContinuationAgent extends CanonicalAgentClient {
   searchDisabledAfterContinuation = false;
 
   constructor() {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
@@ -2412,7 +2417,7 @@ class SecondSearchCursorContinuationAgent extends CanonicalAgentClient {
 
 class PublicRetrievalAgent extends CanonicalAgentClient {
   constructor(private readonly expectedSearchSnippet: string) {
-    super({} as ExactPiBoundary);
+    super(testProviderBoundary());
   }
 
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
@@ -3684,6 +3689,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const providerRequests: LiveProviderRequest[] = [];
     let providerTurn = 0;
     const client = new CanonicalAgentClient({
+      bindAcceptedProviderProfile: () => undefined,
       complete: async (request: LiveProviderRequest) => {
         providerRequests.push(request);
         const completion =
@@ -3766,6 +3772,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const providerRequests: LiveProviderRequest[] = [];
     let providerTurn = 0;
     const client = new CanonicalAgentClient({
+      bindAcceptedProviderProfile: () => undefined,
       complete: async (request: LiveProviderRequest) => {
         providerRequests.push(request);
         const completion =
@@ -4878,6 +4885,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const providerRequests: LiveProviderRequest[] = [];
     let providerTurn = 0;
     const staleFetchClient = new CanonicalAgentClient({
+      bindAcceptedProviderProfile: () => undefined,
       complete: async (request: LiveProviderRequest) => {
         providerRequests.push(request);
         const completion =
@@ -4946,6 +4954,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const terminalRecoveryRequests: LiveProviderRequest[] = [];
     let terminalRecoveryTurn = 0;
     const terminalRecoveryClient = new CanonicalAgentClient({
+      bindAcceptedProviderProfile: () => undefined,
       complete: async (request: LiveProviderRequest) => {
         terminalRecoveryRequests.push(request);
         const completion =
@@ -5131,6 +5140,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     let providerTurn = 0;
     let webBoundaryCalls = 0;
     const agent = new CanonicalAgentClient({
+      bindAcceptedProviderProfile: () => undefined,
       complete: async (
         request: LiveProviderRequest,
         coordinates: PiBoundaryCoordinates,
@@ -5438,7 +5448,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
       config,
-      new CanonicalAgentClient({} as never),
+      new CanonicalAgentClient(testProviderBoundary()),
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     expect(load.acceptanceScope.webRequested).toBe(true);
@@ -6124,6 +6134,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const providerRequests: LiveProviderRequest[] = [];
     let providerTurn = 0;
     const client = new CanonicalAgentClient({
+      bindAcceptedProviderProfile: () => undefined,
       complete: async (
         request: LiveProviderRequest,
         coordinates: PiBoundaryCoordinates,
