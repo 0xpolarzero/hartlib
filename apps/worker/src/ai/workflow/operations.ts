@@ -2676,7 +2676,7 @@ export class CanonicalWorkflowOperations {
           definition: {
             name: "lookup_named_source",
             description:
-              "Look up one user-named source in the current authorized scope. The result is an opaque one-use lookupRef for a later search.",
+              "Look up one user-named source in the saved acceptance scope. The result is an opaque one-use lookupRef for a later search.",
             parameters: z.toJSONSchema(
               z.object({ name: z.string().trim().min(1).max(200) }).strict(),
             ),
@@ -4096,12 +4096,7 @@ export class CanonicalWorkflowOperations {
                 "web fetch requires a canonical URL discovered by an earlier complete search turn",
               );
             }
-            const fetchedPage = await this.web!.fetch(
-              url,
-              webPolicy,
-              coordinates,
-              signal,
-            );
+            const fetchedPage = await this.web!.fetch(url, webPolicy, coordinates, signal);
             throwIfAborted(signal);
             const page = {
               ...fetchedPage,
