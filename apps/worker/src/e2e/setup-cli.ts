@@ -72,7 +72,7 @@ const acceptanceScopeForSeed = (args: {
   readonly companyId: string;
   readonly subscriptionIds?: readonly string[];
   readonly accessIds?: readonly string[];
-  readonly publicSourceIds?: readonly string[];
+  readonly publicSourceIds: readonly string[];
   readonly webRequested?: boolean;
   readonly webEnabled?: boolean;
   readonly allowedDomains?: readonly string[] | null;
@@ -83,7 +83,7 @@ const acceptanceScopeForSeed = (args: {
     companyId: args.companyId,
     subscriptionIds: args.subscriptionIds ?? [],
     accessIds: args.accessIds ?? [],
-    publicSourceIds: args.publicSourceIds ?? [],
+    publicSourceIds: args.publicSourceIds,
     memoryMode: "private_owner",
     provider: seedProvider,
     providerEndpointIdentity: seedProviderEndpointIdentity,
@@ -694,6 +694,13 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
     return yield* Effect.fail(new Error("published E2E publisher document is unavailable"));
   }
   const ranges = [{ charStart: 0, charEnd: Math.min(document.textCharCount, 200) }];
+  const publicSources = yield* sql<{ readonly sourceId: string }>`
+    select source_id as "sourceId"
+    from client_company_public_source_settings
+    where client_company_id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+      and enabled
+    order by source_id
+  `;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const [chat] = yield* sql<{ readonly id: string }>`
@@ -730,6 +737,7 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
           companyId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
           subscriptionIds: [publisherPdfFixture.subscriptionId],
           accessIds: [publisherPdfFixture.accessId],
+          publicSourceIds: publicSources.map((source) => source.sourceId),
         }),
       )},
       now(), now()
@@ -756,7 +764,7 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
       yield* sql`
     insert into assistant_message_sources (
       assistant_message_id, source_key, kind, locator,
-      version_id, publisher_extraction_id,
+      version_id, publisher_extraction_id, document_source_id, document_id, content_hash,
       display_label, public_provenance
     ) values (
       ${message!.id}, ${sourceKey}, 'document',
@@ -769,8 +777,11 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
         ranges,
         publisherIssueId: publisherPdfFixture.issueId,
         publisherDocumentId: document.documentId,
+        publisherExtractionId: document.extractionId,
       })},
-      ${document.versionId}, ${document.extractionId}, ${document.title},
+      ${document.versionId}, ${document.extractionId},
+      ${`publisher:${publisherPdfFixture.subscriptionId}`}, ${document.documentId}, ${document.contentHash},
+      ${document.title},
       ${sql.json({
         sourceName: "E2E PDF Publisher",
         issueTitle: publisherPdfFixture.issueTitle,
@@ -870,6 +881,13 @@ const seedActiveRun = (scope: "chat" | "user") =>
       `;
       chatId = inserted[0]!.id;
     }
+    const publicSources = yield* sql<{ readonly sourceId: string }>`
+      select source_id as "sourceId"
+      from client_company_public_source_settings
+      where client_company_id = ${primary.companyId}
+        and enabled
+      order by source_id
+    `;
     const messages = yield* sql<{ readonly id: string }>`
       insert into chat_messages (chat_id, author, content)
       values (${chatId}, 'user', 'Seeded active-run guard')
@@ -882,7 +900,13 @@ const seedActiveRun = (scope: "chat" | "user") =>
       ) values (
         ${chatId}, 'demo-user', ${messages[0]!.id}, 'fr-FR', 'FR',
         ${citationNamespaceForSeed(`active:${scope}`)},
-        ${sql.json(acceptanceScopeForSeed({ chatId, companyId: primary.companyId }))}
+        ${sql.json(
+          acceptanceScopeForSeed({
+            chatId,
+            companyId: primary.companyId,
+            publicSourceIds: publicSources.map((source) => source.sourceId),
+          }),
+        )}
       )
       returning id::text
     `;
@@ -898,6 +922,13 @@ const seedPrunedStreamRun = Effect.gen(function* () {
   `;
   const primary = chats[0];
   if (primary === undefined) return yield* Effect.fail(new Error("demo chat is not initialized"));
+  const publicSources = yield* sql<{ readonly sourceId: string }>`
+    select source_id as "sourceId"
+    from client_company_public_source_settings
+    where client_company_id = ${primary.companyId}
+      and enabled
+    order by source_id
+  `;
   const messages = yield* sql<{ readonly id: string }>`
     insert into chat_messages (chat_id, author, content)
     values (${primary.id}, 'user', 'Seeded pruned stream')
@@ -910,7 +941,13 @@ const seedPrunedStreamRun = Effect.gen(function* () {
     ) values (
       ${primary.id}, 'demo-user', ${messages[0]!.id}, 'en-US', 'US',
       ${citationNamespaceForSeed("pruned-stream")},
-      ${sql.json(acceptanceScopeForSeed({ chatId: primary.id, companyId: primary.companyId }))},
+      ${sql.json(
+        acceptanceScopeForSeed({
+          chatId: primary.id,
+          companyId: primary.companyId,
+          publicSourceIds: publicSources.map((source) => source.sourceId),
+        }),
+      )},
       now(), 5
     )
     returning id::text
@@ -949,6 +986,13 @@ const seedFailedRun = (chatId: string, content: string) =>
     `;
     const chat = chats[0];
     if (chat === undefined) return yield* Effect.fail(new Error("failed-run chat is unavailable"));
+    const publicSources = yield* sql<{ readonly sourceId: string }>`
+      select source_id as "sourceId"
+      from client_company_public_source_settings
+      where client_company_id = ${chat.companyId}
+        and enabled
+      order by source_id
+    `;
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         const messages = yield* sql<{ readonly id: string }>`
@@ -964,7 +1008,13 @@ const seedFailedRun = (chatId: string, content: string) =>
           ) values (
             ${chat.id}, 'demo-user', ${messages[0]!.id}, 'en-US', 'US',
             ${citationNamespaceForSeed(`failed:${content}`)},
-            ${sql.json(acceptanceScopeForSeed({ chatId: chat.id, companyId: chat.companyId }))},
+            ${sql.json(
+              acceptanceScopeForSeed({
+                chatId: chat.id,
+                companyId: chat.companyId,
+                publicSourceIds: publicSources.map((source) => source.sourceId),
+              }),
+            )},
             now(), now(), 'answer_failed', true, 3
           )
           returning id::text
