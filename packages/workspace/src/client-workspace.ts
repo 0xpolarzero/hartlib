@@ -444,12 +444,10 @@ const listDeliveredArchiveLocked = (input: {
                  else version.canonical_text
                end as "snippetText"
         from issue_deliveries delivery
-        join client_employee_subscription_grants grant_row
-          on grant_row.access_id = delivery.access_id
-         and grant_row.client_company_id = delivery.client_company_id
-         and grant_row.user_id = ${input.identity.userId}
-         and grant_row.revoked_at is null
-        join client_subscription_accesses access on access.id = delivery.access_id
+        join issue_delivery_recipients recipient
+          on recipient.issue_id = delivery.issue_id
+         and recipient.client_company_id = delivery.client_company_id
+         and recipient.user_id = ${input.identity.userId}
         join publisher_issues issue on issue.id = delivery.issue_id
         join publisher_subscriptions subscription on subscription.id = issue.subscription_id
         join publisher_companies publisher on publisher.id = subscription.publisher_company_id
@@ -459,7 +457,6 @@ const listDeliveredArchiveLocked = (input: {
           and ${includePublisher}
           and issue.status = 'published'
           and issue.restricted_at is null and issue.deleted_at is null
-          and access.state in ('active', 'ending', 'paused')
           and btrim(lower(split_part(document.media_type, ';', 1))) = 'application/pdf'
           and (${publisherSubscriptionId}::uuid is null or subscription.id = ${publisherSubscriptionId})
           and (
@@ -635,6 +632,11 @@ export const getClientIssue = (identity: WorkspaceIdentity, issueId: string) =>
           join client_company_memberships membership
             on membership.company_id = delivery.client_company_id
            and membership.user_id = ${identity.userId}
+           and membership.revoked_at is null
+          join issue_delivery_recipients recipient
+            on recipient.issue_id = delivery.issue_id
+           and recipient.client_company_id = delivery.client_company_id
+           and recipient.user_id = ${identity.userId}
           where delivery.issue_id = ${issueId}
           order by key
         `;
@@ -725,15 +727,10 @@ export const getClientIssue = (identity: WorkspaceIdentity, issueId: string) =>
               on membership.company_id = delivery.client_company_id
              and membership.user_id = ${identity.userId}
              and membership.revoked_at is null
-            join client_subscription_accesses access_row
-              on access_row.id = delivery.access_id
-             and access_row.client_company_id = delivery.client_company_id
-             and access_row.state in ('active', 'ending', 'paused')
-            join client_employee_subscription_grants employee_grant
-              on employee_grant.access_id = delivery.access_id
-             and employee_grant.client_company_id = delivery.client_company_id
-             and employee_grant.user_id = membership.user_id
-             and employee_grant.revoked_at is null
+            join issue_delivery_recipients recipient
+              on recipient.issue_id = delivery.issue_id
+             and recipient.client_company_id = delivery.client_company_id
+             and recipient.user_id = ${identity.userId}
             where delivery.issue_id = issue.id
               and (
                 ${identity.mode} = 'demo'

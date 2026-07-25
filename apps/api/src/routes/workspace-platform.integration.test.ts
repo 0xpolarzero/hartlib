@@ -1567,6 +1567,32 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
       404,
     );
 
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_employee_subscription_grants
+          set revoked_at = now(), revoked_by_user_id = 'admin-user'
+          where access_id = ${accessId}
+            and client_company_id = ${clientCompanyId}
+            and user_id = 'member-user'
+        `;
+      }),
+    );
+    expect((await call(routes, "member-user", "GET", `/v1/issues/${issueId}`)).status).toBe(200);
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_employee_subscription_grants
+          set revoked_at = null, revoked_by_user_id = null
+          where access_id = ${accessId}
+            and client_company_id = ${clientCompanyId}
+            and user_id = 'member-user'
+        `;
+      }),
+    );
+
     const reads = Array.from({ length: 20 }, () =>
       call(routes, "member-user", "GET", `/v1/issues/${issueId}`),
     );
@@ -1582,11 +1608,6 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
               update client_company_memberships
               set revoked_at = now(), revoked_by_user_id = 'admin-user'
               where company_id = ${clientCompanyId} and user_id = 'member-user'
-            `;
-            yield* sql`
-              update client_employee_subscription_grants
-              set revoked_at = now(), revoked_by_user_id = 'admin-user'
-              where client_company_id = ${clientCompanyId} and user_id = 'member-user'
             `;
           }),
         );
