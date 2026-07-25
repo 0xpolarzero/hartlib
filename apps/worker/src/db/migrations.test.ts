@@ -4186,9 +4186,25 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             `;
             yield* sql`alter table assistant_message_sources enable trigger user`;
           }
-          // The second run sees only canonical version_id/content_hash
-          // exposure columns and must still accept the populated ledger.
+          // The successful run must write only canonical version_id/content_hash
+          // locator data and retain the exact publisher extraction binding.
           yield* sql.unsafe(migration).raw;
+          const finalSourceKey = `k_cn_${upgradeNonce.toString("base64url")}_1`;
+          const [normalizedLocator] = yield* sql<{
+            readonly versionId: string | null;
+            readonly publisherDocumentVersionId: string | null;
+          }>`
+            select
+              locator->>'versionId' as "versionId",
+              locator->>'publisherDocumentVersionId' as "publisherDocumentVersionId"
+            from assistant_message_sources
+            where assistant_message_id = ${upgradeAssistantMessageId}
+              and source_key = ${finalSourceKey}
+          `;
+          expect(normalizedLocator).toEqual({
+            versionId,
+            publisherDocumentVersionId: null,
+          });
         }),
       );
       const binding = await runDb(
