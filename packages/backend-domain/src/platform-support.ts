@@ -147,16 +147,17 @@ export const resolveCompanyDeletionRequest = (input: {
           if (current.purgeAfter !== null) {
             return yield* Effect.fail(new Error("company_deletion_already_scheduled"));
           }
-          const purgeAfter = new Date(resolvedAt.getTime() + 180 * 86_400_000);
           yield* sql`
             update client_companies
             set deletion_requested_at = coalesce(deletion_requested_at, ${current.requestedAt}),
-                recovery_deleted_at = ${resolvedAt}, purge_after = ${purgeAfter}, updated_at = now()
+                recovery_deleted_at = now(),
+                purge_after = now() + interval '180 days',
+                updated_at = now()
             where id = ${current.clientCompanyId} and recovery_deleted_at is null
           `;
           yield* sql`
             update company_deletion_requests
-            set status = 'rejected', resolved_at = ${resolvedAt},
+            set status = 'rejected', resolved_at = now(),
                 resolved_by_user_id = ${input.actorUserId}
             where client_company_id = ${current.clientCompanyId}
               and id <> ${input.deletionRequestId} and status = 'requested'

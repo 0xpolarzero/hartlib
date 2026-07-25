@@ -2341,7 +2341,9 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
         `)[0]!;
       }),
     );
-    expect(state.purgeAfter.getTime() - state.recoveryDeletedAt.getTime()).toBe(180 * 86_400_000);
+    const recoveryWindowMs = state.purgeAfter.getTime() - state.recoveryDeletedAt.getTime();
+    expect(recoveryWindowMs).toBeGreaterThanOrEqual(180 * 86_400_000);
+    expect(recoveryWindowMs).toBeLessThan(181 * 86_400_000);
     expect(state).toMatchObject({
       retainedRecoveryDeletedAt: null,
       retainedPurgeAfter: null,
