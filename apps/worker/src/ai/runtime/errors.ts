@@ -221,6 +221,18 @@ export const toAiRuntimeError = (
   options: AiRuntimeErrorOptions = {},
 ): Error => {
   if (isAbortError(error) || isAiRuntimeError(error)) return error;
+  // Web policy failures already carry a bounded, code-owned type. Preserve
+  // that non-retryable decision instead of relabeling it as a retryable
+  // web-research task failure at the agent boundary.
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    (error as { readonly name?: unknown }).name === "WebBoundaryError" &&
+    (error as { readonly code?: unknown }).code === "unsupported_policy" &&
+    (error as { readonly retryable?: unknown }).retryable === false
+  ) {
+    return error as Error;
+  }
   const providerStatus = isHttpStatus(options.providerStatus) ? options.providerStatus : undefined;
   // Product retryability is code-owned by default.  Only an explicit
   // in-process option (owned by this boundary) or a trusted numeric transport

@@ -1119,6 +1119,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             webResearchProvider: null,
             aiWebMaxDomainFilters: 10,
             aiProviderServiceId: "zai_coding_plan_official",
+            aiProviderEndpointIdentity: "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
           },
           memberIdentity.organizationId,
           chats.privateId,

@@ -7,6 +7,9 @@ export type AiProviderServiceId =
   | "deterministic_test"
   | "openai_compatible_custom";
 
+/** Exact provider service and endpoint identity captured at acceptance. */
+export type AiProviderEndpointIdentity = string;
+
 export interface RunAcceptanceScope {
   readonly userId: string;
   readonly chatId: string;
@@ -19,6 +22,7 @@ export interface RunAcceptanceScope {
   readonly webRequested: boolean;
   readonly webEnabled: boolean;
   readonly provider: AiProviderServiceId;
+  readonly providerEndpointIdentity: AiProviderEndpointIdentity;
   readonly fastModelId: "glm-5-turbo";
   readonly mainModelId: "glm-5-turbo";
   readonly webTransportProvider: "tinyfish" | null;
@@ -40,6 +44,7 @@ const acceptanceScopeKeys = new Set([
   "webRequested",
   "webEnabled",
   "provider",
+  "providerEndpointIdentity",
   "fastModelId",
   "mainModelId",
   "webTransportProvider",
@@ -111,6 +116,13 @@ export const parseRunAcceptanceScope = (value: unknown): RunAcceptanceScope => {
   ) {
     throw new Error("acceptance scope provider is invalid");
   }
+  if (
+    typeof record.providerEndpointIdentity !== "string" ||
+    record.providerEndpointIdentity.length === 0 ||
+    !record.providerEndpointIdentity.startsWith(`${record.provider}:`)
+  ) {
+    throw new Error("acceptance scope provider endpoint identity is invalid");
+  }
   if (record.fastModelId !== "glm-5-turbo" || record.mainModelId !== "glm-5-turbo") {
     throw new Error("acceptance scope model is invalid");
   }
@@ -154,6 +166,7 @@ export const parseRunAcceptanceScope = (value: unknown): RunAcceptanceScope => {
     webRequested: record.webRequested,
     webEnabled: record.webEnabled,
     provider: record.provider,
+    providerEndpointIdentity: record.providerEndpointIdentity as AiProviderEndpointIdentity,
     fastModelId: record.fastModelId,
     mainModelId: record.mainModelId,
     webTransportProvider,
@@ -173,11 +186,24 @@ export const makeRunAcceptanceScope = (args: {
   readonly webRequested?: boolean;
   readonly webEnabled?: boolean;
   readonly provider?: AiProviderServiceId;
+  readonly providerEndpointIdentity?: AiProviderEndpointIdentity;
   readonly webTransportProvider?: "tinyfish" | null;
   readonly allowedDomains?: readonly string[] | null;
 }): RunAcceptanceScope => {
   const webRequested = args.webRequested ?? false;
   const webEnabled = args.webEnabled ?? false;
+  const provider = args.provider ?? "zai_coding_plan_official";
+  const providerEndpointIdentity =
+    args.providerEndpointIdentity ??
+    (provider === "zai_coding_plan_official"
+      ? "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4"
+      : provider === "deterministic_test"
+        ? "deterministic_test:deterministic"
+        : (() => {
+            throw new Error(
+              "custom provider acceptance scopes must include the exact endpoint identity",
+            );
+          })());
   return parseRunAcceptanceScope({
     userId: args.userId,
     chatId: args.chatId,
@@ -189,7 +215,8 @@ export const makeRunAcceptanceScope = (args: {
     memoryRevisionIds: [...(args.memoryRevisionIds ?? [])].sort(),
     webRequested,
     webEnabled,
-    provider: args.provider ?? "zai_coding_plan_official",
+    provider,
+    providerEndpointIdentity,
     fastModelId: "glm-5-turbo",
     mainModelId: "glm-5-turbo",
     webTransportProvider: webEnabled ? (args.webTransportProvider ?? "tinyfish") : null,

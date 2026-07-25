@@ -7,6 +7,7 @@ import { PgClient } from "@effect/sql-pg";
 import { Cause, Effect } from "effect";
 import { z } from "zod";
 import { loadDatabaseUrl } from "@brief/config";
+import type { AiProviderEndpointIdentity } from "@brief/shared";
 import { CanonicalAgentClient } from "../ai/runtime/agent-client";
 import {
   ExactPiBoundary,
@@ -67,6 +68,8 @@ import {
   WebBoundaryError,
   type WebOperationAccounting,
 } from "../ai/web";
+import { assertDomainAllowed } from "../ai/web/policy";
+import { canonicalizeWebUrl } from "../ai/runtime/canonicalization";
 import { deleteSmithersRowsForRun, purgeAiRuntimeRetention } from "../ai/workflow/smithers-cleanup";
 import { purgeUserMemoryTombstones } from "../ai/product-state/retention";
 import { loadWorkerConfig } from "../config";
@@ -595,6 +598,9 @@ export const makeWebResearchBoundary = (
             false,
           );
         }
+        const deterministicDomain = "e2e.example";
+        assertDomainAllowed(deterministicDomain, acceptedPolicy.allowedDomains);
+        const deterministicUrl = `https://${deterministicDomain}/web/solar-grid`;
         throwIfAborted(signal);
         await persist(
           coordinates,
@@ -612,9 +618,9 @@ export const makeWebResearchBoundary = (
         return {
           results: [
             {
-              url: "https://e2e.example/web/solar-grid",
+              url: deterministicUrl,
               title: "Deterministic solar grid update",
-              domain: "e2e.example",
+              domain: deterministicDomain,
               snippet: "Connection queues and storage remain the main monitoring signals.",
             },
           ],
@@ -637,6 +643,14 @@ export const makeWebResearchBoundary = (
             false,
           );
         }
+        let canonicalUrl: string;
+        try {
+          canonicalUrl = canonicalizeWebUrl(url);
+        } catch (cause) {
+          throw new WebBoundaryError("invalid_url", "web URL is invalid", false, cause);
+        }
+        const domain = new URL(canonicalUrl).hostname;
+        assertDomainAllowed(domain, acceptedPolicy.allowedDomains);
         throwIfAborted(signal);
         await persist(
           coordinates,
@@ -652,9 +666,9 @@ export const makeWebResearchBoundary = (
         );
         throwIfAborted(signal);
         return {
-          url,
+          url: canonicalUrl,
           title: "Deterministic solar grid update",
-          domain: "e2e.example",
+          domain,
           text,
           publishedAt: "2026-07-10T00:00:00.000Z",
           capturedAt: "2026-07-10T00:00:01.000Z",
@@ -771,16 +785,23 @@ export const providerServiceIdForConfig = (
       ? ZAI_CODING_PLAN_PROVIDER_SERVICE_ID
       : "openai_compatible_custom";
 
+export const providerEndpointIdentityForConfig = (
+  config: WorkerConfig,
+): AiProviderEndpointIdentity =>
+  `${providerServiceIdForConfig(config)}:${config.aiBaseUrl}` as AiProviderEndpointIdentity;
+
 export const makeDurableProviderBoundary = (
   connectionString: string,
   aiRunId: string,
   config: WorkerConfig,
 ): ExactPiBoundary | DeterministicE2eProviderBoundary => {
   const providerServiceId = providerServiceIdForConfig(config);
+  const providerEndpointIdentity = providerEndpointIdentityForConfig(config);
   const boundaryOptions: PiBoundaryOptions = {
     apiKey: config.zaiApiKey,
     baseUrl: config.aiBaseUrl,
     providerServiceId,
+    providerEndpointIdentity,
     fastModelId: config.aiFastModel,
     mainModelId: config.aiMainModel,
     requireAcceptedProviderProfile: true,
@@ -796,6 +817,7 @@ export const makeDurableProviderBoundary = (
           const scope = decodeRunAcceptanceScope(rows[0]?.scope);
           return {
             providerServiceId: scope.provider,
+            providerEndpointIdentity: scope.providerEndpointIdentity,
             fastModelId: scope.fastModelId,
             mainModelId: scope.mainModelId,
           } as const;
@@ -960,9 +982,10 @@ export const makeCanonicalOperations = (
 ): CanonicalWorkflowOperations => {
   const boundary = makeDurableProviderBoundary(connectionString, aiRunId, config);
   const providerServiceId = providerServiceIdForConfig(config);
+  const providerEndpointIdentity = providerEndpointIdentityForConfig(config);
   return new CanonicalWorkflowOperations(
     connectionString,
-    { ...config, providerServiceId },
+    { ...config, providerServiceId, providerEndpointIdentity },
     new CanonicalAgentClient(boundary),
     webResearchBoundary ?? makeWebResearchBoundary(connectionString, aiRunId, config),
   );

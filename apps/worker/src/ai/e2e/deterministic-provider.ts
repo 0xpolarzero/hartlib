@@ -5,7 +5,7 @@ import {
   type AcceptedProviderProfile,
   type ProviderGateLimits,
 } from "../runtime/model-registry";
-import type { AiProviderServiceId } from "@brief/shared";
+import type { AiProviderEndpointIdentity, AiProviderServiceId } from "@brief/shared";
 import type {
   BeforeProviderRequest,
   PiBoundaryCoordinates,
@@ -50,6 +50,7 @@ interface DeterministicBoundaryOptions {
   readonly fastLimits: ProviderGateLimits;
   readonly mainLimits: ProviderGateLimits;
   readonly providerServiceId?: AiProviderServiceId | undefined;
+  readonly providerEndpointIdentity?: AiProviderEndpointIdentity | undefined;
   readonly fastModelId?: "glm-5-turbo" | undefined;
   readonly mainModelId?: "glm-5-turbo" | undefined;
   readonly requireAcceptedProviderProfile?: boolean | undefined;
@@ -402,6 +403,7 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
     if (
       current !== undefined &&
       (current.providerServiceId !== profile.providerServiceId ||
+        current.providerEndpointIdentity !== profile.providerEndpointIdentity ||
         current.fastModelId !== profile.fastModelId ||
         current.mainModelId !== profile.mainModelId)
     ) {
@@ -418,6 +420,16 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
       throw new AiRuntimeError(
         "invalid_workflow_output",
         "accepted provider service differs from the runtime provider",
+        { taskRetryable: false },
+      );
+    }
+    if (
+      this.options.providerEndpointIdentity !== undefined &&
+      this.options.providerEndpointIdentity !== profile.providerEndpointIdentity
+    ) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "accepted provider endpoint differs from the runtime provider",
         { taskRetryable: false },
       );
     }

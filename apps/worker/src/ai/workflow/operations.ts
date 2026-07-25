@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   isCanonicalPublicDocumentSourceId,
   isCanonicalPublisherDocumentSourceId,
+  type AiProviderEndpointIdentity,
   type AiProviderServiceId,
   type PublicContextConsumer,
 } from "@brief/shared";
@@ -113,6 +114,7 @@ import {
   validateTopicPacket,
 } from "../runtime/validators";
 import { WebBoundaryError } from "../web/errors";
+import { TINYFISH_SEARCH_DOMAIN_FILTER_HARD_MAX } from "../web/tinyfish-search";
 import { decodeRunAcceptanceScope, type LoadedTurn } from "./types";
 
 export type { LoadedTurn } from "./types";
@@ -136,7 +138,10 @@ export type CanonicalAiConfig = Pick<
   | "aiContextReductionMaxIterations"
   | "aiMemoryToolResultMaxItems"
   | "webResearchProvider"
-> & { readonly providerServiceId?: AiProviderServiceId };
+> & {
+  readonly providerServiceId?: AiProviderServiceId;
+  readonly providerEndpointIdentity?: AiProviderEndpointIdentity;
+};
 
 export interface WebSearchResult {
   readonly url: string;
@@ -1152,8 +1157,11 @@ const immutableSourceIdentity = (source: FinalSourceRecord): string => {
 };
 
 export class CanonicalWorkflowOperations {
-  private readonly runtimeProviderProfile: Omit<AcceptedProviderProfile, "providerServiceId"> & {
+  private readonly runtimeProviderProfile: {
     readonly providerServiceId?: AcceptedProviderProfile["providerServiceId"];
+    readonly providerEndpointIdentity?: AcceptedProviderProfile["providerEndpointIdentity"];
+    readonly fastModelId: AcceptedProviderProfile["fastModelId"];
+    readonly mainModelId: AcceptedProviderProfile["mainModelId"];
   };
 
   constructor(
@@ -1167,6 +1175,9 @@ export class CanonicalWorkflowOperations {
       ...(config.providerServiceId === undefined
         ? {}
         : { providerServiceId: config.providerServiceId }),
+      ...(config.providerEndpointIdentity === undefined
+        ? {}
+        : { providerEndpointIdentity: config.providerEndpointIdentity }),
       fastModelId: config.aiFastModel,
       mainModelId: config.aiMainModel,
     };
@@ -1511,6 +1522,9 @@ export class CanonicalWorkflowOperations {
             if (
               (runtimeProviderProfile.providerServiceId !== undefined &&
                 acceptanceScope.provider !== runtimeProviderProfile.providerServiceId) ||
+              (runtimeProviderProfile.providerEndpointIdentity !== undefined &&
+                acceptanceScope.providerEndpointIdentity !==
+                  runtimeProviderProfile.providerEndpointIdentity) ||
               acceptanceScope.fastModelId !== runtimeProviderProfile.fastModelId ||
               acceptanceScope.mainModelId !== runtimeProviderProfile.mainModelId
             ) {
@@ -1520,6 +1534,7 @@ export class CanonicalWorkflowOperations {
             }
             bindAcceptedProviderProfile?.call(agents, {
               providerServiceId: acceptanceScope.provider,
+              providerEndpointIdentity: acceptanceScope.providerEndpointIdentity,
               fastModelId: acceptanceScope.fastModelId,
               mainModelId: acceptanceScope.mainModelId,
             });
@@ -3809,7 +3824,10 @@ export class CanonicalWorkflowOperations {
           maximumTurns: this.config.aiRetrievalMaxTurns,
           maximumSearches: this.config.aiWebMaxSearches,
           maximumFetches: this.config.aiWebMaxFetches,
-          maximumDomainFiltersPerSearch: this.config.aiWebMaxDomainFilters,
+          // The accepted scope owns the allowlist. The deployment setting is
+          // not read after acceptance; this fixed code limit only bounds the
+          // adapter's fanout for defense in depth.
+          maximumDomainFiltersPerSearch: TINYFISH_SEARCH_DOMAIN_FILTER_HARD_MAX,
         },
       }),
       maximumTurns: this.config.aiRetrievalMaxTurns,

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { LIVE_AI_MODEL_ID, ZAI_CODING_PLAN_BASE_URL } from "@brief/config";
-import type { AiProviderServiceId } from "@brief/shared";
+import type { AiProviderEndpointIdentity, AiProviderServiceId } from "@brief/shared";
 import { tokenizers } from "@lenml/tokenizers";
 import { Template } from "@huggingface/jinja";
 
@@ -21,6 +21,8 @@ export const RUNTIME_MODEL_ID = LIVE_AI_MODEL_ID;
 export type RuntimeModelId = typeof RUNTIME_MODEL_ID;
 export interface AcceptedProviderProfile {
   readonly providerServiceId: AiProviderServiceId;
+  /** Durable accepted profiles always carry this exact endpoint identity. */
+  readonly providerEndpointIdentity?: AiProviderEndpointIdentity;
   readonly fastModelId: RuntimeModelId;
   readonly mainModelId: RuntimeModelId;
 }

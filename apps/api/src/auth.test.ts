@@ -12,6 +12,8 @@ const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
   aiStreamKeepAliveMs: 15_000,
   webResearchProvider: null,
   aiWebMaxDomainFilters: 8,
+  aiProviderServiceId: "zai_coding_plan_official",
+  aiProviderEndpointIdentity: "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
   authMode: "clerk",
   demoUserId: "demo-user",
   clerkSecretKey: "secret",

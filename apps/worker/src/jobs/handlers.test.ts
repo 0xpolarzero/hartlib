@@ -83,6 +83,23 @@ describe("AI provider service identity", () => {
       } as WorkerConfig),
     ).toBe("deterministic_test");
   });
+
+  it("binds custom provider identity to its exact configured endpoint", async () => {
+    const { providerEndpointIdentityForConfig } = await import("./handlers");
+    const endpointA = providerEndpointIdentityForConfig({
+      nodeEnv: "development",
+      aiE2eFakeProvider: false,
+      aiBaseUrl: "https://compatible-a.example/v1",
+    } as WorkerConfig);
+    const endpointB = providerEndpointIdentityForConfig({
+      nodeEnv: "development",
+      aiE2eFakeProvider: false,
+      aiBaseUrl: "https://compatible-b.example/v1",
+    } as WorkerConfig);
+    expect(endpointA).toBe("openai_compatible_custom:https://compatible-a.example/v1");
+    expect(endpointB).toBe("openai_compatible_custom:https://compatible-b.example/v1");
+    expect(endpointA).not.toBe(endpointB);
+  });
 });
 
 describe("AI chat Smithers identity", () => {

@@ -6,6 +6,7 @@ import {
   makeRunAcceptanceScope,
   normalizeDomainAllowlist,
   type AiProviderServiceId,
+  type AiProviderEndpointIdentity,
   type EffectiveWebPolicy,
 } from "@brief/shared";
 import { Effect } from "effect";
@@ -16,6 +17,7 @@ export interface ChatRuntimeConfiguration {
   readonly webResearchProvider: "tinyfish" | null;
   readonly aiWebMaxDomainFilters: number;
   readonly aiProviderServiceId: AiProviderServiceId;
+  readonly aiProviderEndpointIdentity: AiProviderEndpointIdentity;
 }
 
 export interface ChatRuntimeReadIdentity {
@@ -603,6 +605,7 @@ const insertMessageRunAndJob = (
   input: CreateChatRunInput,
   policy: EffectiveWebPolicy,
   providerServiceId: AiProviderServiceId,
+  providerEndpointIdentity: AiProviderEndpointIdentity,
 ) =>
   Effect.gen(function* () {
     const selectedPublisherRows = yield* sql<{
@@ -667,6 +670,7 @@ const insertMessageRunAndJob = (
       // database and worker cannot mistake policy capability for acceptance.
       webEnabled: input.webSearchEnabled && policy.enabled,
       provider: providerServiceId,
+      providerEndpointIdentity,
       webTransportProvider: input.webSearchEnabled && policy.enabled ? policy.provider : null,
       allowedDomains: input.webSearchEnabled && policy.enabled ? policy.allowedDomains : null,
     });
@@ -812,6 +816,7 @@ export const createUserMessageAndRun = (
           input,
           policy,
           config.aiProviderServiceId,
+          config.aiProviderEndpointIdentity,
         );
       }),
     );

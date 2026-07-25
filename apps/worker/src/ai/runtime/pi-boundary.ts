@@ -38,7 +38,7 @@ import {
   type ProviderToolCall,
 } from "./provider-request";
 import type { LiveProviderRequestMeasurement, ModelUsage } from "./types";
-import type { AiProviderServiceId } from "@brief/shared";
+import type { AiProviderEndpointIdentity, AiProviderServiceId } from "@brief/shared";
 import { workerProviderSemaphore, type ProviderSemaphore } from "./provider-semaphore";
 import { withProviderOriginGuard } from "./provider-origin-guard";
 import {
@@ -92,6 +92,8 @@ export interface PiBoundaryOptions {
   readonly baseUrl: string;
   /** Runtime provider identity. Production callers must set this explicitly. */
   readonly providerServiceId?: AiProviderServiceId | undefined;
+  /** Exact runtime provider service and endpoint identity. */
+  readonly providerEndpointIdentity?: AiProviderEndpointIdentity | undefined;
   /** Runtime model identities captured when the boundary is constructed. */
   readonly fastModelId?: RuntimeModelId | undefined;
   readonly mainModelId?: RuntimeModelId | undefined;
@@ -295,6 +297,7 @@ export class ExactPiBoundary {
     if (
       current !== undefined &&
       (current.providerServiceId !== profile.providerServiceId ||
+        current.providerEndpointIdentity !== profile.providerEndpointIdentity ||
         current.fastModelId !== profile.fastModelId ||
         current.mainModelId !== profile.mainModelId)
     ) {
@@ -311,6 +314,16 @@ export class ExactPiBoundary {
       throw new AiRuntimeError(
         "invalid_workflow_output",
         "accepted provider service differs from the runtime provider",
+        { taskRetryable: false },
+      );
+    }
+    if (
+      this.options.providerEndpointIdentity !== undefined &&
+      this.options.providerEndpointIdentity !== profile.providerEndpointIdentity
+    ) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "accepted provider endpoint differs from the runtime provider",
         { taskRetryable: false },
       );
     }

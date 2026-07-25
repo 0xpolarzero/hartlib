@@ -65,6 +65,7 @@ const seedProvider =
     : (process.env.AI_BASE_URL ?? ZAI_CODING_PLAN_BASE_URL) === ZAI_CODING_PLAN_BASE_URL
       ? ("zai_coding_plan_official" as const)
       : ("openai_compatible_custom" as const);
+const seedProviderEndpointIdentity = `${seedProvider}:${process.env.AI_BASE_URL ?? ZAI_CODING_PLAN_BASE_URL}`;
 
 const acceptanceScopeForSeed = (args: {
   readonly chatId: string;
@@ -85,6 +86,7 @@ const acceptanceScopeForSeed = (args: {
     publicSourceIds: args.publicSourceIds ?? [],
     memoryMode: "private_owner",
     provider: seedProvider,
+    providerEndpointIdentity: seedProviderEndpointIdentity,
     webRequested: args.webRequested ?? false,
     webEnabled: args.webEnabled ?? false,
     webTransportProvider: args.webEnabled === true ? "tinyfish" : null,

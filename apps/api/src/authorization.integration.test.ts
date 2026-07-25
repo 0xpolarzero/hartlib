@@ -436,6 +436,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
             webResearchProvider: null,
             aiWebMaxDomainFilters: 10,
             aiProviderServiceId: "zai_coding_plan_official",
+            aiProviderEndpointIdentity: "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
           },
           "org_publisher",
           fixture.ownerPrivateChatId,
