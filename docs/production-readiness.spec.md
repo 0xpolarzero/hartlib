@@ -294,8 +294,9 @@ before launch.
 Approve the complete retention schedule, legal-hold handling, tombstones, export expiry, provider
 deletion, backup expiry, GC schedules, and deletion evidence. Run concurrency and recovery drills.
 The drills must prove that ordinary unsubscribe, grant, source-setting, and policy changes do not
-revoke raw delivered publications from exact historical recipients, while account purge, approved
-retention expiry, and legal or security restriction still deny them.
+revoke raw delivered publications from exact historical recipients who retain current membership,
+while membership revocation, account purge, approved retention expiry, and legal or security
+restriction still deny them.
 
 #### PR-LEGAL-001 — Customer documents
 

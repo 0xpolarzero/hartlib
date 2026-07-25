@@ -44,17 +44,45 @@ const adminDatabaseUrl = (): string => databaseUrlForName("postgres");
 const isolatedDatabaseUrl = (): string => databaseUrlForName(isolatedDatabaseName);
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 
-const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> =>
+const runDbAs = <A, E>(
+  applicationName: string,
+  effect: Effect.Effect<A, E, PgClient.PgClient>,
+): Promise<A> =>
   Effect.runPromise(
     effect.pipe(
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(isolatedDatabaseUrl()),
-          applicationName: "brief-platform-jobs-test",
+          applicationName,
         }),
       ),
     ),
   );
+
+const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> =>
+  runDbAs("brief-platform-jobs-test", effect);
+
+const waitForDatabaseLock = async (applicationName: string): Promise<void> => {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const waiting = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return (yield* sql<{ readonly waiting: boolean }>`
+          select exists(
+            select 1
+            from pg_stat_activity
+            where datname = current_database()
+              and application_name = ${applicationName}
+              and wait_event_type = 'Lock'
+          ) as waiting
+        `)[0]!.waiting;
+      }),
+    );
+    if (waiting) return;
+    await Bun.sleep(5);
+  }
+  throw new Error(`${applicationName} did not wait for a database lock`);
+};
 
 const runAdminDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> =>
   Effect.runPromise(
@@ -697,7 +725,16 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
     );
 
-    const laneHolder = runDb(
+    let releaseLane!: () => void;
+    const laneReleased = new Promise<void>((resolve) => {
+      releaseLane = resolve;
+    });
+    let signalLaneHeld!: () => void;
+    const laneHeld = new Promise<void>((resolve) => {
+      signalLaneHeld = resolve;
+    });
+    const laneHolder = runDbAs(
+      "brief-publication-set-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
@@ -707,16 +744,18 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
                 hashtext(${`brief:client-members:${fixture.clientCompanyId}`})
               )
             `;
-            yield* sql`select pg_sleep(1.2)`;
+            yield* Effect.sync(signalLaneHeld);
+            yield* Effect.promise(() => laneReleased);
           }),
         );
       }),
     );
-    await Bun.sleep(100);
+    await laneHeld;
     const publication = runPlatformJob(publishJob, fileStore);
-    await Bun.sleep(200);
+    await waitForDatabaseLock("brief-ai-runtime");
     const additionalAccess = await runDb(provisionAdditionalClientAccess(fixture));
 
+    releaseLane();
     await laneHolder;
     await expect(publication).rejects.toThrow(/delivery access set changed/);
 
@@ -766,6 +805,200 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       ].sort((left, right) => left.clientCompanyId.localeCompare(right.clientCompanyId)),
     );
     expect(recipientCompanies).toEqual(deliveredCompanies);
+  }, 20_000);
+
+  it("fails closed when an exact access tuple expires before delivery insertion", async () => {
+    const fixture = await runDb(
+      provisionFixture({ status: "scheduled", publicationAt: new Date(Date.now() - 60_000) }),
+    );
+    const fileStore = makeInMemoryPlatformFileStore({ [fixture.objectKey]: fixture.bytes });
+    const publishJob = await runDb(
+      createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
+    );
+    const barrierKey = "brief:test-publication-insert-barrier";
+    let releaseBarrier!: () => void;
+    const barrierReleased = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    let signalBarrierHeld!: () => void;
+    const barrierHeld = new Promise<void>((resolve) => {
+      signalBarrierHeld = resolve;
+    });
+
+    try {
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            create or replace function brief_test_pause_publication_insert()
+            returns trigger language plpgsql as $$
+            begin
+              if new.status = 'published' and old.status <> 'published' then
+                perform pg_advisory_xact_lock(hashtext('brief:test-publication-insert-barrier'));
+              end if;
+              return new;
+            end;
+            $$
+          `;
+          yield* sql`
+            drop trigger if exists brief_test_pause_publication_insert on publisher_issues
+          `;
+          yield* sql`
+            create trigger brief_test_pause_publication_insert
+            before update of status on publisher_issues
+            for each row execute function brief_test_pause_publication_insert()
+          `;
+        }),
+      );
+
+      const barrier = runDbAs(
+        "brief-publication-insert-barrier",
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`select pg_advisory_xact_lock(hashtext(${barrierKey}))`;
+              yield* Effect.sync(signalBarrierHeld);
+              yield* Effect.promise(() => barrierReleased);
+            }),
+          );
+        }),
+      );
+      await barrierHeld;
+
+      const publication = runPlatformJob(publishJob, fileStore);
+      await waitForDatabaseLock("brief-ai-runtime");
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update client_subscription_accesses
+            set state = 'ending', delivery_end_at = now() - interval '1 second'
+            where id = ${fixture.accessId}
+          `;
+        }),
+      );
+      releaseBarrier();
+      await barrier;
+      await expect(publication).rejects.toThrow();
+
+      const [state] = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly status: string; readonly deliveries: number }>`
+            select issues.status,
+                   (select count(*)::int from issue_deliveries where issue_id = issues.id) as deliveries
+            from publisher_issues issues
+            where issues.id = ${fixture.issueId}
+          `;
+        }),
+      );
+      expect(state).toEqual({ status: "scheduled", deliveries: 0 });
+    } finally {
+      releaseBarrier();
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`drop trigger if exists brief_test_pause_publication_insert on publisher_issues`;
+          yield* sql`drop function if exists brief_test_pause_publication_insert()`;
+        }),
+      );
+    }
+  }, 20_000);
+
+  it("fails closed when an exact access tuple is deleted before delivery insertion", async () => {
+    const fixture = await runDb(
+      provisionFixture({ status: "scheduled", publicationAt: new Date(Date.now() - 60_000) }),
+    );
+    const fileStore = makeInMemoryPlatformFileStore({ [fixture.objectKey]: fixture.bytes });
+    const publishJob = await runDb(
+      createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
+    );
+    const barrierKey = "brief:test-publication-delete-barrier";
+    let releaseBarrier!: () => void;
+    const barrierReleased = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    let signalBarrierHeld!: () => void;
+    const barrierHeld = new Promise<void>((resolve) => {
+      signalBarrierHeld = resolve;
+    });
+
+    try {
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            create or replace function brief_test_pause_publication_delete()
+            returns trigger language plpgsql as $$
+            begin
+              if new.status = 'published' and old.status <> 'published' then
+                perform pg_advisory_xact_lock(hashtext('brief:test-publication-delete-barrier'));
+              end if;
+              return new;
+            end;
+            $$
+          `;
+          yield* sql`
+            drop trigger if exists brief_test_pause_publication_delete on publisher_issues
+          `;
+          yield* sql`
+            create trigger brief_test_pause_publication_delete
+            before update of status on publisher_issues
+            for each row execute function brief_test_pause_publication_delete()
+          `;
+        }),
+      );
+
+      const barrier = runDbAs(
+        "brief-publication-delete-barrier",
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`select pg_advisory_xact_lock(hashtext(${barrierKey}))`;
+              yield* Effect.sync(signalBarrierHeld);
+              yield* Effect.promise(() => barrierReleased);
+            }),
+          );
+        }),
+      );
+      await barrierHeld;
+
+      const publication = runPlatformJob(publishJob, fileStore);
+      await waitForDatabaseLock("brief-ai-runtime");
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`delete from client_subscription_accesses where id = ${fixture.accessId}`;
+        }),
+      );
+      releaseBarrier();
+      await barrier;
+      await expect(publication).rejects.toThrow();
+
+      const [state] = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly status: string; readonly deliveries: number }>`
+            select issues.status,
+                   (select count(*)::int from issue_deliveries where issue_id = issues.id) as deliveries
+            from publisher_issues issues
+            where issues.id = ${fixture.issueId}
+          `;
+        }),
+      );
+      expect(state).toEqual({ status: "scheduled", deliveries: 0 });
+    } finally {
+      releaseBarrier();
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`drop trigger if exists brief_test_pause_publication_delete on publisher_issues`;
+          yield* sql`drop function if exists brief_test_pause_publication_delete()`;
+        }),
+      );
+    }
   }, 20_000);
 
   it("enforces schedule, payload, and delivery-end gates", async () => {

@@ -1501,7 +1501,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
     });
   });
 
-  it("returns an immutable issue-detail snapshot after membership is revoked", async () => {
+  it("requires current membership for issue detail while retaining historical entitlement", async () => {
     const issueId = crypto.randomUUID();
     const documentId = crypto.randomUUID();
     await runDb(
@@ -1532,6 +1532,14 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
+              insert into platform_users (id, primary_email, display_name, clerk_user_id)
+              values ('never-recipient', 'never-recipient@example.test', 'Never Recipient', 'clerk-never-recipient')
+            `;
+            yield* sql`
+              insert into client_company_memberships (company_id, user_id, role)
+              values (${clientCompanyId}, 'never-recipient', 'member')
+            `;
+            yield* sql`
               insert into issue_deliveries (
                 issue_id, subscription_id, access_id, client_company_id, historical
               ) values (${issueId}, ${subscriptionId}, ${accessId}, ${clientCompanyId}, false)
@@ -1555,6 +1563,9 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
       issue: { id: issueId, title: "Atomic issue detail" },
       documents: [{ id: documentId, issueId }],
     });
+    expect((await call(routes, "never-recipient", "GET", `/v1/issues/${issueId}`)).status).toBe(
+      404,
+    );
 
     const reads = Array.from({ length: 20 }, () =>
       call(routes, "member-user", "GET", `/v1/issues/${issueId}`),
@@ -1584,13 +1595,15 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
     const responses = await Promise.all(reads);
     await revocation;
     for (const response of responses) {
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        issue: { id: issueId },
-        documents: [{ id: documentId, issueId }],
-      });
+      expect([200, 404]).toContain(response.status);
+      if (response.status === 200) {
+        await expect(response.json()).resolves.toMatchObject({
+          issue: { id: issueId },
+          documents: [{ id: documentId, issueId }],
+        });
+      }
     }
-    expect((await call(routes, "member-user", "GET", `/v1/issues/${issueId}`)).status).toBe(200);
+    expect((await call(routes, "member-user", "GET", `/v1/issues/${issueId}`)).status).toBe(404);
   });
 
   it("recoverably deletes every draft issue object and cancels publication/extraction races", async () => {

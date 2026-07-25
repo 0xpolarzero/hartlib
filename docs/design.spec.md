@@ -222,10 +222,12 @@ The platform should make historical issue upload easy during onboarding.
 Published issues cannot be edited, archived, deleted, or removed from client access.
 
 Delivery freezes the exact client company and user recipients. A delivered issue
-remains available only to those authenticated historical recipients while their
-accounts and the content exist and no legal, security, or retention control
-restricts it. A later subscription, grant, source, or policy change neither revokes
-that raw issue nor grants it to a user or company that never received it.
+remains available only to an authenticated historical recipient who still has an
+unrevoked current membership in the delivered company, while their account and the
+content exist and no legal, security, or retention control restricts it. A later
+subscription, grant, source, or policy change neither revokes that raw issue nor
+grants it to a user or company that never received it. Revoking the current company
+membership denies the client viewer without changing the historical recipient row.
 
 The client company's delivered issue archive is durable.
 
@@ -710,10 +712,12 @@ See `docs/data-access.spec.md`.
 When a publisher pauses a client company's subscription, delivery continues until the delivery end date.
 
 The client company keeps access to issues already delivered to it. Delivery
-freezes exact user recipients in an immutable delivery-recipient record;
-ordinary unsubscribe, source, grant, or policy changes do not revoke those
-historical recipients. A user or company that never received the issue stays
-denied, including after a later grant.
+freezes exact user recipients in an immutable delivery-recipient record; a
+recipient also needs an unrevoked current company membership. Ordinary
+unsubscribe, source, grant, or policy changes do not revoke those historical
+recipients, but membership revocation denies the client viewer without changing
+the row. A user or company that never received the issue stays denied, including
+after a later grant.
 
 The client company keeps access to existing AI chats.
 
@@ -744,7 +748,8 @@ Clients keep already delivered issues, delivered archive search, and AI access w
 ## Exports
 
 Client users can download delivered brief documents when their authenticated
-identity has the exact historical delivery-recipient record.
+identity has an unrevoked current company membership and the exact historical
+delivery-recipient record.
 
 Client users can export their chats while they have subscription access.
 

@@ -604,6 +604,10 @@ const publishIssue = (
                 readonly accessId: string;
                 readonly clientCompanyId: string;
               }>`
+                with proven_accesses(access_id, client_company_id) as (
+                  select value->>'id', value->>'clientCompanyId'
+                  from jsonb_array_elements(${JSON.stringify(deliveryAccesses)}::jsonb) as entries(value)
+                )
                 insert into issue_deliveries (
                   issue_id,
                   subscription_id,
@@ -615,15 +619,11 @@ const publishIssue = (
                 select
                   ${issueId},
                   ${issue.subscriptionId},
-                  accesses.id,
-                  accesses.client_company_id,
+                  proven_accesses.access_id::uuid,
+                  proven_accesses.client_company_id::uuid,
                   ${historical},
                   ${jobId}
-                from client_subscription_accesses accesses
-                where ${sql.in(
-                  "accesses.id",
-                  deliveryAccesses.map(({ id }) => id),
-                )}
+                from proven_accesses
                 on conflict (issue_id, client_company_id) do nothing
                 returning
                   id::text,

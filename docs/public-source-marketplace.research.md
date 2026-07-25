@@ -166,10 +166,11 @@ Public sources appear alongside publisher invitation sources as unified sources 
 
 Current public-source settings govern current catalog listings and future AI
 acceptance. They do not create publisher delivery entitlement. A publisher issue
-content route instead uses its exact immutable delivery-recipient record, so a
-public-source toggle cannot grant a never-delivered issue or revoke one from its
-historical recipient. The exceptional deletion, retention, and legal or security
-controls still apply.
+content route instead uses an unrevoked current client-company membership plus its
+exact immutable delivery-recipient record, so a public-source toggle cannot grant
+a never-delivered issue or revoke one from its historical recipient. Membership
+revocation and the exceptional deletion, retention, and legal or security controls
+still apply.
 
 Each production source row lets the client include or exclude it from AI context. The live demo presents read-only subscription state and uses all sources authorized for its demo user. The demo feed is projected from that same company-scoped setting set used by chat retrieval, so a source marked subscribed is retrievable by the demo company. Public-source subscriber, open, download, and AI-context-pull metrics are not part of the ingestion facts; APIs and UI use null for those unavailable values rather than zero placeholders. Results cite the original official source, and completeness is bounded by connector health and the official source surface.
 

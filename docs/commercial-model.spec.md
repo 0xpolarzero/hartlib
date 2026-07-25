@@ -177,11 +177,13 @@ When available credits are exhausted, AI chat pauses for that client company.
 When a publisher pauses a client company's subscription, delivery continues until the delivery end date.
 
 The client company keeps access to issues already delivered to it. Delivery
-freezes the exact user recipients in an immutable delivery-recipient record;
-ordinary unsubscribe, source, grant, or policy changes do not revoke those
-historical recipients. A user added later is not a historical recipient, and
-neither that user nor a company that never received the issue gains historical
-access from a later grant. Current subscriptions govern only the catalog and
+freezes the exact user recipients in an immutable delivery-recipient record; a
+recipient also needs an unrevoked current company membership. Ordinary
+unsubscribe, source, grant, or policy changes do not revoke those historical
+recipients, but membership revocation denies the client viewer without changing
+the row. A user added later is not a historical recipient, and neither that user
+nor a company that never received the issue gains historical access from a later
+grant. Current subscriptions govern only the catalog and
 future delivery.
 
 The client company's delivered issue archive is durable.
