@@ -13937,7 +13937,9 @@ after insert on issue_deliveries
 for each row execute function open_issue_delivery_recipient_snapshot();
 
 -- Backfill only recipients whose durable grant and membership timestamps prove
--- entitlement at delivery time. Rows without that proof remain unavailable.
+-- entitlement at delivery time. Legacy rows with an equality boundary do not
+-- preserve transaction order, so they remain unavailable rather than gaining
+-- access from an ambiguous timestamp.
 select set_config('brief.allow_delivery_recipient_backfill', 'on', true);
 insert into issue_delivery_recipients (issue_id, client_company_id, user_id, delivered_at)
 select delivery.issue_id,
@@ -13951,9 +13953,9 @@ join client_employee_subscription_grants grants
 join client_company_memberships memberships
   on memberships.company_id = delivery.client_company_id
  and memberships.user_id = grants.user_id
-where grants.granted_at <= delivery.delivered_at
+where grants.granted_at < delivery.delivered_at
   and (grants.revoked_at is null or grants.revoked_at > delivery.delivered_at)
-  and memberships.created_at <= delivery.delivered_at
+  and memberships.created_at < delivery.delivered_at
   and (memberships.revoked_at is null or memberships.revoked_at > delivery.delivered_at)
   and not exists (
     select 1

@@ -637,6 +637,179 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     expect(result.recipients).toEqual([result.revokedAfterUserId, result.validUserId].sort());
   });
 
+  it("backfills only unambiguous legacy delivery recipients", { timeout: 120_000 }, async () => {
+    const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+    const databaseName = `brief_migrations_delivery_backfill_${process.pid}_${suffix}`;
+    const legacyUrl = databaseUrlForName(databaseName);
+    const migration = await Bun.file(
+      new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+    ).text();
+    const deliveryAt = new Date(Date.now() - 60_000);
+    const ids = {
+      publisherCompany: crypto.randomUUID(),
+      subscription: crypto.randomUUID(),
+      clientCompany: crypto.randomUUID(),
+      access: crypto.randomUUID(),
+      issue: crypto.randomUUID(),
+      valid: `legacy-delivery-valid-${suffix}`,
+      revokedAfter: `legacy-delivery-revoked-after-${suffix}`,
+      grantBoundary: `legacy-delivery-grant-boundary-${suffix}`,
+      membershipBoundary: `legacy-delivery-membership-boundary-${suffix}`,
+      never: `legacy-delivery-never-${suffix}`,
+    };
+    const users = [
+      ids.valid,
+      ids.revokedAfter,
+      ids.grantBoundary,
+      ids.membershipBoundary,
+      ids.never,
+    ];
+
+    try {
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`);
+        }),
+      );
+      await runDb(
+        legacyUrl,
+        applyMigrationsThrough("0063_immutable_document_exposure_evidence.sql"),
+      );
+      await runDb(
+        legacyUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          for (const userId of users) {
+            yield* sql`
+                insert into platform_users (id, primary_email, display_name, clerk_user_id)
+                values (${userId}, ${`${userId}@example.test`}, 'Legacy delivery user', ${`clerk-${userId}`})
+              `;
+          }
+          yield* sql`
+              insert into publisher_companies (id, name)
+              values (${ids.publisherCompany}, 'Legacy delivery publisher')
+            `;
+          yield* sql`
+              insert into publisher_subscriptions (
+                id, publisher_company_id, name, created_by_user_id
+              ) values (
+                ${ids.subscription}, ${ids.publisherCompany}, 'Legacy delivery source', 'legacy-publisher'
+              )
+            `;
+          yield* sql`
+              insert into client_companies (id, name)
+              values (${ids.clientCompany}, 'Legacy delivery client')
+            `;
+          for (const userId of users) {
+            const createdAt =
+              userId === ids.membershipBoundary
+                ? deliveryAt
+                : new Date(deliveryAt.getTime() - 3_600_000);
+            yield* sql`
+                insert into client_company_memberships (company_id, user_id, role, created_at)
+                values (${ids.clientCompany}, ${userId}, 'member', ${createdAt})
+              `;
+          }
+          yield* sql`
+              insert into client_subscription_accesses (
+                id, subscription_id, client_company_id, state, first_admin_email,
+                accepted_at, subscribed_at, created_by_user_id
+              ) values (
+                ${ids.access}, ${ids.subscription}, ${ids.clientCompany}, 'active',
+                'legacy@example.test', ${new Date(deliveryAt.getTime() - 7_200_000)},
+                ${new Date(deliveryAt.getTime() - 7_200_000)}, 'legacy-publisher'
+              )
+            `;
+          yield* sql`
+              insert into publisher_issues (
+                id, subscription_id, title, status, publication_at, published_at,
+                created_by_user_id
+              ) values (
+                ${ids.issue}, ${ids.subscription}, 'Legacy delivery issue', 'published',
+                ${new Date(deliveryAt.getTime() - 7_200_000)},
+                ${new Date(deliveryAt.getTime() - 3_600_000)}, 'legacy-publisher'
+              )
+            `;
+          yield* sql`
+              insert into issue_deliveries (
+                issue_id, subscription_id, access_id, client_company_id,
+                delivered_at, historical
+              ) values (
+                ${ids.issue}, ${ids.subscription}, ${ids.access}, ${ids.clientCompany},
+                ${deliveryAt}, false
+              )
+            `;
+          yield* sql`
+              insert into client_employee_subscription_grants (
+                access_id, client_company_id, user_id, granted_by_user_id, granted_at
+              ) values (
+                ${ids.access}, ${ids.clientCompany}, ${ids.valid}, 'legacy-publisher',
+                ${new Date(deliveryAt.getTime() - 1_800_000)}
+              )
+            `;
+          yield* sql`
+              insert into client_employee_subscription_grants (
+                access_id, client_company_id, user_id, granted_by_user_id,
+                granted_at, revoked_at, revoked_by_user_id
+              ) values (
+                ${ids.access}, ${ids.clientCompany}, ${ids.revokedAfter}, 'legacy-publisher',
+                ${new Date(deliveryAt.getTime() - 1_800_000)},
+                ${new Date(deliveryAt.getTime() + 1_800_000)}, 'legacy-publisher'
+              )
+            `;
+          yield* sql`
+              insert into client_employee_subscription_grants (
+                access_id, client_company_id, user_id, granted_by_user_id, granted_at
+              ) values (
+                ${ids.access}, ${ids.clientCompany}, ${ids.grantBoundary}, 'legacy-publisher',
+                ${deliveryAt}
+              )
+            `;
+          yield* sql`
+              insert into client_employee_subscription_grants (
+                access_id, client_company_id, user_id, granted_by_user_id, granted_at
+              ) values (
+                ${ids.access}, ${ids.clientCompany}, ${ids.membershipBoundary}, 'legacy-publisher',
+                ${new Date(deliveryAt.getTime() - 1_800_000)}
+              )
+            `;
+        }),
+      );
+
+      const result = await runDb(
+        legacyUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(migration).raw;
+          return yield* sql<{ readonly userId: string }>`
+              select user_id as "userId"
+              from issue_delivery_recipients
+              where issue_id = ${ids.issue}
+              order by user_id
+            `;
+        }),
+      );
+      expect(result.map((row) => row.userId)).toEqual([ids.revokedAfter, ids.valid].sort());
+    } finally {
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+              select pg_terminate_backend(pid)
+              from pg_stat_activity
+              where datname = ${databaseName}
+                and usename = current_user
+                and pid <> pg_backend_pid()
+            `;
+          yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
+        }),
+      );
+    }
+  });
+
   it("stores one strict immutable acceptance scope and never reauthorizes run updates", async () => {
     const userId = `scope-contract-${crypto.randomUUID()}`;
     const companyId = await runDb(isolatedDatabaseUrl(), provisionClientUser(userId));
@@ -10418,7 +10591,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           values (
             ${firstChatId}, ${initiatingUserId}, ${firstMessageId}, 'en-US', 'US',
             ${sql.json(
-                makeRunAcceptanceScope({
+              makeRunAcceptanceScope({
                 userId: initiatingUserId,
                 chatId: firstChatId,
                 companyId: initiatingCompanyId,
@@ -10435,7 +10608,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           values (
             ${secondChatId}, ${initiatingUserId}, ${secondMessageId}, 'en-US', 'US',
             ${sql.json(
-                makeRunAcceptanceScope({
+              makeRunAcceptanceScope({
                 userId: initiatingUserId,
                 chatId: secondChatId,
                 companyId: otherCompanyId,

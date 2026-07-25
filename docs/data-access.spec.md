@@ -189,7 +189,8 @@ Delivery writes one immutable recipient row per `(issue, company, user)` in the
 same transaction as the delivery record. Existing company-level delivery rows
 prove company delivery but do not prove an employee recipient. A migration may
 backfill a recipient only when retained membership, grant, and delivery times
-prove entitlement at `delivered_at`; ambiguous rows fail closed. Raw PDF, issue
+strictly prove entitlement at `delivered_at`; an equality boundary has no
+retained transaction order and remains ambiguous. Raw PDF, issue
 detail, archive, and delivered-citation routes require that exact recipient
 row, and rows remain immutable until account purge.
 

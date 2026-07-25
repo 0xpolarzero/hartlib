@@ -452,7 +452,8 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
             webResearchProvider: null,
             aiWebMaxDomainFilters: 10,
             aiProviderServiceId: "zai_coding_plan_official",
-            aiProviderEndpointIdentity: "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
+            aiProviderEndpointIdentity:
+              "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
           },
           "org_publisher",
           fixture.ownerPrivateChatId,
@@ -1439,6 +1440,115 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
         expiresInSeconds: 300,
       }),
     ]);
+  });
+
+  it("serves a saved citation after unsubscribe and later source policy changes", async () => {
+    const url = databaseUrlFor(isolatedDatabaseName);
+    const pgLayer = PgClient.layer({
+      url: Redacted.make(url),
+      applicationName: "brief-publisher-citation-route-test",
+    });
+    const citationUrl =
+      `/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content` as const;
+    const route = makePublisherDocumentContentRoute(
+      pgLayer,
+      async () => "https://private-storage.test/saved-citation",
+    );
+    const readCitation = (userId: string) => {
+      const request = new Request(`https://brief.test${citationUrl}`);
+      return Effect.runPromise(
+        route
+          .execute(
+            request,
+            new URL(request.url),
+            { issueId: fixture.issueId, documentId: fixture.documentId },
+            { query: {}, headers: {} },
+          )
+          .pipe(
+            Effect.provide(
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({
+                  env: {
+                    NODE_ENV: "test",
+                    AUTH_MODE: "demo",
+                    DEMO_USER_ID: userId,
+                    RAILWAY_BUCKET_ENDPOINT: "https://storage.test",
+                    RAILWAY_BUCKET_NAME: "private",
+                    RAILWAY_BUCKET_ACCESS_KEY_ID: "access",
+                    RAILWAY_BUCKET_SECRET_ACCESS_KEY: "secret",
+                  },
+                }),
+              ),
+            ),
+          ),
+      );
+    };
+
+    await expect(readCitation("owner")).resolves.toMatchObject({ status: 302 });
+    await expect(readCitation("publisher-admin")).resolves.toMatchObject({ status: 302 });
+    await expect(readCitation("never-recipient")).resolves.toMatchObject({ status: 404 });
+
+    await runDb(
+      url,
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_subscription_accesses
+          set state = 'paused', delivery_end_at = now(), paused_at = now(), updated_at = now()
+          where id = ${fixture.accessId}
+        `;
+        yield* sql`
+          update client_employee_subscription_grants
+          set revoked_at = now(), revoked_by_user_id = 'owner'
+          where access_id = ${fixture.accessId}
+            and client_company_id = ${fixture.clientCompanyId}
+            and user_id in ('owner', 'viewer')
+        `;
+        yield* sql`
+          update publisher_companies
+          set delivery_enabled = false
+          where id = ${fixture.publisherCompanyId}
+        `;
+        yield* sql`
+          update publisher_subscriptions
+          set delivery_enabled = false
+          where id = ${fixture.subscriptionId}
+        `;
+      }),
+    );
+
+    await expect(readCitation("owner")).resolves.toMatchObject({ status: 302 });
+    await expect(readCitation("publisher-admin")).resolves.toMatchObject({ status: 302 });
+    await expect(readCitation("never-recipient")).resolves.toMatchObject({ status: 404 });
+
+    await runDb(
+      url,
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_subscription_accesses
+          set state = 'active', delivery_end_at = null, paused_at = null, updated_at = now()
+          where id = ${fixture.accessId}
+        `;
+        yield* sql`
+          update client_employee_subscription_grants
+          set revoked_at = null, revoked_by_user_id = null
+          where access_id = ${fixture.accessId}
+            and client_company_id = ${fixture.clientCompanyId}
+            and user_id in ('owner', 'viewer')
+        `;
+        yield* sql`
+          update publisher_companies
+          set delivery_enabled = true
+          where id = ${fixture.publisherCompanyId}
+        `;
+        yield* sql`
+          update publisher_subscriptions
+          set delivery_enabled = true
+          where id = ${fixture.subscriptionId}
+        `;
+      }),
+    );
   });
 
   it("uses explicit-origin CORS for publisher document final responses", async () => {

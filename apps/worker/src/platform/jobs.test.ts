@@ -546,6 +546,100 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
     expect(historicalState).toEqual({ historical: true, deliveries: 1, notifications: 0 });
   });
 
+  it("holds the client lane through the delivery recipient snapshot", async () => {
+    const fixture = await runDb(
+      provisionFixture({ status: "scheduled", publicationAt: new Date(Date.now() - 60_000) }),
+    );
+    const fileStore = makeInMemoryPlatformFileStore({ [fixture.objectKey]: fixture.bytes });
+    const publishJob = await runDb(
+      createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
+    );
+    let revocation: Promise<void> | undefined;
+
+    try {
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            create or replace function brief_test_pause_issue_delivery()
+            returns trigger language plpgsql as $$
+            begin
+              perform pg_sleep(0.8);
+              return new;
+            end;
+            $$
+          `;
+          yield* sql`
+            drop trigger if exists brief_test_pause_issue_delivery on issue_deliveries
+          `;
+          yield* sql`
+            create trigger brief_test_pause_issue_delivery
+            after insert on issue_deliveries
+            for each row execute function brief_test_pause_issue_delivery()
+          `;
+        }),
+      );
+
+      const publication = runPlatformJob(publishJob, fileStore);
+      revocation = (async () => {
+        await Bun.sleep(100);
+        await runDb(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`
+                  select pg_advisory_xact_lock(
+                    hashtext(${`brief:client-members:${fixture.clientCompanyId}`})
+                  )
+                `;
+                yield* sql`
+                  update client_employee_subscription_grants
+                  set revoked_at = now(), revoked_by_user_id = ${fixture.userId}
+                  where access_id = ${fixture.accessId}
+                    and client_company_id = ${fixture.clientCompanyId}
+                    and user_id = ${fixture.userId}
+                `;
+              }),
+            );
+          }),
+        );
+      })();
+
+      const revocationCommittedDuringSnapshot = await Promise.race([
+        revocation.then(() => true),
+        Bun.sleep(250).then(() => false),
+      ]);
+      expect(revocationCommittedDuringSnapshot).toBe(false);
+      await expect(publication).resolves.toMatchObject({ status: "completed" });
+      await revocation;
+
+      const recipientCount = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const [row] = yield* sql<{ readonly count: number }>`
+            select count(*)::int as count
+            from issue_delivery_recipients
+            where issue_id = ${fixture.issueId}
+              and client_company_id = ${fixture.clientCompanyId}
+              and user_id = ${fixture.userId}
+          `;
+          return row?.count ?? 0;
+        }),
+      );
+      expect(recipientCount).toBe(1);
+    } finally {
+      if (revocation !== undefined) await revocation.catch(() => undefined);
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`drop trigger if exists brief_test_pause_issue_delivery on issue_deliveries`;
+          yield* sql`drop function if exists brief_test_pause_issue_delivery()`;
+        }),
+      );
+    }
+  }, 20_000);
+
   it("enforces schedule, payload, and delivery-end gates", async () => {
     const fileStore = makeInMemoryPlatformFileStore();
     const future = await runDb(

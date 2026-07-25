@@ -512,14 +512,6 @@ const publishIssue = (
               new Error("historical issue publication time must be in the past"),
             );
           }
-          yield* sql`
-            update publisher_issues
-            set historical = true,
-                publication_at = coalesce(publication_at, now()),
-                status = 'published',
-                updated_at = now()
-            where id = ${issueId}
-          `;
         } else {
           if (issue.status !== "scheduled" || issue.publicationAt === null) {
             return yield* Effect.fail(
@@ -529,6 +521,33 @@ const publishIssue = (
           if (!issue.due) {
             return yield* Effect.fail(new Error("scheduled issue is not due yet"));
           }
+        }
+
+        // Delivery snapshots must linearize with client membership and grant
+        // changes. Discover every company attached to this subscription and
+        // hold its lane before inserting the delivery or reading recipients;
+        // otherwise a revoke can commit between those two statements and
+        // erase a user who was entitled at delivered_at.
+        const deliveryCompanies = yield* sql<{ readonly id: string }>`
+          select distinct client_company_id::text as id
+          from client_subscription_accesses
+          where subscription_id = ${issue.subscriptionId}
+          order by client_company_id::text
+        `;
+        yield* lockMembershipLanes(
+          deliveryCompanies.map(({ id }) => `client:${id}` as MembershipLaneKey),
+        );
+
+        if (historical) {
+          yield* sql`
+            update publisher_issues
+            set historical = true,
+                publication_at = coalesce(publication_at, now()),
+                status = 'published',
+                updated_at = now()
+            where id = ${issueId}
+          `;
+        } else {
           yield* sql`
             update publisher_issues
             set status = 'published', updated_at = now()
