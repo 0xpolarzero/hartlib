@@ -59,23 +59,27 @@ const readChat = (identity: RequestIdentity, config: ApiConfig, chatId?: string)
       if (loaded === null) return Effect.fail(new AuthorizationError("not_found"));
       const active =
         loaded.runs.find((run) => run.finished_at === null && run.failed_at === null) ?? null;
-      return Effect.succeed({
-        chat: {
-          id: loaded.chat.id,
-          memoryMode: loaded.chat.memory_mode,
-          createdAt: loaded.chat.created_at.toISOString(),
-          updatedAt: loaded.chat.updated_at.toISOString(),
-        },
-        messages: chatMessagesResponseFromRows(
-          loaded.messages,
-          loaded.runs,
-          loaded.sourceRows,
-          loaded.useRows,
-        ),
-        effectiveWebPolicy: loaded.effectivePolicy,
-        activeRun: active === null ? null : runDescriptor(active),
-        canWrite: loaded.chat.user_id === identity.userId,
-      } satisfies GetChatResponse);
+      return Effect.try({
+        try: () =>
+          ({
+            chat: {
+              id: loaded.chat.id,
+              memoryMode: loaded.chat.memory_mode,
+              createdAt: loaded.chat.created_at.toISOString(),
+              updatedAt: loaded.chat.updated_at.toISOString(),
+            },
+            messages: chatMessagesResponseFromRows(
+              loaded.messages,
+              loaded.runs,
+              loaded.sourceRows,
+              loaded.useRows,
+            ),
+            effectiveWebPolicy: loaded.effectivePolicy,
+            activeRun: active === null ? null : runDescriptor(active),
+            canWrite: loaded.chat.user_id === identity.userId,
+          }) satisfies GetChatResponse,
+        catch: () => new AuthorizationError("not_found"),
+      });
     }),
   );
 

@@ -15,13 +15,36 @@ import type { MessageRow, RunRow, SourceRow, SourceUseRow } from "./chat-runtime
 type IndexedDocumentSourceRow = SourceRow & {
   readonly source_id?: string | null;
   readonly document_id?: string | null;
-  readonly document_version_id?: string | null;
+  readonly version_id?: string | null;
   readonly content_hash?: string | null;
-  readonly canonical_url?: string | null;
 };
 
 const indexedDocumentRow = (row: SourceRow): IndexedDocumentSourceRow =>
   row as IndexedDocumentSourceRow;
+
+const assertSourceIdentityDigest = (row: SourceRow): void => {
+  if (row.source_identity_valid === false) {
+    throw new Error("persisted source identity digest mismatch");
+  }
+  if (
+    row.source_identity_valid !== true ||
+    !/^[0-9a-f]{64}$/u.test(row.source_identity_digest ?? "")
+  ) {
+    throw new Error("invalid persisted source identity digest");
+  }
+};
+
+const assertSourceUseIdentityDigest = (row: SourceUseRow): void => {
+  if (row.source_use_identity_valid === false) {
+    throw new Error("persisted source use identity digest mismatch");
+  }
+  if (
+    row.source_use_identity_valid !== true ||
+    !/^[0-9a-f]{64}$/u.test(row.source_use_identity_digest ?? "")
+  ) {
+    throw new Error("invalid persisted source use identity digest");
+  }
+};
 
 const strictRecord = (value: unknown, label: string): Record<string, unknown> => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -78,33 +101,24 @@ const requiredNonBlankString = (record: Record<string, unknown>, key: string): s
 
 const sourceKeyParts = (
   sourceKey: string,
-): { readonly nonce: string; readonly ordinal: number } => {
-  const match = /^k_([A-Za-z0-9_-]{22})_([1-9][0-9]*)$/u.exec(sourceKey);
+): { readonly namespace: string; readonly ordinal: number } => {
+  const match = /^k_(cn_[A-Za-z0-9_-]{22})_([1-9][0-9]*)$/u.exec(sourceKey);
   if (match === null) throw new Error("invalid persisted source key");
   const ordinal = Number(match[2]);
   if (!Number.isSafeInteger(ordinal) || ordinal < 1) {
     throw new Error("invalid persisted source key ordinal");
   }
-  return { nonce: match[1]!, ordinal };
+  return { namespace: match[1]!, ordinal };
 };
 
 const sourceOrdinalFromKey = (sourceKey: string): number => sourceKeyParts(sourceKey).ordinal;
 
-const base64UrlFromHex = (hex: string): string => {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let index = 0; index < bytes.length; index += 1) {
-    bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
-  }
-  return base64Url(bytes);
-};
-
 const assertRunCitationNamespace = (source: SourceRow): void => {
-  const citationNonceHex = source.citation_nonce_hex;
-  if (!/^[0-9a-f]{32}$/u.test(citationNonceHex)) {
-    throw new Error("invalid persisted citation nonce");
+  const citationNamespace = source.citation_namespace;
+  if (!/^cn_[A-Za-z0-9_-]{22}$/u.test(citationNamespace)) {
+    throw new Error("invalid persisted citation namespace");
   }
-  const expectedNonce = base64UrlFromHex(citationNonceHex);
-  if (sourceKeyParts(source.source_key).nonce !== expectedNonce) {
+  if (sourceKeyParts(source.source_key).namespace !== citationNamespace) {
     throw new Error("persisted source key namespace mismatch");
   }
 };
@@ -140,43 +154,40 @@ const requiredDocumentCitationUrl = (
   if (hasPublisherIssue !== hasPublisherDocument) {
     throw new Error("invalid persisted publisher document provenance");
   }
-  const indexedPublisherVersion = row.publisher_document_version_id;
+  const indexedPublisherExtractionId = row.publisher_extraction_id;
   const indexedPublisherDocument = row.publisher_document_id ?? null;
   const indexedPublisherIssue = row.publisher_issue_id ?? null;
   if (!hasPublisherIssue) {
     if (
-      indexedPublisherVersion !== null ||
+      indexedPublisherExtractionId !== null ||
+      Object.hasOwn(locator, "publisherExtractionId") ||
       indexedPublisherDocument !== null ||
       indexedPublisherIssue !== null
     ) {
       throw new Error("invalid persisted publisher document provenance");
     }
     const documentId = indexed.document_id;
-    const documentVersionId = indexed.document_version_id;
+    const versionId = indexed.version_id;
     const contentHash = indexed.content_hash;
-    const canonicalUrl = indexed.canonical_url;
     if (
       isCanonicalPublicDocumentSourceId(sourceId) &&
       documentId !== null &&
       documentId !== undefined &&
-      documentVersionId !== null &&
-      documentVersionId !== undefined &&
+      versionId !== null &&
+      versionId !== undefined &&
       contentHash !== null &&
       contentHash !== undefined &&
-      canonicalUrl !== null &&
-      canonicalUrl !== undefined &&
       locator.documentId === documentId &&
-      locator.documentVersionId === documentVersionId &&
+      locator.versionId === versionId &&
       locator.contentHash === contentHash &&
-      canonicalPublicSourceHttpsUrl(value) === value &&
-      value === canonicalUrl
+      canonicalPublicSourceHttpsUrl(value) === value
     ) {
       return value;
     }
     throw new Error("invalid persisted source citationUrl");
   }
 
-  const documentVersionId = requiredString(locator, "documentVersionId");
+  const versionId = requiredString(locator, "versionId");
   const documentId = requiredString(locator, "documentId");
   const publisherIssueId = requiredString(locator, "publisherIssueId");
   const publisherDocumentId = requiredString(locator, "publisherDocumentId");
@@ -184,9 +195,9 @@ const requiredDocumentCitationUrl = (
   if (
     !isCanonicalPublisherDocumentSourceId(sourceId) ||
     indexed.document_id !== documentId ||
-    indexed.document_version_id !== documentVersionId ||
+    indexed.version_id !== versionId ||
     indexed.content_hash !== locator.contentHash ||
-    indexedPublisherVersion !== documentVersionId ||
+    indexedPublisherExtractionId === null ||
     indexedPublisherDocument !== publisherDocumentId ||
     indexedPublisherIssue !== publisherIssueId ||
     publisherDocumentId !== documentId ||
@@ -503,9 +514,10 @@ const publicSourceFromRow = (row: SourceRow, uses: readonly SourceUseRow[]): Pub
           "kind",
           "sourceId",
           "documentId",
-          "documentVersionId",
+          "versionId",
           "contentHash",
           "ranges",
+          "publisherExtractionId",
           "publisherIssueId",
           "publisherDocumentId",
         ],
@@ -514,11 +526,13 @@ const publicSourceFromRow = (row: SourceRow, uses: readonly SourceUseRow[]): Pub
       const hasPublisherTuple =
         typeof locator.publisherIssueId === "string" ||
         typeof locator.publisherDocumentId === "string" ||
-        (row.publisher_document_version_id !== null &&
-          row.publisher_document_version_id !== undefined) ||
+        (row.publisher_extraction_id !== null && row.publisher_extraction_id !== undefined) ||
         (row.publisher_document_id !== null && row.publisher_document_id !== undefined) ||
         (row.publisher_issue_id !== null && row.publisher_issue_id !== undefined);
       if (hasPublisherTuple) {
+        if (locator.publisherExtractionId !== row.publisher_extraction_id) {
+          throw new Error("invalid persisted publisher document provenance");
+        }
         const sourceName = requiredNonBlankString(provenance, "sourceName");
         const issueTitle = requiredNonBlankString(provenance, "issueTitle");
         const publishedAt = requiredNonBlankString(provenance, "publishedAt");
@@ -723,6 +737,7 @@ export const chatMessagesResponseFromRows = (
       throw new Error("persisted source use has no source");
     }
     const consumerTaskId = validateUseOwnership(use);
+    assertSourceUseIdentityDigest(use);
     const sourceConsumer = `${identity}\u0000${consumerTaskId}`;
     if (sourceConsumers.has(sourceConsumer)) {
       throw new Error("duplicate persisted source use consumer");
@@ -752,6 +767,7 @@ export const chatMessagesResponseFromRows = (
       ...usesByIdentity.get(`${sourceRow.assistant_message_id}\u0000${sourceRow.source_key}`)!,
     ].sort((left, right) => left.context_order - right.context_order);
     const source = publicSourceFromRow(sourceRow, uses);
+    assertSourceIdentityDigest(sourceRow);
     const rows = sourcesByAssistantMessage.get(sourceRow.assistant_message_id) ?? [];
     rows.push(source);
     sourcesByAssistantMessage.set(sourceRow.assistant_message_id, rows);

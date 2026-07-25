@@ -10,6 +10,7 @@ import {
 const at = (value: string) => new Date(value);
 const citationNamespace = "cn_" + "A".repeat(22);
 const citationNamespaceHex = citationNamespace;
+const integrityDigest = "0".repeat(64);
 const documentSourceId = "public:test-source";
 const documentId = "test-document";
 const versionId = "test-document-version";
@@ -172,7 +173,6 @@ describe("chatMessagesResponseFromRows", () => {
           document_id: documentId,
           version_id: versionId,
           content_hash: documentContentHash,
-          canonical_url: "https://example.com/document",
           kind: "document",
           locator: {
             kind: "document",
@@ -190,6 +190,8 @@ describe("chatMessagesResponseFromRows", () => {
             citationUrl: "https://example.com/document",
             publishedAt: "2026-07-09T00:00:00.000Z",
           },
+          source_identity_digest: integrityDigest,
+          source_identity_valid: true,
         },
       ],
       [
@@ -201,6 +203,8 @@ describe("chatMessagesResponseFromRows", () => {
           rendered_token_count: 40,
           context_order: 0,
           ranges: [{ pageNumber: 2, charStart: 30, charEnd: 50 }],
+          source_use_identity_digest: integrityDigest,
+          source_use_identity_valid: true,
         },
         {
           assistant_message_id: "assistant-message",
@@ -210,6 +214,8 @@ describe("chatMessagesResponseFromRows", () => {
           rendered_token_count: 60,
           context_order: 0,
           ranges: [{ pageNumber: 2, charStart: 10, charEnd: 30 }],
+          source_use_identity_digest: integrityDigest,
+          source_use_identity_valid: true,
         },
       ],
     );
@@ -243,7 +249,6 @@ describe("chatMessagesResponseFromRows", () => {
       document_id: documentId,
       version_id: versionId,
       content_hash: documentContentHash,
-      canonical_url: "https://example.com/document",
       kind: "document" as const,
       locator: {
         kind: "document",
@@ -255,6 +260,8 @@ describe("chatMessagesResponseFromRows", () => {
       },
       display_label: sourceKey,
       public_provenance: { documentTitle: sourceKey, citationUrl },
+      source_identity_digest: integrityDigest,
+      source_identity_valid: true,
     });
     const useRow = (sourceKey: string, context_order: number) => ({
       assistant_message_id: "assistant-message",
@@ -264,6 +271,8 @@ describe("chatMessagesResponseFromRows", () => {
       rendered_token_count: 1,
       context_order,
       ranges: [{ charStart: 0, charEnd: 8 }],
+      source_use_identity_digest: integrityDigest,
+      source_use_identity_valid: true,
     });
     const projected = chatMessagesResponseFromRows(
       [

@@ -61,7 +61,7 @@ export interface SourceRow {
   readonly citation_namespace: string;
   /** Indexed publisher extraction identity; null for public-source documents. */
   readonly publisher_extraction_id: string | null;
-  /** Publisher ownership resolved from the indexed version's issue/document joins. */
+  /** Publisher ownership copied from the immutable source locator. */
   readonly publisher_document_id?: string | null;
   readonly publisher_issue_id?: string | null;
   /** Canonical indexed evidence identity, populated for durable document rows. */
@@ -69,8 +69,11 @@ export interface SourceRow {
   readonly document_id?: string | null;
   readonly version_id?: string | null;
   readonly content_hash?: string | null;
-  readonly canonical_url?: string | null;
   readonly source_identity_digest?: string | null;
+  readonly source_identity_valid?: boolean;
+  /** Kind-specific indexed identities used to verify the immutable source digest. */
+  readonly message_id?: string | null;
+  readonly memory_revision_id?: string | null;
   readonly kind: "document" | "chat_message" | "memory" | "web";
   readonly locator: unknown;
   readonly display_label: string | null;
@@ -85,6 +88,8 @@ export interface SourceUseRow {
   readonly rendered_token_count: number;
   readonly context_order: number;
   readonly ranges?: unknown;
+  readonly source_use_identity_digest?: string | null;
+  readonly source_use_identity_valid?: boolean;
 }
 
 export type ActiveRunRow = RunRow;
@@ -352,29 +357,21 @@ export const loadChatRuntimeState = (
                    sources.locator, sources.display_label,
                    sources.public_provenance,
                    sources.publisher_extraction_id::text as publisher_extraction_id,
-                   case
-                     when publisher_versions.id is not null
-                       then 'publisher:' || publisher_issues.subscription_id::text
-                     when public_documents.document_id is not null
-                       then 'public:' || public_documents.source_id
-                     else null
-                   end as source_id,
-                   case
-                     when publisher_versions.id is not null then publisher_documents.id::text
-                     else public_documents.document_id
-                   end as document_id,
-                   case
-                     when publisher_versions.id is not null then publisher_versions.id::text
-                     else public_documents.document_id
-                   end as version_id,
-                   case
-                     when publisher_versions.id is not null then publisher_versions.content_hash
-                     else public_documents.content_hash
-                   end as content_hash,
-                   public_documents.canonical_url,
+                   sources.document_source_id as source_id,
+                   sources.document_id,
+                   sources.version_id,
+                   sources.content_hash,
                    sources.source_identity_digest,
-                   publisher_documents.id::text as publisher_document_id,
-                   publisher_issues.id::text as publisher_issue_id,
+                   sources.source_identity_digest = assistant_message_source_identity_digest(
+                     sources.assistant_message_id, sources.source_key, sources.kind,
+                     sources.locator, sources.version_id, sources.publisher_extraction_id,
+                     sources.message_id, sources.memory_revision_id, sources.display_label,
+                     sources.public_provenance
+                   ) as source_identity_valid,
+                   sources.message_id::text as message_id,
+                   sources.memory_revision_id::text as memory_revision_id,
+                   sources.locator->>'publisherDocumentId' as publisher_document_id,
+                   sources.locator->>'publisherIssueId' as publisher_issue_id,
                    runs.citation_namespace
             from assistant_message_sources sources
             join chat_messages messages
@@ -382,19 +379,6 @@ export const loadChatRuntimeState = (
             join ai_runs runs
               on runs.id = messages.assistant_ai_run_id
              and runs.assistant_message_id = messages.id
-            left join brief_document_extractions publisher_extractions
-              on publisher_extractions.id = sources.publisher_extraction_id
-            left join brief_documents publisher_documents
-              on publisher_documents.id = publisher_extractions.brief_document_id
-            left join brief_document_versions publisher_versions
-              on publisher_versions.brief_document_id = publisher_documents.id
-             and publisher_versions.id::text = sources.version_id
-             and publisher_versions.content_hash = sources.locator->>'contentHash'
-            left join publisher_issues publisher_issues
-              on publisher_issues.id = publisher_documents.issue_id
-            left join public_source_documents public_documents
-              on public_documents.document_id = sources.version_id
-             and sources.publisher_extraction_id is null
             where ${sql.in("sources.assistant_message_id", assistantMessageIds)}
             order by sources.assistant_message_id,
                      (substring(sources.source_key from '_([1-9][0-9]*)$'))::numeric,
@@ -405,7 +389,12 @@ export const loadChatRuntimeState = (
         ? []
         : yield* sql<SourceUseRow>`
             select assistant_message_id::text, source_key, topic_id,
-                   consumer_task_id, rendered_token_count, context_order, ranges
+                   consumer_task_id, rendered_token_count, context_order, ranges,
+                   source_use_identity_digest,
+                   source_use_identity_digest = assistant_message_source_use_identity_digest(
+                     assistant_message_id, source_key, consumer_task_id, topic_id,
+                     rendered_token_count, context_order, ranges
+                   ) as source_use_identity_valid
             from assistant_message_source_uses
             where ${sql.in("assistant_message_id", assistantMessageIds)}
             order by assistant_message_id, context_order,

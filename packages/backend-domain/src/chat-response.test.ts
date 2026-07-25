@@ -6,10 +6,11 @@ import { chatMessagesResponseFromRows } from "./chat-response";
 const assistantMessage: MessageRow = {
   id: "assistant-1",
   author: "assistant",
-  content: `Answer [[cite:k_${"A".repeat(22)}_2,k_${"A".repeat(22)}_10]]`,
+  content: `Answer [[cite:k_${"cn_" + "A".repeat(22)}_2,k_${"cn_" + "A".repeat(22)}_10]]`,
   created_at: new Date("2026-01-01T00:00:00.000Z"),
 };
-const citationNonceHex = "00".repeat(16);
+const citationNamespaceHex = "cn_" + "A".repeat(22);
+const integrityDigest = "0".repeat(64);
 const documentContentHash = "a".repeat(64);
 
 const use = (
@@ -24,6 +25,8 @@ const use = (
   rendered_token_count: 1,
   context_order: 0,
   ranges,
+  source_use_identity_digest: integrityDigest,
+  source_use_identity_valid: true,
 });
 
 const webLocator = (url: string) =>
@@ -40,19 +43,21 @@ const webLocator = (url: string) =>
 const webSource = (sourceKey: string, url: string): SourceRow => ({
   assistant_message_id: assistantMessage.id,
   source_key: sourceKey,
-  citation_nonce_hex: citationNonceHex,
-  publisher_document_version_id: null,
+  citation_namespace: citationNamespaceHex,
+  publisher_extraction_id: null,
   kind: "web",
   locator: { ...webLocator(url), title: sourceKey },
   display_label: null,
   public_provenance: { citationUrl: url },
+  source_identity_digest: integrityDigest,
+  source_identity_valid: true,
 });
 
 const documentSource = (url: string, publisher = false): SourceRow => ({
   assistant_message_id: assistantMessage.id,
-  source_key: `k_${"A".repeat(22)}_2`,
-  citation_nonce_hex: citationNonceHex,
-  publisher_document_version_id: publisher ? "publisher-version-1" : null,
+  source_key: `k_${"cn_" + "A".repeat(22)}_2`,
+  citation_namespace: citationNamespaceHex,
+  publisher_extraction_id: publisher ? "publisher-extraction-1" : null,
   ...(publisher
     ? {
         publisher_document_id: "223e4567-e89b-12d3-a456-426614174000",
@@ -64,10 +69,11 @@ const documentSource = (url: string, publisher = false): SourceRow => ({
     kind: "document",
     sourceId: publisher ? "publisher:publisher-source-1" : "public:public-source-1",
     documentId: publisher ? "223e4567-e89b-12d3-a456-426614174000" : "public-document-1",
-    documentVersionId: publisher ? "publisher-version-1" : "public-version-1",
+    versionId: publisher ? "publisher-version-1" : "public-version-1",
     contentHash: documentContentHash,
     ...(publisher
       ? {
+          publisherExtractionId: "publisher-extraction-1",
           publisherIssueId: "123e4567-e89b-12d3-a456-426614174000",
           publisherDocumentId: "223e4567-e89b-12d3-a456-426614174000",
         }
@@ -77,9 +83,8 @@ const documentSource = (url: string, publisher = false): SourceRow => ({
   display_label: null,
   source_id: publisher ? "publisher:publisher-source-1" : "public:public-source-1",
   document_id: publisher ? "223e4567-e89b-12d3-a456-426614174000" : "public-document-1",
-  document_version_id: publisher ? "publisher-version-1" : "public-version-1",
+  version_id: publisher ? "publisher-version-1" : "public-version-1",
   content_hash: documentContentHash,
-  canonical_url: url,
   public_provenance: publisher
     ? {
         sourceName: "Publisher",
@@ -89,6 +94,8 @@ const documentSource = (url: string, publisher = false): SourceRow => ({
         citationUrl: url,
       }
     : { documentTitle: "Document", citationUrl: url },
+  source_identity_digest: integrityDigest,
+  source_identity_valid: true,
 });
 
 const reload = (sources: readonly SourceRow[]) =>
@@ -119,23 +126,23 @@ const reload = (sources: readonly SourceRow[]) =>
 describe("chat response reload boundaries", () => {
   it("orders source ordinals numerically and rejects malformed source keys", () => {
     const response = reload([
-      webSource(`k_${"A".repeat(22)}_10`, "https://example.com/ten"),
-      webSource(`k_${"A".repeat(22)}_2`, "https://example.com/two"),
+      webSource(`k_${"cn_" + "A".repeat(22)}_10`, "https://example.com/ten"),
+      webSource(`k_${"cn_" + "A".repeat(22)}_2`, "https://example.com/two"),
     ]);
     expect(response[0]).toMatchObject({
       sourcesRead: [
-        { sourceKey: `k_${"A".repeat(22)}_2` },
-        { sourceKey: `k_${"A".repeat(22)}_10` },
+        { sourceKey: `k_${"cn_" + "A".repeat(22)}_2` },
+        { sourceKey: `k_${"cn_" + "A".repeat(22)}_10` },
       ],
     });
-    expect(() => reload([webSource(`k_${"A".repeat(22)}_02`, "https://example.com/")])).toThrow(
-      "invalid persisted source key",
-    );
+    expect(() =>
+      reload([webSource(`k_${"cn_" + "A".repeat(22)}_02`, "https://example.com/")]),
+    ).toThrow("invalid persisted source key");
   });
 
   it("accepts only canonical credential-free HTTPS external citations", () => {
     expect(() =>
-      reload([webSource(`k_${"A".repeat(22)}_2`, "https://example.com/evidence")]),
+      reload([webSource(`k_${"cn_" + "A".repeat(22)}_2`, "https://example.com/evidence")]),
     ).not.toThrow();
     for (const url of [
       "http://example.com/evidence",
@@ -144,7 +151,7 @@ describe("chat response reload boundaries", () => {
       "https://example.com:444/evidence",
       "HTTPS://example.com/evidence",
     ]) {
-      expect(() => reload([webSource(`k_${"A".repeat(22)}_2`, url)]), url).toThrow(
+      expect(() => reload([webSource(`k_${"cn_" + "A".repeat(22)}_2`, url)]), url).toThrow(
         "invalid persisted source url",
       );
     }
@@ -185,7 +192,7 @@ describe("chat response reload boundaries", () => {
     expect(() => reload([documentSource(valid)])).toThrow("invalid persisted source citationUrl");
     expect(() => reload([documentSource("https://public.example/document")])).not.toThrow();
     expect(() =>
-      reload([{ ...documentSource(valid, true), publisher_document_version_id: "other-version" }]),
+      reload([{ ...documentSource(valid, true), publisher_extraction_id: "other-version" }]),
     ).toThrow("invalid persisted publisher document provenance");
   });
 
@@ -197,14 +204,13 @@ describe("chat response reload boundaries", () => {
         ...source,
         source_id: "public:public-source-1",
         document_id: collidingId,
-        document_version_id: collidingId,
+        version_id: collidingId,
         content_hash: documentContentHash,
-        canonical_url: "https://public.example/colliding",
         locator: {
           kind: "document",
           sourceId: "public:public-source-1",
           documentId: collidingId,
-          documentVersionId: collidingId,
+          versionId: collidingId,
           contentHash: documentContentHash,
           ranges: [{ charStart: 0, charEnd: 8 }],
         },
@@ -229,14 +235,14 @@ describe("chat response reload boundaries", () => {
       reload([
         {
           ...source,
-          publisher_document_version_id: null,
+          publisher_extraction_id: null,
         },
       ]),
     ).toThrow("invalid persisted publisher document provenance");
   });
 
   it("rechecks strict web provenance on reload", () => {
-    const key = `k_${"A".repeat(22)}_2`;
+    const key = `k_${"cn_" + "A".repeat(22)}_2`;
     const valid = webSource(key, "https://example.com/evidence");
     const validLocator = webLocator("https://example.com/evidence");
     expect(() => reload([valid])).not.toThrow();
@@ -278,12 +284,12 @@ describe("chat response reload boundaries", () => {
       ).toThrow();
     }
     for (const mutation of [
-      { canonical_url: "https://public.example/other" },
       { source_id: "public:other-source" },
       { document_id: "other-document" },
-      { document_version_id: "other-version" },
+      { version_id: "other-version" },
       { content_hash: "b".repeat(64) },
       {
+        source_identity_valid: false,
         public_provenance: {
           documentTitle: "Document",
           citationUrl: "https://public.example/other",
@@ -294,8 +300,33 @@ describe("chat response reload boundaries", () => {
     }
   });
 
+  it("rejects rows whose persisted response digest no longer matches", () => {
+    const source = webSource(`k_${"cn_" + "A".repeat(22)}_2`, "https://example.com/evidence");
+    expect(() =>
+      chatMessagesResponseFromRows(
+        [assistantMessage],
+        [],
+        [{ ...source, source_identity_valid: false }],
+        [use(source.source_key)],
+      ),
+    ).toThrow("persisted source identity digest mismatch");
+    expect(() =>
+      chatMessagesResponseFromRows(
+        [assistantMessage],
+        [],
+        [source],
+        [
+          {
+            ...use(source.source_key),
+            source_use_identity_valid: false,
+          },
+        ],
+      ),
+    ).toThrow("persisted source use identity digest mismatch");
+  });
+
   it("rejects unknown, non-object, and partial persisted provenance recursively", () => {
-    const valid = webSource(`k_${"A".repeat(22)}_2`, "https://example.com/evidence");
+    const valid = webSource(`k_${"cn_" + "A".repeat(22)}_2`, "https://example.com/evidence");
     for (const publicProvenance of [
       { citationUrl: "https://example.com/evidence", unexpected: true },
       null,
@@ -320,8 +351,8 @@ describe("chat response reload boundaries", () => {
   });
 
   it("binds reload source keys to the owning run nonce", () => {
-    const source = webSource(`k_${"A".repeat(22)}_2`, "https://example.com/evidence");
-    expect(() => reload([{ ...source, citation_nonce_hex: "11".repeat(16) }])).toThrow(
+    const source = webSource(`k_${"cn_" + "A".repeat(22)}_2`, "https://example.com/evidence");
+    expect(() => reload([{ ...source, citation_namespace: "cn_" + "B".repeat(22) }])).toThrow(
       "persisted source key namespace mismatch",
     );
   });
@@ -351,12 +382,17 @@ describe("chat response reload boundaries", () => {
   });
 
   it("requires a complete one-to-one source/use replay ledger", () => {
-    const source = webSource(`k_${"A".repeat(22)}_2`, "https://example.com/evidence");
+    const source = webSource(`k_${"cn_" + "A".repeat(22)}_2`, "https://example.com/evidence");
     expect(() => chatMessagesResponseFromRows([assistantMessage], [], [source], [])).toThrow(
       "persisted source has no source use",
     );
     expect(() =>
-      chatMessagesResponseFromRows([assistantMessage], [], [], [use(`k_${"A".repeat(22)}_2`)]),
+      chatMessagesResponseFromRows(
+        [assistantMessage],
+        [],
+        [],
+        [use(`k_${"cn_" + "A".repeat(22)}_2`)],
+      ),
     ).toThrow("persisted source use has no source");
     expect(() =>
       chatMessagesResponseFromRows(
@@ -380,12 +416,12 @@ describe("chat response reload boundaries", () => {
     const secondAssistant: MessageRow = {
       ...assistantMessage,
       id: "assistant-2",
-      content: `Follow-up [[cite:k_${"A".repeat(22)}_3]]`,
+      content: `Follow-up [[cite:k_${"cn_" + "A".repeat(22)}_3]]`,
       created_at: new Date("2026-01-01T00:01:00.000Z"),
     };
-    const firstSource = webSource(`k_${"A".repeat(22)}_2`, "https://example.com/first");
+    const firstSource = webSource(`k_${"cn_" + "A".repeat(22)}_2`, "https://example.com/first");
     const secondSource = {
-      ...webSource(`k_${"A".repeat(22)}_3`, "https://example.com/second"),
+      ...webSource(`k_${"cn_" + "A".repeat(22)}_3`, "https://example.com/second"),
       assistant_message_id: secondAssistant.id,
     };
     const response = chatMessagesResponseFromRows(
@@ -485,8 +521,8 @@ describe("chat response reload boundaries", () => {
   });
 
   it("requires zero-based contiguous context order per consumer and canonical topic ownership", () => {
-    const sourceTwo = webSource(`k_${"A".repeat(22)}_2`, "https://example.com/two");
-    const sourceThree = webSource(`k_${"A".repeat(22)}_3`, "https://example.com/three");
+    const sourceTwo = webSource(`k_${"cn_" + "A".repeat(22)}_2`, "https://example.com/two");
+    const sourceThree = webSource(`k_${"cn_" + "A".repeat(22)}_3`, "https://example.com/three");
     expect(() =>
       chatMessagesResponseFromRows(
         [assistantMessage],
