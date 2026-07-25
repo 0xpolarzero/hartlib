@@ -211,6 +211,23 @@ export const aiRuntimeFailureMetadataFromDurableJson = (
     return undefined;
   }
   const parsedStatus = status === undefined ? null : Number(status);
+  // Smithers normally retains only the generic Error fields. If a richer
+  // record survives, require the complete metadata tuple and make sure it
+  // agrees with the signed message marker. Reject partial extensions so a
+  // hostile record cannot add one plausible field to an otherwise valid one.
+  const hasSerializedMetadata =
+    parsed.data.code !== undefined ||
+    parsed.data.retryable !== undefined ||
+    parsed.data.providerStatus !== undefined;
+  if (hasSerializedMetadata) {
+    if (
+      parsed.data.code !== code ||
+      parsed.data.retryable !== (retryable === "true") ||
+      parsed.data.providerStatus !== parsedStatus
+    ) {
+      return undefined;
+    }
+  }
   return {
     code,
     retryable: retryable === "true",
