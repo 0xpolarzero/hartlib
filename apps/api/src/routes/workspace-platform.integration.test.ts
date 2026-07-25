@@ -3899,6 +3899,8 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
                   webRequested: false,
                   webEnabled: false,
                   provider: "zai_coding_plan_official",
+                  providerEndpointIdentity:
+                    "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
                   fastModelId: "glm-5-turbo",
                   mainModelId: "glm-5-turbo",
                   webTransportProvider: null,
@@ -4442,6 +4444,12 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             (${clientCompanyId}, 'metrics-user-0', 'member'),
             (${clientCompanyId}, 'metrics-user-1', 'member')
         `;
+        yield* sql`
+          insert into platform_users (id, primary_email, display_name, clerk_user_id)
+          values
+            ('metrics-user-0', 'metrics-0@example.test', 'Metrics User 0', 'clerk-metrics-0'),
+            ('metrics-user-1', 'metrics-1@example.test', 'Metrics User 1', 'clerk-metrics-1')
+        `;
         const runs: string[] = [];
         for (const index of [0, 1]) {
           const chatId = crypto.randomUUID();
@@ -4472,6 +4480,8 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
                 webRequested: false,
                 webEnabled: false,
                 provider: "zai_coding_plan_official",
+                providerEndpointIdentity:
+                  "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
                 fastModelId: "glm-5-turbo",
                 mainModelId: "glm-5-turbo",
                 webTransportProvider: null,
