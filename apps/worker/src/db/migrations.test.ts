@@ -98,6 +98,14 @@ function databaseUrlForName(databaseName: string): string {
   return url.toString();
 }
 
+function makePreCutoverRunAcceptanceScope(
+  args: Parameters<typeof makeRunAcceptanceScope>[0],
+): Omit<ReturnType<typeof makeRunAcceptanceScope>, "providerEndpointIdentity"> {
+  const { providerEndpointIdentity: _providerEndpointIdentity, ...scope } =
+    makeRunAcceptanceScope(args);
+  return scope;
+}
+
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
@@ -413,12 +421,38 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     const body = await Bun.file(
       new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
     ).text();
+    const providerServicesMigration = await Bun.file(
+      new URL(
+        "../../../../db/migrations/0066_ai_acceptance_provider_services.sql",
+        import.meta.url,
+      ),
+    ).text();
+    const scopeIdentityMigration = await Bun.file(
+      new URL(
+        "../../../../db/migrations/0067_ai_acceptance_scope_update_identity.sql",
+        import.meta.url,
+      ),
+    ).text();
+    const endpointIdentityMigration = await Bun.file(
+      new URL(
+        "../../../../db/migrations/0068_ai_acceptance_provider_endpoint_identity.sql",
+        import.meta.url,
+      ),
+    ).text();
     const result = await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.unsafe(body).raw;
         yield* sql.unsafe(body).raw;
+        // 0064 predates the provider endpoint field. Restore the later
+        // migrations after exercising its idempotent body so this shared
+        // schema remains at the final cutover shape for following tests.
+        yield* sql.unsafe(providerServicesMigration).raw;
+        yield* sql`drop trigger if exists ai_runs_validate_acceptance_scope_insert on ai_runs`;
+        yield* sql`drop trigger if exists ai_runs_validate_acceptance_scope_update on ai_runs`;
+        yield* sql.unsafe(scopeIdentityMigration).raw;
+        yield* sql.unsafe(endpointIdentityMigration).raw;
         return yield* sql<{ readonly count: number }>`
           select count(*)::int as count
           from pg_constraint constraints
@@ -1012,7 +1046,13 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 acceptance_scope, citation_nonce, effective_web_policy, failed_at, error_code, retryable
               ) values (
                 ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
-                ${sql.json(makeRunAcceptanceScope({ userId: ids.user, chatId: ids.chat, companyId: ids.company }))},
+                ${sql.json(
+                  makePreCutoverRunAcceptanceScope({
+                    userId: ids.user,
+                    chatId: ids.chat,
+                    companyId: ids.company,
+                  }),
+                )},
                 decode(${nonce.toString("base64")}, 'base64'),
                 ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
                 now(), 'failed_fixture', true
@@ -1882,7 +1922,13 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 acceptance_scope, citation_nonce, effective_web_policy, finished_at
               ) values (
                 ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
-                ${sql.json(makeRunAcceptanceScope({ userId: ids.user, chatId: ids.chat, companyId: ids.company }))},
+                ${sql.json(
+                  makePreCutoverRunAcceptanceScope({
+                    userId: ids.user,
+                    chatId: ids.chat,
+                    companyId: ids.company,
+                  }),
+                )},
                 decode(${nonce.toString("base64")}, 'base64'),
                 ${sql.json({ enabled: false, reason: "company_disabled", allowlistActive: false })},
                 now()
@@ -3223,7 +3269,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               ${upgradeRunId}, ${upgradeChatId}, ${upgradeUserId}, ${upgradeUserMessageId},
               'en-US', 'US',
               ${sql.json(
-                makeRunAcceptanceScope({
+                makePreCutoverRunAcceptanceScope({
                   userId: upgradeUserId,
                   chatId: upgradeChatId,
                   companyId: upgradeCompanyId,
@@ -5167,7 +5213,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             ) values (
               ${ids.run}, ${ids.chat}, ${ids.user}, ${ids.userMessage}, 'en-US', 'US',
               ${sql.json(
-                makeRunAcceptanceScope({
+                makePreCutoverRunAcceptanceScope({
                   userId: ids.user,
                   chatId: ids.chat,
                   companyId: ids.company,
@@ -7654,6 +7700,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               webRequested: false,
               webEnabled: false,
               provider: "zai_coding_plan_official",
+              providerEndpointIdentity:
+                "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
               fastModelId: "glm-5-turbo",
               mainModelId: "glm-5-turbo",
               webTransportProvider: null,
@@ -9773,6 +9821,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         .replaceAll("-", "")
         .slice(0, 8)}`;
       const duplicateUrl = databaseUrlForName(duplicateDatabaseName);
+      const cutoverMigration = await Bun.file(
+        new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
+      ).text();
       const chatId = "eeeeeeee-0000-0000-0000-000000000001";
       const messageId = "eeeeeeee-0000-0000-0000-000000000002";
       const runId = "eeeeeeee-0000-0000-0000-000000000003";
@@ -9935,7 +9986,21 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             `;
           }),
         );
-        await runDb(duplicateUrl, runMigrations);
+        // This fixture models a retained row from before the endpoint
+        // identity migration. The 0064 cutover is the only migration that
+        // can convert it; 0068 must remain a later fail-closed boundary for
+        // rows that lack that proof.
+        await runDb(
+          duplicateUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(cutoverMigration).raw;
+            yield* sql`
+              insert into schema_migrations (name)
+              values ('0064_ai_chat_runtime_cutover.sql')
+            `;
+          }),
+        );
         const result = await runDb(
           duplicateUrl,
           Effect.gen(function* () {
