@@ -474,40 +474,32 @@ export class ExactPiBoundary {
     };
     let observedStatus: number | undefined;
     try {
-      const { message, providerRequest, baseUrl } = await this.providerSemaphore.withPermit(
-        async () => {
-          const gated = await this.gate(
-            request,
-            executionCoordinates,
-            signal,
-            beforeProviderRequest,
-          );
-          const providerRequest = gated.request;
-          const baseUrl = gated.baseUrl;
-          throwIfAborted(signal);
-          const message = await withProviderOriginGuard(baseUrl, () =>
-            this.runComplete(resolveModel(providerRequest, baseUrl), toPiContext(providerRequest), {
-              apiKey: this.options.apiKey,
-              maxTokens: providerRequest.requestedOutputTokens,
-              reasoning: providerRequest.reasoning,
-              maxRetries: 0,
-              ...(signal === undefined ? {} : { signal }),
-              timeoutMs:
-                providerRequest.requestClass === "main"
-                  ? this.options.answerTimeoutMs
-                  : this.options.fastTimeoutMs,
-              onResponse: (response) => {
-                observedStatus = response.status;
-              },
-              ...(providerRequest.toolChoice === undefined
-                ? {}
-                : { toolChoice: toolChoice(providerRequest.toolChoice) }),
-            } as Parameters<typeof completeSimple>[2]),
-          );
-          return { message, providerRequest, baseUrl };
-        },
-        signal,
-      );
+      const { message, providerRequest } = await this.providerSemaphore.withPermit(async () => {
+        const gated = await this.gate(request, executionCoordinates, signal, beforeProviderRequest);
+        const providerRequest = gated.request;
+        const baseUrl = gated.baseUrl;
+        throwIfAborted(signal);
+        const message = await withProviderOriginGuard(baseUrl, () =>
+          this.runComplete(resolveModel(providerRequest, baseUrl), toPiContext(providerRequest), {
+            apiKey: this.options.apiKey,
+            maxTokens: providerRequest.requestedOutputTokens,
+            reasoning: providerRequest.reasoning,
+            maxRetries: 0,
+            ...(signal === undefined ? {} : { signal }),
+            timeoutMs:
+              providerRequest.requestClass === "main"
+                ? this.options.answerTimeoutMs
+                : this.options.fastTimeoutMs,
+            onResponse: (response) => {
+              observedStatus = response.status;
+            },
+            ...(providerRequest.toolChoice === undefined
+              ? {}
+              : { toolChoice: toolChoice(providerRequest.toolChoice) }),
+          } as Parameters<typeof completeSimple>[2]),
+        );
+        return { message, providerRequest, baseUrl };
+      }, signal);
       throwIfAborted(signal);
       if (message.stopReason === "aborted") {
         const aborted = new Error("provider request aborted");
