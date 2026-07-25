@@ -149,7 +149,7 @@ export const DOCS_HTML: string = `<!doctype html>
 <body>
 <main>
   <h1>How chat works</h1>
-  <p class="lede">A precise trace of a Brief chat turn, from HTTP request to streamed answer.</p>
+  <p class="lede">A precise trace of a Brief chat turn, from HTTP request to streamed response.</p>
   <p class="meta">
     <span class="pill">GET /docs</span>
     <span class="pill">English</span>
