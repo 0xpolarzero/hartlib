@@ -1,4 +1,4 @@
-import { AiRuntimeError } from "../runtime/errors";
+import { aiRunErrorCodeForRole, AiRuntimeError } from "../runtime/errors";
 import {
   measureProviderRequest,
   resolveRuntimeModel,
@@ -413,45 +413,17 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
         { taskRetryable: false },
       );
     }
-    if (
-      this.options.providerServiceId !== undefined &&
-      this.options.providerServiceId !== profile.providerServiceId
-    ) {
-      throw new AiRuntimeError(
-        "invalid_workflow_output",
-        "accepted provider service differs from the runtime provider",
-        { taskRetryable: false },
-      );
-    }
-    if (
-      this.options.providerEndpointIdentity !== undefined &&
-      this.options.providerEndpointIdentity !== profile.providerEndpointIdentity
-    ) {
-      throw new AiRuntimeError(
-        "invalid_workflow_output",
-        "accepted provider endpoint differs from the runtime provider",
-        { taskRetryable: false },
-      );
-    }
-    if (
-      (this.options.fastModelId !== undefined &&
-        this.options.fastModelId !== profile.fastModelId) ||
-      (this.options.mainModelId !== undefined && this.options.mainModelId !== profile.mainModelId)
-    ) {
-      throw new AiRuntimeError(
-        "invalid_workflow_output",
-        "accepted model differs from the runtime model",
-        { taskRetryable: false },
-      );
-    }
     this.acceptedProviderProfile = profile;
   }
 
-  private assertAcceptedProviderProfile(request: LiveProviderRequest): void | Promise<void> {
+  private assertAcceptedProviderProfile(
+    request: LiveProviderRequest,
+    agentRole: string,
+  ): void | Promise<void> {
     if (this.acceptedProviderProfile === undefined && this.options.loadAcceptedProviderProfile) {
       return this.options.loadAcceptedProviderProfile().then((profile) => {
         this.bindAcceptedProviderProfile(profile);
-        this.assertAcceptedProviderProfile(request);
+        this.assertAcceptedProviderProfile(request, agentRole);
       });
     }
     const profile = this.acceptedProviderProfile;
@@ -471,6 +443,17 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
       throw new AiRuntimeError(
         "invalid_workflow_output",
         "provider request model differs from the accepted model",
+        { taskRetryable: false },
+      );
+    }
+    if (
+      profile.providerServiceId !== "deterministic_test" ||
+      profile.providerEndpointIdentity === undefined ||
+      !profile.providerEndpointIdentity.startsWith("deterministic_test:")
+    ) {
+      throw new AiRuntimeError(
+        aiRunErrorCodeForRole(agentRole),
+        "accepted provider adapter is unavailable",
         { taskRetryable: false },
       );
     }
@@ -524,7 +507,10 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
       ...coordinates,
       ...requireCurrentTaskCoordinates(coordinates.taskId),
     };
-    const profileCheck = this.assertAcceptedProviderProfile(request);
+    const profileCheck = this.assertAcceptedProviderProfile(
+      request,
+      executionCoordinates.agentRole,
+    );
     if (profileCheck !== undefined) await profileCheck;
     const gated = await this.measured(request, executionCoordinates, signal, beforeProviderRequest);
     const { measurement, request: providerRequest } = gated;
@@ -559,7 +545,10 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
       ...coordinates,
       ...requireCurrentTaskCoordinates(coordinates.taskId),
     };
-    const profileCheck = this.assertAcceptedProviderProfile(request);
+    const profileCheck = this.assertAcceptedProviderProfile(
+      request,
+      executionCoordinates.agentRole,
+    );
     if (profileCheck !== undefined) await profileCheck;
     const gated = await this.measured(request, executionCoordinates, signal, beforeProviderRequest);
     const { measurement, request: providerRequest } = gated;
