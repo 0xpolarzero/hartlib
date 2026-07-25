@@ -2671,11 +2671,11 @@ const validateDurableObservability = (
         );
       }
       const expectedSources = expectedSourcesFor(expectedContextTask, undefined);
-      const serializedSourceExpectations =
-        evaluationTopology || answer.mode === "synthesis"
-          ? answer.sourceMap.map((source) => ({ source }))
-          : expectedSources;
-      if (!sourceKeysMatch(row, serializedSourceExpectations)) {
+      const sourceExpectations =
+        evaluationTopology || answer.mode !== "synthesis"
+          ? [evaluationTopology ? answer.sourceMap.map((source) => ({ source })) : expectedSources]
+          : [expectedSources, answer.sourceMap.map((source) => ({ source }))];
+      if (!sourceExpectations.some((sources) => sourceKeysMatch(row, sources))) {
         return yield* Effect.fail(
           new Error("context serialization source keys differ from the saved answer source map"),
         );
