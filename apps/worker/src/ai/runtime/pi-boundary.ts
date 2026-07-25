@@ -14,6 +14,7 @@ import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import {
   measureProviderRequest,
   resolveRuntimeModel,
+  ZAI_CODING_PLAN_PROVIDER_ENDPOINT_IDENTITY,
   type AcceptedProviderProfile,
   type ProviderGateLimits,
   type RuntimeModelId,
@@ -283,6 +284,12 @@ const toolChoice = (choice: ProviderRequest["toolChoice"]): unknown =>
 const acceptedProviderBaseUrl = (profile: AcceptedProviderProfile): string | undefined => {
   const endpointIdentity = profile.providerEndpointIdentity;
   if (endpointIdentity === undefined) return undefined;
+  if (
+    profile.providerServiceId === "zai_coding_plan_official" &&
+    endpointIdentity !== ZAI_CODING_PLAN_PROVIDER_ENDPOINT_IDENTITY
+  ) {
+    return undefined;
+  }
   const prefix = `${profile.providerServiceId}:`;
   if (!endpointIdentity.startsWith(prefix)) return undefined;
   const endpoint = endpointIdentity.slice(prefix.length);
@@ -386,7 +393,8 @@ export class ExactPiBoundary {
     const baseUrl = this.acceptedProviderBaseUrl ?? this.options.baseUrl;
     if (
       profile.providerServiceId === "deterministic_test" ||
-      (profile.providerEndpointIdentity !== undefined && this.acceptedProviderBaseUrl === undefined)
+      profile.providerEndpointIdentity === undefined ||
+      this.acceptedProviderBaseUrl === undefined
     ) {
       throw new AiRuntimeError(
         aiRunErrorCodeForRole(agentRole),

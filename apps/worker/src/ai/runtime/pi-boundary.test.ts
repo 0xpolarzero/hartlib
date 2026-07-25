@@ -193,6 +193,28 @@ describe("exact Pi boundary", () => {
     expect(complete).toHaveBeenCalledOnce();
   });
 
+  it("rejects an official provider endpoint that is not the saved service endpoint", async () => {
+    const complete = vi.fn(async () => assistant("must not run"));
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      requireAcceptedProviderProfile: true,
+      complete: complete as never,
+    });
+    boundary.bindAcceptedProviderProfile({
+      providerServiceId: "zai_coding_plan_official",
+      providerEndpointIdentity: "zai_coding_plan_official:https://attacker.example/v1",
+      fastModelId: "glm-5-turbo",
+      mainModelId: "glm-5-turbo",
+    });
+
+    await expect(
+      inTask(new AbortController(), coordinates.attempt, () =>
+        boundary.complete(request, { ...coordinates, agentRole: "direct_answer" }),
+      ),
+    ).rejects.toMatchObject({ code: "answer_failed" });
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it("classifies a missing accepted provider adapter under the owning role", async () => {
     const complete = vi.fn(async () => assistant("must not run"));
     const boundary = new ExactPiBoundary({
