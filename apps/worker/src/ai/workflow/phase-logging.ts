@@ -175,7 +175,7 @@ const rules: Record<OperationName, PhaseRule> = {
     },
     topicId: (args) => topicFrom(args[1]),
     model: "main",
-    fallbackErrorCode: "source_access_revoked",
+    fallbackErrorCode: "context_assembly_failed",
   },
   selectMemories: {
     phase: "memory_selection",

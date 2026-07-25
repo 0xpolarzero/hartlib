@@ -4186,7 +4186,6 @@ const completeDurableCaptureSession = async (
           },
           memory: memoryArtifact,
           coordinates: { loopIteration: 0, attempt: 1 },
-          authorize: () => Effect.succeed({ authorized: true as const }),
         });
       }),
     );

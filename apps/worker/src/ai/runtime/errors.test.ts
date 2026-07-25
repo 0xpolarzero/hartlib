@@ -26,7 +26,7 @@ describe("AI run error classification", () => {
     expect(isRetryableAiRunError("context_plan_unfit")).toBe(false);
     expect(isRetryableAiRunError("context_budget_mismatch")).toBe(false);
     expect(isRetryableAiRunError("synthesis_budget_mismatch")).toBe(false);
-    expect(isRetryableAiRunError("source_access_revoked")).toBe(true);
+    expect(isRetryableAiRunError("context_assembly_failed")).toBe(true);
   });
 
   it("keeps the canonical code at the durable serialized error boundary", () => {

@@ -342,10 +342,11 @@ describe("canonical agent tool loop", () => {
   });
 
   it("preserves a non-retryable typed boundary policy failure", async () => {
-    const policyFailure = new AiRuntimeError("web_policy_revoked", "web policy revoked", {
-      retryable: false,
-      taskRetryable: false,
-    });
+    const policyFailure = new WebBoundaryError(
+      "unsupported_policy",
+      "saved web policy unavailable",
+      false,
+    );
     const client = new CanonicalAgentClient({
       complete: vi.fn(async () => {
         throw policyFailure;
@@ -374,9 +375,8 @@ describe("canonical agent tool loop", () => {
     );
     expect(failure).toBe(policyFailure);
     expect(failure).toMatchObject({
-      code: "web_policy_revoked",
+      code: "unsupported_policy",
       retryable: false,
-      details: { failureRetryable: false },
     });
   });
 

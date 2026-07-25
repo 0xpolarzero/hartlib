@@ -120,8 +120,6 @@
   "chat.failure.context_assembly_failed": "The context could not be assembled safely. Try again later.",
   "chat.failure.context_budget_mismatch": "The provider rejected a request that passed the local token gate. Try again later.",
   "chat.failure.synthesis_budget_mismatch": "The topic packets could not fit in synthesis. Narrow the request and try again.",
-  "chat.failure.source_access_revoked": "Access to a selected source changed before the answer could be saved.",
-  "chat.failure.web_policy_revoked": "Web research policy changed before the answer could be saved.",
   "chat.failure.memory_conflict": "A saved memory changed before this turn completed. Send the message again.",
   "chat.failure.workflow_resume_incompatible": "The workflow changed during this turn. Send the message again.",
   "chat.failure.generic": "The answer failed ({code}).",

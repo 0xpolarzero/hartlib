@@ -49,22 +49,6 @@ import {
   type AggregateAiRunUsage,
 } from "./observability";
 
-/** @deprecated Accepted scope validation is now owned by finalization. */
-export type FinalizationAuthorizationResult =
-  | { readonly authorized: true }
-  | {
-      readonly authorized: false;
-      readonly code: "finalization_failed";
-    };
-
-/** @deprecated Kept only so old fixtures can compile; runtime never invokes it. */
-export type FinalizationAuthorization = (input: {
-  readonly runId: string;
-  readonly chatId: string;
-  readonly initiatingUserId: string;
-  readonly sourceMap: readonly FinalSourceRecord[];
-}) => Effect.Effect<FinalizationAuthorizationResult, Error, PgClient.PgClient>;
-
 interface RunRow {
   readonly id: string;
   readonly chatId: string;
@@ -114,8 +98,6 @@ export interface FinalizeAiRunInput {
   readonly expectedSmithersRunId: string;
   readonly answer: AnswerLaneResult;
   readonly memory: MemoryExtractionArtifact;
-  /** @deprecated The accepted scope is authoritative; this callback is ignored. */
-  readonly authorize?: FinalizationAuthorization | undefined;
   readonly coordinates: {
     readonly loopIteration: number;
     readonly attempt: number;

@@ -1399,8 +1399,6 @@ const publisherSourceFor = (
   ],
 });
 
-const authorize = () => Effect.succeed({ authorized: true } as const);
-
 describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
   beforeAll(async () => {
     await runDb(
@@ -1969,7 +1967,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         sourceMap: [],
       },
       memory,
-      authorize,
     });
 
     const missing = await runDb(createFixture("measurement-missing"));
@@ -2037,7 +2034,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/outside the selected route/u);
@@ -2112,7 +2108,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).resolves.toMatchObject({ status: "succeeded" });
@@ -2164,7 +2159,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/retrieval manifest attempt lacks its latest provider measurement/u);
@@ -2208,7 +2202,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/role differs/u);
@@ -2252,7 +2245,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "synthesis", content: "Answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/outside the selected route/u);
@@ -2284,7 +2276,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "failed", code: "answer_failed", retryable: false },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/outside the selected route/u);
@@ -2334,7 +2325,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "failed", code: "answer_failed", retryable: false },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/outside the selected route/u);
@@ -2403,7 +2393,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             sourceMap: [],
           },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow("source exposure lacks its exact provider measurement");
@@ -2432,7 +2421,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/provider measurement|provider usage/u);
@@ -2496,7 +2484,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).resolves.toMatchObject({ status: "succeeded" });
@@ -2575,7 +2562,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/latest extraction result/u);
@@ -2631,7 +2617,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             sourceMap: [source],
           },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/answer_serialized exposure|provider measurement/u);
@@ -2662,7 +2647,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/path-specific context measurement/u);
@@ -2706,7 +2690,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/latest provider measurement/u);
@@ -2781,7 +2764,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).resolves.toMatchObject({ status: "succeeded" });
@@ -3095,7 +3077,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: { loopIteration: 0, attempt: 2 },
           answer: { status: "ok", mode: "single", content: "Retry answer", sourceMap: [] },
           memory,
-          authorize,
         }),
       ),
     ).resolves.toMatchObject({ status: "succeeded" });
@@ -3260,7 +3241,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: { loopIteration: 0, attempt: 3 },
           answer: { status: "ok", mode: "single", content: "Resumed answer", sourceMap: [] },
           memory: resumedMemory,
-          authorize,
         }),
       ),
     ).resolves.toMatchObject({ status: "succeeded" });
@@ -3301,7 +3281,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       coordinates: finalizeCoordinates,
       answer,
       memory,
-      authorize,
     };
     const first = await runDb(finalizeAiRun(input));
     const replay = await runDb(finalizeAiRun(input));
@@ -3479,7 +3458,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           sourceMap: [source],
         },
         memory,
-        authorize,
       };
       await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
         status: "succeeded",
@@ -3650,7 +3628,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           sourceMap: [],
         },
         memory,
-        authorize,
       };
       await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
         status: "succeeded",
@@ -3745,7 +3722,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         sourceMap: [],
       },
       memory,
-      authorize,
     };
 
     await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
@@ -3774,7 +3750,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             sourceMap: [],
           },
           memory: laterMemory,
-          authorize,
         }),
       ),
     ).resolves.toMatchObject({ status: "succeeded" });
@@ -3801,7 +3776,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         coordinates: finalizeCoordinates,
         answer: { status: "ok", mode: "clarification", content: "Saved", sourceMap: [] },
         memory: createdArtifact,
-        authorize,
       }),
     );
     const memory = await runDb(
@@ -3831,7 +3805,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         sourceMap: [],
       },
       memory: providerBackedArtifact,
-      authorize,
     };
     await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
       status: "succeeded",
@@ -3861,7 +3834,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         coordinates: finalizeCoordinates,
         answer: { status: "ok", mode: "clarification", content: "Saved", sourceMap: [] },
         memory: createdArtifact,
-        authorize,
       }),
     );
     const memory = await runDb(
@@ -3896,7 +3868,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         sourceMap: [],
       },
       memory: noCallArtifact,
-      authorize,
     };
     await expect(runDb(finalizeAiRun(input))).resolves.toMatchObject({
       status: "succeeded",
@@ -3932,7 +3903,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         sourceMap: [],
       },
       memory: artifact,
-      authorize,
     };
     await runDb(finalizeAiRun(input));
 
@@ -3951,7 +3921,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         coordinates: finalizeCoordinates,
         answer: { status: "ok", mode: "clarification", content: "Saved", sourceMap: [] },
         memory: laterArtifact,
-        authorize,
       }),
     );
     const memoryId = await runDb(
@@ -4019,7 +3988,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           sourceMap: [],
         },
         memory: firstMemory,
-        authorize,
       }),
     );
 
@@ -4040,7 +4008,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory: forgedHistoryMemory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/invalid durable no-call reason/u);
@@ -4071,7 +4038,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory: forgedProviderMemory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/invalid durable no-call reason/u);
@@ -4212,7 +4178,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               coordinates: finalizeCoordinates,
               answer: testCase.answer,
               memory,
-              authorize,
             }),
           ),
         ).rejects.toThrow(/invalid durable no-call reason/u);
@@ -4229,7 +4194,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         coordinates: finalizeCoordinates,
         answer: testCase.answer,
         memory: replayMemory,
-        authorize,
       };
       await expect(runDb(finalizeAiRun(replayInput))).resolves.toMatchObject(
         testCase.answer.status === "failed"
@@ -4326,7 +4290,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
           memory: initialMemory,
-          authorize,
         }),
       ),
     ).rejects.toThrow(/invalid durable no-call reason/u);
@@ -4344,7 +4307,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       coordinates: finalizeCoordinates,
       answer: { status: "ok" as const, mode: "single" as const, content: "Answer", sourceMap: [] },
       memory: replayMemory,
-      authorize,
     };
     await expect(runDb(finalizeAiRun(replayInput))).resolves.toMatchObject({
       status: "succeeded",
@@ -4693,7 +4655,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             sourceMap: [source],
           },
           memory,
-          authorize,
         }),
       ),
     ).resolves.toMatchObject({ status: "succeeded" });
@@ -4782,7 +4743,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             sourceMap: [malformedSource],
           },
           memory: malformedMemory,
-          authorize,
         }),
       ),
     ).rejects.toThrow("publisher document identity does not match database ownership");
@@ -4864,7 +4824,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           sourceMap: [],
         },
         memory: projectionMemory,
-        authorize,
       }),
     );
     try {
@@ -4990,7 +4949,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           sourceMap: [],
         },
         memory: exportMemory,
-        authorize,
       }),
     );
     try {
@@ -5090,7 +5048,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         coordinates: finalizeCoordinates,
         answer: { status: "failed", code: "answer_failed", retryable: false },
         memory: controlledMemory,
-        authorize,
       }),
     );
     expect(result).toMatchObject({ status: "failed", code: "answer_failed", retryable: false });
@@ -5168,7 +5125,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "failed", code: "answer_failed", retryable: false },
           memory,
-          authorize,
         }),
       ),
     ).resolves.toMatchObject({
@@ -5208,7 +5164,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "failed", code: "answer_failed", retryable: false },
           memory,
-          authorize,
         }),
       ),
     ).resolves.toMatchObject({
@@ -5248,7 +5203,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "failed", code: "topic_answer_failed", retryable: false },
           memory,
-          authorize,
         }),
       ),
     ).resolves.toMatchObject({
@@ -5346,7 +5300,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             coordinates: finalizeCoordinates,
             answer: { status: "failed", code: "answer_failed", retryable: false },
             memory,
-            authorize,
           }),
         ),
       ).rejects.toThrow(
@@ -5399,7 +5352,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             sourceMap: [],
           },
           memory: successMemory,
-          authorize,
         }),
       ),
     ).rejects.toBeInstanceOf(AiRunSmithersRunIdMismatch);
@@ -5411,7 +5363,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "failed", code: "answer_failed", retryable: false },
           memory: controlledMemory,
-          authorize,
         }),
       ),
     ).rejects.toBeInstanceOf(AiRunSmithersRunIdMismatch);
@@ -5468,7 +5419,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         coordinates: finalizeCoordinates,
         answer: { status: "ok", mode: "clarification", content: "Clarify", sourceMap: [] },
         memory: originalMemory,
-        authorize,
       }),
     );
     const memory = await runDb(
@@ -5507,7 +5457,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           coordinates: finalizeCoordinates,
           answer: { status: "ok", mode: "clarification", content: "Updated", sourceMap: [] },
           memory: staleMemory,
-          authorize,
         }),
       ),
     );
@@ -5538,7 +5487,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         coordinates: finalizeCoordinates,
         answer: { status: "ok", mode: "clarification", content: "Saved", sourceMap: [] },
         memory: lockedMemory,
-        authorize,
       }),
     );
     const ids = await runDb(
@@ -5619,7 +5567,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         coordinates: finalizeCoordinates,
         answer: { status: "ok", mode: "clarification", content: "First", sourceMap: [] },
         memory: retainedMemory,
-        authorize,
       }),
     );
     const memory = await runDb(
@@ -5683,7 +5630,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           sourceMap: [memorySource],
         },
         memory: citeMemory,
-        authorize,
       }),
     );
     await runDb(deleteUserMemory(fixture.userId, memory.id));
@@ -5703,7 +5649,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         coordinates: finalizeCoordinates,
         answer: { status: "ok", mode: "clarification", content: "First", sourceMap: [] },
         memory: unreferencedMemory,
-        authorize,
       }),
     );
     const [unreferencedId] = await runDb(

@@ -48,8 +48,6 @@ const localizedFailureCodes = new Set([
   "context_assembly_failed",
   "context_budget_mismatch",
   "synthesis_budget_mismatch",
-  "source_access_revoked",
-  "web_policy_revoked",
   "memory_conflict",
   "workflow_resume_incompatible",
 ]);

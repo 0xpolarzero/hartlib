@@ -535,7 +535,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           sourceMap: [],
         },
         memory: { result: memoryResult, producer: memoryProducer },
-        authorize: () => Effect.succeed({ authorized: true } as const),
       }),
     );
     try {
