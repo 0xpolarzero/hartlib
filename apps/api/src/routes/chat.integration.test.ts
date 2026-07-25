@@ -11,7 +11,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { RequestAuthenticator } from "../auth";
 import { routeRequest, type Route } from "../http";
-import { makeChatRoutes } from "../domain/chat";
+import { makeChatRoutes, type AiRunEventPoller } from "../domain/chat";
 import { makeMemoryRoutes } from "../domain/memories";
 
 const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
@@ -1083,6 +1083,55 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     expect(await readStream(response)).toBe(
       'id: 2\nevent: error\ndata: {"type":"error","code":"test_failure","retryable":true}\n\n',
     );
+  });
+
+  it("interrupts and awaits an in-flight SSE event poll on cancellation", async () => {
+    const acceptedResponse = await postMessage({
+      text: "Cancel an in-flight stream poll",
+      locale: "en-US",
+      market: "US",
+      webSearchEnabled: false,
+    });
+    const accepted = await body<{ run: { id: string } }>(acceptedResponse);
+    let signal!: AbortSignal;
+    let signalPollStarted!: () => void;
+    const pollStarted = new Promise<void>((resolve) => {
+      signalPollStarted = resolve;
+    });
+    const poller: AiRunEventPoller = async (
+      _userId,
+      _organizationId,
+      _runId,
+      _afterSeq,
+      _databaseLayer,
+      pollSignal,
+    ) => {
+      signal = pollSignal!;
+      signalPollStarted();
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) return resolve();
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return {
+        authorized: false,
+        events: [],
+        terminal: false,
+        replayableTerminal: false,
+      };
+    };
+    const streamRoutes = makeChatRoutes(pgLayer(), { readAiRunEventsAfter: poller });
+    const response = await Effect.runPromise(
+      routeRequest(streamRoutes, request("GET", `/v1/ai-runs/${accepted.run.id}/stream`)).pipe(
+        Effect.provide(configLayer),
+      ),
+    );
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    await pollStarted;
+    const cancellation = reader.cancel("test cancellation");
+    expect(signal.aborted).toBe(true);
+    await expect(cancellation).resolves.toBeUndefined();
+    reader.releaseLock();
   });
 
   it("keeps private SSE runs owner-only and permits current shared viewers", async () => {

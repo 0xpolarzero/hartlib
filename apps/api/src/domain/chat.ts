@@ -48,6 +48,7 @@ export type AiRunEventPoller = (
   runId: string,
   afterSeq: number,
   databaseLayer: ApiDatabaseLayerType,
+  signal?: AbortSignal,
 ) => Promise<AuthorizedAiRunEventPoll>;
 
 const readChat = (identity: RequestIdentity, config: ApiConfig, chatId?: string) =>
@@ -228,11 +229,13 @@ const readAuthorizedAiRunEventsAfter: AiRunEventPoller = (
   runId,
   afterSeq,
   databaseLayer,
+  signal,
 ) =>
   Effect.runPromise(
     readAuthorizedAiRunEventsAfterFromDomain(userId, organizationId, runId, afterSeq).pipe(
       Effect.provide(databaseLayer),
     ),
+    { signal },
   );
 
 const streamLog = (message: string, fields: Record<string, unknown>): void => {
@@ -257,7 +260,9 @@ const incrementalSse = (args: {
   readonly readAuthorizedAiRunEventsAfter: AiRunEventPoller;
 }) => {
   const encoder = new TextEncoder();
+  const streamAbort = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let inFlight: Promise<void> | undefined;
   let closed = false;
   let close = () => {
     closed = true;
@@ -268,7 +273,10 @@ const incrementalSse = (args: {
       start(controller) {
         let afterSeq = args.afterSeq;
         let lastWrite = performance.now();
-        const onAbort = () => close();
+        const onAbort = () => {
+          streamAbort.abort(args.request.signal.reason);
+          close();
+        };
         close = () => {
           if (closed) return;
           closed = true;
@@ -285,6 +293,18 @@ const incrementalSse = (args: {
           controller.enqueue(encoder.encode(value));
           lastWrite = performance.now();
         };
+        function runTick(): void {
+          const pending = tick();
+          inFlight = pending;
+          void pending.then(
+            () => {
+              if (inFlight === pending) inFlight = undefined;
+            },
+            () => {
+              if (inFlight === pending) inFlight = undefined;
+            },
+          );
+        }
         const tick = async () => {
           if (closed || args.request.signal.aborted) return close();
           try {
@@ -294,6 +314,7 @@ const incrementalSse = (args: {
               args.runId,
               afterSeq,
               args.databaseLayer,
+              streamAbort.signal,
             );
             if (!poll.authorized) {
               streamLog("ai chat stream viewer denied", {
@@ -320,7 +341,7 @@ const incrementalSse = (args: {
               if (event.type === "done" || event.type === "error") return close();
             }
             if (performance.now() - lastWrite >= args.keepAliveMs) write(": keep-alive\n\n");
-            timeout = setTimeout(tick, args.pollMs);
+            timeout = setTimeout(runTick, args.pollMs);
           } catch (error) {
             streamLog("ai chat stream failed", {
               userId: args.userId,
@@ -341,10 +362,12 @@ const incrementalSse = (args: {
           runId: args.runId,
           afterSeq,
         });
-        void tick();
+        runTick();
       },
       cancel() {
+        streamAbort.abort("stream_cancelled");
         close();
+        return inFlight;
       },
     }),
     { headers: sseHeaders() },
