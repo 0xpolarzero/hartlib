@@ -1254,24 +1254,24 @@ export function buildAiChatWorkflow(
               const collected = ctx.output(outputs.aiChatFanoutCollect, {
                 nodeId: "fanout-collect",
               });
-              return {
-                value:
-                  collected.status === "ok"
-                    ? await runtime.operations.synthesisContext(
-                        load(),
-                        collected.packets as TopicPacket[],
-                        collected.sourceMap as FinalSourceRecord[],
-                        collected.contexts as ContextState[],
-                        ctx.output(outputs.aiChatAllocation, { nodeId: "fanout-allocate" }).value,
-                      )
-                    : await runtime.operations.synthesisContext(
-                        load(),
-                        [],
-                        [],
-                        collected.contexts as ContextState[],
-                        ctx.output(outputs.aiChatAllocation, { nodeId: "fanout-allocate" }).value,
-                      ),
-              };
+              const context =
+                collected.status === "ok"
+                  ? await runtime.operations.synthesisContext(
+                      load(),
+                      collected.packets as TopicPacket[],
+                      collected.sourceMap as FinalSourceRecord[],
+                      collected.contexts as ContextState[],
+                      ctx.output(outputs.aiChatAllocation, { nodeId: "fanout-allocate" }).value,
+                    )
+                  : await runtime.operations.synthesisContext(
+                      load(),
+                      [],
+                      [],
+                      collected.contexts as ContextState[],
+                      ctx.output(outputs.aiChatAllocation, { nodeId: "fanout-allocate" }).value,
+                    );
+              await runtime.operations.recordSynthesisContextMeasurement(load(), context);
+              return { value: context };
             }}
           </Task>
           <Task

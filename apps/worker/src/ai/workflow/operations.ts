@@ -1308,9 +1308,16 @@ export class CanonicalWorkflowOperations {
     };
   }
 
-  private contextMeasurementPayload(state: ContextState, consumerTaskId: string) {
-    const model = resolveRuntimeModel(state.request.model);
-    const messages = state.request.messages.map((message) => {
+  private contextMeasurementPayload(
+    state: ContextState,
+    consumerTaskId: string,
+    requestKind: "direct" | "topic" | "synthesis" = state.topicId === undefined
+      ? "direct"
+      : "topic",
+    request: ProviderRequest = state.request,
+  ) {
+    const model = resolveRuntimeModel(request.model);
+    const messages = request.messages.map((message) => {
       if (message.role !== "user") return message;
       try {
         const parsed = JSON.parse(message.content) as Record<string, unknown>;
@@ -1323,7 +1330,7 @@ export class CanonicalWorkflowOperations {
         return message;
       }
     });
-    const mandatoryInputTokens = model.countRequestTokens({ ...state.request, messages });
+    const mandatoryInputTokens = model.countRequestTokens({ ...request, messages });
     return {
       consumerTaskId,
       ...(state.topicId === undefined ? {} : { topicId: state.topicId }),
@@ -1336,10 +1343,7 @@ export class CanonicalWorkflowOperations {
       status: state.status,
       reductionRan: state.reductionRan,
       reductionFeedback: state.reductionFeedback,
-      restrictedContextLedger: this.restrictedContextLedger(
-        state,
-        state.topicId === undefined ? "direct" : "topic",
-      ),
+      restrictedContextLedger: this.restrictedContextLedger(state, requestKind, request),
     };
   }
 
@@ -6285,6 +6289,15 @@ export class CanonicalWorkflowOperations {
         ? {}
         : { failureCode: "synthesis_budget_mismatch" }),
     };
+  }
+
+  async recordSynthesisContextMeasurement(load: LoadedTurn, context: ContextState): Promise<void> {
+    await this.observe(
+      load,
+      "fanout-synthesis-measure",
+      "context_measurement",
+      this.contextMeasurementPayload(context, "fanout-synthesis", "synthesis"),
+    );
   }
 
   async synthesize(

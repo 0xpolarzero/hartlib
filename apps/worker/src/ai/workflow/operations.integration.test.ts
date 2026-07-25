@@ -4199,7 +4199,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             task: "fanout-synthesis",
             payload: {
               consumerTaskId: "fanout-synthesis",
-              sourceKeys: [],
+              sourceKeys: sourceMap.map((source) => source.sourceKey),
               restrictedContextLedger: {
                 requestKind: "synthesis",
                 modelId: "glm-5-turbo",
