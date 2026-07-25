@@ -120,6 +120,95 @@ const boundaryOptions = () => ({
 });
 
 describe("exact Pi boundary", () => {
+  it("requires the accepted provider profile before measurement or transport", async () => {
+    const complete = vi.fn(async () => assistant("must not run"));
+    const onMeasurement = vi.fn();
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      providerServiceId: "zai_coding_plan_official",
+      fastModelId: "glm-5-turbo",
+      mainModelId: "glm-5-turbo",
+      requireAcceptedProviderProfile: true,
+      complete: complete as never,
+      hooks: { onMeasurement },
+    });
+
+    await expect(
+      inTask(new AbortController(), coordinates.attempt, () =>
+        boundary.complete(request, coordinates),
+      ),
+    ).rejects.toThrow(/accepted provider profile/u);
+    expect(onMeasurement).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("binds the saved service and role models before the provider call", async () => {
+    const complete = vi.fn(async () => assistant("done"));
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      providerServiceId: "zai_coding_plan_official",
+      fastModelId: "glm-5-turbo",
+      mainModelId: "glm-5-turbo",
+      requireAcceptedProviderProfile: true,
+      complete: complete as never,
+    });
+    boundary.bindAcceptedProviderProfile({
+      providerServiceId: "zai_coding_plan_official",
+      fastModelId: "glm-5-turbo",
+      mainModelId: "glm-5-turbo",
+    });
+
+    await expect(
+      inTask(new AbortController(), coordinates.attempt, () =>
+        boundary.complete(request, coordinates),
+      ),
+    ).resolves.toMatchObject({ text: "done" });
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a tampered saved service before outbound transport", async () => {
+    const complete = vi.fn(async () => assistant("must not run"));
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      providerServiceId: "zai_coding_plan_official",
+      requireAcceptedProviderProfile: true,
+      complete: complete as never,
+    });
+
+    expect(() =>
+      boundary.bindAcceptedProviderProfile({
+        providerServiceId: "openai_compatible_custom",
+        fastModelId: "glm-5-turbo",
+        mainModelId: "glm-5-turbo",
+      }),
+    ).toThrow(/accepted provider service/u);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("uses the accepted main model for main provider requests", async () => {
+    const complete = vi.fn(async () => assistant("main done"));
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      providerServiceId: "zai_coding_plan_official",
+      fastModelId: "glm-5-turbo",
+      mainModelId: "glm-5-turbo",
+      requireAcceptedProviderProfile: true,
+      complete: complete as never,
+    });
+    boundary.bindAcceptedProviderProfile({
+      providerServiceId: "zai_coding_plan_official",
+      fastModelId: "glm-5-turbo",
+      mainModelId: "glm-5-turbo",
+    });
+
+    await expect(
+      inTask(new AbortController(), coordinates.attempt, () =>
+        boundary.complete({ ...request, requestClass: "main" }, coordinates),
+      ),
+    ).resolves.toMatchObject({ text: "main done" });
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a historical model before any measurement, hook, or transport", async () => {
     const complete = vi.fn(async () => assistant("must not run"));
     const onMeasurement = vi.fn();

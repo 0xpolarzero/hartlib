@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { LIVE_AI_MODEL_ID, ZAI_CODING_PLAN_BASE_URL } from "@brief/config";
+import type { AiProviderServiceId } from "@brief/shared";
 import { tokenizers } from "@lenml/tokenizers";
 import { Template } from "@huggingface/jinja";
 
@@ -18,6 +19,11 @@ export type RequestClass = "fast" | "main";
 /** The only model permitted by the live chat runtime. */
 export const RUNTIME_MODEL_ID = LIVE_AI_MODEL_ID;
 export type RuntimeModelId = typeof RUNTIME_MODEL_ID;
+export interface AcceptedProviderProfile {
+  readonly providerServiceId: AiProviderServiceId;
+  readonly fastModelId: RuntimeModelId;
+  readonly mainModelId: RuntimeModelId;
+}
 export { ZAI_CODING_PLAN_BASE_URL };
 export const ZAI_CODING_PLAN_PROVIDER_SERVICE_ID = "zai_coding_plan_official" as const;
 export const ZAI_CODING_PLAN_PROVIDER_ENDPOINT_IDENTITY =

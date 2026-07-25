@@ -61,7 +61,11 @@ import {
   isRetryableAiRunError,
   type AiRunErrorCode,
 } from "../runtime/errors";
-import { resolveRuntimeModel, type RuntimeModelId } from "../runtime/model-registry";
+import {
+  resolveRuntimeModel,
+  type AcceptedProviderProfile,
+  type RuntimeModelId,
+} from "../runtime/model-registry";
 import type { PiBoundaryCoordinates } from "../runtime/pi-boundary";
 import {
   providerRequestSha256Hex,
@@ -1154,13 +1158,25 @@ const immutableSourceIdentity = (source: FinalSourceRecord): string => {
 };
 
 export class CanonicalWorkflowOperations {
+  private readonly runtimeProviderProfile: Omit<AcceptedProviderProfile, "providerServiceId"> & {
+    readonly providerServiceId?: AcceptedProviderProfile["providerServiceId"];
+  };
+
   constructor(
     private readonly connectionString: string,
     private readonly config: CanonicalAiConfig,
     private readonly agents: CanonicalAgentClient,
     private readonly web?: WebResearchBoundary | undefined,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.runtimeProviderProfile = {
+      ...(config.providerServiceId === undefined
+        ? {}
+        : { providerServiceId: config.providerServiceId }),
+      fastModelId: config.aiFastModel,
+      mainModelId: config.aiMainModel,
+    };
+  }
 
   private db<A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
     return this.dbWithSignal(effect, currentTaskAbortSignal());
@@ -1444,6 +1460,9 @@ export class CanonicalWorkflowOperations {
   }
 
   async loadTurn(aiRunId: string): Promise<LoadedTurn> {
+    const runtimeProviderProfile = this.runtimeProviderProfile;
+    const agents = this.agents;
+    const bindAcceptedProviderProfile = this.agents.bindAcceptedProviderProfile;
     return this.db(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -1492,6 +1511,21 @@ export class CanonicalWorkflowOperations {
             if (!/^cn_[A-Za-z0-9_-]{22}$/u.test(run.citationNamespace)) {
               return yield* Effect.fail(new Error("ai run citation namespace is invalid"));
             }
+            if (
+              (runtimeProviderProfile.providerServiceId !== undefined &&
+                acceptanceScope.provider !== runtimeProviderProfile.providerServiceId) ||
+              acceptanceScope.fastModelId !== runtimeProviderProfile.fastModelId ||
+              acceptanceScope.mainModelId !== runtimeProviderProfile.mainModelId
+            ) {
+              return yield* Effect.fail(
+                new Error("accepted provider profile differs from runtime"),
+              );
+            }
+            bindAcceptedProviderProfile?.call(agents, {
+              providerServiceId: acceptanceScope.provider,
+              fastModelId: acceptanceScope.fastModelId,
+              mainModelId: acceptanceScope.mainModelId,
+            });
             yield* appendAiRunEventInTransaction({
               runId: aiRunId,
               emissionKey: "run_started",
@@ -1563,33 +1597,6 @@ export class CanonicalWorkflowOperations {
       selected.unshift(entry);
     }
     return selected;
-  }
-
-  private fastStructuredRequestFits(
-    system: string,
-    user: string,
-    toolName: string,
-    toolDescription: string,
-    parameters: Readonly<Record<string, unknown>>,
-    requestedOutputTokens: number,
-  ): boolean {
-    const request: LiveProviderRequest = {
-      requestClass: "fast",
-      model: this.config.aiFastModel,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      tools: [{ name: toolName, description: toolDescription, parameters }],
-      toolChoice: "auto",
-      requestedOutputTokens,
-      reasoning: "medium",
-    };
-    const model = resolveRuntimeModel(this.config.aiFastModel);
-    return (
-      model.countRequestTokens(request) <=
-      Math.min(this.config.aiFastInputMaxTokens, model.contextWindow - requestedOutputTokens)
-    );
   }
 
   private async currentPriorTurns(load: LoadedTurn): Promise<readonly ConversationEntry[]> {
@@ -4471,11 +4478,11 @@ export class CanonicalWorkflowOperations {
     options: {
       readonly hardLimitTruncated?: boolean | undefined;
       readonly maximumResults?: number | undefined;
-      readonly modelId?: RuntimeModelId | undefined;
+      readonly modelId: RuntimeModelId;
       readonly sourceExposureMarker?:
         | ((item: Item) => ReturnType<typeof providerVisibleExposureMarker>)
         | undefined;
-    } = {},
+    },
   ): {
     readonly items: readonly Item[];
     readonly complete: boolean;
@@ -4523,7 +4530,7 @@ export class CanonicalWorkflowOperations {
       if (
         this.visibleTokenCount(
           JSON.stringify(resultFor([...selected, item], index + 1)),
-          options.modelId ?? this.config.aiFastModel,
+          options.modelId,
         ) > this.config.aiFastOutputMaxTokens
       ) {
         break;

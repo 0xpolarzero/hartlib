@@ -410,6 +410,14 @@ const providerOutputError = (
 export class CanonicalAgentClient {
   constructor(private readonly boundary: ExactPiBoundary | PiRuntimeBoundary) {}
 
+  bindAcceptedProviderProfile(profile: import("./model-registry").AcceptedProviderProfile): void {
+    const bind = this.boundary.bindAcceptedProviderProfile;
+    if (bind === undefined) {
+      throw new Error("provider boundary cannot bind the accepted provider profile");
+    }
+    bind.call(this.boundary, profile);
+  }
+
   async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
     const request = {
       requestClass: input.requestClass,

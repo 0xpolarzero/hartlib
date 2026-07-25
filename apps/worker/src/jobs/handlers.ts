@@ -15,6 +15,7 @@ import {
 } from "../ai/runtime/pi-boundary";
 import { providerRequestSha256Hex } from "../ai/runtime/provider-request";
 import {
+  RUNTIME_MODEL_ID,
   ZAI_CODING_PLAN_BASE_URL,
   ZAI_CODING_PLAN_PROVIDER_SERVICE_ID,
 } from "../ai/runtime/model-registry";
@@ -778,9 +779,33 @@ export const makeDurableProviderBoundary = (
   aiRunId: string,
   config: WorkerConfig,
 ): ExactPiBoundary | DeterministicE2eProviderBoundary => {
+  const providerServiceId = providerServiceIdForConfig(config);
   const boundaryOptions: PiBoundaryOptions = {
     apiKey: config.zaiApiKey,
     baseUrl: config.aiBaseUrl,
+    providerServiceId,
+    fastModelId: config.aiFastModel,
+    mainModelId: config.aiMainModel,
+    requireAcceptedProviderProfile: true,
+    loadAcceptedProviderProfile: async () => {
+      const signal = currentTaskAbortSignal();
+      return runAiWorkflowDb(
+        connectionString,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const rows = yield* sql<{ readonly scope: unknown }>`
+            select acceptance_scope as scope from ai_runs where id = ${aiRunId} for share
+          `;
+          const scope = decodeRunAcceptanceScope(rows[0]?.scope);
+          return {
+            providerServiceId: scope.provider,
+            fastModelId: scope.fastModelId,
+            mainModelId: scope.mainModelId,
+          } as const;
+        }),
+        signal === undefined ? undefined : { signal },
+      );
+    },
     fastLimits: {
       inputTokens: config.aiFastInputMaxTokens,
       outputTokens: config.aiFastOutputMaxTokens,
@@ -1042,8 +1067,8 @@ export const handleAiChatRunJob = (
       makeCanonicalOperations(connectionString, payload.aiRunId, config);
     const operations = withAiPhaseLogging(unloggedOperations, {
       logger: localAiPhaseLogger,
-      fastModel: config.aiFastModel,
-      mainModel: config.aiMainModel,
+      fastModel: RUNTIME_MODEL_ID,
+      mainModel: RUNTIME_MODEL_ID,
     });
 
     const result = yield* Effect.tryPromise({

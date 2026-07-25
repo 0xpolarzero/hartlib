@@ -14,7 +14,9 @@ import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import {
   measureProviderRequest,
   resolveRuntimeModel,
+  type AcceptedProviderProfile,
   type ProviderGateLimits,
+  type RuntimeModelId,
 } from "./model-registry";
 import {
   aiRunErrorCodeForRole,
@@ -36,6 +38,7 @@ import {
   type ProviderToolCall,
 } from "./provider-request";
 import type { LiveProviderRequestMeasurement, ModelUsage } from "./types";
+import type { AiProviderServiceId } from "@brief/shared";
 import { workerProviderSemaphore, type ProviderSemaphore } from "./provider-semaphore";
 import { withProviderOriginGuard } from "./provider-origin-guard";
 import {
@@ -87,6 +90,15 @@ export type BeforeProviderRequest = (
 export interface PiBoundaryOptions {
   readonly apiKey: string;
   readonly baseUrl: string;
+  /** Runtime provider identity. Production callers must set this explicitly. */
+  readonly providerServiceId?: AiProviderServiceId | undefined;
+  /** Runtime model identities captured when the boundary is constructed. */
+  readonly fastModelId?: RuntimeModelId | undefined;
+  readonly mainModelId?: RuntimeModelId | undefined;
+  /** Require load-turn to bind the immutable accepted profile before a call. */
+  readonly requireAcceptedProviderProfile?: boolean | undefined;
+  /** Resume-safe loader for runs whose load-turn task already completed. */
+  readonly loadAcceptedProviderProfile?: (() => Promise<AcceptedProviderProfile>) | undefined;
   readonly fastLimits: ProviderGateLimits;
   readonly mainLimits: ProviderGateLimits;
   readonly fastTimeoutMs: number;
@@ -270,11 +282,79 @@ export class ExactPiBoundary {
   private readonly runComplete: typeof completeSimple;
   private readonly runStream: typeof streamSimple;
   private readonly providerSemaphore: ProviderSemaphore;
+  private acceptedProviderProfile: AcceptedProviderProfile | undefined;
 
   constructor(private readonly options: PiBoundaryOptions) {
     this.runComplete = options.complete ?? completeSimple;
     this.runStream = options.stream ?? streamSimple;
     this.providerSemaphore = options.providerSemaphore ?? workerProviderSemaphore;
+  }
+
+  bindAcceptedProviderProfile(profile: AcceptedProviderProfile): void {
+    const current = this.acceptedProviderProfile;
+    if (
+      current !== undefined &&
+      (current.providerServiceId !== profile.providerServiceId ||
+        current.fastModelId !== profile.fastModelId ||
+        current.mainModelId !== profile.mainModelId)
+    ) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "accepted provider profile cannot be rebound",
+        { taskRetryable: false },
+      );
+    }
+    if (
+      this.options.providerServiceId !== undefined &&
+      this.options.providerServiceId !== profile.providerServiceId
+    ) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "accepted provider service differs from the runtime provider",
+        { taskRetryable: false },
+      );
+    }
+    if (
+      (this.options.fastModelId !== undefined &&
+        this.options.fastModelId !== profile.fastModelId) ||
+      (this.options.mainModelId !== undefined && this.options.mainModelId !== profile.mainModelId)
+    ) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "accepted model differs from the runtime model",
+        { taskRetryable: false },
+      );
+    }
+    this.acceptedProviderProfile = profile;
+  }
+
+  private assertAcceptedProviderProfile(request: ProviderRequest): void | Promise<void> {
+    if (this.acceptedProviderProfile === undefined && this.options.loadAcceptedProviderProfile) {
+      return this.options.loadAcceptedProviderProfile().then((profile) => {
+        this.bindAcceptedProviderProfile(profile);
+        this.assertAcceptedProviderProfile(request);
+      });
+    }
+    const profile = this.acceptedProviderProfile;
+    if (profile === undefined) {
+      if (this.options.requireAcceptedProviderProfile === true) {
+        throw new AiRuntimeError(
+          "invalid_workflow_output",
+          "provider request is missing its accepted provider profile",
+          { taskRetryable: false },
+        );
+      }
+      return;
+    }
+    const expectedModel =
+      request.requestClass === "fast" ? profile.fastModelId : profile.mainModelId;
+    if (request.model !== expectedModel) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "provider request model differs from the accepted model",
+        { taskRetryable: false },
+      );
+    }
   }
 
   private async gate(
@@ -284,6 +364,8 @@ export class ExactPiBoundary {
     beforeProviderRequest: BeforeProviderRequest | undefined,
   ) {
     throwIfAborted(signal);
+    const profileCheck = this.assertAcceptedProviderProfile(request);
+    if (profileCheck !== undefined) await profileCheck;
     const normalizedRequest = requireLiveProviderRequest(normalizeProviderRequest(request));
     const model = resolveRuntimeModel(normalizedRequest.model);
     const limits =

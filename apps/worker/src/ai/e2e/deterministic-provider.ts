@@ -2,8 +2,10 @@ import { AiRuntimeError } from "../runtime/errors";
 import {
   measureProviderRequest,
   resolveRuntimeModel,
+  type AcceptedProviderProfile,
   type ProviderGateLimits,
 } from "../runtime/model-registry";
+import type { AiProviderServiceId } from "@brief/shared";
 import type {
   BeforeProviderRequest,
   PiBoundaryCoordinates,
@@ -30,6 +32,7 @@ import {
 import { e2eStreamGateIdFromMessage } from "./stream-gate";
 
 export interface PiRuntimeBoundary {
+  readonly bindAcceptedProviderProfile?: (profile: AcceptedProviderProfile) => void;
   readonly complete: (
     request: LiveProviderRequest,
     coordinates: PiBoundaryCoordinates,
@@ -46,6 +49,11 @@ export interface PiRuntimeBoundary {
 interface DeterministicBoundaryOptions {
   readonly fastLimits: ProviderGateLimits;
   readonly mainLimits: ProviderGateLimits;
+  readonly providerServiceId?: AiProviderServiceId | undefined;
+  readonly fastModelId?: "glm-5-turbo" | undefined;
+  readonly mainModelId?: "glm-5-turbo" | undefined;
+  readonly requireAcceptedProviderProfile?: boolean | undefined;
+  readonly loadAcceptedProviderProfile?: (() => Promise<AcceptedProviderProfile>) | undefined;
   readonly hooks?: PiBoundaryHooks | undefined;
   readonly waitForStreamGate?:
     | ((gateId: string, signal: AbortSignal | undefined) => Promise<void>)
@@ -385,7 +393,76 @@ const outputFor = (
 };
 
 export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
+  private acceptedProviderProfile: AcceptedProviderProfile | undefined;
+
   constructor(private readonly options: DeterministicBoundaryOptions) {}
+
+  bindAcceptedProviderProfile(profile: AcceptedProviderProfile): void {
+    const current = this.acceptedProviderProfile;
+    if (
+      current !== undefined &&
+      (current.providerServiceId !== profile.providerServiceId ||
+        current.fastModelId !== profile.fastModelId ||
+        current.mainModelId !== profile.mainModelId)
+    ) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "accepted provider profile cannot be rebound",
+        { taskRetryable: false },
+      );
+    }
+    if (
+      this.options.providerServiceId !== undefined &&
+      this.options.providerServiceId !== profile.providerServiceId
+    ) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "accepted provider service differs from the runtime provider",
+        { taskRetryable: false },
+      );
+    }
+    if (
+      (this.options.fastModelId !== undefined &&
+        this.options.fastModelId !== profile.fastModelId) ||
+      (this.options.mainModelId !== undefined && this.options.mainModelId !== profile.mainModelId)
+    ) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "accepted model differs from the runtime model",
+        { taskRetryable: false },
+      );
+    }
+    this.acceptedProviderProfile = profile;
+  }
+
+  private assertAcceptedProviderProfile(request: LiveProviderRequest): void | Promise<void> {
+    if (this.acceptedProviderProfile === undefined && this.options.loadAcceptedProviderProfile) {
+      return this.options.loadAcceptedProviderProfile().then((profile) => {
+        this.bindAcceptedProviderProfile(profile);
+        this.assertAcceptedProviderProfile(request);
+      });
+    }
+    const profile = this.acceptedProviderProfile;
+    if (profile === undefined) {
+      if (this.options.requireAcceptedProviderProfile === true) {
+        throw new AiRuntimeError(
+          "invalid_workflow_output",
+          "provider request is missing its accepted provider profile",
+          { taskRetryable: false },
+        );
+      }
+      return;
+    }
+    const expectedModel =
+      request.requestClass === "fast" ? profile.fastModelId : profile.mainModelId;
+    if (request.model !== expectedModel) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "provider request model differs from the accepted model",
+        { taskRetryable: false },
+      );
+    }
+  }
 
   private async measured(
     request: LiveProviderRequest,
@@ -435,6 +512,8 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
       ...coordinates,
       ...requireCurrentTaskCoordinates(coordinates.taskId),
     };
+    const profileCheck = this.assertAcceptedProviderProfile(request);
+    if (profileCheck !== undefined) await profileCheck;
     const gated = await this.measured(request, executionCoordinates, signal, beforeProviderRequest);
     const { measurement, request: providerRequest } = gated;
     throwIfAborted(signal);
@@ -468,6 +547,8 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
       ...coordinates,
       ...requireCurrentTaskCoordinates(coordinates.taskId),
     };
+    const profileCheck = this.assertAcceptedProviderProfile(request);
+    if (profileCheck !== undefined) await profileCheck;
     const gated = await this.measured(request, executionCoordinates, signal, beforeProviderRequest);
     const { measurement, request: providerRequest } = gated;
     throwIfAborted(signal);
