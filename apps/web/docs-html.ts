@@ -752,7 +752,7 @@ data: {"type":"text_delta","delta":"Q3 "}
       <li>Chat owned by caller; <code>chats.deleted_at is null</code>; company and creator not recovery/purge-deleted.</li>
       <li>Membership active; organization id matches when provided.</li>
       <li>Every wired subscription source backed by a non-revoked grant on an access in <code>active</code>, <code>ending</code>, or <code>paused</code>.</li>
-      <li>Re-checked under the advisory locks to close the load→lock revocation race.</li>
+      <li>Captured under the advisory locks so the accepted scope cannot race a membership or grant change.</li>
     </ul>
     <h4>At finalize (single transaction)</h4>
     <p>The final transaction validates the run's immutable scope, exact source identities, document version/hash/locator/range data, memory revisions, web quotations, usage, and idempotency records. Later setting changes affect later runs only and do not discard an accepted answer.</p>

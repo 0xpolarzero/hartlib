@@ -296,11 +296,10 @@ const incrementalSse = (args: {
               args.databaseLayer,
             );
             if (!poll.authorized) {
-              streamLog("ai chat stream authorization revoked", {
+              streamLog("ai chat stream viewer denied", {
                 userId: args.userId,
                 chatId: args.chatId,
                 runId: args.runId,
-                errorCode: "stream_access_revoked",
               });
               return close();
             }

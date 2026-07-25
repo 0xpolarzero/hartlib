@@ -4117,7 +4117,7 @@ const evaluationRunEvidenceDigest = (
   });
 };
 
-const assertLiveEvaluationAuthorization = async (
+const assertEvaluationTenantAvailable = async (
   connectionString: string,
   manifest: EvaluationSeedManifest,
 ): Promise<void> => {
@@ -4137,11 +4137,6 @@ const assertLiveEvaluationAuthorization = async (
             on companies.id = ${manifest.companyId}
            and companies.recovery_deleted_at is null
            and companies.purged_at is null
-          join client_company_memberships memberships
-            on memberships.company_id = companies.id
-           and memberships.user_id = users.id
-           and memberships.revoked_at is null
-           and memberships.revoked_by_user_id is null
           where chats.id = ${manifest.chatId}
             and chats.company_id = companies.id
             and chats.user_id = users.id
@@ -4153,13 +4148,13 @@ const assertLiveEvaluationAuthorization = async (
     }),
   );
   if (!authorized) {
-    throw new Error(`${manifest.caseId} current evaluation authorization is invalid`);
+    throw new Error(`${manifest.caseId} evaluation tenant is unavailable`);
   }
 };
 
 const finalizeCaseEvidence = async (connectionString: string, row: CaseRunRow): Promise<string> => {
   const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
-  await assertLiveEvaluationAuthorization(connectionString, manifest);
+  await assertEvaluationTenantAvailable(connectionString, manifest);
   const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
   const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
   if (
@@ -4208,7 +4203,7 @@ export const attestEvaluationCaseFromDurableRun = async (
   if (row.status !== "running") {
     if (row.status === "succeeded" && row.runEvidenceSha256Hex !== null) {
       const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
-      await assertLiveEvaluationAuthorization(connectionString, manifest);
+      await assertEvaluationTenantAvailable(connectionString, manifest);
       const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
       const current = evaluationRunEvidenceDigest(
         row,
@@ -6331,7 +6326,7 @@ const commonCapturedResult = async (
 ) => {
   const fixture = fixtureFor(row.caseId);
   const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
-  await assertLiveEvaluationAuthorization(connectionString, manifest);
+  await assertEvaluationTenantAvailable(connectionString, manifest);
   const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
   const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
   const measurementFixture = fixtureWithStoredDocumentText(fixture, storedDocuments);

@@ -160,7 +160,6 @@ const preSealCitationChangeSessionId = "50000000-0000-4000-8000-000000000092";
 const preSealCitationDeleteSessionId = "50000000-0000-4000-8000-000000000093";
 const preSealExposureCountSessionId = "50000000-0000-4000-8000-000000000094";
 const preSealMemoryRetrySessionId = "50000000-0000-4000-8000-000000000095";
-const preSealMembershipSessionId = "50000000-0000-4000-8000-000000000096";
 const preSealUserRecoverySessionId = "50000000-0000-4000-8000-000000000097";
 const preSealCompanyRecoverySessionId = "50000000-0000-4000-8000-000000000098";
 const preSealManifestSessionId = "50000000-0000-4000-8000-000000000099";
@@ -780,7 +779,6 @@ const completeDurableCaptureSession = async (
     | "preseal_exposure_count"
     | "preseal_stale_memory_retry"
     | "preseal_terminal_memory_mismatch"
-    | "preseal_membership_revoked"
     | "preseal_user_recovery_deleted"
     | "preseal_company_recovery_deleted"
     | "preseal_manifest_delete"
@@ -4275,7 +4273,6 @@ const completeDurableCaptureSession = async (
               ...exposureMarker,
               visibleTokenCount: forgedExposureCount,
             });
-      const forgedAdminId = `eval-forged-admin-${targetSessionId}`;
       await runDb(
         isolatedDatabaseUrl(),
         Effect.gen(function* () {
@@ -4423,21 +4420,6 @@ const completeDurableCaptureSession = async (
                 where run_id = ${row.runId} and kind = 'memory_extraction_result'
               `;
               break;
-            case "preseal_membership_revoked":
-              yield* sql`
-                insert into platform_users (id, primary_email, display_name, clerk_user_id)
-                values (${forgedAdminId}, ${`${forgedAdminId}@evaluation.invalid`}, 'Evaluation guard admin', ${`clerk_${forgedAdminId}`})
-              `;
-              yield* sql`
-                insert into client_company_memberships (company_id, user_id, role)
-                values (${manifest.companyId}, ${forgedAdminId}, 'admin')
-              `;
-              yield* sql`
-                update client_company_memberships
-                set revoked_at = now(), revoked_by_user_id = ${forgedAdminId}
-                where company_id = ${manifest.companyId} and user_id = ${manifest.userId}
-              `;
-              break;
             case "preseal_user_recovery_deleted":
               yield* sql`
                 update platform_users
@@ -4515,8 +4497,7 @@ const beginFocusedProductionGraphCase = async (
   providerServiceId:
     | "deterministic_test"
     | "zai_coding_plan_official"
-    | "openai_compatible_custom" =
-    "zai_coding_plan_official",
+    | "openai_compatible_custom" = "zai_coding_plan_official",
 ) => {
   await createEvaluationSession(isolatedDatabaseUrl(), targetSessionId);
   const manifests = await seedEvaluationSession(
@@ -4581,8 +4562,7 @@ const beginFocusedGeneralPlannerCase = async (
   providerServiceId:
     | "deterministic_test"
     | "zai_coding_plan_official"
-    | "openai_compatible_custom" =
-    "zai_coding_plan_official",
+    | "openai_compatible_custom" = "zai_coding_plan_official",
 ) => {
   await createEvaluationSession(isolatedDatabaseUrl(), targetSessionId);
   const manifests = await seedEvaluationSession(
@@ -6190,19 +6170,14 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         /Failed to execute statement|append-only|source-serialization proof|visible/u,
       ],
       [
-        preSealMembershipSessionId,
-        "preseal_membership_revoked",
-        /current evaluation authorization is invalid/u,
-      ],
-      [
         preSealUserRecoverySessionId,
         "preseal_user_recovery_deleted",
-        /current evaluation authorization is invalid/u,
+        /evaluation tenant is unavailable/u,
       ],
       [
         preSealCompanyRecoverySessionId,
         "preseal_company_recovery_deleted",
-        /current evaluation authorization is invalid/u,
+        /evaluation tenant is unavailable/u,
       ],
       [
         preSealManifestSessionId,
