@@ -62,11 +62,7 @@ import {
   isRetryableAiRunError,
   type AiRunErrorCode,
 } from "../runtime/errors";
-import {
-  resolveRuntimeModel,
-  type AcceptedProviderProfile,
-  type RuntimeModelId,
-} from "../runtime/model-registry";
+import { resolveRuntimeModel, type RuntimeModelId } from "../runtime/model-registry";
 import type { PiBoundaryCoordinates } from "../runtime/pi-boundary";
 import {
   providerRequestSha256Hex,
@@ -1157,31 +1153,13 @@ const immutableSourceIdentity = (source: FinalSourceRecord): string => {
 };
 
 export class CanonicalWorkflowOperations {
-  private readonly runtimeProviderProfile: {
-    readonly providerServiceId?: AcceptedProviderProfile["providerServiceId"];
-    readonly providerEndpointIdentity?: AcceptedProviderProfile["providerEndpointIdentity"];
-    readonly fastModelId: AcceptedProviderProfile["fastModelId"];
-    readonly mainModelId: AcceptedProviderProfile["mainModelId"];
-  };
-
   constructor(
     private readonly connectionString: string,
     private readonly config: CanonicalAiConfig,
     private readonly agents: CanonicalAgentClient,
     private readonly web?: WebResearchBoundary | undefined,
     private readonly now: () => Date = () => new Date(),
-  ) {
-    this.runtimeProviderProfile = {
-      ...(config.providerServiceId === undefined
-        ? {}
-        : { providerServiceId: config.providerServiceId }),
-      ...(config.providerEndpointIdentity === undefined
-        ? {}
-        : { providerEndpointIdentity: config.providerEndpointIdentity }),
-      fastModelId: config.aiFastModel,
-      mainModelId: config.aiMainModel,
-    };
-  }
+  ) {}
 
   private db<A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
     return this.dbWithSignal(effect, currentTaskAbortSignal());
@@ -1472,7 +1450,6 @@ export class CanonicalWorkflowOperations {
   }
 
   async loadTurn(aiRunId: string): Promise<LoadedTurn> {
-    const runtimeProviderProfile = this.runtimeProviderProfile;
     const agents = this.agents;
     const bindAcceptedProviderProfile = this.agents.bindAcceptedProviderProfile;
     return this.db(
@@ -1522,19 +1499,6 @@ export class CanonicalWorkflowOperations {
             }
             if (!/^cn_[A-Za-z0-9_-]{22}$/u.test(run.citationNamespace)) {
               return yield* Effect.fail(new Error("ai run citation namespace is invalid"));
-            }
-            if (
-              (runtimeProviderProfile.providerServiceId !== undefined &&
-                acceptanceScope.provider !== runtimeProviderProfile.providerServiceId) ||
-              (runtimeProviderProfile.providerEndpointIdentity !== undefined &&
-                acceptanceScope.providerEndpointIdentity !==
-                  runtimeProviderProfile.providerEndpointIdentity) ||
-              acceptanceScope.fastModelId !== runtimeProviderProfile.fastModelId ||
-              acceptanceScope.mainModelId !== runtimeProviderProfile.mainModelId
-            ) {
-              return yield* Effect.fail(
-                new Error("accepted provider profile differs from runtime"),
-              );
             }
             bindAcceptedProviderProfile?.call(agents, {
               providerServiceId: acceptanceScope.provider,
@@ -3775,13 +3739,18 @@ export class CanonicalWorkflowOperations {
     }
     await this.validateSavedScope(load);
     const webPolicy = await this.acceptancePolicy(load);
-    if (webPolicy === undefined || this.web === undefined) {
+    if (webPolicy === undefined) {
       await this.observe(load, taskId, "retrieval_manifest", {
         selectorRole: "web",
         references: [],
         noCallReason: "web_policy_disabled",
       });
       return { status: "disabled", reason: "policy_disabled" };
+    }
+    if (this.web === undefined) {
+      throw new AiRuntimeError("web_research_failed", "requested web adapter is unavailable", {
+        taskRetryable: false,
+      });
     }
     if (taskId.startsWith("topic-") && !topicRequestsWebEvidence(question)) {
       await this.observe(load, taskId, "retrieval_manifest", {

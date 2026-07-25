@@ -25,7 +25,7 @@ import {
   type ProviderVisibleSourceExposureProofBinding,
   type ProviderVisibleSourceExposureMarker,
 } from "../runtime/provider-request";
-import { resolveRegisteredModel } from "../runtime/model-registry";
+import { resolveRegisteredModel, type AcceptedProviderProfile } from "../runtime/model-registry";
 import {
   chatMessageEvidenceIdentity,
   memoryEvidenceIdentity,
@@ -2507,6 +2507,56 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       databaseUrlFor("postgres"),
     );
   }, 60_000);
+
+  it("loads the saved provider profile after live provider drift", async () => {
+    const fixture = await runDb(createFixture);
+    let boundProfile: AcceptedProviderProfile | undefined;
+    const agent = new CanonicalAgentClient({
+      bindAcceptedProviderProfile: (profile: AcceptedProviderProfile) => {
+        boundProfile = profile;
+      },
+    } as unknown as ExactPiBoundary);
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "",
+        providerServiceId: "openai_compatible_custom",
+        providerEndpointIdentity: "openai_compatible_custom:https://live-drift.example/v1",
+      },
+      agent,
+    );
+
+    await expect(
+      inTask("load-turn", () => operations.loadTurn(fixture.runId)),
+    ).resolves.toMatchObject({
+      acceptanceScope: {
+        provider: "zai_coding_plan_official",
+        providerEndpointIdentity: "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
+      },
+    });
+    expect(boundProfile).toEqual({
+      providerServiceId: "zai_coding_plan_official",
+      providerEndpointIdentity: "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
+      fastModelId: "glm-5-turbo",
+      mainModelId: "glm-5-turbo",
+    });
+  }, 120_000);
 
   it("persists distinct owning coordinates for retries across Smithers loop iterations", async () => {
     const fixture = await runDb(createFixture);
@@ -5283,6 +5333,43 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     });
     expect(providerTransportCalls).toBe(3);
     expect(webBoundaryCalls).toBe(2);
+  }, 120_000);
+
+  it("fails a requested web path with a missing current adapter", async () => {
+    const fixture = await runDb(createFixture);
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      {
+        aiMainModel: "glm-5-turbo",
+        aiFastModel: "glm-5-turbo",
+        aiMainInputMaxTokens: 100_000,
+        aiMainOutputMaxTokens: 4096,
+        aiFastInputMaxTokens: 100_000,
+        aiFastOutputMaxTokens: 4096,
+        aiConversationRecentTurns: 12,
+        aiFanoutMaxTopics: 3,
+        aiRetrievalMaxTurns: 4,
+        aiInternalMaxSearches: 4,
+        aiInternalMaxInspections: 4,
+        aiWebMaxSearches: 2,
+        aiWebMaxFetches: 2,
+        aiWebMaxDomainFilters: 8,
+        aiContextReductionMaxIterations: 2,
+        aiMemoryToolResultMaxItems: 20,
+        webResearchProvider: "tinyfish",
+      },
+      new WebManifestAgent("unused"),
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+
+    await expect(
+      inTask("single-retrieve-web", () =>
+        operations.retrieveWeb(load, "What is the current update?", "single-retrieve-web"),
+      ),
+    ).rejects.toMatchObject({
+      code: "web_research_failed",
+      details: { failureRetryable: false },
+    });
   }, 120_000);
 
   it.each(["membership", "settings", "accepted-policy", "chat"] as const)(

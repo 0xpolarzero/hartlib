@@ -166,8 +166,11 @@ describe("exact Pi boundary", () => {
     expect(complete).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects a tampered saved service before outbound transport", async () => {
-    const complete = vi.fn(async () => assistant("must not run"));
+  it("routes a saved provider endpoint despite live runtime drift", async () => {
+    const complete = vi.fn(async (model) => {
+      expect(model.baseUrl).toBe("https://custom.example/v1");
+      return assistant("saved endpoint");
+    });
     const boundary = new ExactPiBoundary({
       ...boundaryOptions(),
       providerServiceId: "zai_coding_plan_official",
@@ -175,13 +178,69 @@ describe("exact Pi boundary", () => {
       complete: complete as never,
     });
 
-    expect(() =>
-      boundary.bindAcceptedProviderProfile({
-        providerServiceId: "openai_compatible_custom",
-        fastModelId: "glm-5-turbo",
-        mainModelId: "glm-5-turbo",
-      }),
-    ).toThrow(/accepted provider service/u);
+    boundary.bindAcceptedProviderProfile({
+      providerServiceId: "openai_compatible_custom",
+      providerEndpointIdentity: "openai_compatible_custom:https://custom.example/v1",
+      fastModelId: "glm-5-turbo",
+      mainModelId: "glm-5-turbo",
+    });
+
+    await expect(
+      inTask(new AbortController(), coordinates.attempt, () =>
+        boundary.complete(request, coordinates),
+      ),
+    ).resolves.toMatchObject({ text: "saved endpoint" });
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it("classifies a missing accepted provider adapter under the owning role", async () => {
+    const complete = vi.fn(async () => assistant("must not run"));
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      requireAcceptedProviderProfile: true,
+      complete: complete as never,
+    });
+    boundary.bindAcceptedProviderProfile({
+      providerServiceId: "deterministic_test",
+      providerEndpointIdentity: "deterministic_test:deterministic",
+      fastModelId: "glm-5-turbo",
+      mainModelId: "glm-5-turbo",
+    });
+
+    await expect(
+      inTask(new AbortController(), coordinates.attempt, () =>
+        boundary.complete(
+          { ...request, model: "glm-5-turbo" },
+          {
+            ...coordinates,
+            agentRole: "direct_answer",
+          },
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "answer_failed" });
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("classifies missing provider credentials under the owning role", async () => {
+    const complete = vi.fn(async () => assistant("must not run"));
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      apiKey: "",
+      requireAcceptedProviderProfile: true,
+      complete: complete as never,
+    });
+    boundary.bindAcceptedProviderProfile({
+      providerServiceId: "zai_coding_plan_official",
+      providerEndpointIdentity: "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
+      fastModelId: "glm-5-turbo",
+      mainModelId: "glm-5-turbo",
+    });
+
+    await expect(
+      inTask(new AbortController(), coordinates.attempt, () =>
+        boundary.complete(request, { ...coordinates, agentRole: "direct_answer" }),
+      ),
+    ).rejects.toMatchObject({ code: "answer_failed" });
     expect(complete).not.toHaveBeenCalled();
   });
 

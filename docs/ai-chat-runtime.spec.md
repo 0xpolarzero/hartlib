@@ -752,6 +752,8 @@ The owning Smithers task signal is combined with, and remains distinct from, eac
 
 The development adapter is available only when `TINYFISH_API_KEY` is non-empty and the saved acceptance scope enables it. Production web policy remains disabled until the Tinyfish contractual, disclosure, and conformance decisions in `docs/production-readiness.spec.md` are accepted; a development key never constitutes production approval. The acceptance transaction saves the complete server-derived web state, provider, model IDs, and canonical domain allowlist in the immutable run scope. Every search, fetch, redirect, and provider request uses those saved values. Network safety, response parsing, URL normalization, DNS, redirect, timeout, media, quotation, and exact evidence checks remain transport or data-integrity checks; they do not consult live policy. A malformed, incomplete, cross-tenant, or tampered saved scope fails closed. W returns only selected URL-backed verbatim quotations:
 
+The worker does not compare an accepted provider or endpoint with later deployment settings. It routes each request through the saved provider endpoint and role model; a missing provider adapter or credential fails the owning task with its typed runtime error. If an accepted run requested and enabled web research but the current web adapter is missing, W fails with `web_research_failed` rather than returning `policy_disabled`.
+
 Before quote containment and identity hashing, both the model quotation and fetched page text use the same transport-only normalization: Unicode NFC, CRLF/CR line endings to LF, and removal of outer whitespace; internal whitespace remains evidence.
 
 ```ts

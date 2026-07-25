@@ -280,11 +280,35 @@ const resolveModel = (
 const toolChoice = (choice: ProviderRequest["toolChoice"]): unknown =>
   typeof choice === "object" ? { type: "function", function: { name: choice.name } } : choice;
 
+const acceptedProviderBaseUrl = (profile: AcceptedProviderProfile): string | undefined => {
+  const endpointIdentity = profile.providerEndpointIdentity;
+  if (endpointIdentity === undefined) return undefined;
+  const prefix = `${profile.providerServiceId}:`;
+  if (!endpointIdentity.startsWith(prefix)) return undefined;
+  const endpoint = endpointIdentity.slice(prefix.length);
+  try {
+    const url = new URL(endpoint);
+    if (
+      url.protocol !== "https:" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.search !== "" ||
+      url.hash !== ""
+    ) {
+      return undefined;
+    }
+    return url.href.replace(/\/$/u, "");
+  } catch {
+    return undefined;
+  }
+};
+
 export class ExactPiBoundary {
   private readonly runComplete: typeof completeSimple;
   private readonly runStream: typeof streamSimple;
   private readonly providerSemaphore: ProviderSemaphore;
   private acceptedProviderProfile: AcceptedProviderProfile | undefined;
+  private acceptedProviderBaseUrl: string | undefined;
 
   constructor(private readonly options: PiBoundaryOptions) {
     this.runComplete = options.complete ?? completeSimple;
@@ -307,38 +331,8 @@ export class ExactPiBoundary {
         { taskRetryable: false },
       );
     }
-    if (
-      this.options.providerServiceId !== undefined &&
-      this.options.providerServiceId !== profile.providerServiceId
-    ) {
-      throw new AiRuntimeError(
-        "invalid_workflow_output",
-        "accepted provider service differs from the runtime provider",
-        { taskRetryable: false },
-      );
-    }
-    if (
-      this.options.providerEndpointIdentity !== undefined &&
-      this.options.providerEndpointIdentity !== profile.providerEndpointIdentity
-    ) {
-      throw new AiRuntimeError(
-        "invalid_workflow_output",
-        "accepted provider endpoint differs from the runtime provider",
-        { taskRetryable: false },
-      );
-    }
-    if (
-      (this.options.fastModelId !== undefined &&
-        this.options.fastModelId !== profile.fastModelId) ||
-      (this.options.mainModelId !== undefined && this.options.mainModelId !== profile.mainModelId)
-    ) {
-      throw new AiRuntimeError(
-        "invalid_workflow_output",
-        "accepted model differs from the runtime model",
-        { taskRetryable: false },
-      );
-    }
     this.acceptedProviderProfile = profile;
+    this.acceptedProviderBaseUrl = acceptedProviderBaseUrl(profile);
   }
 
   private assertAcceptedProviderProfile(request: ProviderRequest): void | Promise<void> {
@@ -370,6 +364,46 @@ export class ExactPiBoundary {
     }
   }
 
+  private acceptedProviderTransport(agentRole: string): { readonly baseUrl: string } {
+    const profile = this.acceptedProviderProfile;
+    if (profile === undefined) {
+      if (this.options.requireAcceptedProviderProfile === true) {
+        throw new AiRuntimeError(
+          "invalid_workflow_output",
+          "provider request is missing its accepted provider profile",
+          { taskRetryable: false },
+        );
+      }
+      if (this.options.apiKey.trim() === "") {
+        throw new AiRuntimeError(
+          aiRunErrorCodeForRole(agentRole),
+          "provider credentials are unavailable",
+          { taskRetryable: false },
+        );
+      }
+      return { baseUrl: this.options.baseUrl };
+    }
+    const baseUrl = this.acceptedProviderBaseUrl ?? this.options.baseUrl;
+    if (
+      profile.providerServiceId === "deterministic_test" ||
+      (profile.providerEndpointIdentity !== undefined && this.acceptedProviderBaseUrl === undefined)
+    ) {
+      throw new AiRuntimeError(
+        aiRunErrorCodeForRole(agentRole),
+        "accepted provider adapter is unavailable",
+        { taskRetryable: false },
+      );
+    }
+    if (this.options.apiKey.trim() === "") {
+      throw new AiRuntimeError(
+        aiRunErrorCodeForRole(agentRole),
+        "accepted provider credentials are unavailable",
+        { taskRetryable: false },
+      );
+    }
+    return { baseUrl };
+  }
+
   private async gate(
     request: ProviderRequest,
     coordinates: PiBoundaryCoordinates,
@@ -379,6 +413,7 @@ export class ExactPiBoundary {
     throwIfAborted(signal);
     const profileCheck = this.assertAcceptedProviderProfile(request);
     if (profileCheck !== undefined) await profileCheck;
+    const transport = this.acceptedProviderTransport(coordinates.agentRole);
     const normalizedRequest = requireLiveProviderRequest(normalizeProviderRequest(request));
     const model = resolveRuntimeModel(normalizedRequest.model);
     const limits =
@@ -416,7 +451,7 @@ export class ExactPiBoundary {
       measurement,
     );
     throwIfAborted(signal);
-    return { model, measurement, request: normalizedRequest };
+    return { model, measurement, request: normalizedRequest, baseUrl: transport.baseUrl };
   }
 
   async complete(
@@ -431,15 +466,19 @@ export class ExactPiBoundary {
     };
     let observedStatus: number | undefined;
     try {
-      const { message, providerRequest } = await this.providerSemaphore.withPermit(async () => {
-        const gated = await this.gate(request, executionCoordinates, signal, beforeProviderRequest);
-        const providerRequest = gated.request;
-        throwIfAborted(signal);
-        const message = await withProviderOriginGuard(this.options.baseUrl, () =>
-          this.runComplete(
-            resolveModel(providerRequest, this.options.baseUrl),
-            toPiContext(providerRequest),
-            {
+      const { message, providerRequest, baseUrl } = await this.providerSemaphore.withPermit(
+        async () => {
+          const gated = await this.gate(
+            request,
+            executionCoordinates,
+            signal,
+            beforeProviderRequest,
+          );
+          const providerRequest = gated.request;
+          const baseUrl = gated.baseUrl;
+          throwIfAborted(signal);
+          const message = await withProviderOriginGuard(baseUrl, () =>
+            this.runComplete(resolveModel(providerRequest, baseUrl), toPiContext(providerRequest), {
               apiKey: this.options.apiKey,
               maxTokens: providerRequest.requestedOutputTokens,
               reasoning: providerRequest.reasoning,
@@ -455,11 +494,12 @@ export class ExactPiBoundary {
               ...(providerRequest.toolChoice === undefined
                 ? {}
                 : { toolChoice: toolChoice(providerRequest.toolChoice) }),
-            } as Parameters<typeof completeSimple>[2],
-          ),
-        );
-        return { message, providerRequest };
-      }, signal);
+            } as Parameters<typeof completeSimple>[2]),
+          );
+          return { message, providerRequest, baseUrl };
+        },
+        signal,
+      );
       throwIfAborted(signal);
       if (message.stopReason === "aborted") {
         const aborted = new Error("provider request aborted");
@@ -508,26 +548,23 @@ export class ExactPiBoundary {
       const { final, providerRequest } = await this.providerSemaphore.withPermit(async () => {
         const gated = await this.gate(request, executionCoordinates, signal, beforeProviderRequest);
         const providerRequest = gated.request;
+        const baseUrl = gated.baseUrl;
         throwIfAborted(signal);
-        const stream = await withProviderOriginGuard(this.options.baseUrl, async () =>
-          this.runStream(
-            resolveModel(providerRequest, this.options.baseUrl),
-            toPiContext(providerRequest),
-            {
-              apiKey: this.options.apiKey,
-              maxTokens: providerRequest.requestedOutputTokens,
-              reasoning: providerRequest.reasoning,
-              maxRetries: 0,
-              ...(signal === undefined ? {} : { signal }),
-              timeoutMs:
-                providerRequest.requestClass === "main"
-                  ? this.options.answerTimeoutMs
-                  : this.options.fastTimeoutMs,
-              onResponse: (response) => {
-                observedStatus = response.status;
-              },
+        const stream = await withProviderOriginGuard(baseUrl, async () =>
+          this.runStream(resolveModel(providerRequest, baseUrl), toPiContext(providerRequest), {
+            apiKey: this.options.apiKey,
+            maxTokens: providerRequest.requestedOutputTokens,
+            reasoning: providerRequest.reasoning,
+            maxRetries: 0,
+            ...(signal === undefined ? {} : { signal }),
+            timeoutMs:
+              providerRequest.requestClass === "main"
+                ? this.options.answerTimeoutMs
+                : this.options.fastTimeoutMs,
+            onResponse: (response) => {
+              observedStatus = response.status;
             },
-          ),
+          }),
         );
         let streamedFinal: AssistantMessage | undefined;
         let deltaIndex = 0;
