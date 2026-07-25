@@ -47,7 +47,6 @@ export type AiRunEventPoller = (
   organizationId: string | null,
   runId: string,
   afterSeq: number,
-  configuration: Pick<ApiConfig, "webResearchProvider" | "aiWebMaxDomainFilters">,
   databaseLayer: ApiDatabaseLayerType,
 ) => Promise<AuthorizedAiRunEventPoll>;
 
@@ -224,17 +223,12 @@ const readAuthorizedAiRunEventsAfter: AiRunEventPoller = (
   organizationId,
   runId,
   afterSeq,
-  configuration,
   databaseLayer,
 ) =>
   Effect.runPromise(
-    readAuthorizedAiRunEventsAfterFromDomain(
-      userId,
-      organizationId,
-      runId,
-      afterSeq,
-      configuration,
-    ).pipe(Effect.provide(databaseLayer)),
+    readAuthorizedAiRunEventsAfterFromDomain(userId, organizationId, runId, afterSeq).pipe(
+      Effect.provide(databaseLayer),
+    ),
   );
 
 const streamLog = (message: string, fields: Record<string, unknown>): void => {
@@ -252,7 +246,6 @@ const incrementalSse = (args: {
   readonly chatId: string;
   readonly userId: string;
   readonly organizationId: string | null;
-  readonly configuration: Pick<ApiConfig, "webResearchProvider" | "aiWebMaxDomainFilters">;
   readonly afterSeq: number;
   readonly pollMs: number;
   readonly keepAliveMs: number;
@@ -296,7 +289,6 @@ const incrementalSse = (args: {
               args.organizationId,
               args.runId,
               afterSeq,
-              args.configuration,
               args.databaseLayer,
             );
             if (!poll.authorized) {
@@ -450,7 +442,6 @@ export const makeChatRoutes = (
           authentication.identity.organizationId,
           runId,
           afterSeq,
-          config,
         ).pipe(Effect.provide(databaseLayer));
         if (!handshake.authorized) {
           return json({ error: "not_found" }, { status: 404 });
@@ -464,7 +455,6 @@ export const makeChatRoutes = (
           chatId: context.chatId,
           userId: authentication.identity.userId,
           organizationId: authentication.identity.organizationId,
-          configuration: config,
           afterSeq,
           pollMs: config.aiStreamPollMs,
           keepAliveMs: config.aiStreamKeepAliveMs,

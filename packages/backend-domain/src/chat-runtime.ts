@@ -861,13 +861,6 @@ export const readAuthorizedAiRunEventsAfter = (
   organizationId: string | null,
   runId: string,
   afterSeq: number,
-  _configuration: Pick<
-    ChatRuntimeConfiguration,
-    "webResearchProvider" | "aiWebMaxDomainFilters"
-  > = {
-    webResearchProvider: null,
-    aiWebMaxDomainFilters: 0,
-  },
 ) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
@@ -887,28 +880,24 @@ export const readAuthorizedAiRunEventsAfter = (
           on company.id = chat.company_id
           and company.recovery_deleted_at is null
           and company.purged_at is null
+        join client_company_memberships membership
+          on membership.company_id = chat.company_id
+         and membership.user_id = ${userId}
+         and membership.revoked_at is null
+        join platform_users viewer
+          on viewer.id = membership.user_id
+         and viewer.recovery_deleted_at is null
+         and viewer.purged_at is null
         where run.id = ${runId}
           and chat.deleted_at is null
           and (${organizationId}::text is null or company.clerk_organization_id = ${organizationId})
-          and exists (
-            select 1 from platform_users viewer
-            where viewer.id = ${userId}
-              and viewer.recovery_deleted_at is null
-              and viewer.purged_at is null
-          )
           and (
             chat.user_id = ${userId}
             or (
               chat.shared_at is not null
-          and exists (
-                select 1 from client_company_memberships membership
-            where membership.company_id = chat.company_id
-              and membership.user_id = ${userId}
-              and membership.revoked_at is null
+            )
           )
-                )
-              )
-          )
+        )
       select authorized.run_id is not null as authorized,
              authorized.terminal,
              case when authorized.run_id is null then false else exists (

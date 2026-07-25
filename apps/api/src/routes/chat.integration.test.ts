@@ -161,27 +161,6 @@ const configLayer = ConfigProvider.layer(
   }),
 );
 
-const noWebConfigLayer = ConfigProvider.layer(
-  ConfigProvider.fromEnv({
-    env: {
-      AI_STREAM_POLL_MS: "5",
-      AI_STREAM_KEEPALIVE_MS: "10",
-      AI_WEB_MAX_DOMAIN_FILTERS: "2",
-    },
-  }),
-);
-
-const oneDomainConfigLayer = ConfigProvider.layer(
-  ConfigProvider.fromEnv({
-    env: {
-      AI_STREAM_POLL_MS: "5",
-      AI_STREAM_KEEPALIVE_MS: "10",
-      TINYFISH_API_KEY: "test-key",
-      AI_WEB_MAX_DOMAIN_FILTERS: "1",
-    },
-  }),
-);
-
 const clerkStreamConfigLayer = ConfigProvider.layer(
   ConfigProvider.fromEnv({
     env: {
@@ -204,8 +183,6 @@ const request = (method: string, path: string, init?: RequestInit) =>
   new Request(`http://brief.test${path}`, { ...init, method });
 const route = (value: Request) =>
   Effect.runPromise(routeRequest(routes(), value).pipe(Effect.provide(configLayer)));
-const routeWithConfig = (value: Request, layer: typeof configLayer) =>
-  Effect.runPromise(routeRequest(routes(), value).pipe(Effect.provide(layer)));
 const body = <A>(response: Response): Promise<A> => response.json() as Promise<A>;
 
 const getChat = async () => {
@@ -942,7 +919,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     );
   });
 
-  it("keeps private SSE runs owner-only regardless of web exposure and permits shared viewers", async () => {
+  it("keeps private SSE runs owner-only and permits current shared viewers", async () => {
     const viewerId = `stream-viewer-${crypto.randomUUID()}`;
     const ownerByName = {
       privateNoWeb: `stream-owner-private-no-web-${crypto.randomUUID()}`,
@@ -1116,6 +1093,23 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
       const chunk = await readFirstChunk(await streamAs(runIds[key], ownerByName[key]));
       expect(chunk).toContain(secret);
     }
+
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_company_memberships
+          set revoked_at = now(), revoked_by_user_id = ${viewerId}
+          where user_id = ${viewerId}
+            and company_id = (
+              select company_id from chats where id = ${sharedNoWebChatId}
+            )
+        `;
+      }),
+    );
+    streamUserId = viewerId;
+    await expectNotFoundWithoutLeak(runIds.sharedNoWeb, eventText.sharedNoWeb);
   });
 
   it("rejects a terminal stream after its replayable event ledger was pruned", async () => {
@@ -1276,7 +1270,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     expect(stream).toContain("event: done");
   });
 
-  it("closes an open SSE stream before emitting events after source access revocation", async () => {
+  it("keeps an open SSE stream after source access revocation", async () => {
     const chat = await getChat();
     const acceptedResponse = await postMessage({
       text: "Stream with revocation",
@@ -1453,7 +1447,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     expect(remainder).not.toContain("keep-alive");
   });
 
-  it("closes an open SSE stream before emitting public-source text after company opt-out", async () => {
+  it("keeps an open SSE stream after public-source opt-out", async () => {
     const chat = await getChat();
     const acceptedResponse = await postMessage({
       text: "Stream with public-source opt-out",
@@ -2005,7 +1999,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     await malformedStream.body?.cancel();
   });
 
-  it("rejects an SSE handshake when the web adapter key is removed or the live capability limit shrinks", async () => {
+  it("keeps the SSE handshake independent of later web capability changes", async () => {
     const chat = await getChat();
     await runDb(
       isolatedUrl(),
@@ -2093,21 +2087,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     const narrowed = await route(request("GET", `/v1/ai-runs/${accepted.run.id}/stream`));
     expect(narrowed.status).toBe(200);
     await narrowed.body?.cancel();
-    const noWeb = await routeWithConfig(
-      request("GET", `/v1/ai-runs/${accepted.run.id}/stream`),
-      noWebConfigLayer,
-    );
-    expect(noWeb.status).toBe(200);
-    await noWeb.body?.cancel();
-    const oneDomain = await routeWithConfig(
-      request("GET", `/v1/ai-runs/${accepted.run.id}/stream`),
-      oneDomainConfigLayer,
-    );
-    expect(oneDomain.status).toBe(200);
-    await oneDomain.body?.cancel();
   });
 
-  it("fails stream reauthorization closed for malformed and empty active allowlists", async () => {
+  it("keeps streaming after a later malformed web policy", async () => {
     const chat = await getChat();
     await runDb(
       isolatedUrl(),
@@ -2182,7 +2164,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
 
   });
 
-  it("closes an open SSE stream before emitting cited memory text after memory revocation", async () => {
+  it("keeps an open SSE stream after cited memory revocation", async () => {
     const acceptedResponse = await postMessage({
       text: "Stream with memory revocation",
       locale: "en-US",
