@@ -2,8 +2,8 @@
 
 ## Affected release
 
-- `smithers-orchestrator@0.27.0`
-- `@smithers-orchestrator/engine@0.27.0`
+- `smithers-orchestrator@0.30.0`
+- `@smithers-orchestrator/engine@0.30.0`
 
 ## Problem
 
@@ -36,10 +36,18 @@ A finite evaluation command that omits the close can finish its work but does no
 
 Brief carries the lifecycle implementation and facade export as Bun dependency patches:
 
-- `patches/@smithers-orchestrator%2Fengine@0.27.0.patch`
-- `patches/smithers-orchestrator@0.27.0.patch`
+- `patches/@smithers-orchestrator%2Fengine@0.30.0.patch`
+- `patches/smithers-orchestrator@0.30.0.patch`
 
 `apps/worker/src/ai/smithers-interop.ts` owns the application boundary. The evaluation CLI closes the runtime in finalization and reports cleanup failure as exit `2`; it does not call `process.exit`.
+
+The chat cutover keeps Smithers state disposable. Brief commits the product
+terminal transition first, then removes the exact `ai-chat:<aiRunId>` engine,
+input, and output rows. Cleanup never repairs an old output shape, reads a
+product answer from Smithers, or runs a second provider path. A schema change
+must take the exclusive Smithers schema fence, lock affected tables in sorted
+order, and refuse active runs or retained incompatible outputs before creating
+the final output schema.
 
 Remove the patches only after an upstream release exposes equivalent lifecycle semantics and the finite CLI lifecycle tests pass against the unpatched package.
 
