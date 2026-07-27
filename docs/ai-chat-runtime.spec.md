@@ -942,6 +942,14 @@ while a retry or later tool turn creates a separate detailed row.
 
 Content-item identity is document-version ID plus exact range/snippet hash for document previews, message ID for whole chat messages, memory-revision ID for whole memories, and final URL plus normalized snippet/quotation hash for web content. The identity stays in the internal sidecar and durable exposure row, never in provider-visible content. Therefore 20 distinct snippets shown to A are 20 exposed items even if A selects only three. Run-level exposed-item metrics deduplicate repeat visibility as `count distinct (runId, sourceKind, contentItemIdentity)`.
 
+The immutable exposure identity in a code-owned sidecar is the tuple of source
+kind, logical source identity, content-item identity, and exposure stage. If a
+later tool result repeats that identity, its visible text, tokenizer count,
+immutable content hash, and immutable source-identity commitment must remain
+unchanged; otherwise the runtime rejects the result as a rebound identity. The
+call-coordinate-bound immutable source commitment may differ for a later
+provider call and is not part of this identity comparison.
+
 Publisher-facing pulls are two separate distinct rollups: issue totals use `count distinct (runId, issueId)`, while the per-document breakdown uses `count distinct (runId, publisherDocumentId)`. A retry, 20 snippets from one document, or several documents from one issue cannot inflate either identity above one pull for the run.
 
 Pulled, selected, serialized, and cited are different funnel stages.
@@ -1809,10 +1817,11 @@ explicit exceptional denies.
 
 Migration `0065_ai_evaluation_schema_versions.sql` keeps immutable terminal v2
 sessions as historical evidence. It blocks deployment when any v2 session is
-still nonterminal, then installs the v3-only version check as `NOT VALID`: the
-check remains enforced for every new row while retained v2 rows stay readable.
-New evaluation sessions must use artifact and golden-set version 3; the
-migration never rewrites or deletes v2 evidence.
+still nonterminal, taking an exclusive table lock before that drain check so no
+old-code insert can race the migration. It then installs the v3-only version
+check as `NOT VALID`: the check remains enforced for every new row while
+retained v2 rows stay readable. New evaluation sessions must use artifact and
+golden-set version 3; the migration never rewrites or deletes v2 evidence.
 
 The source corpus and its search indexes remain the canonical internal content store. Document versions referenced by a retained assistant source row remain resolvable for that answer's retention lifetime; mutable “current document” pointers never replace the referenced version. There is no chat-global context-block table controlling future prompt membership.
 

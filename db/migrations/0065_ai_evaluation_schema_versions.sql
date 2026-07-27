@@ -9,6 +9,10 @@ begin
     return;
   end if;
 
+  -- Lock the table before the drain check so no old-code insert can commit
+  -- between the count and the new-row check constraint.
+  execute 'lock table ai_evaluation_sessions in access exclusive mode';
+
   select count(*)
   into nonterminal_v2_count
   from ai_evaluation_sessions
