@@ -8568,6 +8568,114 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
   );
 
   it(
+    "retains terminal v2 evaluation evidence while rejecting new v2 sessions",
+    { timeout: 60_000 },
+    async () => {
+      const upgradeDatabaseName = `brief_eval_schema_upgrade_${process.pid}_${crypto
+        .randomUUID()
+        .replaceAll("-", "")
+        .slice(0, 8)}`;
+      const upgradeUrl = databaseUrlForName(upgradeDatabaseName);
+      const legacyIdentity = "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4";
+
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(`create database ${quoteIdentifier(upgradeDatabaseName)}`);
+        }),
+      );
+
+      try {
+        await runDb(
+          upgradeUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* applyMigrationsThrough("0064_ai_chat_runtime_cutover.sql");
+            const legacySessionId = crypto.randomUUID();
+            yield* sql`
+              insert into ai_evaluation_sessions (
+                id, artifact_version, golden_set_version, fixture_sha256_hex,
+                execution_config_sha256_hex, provider_endpoint_identity,
+                status
+              ) values (
+                ${legacySessionId}, 2, 2, ${"a".repeat(64)}, ${"b".repeat(64)},
+                ${legacyIdentity}, 'running'
+              )
+            `;
+            const migration = yield* Effect.promise(() =>
+              Bun.file(new URL("0065_ai_evaluation_schema_versions.sql", migrationsUrl)).text(),
+            );
+            const preflightExit = yield* Effect.exit(sql.unsafe(migration).raw);
+            expect(preflightExit._tag).toBe("Failure");
+            expect(errorText(preflightExit)).toContain("nonterminal v2 session");
+            yield* sql`
+              update ai_evaluation_sessions
+              set status = 'failed', failure_reason = 'drained for v3 migration', completed_at = now()
+              where id = ${legacySessionId}
+            `;
+            yield* sql.unsafe(migration).raw;
+
+            const rows = yield* sql<{
+              readonly artifactVersion: number;
+              readonly goldenSetVersion: number;
+            }>`
+              select artifact_version as "artifactVersion",
+                     golden_set_version as "goldenSetVersion"
+              from ai_evaluation_sessions
+            `;
+            expect(rows).toEqual([{ artifactVersion: 2, goldenSetVersion: 2 }]);
+
+            const newV2 = yield* Effect.exit(sql`
+              insert into ai_evaluation_sessions (
+                id, artifact_version, golden_set_version, fixture_sha256_hex, status
+              ) values (
+                ${crypto.randomUUID()}, 2, 2, ${"c".repeat(64)}, 'preparing'
+              )
+            `);
+            expect(newV2._tag).toBe("Failure");
+
+            yield* sql`
+              insert into ai_evaluation_sessions (
+                id, artifact_version, golden_set_version, fixture_sha256_hex, status
+              ) values (
+                ${crypto.randomUUID()}, 3, 3, ${"d".repeat(64)}, 'preparing'
+              )
+            `;
+
+            const constraint = yield* sql<{
+              readonly validated: boolean;
+              readonly definition: string;
+            }>`
+              select convalidated as validated, pg_get_constraintdef(oid) as definition
+              from pg_constraint
+              where conrelid = 'ai_evaluation_sessions'::regclass
+                and conname = 'ai_evaluation_sessions_versions'
+            `;
+            expect(constraint[0]?.validated).toBe(false);
+            expect(constraint[0]?.definition).toContain("artifact_version = 3");
+          }),
+        );
+      } finally {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              select pg_terminate_backend(pid)
+              from pg_stat_activity
+              where datname = ${upgradeDatabaseName}
+                and usename = current_user
+                and pid <> pg_backend_pid()
+            `;
+            yield* sql.unsafe(`drop database if exists ${quoteIdentifier(upgradeDatabaseName)}`);
+          }),
+        );
+      }
+    },
+  );
+
+  it(
     "installs the provider usage arithmetic check without rewriting historical rows",
     { timeout: 60_000 },
     async () => {

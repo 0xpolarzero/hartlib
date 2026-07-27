@@ -85,7 +85,6 @@ export const safeAiPhaseLogFields = (entry: AiPhaseLogEntry): AiPhaseLogEntry =>
 type OperationName =
   | "loadTurn"
   | "planTurn"
-  | "planTurn"
   | "extractMemory"
   | "freezeContext"
   | "selectMemories"
