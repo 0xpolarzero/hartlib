@@ -5,6 +5,14 @@ import { describe, expect, it, vi } from "vitest";
 import { CanonicalAgentClient } from "./agent-client";
 import { AiRuntimeError } from "./errors";
 import { ExactPiBoundary, type PiCompletion } from "./pi-boundary";
+import { WebBoundaryError } from "../web/errors";
+import { chatMessageEvidenceIdentity } from "./canonicalization";
+import { resolveRegisteredModel } from "./model-registry";
+import {
+  providerRequestSourceExposureProofBindings,
+  type CodeOwnedSourceExposureProof,
+  type LiveProviderRequest,
+} from "./provider-request";
 
 const usage = {
   inputTokens: 1,
@@ -126,7 +134,13 @@ describe("canonical agent tool loop", () => {
         completion([{ id: "search-1", name: "search_internal", arguments: {} }]),
       )
       .mockResolvedValueOnce(
-        completion([{ id: "inspect-1", name: "inspect_internal", arguments: {} }]),
+        completion([
+          {
+            id: "inspect-1",
+            name: "inspect_internal",
+            arguments: { reference: { kind: "chat_message", messageId: "restricted-message" } },
+          },
+        ]),
       )
       .mockResolvedValueOnce(
         completion([{ id: "terminal-1", name: "emit", arguments: { ok: true } }]),
@@ -151,6 +165,18 @@ describe("canonical agent tool loop", () => {
                 execute: async () => ({
                   items: [{ messageId: "restricted-message", snippet: "restricted search text" }],
                   complete: true,
+                  __briefSourceExposures: [
+                    {
+                      sourceKind: "chat_message",
+                      logicalSourceIdentity: chatMessageEvidenceIdentity("restricted-message"),
+                      contentItemIdentity: "restricted-message",
+                      exposureStage: "internal_inspection",
+                      visibleTokenCount:
+                        resolveRegisteredModel("glm-5-turbo").countTextTokens(
+                          "restricted search text",
+                        ),
+                    },
+                  ],
                 }),
               },
               {
@@ -166,6 +192,17 @@ describe("canonical agent tool loop", () => {
                     messageId: "restricted-message",
                     content: "restricted inspected text",
                   },
+                  __briefSourceExposures: [
+                    {
+                      sourceKind: "chat_message",
+                      logicalSourceIdentity: chatMessageEvidenceIdentity("restricted-message"),
+                      contentItemIdentity: "restricted-message",
+                      exposureStage: "internal_inspection",
+                      visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(
+                        "restricted inspected text",
+                      ),
+                    },
+                  ],
                 }),
               },
               {
@@ -246,7 +283,7 @@ describe("canonical agent tool loop", () => {
           loopIteration: 0,
           attempt: 0,
           providerRequestIndex: 0,
-          agentRole: "execution_planner",
+          agentRole: "plan_turn",
         },
       }),
     ).then(
@@ -255,7 +292,7 @@ describe("canonical agent tool loop", () => {
       },
       (error) => error,
     );
-    expect(failure).toMatchObject({ code: "execution_planner_failed", retryable: true });
+    expect(failure).toMatchObject({ code: "plan_turn_failed", retryable: true });
     expect(failure).not.toMatchObject({ details: { failureRetryable: false } });
   });
 
@@ -285,7 +322,7 @@ describe("canonical agent tool loop", () => {
           loopIteration: 0,
           attempt: 0,
           providerRequestIndex: 0,
-          agentRole: "execution_planner",
+          agentRole: "plan_turn",
         },
       }),
     ).then(
@@ -294,7 +331,7 @@ describe("canonical agent tool loop", () => {
       },
       (error) => error,
     );
-    expect(failure).toMatchObject({ code: "execution_planner_failed", retryable: true });
+    expect(failure).toMatchObject({ code: "plan_turn_failed", retryable: true });
     expect(failure).not.toMatchObject({ details: { failureRetryable: false } });
   });
 
@@ -413,7 +450,7 @@ describe("canonical agent tool loop", () => {
             loopIteration: 0,
             attempt: 0,
             providerRequestIndex: 0,
-            agentRole: "execution_planner",
+            agentRole: "plan_turn",
           },
           onBeforeRequest: (request, coordinates, measurement) => {
             seen.push({ request, coordinates, measurement });
@@ -434,7 +471,7 @@ describe("canonical agent tool loop", () => {
     const complete = vi
       .fn()
       .mockResolvedValueOnce(
-        completion([{ id: "call-1", name: "search", arguments: { terms: "solar" } }]),
+        completion([{ id: "call-1", name: "search_internal", arguments: { terms: "solar" } }]),
       )
       .mockResolvedValueOnce(
         completion([{ id: "call-2", name: "emit", arguments: { ids: ["a"] } }]),
@@ -449,11 +486,28 @@ describe("canonical agent tool loop", () => {
         tools: [
           {
             definition: {
-              name: "search",
+              name: "search_internal",
               description: "Search",
               parameters: { type: "object" },
             },
-            execute: async () => ({ complete: true, items: [{ id: "a" }] }),
+            execute: async () => ({
+              complete: true,
+              items: [{ messageId: "public-message", snippet: "visible" }],
+              versionId: "secret",
+              source: { kind: "public", sourceId: "secret" },
+              contentHash: "secret",
+              publisherExtractionId: "secret",
+              __briefSourceExposures: [
+                {
+                  sourceKind: "chat_message",
+                  logicalSourceIdentity: chatMessageEvidenceIdentity("public-message"),
+                  contentItemIdentity: "public-message",
+                  exposureStage: "internal_inspection",
+                  visibleTokenCount:
+                    resolveRegisteredModel("glm-5-turbo").countTextTokens("visible"),
+                },
+              ],
+            }),
           },
           {
             definition: { name: "emit", description: "Emit", parameters: { type: "object" } },
@@ -478,6 +532,233 @@ describe("canonical agent tool loop", () => {
       "tool",
     ]);
     expect(secondRequest.messages.at(-1).content).toContain('"complete":true');
+    expect(secondRequest.messages.at(-1).content).not.toContain("__briefSourceExposures");
+    expect(secondRequest.messages.at(-1).content).not.toContain("secret");
+    expect(secondRequest.sourceExposureProofs).toEqual([
+      expect.objectContaining({
+        sourceKind: "chat_message",
+        logicalSourceIdentity: chatMessageEvidenceIdentity("public-message"),
+        contentItemIdentity: "public-message",
+        exposureStage: "internal_inspection",
+        visibleTokenCount: 1,
+        visibleText: "visible",
+        immutableContentHash: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+        immutableSourceIdentityCommitment: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+        immutableSourceCommitment: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+      }),
+    ]);
+  });
+
+  it("binds opaque conversation inspections through the real serialized tool transcript", async () => {
+    const entries = {
+      opaque_candidate_1: {
+        turnId: "turn-1",
+        userMessageId: "user-1",
+        userContent: "first user text",
+        assistantMessageId: "assistant-1",
+        assistantContent: "first assistant text",
+      },
+      opaque_candidate_2: {
+        turnId: "turn-2",
+        userMessageId: "user-2",
+        userContent: "second user text",
+        assistantMessageId: "assistant-2",
+        assistantContent: "second assistant text",
+      },
+      opaque_candidate_3: {
+        turnId: "turn-3",
+        userMessageId: "user-3",
+        userContent: "failed user text",
+        errorCode: "answer_failed",
+        retryable: false,
+      },
+    } as const;
+    const inspectCalls = Object.keys(entries).map((id, index) => ({
+      id: `inspect-${index + 1}`,
+      name: "inspect_candidate",
+      arguments: { id },
+    }));
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(completion(inspectCalls))
+      .mockResolvedValueOnce(
+        completion([{ id: "terminal", name: "emit", arguments: { ok: true } }]),
+      );
+    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
+    const countTextTokens = resolveRegisteredModel("glm-5-turbo").countTextTokens;
+
+    await expect(
+      inTask(() =>
+        client.toolLoop({
+          requestClass: "fast",
+          model: "glm-5-turbo",
+          system: "system",
+          user: "user",
+          tools: [
+            {
+              definition: {
+                name: "inspect_candidate",
+                description: "Inspect",
+                parameters: { type: "object" },
+              },
+              execute: async (arguments_) => {
+                const entry = entries[arguments_.id as keyof typeof entries];
+                if (entry === undefined) throw new Error("unknown opaque candidate");
+                const visibleMessages = [
+                  { messageId: entry.userMessageId, content: entry.userContent },
+                  ...("assistantMessageId" in entry
+                    ? [
+                        {
+                          messageId: entry.assistantMessageId,
+                          content: entry.assistantContent,
+                        },
+                      ]
+                    : []),
+                ];
+                return {
+                  found: true,
+                  complete: true,
+                  conversationEntry: entry,
+                  __briefSourceExposures: visibleMessages.map(({ messageId, content }) => ({
+                    sourceKind: "chat_message" as const,
+                    logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
+                    contentItemIdentity: messageId,
+                    exposureStage: "provider_input",
+                    visibleTokenCount: countTextTokens(content),
+                  })),
+                };
+              },
+            },
+            {
+              definition: { name: "emit", description: "Emit", parameters: { type: "object" } },
+              execute: async () => ({}),
+            },
+          ],
+          terminalToolName: "emit",
+          validateTerminal: (value) => value as { readonly ok: boolean },
+          maximumTurns: 2,
+          requestedOutputTokens: 128,
+          reasoning: "medium",
+          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reduction" },
+        }),
+      ),
+    ).resolves.toEqual({ ok: true });
+
+    const serialized = complete.mock.calls[1]?.[0] as LiveProviderRequest;
+    expect(
+      serialized.messages.flatMap((message) =>
+        message.role === "assistant"
+          ? (message.toolCalls ?? []).map((call) => call.arguments.id)
+          : [],
+      ),
+    ).toEqual(["opaque_candidate_1", "opaque_candidate_2", "opaque_candidate_3"]);
+    expect(JSON.stringify(serialized.messages)).not.toContain("conversation_entry:");
+    expect(serialized.sourceExposureProofs).toHaveLength(5);
+    expect(providerRequestSourceExposureProofBindings(serialized, countTextTokens)).toHaveLength(5);
+    const proofs = serialized.sourceExposureProofs as readonly CodeOwnedSourceExposureProof[];
+    for (const field of [
+      "immutableContentHash",
+      "immutableSourceIdentityCommitment",
+      "immutableSourceCommitment",
+      "sourceToolCallId",
+      "sourceResultIndex",
+    ] as const) {
+      const { [field]: _removed, ...weakenedProof } = proofs[0]!;
+      expect(() =>
+        providerRequestSourceExposureProofBindings(
+          {
+            ...serialized,
+            sourceExposureProofs: [weakenedProof, ...proofs.slice(1)],
+          },
+          countTextTokens,
+        ),
+      ).toThrow(/code-owned|commitment|coordinate|tool-result/u);
+    }
+    expect(() =>
+      providerRequestSourceExposureProofBindings(
+        {
+          ...serialized,
+          sourceExposureProofs: [
+            {
+              sourceKind: proofs[0]!.sourceKind,
+              logicalSourceIdentity: proofs[0]!.logicalSourceIdentity,
+              contentItemIdentity: proofs[0]!.contentItemIdentity,
+              exposureStage: proofs[0]!.exposureStage,
+              visibleTokenCount: proofs[0]!.visibleTokenCount,
+            },
+            ...proofs.slice(1),
+          ],
+        },
+        countTextTokens,
+      ),
+    ).toThrow(/code-owned|commitment/u);
+
+    const toolMessageIndexes = serialized.messages.flatMap((message, index) =>
+      message.role === "tool" && message.name === "inspect_candidate" ? [index] : [],
+    );
+    const toolContents = toolMessageIndexes.map(
+      (index) =>
+        (
+          serialized.messages[index] as Extract<
+            (typeof serialized.messages)[number],
+            { role: "tool" }
+          >
+        ).content,
+    );
+    const withToolContents = (contents: readonly string[]): LiveProviderRequest => ({
+      ...serialized,
+      messages: serialized.messages.map((message, index) => {
+        const toolIndex = toolMessageIndexes.indexOf(index);
+        return toolIndex < 0 ? message : { ...message, content: contents[toolIndex]! };
+      }),
+    });
+    const parsedToolResult = (index: number): Record<string, unknown> =>
+      JSON.parse(toolContents[index]!) as Record<string, unknown>;
+    const withEntryMutation = (
+      index: number,
+      mutation: Readonly<Record<string, unknown>>,
+    ): LiveProviderRequest => {
+      const parsed = parsedToolResult(index);
+      const entry = parsed.conversationEntry as Readonly<Record<string, unknown>>;
+      const contents = [...toolContents];
+      contents[index] = JSON.stringify({
+        ...parsed,
+        conversationEntry: { ...entry, ...mutation },
+      });
+      return withToolContents(contents);
+    };
+
+    const swapped = [...toolContents];
+    [swapped[0], swapped[1]] = [swapped[1]!, swapped[0]!];
+    expect(() =>
+      providerRequestSourceExposureProofBindings(withToolContents(swapped), countTextTokens),
+    ).toThrow(/sidecar|tool-result|commitment|exact/u);
+
+    const replayed = [...toolContents];
+    replayed[1] = replayed[0]!;
+    expect(() =>
+      providerRequestSourceExposureProofBindings(withToolContents(replayed), countTextTokens),
+    ).toThrow(/sidecar|tool-result|commitment|exact/u);
+
+    for (const mutation of [
+      { index: 0, value: { turnId: "swapped-turn" } },
+      { index: 0, value: { userMessageId: "swapped-user" } },
+      { index: 0, value: { userContent: "swapped user content" } },
+      { index: 0, value: { assistantMessageId: "swapped-assistant" } },
+      { index: 0, value: { assistantContent: "swapped assistant content" } },
+      { index: 2, value: { turnId: "replayed-turn" } },
+      { index: 2, value: { userMessageId: "replayed-user" } },
+      { index: 2, value: { userContent: "replayed user content" } },
+      { index: 2, value: { errorCode: "replayed_failure" } },
+      { index: 2, value: { retryable: true } },
+    ]) {
+      expect(() =>
+        providerRequestSourceExposureProofBindings(
+          withEntryMutation(mutation.index, mutation.value),
+          countTextTokens,
+        ),
+      ).toThrow(/sidecar|tool-result|commitment|exact/u);
+    }
   });
 
   it("lets the owning operation make protocol-error recovery terminal-only", async () => {
@@ -1483,8 +1764,18 @@ describe("canonical agent tool loop", () => {
       );
     const search = vi
       .fn()
-      .mockResolvedValueOnce({ complete: false, truncated: true, cursor: 2, items: [{ id: "a" }] })
-      .mockResolvedValueOnce({ complete: true, truncated: false, cursor: null, items: [] });
+      .mockResolvedValueOnce({
+        complete: false,
+        truncated: true,
+        cursor: 2,
+        matchPreviews: [],
+      })
+      .mockResolvedValueOnce({
+        complete: true,
+        truncated: false,
+        cursor: null,
+        matchPreviews: [],
+      });
     const inspect = vi.fn(async () => ({ complete: true, found: true }));
     const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
 
@@ -1933,7 +2224,7 @@ describe("canonical agent tool loop", () => {
     const reference = {
       kind: "document",
       documentId: "doc",
-      documentVersionId: "version",
+      versionId: "version",
       source: { kind: "public", sourceId: "public:source" },
       purpose: "inspect",
     } as const;
@@ -2058,7 +2349,7 @@ describe("canonical agent tool loop", () => {
     const reference = {
       kind: "document",
       documentId: "doc",
-      documentVersionId: "version",
+      versionId: "version",
       source: { kind: "public", sourceId: "public:source" },
       purpose: "inspect",
       ranges: [
@@ -2129,7 +2420,7 @@ describe("canonical agent tool loop", () => {
     const reference = {
       kind: "document",
       documentId: "doc",
-      documentVersionId: "version",
+      versionId: "version",
       source: { kind: "public", sourceId: "public:source" },
       purpose: "inspect",
       ranges: [

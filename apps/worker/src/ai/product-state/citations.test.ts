@@ -4,9 +4,9 @@ import { parseCurrentTurnCitations } from "./citations";
 
 describe("current-turn citation parsing", () => {
   it("resolves only exact current-turn keys and gives every defect a stable slot", () => {
-    const known = "k_AAAAAAAAAAAAAAAAAAAAAA_1";
+    const known = "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1";
     const parsed = parseCurrentTurnCitations(
-      `[[cite:${known},k_BBBBBBBBBBBBBBBBBBBBBB_2,k_CCCCCCCCCCCCCCCCCCCCCC_3]] [[cite:bad key]]`,
+      `[[cite:${known},k_cn_BBBBBBBBBBBBBBBBBBBBBB_2,k_cn_CCCCCCCCCCCCCCCCCCCCCC_3]] [[cite:bad key]]`,
       new Set([known]),
     );
 
@@ -21,7 +21,7 @@ describe("current-turn citation parsing", () => {
   });
 
   it("never aliases citation-shaped attacker input to a current nonce namespace", () => {
-    const current = "k_ZZZZZZZZZZZZZZZZZZZZZZ_1";
+    const current = "k_cn_ZZZZZZZZZZZZZZZZZZZZZZ_1";
     for (let ordinal = 1; ordinal <= 200; ordinal += 1) {
       const attackerKey = `k_${"A".repeat(22)}_${ordinal}`;
       const parsed = parseCurrentTurnCitations(

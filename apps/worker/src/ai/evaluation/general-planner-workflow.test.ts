@@ -1,11 +1,13 @@
 import * as SmithersTaskRuntimeModule from "@smithers-orchestrator/driver/task-runtime";
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import type { PiRuntimeBoundary } from "../e2e/deterministic-provider";
 import { resolveRegisteredModel } from "../runtime/model-registry";
 import type { PiCompletion } from "../runtime/pi-boundary";
 import type { ProviderRequest } from "../runtime/provider-request";
-import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v2";
+import { namespacedDocumentEvidenceIdentity, sha256Base64Url } from "../runtime/canonicalization";
+import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v3";
 import {
   aiEvaluationGeneralPlannerSchemas,
   executeGeneralPlannerProviderTurn,
@@ -66,10 +68,82 @@ const parallelCompletion = (
   stopReason: "toolUse",
 });
 
+const evaluationSourceIdentityOptions = (
+  fixture: (typeof CanonicalGoldenEvaluationSet.cases)[number],
+) => {
+  const documents = new Map(
+    fixture.evidence.flatMap((source, index) =>
+      source.kind !== "document"
+        ? []
+        : [
+            [
+              source.sourceId,
+              {
+                documentId: source.sourceId,
+                versionId: `test-version-${index + 1}`,
+                contentHash: createHash("sha256").update(source.content, "utf8").digest("hex"),
+                source: {
+                  kind: "public" as const,
+                  sourceId: `public:evaluation-test-${index + 1}`,
+                },
+              },
+            ] as const,
+          ],
+    ),
+  );
+  return {
+    sourceExposureIdentity: (input: {
+      readonly sourceId: string;
+      readonly sourceKind: "document" | "chat_message" | "memory" | "web";
+      readonly charStart: number;
+      readonly charEnd: number;
+      readonly visibleText: string;
+    }) => {
+      const binding = documents.get(input.sourceId);
+      if (input.sourceKind === "document" && binding !== undefined) {
+        const logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
+          binding.source,
+          binding.documentId,
+        );
+        return {
+          logicalSourceIdentity,
+          contentItemIdentity: `${logicalSourceIdentity}:${binding.versionId}:${sha256Base64Url(
+            JSON.stringify([{ charStart: input.charStart, charEnd: input.charEnd }]),
+          )}`,
+          documentId: binding.documentId,
+        };
+      }
+      return {
+        logicalSourceIdentity: input.sourceId,
+        contentItemIdentity: `${input.sourceId}:${input.charStart}:${input.charEnd}:${createHash(
+          "sha256",
+        )
+          .update(input.visibleText, "utf8")
+          .digest("hex")}`,
+      };
+    },
+    sourceIdentitySidecar: (input: {
+      readonly sourceId: string;
+      readonly sourceKind: "document" | "chat_message" | "memory" | "web";
+      readonly charStart: number;
+      readonly charEnd: number;
+    }) => {
+      const binding = documents.get(input.sourceId);
+      if (input.sourceKind !== "document" || binding === undefined) return undefined;
+      return {
+        versionId: binding.versionId,
+        contentHash: binding.contentHash,
+        source: binding.source,
+        ranges: [{ charStart: input.charStart, charEnd: input.charEnd }],
+      };
+    },
+  };
+};
+
 describe("offline single-general-planner evaluation workflow", () => {
   it("rejects unknown fields at durable wrappers and nested positions", () => {
     const value = {
-      resolution: { mode: "clarify" as const, question: "Which period?" },
+      planTurn: { mode: "clarify" as const, question: "Which period?" },
       selectedSources: [],
       answerContent: "Please specify the period.",
       citationSourceIds: [],
@@ -95,7 +169,7 @@ describe("offline single-general-planner evaluation workflow", () => {
     expect(
       GeneralPlannerProviderOutputSchema.safeParse({
         ...value,
-        resolution: { ...value.resolution, forged: true },
+        planTurn: { ...value.planTurn, forged: true },
       }).success,
     ).toBe(false);
     expect(
@@ -134,7 +208,7 @@ describe("offline single-general-planner evaluation workflow", () => {
 
   it("pins supplied turn identities and kind-specific range rules", () => {
     expect(GeneralPlannerEvaluationPrompt).toContain(
-      "When the supplied conversation is empty, selectedTurnIds MUST be []",
+      "When the supplied conversation is empty, relevantTurnIds MUST be []",
     );
     expect(GeneralPlannerEvaluationPrompt).toContain(
       "MUST be omitted for web, chat_message, and memory evidence",
@@ -143,7 +217,7 @@ describe("offline single-general-planner evaluation workflow", () => {
       "every non-document source MUST use ranges: []",
     );
     expect(GeneralPlannerEvaluationPrompt).toContain(
-      "A turnId may appear only in resolution.selectedTurnIds",
+      "A turnId may appear only in planTurn.relevantTurnIds",
     );
     expect(GeneralPlannerEvaluationPrompt).toContain("multiple plausible same-kind antecedents");
     expect(GeneralPlannerEvaluationPrompt).toContain("Do not infer a recency pairing");
@@ -156,10 +230,10 @@ describe("offline single-general-planner evaluation workflow", () => {
     );
     if (emptyConversation === undefined) throw new Error("empty-conversation fixture is missing");
     const result = {
-      resolution: {
-        mode: "continue" as const,
-        retrievalQuestion: emptyConversation.currentMessage,
-        selectedTurnIds: [],
+      planTurn: {
+        mode: "single" as const,
+        question: emptyConversation.currentMessage,
+        relevantTurnIds: [],
       },
       selectedSources: [],
       answerContent: "No supplied evidence answers the question.",
@@ -170,7 +244,7 @@ describe("offline single-general-planner evaluation workflow", () => {
     expect(() =>
       validateGeneralPlannerOutput(emptyConversation, {
         ...result,
-        resolution: { ...result.resolution, selectedTurnIds: ["invented-turn"] },
+        planTurn: { ...result.planTurn, relevantTurnIds: ["invented-turn"] },
       }),
     ).toThrow(/unknown conversation turn/u);
 
@@ -179,7 +253,7 @@ describe("offline single-general-planner evaluation workflow", () => {
     );
     if (ambiguous === undefined) throw new Error("ambiguous-comparison fixture is missing");
     const clarification = {
-      resolution: {
+      planTurn: {
         mode: "clarify" as const,
         question: "Should I compare the wind result or the solar result?",
       },
@@ -191,10 +265,10 @@ describe("offline single-general-planner evaluation workflow", () => {
     expect(validateGeneralPlannerOutput(ambiguous, clarification)).toEqual(clarification);
     expect(() =>
       validateGeneralPlannerOutput(ambiguous, {
-        resolution: {
-          mode: "continue",
-          retrievalQuestion: "Compare solar and wind output results",
-          selectedTurnIds: ["turn-wind", "turn-solar"],
+        planTurn: {
+          mode: "single",
+          question: "Compare solar and wind output results",
+          relevantTurnIds: ["turn-wind", "turn-solar"],
         },
         selectedSources: [
           { sourceId: "turn-wind", ranges: [] },
@@ -215,10 +289,10 @@ describe("offline single-general-planner evaluation workflow", () => {
     }
     expect(() =>
       validateGeneralPlannerOutput(crossCutting, {
-        resolution: {
-          mode: "continue",
-          retrievalQuestion: crossCutting.currentMessage,
-          selectedTurnIds: [],
+        planTurn: {
+          mode: "single",
+          question: crossCutting.currentMessage,
+          relevantTurnIds: [],
         },
         selectedSources: [{ sourceId: web.sourceId, ranges: [{ charStart: 0, charEnd: 1 }] }],
         answerContent: "A web-backed answer.",
@@ -273,10 +347,10 @@ describe("offline single-general-planner evaluation workflow", () => {
           return completion("search_evidence", { query: "preference" });
         }
         return completion("emit_general_planner_result", {
-          resolution: {
-            mode: "continue",
-            retrievalQuestion: fixture.currentMessage,
-            selectedTurnIds: [],
+          planTurn: {
+            mode: "single",
+            question: fixture.currentMessage,
+            relevantTurnIds: [],
           },
           selectedSources,
           answerContent:
@@ -301,7 +375,12 @@ describe("offline single-general-planner evaluation workflow", () => {
         heartbeat: () => undefined,
         lastHeartbeat: null,
       },
-      () => executeGeneralPlannerProviderTurn(boundary, fixture),
+      () =>
+        executeGeneralPlannerProviderTurn(
+          boundary,
+          fixture,
+          evaluationSourceIdentityOptions(fixture),
+        ),
     );
 
     expect(output.selectedSources).toEqual(selectedSources);
@@ -342,10 +421,10 @@ describe("offline single-general-planner evaluation workflow", () => {
           });
         }
         return completion("emit_general_planner_result", {
-          resolution: {
-            mode: "continue",
-            retrievalQuestion: fixture.currentMessage,
-            selectedTurnIds: [],
+          planTurn: {
+            mode: "single",
+            question: fixture.currentMessage,
+            relevantTurnIds: [],
           },
           selectedSources: [
             { sourceId: source.sourceId, ranges: [{ charStart: 0, charEnd: 100 }] },
@@ -371,7 +450,12 @@ describe("offline single-general-planner evaluation workflow", () => {
         heartbeat: () => undefined,
         lastHeartbeat: null,
       },
-      () => executeGeneralPlannerProviderTurn(boundary, fixture),
+      () =>
+        executeGeneralPlannerProviderTurn(
+          boundary,
+          fixture,
+          evaluationSourceIdentityOptions(fixture),
+        ),
     );
 
     expect(output.selectedSources).toEqual([

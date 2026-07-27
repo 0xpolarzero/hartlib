@@ -21,6 +21,7 @@ import type {
 import {
   normalizeProviderRequest,
   providerRequestSha256Hex,
+  providerRequestSourceExposureProofBindings,
   providerRequestSourceExposureProofs,
   requireLiveProviderRequest,
 } from "../runtime/provider-request";
@@ -74,6 +75,15 @@ const parseJsonRecord = (value: string): Record<string, unknown> => {
   }
 };
 
+const textValue = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  const record = asRecord(value);
+  for (const key of ["content", "text", "message"]) {
+    if (typeof record[key] === "string") return record[key];
+  }
+  return "";
+};
+
 const userRecord = (request: ProviderRequest): Record<string, unknown> => {
   const message = [...request.messages].reverse().find((candidate) => candidate.role === "user");
   return message === undefined ? {} : parseJsonRecord(message.content);
@@ -92,6 +102,59 @@ const toolResults = (
       : [],
   );
 
+const resultIsIncomplete = (value: Readonly<Record<string, unknown>>): boolean =>
+  value.complete !== true || value.truncated === true || typeof value.cursor === "number";
+
+const sameRecord = (left: unknown, right: unknown): boolean =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+const referenceIdentity = (value: unknown): string | undefined => {
+  const reference = asRecord(value);
+  if (reference.kind === "document" && typeof reference.documentId === "string") {
+    return `document:${reference.documentId}`;
+  }
+  if (reference.kind === "chat_message" && typeof reference.messageId === "string") {
+    return `chat_message:${reference.messageId}`;
+  }
+  return undefined;
+};
+
+const rangesFrom = (
+  value: unknown,
+): readonly { readonly charStart: number; readonly charEnd: number }[] => {
+  const record = asRecord(value);
+  const ranges = Array.isArray(record.ranges)
+    ? record.ranges
+    : record.range === undefined
+      ? []
+      : [record.range];
+  return ranges.flatMap((range) => {
+    const parsed = asRecord(range);
+    return typeof parsed.charStart === "number" && typeof parsed.charEnd === "number"
+      ? [{ charStart: parsed.charStart, charEnd: parsed.charEnd }]
+      : [];
+  });
+};
+
+const isStrictlyNarrower = (
+  previous: readonly { readonly charStart: number; readonly charEnd: number }[],
+  next: readonly { readonly charStart: number; readonly charEnd: number }[],
+): boolean => {
+  if (previous.length === 0 || next.length === 0) return false;
+  const previousLength = previous.reduce((sum, range) => sum + range.charEnd - range.charStart, 0);
+  const nextLength = next.reduce((sum, range) => sum + range.charEnd - range.charStart, 0);
+  return (
+    nextLength < previousLength &&
+    next.every((nextRange) =>
+      previous.some(
+        (previousRange) =>
+          nextRange.charStart >= previousRange.charStart &&
+          nextRange.charEnd <= previousRange.charEnd,
+      ),
+    )
+  );
+};
+
 const priorToolArguments = (
   request: ProviderRequest,
   name: string,
@@ -101,6 +164,49 @@ const priorToolArguments = (
       ? (message.toolCalls ?? []).filter((call) => call.name === name).map((call) => call.arguments)
       : [],
   );
+
+const toolHistory = (
+  request: ProviderRequest,
+  name: string,
+): readonly {
+  readonly arguments: Record<string, unknown>;
+  readonly value: Record<string, unknown>;
+}[] => {
+  const calls = new Map<string, Record<string, unknown>>();
+  for (const message of request.messages) {
+    if (message.role !== "assistant") continue;
+    for (const call of message.toolCalls ?? []) {
+      if (call.name === name) calls.set(call.id, call.arguments);
+    }
+  }
+  return request.messages.flatMap((message) => {
+    if (message.role !== "tool" || message.name !== name) return [];
+    const arguments_ = calls.get(message.toolCallId);
+    return arguments_ === undefined
+      ? []
+      : [{ arguments: arguments_, value: parseJsonRecord(message.content) }];
+  });
+};
+
+const memorySearchLedger = (
+  searches: ReadonlyArray<{
+    readonly value: Record<string, unknown>;
+  }>,
+): readonly Record<string, unknown>[] => {
+  const seenMemoryIds = new Set<string>();
+  const ledger: Record<string, unknown>[] = [];
+  for (const { value } of searches) {
+    if (!Array.isArray(value.items)) continue;
+    for (const item of value.items) {
+      const record = asRecord(item);
+      const memoryId = record.memoryId;
+      if (typeof memoryId !== "string" || seenMemoryIds.has(memoryId)) continue;
+      seenMemoryIds.add(memoryId);
+      ledger.push(record);
+    }
+  }
+  return ledger;
+};
 
 const call = (
   coordinates: PiBoundaryCoordinates,
@@ -131,30 +237,75 @@ const outputFor = (
     .join("\n");
   switch (coordinates.agentRole) {
     case "evaluation_general_planner": {
-      const currentMessage = String(user.currentMessage ?? "");
-      if (currentMessage !== "Compare it with the previous result.") {
-        throw new AiRuntimeError(
-          "invalid_workflow_output",
-          "deterministic general planner supports only the focused clarification fixture",
-        );
-      }
+      const currentMessage = String(
+        user.requestText ?? user.currentMessageText ?? user.currentMessage ?? "",
+      );
+      const entries = Array.isArray(user.entries)
+        ? user.entries
+        : Array.isArray(user.conversation)
+          ? user.conversation
+          : [];
+      const relevantTurnIds = entries
+        .map(asRecord)
+        .map((entry) => entry.turnId)
+        .filter((turnId): turnId is string => typeof turnId === "string");
+      const planTurn =
+        currentMessage === "Compare it with the previous result."
+          ? {
+              mode: "clarify" as const,
+              question: "Should I compare the wind result or the solar result?",
+            }
+          : currentMessage.includes("[fanout]") ||
+              (currentMessage.includes("solar connections") &&
+                currentMessage.includes("storage operations"))
+            ? {
+                mode: "fanout" as const,
+                question: currentMessage,
+                topics: [
+                  {
+                    topicId: "t1" as const,
+                    question: "What does the first deterministic topic cover?",
+                    relevantTurnIds: [],
+                  },
+                  {
+                    topicId: "t2" as const,
+                    question: "What does the second deterministic topic cover?",
+                    relevantTurnIds: [],
+                  },
+                  ...(currentMessage.includes("solar connections") &&
+                  currentMessage.includes("storage operations")
+                    ? [
+                        {
+                          topicId: "t3" as const,
+                          question: "What does the third deterministic topic cover?",
+                          relevantTurnIds: [],
+                        },
+                      ]
+                    : []),
+                ],
+              }
+            : {
+                mode: "single" as const,
+                question: currentMessage,
+                relevantTurnIds,
+              };
       return {
         text: "",
         toolCalls: [
           call(coordinates, "emit_general_planner_result", {
-            resolution: {
-              mode: "clarify",
-              question: "Should I compare the wind result or the solar result?",
-            },
+            planTurn,
             selectedSources: [],
-            answerContent: "Should I compare the wind result or the solar result?",
+            answerContent:
+              planTurn.mode === "clarify"
+                ? planTurn.question
+                : "Deterministic general-planner answer.",
             citationSourceIds: [],
             memoryProposals: [],
           }),
         ],
       };
     }
-    case "conversation_resolver": {
+    case "plan_turn": {
       const currentMessage = String(user.currentMessage ?? "");
       const entries = Array.isArray(user.entries) ? user.entries : [];
       const completeEntries = entries
@@ -189,62 +340,211 @@ const outputFor = (
                 ? `Which prior results should I compare: ${competingCandidates.join(" or ")}?`
                 : "Which market and time horizon should Brief use?",
             }
-          : {
-              mode: "continue",
-              retrievalQuestion: currentMessage,
-              selectedTurnIds: entries
-                .map((entry) => asRecord(entry).turnId)
-                .filter((turnId): turnId is string => typeof turnId === "string"),
-            };
-      return { text: "", toolCalls: [call(coordinates, "emit_conversation_resolution", result)] };
-    }
-    case "execution_planner": {
-      const question = String(user.resolvedQuestion ?? "");
-      const selectedEntries = Array.isArray(user.selectedEntries) ? user.selectedEntries : [];
-      const selectedTurnIds = selectedEntries
-        .map((entry) => asRecord(entry).turnId)
-        .filter((turnId): turnId is string => typeof turnId === "string");
-      const result = question.includes("[fanout]")
-        ? {
-            mode: "fanout",
-            reason: "two independent deterministic research topics",
-            topics: [
-              { question: "What do the solar sources report?", relevantTurnIds: selectedTurnIds },
-              { question: "What should grid operators monitor?", relevantTurnIds: selectedTurnIds },
-            ],
-          }
-        : { mode: "single", reason: "one atomic deterministic question" };
-      return { text: "", toolCalls: [call(coordinates, "emit_execution_plan", result)] };
+          : currentMessage.includes("[fanout]")
+            ? {
+                mode: "fanout",
+                question: currentMessage,
+                topics: [
+                  {
+                    question: "What does the first deterministic topic cover?",
+                    relevantTurnIds: [],
+                  },
+                  {
+                    question: "What does the second deterministic topic cover?",
+                    relevantTurnIds: [],
+                  },
+                ],
+              }
+            : {
+                mode: "single",
+                question: currentMessage,
+                relevantTurnIds: entries
+                  .map((entry) => asRecord(entry).turnId)
+                  .filter((turnId): turnId is string => typeof turnId === "string"),
+              };
+      return { text: "", toolCalls: [call(coordinates, "emit_plan_turn", result)] };
     }
     case "memory_extractor": {
-      const message = String(user.currentUserMessage ?? "");
-      const active = Array.isArray(user.activeMemories) ? user.activeMemories : [];
-      const create = /Remember preference:\s*(.+)/iu.exec(message)?.[1]?.trim();
-      const update = /Update preference:\s*(.+)/iu.exec(message)?.[1]?.trim();
-      const target = asRecord(active[0]).memoryId;
-      const proposals =
-        create !== undefined
-          ? [{ kind: "preference", content: create }]
-          : update !== undefined && typeof target === "string"
-            ? [{ kind: "preference", content: update, targetMemoryId: target }]
-            : [];
-      return { text: "", toolCalls: [call(coordinates, "emit_memory_proposals", { proposals })] };
+      const message = textValue(user.currentUserMessage);
+      const messageSource = [
+        message,
+        rawUser,
+        ...request.messages.map((candidate) => candidate.content),
+      ].join("\n");
+      const create = /Remember preference:\s*(.+)/iu.exec(messageSource)?.[1]?.trim();
+      const update =
+        /Update preference:\s*(.+)/iu.exec(messageSource)?.[1]?.trim() ??
+        (/\bMWh\b/iu.test(messageSource)
+          ? "Prefer concise answers in French and report energy quantities in MWh."
+          : undefined);
+      const searches = toolResults(request, "search_memories");
+      const inspections = toolResults(request, "inspect_memory");
+      if (create !== undefined) {
+        return {
+          text: "",
+          toolCalls: [
+            call(coordinates, "emit_memory_proposals", {
+              proposals: [{ kind: "preference", content: create }],
+            }),
+          ],
+        };
+      }
+      if (update === undefined) {
+        return {
+          text: "",
+          toolCalls: [call(coordinates, "emit_memory_proposals", { proposals: [] })],
+        };
+      }
+      if (searches.length === 0) {
+        return {
+          text: "",
+          toolCalls: [
+            call(coordinates, "search_memories", {
+              query: /\bsolar\b/iu.test(messageSource) ? "solar" : "prefer",
+            }),
+          ],
+        };
+      }
+      const searchHistory = toolHistory(request, "search_memories");
+      const pendingSearch = searchHistory.find(({ arguments: arguments_, value }, index) => {
+        if (!resultIsIncomplete(value)) return false;
+        const cursor = value.cursor;
+        return !searchHistory.slice(index + 1).some((later) => {
+          return (
+            sameRecord(later.arguments.query, arguments_.query) &&
+            (typeof cursor !== "number" || later.arguments.cursor === cursor)
+          );
+        });
+      });
+      if (pendingSearch !== undefined) {
+        const cursor = pendingSearch.value.cursor;
+        if (typeof cursor === "number") {
+          return {
+            text: "",
+            toolCalls: [
+              call(coordinates, "search_memories", {
+                query: pendingSearch.arguments.query ?? "prefer",
+                cursor,
+              }),
+            ],
+          };
+        }
+        throw new AiRuntimeError(
+          "invalid_workflow_output",
+          "deterministic memory extraction cannot continue an incomplete search without a cursor",
+        );
+      }
+      const ledger = memorySearchLedger(searches);
+      if (inspections.length === 0) {
+        const memoryId = ledger[0]?.memoryId;
+        return typeof memoryId === "string"
+          ? { text: "", toolCalls: [call(coordinates, "inspect_memory", { memoryId })] }
+          : {
+              text: "",
+              toolCalls: [call(coordinates, "emit_memory_proposals", { proposals: [] })],
+            };
+      }
+      const targetMemoryId = ledger[0]?.memoryId;
+      const inspected =
+        inspections.find(
+          ({ value }) =>
+            targetMemoryId === undefined || asRecord(value.memory).memoryId === targetMemoryId,
+        ) ?? inspections[0];
+      const memory = asRecord(inspected?.value.memory);
+      const inspectedMemoryId = memory.memoryId;
+      return {
+        text: "",
+        toolCalls: [
+          call(coordinates, "emit_memory_proposals", {
+            proposals:
+              typeof inspectedMemoryId === "string"
+                ? [{ kind: "preference", content: update, targetMemoryId: inspectedMemoryId }]
+                : [],
+          }),
+        ],
+      };
     }
     case "memory_selector": {
-      const question = String(user.currentUserMessage ?? user.question ?? "");
-      const memories = Array.isArray(user.activeMemories)
-        ? user.activeMemories
-        : Array.isArray(user.memories)
-          ? user.memories
-          : [];
-      const first = asRecord(memories[0]);
-      const entries =
-        question.includes("[use-memory]") &&
-        typeof first.memoryId === "string" &&
-        typeof first.memoryRevisionId === "string"
-          ? [{ memoryId: first.memoryId, memoryRevisionId: first.memoryRevisionId }]
-          : [];
-      return { text: "", toolCalls: [call(coordinates, "emit_memory_manifest", { entries })] };
+      const question = textValue(user.currentUserMessage ?? user.question);
+      const searches = toolResults(request, "search_memories");
+      const inspections = toolResults(request, "inspect_memory");
+      if (
+        !question.includes("[use-memory]") &&
+        !/\b(?:preference|préférence|MWh)\b/iu.test(question)
+      ) {
+        return {
+          text: "",
+          toolCalls: [call(coordinates, "emit_memory_manifest", { entries: [] })],
+        };
+      }
+      if (searches.length === 0) {
+        return {
+          text: "",
+          toolCalls: [
+            call(coordinates, "search_memories", {
+              query: question.includes("[use-memory]")
+                ? "concise"
+                : /\bsolar\b/iu.test(question)
+                  ? "solar"
+                  : "prefer",
+            }),
+          ],
+        };
+      }
+      const searchHistory = toolHistory(request, "search_memories");
+      const pendingSearch = searchHistory.find(({ arguments: arguments_, value }, index) => {
+        if (!resultIsIncomplete(value)) return false;
+        const cursor = value.cursor;
+        return !searchHistory.slice(index + 1).some((later) => {
+          return (
+            sameRecord(later.arguments.query, arguments_.query) &&
+            (typeof cursor !== "number" || later.arguments.cursor === cursor)
+          );
+        });
+      });
+      if (pendingSearch !== undefined) {
+        const cursor = pendingSearch.value.cursor;
+        if (typeof cursor === "number") {
+          return {
+            text: "",
+            toolCalls: [
+              call(coordinates, "search_memories", {
+                query: pendingSearch.arguments.query ?? "prefer",
+                cursor,
+              }),
+            ],
+          };
+        }
+        throw new AiRuntimeError(
+          "invalid_workflow_output",
+          "deterministic memory selection cannot continue an incomplete search without a cursor",
+        );
+      }
+      const ledger = memorySearchLedger(searches);
+      if (inspections.length === 0) {
+        const memoryId = ledger[0]?.memoryId;
+        return typeof memoryId === "string"
+          ? { text: "", toolCalls: [call(coordinates, "inspect_memory", { memoryId })] }
+          : { text: "", toolCalls: [call(coordinates, "emit_memory_manifest", { entries: [] })] };
+      }
+      const targetMemoryId = ledger[0]?.memoryId;
+      const inspected =
+        inspections.find(
+          ({ value }) =>
+            targetMemoryId === undefined || asRecord(value.memory).memoryId === targetMemoryId,
+        ) ?? inspections[0];
+      const memory = asRecord(inspected?.value.memory);
+      return {
+        text: "",
+        toolCalls: [
+          call(coordinates, "emit_memory_manifest", {
+            entries:
+              typeof memory.memoryId === "string" && typeof memory.memoryRevisionId === "string"
+                ? [{ memoryId: memory.memoryId, memoryRevisionId: memory.memoryRevisionId }]
+                : [],
+          }),
+        ],
+      };
     }
     case "internal_retrieval": {
       const searches = toolResults(request, "search_internal");
@@ -268,55 +568,188 @@ const outputFor = (
           ],
         };
       }
+      const searchHistory = toolHistory(request, "search_internal");
+      const pendingSearch = searchHistory.find(({ arguments: arguments_, value }, index) => {
+        if (!resultIsIncomplete(value)) return false;
+        const cursor = value.cursor;
+        return !searchHistory
+          .slice(index + 1)
+          .some(
+            (later) =>
+              sameRecord(later.arguments.query, arguments_.query) &&
+              (typeof cursor !== "number" || later.arguments.cursor === cursor),
+          );
+      });
+      if (pendingSearch !== undefined) {
+        const cursor = pendingSearch.value.cursor;
+        if (typeof cursor === "number") {
+          return {
+            text: "",
+            toolCalls: [
+              call(coordinates, "search_internal", {
+                query: pendingSearch.arguments.query,
+                cursor,
+              }),
+            ],
+          };
+        }
+        throw new AiRuntimeError(
+          "invalid_workflow_output",
+          "deterministic internal retrieval cannot emit a manifest while search is incomplete",
+        );
+      }
       const inspections = toolResults(request, "inspect_internal");
+      const inspectionHistory = toolHistory(request, "inspect_internal");
+      const pendingInspection = inspectionHistory.find(
+        ({ arguments: arguments_, value }, index) => {
+          if (!resultIsIncomplete(value)) return false;
+          const identity = referenceIdentity(arguments_.reference);
+          if (identity === undefined) return false;
+          const resultRanges = rangesFrom(value);
+          const referenceRanges = rangesFrom(arguments_.reference);
+          const previousRanges =
+            resultRanges.length > 0
+              ? resultRanges
+              : referenceRanges.length > 0
+                ? referenceRanges
+                : [{ charStart: 0, charEnd: 8_192 }];
+          const cursor = value.cursor;
+          return !inspectionHistory.slice(index + 1).some((later) => {
+            if (referenceIdentity(later.arguments.reference) !== identity) return false;
+            if (typeof cursor === "number") return later.arguments.cursor === cursor;
+            if (value.narrowerRangeRequired !== true) return false;
+            return isStrictlyNarrower(previousRanges, rangesFrom(later.arguments.reference));
+          });
+        },
+      );
+      if (pendingInspection !== undefined) {
+        const cursor = pendingInspection.value.cursor;
+        if (typeof cursor === "number") {
+          return {
+            text: "",
+            toolCalls: [
+              call(coordinates, "inspect_internal", {
+                ...pendingInspection.arguments,
+                cursor,
+              }),
+            ],
+          };
+        }
+        if (pendingInspection.value.narrowerRangeRequired === true) {
+          const previousReference = asRecord(pendingInspection.arguments.reference);
+          const previousRanges = rangesFrom(pendingInspection.value);
+          const referenceRanges = rangesFrom(previousReference);
+          const previousRange = (previousRanges.length > 0 ? previousRanges : referenceRanges)[0];
+          const charStart = previousRange?.charStart ?? 0;
+          const charEnd = previousRange?.charEnd ?? 2_048;
+          const narrowerEnd = Math.max(
+            charStart + 1,
+            charStart + Math.floor((charEnd - charStart) / 2),
+          );
+          if (
+            previousReference.kind === "document" &&
+            typeof previousReference.documentId === "string"
+          ) {
+            return {
+              text: "",
+              toolCalls: [
+                call(coordinates, "inspect_internal", {
+                  reference: {
+                    kind: "document",
+                    documentId: previousReference.documentId,
+                    range: { charStart, charEnd: narrowerEnd },
+                    purpose: "ground the deterministic E2E answer",
+                  },
+                }),
+              ],
+            };
+          }
+        }
+        throw new AiRuntimeError(
+          "invalid_workflow_output",
+          "deterministic internal retrieval cannot emit a manifest while inspection is incomplete",
+        );
+      }
       if (inspections.length === 0) {
-        const items = Array.isArray(searches.at(-1)?.value.items)
-          ? (searches.at(-1)?.value.items as unknown[])
-          : [];
+        const items = searches.flatMap(({ value }) =>
+          Array.isArray(value.items) ? (value.items as unknown[]) : [],
+        );
         const calls = items.slice(0, 2).flatMap((value, index) => {
           const item = asRecord(value);
-          if (typeof item.documentId !== "string" || typeof item.documentVersionId !== "string") {
-            return [];
-          }
-          const source =
-            item.kind === "publisher" &&
-            typeof item.sourceId === "string" &&
-            typeof item.issueId === "string"
-              ? {
-                  kind: "publisher" as const,
-                  sourceId: item.sourceId,
-                  issueId: item.issueId,
-                  documentId: item.documentId,
-                }
-              : typeof item.sourceId === "string"
-                ? { kind: "public" as const, sourceId: item.sourceId }
-                : undefined;
-          if (source === undefined) return [];
-          const textCharCount = typeof item.textCharCount === "number" ? item.textCharCount : 500;
-          return [
-            call(
-              coordinates,
-              "inspect_internal",
-              {
-                reference: {
-                  kind: "document",
-                  documentId: item.documentId,
-                  documentVersionId: item.documentVersionId,
-                  source,
-                  ranges: [{ charStart: 0, charEnd: Math.min(800, textCharCount) }],
-                  purpose: "ground the deterministic E2E answer",
+          if (typeof item.documentId === "string") {
+            return [
+              call(
+                coordinates,
+                "inspect_internal",
+                {
+                  reference: {
+                    kind: "document",
+                    documentId: item.documentId,
+                    purpose: "ground the deterministic E2E answer",
+                  },
                 },
-              },
-              index,
-            ),
-          ];
+                index,
+              ),
+            ];
+          }
+          if (typeof item.messageId === "string") {
+            return [
+              call(
+                coordinates,
+                "inspect_internal",
+                {
+                  reference: {
+                    kind: "chat_message",
+                    messageId: item.messageId,
+                    purpose: "ground the deterministic E2E answer",
+                  },
+                },
+                index,
+              ),
+            ];
+          }
+          return [];
         });
         if (calls.length > 0) return { text: "", toolCalls: calls };
       }
-      const entries = priorToolArguments(request, "inspect_internal").flatMap((arguments_) => {
+      const completed = new Map<string, Record<string, unknown>>();
+      for (const { arguments: arguments_, value } of inspectionHistory) {
+        if (value.complete !== true || value.found !== true) continue;
         const reference = asRecord(arguments_.reference);
-        return reference.kind === "document" ? [reference] : [];
-      });
+        const key = referenceIdentity(reference);
+        if (key === undefined) continue;
+        const purpose =
+          typeof reference.purpose === "string"
+            ? reference.purpose
+            : "ground the deterministic E2E answer";
+        if (key.startsWith("document:")) {
+          const resultRanges = rangesFrom(value);
+          const referenceRanges = rangesFrom(reference);
+          // A whole-document inspection is complete at the logical document
+          // level; its result range describes the returned body but is not an
+          // explicit bounded selection. Preserve ranges only when the
+          // successful request asked for a bounded window.
+          const ranges =
+            referenceRanges.length > 0
+              ? resultRanges.length > 0
+                ? resultRanges
+                : referenceRanges
+              : [];
+          completed.set(key, {
+            kind: "document",
+            documentId: reference.documentId as string,
+            ...(ranges.length > 0 ? { ranges } : {}),
+            purpose,
+          });
+        } else {
+          completed.set(key, {
+            kind: "chat_message",
+            messageId: reference.messageId as string,
+            purpose,
+          });
+        }
+      }
+      const entries = [...completed.values()];
       return { text: "", toolCalls: [call(coordinates, "emit_internal_manifest", { entries })] };
     }
     case "web_research": {
@@ -381,7 +814,7 @@ const outputFor = (
               claims: [
                 {
                   text: `Deterministic grounded claim for ${topicId}.`,
-                  sourceKeys: [sourceKeys[0]],
+                  sourceKeys,
                 },
               ],
               gaps: [],
@@ -472,17 +905,51 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
     readonly request: LiveProviderRequest;
   }> {
     throwIfAborted(signal);
-    const normalizedRequest = requireLiveProviderRequest(normalizeProviderRequest(request));
+    const normalized = normalizeProviderRequest(request);
+    if (normalized.model !== "glm-5-turbo") {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        `deterministic E2E provider requires glm-5-turbo; received ${normalized.model}`,
+      );
+    }
+    const normalizedRequest = requireLiveProviderRequest(normalized);
     const model = resolveRuntimeModel(normalizedRequest.model);
     const limits =
       normalizedRequest.requestClass === "main" ? this.options.mainLimits : this.options.fastLimits;
     const measurement = measureProviderRequest(normalizedRequest, model, limits);
     throwIfAborted(signal);
+    const proofRequest =
+      normalizedRequest.sourceExposureProofs === undefined ||
+      normalizedRequest.sourceExposureProofs.length === 0
+        ? (() => {
+            const { sourceExposureProofs: _sourceExposureProofs, ...requestWithoutProofs } =
+              normalizedRequest;
+            return requestWithoutProofs;
+          })()
+        : normalizedRequest;
+    const measuredSourceExposureProofSha256Hexes = providerRequestSourceExposureProofs(
+      proofRequest,
+      (text) => model.countTextTokens(text),
+    );
+    const measuredSourceExposureProofBindings = providerRequestSourceExposureProofBindings(
+      proofRequest,
+      (text) => model.countTextTokens(text),
+    );
+    const sourceExposureProofBindings = measuredSourceExposureProofBindings.filter(
+      (candidate, index, bindings) =>
+        bindings.findIndex(
+          (other) => JSON.stringify(other.marker) === JSON.stringify(candidate.marker),
+        ) === index,
+    );
+    const sourceExposureProofSha256Hexes = sourceExposureProofBindings
+      .map(({ providerSerializationProofSha256Hex }) => providerSerializationProofSha256Hex)
+      .sort();
     await this.options.hooks?.onMeasurement?.(
       coordinates,
       measurement,
       normalizedRequest,
-      providerRequestSourceExposureProofs(normalizedRequest, (text) => model.countTextTokens(text)),
+      sourceExposureProofSha256Hexes,
+      sourceExposureProofBindings,
     );
     throwIfAborted(signal);
     if (!measurement.passed) {
@@ -518,6 +985,20 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
     const gated = await this.measured(request, executionCoordinates, signal, beforeProviderRequest);
     const { measurement, request: providerRequest } = gated;
     throwIfAborted(signal);
+    const user = userRecord(providerRequest);
+    const failureMessage = String(
+      user.originalMessage ??
+        user.requestText ??
+        user.currentMessageText ??
+        user.currentMessage ??
+        "",
+    );
+    if (failureMessage.includes("[fail]")) {
+      throw new AiRuntimeError(
+        executionCoordinates.agentRole === "synthesis" ? "synthesis_failed" : "answer_failed",
+        "deterministic E2E provider failure",
+      );
+    }
     const output = outputFor(providerRequest, executionCoordinates);
     const outputTokens = Math.max(
       1,
@@ -559,8 +1040,19 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
     // Failure injection belongs only to the current message. A failed prior turn
     // may be selected as conversation context for an edited resubmission and must
     // not poison that new run.
-    const originalMessage = String(userRecord(providerRequest).originalMessage ?? "");
-    if (originalMessage.includes("[fail]")) {
+    const streamUser = userRecord(providerRequest);
+    const originalMessage = textValue(streamUser.originalMessage);
+    const failureMessage = [
+      streamUser.originalMessage,
+      streamUser.requestText,
+      streamUser.currentMessageText,
+      streamUser.currentMessage,
+      streamUser.currentUserMessage,
+      streamUser.question,
+    ]
+      .map(textValue)
+      .join("\n");
+    if (failureMessage.includes("[fail]")) {
       throw new AiRuntimeError(
         executionCoordinates.agentRole === "synthesis" ? "synthesis_failed" : "answer_failed",
         "deterministic E2E provider failure",
@@ -569,7 +1061,8 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
     const sourceKeys = keysFrom(
       providerRequest.messages.map((message) => message.content).join("\n"),
     );
-    const citeEverySource = originalMessage.includes("[cite-all]");
+    const citeEverySource =
+      executionCoordinates.agentRole === "topic_answer" || originalMessage.includes("[cite-all]");
     const streamGateId = e2eStreamGateIdFromMessage(originalMessage);
     const directCitationKeys = citeEverySource ? sourceKeys : sourceKeys.slice(0, 1);
     const text =

@@ -16,7 +16,7 @@ describe("AI phase structured logging", () => {
         {
           kind: "document",
           documentId: "doc-1",
-          documentVersionId: "doc-1",
+          versionId: "doc-1",
           purpose: secretSource,
         },
       ],

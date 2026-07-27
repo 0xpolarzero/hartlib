@@ -4,9 +4,8 @@ import { sourceKeyForOrdinal, webQuoteHash } from "../runtime/canonicalization";
 import type { AnswerLaneResult, FinalSourceRecord } from "../runtime/types";
 import { assertFinalSourceMap } from "./finalization";
 
-const citationNonce = new Uint8Array(16);
-const citationNonceHex = Buffer.from(citationNonce).toString("hex");
-const sourceKey = (ordinal: number): string => sourceKeyForOrdinal(citationNonce, ordinal);
+const citationNamespace = "cn_" + "A".repeat(22);
+const sourceKey = (ordinal: number): string => `k_${citationNamespace}_${ordinal}`;
 
 const memorySource = (ordinal = 1): FinalSourceRecord => ({
   sourceKey: sourceKey(ordinal),
@@ -39,7 +38,7 @@ const singleAnswer = (
 describe("final source-map validation", () => {
   it("accepts a valid turn-local immutable source map", () => {
     expect(() =>
-      assertFinalSourceMap(singleAnswer([memorySource()]), citationNonceHex),
+      assertFinalSourceMap(singleAnswer([memorySource()]), citationNamespace),
     ).not.toThrow();
   });
 
@@ -48,7 +47,7 @@ describe("final source-map validation", () => {
     expect(() =>
       assertFinalSourceMap(
         singleAnswer([{ ...source, uses: [{ ...source.uses[0]!, renderedTokenCount: 0 }] }]),
-        citationNonceHex,
+        citationNamespace,
       ),
     ).not.toThrow();
   });
@@ -57,7 +56,7 @@ describe("final source-map validation", () => {
     expect(() =>
       assertFinalSourceMap(
         { status: "ok", mode: "clarification", content: "Clarify", sourceMap: [memorySource()] },
-        citationNonceHex,
+        citationNamespace,
       ),
     ).toThrow("clarification result must have an empty source map");
     expect(() =>
@@ -65,17 +64,17 @@ describe("final source-map validation", () => {
         singleAnswer([
           { ...memorySource(), sourceKey: sourceKeyForOrdinal(new Uint8Array(16).fill(1), 1) },
         ]),
-        citationNonceHex,
+        citationNamespace,
       ),
     ).toThrow("outside the current citation namespace");
   });
 
   it("rejects duplicate identities, missing consumers, and invalid consumer ownership", () => {
     expect(() =>
-      assertFinalSourceMap(singleAnswer([memorySource(1), memorySource(2)]), citationNonceHex),
+      assertFinalSourceMap(singleAnswer([memorySource(1), memorySource(2)]), citationNamespace),
     ).toThrow("duplicate final source identity");
     expect(() =>
-      assertFinalSourceMap(singleAnswer([{ ...memorySource(), uses: [] }]), citationNonceHex),
+      assertFinalSourceMap(singleAnswer([{ ...memorySource(), uses: [] }]), citationNamespace),
     ).toThrow("source has no answer consumer");
     expect(() =>
       assertFinalSourceMap(
@@ -93,7 +92,7 @@ describe("final source-map validation", () => {
             ],
           },
         ]),
-        citationNonceHex,
+        citationNamespace,
       ),
     ).toThrow("single answer has a non-single source consumer");
   });
@@ -105,7 +104,7 @@ describe("final source-map validation", () => {
         kind: "document",
         sourceId: "public:source-1",
         documentId: "document-1",
-        documentVersionId: "version-1",
+        versionId: "version-1",
         contentHash: "a".repeat(64),
         ranges: [
           { charStart: 0, charEnd: 10 },
@@ -136,7 +135,7 @@ describe("final source-map validation", () => {
             uses: [{ ...document.uses[0]!, ranges: [{ charStart: 9, charEnd: 16 }] }],
           },
         ]),
-        citationNonceHex,
+        citationNamespace,
       ),
     ).toThrow("document use range exceeds locator union");
     expect(() =>
@@ -144,10 +143,10 @@ describe("final source-map validation", () => {
         singleAnswer([
           {
             ...document,
-            locator: { ...documentLocator, publisherIssueId: "issue-1" },
+            locator: { ...documentLocator, publisherIssueId: "issue-1" } as never,
           },
         ]),
-        citationNonceHex,
+        citationNamespace,
       ),
     ).toThrow("publisher document identity is incomplete");
     for (const citationUrl of [
@@ -160,7 +159,7 @@ describe("final source-map validation", () => {
           singleAnswer([
             { ...document, publicProvenance: { documentTitle: "Report", citationUrl } },
           ]),
-          citationNonceHex,
+          citationNamespace,
         ),
       ).toThrow("document public provenance is incomplete");
     }
@@ -169,10 +168,10 @@ describe("final source-map validation", () => {
         singleAnswer([
           {
             ...document,
-            locator: { ...documentLocator, sourceId: "publisher:source-1" },
+            locator: { ...documentLocator, sourceId: "publisher:source-1" } as never,
           },
         ]),
-        citationNonceHex,
+        citationNamespace,
       ),
     ).toThrow("public document source identity is incomplete");
     for (const sourceId of [
@@ -187,10 +186,10 @@ describe("final source-map validation", () => {
             singleAnswer([
               {
                 ...document,
-                locator: { ...documentLocator, sourceId },
+                locator: { ...documentLocator, sourceId } as never,
               },
             ]),
-            citationNonceHex,
+            citationNamespace,
           ),
         sourceId,
       ).toThrow("document locator identity is incomplete");
@@ -208,7 +207,7 @@ describe("final source-map validation", () => {
             },
           },
         ]),
-        citationNonceHex,
+        citationNamespace,
       ),
     ).toThrow("publisher document provenance is incomplete");
     expect(() =>
@@ -223,7 +222,7 @@ describe("final source-map validation", () => {
             } as never,
           },
         ]),
-        citationNonceHex,
+        citationNamespace,
       ),
     ).toThrow();
   });
@@ -235,7 +234,7 @@ describe("final source-map validation", () => {
         kind: "document",
         sourceId: "public:source-1",
         documentId: "document-1",
-        documentVersionId: "version-1",
+        versionId: "version-1",
         contentHash: "a".repeat(64),
         ranges: [
           { charStart: 0, charEnd: 10 },
@@ -259,7 +258,7 @@ describe("final source-map validation", () => {
     const documentLocator = document.locator;
     if (documentLocator.kind !== "document") throw new Error("expected document locator");
 
-    expect(() => assertFinalSourceMap(singleAnswer([document]), citationNonceHex)).toThrow(
+    expect(() => assertFinalSourceMap(singleAnswer([document]), citationNamespace)).toThrow(
       "document use ranges do not equal locator union",
     );
 
@@ -281,7 +280,7 @@ describe("final source-map validation", () => {
             ],
           },
         ]),
-        citationNonceHex,
+        citationNamespace,
       ),
     ).toThrow("non-contiguous context order");
   });
@@ -312,7 +311,7 @@ describe("final source-map validation", () => {
           kind: "document",
           sourceId: `public:source-${index + 1}`,
           documentId: `document-${index + 1}`,
-          documentVersionId: `version-${index + 1}`,
+          versionId: `version-${index + 1}`,
           contentHash: "b".repeat(64),
           ranges: locatorRanges,
         },
@@ -328,7 +327,7 @@ describe("final source-map validation", () => {
           ranges: [...ranges],
         })),
       };
-      expect(() => assertFinalSourceMap(singleAnswer([source]), citationNonceHex)).not.toThrow();
+      expect(() => assertFinalSourceMap(singleAnswer([source]), citationNamespace)).not.toThrow();
     }
   });
 
@@ -358,7 +357,7 @@ describe("final source-map validation", () => {
     };
     if (web.locator.kind !== "web") throw new Error("expected web locator");
     const webLocator = web.locator;
-    expect(() => assertFinalSourceMap(singleAnswer([web]), citationNonceHex)).not.toThrow();
+    expect(() => assertFinalSourceMap(singleAnswer([web]), citationNamespace)).not.toThrow();
     expect(() =>
       assertFinalSourceMap(
         singleAnswer([
@@ -367,13 +366,13 @@ describe("final source-map validation", () => {
             locator: { ...webLocator, domain: "attacker.example" },
           },
         ]),
-        citationNonceHex,
+        citationNamespace,
       ),
     ).toThrow("web locator provenance is not canonical");
     expect(() =>
       assertFinalSourceMap(
         singleAnswer([{ ...web, publicProvenance: { citationUrl: "https://other.example" } }]),
-        citationNonceHex,
+        citationNamespace,
       ),
     ).toThrow("web public provenance URL differs");
   });

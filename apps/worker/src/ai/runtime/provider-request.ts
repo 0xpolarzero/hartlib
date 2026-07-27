@@ -89,12 +89,21 @@ export interface ProviderVisibleSourceExposureMarker {
  */
 export type CodeOwnedSourceExposureProof = ProviderVisibleSourceExposureMarker & {
   readonly visibleText: string;
+  /** Hash of the immutable source body, kept only in the code-owned sidecar. */
+  readonly immutableContentHash?: string | undefined;
+  /** Commitment to namespace, version, and publisher/external identity fields. */
+  readonly immutableSourceIdentityCommitment?: string | undefined;
+  /** Commitment to the exact source identity and provider-visible range fields. */
+  readonly immutableSourceCommitment?: string | undefined;
   /** Optional caller-supplied binding; the gate re-derives and checks it. */
   readonly messageIndex?: number | undefined;
   readonly serializedField?: string | undefined;
   readonly sourceOrdinal?: number | undefined;
   readonly orderedSourceDescriptor?: string | undefined;
   readonly publicDocumentId?: string | undefined;
+  /** Exact assistant call and result item that minted this sidecar. */
+  readonly sourceToolCallId?: string | undefined;
+  readonly sourceResultIndex?: number | undefined;
 };
 
 export type SourceExposureProof =
@@ -139,6 +148,19 @@ export const providerRequestSha256Hex = (request: ProviderRequest): string =>
     )
     .digest("hex");
 
+/** Shared canonical framing for verbatim answer evidence. */
+export const serializeAnswerSource = (source: {
+  readonly key: string;
+  readonly kind: string;
+  readonly label?: string | null | undefined;
+  readonly text: string;
+}): string =>
+  [
+    `<source key=${JSON.stringify(source.key)} kind=${JSON.stringify(source.kind)} length="${source.text.length}"${source.label == null ? "" : ` label=${JSON.stringify(source.label)}`}>`,
+    source.text,
+    "</source>",
+  ].join("\n");
+
 export const providerVisibleSourceExposureProofSha256Hex = (
   marker: ProviderVisibleSourceExposureMarker,
   binding?: ProviderVisibleSourceExposureProofBinding,
@@ -163,10 +185,38 @@ export const providerVisibleSourceExposureProofSha256Hex = (
     .digest("hex");
 };
 
+/**
+ * Private commitment carried beside a redacted tool result.  It binds the
+ * immutable content hash, every source identity, and the exact provider field
+ * (including candidate-search matches, previews, and scope).  The commitment
+ * never enters provider messages.
+ */
+export const providerVisibleSourceExposureCommitment = (
+  marker: ProviderVisibleSourceExposureMarker,
+  providerVisibleBinding: string,
+  immutableContentHash: string,
+  immutableSourceIdentityCommitment?: string,
+): string =>
+  sha256Base64Url(
+    stableJson({
+      sourceKind: marker.sourceKind,
+      logicalSourceIdentity: marker.logicalSourceIdentity,
+      contentItemIdentity: marker.contentItemIdentity,
+      exposureStage: marker.exposureStage,
+      visibleTokenCount: marker.visibleTokenCount,
+      immutableContentHash,
+      ...(immutableSourceIdentityCommitment === undefined
+        ? {}
+        : { immutableSourceIdentityCommitment }),
+      providerVisibleBinding,
+    }),
+  );
+
 const providerSourceExposureBindingRegistry = new Map<
   string,
   Map<string, ProviderVisibleSourceExposureProofBinding[]>
 >();
+const MAX_PROVIDER_SOURCE_EXPOSURE_BINDING_REQUESTS = 4096;
 
 const providerSourceExposureMarkerKey = (marker: ProviderVisibleSourceExposureMarker): string =>
   stableJson({
@@ -182,9 +232,18 @@ const rememberProviderSourceExposureBinding = (
   marker: ProviderVisibleSourceExposureMarker,
   binding: ProviderVisibleSourceExposureProofBinding,
 ): void => {
-  const requestEntries =
-    providerSourceExposureBindingRegistry.get(requestSha256Hex) ??
-    new Map<string, ProviderVisibleSourceExposureProofBinding[]>();
+  let requestEntries = providerSourceExposureBindingRegistry.get(requestSha256Hex);
+  if (requestEntries === undefined) {
+    if (
+      providerSourceExposureBindingRegistry.size >= MAX_PROVIDER_SOURCE_EXPOSURE_BINDING_REQUESTS
+    ) {
+      const oldestRequest = providerSourceExposureBindingRegistry.keys().next().value;
+      if (typeof oldestRequest === "string") {
+        providerSourceExposureBindingRegistry.delete(oldestRequest);
+      }
+    }
+    requestEntries = new Map<string, ProviderVisibleSourceExposureProofBinding[]>();
+  }
   const markerEntries = requestEntries.get(providerSourceExposureMarkerKey(marker)) ?? [];
   if (!markerEntries.some((candidate) => stableJson(candidate) === stableJson(binding))) {
     markerEntries.push(binding);
@@ -241,17 +300,38 @@ const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourc
     "exposureStage",
     "visibleTokenCount",
     "visibleText",
+    "immutableContentHash",
+    "immutableSourceIdentityCommitment",
+    "immutableSourceCommitment",
     "messageIndex",
     "serializedField",
     "sourceOrdinal",
     "orderedSourceDescriptor",
     "publicDocumentId",
+    "sourceToolCallId",
+    "sourceResultIndex",
   ]);
   return (
     isProviderVisibleSourceExposureMarker(marker) &&
     Object.keys(proof).every((key) => allowedKeys.has(key)) &&
     typeof proof.visibleText === "string" &&
-    proof.visibleText.length > 0
+    proof.visibleText.length > 0 &&
+    (proof.immutableContentHash === undefined ||
+      (typeof proof.immutableContentHash === "string" &&
+        (/^[a-f0-9]{64}$/u.test(proof.immutableContentHash) ||
+          /^[A-Za-z0-9_-]{43}$/u.test(proof.immutableContentHash)))) &&
+    (proof.immutableSourceIdentityCommitment === undefined ||
+      (typeof proof.immutableSourceIdentityCommitment === "string" &&
+        /^[A-Za-z0-9_-]{43}$/u.test(proof.immutableSourceIdentityCommitment))) &&
+    (proof.immutableSourceCommitment === undefined ||
+      (typeof proof.immutableSourceCommitment === "string" &&
+        /^[A-Za-z0-9_-]{43}$/u.test(proof.immutableSourceCommitment))) &&
+    (proof.sourceToolCallId === undefined ||
+      (typeof proof.sourceToolCallId === "string" && proof.sourceToolCallId.length > 0)) &&
+    (proof.sourceResultIndex === undefined ||
+      (typeof proof.sourceResultIndex === "number" &&
+        Number.isSafeInteger(proof.sourceResultIndex) &&
+        proof.sourceResultIndex >= 0))
   );
 };
 
@@ -267,7 +347,44 @@ interface ExpectedVisibleSourceExposure {
   readonly documentId?: string | undefined;
   /** Range identity remains internal when version metadata is redacted. */
   readonly documentRangeHash?: string | undefined;
+  /** Canonical binding of every provider-visible field for this exposure. */
+  readonly providerVisibleBinding?: string | undefined;
+  /** Redacted opaque candidates require the private commitment sidecar. */
+  readonly requiresPrivateCommitment?: boolean | undefined;
+  /** Exact assistant call and result item that produced this exposure. */
+  readonly sourceToolCallId?: string | undefined;
+  readonly sourceResultIndex?: number | undefined;
 }
+
+const providerVisibleBindingForCall = (
+  toolName: string,
+  toolCall: ProviderToolCall,
+  index: number,
+  sourceBinding: string | undefined,
+): string =>
+  stableJson({
+    toolName,
+    toolCallId: toolCall.id,
+    toolArguments: stableJsonValue(toolCall.arguments),
+    resultIndex: index,
+    sourceBinding:
+      sourceBinding ??
+      stableJson({
+        visibleTextOnly: true,
+      }),
+  });
+
+const providerVisibleSourceBinding = (
+  exposure: Pick<
+    ExpectedVisibleSourceExposure,
+    "sourceKind" | "visibleText" | "providerVisibleBinding"
+  >,
+): string =>
+  exposure.providerVisibleBinding ??
+  stableJson({
+    sourceKind: exposure.sourceKind,
+    visibleTextHash: sha256Base64Url(exposure.visibleText),
+  });
 
 const invalidDocumentNamespace = (context: string): never => {
   throw sourceExposureFailure(`${context} lacks an exact document source namespace`);
@@ -325,12 +442,35 @@ interface CanonicalInspectionRange {
 }
 
 const SOURCE_EXPOSURE_FIELD = "__briefSourceExposures";
+const SOURCE_IDENTITY_FIELD = "__briefSourceIdentity";
+const HIDDEN_PROVIDER_TOOL_RESULT_FIELDS = new Set([
+  SOURCE_EXPOSURE_FIELD,
+  SOURCE_IDENTITY_FIELD,
+  "versionId",
+  "contentHash",
+  "publisherExtractionId",
+  "source",
+]);
 
 const isJsonRecord = (value: unknown): value is JsonRecord =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 const sourceExposureFailure = (message: string): Error =>
   new Error(`invalid provider-visible source exposure: ${message}`);
+
+/**
+ * Removes the complete private source identity policy from a tool result
+ * before the result joins the provider-visible transcript.
+ */
+export const redactProviderToolResult = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(redactProviderToolResult);
+  if (!isJsonRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !HIDDEN_PROVIDER_TOOL_RESULT_FIELDS.has(key))
+      .map(([key, nested]) => [key, redactProviderToolResult(nested)]),
+  );
+};
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 
@@ -358,35 +498,131 @@ const expectedInternalSearchExposures = (
     if (!isJsonRecord(value) || typeof value.snippet !== "string") {
       throw sourceExposureFailure("search_internal item must contain an exact snippet");
     }
+    const privateIdentity = isJsonRecord(value[SOURCE_IDENTITY_FIELD])
+      ? value[SOURCE_IDENTITY_FIELD]
+      : undefined;
     const hasDocumentIdentity = typeof value.documentId === "string" && value.documentId.length > 0;
-    const hasMessageIdentity = typeof value.messageId === "string";
-    if (hasDocumentIdentity === hasMessageIdentity) {
+    const hasMessageIdentity =
+      typeof value.messageId === "string" ||
+      (value.kind === "chat_message" &&
+        privateIdentity !== undefined &&
+        typeof privateIdentity.messageId === "string");
+    if (hasDocumentIdentity && hasMessageIdentity) {
       throw sourceExposureFailure("search_internal item must have one canonical source identity");
     }
     if (hasDocumentIdentity) {
       if (
         value.kind !== "document" ||
         Object.keys(value).some(
-          (key) => !["kind", "documentId", "snippet", "title", "publishedAt"].includes(key),
+          (key) =>
+            ![
+              "kind",
+              "documentId",
+              "snippet",
+              "ranges",
+              "title",
+              "publishedAt",
+              SOURCE_IDENTITY_FIELD,
+            ].includes(key),
         )
       ) {
         throw sourceExposureFailure(
           "search_internal document item contains a legacy or unchecked identity field",
         );
       }
+      const privateIdentity = isJsonRecord(value[SOURCE_IDENTITY_FIELD])
+        ? value[SOURCE_IDENTITY_FIELD]
+        : undefined;
+      const hasPrivateIdentity =
+        privateIdentity !== undefined &&
+        typeof privateIdentity.versionId === "string" &&
+        privateIdentity.versionId.length > 0 &&
+        typeof privateIdentity.contentHash === "string" &&
+        /^[a-f0-9]{64}$/u.test(privateIdentity.contentHash) &&
+        isJsonRecord(privateIdentity.source);
+      const visibleRanges = Object.hasOwn(value, "ranges")
+        ? canonicalPrivateDocumentRanges(value.ranges, "search_internal document item")
+        : undefined;
+      let logicalSourceIdentity: string | undefined;
+      let contentItemIdentity: string | undefined;
+      let documentRangeHash =
+        visibleRanges === undefined ? undefined : sha256Base64Url(JSON.stringify(visibleRanges));
+      if (hasPrivateIdentity) {
+        validatePrivateDocumentIdentity(
+          privateIdentity!,
+          value.documentId as string,
+          "search_internal document item",
+        );
+        const ranges = canonicalPrivateDocumentRanges(
+          privateIdentity!.ranges,
+          "search_internal document item",
+        );
+        documentRangeHash = sha256Base64Url(JSON.stringify(ranges));
+        if (
+          visibleRanges !== undefined &&
+          documentRangeHash !== sha256Base64Url(JSON.stringify(visibleRanges))
+        ) {
+          throw sourceExposureFailure(
+            "search_internal document ranges differ from its private identity",
+          );
+        }
+        const namespace = documentNamespaceFromValue(
+          privateIdentity!.source,
+          value.documentId as string,
+          "search_internal document item",
+        );
+        logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
+          namespace,
+          value.documentId as string,
+        );
+        contentItemIdentity = `${logicalSourceIdentity}:${privateIdentity!.versionId}:${sha256Base64Url(
+          JSON.stringify(ranges),
+        )}`;
+      }
       return {
         sourceKind: "document" as const,
         exposureStage: "internal_search_preview",
         visibleText: value.snippet,
         documentId: value.documentId as string,
+        ...(logicalSourceIdentity === undefined ? {} : { logicalSourceIdentity }),
+        ...(contentItemIdentity === undefined ? {} : { contentItemIdentity }),
+        ...(documentRangeHash === undefined ? {} : { documentRangeHash }),
+        providerVisibleBinding: stableJson({
+          sourceKind: "document",
+          documentId: value.documentId,
+          visibleTextHash: sha256Base64Url(value.snippet as string),
+        }),
+        ...(hasPrivateIdentity ? {} : { requiresPrivateCommitment: true }),
       };
     }
+    if (value.kind === "document") {
+      throw sourceExposureFailure(
+        "search_internal document item lacks its exact document identity",
+      );
+    }
+    if (value.kind !== undefined && value.kind !== "chat_message") {
+      throw sourceExposureFailure("search_internal chat item has an invalid source kind");
+    }
+    const messageId =
+      typeof value.messageId === "string"
+        ? value.messageId
+        : privateIdentity !== undefined && typeof privateIdentity.messageId === "string"
+          ? privateIdentity.messageId
+          : undefined;
     return {
       sourceKind: "chat_message" as const,
-      logicalSourceIdentity: chatMessageEvidenceIdentity(value.messageId as string),
-      contentItemIdentity: value.messageId as string,
+      ...(messageId === undefined
+        ? { requiresPrivateCommitment: true }
+        : {
+            logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
+            contentItemIdentity: messageId,
+          }),
       exposureStage: "internal_inspection",
       visibleText: value.snippet,
+      providerVisibleBinding: stableJson({
+        sourceKind: "chat_message",
+        visibleTextHash: sha256Base64Url(value.snippet as string),
+      }),
     };
   });
 };
@@ -410,6 +646,22 @@ const canonicalInspectionRanges = (value: unknown): readonly CanonicalInspection
     }
     return { charStart: range.charStart as number, charEnd: range.charEnd as number };
   });
+};
+
+const canonicalPrivateDocumentRanges = (
+  value: unknown,
+  context: string,
+): readonly CanonicalInspectionRange[] => {
+  const ranges = canonicalInspectionRanges(value);
+  if (ranges.length === 0) {
+    throw sourceExposureFailure(`${context} lacks its exact document ranges`);
+  }
+  for (let index = 1; index < ranges.length; index += 1) {
+    if (ranges[index - 1]!.charEnd >= ranges[index]!.charStart) {
+      throw sourceExposureFailure(`${context} document ranges are not canonical`);
+    }
+  }
+  return ranges;
 };
 
 const expectedInternalInspectionExposures = (
@@ -477,6 +729,30 @@ const expectedInternalInspectionExposures = (
       "inspect_internal visible document ID differs from its tool reference",
     );
   }
+  const privateIdentity = isJsonRecord(result[SOURCE_IDENTITY_FIELD])
+    ? result[SOURCE_IDENTITY_FIELD]
+    : undefined;
+  let logicalSourceIdentity: string | undefined;
+  let contentItemIdentity: string | undefined;
+  if (privateIdentity !== undefined) {
+    validatePrivateDocumentIdentity(
+      privateIdentity,
+      reference.documentId as string,
+      "inspect_internal document result",
+    );
+    const namespace = documentNamespaceFromValue(
+      privateIdentity.source,
+      reference.documentId as string,
+      "inspect_internal document result",
+    );
+    logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
+      namespace,
+      reference.documentId as string,
+    );
+    contentItemIdentity = `${logicalSourceIdentity}:${privateIdentity.versionId}:${sha256Base64Url(
+      JSON.stringify(ranges),
+    )}`;
+  }
   return [
     {
       sourceKind: "document",
@@ -487,6 +763,15 @@ const expectedInternalInspectionExposures = (
       visibleText: result.text as string,
       documentId: reference.documentId,
       documentRangeHash: sha256Base64Url(JSON.stringify(ranges)),
+      ...(logicalSourceIdentity === undefined ? {} : { logicalSourceIdentity }),
+      ...(contentItemIdentity === undefined ? {} : { contentItemIdentity }),
+      providerVisibleBinding: stableJson({
+        sourceKind: "document",
+        documentId: reference.documentId,
+        ranges,
+        visibleTextHash: sha256Base64Url(result.text as string),
+      }),
+      ...(privateIdentity === undefined ? { requiresPrivateCommitment: true } : {}),
     },
   ];
 };
@@ -496,11 +781,14 @@ const expectedCandidateInspectionExposures = (
   toolCall: ProviderToolCall,
 ): readonly ExpectedVisibleSourceExposure[] => {
   const candidateId = toolCall.arguments.id;
-  if (typeof candidateId !== "string") {
-    if (typeof result.text !== "string") return [];
-    throw sourceExposureFailure("inspect_candidate lacks its candidate identity");
-  }
-  if (candidateId.startsWith("conversation_entry:")) {
+  const hasConversationEntry = Object.hasOwn(result, "conversationEntry");
+  if (
+    hasConversationEntry ||
+    (typeof candidateId === "string" && candidateId.startsWith("conversation_entry:"))
+  ) {
+    if (typeof candidateId !== "string" || candidateId.length === 0) {
+      throw sourceExposureFailure("inspect_candidate lacks its candidate identity");
+    }
     if (!Object.hasOwn(result, "conversationEntry")) {
       if (Object.hasOwn(result, "text") || (result.found === true && result.complete === true)) {
         throw sourceExposureFailure(
@@ -540,7 +828,13 @@ const expectedCandidateInspectionExposures = (
     const failedKeys = ["errorCode", "retryable", "turnId", "userContent", "userMessageId"];
     const isCompleteEntry = entryKeys.join("\u0000") === completeKeys.join("\u0000");
     const keysMatch = isCompleteEntry || entryKeys.join("\u0000") === failedKeys.join("\u0000");
-    if (!keysMatch || entry.turnId !== candidateId.slice("conversation_entry:".length)) {
+    if (!keysMatch) {
+      throw sourceExposureFailure("inspect_candidate conversation entry is not canonical");
+    }
+    if (
+      candidateId.startsWith("conversation_entry:") &&
+      entry.turnId !== candidateId.slice("conversation_entry:".length)
+    ) {
       throw sourceExposureFailure(
         "inspect_candidate conversation entry differs from its candidate",
       );
@@ -560,6 +854,10 @@ const expectedCandidateInspectionExposures = (
     ) {
       throw sourceExposureFailure("inspect_candidate conversation entry is not canonical");
     }
+    const providerVisibleBinding = stableJson({
+      sourceKind: "chat_message",
+      conversationEntry: stableJsonValue(entry),
+    });
     const messages = [
       { messageId: entry.userMessageId, content: entry.userContent },
       ...(isCompleteEntry
@@ -577,7 +875,16 @@ const expectedCandidateInspectionExposures = (
       contentItemIdentity: messageId,
       exposureStage: "provider_input",
       visibleText: content,
+      providerVisibleBinding,
+      // The structured entry carries fields beyond the exposed message body.
+      // Require the private commitment so each proof stays bound to the exact
+      // opaque tool call, result item, and complete visible entry.
+      requiresPrivateCommitment: true,
     }));
+  }
+  if (typeof candidateId !== "string" || candidateId.length === 0) {
+    if (typeof result.text !== "string") return [];
+    throw sourceExposureFailure("inspect_candidate lacks its candidate identity");
   }
   if (typeof result.text !== "string") return [];
   if (
@@ -588,11 +895,28 @@ const expectedCandidateInspectionExposures = (
     throw sourceExposureFailure("inspect_candidate visible body is not a complete found result");
   }
   let sourceKind: ProviderVisibleSourceExposureMarker["sourceKind"];
+  let logicalSourceIdentity: string | undefined;
   let contentItemIdentity: string | undefined;
   let documentRangeHash: string | undefined;
   let documentId: string | undefined;
-  if (candidateId.startsWith("document:")) {
+  let requiresPrivateCommitment = false;
+  const resultKind =
+    typeof result.kind === "string" ? sourceKindFromSerializedKind(result.kind) : undefined;
+  let providerVisibleBinding = stableJson({
+    sourceKind: resultKind,
+    visibleTextHash: sha256Base64Url(result.text),
+  });
+  const privateIdentity = isJsonRecord(result[SOURCE_IDENTITY_FIELD])
+    ? result[SOURCE_IDENTITY_FIELD]
+    : undefined;
+  if (candidateId.startsWith("document:") || resultKind === "document") {
     sourceKind = "document";
+    const hasKnownDocumentIdentity = isCanonicalDocumentLogicalIdentity(candidateId);
+    if (candidateId.startsWith("document:") && !hasKnownDocumentIdentity) {
+      throw sourceExposureFailure(
+        "inspect_candidate document handle is not a canonical namespaced candidate",
+      );
+    }
     documentId =
       typeof result.documentId === "string" && result.documentId.length > 0
         ? result.documentId
@@ -601,56 +925,154 @@ const expectedCandidateInspectionExposures = (
       throw sourceExposureFailure("inspect_candidate document result lacks its exact document");
     }
     if (
-      typeof result.versionId !== "string" ||
-      result.versionId.length === 0 ||
-      !Object.hasOwn(result, "source")
+      Object.hasOwn(result, "documentId") &&
+      (typeof result.documentId !== "string" || result.documentId !== documentId)
     ) {
-      throw sourceExposureFailure("inspect_candidate document result lacks its immutable identity");
-    }
-    const namespace = documentNamespaceFromValue(
-      result.source,
-      documentId,
-      "inspect_candidate document result",
-    );
-    const expectedCandidateId = namespacedDocumentEvidenceIdentity(namespace, documentId);
-    if (candidateId !== expectedCandidateId) {
       throw sourceExposureFailure(
-        "inspect_candidate document result provenance differs from its namespaced candidate",
+        "inspect_candidate visible document ID differs from its tool result",
       );
     }
-    const ranges = isJsonRecord(toolCall.arguments.range)
-      ? canonicalInspectionRanges([toolCall.arguments.range])
-      : canonicalInspectionRanges(result.ranges);
-    const rangeHash = sha256Base64Url(JSON.stringify(ranges));
-    contentItemIdentity = `${candidateId}:${result.versionId}:${rangeHash}`;
-  } else if (candidateId.startsWith("chat_message:")) {
+    const ranges = canonicalInspectionRanges(result.ranges);
+    if (Object.hasOwn(toolCall.arguments, "range")) {
+      const requestedRange = canonicalInspectionRanges([toolCall.arguments.range]);
+      if (stableJson(requestedRange) !== stableJson(ranges)) {
+        throw sourceExposureFailure(
+          "inspect_candidate document range differs from its tool result",
+        );
+      }
+    }
+    documentRangeHash = sha256Base64Url(JSON.stringify(ranges));
+    const hasVersion = typeof result.versionId === "string" && result.versionId.length > 0;
+    const hasSource = Object.hasOwn(result, "source");
+    if (hasVersion !== hasSource) {
+      throw sourceExposureFailure(
+        "inspect_candidate document result has a partial immutable identity",
+      );
+    }
+    if (hasVersion && hasSource) {
+      const namespace = documentNamespaceFromValue(
+        result.source,
+        documentId,
+        "inspect_candidate document result",
+      );
+      const expectedCandidateId = namespacedDocumentEvidenceIdentity(namespace, documentId);
+      if (candidateId !== expectedCandidateId) {
+        if (hasKnownDocumentIdentity) {
+          throw sourceExposureFailure(
+            "inspect_candidate document result provenance differs from its namespaced candidate",
+          );
+        }
+      }
+      logicalSourceIdentity = expectedCandidateId;
+      contentItemIdentity = `${expectedCandidateId}:${result.versionId}:${documentRangeHash}`;
+    } else {
+      requiresPrivateCommitment = true;
+    }
+    providerVisibleBinding = stableJson({
+      sourceKind,
+      documentId,
+      ranges,
+      visibleTextHash: sha256Base64Url(result.text),
+    });
+  } else if (candidateId.startsWith("chat_message:") || resultKind === "chat_message") {
     sourceKind = "chat_message";
-    contentItemIdentity = candidateId.slice("chat_message:".length);
-  } else if (candidateId.startsWith("memory:")) {
+    const messageId = candidateId.startsWith("chat_message:")
+      ? candidateId.slice("chat_message:".length)
+      : typeof result.messageId === "string" && result.messageId.length > 0
+        ? result.messageId
+        : privateIdentity !== undefined &&
+            typeof privateIdentity.messageId === "string" &&
+            privateIdentity.messageId.length > 0
+          ? privateIdentity.messageId
+          : undefined;
+    if (messageId !== undefined) {
+      logicalSourceIdentity = chatMessageEvidenceIdentity(messageId);
+      contentItemIdentity = messageId;
+    } else {
+      requiresPrivateCommitment = true;
+    }
+    providerVisibleBinding = stableJson({
+      sourceKind,
+      visibleTextHash: sha256Base64Url(result.text),
+    });
+  } else if (candidateId.startsWith("memory:") || resultKind === "memory") {
     sourceKind = "memory";
-    const memoryId = candidateId.slice("memory:".length);
-    if (typeof result.memoryId !== "string" || result.memoryId !== memoryId) {
+    const memoryId = candidateId.startsWith("memory:")
+      ? candidateId.slice("memory:".length)
+      : typeof result.memoryId === "string"
+        ? result.memoryId
+        : privateIdentity?.memoryId;
+    if (typeof result.memoryId === "string" && memoryId !== result.memoryId) {
       throw sourceExposureFailure("inspect_candidate memory result differs from its candidate");
     }
-    if (typeof result.memoryRevisionId !== "string" || result.memoryRevisionId.length === 0) {
-      throw sourceExposureFailure("inspect_candidate memory result lacks its exact revision");
+    if (
+      typeof memoryId === "string" &&
+      memoryId.length > 0 &&
+      (typeof result.memoryRevisionId === "string"
+        ? result.memoryRevisionId
+        : privateIdentity?.memoryRevisionId) !== undefined &&
+      (
+        (typeof result.memoryRevisionId === "string"
+          ? result.memoryRevisionId
+          : privateIdentity?.memoryRevisionId) as string
+      ).length > 0
+    ) {
+      logicalSourceIdentity = `memory:${memoryId}`;
+      contentItemIdentity = (
+        typeof result.memoryRevisionId === "string"
+          ? result.memoryRevisionId
+          : privateIdentity?.memoryRevisionId
+      ) as string;
+    } else {
+      requiresPrivateCommitment = true;
     }
-    contentItemIdentity = result.memoryRevisionId;
-  } else if (candidateId.startsWith("web:")) {
+    providerVisibleBinding = stableJson({
+      sourceKind,
+      visibleTextHash: sha256Base64Url(result.text),
+    });
+  } else if (candidateId.startsWith("web:") || resultKind === "web") {
     sourceKind = "web";
-    contentItemIdentity = candidateId.slice("web:".length);
+    const url = candidateId.startsWith("web:")
+      ? candidateId.slice("web:".length)
+      : typeof result.url === "string" && result.url.length > 0
+        ? canonicalizeWebUrl(result.url)
+        : privateIdentity !== undefined &&
+            typeof privateIdentity.url === "string" &&
+            privateIdentity.url.length > 0
+          ? canonicalizeWebUrl(privateIdentity.url)
+          : undefined;
+    const quoteHash =
+      typeof result.quoteHash === "string" && result.quoteHash.length > 0
+        ? result.quoteHash
+        : privateIdentity !== undefined &&
+            typeof privateIdentity.quoteHash === "string" &&
+            privateIdentity.quoteHash.length > 0
+          ? privateIdentity.quoteHash
+          : sha256Base64Url(result.text);
+    if (url !== undefined) {
+      logicalSourceIdentity = `web:${url}:${quoteHash}`;
+      contentItemIdentity = `${url}:${quoteHash}`;
+    } else {
+      requiresPrivateCommitment = true;
+    }
+    providerVisibleBinding = stableJson({
+      sourceKind,
+      visibleTextHash: sha256Base64Url(result.text),
+    });
   } else {
     throw sourceExposureFailure("inspect_candidate has an unknown candidate identity");
   }
   return [
     {
       sourceKind,
-      logicalSourceIdentity: candidateId,
+      ...(logicalSourceIdentity === undefined ? {} : { logicalSourceIdentity }),
       ...(contentItemIdentity === undefined ? {} : { contentItemIdentity }),
       exposureStage: "context_candidate_inspection",
       visibleText: result.text,
       ...(sourceKind === "document" ? { documentId: documentId as string } : {}),
       ...(documentRangeHash === undefined ? {} : { documentRangeHash }),
+      providerVisibleBinding,
+      ...(requiresPrivateCommitment ? { requiresPrivateCommitment: true } : {}),
     },
   ];
 };
@@ -659,19 +1081,31 @@ const expectedCandidateSearchExposures = (
   result: JsonRecord,
   toolCall: ProviderToolCall,
 ): readonly ExpectedVisibleSourceExposure[] => {
+  if (result.protocolError === "tool arguments did not match the advertised schema") return [];
   const candidateId = toolCall.arguments.id;
+  const matches = result.matches;
   const previews = result.matchPreviews;
   if (!Array.isArray(previews)) {
     throw sourceExposureFailure("search_within_candidate result lacks canonical match previews");
   }
-  if (typeof candidateId !== "string" || !candidateId.startsWith("document:")) {
-    if (previews.length > 0) {
-      throw sourceExposureFailure(
-        "search_within_candidate preview lacks its document candidate identity",
-      );
-    }
+  if (!Array.isArray(matches)) {
+    if (previews.length === 0) return [];
+    throw sourceExposureFailure("search_within_candidate result lacks canonical matches");
+  }
+  if (matches.length === 0 && previews.length === 0 && !Object.hasOwn(result, "scope")) {
     return [];
   }
+  const canonicalMatches = matches.map((match) => canonicalInspectionRanges([match])[0]!);
+  const knownDocumentCandidate =
+    typeof candidateId === "string" && candidateId.startsWith("document:");
+  if (knownDocumentCandidate && !isCanonicalDocumentLogicalIdentity(candidateId as string)) {
+    throw sourceExposureFailure("search_within_candidate document handle is not canonical");
+  }
+  const candidateKind = knownDocumentCandidate
+    ? "document"
+    : typeof result.kind === "string"
+      ? sourceKindFromSerializedKind(result.kind)
+      : undefined;
   if (result.found !== true) {
     if (previews.length > 0) {
       throw sourceExposureFailure(
@@ -680,21 +1114,176 @@ const expectedCandidateSearchExposures = (
     }
     return [];
   }
-  if (typeof result.versionId !== "string" || result.versionId.length === 0) {
-    throw sourceExposureFailure("search_within_candidate result lacks its immutable version");
+  if (candidateKind !== "document") {
+    if (previews.length > 0) {
+      throw sourceExposureFailure(
+        "search_within_candidate preview lacks its document candidate identity",
+      );
+    }
+    return [];
   }
+  if (!isJsonRecord(result.scope)) {
+    throw sourceExposureFailure(
+      "search_within_candidate result must contain its exact search scope",
+    );
+  }
+  const scope = result.scope;
+  if (
+    Object.keys(scope).some(
+      (key) => !["kind", "ranges", "matchOffset", "maximumMatches"].includes(key),
+    ) ||
+    (scope.kind !== "selected_document_ranges" && scope.kind !== "complete_candidate") ||
+    typeof scope.matchOffset !== "number" ||
+    !Number.isSafeInteger(scope.matchOffset) ||
+    scope.matchOffset < 0 ||
+    typeof scope.maximumMatches !== "number" ||
+    !Number.isSafeInteger(scope.maximumMatches) ||
+    scope.maximumMatches < 1
+  ) {
+    throw sourceExposureFailure("search_within_candidate result has an invalid search scope");
+  }
+  if (scope.kind !== "selected_document_ranges") {
+    throw sourceExposureFailure(
+      "search_within_candidate result has an invalid document scope kind",
+    );
+  }
+  const requestedCursor =
+    typeof toolCall.arguments.cursor === "number" ? toolCall.arguments.cursor : 0;
+  if (scope.matchOffset !== requestedCursor || scope.maximumMatches !== 500) {
+    throw sourceExposureFailure(
+      "search_within_candidate scope does not match its production bounds",
+    );
+  }
+  const scopeRanges = canonicalInspectionRanges(scope.ranges);
+  if (scopeRanges.length === 0) {
+    throw sourceExposureFailure("search_within_candidate scope must contain a selected range");
+  }
+  for (let index = 1; index < scopeRanges.length; index += 1) {
+    if (scopeRanges[index - 1]!.charEnd >= scopeRanges[index]!.charStart) {
+      throw sourceExposureFailure("search_within_candidate scope ranges are not canonical");
+    }
+  }
+  for (let index = 1; index < canonicalMatches.length; index += 1) {
+    if (canonicalMatches[index - 1]!.charStart >= canonicalMatches[index]!.charStart) {
+      throw sourceExposureFailure("search_within_candidate matches are not canonical");
+    }
+  }
+  if (
+    canonicalMatches.some(
+      (match) =>
+        !scopeRanges.some(
+          (scopeRange) =>
+            match.charStart >= scopeRange.charStart && match.charEnd <= scopeRange.charEnd,
+        ),
+    )
+  ) {
+    throw sourceExposureFailure("search_within_candidate match range is outside its search scope");
+  }
+  if (typeof result.documentId !== "string" || result.documentId.length === 0) {
+    throw sourceExposureFailure("search_within_candidate result lacks its exact document");
+  }
+  const resultDocumentId = result.documentId;
+  if (canonicalMatches.length === 0 && previews.length > 0) {
+    throw sourceExposureFailure("search_within_candidate previews lack their exact matches");
+  }
+  const privateIdentity = isJsonRecord(result[SOURCE_IDENTITY_FIELD])
+    ? result[SOURCE_IDENTITY_FIELD]
+    : undefined;
+  const privateVersion =
+    privateIdentity !== undefined && typeof privateIdentity.versionId === "string"
+      ? privateIdentity.versionId
+      : undefined;
+  const privateSource = privateIdentity?.source;
+  const hasVersion =
+    (typeof result.versionId === "string" && result.versionId.length > 0) ||
+    (privateVersion !== undefined && privateVersion.length > 0);
+  const hasSource = Object.hasOwn(result, "source") || privateSource !== undefined;
+  if (hasVersion !== hasSource) {
+    throw sourceExposureFailure("search_within_candidate result has a partial immutable identity");
+  }
+  if (
+    typeof result.versionId === "string" &&
+    privateVersion !== undefined &&
+    result.versionId !== privateVersion
+  ) {
+    throw sourceExposureFailure(
+      "search_within_candidate version differs from its private identity",
+    );
+  }
+  if (privateIdentity !== undefined) {
+    validatePrivateDocumentIdentity(
+      privateIdentity,
+      resultDocumentId,
+      "search_within_candidate result",
+    );
+  }
+  let logicalSourceIdentity: string | undefined;
+  if (hasVersion && hasSource) {
+    const namespace = documentNamespaceFromValue(
+      result.source ?? privateSource,
+      resultDocumentId,
+      "search_within_candidate result",
+    );
+    logicalSourceIdentity = namespacedDocumentEvidenceIdentity(namespace, resultDocumentId);
+    if (knownDocumentCandidate && candidateId !== logicalSourceIdentity) {
+      throw sourceExposureFailure(
+        "search_within_candidate result provenance differs from its namespaced candidate",
+      );
+    }
+  }
+  const exactSearchBinding = stableJson({
+    sourceKind: "document",
+    documentId: resultDocumentId,
+    matches: canonicalMatches,
+    matchPreviews: previews.map((preview) =>
+      isJsonRecord(preview) && typeof preview.text === "string"
+        ? { range: canonicalInspectionRanges([preview.range])[0], text: preview.text }
+        : preview,
+    ),
+    scope: {
+      kind: scope.kind,
+      ranges: scopeRanges,
+      matchOffset: scope.matchOffset,
+      maximumMatches: scope.maximumMatches,
+    },
+  });
   return previews.map((preview) => {
     if (!isJsonRecord(preview) || typeof preview.text !== "string") {
       throw sourceExposureFailure("search_within_candidate preview is not canonical");
     }
     const ranges = canonicalInspectionRanges([preview.range]);
+    const previewRange = ranges[0]!;
+    if (
+      !canonicalMatches.some(
+        (match) =>
+          match.charStart >= previewRange.charStart && match.charEnd <= previewRange.charEnd,
+      ) ||
+      (scopeRanges !== undefined &&
+        !scopeRanges.some(
+          (scopeRange) =>
+            previewRange.charStart >= scopeRange.charStart &&
+            previewRange.charEnd <= scopeRange.charEnd,
+        ))
+    ) {
+      throw sourceExposureFailure(
+        "search_within_candidate preview range is not bound to its exact match range",
+      );
+    }
     const rangeHash = sha256Base64Url(JSON.stringify(ranges));
     return {
       sourceKind: "document" as const,
-      logicalSourceIdentity: candidateId,
-      contentItemIdentity: `${candidateId}:${result.versionId}:${rangeHash}`,
+      ...(logicalSourceIdentity === undefined ? {} : { logicalSourceIdentity }),
+      ...(hasVersion && logicalSourceIdentity !== undefined
+        ? {
+            contentItemIdentity: `${logicalSourceIdentity}:${privateVersion ?? String(result.versionId)}:${rangeHash}`,
+          }
+        : {}),
       exposureStage: "context_candidate_inspection",
       visibleText: preview.text,
+      documentId: resultDocumentId,
+      documentRangeHash: rangeHash,
+      providerVisibleBinding: exactSearchBinding,
+      ...(hasVersion ? {} : { requiresPrivateCommitment: true }),
     };
   });
 };
@@ -730,10 +1319,33 @@ const expectedSourceExposures = (
       ) {
         throw sourceExposureFailure("search_evidence match is not canonical");
       }
+      const documentRangeHash =
+        value.kind === "document" &&
+        Number.isSafeInteger(value.charStart) &&
+        Number.isSafeInteger(value.charEnd) &&
+        Number(value.charStart) >= 0 &&
+        Number(value.charEnd) > Number(value.charStart)
+          ? sha256Base64Url(
+              JSON.stringify([
+                { charStart: Number(value.charStart), charEnd: Number(value.charEnd) },
+              ]),
+            )
+          : undefined;
+      const documentId =
+        value.kind === "document" &&
+        typeof value.documentId === "string" &&
+        value.documentId.length > 0
+          ? value.documentId
+          : undefined;
+      if (value.kind === "document" && documentId === undefined) {
+        throw sourceExposureFailure("search_evidence document match lacks its exact document ID");
+      }
       return {
         sourceKind: value.kind as ProviderVisibleSourceExposureMarker["sourceKind"],
         exposureStage: "evaluation_general_planner_search",
         visibleText: value.text,
+        ...(documentId === undefined ? {} : { documentId }),
+        ...(documentRangeHash === undefined ? {} : { documentRangeHash }),
       };
     });
   }
@@ -749,11 +1361,38 @@ const expectedSourceExposures = (
     ) {
       throw sourceExposureFailure("inspect_evidence result has an invalid source kind");
     }
+    const documentRangeHash =
+      result.kind === "document" &&
+      isJsonRecord(result.range) &&
+      Number.isSafeInteger(result.range.charStart) &&
+      Number.isSafeInteger(result.range.charEnd) &&
+      Number(result.range.charStart) >= 0 &&
+      Number(result.range.charEnd) > Number(result.range.charStart)
+        ? sha256Base64Url(
+            JSON.stringify([
+              {
+                charStart: Number(result.range.charStart),
+                charEnd: Number(result.range.charEnd),
+              },
+            ]),
+          )
+        : undefined;
+    const documentId =
+      result.kind === "document" &&
+      typeof result.documentId === "string" &&
+      result.documentId.length > 0
+        ? result.documentId
+        : undefined;
+    if (result.kind === "document" && documentId === undefined) {
+      throw sourceExposureFailure("inspect_evidence document result lacks its exact document ID");
+    }
     return [
       {
         sourceKind: result.kind,
         exposureStage: "evaluation_general_planner_inspect",
         visibleText: result.text,
+        ...(documentId === undefined ? {} : { documentId }),
+        ...(documentRangeHash === undefined ? {} : { documentRangeHash }),
       },
     ];
   }
@@ -860,8 +1499,10 @@ const assertExactSourceExposureMarker = (
             ? documentContentIdentityMatchesSnippet(marker, expected.visibleText)
             : documentContentIdentityMatchesRange(marker, expected.documentRangeHash)
           : marker.contentItemIdentity === expected.contentItemIdentity)
-      : expected.contentItemIdentity === undefined ||
-        marker.contentItemIdentity === expected.contentItemIdentity;
+      : (expected.logicalSourceIdentity === undefined ||
+          marker.logicalSourceIdentity === expected.logicalSourceIdentity) &&
+        (expected.contentItemIdentity === undefined ||
+          marker.contentItemIdentity === expected.contentItemIdentity);
   const rangeIdentityMatches =
     expected.documentRangeHash === undefined ||
     documentContentIdentityMatchesRange(marker, expected.documentRangeHash);
@@ -884,45 +1525,7 @@ const expectedStrippedToolResultExposures = (
   toolCall: ProviderToolCall,
 ): readonly ExpectedVisibleSourceExposure[] | undefined => {
   if (toolName === "search_internal") {
-    if (!Array.isArray(result.items)) {
-      throw sourceExposureFailure("search_internal result must contain an items array");
-    }
-    return result.items.map((value) => {
-      if (!isJsonRecord(value) || typeof value.snippet !== "string") {
-        throw sourceExposureFailure("search_internal item must contain an exact snippet");
-      }
-      const hasDocumentIdentity =
-        typeof value.documentId === "string" && value.documentId.length > 0;
-      const hasMessageIdentity = typeof value.messageId === "string";
-      if (hasDocumentIdentity === hasMessageIdentity) {
-        throw sourceExposureFailure("search_internal item must have one canonical source identity");
-      }
-      if (hasDocumentIdentity) {
-        if (
-          value.kind !== "document" ||
-          Object.keys(value).some(
-            (key) => !["kind", "documentId", "snippet", "title", "publishedAt"].includes(key),
-          )
-        ) {
-          throw sourceExposureFailure(
-            "search_internal document item contains a legacy or unchecked identity field",
-          );
-        }
-        return {
-          sourceKind: "document",
-          exposureStage: "internal_search_preview",
-          visibleText: value.snippet,
-          documentId: value.documentId as string,
-        };
-      }
-      return {
-        sourceKind: "chat_message",
-        logicalSourceIdentity: chatMessageEvidenceIdentity(value.messageId as string),
-        contentItemIdentity: value.messageId as string,
-        exposureStage: "internal_inspection",
-        visibleText: value.snippet,
-      };
-    });
+    return expectedInternalSearchExposures(result);
   }
 
   if (toolName === "search_memories") {
@@ -1011,6 +1614,317 @@ const expectedStrippedToolResultExposures = (
   return expectedSourceExposures(toolName, result, toolCall);
 };
 
+const privateIdentityForExposure = (
+  toolName: string,
+  result: JsonRecord,
+  index: number,
+): JsonRecord | undefined => {
+  const item =
+    toolName === "search_internal" || toolName === "search_memories"
+      ? Array.isArray(result.items)
+        ? result.items[index]
+        : undefined
+      : toolName === "search_evidence"
+        ? Array.isArray(result.matches)
+          ? result.matches[index]
+          : undefined
+        : toolName === "web_search"
+          ? Array.isArray(result.results)
+            ? result.results[index]
+            : undefined
+          : result;
+  if (!isJsonRecord(item)) return undefined;
+  const value = item[SOURCE_IDENTITY_FIELD];
+  if (value !== undefined && !isJsonRecord(value)) {
+    throw sourceExposureFailure("source identity sidecar must be an object");
+  }
+  return isJsonRecord(value) ? value : undefined;
+};
+
+const immutableContentHashForExposure = (
+  toolName: string,
+  result: JsonRecord,
+  index: number,
+  expected: ExpectedVisibleSourceExposure,
+): string => {
+  const privateIdentity = privateIdentityForExposure(toolName, result, index);
+  const contentHash = privateIdentity?.contentHash;
+  if (typeof contentHash === "string" && /^[a-f0-9]{64}$/u.test(contentHash)) {
+    return contentHash;
+  }
+  const directHash = result.contentHash;
+  if (typeof directHash === "string" && /^[a-f0-9]{64}$/u.test(directHash)) {
+    return directHash;
+  }
+  if (expected.sourceKind === "document") {
+    throw sourceExposureFailure("document exposure lacks its immutable full-content hash");
+  }
+  return sha256Base64Url(expected.visibleText);
+};
+
+const immutableSourceIdentityCommitmentForExposure = (
+  toolName: string,
+  result: JsonRecord,
+  index: number,
+  marker: ProviderVisibleSourceExposureMarker,
+  expected: ExpectedVisibleSourceExposure,
+): string => {
+  const privateIdentity = privateIdentityForExposure(toolName, result, index);
+  return sha256Base64Url(
+    stableJson({
+      sourceKind: marker.sourceKind,
+      logicalSourceIdentity: marker.logicalSourceIdentity,
+      contentItemIdentity: marker.contentItemIdentity,
+      privateIdentity: privateIdentity ?? null,
+      visibleTextHash: sha256Base64Url(expected.visibleText),
+    }),
+  );
+};
+
+const validatePrivateDocumentIdentity = (
+  privateIdentity: JsonRecord,
+  documentId: string,
+  context: string,
+): DocumentEvidenceNamespace => {
+  if (
+    Object.keys(privateIdentity).some(
+      (key) =>
+        !["versionId", "contentHash", "publisherExtractionId", "source", "ranges"].includes(key),
+    )
+  ) {
+    throw sourceExposureFailure(`${context} has unknown immutable identity fields`);
+  }
+  if (
+    typeof privateIdentity.versionId !== "string" ||
+    privateIdentity.versionId.length === 0 ||
+    typeof privateIdentity.contentHash !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(privateIdentity.contentHash)
+  ) {
+    throw sourceExposureFailure(`${context} has an invalid immutable content identity`);
+  }
+  if (Object.hasOwn(privateIdentity, "ranges")) {
+    canonicalPrivateDocumentRanges(privateIdentity.ranges, context);
+  }
+  const namespace = documentNamespaceFromValue(privateIdentity.source, documentId, context);
+  if (
+    namespace.kind === "publisher" &&
+    (typeof privateIdentity.publisherExtractionId !== "string" ||
+      privateIdentity.publisherExtractionId.length === 0)
+  ) {
+    throw sourceExposureFailure(`${context} lacks its publisher extraction identity`);
+  }
+  if (namespace.kind === "public" && Object.hasOwn(privateIdentity, "publisherExtractionId")) {
+    throw sourceExposureFailure(`${context} has publisher identity on a public document`);
+  }
+  return namespace;
+};
+
+const validatePrivateNonDocumentIdentity = (
+  privateIdentity: JsonRecord,
+  expected: ExpectedVisibleSourceExposure,
+  marker: ProviderVisibleSourceExposureMarker,
+  toolName: string,
+): void => {
+  const exactVisibleBody =
+    toolName === "inspect_candidate" ||
+    toolName === "inspect_memory" ||
+    toolName === "search_memories";
+  if (expected.sourceKind === "chat_message") {
+    if (
+      Object.keys(privateIdentity).some((key) => !["messageId", "contentHash"].includes(key)) ||
+      typeof privateIdentity.messageId !== "string" ||
+      privateIdentity.messageId.length === 0 ||
+      typeof privateIdentity.contentHash !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(privateIdentity.contentHash)
+    ) {
+      throw sourceExposureFailure(`${toolName} chat identity is not canonical`);
+    }
+    if (
+      marker.logicalSourceIdentity !== chatMessageEvidenceIdentity(privateIdentity.messageId) ||
+      marker.contentItemIdentity !== privateIdentity.messageId
+    ) {
+      throw sourceExposureFailure(`${toolName} chat identity differs from its private identity`);
+    }
+  } else if (expected.sourceKind === "memory") {
+    if (
+      Object.keys(privateIdentity).some(
+        (key) => !["memoryId", "memoryRevisionId", "contentHash"].includes(key),
+      ) ||
+      typeof privateIdentity.memoryId !== "string" ||
+      privateIdentity.memoryId.length === 0 ||
+      typeof privateIdentity.memoryRevisionId !== "string" ||
+      privateIdentity.memoryRevisionId.length === 0 ||
+      typeof privateIdentity.contentHash !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(privateIdentity.contentHash)
+    ) {
+      throw sourceExposureFailure(`${toolName} memory identity is not canonical`);
+    }
+    if (
+      marker.logicalSourceIdentity !== `memory:${privateIdentity.memoryId}` ||
+      marker.contentItemIdentity !== privateIdentity.memoryRevisionId
+    ) {
+      throw sourceExposureFailure(`${toolName} memory identity differs from its private identity`);
+    }
+  } else if (expected.sourceKind === "web") {
+    let url: string;
+    try {
+      if (typeof privateIdentity.url !== "string") throw new Error("missing URL");
+      url = canonicalizeWebUrl(privateIdentity.url);
+    } catch {
+      throw sourceExposureFailure(`${toolName} web identity is not canonical`);
+    }
+    if (
+      Object.keys(privateIdentity).some(
+        (key) => !["url", "quoteHash", "contentHash"].includes(key),
+      ) ||
+      typeof privateIdentity.quoteHash !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(privateIdentity.quoteHash) ||
+      typeof privateIdentity.contentHash !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(privateIdentity.contentHash) ||
+      marker.logicalSourceIdentity !== `web:${url}:${privateIdentity.quoteHash}` ||
+      marker.contentItemIdentity !== `${url}:${privateIdentity.quoteHash}`
+    ) {
+      throw sourceExposureFailure(`${toolName} web identity differs from its private identity`);
+    }
+  }
+  if (exactVisibleBody && privateIdentity.contentHash !== sha256Base64Url(expected.visibleText)) {
+    throw sourceExposureFailure(`${toolName} private content hash differs from its visible body`);
+  }
+};
+
+/**
+ * Converts a code-owned result marker into the private proof carried to the
+ * next provider request.  This runs before hidden identity fields and markers
+ * are stripped from the provider-visible tool result.
+ */
+export const providerSourceExposureProofFromToolResult = (
+  toolName: string,
+  result: JsonRecord,
+  toolCall: ProviderToolCall,
+  countTextTokens: (text: string) => number,
+): readonly CodeOwnedSourceExposureProof[] => {
+  const expected =
+    expectedSourceExposures(toolName, result, toolCall) ??
+    expectedStrippedToolResultExposures(toolName, result, toolCall);
+  if (expected === undefined) return [];
+  const embedded = markersFromResult(result);
+  if (embedded.length !== expected.length) {
+    throw sourceExposureFailure("marker cardinality differs from visible source bodies");
+  }
+  return expected.map((item, index) => {
+    const marker = embedded[index]!;
+    assertExactSourceExposureMarker(marker, item, countTextTokens);
+    if (item.sourceKind === "document") {
+      const privateIdentity = privateIdentityForExposure(toolName, result, index);
+      if (privateIdentity === undefined) {
+        throw sourceExposureFailure(
+          `${toolName} document result lacks its immutable identity sidecar`,
+        );
+      }
+      if (privateIdentity !== undefined) {
+        const documentId =
+          item.documentId ?? documentIdFromLogicalIdentity(marker.logicalSourceIdentity);
+        if (documentId === undefined) {
+          throw sourceExposureFailure("document exposure lacks its exact document identity");
+        }
+        const namespace = validatePrivateDocumentIdentity(
+          privateIdentity,
+          documentId,
+          `${toolName} document result`,
+        );
+        if (
+          toolName !== "search_internal" &&
+          ((Object.hasOwn(result, "versionId") && result.versionId !== privateIdentity.versionId) ||
+            (Object.hasOwn(result, "contentHash") &&
+              result.contentHash !== privateIdentity.contentHash) ||
+            (Object.hasOwn(result, "publisherExtractionId") &&
+              result.publisherExtractionId !== privateIdentity.publisherExtractionId) ||
+            (Object.hasOwn(result, "source") &&
+              stableJson(
+                documentNamespaceFromValue(
+                  result.source,
+                  documentId,
+                  `${toolName} document result`,
+                ),
+              ) !== stableJson(namespace)))
+        ) {
+          throw sourceExposureFailure(
+            `${toolName} document identity differs from its private identity`,
+          );
+        }
+        const privateLogicalIdentity = namespacedDocumentEvidenceIdentity(namespace, documentId);
+        if (marker.logicalSourceIdentity !== privateLogicalIdentity) {
+          throw sourceExposureFailure(
+            `${toolName} marker namespace differs from its private identity`,
+          );
+        }
+        const privateContentIdentity = `${privateLogicalIdentity}:${privateIdentity.versionId}:${
+          item.documentRangeHash ?? sha256Base64Url(item.visibleText)
+        }`;
+        if (marker.contentItemIdentity !== privateContentIdentity) {
+          throw sourceExposureFailure(
+            `${toolName} marker version or range differs from its private identity`,
+          );
+        }
+        if (item.documentRangeHash !== undefined && Object.hasOwn(privateIdentity, "ranges")) {
+          const privateRangeHash = sha256Base64Url(
+            JSON.stringify(
+              canonicalPrivateDocumentRanges(privateIdentity.ranges, `${toolName} document result`),
+            ),
+          );
+          if (privateRangeHash !== item.documentRangeHash) {
+            throw sourceExposureFailure(
+              `${toolName} document range differs from its immutable identity sidecar`,
+            );
+          }
+        }
+      }
+    } else {
+      const privateIdentity = privateIdentityForExposure(toolName, result, index);
+      if (
+        item.requiresPrivateCommitment === true &&
+        privateIdentity === undefined &&
+        (item.logicalSourceIdentity === undefined || item.contentItemIdentity === undefined)
+      ) {
+        throw sourceExposureFailure(
+          `${toolName} opaque ${item.sourceKind} result lacks its immutable identity sidecar`,
+        );
+      }
+      if (privateIdentity !== undefined) {
+        validatePrivateNonDocumentIdentity(privateIdentity, item, marker, toolName);
+      }
+    }
+    const immutableContentHash = immutableContentHashForExposure(toolName, result, index, item);
+    const immutableSourceIdentityCommitment = immutableSourceIdentityCommitmentForExposure(
+      toolName,
+      result,
+      index,
+      marker,
+      item,
+    );
+    const providerVisibleBinding = providerVisibleBindingForCall(
+      toolName,
+      toolCall,
+      index,
+      providerVisibleSourceBinding(item),
+    );
+    return {
+      ...marker,
+      visibleText: item.visibleText,
+      sourceToolCallId: toolCall.id,
+      sourceResultIndex: index,
+      immutableContentHash,
+      immutableSourceIdentityCommitment,
+      immutableSourceCommitment: providerVisibleSourceExposureCommitment(
+        marker,
+        providerVisibleBinding,
+        immutableContentHash,
+        immutableSourceIdentityCommitment,
+      ),
+    };
+  });
+};
+
 interface SourceExposureLocation {
   readonly messageIndex: number;
   /** Global source order in the normalized request. */
@@ -1030,6 +1944,7 @@ const boundSourceExposureProofSha256Hex = (
   marker: ProviderVisibleSourceExposureMarker,
   location: SourceExposureLocation,
   expected: ExpectedVisibleSourceExposure | undefined,
+  descriptor: CodeOwnedSourceDescriptor,
 ): string =>
   providerVisibleSourceExposureProofSha256Hex(marker, {
     messageIndex: location.messageIndex,
@@ -1038,21 +1953,7 @@ const boundSourceExposureProofSha256Hex = (
     ...(location.characterOffset === undefined
       ? {}
       : { characterOffset: location.characterOffset }),
-    orderedSourceDescriptor: stableJson({
-      sourceOrdinal: location.sourceOrdinal,
-      messageIndex: location.messageIndex,
-      serializedField: location.serializedField,
-      ...(location.characterOffset === undefined
-        ? {}
-        : { characterOffset: location.characterOffset }),
-      sourceKind: marker.sourceKind,
-      exposureStage: marker.exposureStage,
-      logicalSourceIdentity: marker.logicalSourceIdentity,
-      contentItemIdentity: marker.contentItemIdentity,
-      visibleTokenCount: marker.visibleTokenCount,
-      publicDocumentId:
-        expected?.documentId ?? documentIdFromLogicalIdentity(marker.logicalSourceIdentity),
-    }),
+    orderedSourceDescriptor: codeOwnedDescriptorBinding(descriptor, marker, location.sourceOrdinal),
     ...((expected?.documentId ?? documentIdFromLogicalIdentity(marker.logicalSourceIdentity)) ===
     undefined
       ? {}
@@ -1075,14 +1976,17 @@ const sourceToolName = (name: string): boolean =>
   name === "search_within_candidate" ||
   name === "search_memories" ||
   name === "inspect_memory" ||
+  name === "search_evidence" ||
+  name === "inspect_evidence" ||
   name === "web_search" ||
   name === "web_fetch";
 
-const containsReservedExposureField = (value: unknown): boolean => {
-  if (Array.isArray(value)) return value.some(containsReservedExposureField);
+const containsHiddenProviderToolResultField = (value: unknown): boolean => {
+  if (Array.isArray(value)) return value.some(containsHiddenProviderToolResultField);
   if (!isJsonRecord(value)) return false;
   return Object.entries(value).some(
-    ([key, nested]) => key === SOURCE_EXPOSURE_FIELD || containsReservedExposureField(nested),
+    ([key, nested]) =>
+      HIDDEN_PROVIDER_TOOL_RESULT_FIELDS.has(key) || containsHiddenProviderToolResultField(nested),
   );
 };
 
@@ -1095,9 +1999,9 @@ const assertProviderRequestIsRedacted = (request: ProviderRequest): void => {
     } catch {
       continue;
     }
-    if (containsReservedExposureField(parsed)) {
+    if (containsHiddenProviderToolResultField(parsed)) {
       throw sourceExposureFailure(
-        `${SOURCE_EXPOSURE_FIELD} is code-owned and must not cross the provider boundary`,
+        "private source identity is code-owned and must not cross the provider boundary",
       );
     }
   }
@@ -1112,13 +2016,18 @@ const sourceResultField = (
     return `items[${index}].${toolName === "search_memories" ? "content" : "snippet"}`;
   }
   if (toolName === "search_within_candidate") return `matchPreviews[${index}].text`;
+  if (toolName === "search_evidence") return `matches[${index}].text`;
   if (toolName === "web_search") return `results[${index}].snippet`;
   if (toolName === "inspect_memory") return "memory.content";
   if (toolName === "web_fetch") return "text";
   if (toolName === "inspect_internal") {
     return expected.sourceKind === "chat_message" ? "message.content" : "text";
   }
-  if (toolName === "inspect_candidate" && expected.sourceKind === "chat_message") {
+  if (
+    toolName === "inspect_candidate" &&
+    expected.sourceKind === "chat_message" &&
+    expected.exposureStage === "provider_input"
+  ) {
     return index === 0 ? "conversationEntry.userContent" : "conversationEntry.assistantContent";
   }
   return "text";
@@ -1172,9 +2081,10 @@ const answerSourceDescriptors = (
       }
       cursor += 2;
     }
-    const header = /^<source key="([^"]+)" kind="([^"]+)"(?: label="(?:[^"\\]|\\.)*")?>\n/uy.exec(
-      evidence.slice(cursor),
-    );
+    const header =
+      /^<source key="([^"]+)" kind="([^"]+)" length="([1-9][0-9]*)"(?: label="((?:[^"\\]|\\.)*)")?>\n/uy.exec(
+        evidence.slice(cursor),
+      );
     if (header === null) {
       throw sourceExposureFailure("answer evidence contains a malformed source wrapper");
     }
@@ -1199,10 +2109,26 @@ const answerSourceDescriptors = (
     if (sourceKind === undefined) {
       throw sourceExposureFailure("answer evidence contains an invalid source kind");
     }
+    const rawLabel = header[4];
+    if (rawLabel !== undefined) {
+      let label: unknown;
+      try {
+        label = JSON.parse(`"${rawLabel}"`);
+      } catch {
+        throw sourceExposureFailure("answer evidence contains an invalid source label");
+      }
+      if (typeof label !== "string" || JSON.stringify(label) !== `"${rawLabel}"`) {
+        throw sourceExposureFailure("answer evidence contains a noncanonical source label");
+      }
+    }
     const bodyStart = cursor + header[0].length;
-    const bodyEnd = evidence.indexOf("\n</source>", bodyStart);
-    if (bodyEnd < bodyStart) {
-      throw sourceExposureFailure("answer evidence contains an unterminated source wrapper");
+    const declaredLength = Number(header[3]);
+    if (!Number.isSafeInteger(declaredLength) || declaredLength <= 0) {
+      throw sourceExposureFailure("answer evidence contains an invalid source body length");
+    }
+    const bodyEnd = bodyStart + declaredLength;
+    if (bodyEnd > evidence.length || !evidence.startsWith("\n</source>", bodyEnd)) {
+      throw sourceExposureFailure("answer evidence contains an invalid source body framing");
     }
     const visibleText = evidence.slice(bodyStart, bodyEnd);
     if (visibleText.length === 0) {
@@ -1315,6 +2241,9 @@ const assertCodeOwnedMarkerShape = (proof: CodeOwnedSourceExposureProof): void =
   ) {
     throw sourceExposureFailure("code-owned proof has an invalid request binding");
   }
+  if ((proof.sourceToolCallId === undefined) !== (proof.sourceResultIndex === undefined)) {
+    throw sourceExposureFailure("code-owned proof has a partial tool-result coordinate");
+  }
   if (
     ![
       "provider_input",
@@ -1325,23 +2254,57 @@ const assertCodeOwnedMarkerShape = (proof: CodeOwnedSourceExposureProof): void =
       "memory_tool_result",
       "web_search_preview",
       "web_fetch",
+      "evaluation_general_planner_search",
+      "evaluation_general_planner_inspect",
     ].includes(proof.exposureStage)
   ) {
     throw sourceExposureFailure("code-owned proof has an invalid exposure stage");
   }
+  if (
+    proof.sourceKind === "document" &&
+    proof.immutableContentHash !== undefined &&
+    !/^[a-f0-9]{64}$/u.test(proof.immutableContentHash)
+  ) {
+    throw sourceExposureFailure("document proof has an invalid immutable content hash");
+  }
   if (proof.exposureStage === "provider_input" && proof.sourceKind !== "chat_message") {
     throw sourceExposureFailure("provider-input proof must identify a chat message");
   }
+  const evaluationGeneralPlannerExposure =
+    proof.exposureStage === "evaluation_general_planner_search" ||
+    proof.exposureStage === "evaluation_general_planner_inspect";
+  if (evaluationGeneralPlannerExposure && proof.sourceKind !== "document") {
+    const match = /^(.*):([0-9]+):([0-9]+):([0-9a-f]{64})$/u.exec(proof.contentItemIdentity);
+    if (
+      match === null ||
+      match[1] !== proof.logicalSourceIdentity ||
+      !Number.isSafeInteger(Number(match[2])) ||
+      !Number.isSafeInteger(Number(match[3])) ||
+      Number(match[2]) < 0 ||
+      Number(match[3]) <= Number(match[2]) ||
+      match[4] !== createHash("sha256").update(proof.visibleText, "utf8").digest("hex")
+    ) {
+      throw sourceExposureFailure(
+        "general-planner proof identity differs from its exact fixture range",
+      );
+    }
+  }
   if (
+    !evaluationGeneralPlannerExposure &&
     proof.sourceKind === "chat_message" &&
     proof.logicalSourceIdentity !== chatMessageEvidenceIdentity(proof.contentItemIdentity)
   ) {
     throw sourceExposureFailure("code-owned chat proof identity is not canonical");
   }
-  if (proof.sourceKind === "memory" && !proof.logicalSourceIdentity.startsWith("memory:")) {
+  if (
+    !evaluationGeneralPlannerExposure &&
+    proof.sourceKind === "memory" &&
+    !proof.logicalSourceIdentity.startsWith("memory:")
+  ) {
     throw sourceExposureFailure("code-owned memory proof identity is not canonical");
   }
   if (
+    !evaluationGeneralPlannerExposure &&
     proof.sourceKind === "memory" &&
     (!/^memory:[^:\s]+$/u.test(proof.logicalSourceIdentity) ||
       proof.contentItemIdentity.trim() === "" ||
@@ -1349,7 +2312,7 @@ const assertCodeOwnedMarkerShape = (proof: CodeOwnedSourceExposureProof): void =
   ) {
     throw sourceExposureFailure("code-owned memory proof identity is not canonical");
   }
-  if (proof.sourceKind === "web") {
+  if (!evaluationGeneralPlannerExposure && proof.sourceKind === "web") {
     const namespaced = proof.logicalSourceIdentity.startsWith("web:");
     const identity = namespaced
       ? proof.logicalSourceIdentity.slice("web:".length)
@@ -1404,6 +2367,22 @@ const codeOwnedDescriptorBinding = (
     publicDocumentId:
       descriptor.documentId ?? documentIdFromLogicalIdentity(proof.logicalSourceIdentity),
     visibleTokenCount: proof.visibleTokenCount,
+    ...(isCodeOwnedSourceExposureProof(proof) && proof.sourceToolCallId !== undefined
+      ? { sourceToolCallId: proof.sourceToolCallId }
+      : {}),
+    ...(isCodeOwnedSourceExposureProof(proof) && proof.sourceResultIndex !== undefined
+      ? { sourceResultIndex: proof.sourceResultIndex }
+      : {}),
+    ...(isCodeOwnedSourceExposureProof(proof) && proof.immutableContentHash !== undefined
+      ? { immutableContentHash: proof.immutableContentHash }
+      : {}),
+    ...(isCodeOwnedSourceExposureProof(proof) &&
+    proof.immutableSourceIdentityCommitment !== undefined
+      ? { immutableSourceIdentityCommitment: proof.immutableSourceIdentityCommitment }
+      : {}),
+    ...(isCodeOwnedSourceExposureProof(proof) && proof.immutableSourceCommitment !== undefined
+      ? { immutableSourceCommitment: proof.immutableSourceCommitment }
+      : {}),
   });
 
 const expectedToolExposures = (normalized: ProviderRequest): readonly LocatedSourceExposure[] => {
@@ -1457,6 +2436,17 @@ const expectedToolExposures = (normalized: ProviderRequest): readonly LocatedSou
       throw sourceExposureFailure("marker cardinality differs from visible source bodies");
     }
     expected.forEach((item, index) => {
+      const boundExpected = {
+        ...item,
+        sourceToolCallId: call.id,
+        sourceResultIndex: index,
+        providerVisibleBinding: providerVisibleBindingForCall(
+          message.name,
+          call,
+          index,
+          providerVisibleSourceBinding(item),
+        ),
+      } satisfies ExpectedVisibleSourceExposure;
       const marker = embedded?.[index];
       exposures.push({
         marker: marker ?? {
@@ -1467,7 +2457,7 @@ const expectedToolExposures = (normalized: ProviderRequest): readonly LocatedSou
           visibleTokenCount: 0,
         },
         location: sourceResultLocation(messageIndex, message.name, index, item),
-        expected: item,
+        expected: boundExpected,
       });
     });
   }
@@ -1593,8 +2583,8 @@ const verifyCodeOwnedExposureInventory = (
   if (invalid) {
     throw sourceExposureFailure("code-owned exposure inventory contains an invalid proof");
   }
-  const proofs = markers;
-  for (const proof of proofs) {
+  const markerProofs = markers;
+  for (const proof of markerProofs) {
     if (!isCodeOwnedSourceExposureProof(proof)) continue;
     assertCodeOwnedMarkerShape(proof);
     const visibleTokenCount = countTextTokens(proof.visibleText);
@@ -1620,9 +2610,9 @@ const verifyCodeOwnedExposureInventory = (
       `${SOURCE_EXPOSURE_FIELD} is code-owned and must be stripped before a sidecar request`,
     );
   }
-  if (proofs.length !== normalizedExposures.length) {
+  if (markerProofs.length !== normalizedExposures.length) {
     throw sourceExposureFailure(
-      proofs.length < normalizedExposures.length
+      markerProofs.length < normalizedExposures.length
         ? "missing proof for an exact normalized request field"
         : "extra proof has no exact normalized request field",
     );
@@ -1630,7 +2620,7 @@ const verifyCodeOwnedExposureInventory = (
   const boundProofs: string[] = [];
   const bindings: ProviderRequestSourceExposureProofBinding[] = [];
   for (const [index, exposure] of normalizedExposures.entries()) {
-    const proof = proofs[index]!;
+    const proof = markerProofs[index]!;
     const expected = exposure.expected;
     if (exposure.descriptor !== undefined) {
       if (!isCodeOwnedSourceExposureProof(proof)) {
@@ -1648,6 +2638,27 @@ const verifyCodeOwnedExposureInventory = (
         assertExactSourceExposureMarker(proof, expected, countTextTokens);
       } catch {
         throw sourceExposureFailure("sidecar does not match the exact visible tool result");
+      }
+      if (isCodeOwnedSourceExposureProof(proof)) {
+        if (
+          (expected.sourceToolCallId !== undefined &&
+            proof.sourceToolCallId !== expected.sourceToolCallId) ||
+          (expected.sourceResultIndex !== undefined &&
+            proof.sourceResultIndex !== expected.sourceResultIndex)
+        ) {
+          throw sourceExposureFailure("sidecar tool-result coordinate differs from its source");
+        }
+      }
+      if (
+        expected.requiresPrivateCommitment === true &&
+        (!isCodeOwnedSourceExposureProof(proof) ||
+          proof.immutableContentHash === undefined ||
+          proof.immutableSourceIdentityCommitment === undefined ||
+          proof.immutableSourceCommitment === undefined)
+      ) {
+        throw sourceExposureFailure(
+          "redacted source exposure lacks its immutable code-owned commitment",
+        );
       }
       if (isCodeOwnedSourceExposureProof(proof)) {
         if (
@@ -1683,6 +2694,12 @@ const verifyCodeOwnedExposureInventory = (
           publicDocumentId:
             expected.documentId ?? documentIdFromLogicalIdentity(proof.logicalSourceIdentity),
           visibleTokenCount: proof.visibleTokenCount,
+          ...(proof.sourceToolCallId === undefined
+            ? {}
+            : { sourceToolCallId: proof.sourceToolCallId }),
+          ...(proof.sourceResultIndex === undefined
+            ? {}
+            : { sourceResultIndex: proof.sourceResultIndex }),
         });
         if (
           proof.orderedSourceDescriptor !== undefined &&
@@ -1701,11 +2718,58 @@ const verifyCodeOwnedExposureInventory = (
             "sidecar public document ID differs from its source descriptor",
           );
         }
+        if (expected.requiresPrivateCommitment === true) {
+          const providerVisibleBinding =
+            expected.providerVisibleBinding ?? providerVisibleSourceBinding(expected);
+          if (
+            proof.immutableSourceCommitment !==
+            providerVisibleSourceExposureCommitment(
+              proof,
+              providerVisibleBinding,
+              proof.immutableContentHash!,
+              proof.immutableSourceIdentityCommitment!,
+            )
+          ) {
+            throw sourceExposureFailure("immutable source exposure commitment does not match");
+          }
+        } else if (isCodeOwnedSourceExposureProof(proof)) {
+          if (
+            proof.immutableContentHash !== undefined &&
+            proof.immutableSourceIdentityCommitment !== undefined &&
+            proof.immutableSourceCommitment !== undefined
+          ) {
+            const providerVisibleBinding =
+              expected.providerVisibleBinding ?? providerVisibleSourceBinding(expected);
+            if (
+              proof.immutableSourceCommitment !==
+              providerVisibleSourceExposureCommitment(
+                proof,
+                providerVisibleBinding,
+                proof.immutableContentHash,
+                proof.immutableSourceIdentityCommitment,
+              )
+            ) {
+              throw sourceExposureFailure("immutable source exposure commitment does not match");
+            }
+          }
+        }
       }
     } else {
       throw sourceExposureFailure("source exposure location lacks its expected body");
     }
-    const boundProof = boundSourceExposureProofSha256Hex(proof, exposure.location, expected);
+    const bindingDescriptor = exposure.descriptor ?? {
+      sourceKind: proof.sourceKind,
+      exposureStage: proof.exposureStage,
+      visibleText: isCodeOwnedSourceExposureProof(proof) ? proof.visibleText : "",
+      location: exposure.location,
+    };
+    const orderedSourceDescriptor = codeOwnedDescriptorBinding(bindingDescriptor, proof, index);
+    const boundProof = boundSourceExposureProofSha256Hex(
+      proof,
+      exposure.location,
+      expected,
+      bindingDescriptor,
+    );
     boundProofs.push(boundProof);
     bindings.push({
       providerSerializationProofSha256Hex: boundProof,
@@ -1723,16 +2787,7 @@ const verifyCodeOwnedExposureInventory = (
         ...(exposure.location.characterOffset === undefined
           ? {}
           : { characterOffset: exposure.location.characterOffset }),
-        orderedSourceDescriptor: codeOwnedDescriptorBinding(
-          exposure.descriptor ?? {
-            sourceKind: proof.sourceKind,
-            exposureStage: proof.exposureStage,
-            visibleText: isCodeOwnedSourceExposureProof(proof) ? proof.visibleText : "",
-            location: exposure.location,
-          },
-          proof,
-          index,
-        ),
+        orderedSourceDescriptor,
         ...((expected?.documentId ?? documentIdFromLogicalIdentity(proof.logicalSourceIdentity)) ===
         undefined
           ? {}
@@ -1749,10 +2804,26 @@ const verifyCodeOwnedExposureInventory = (
       binding.binding,
     );
   }
-  if (new Set(boundProofs).size !== boundProofs.length) {
-    throw sourceExposureFailure("code-owned exposure inventory contains duplicate bindings");
+  const latestBindingByMarker = new Map<string, ProviderRequestSourceExposureProofBinding>();
+  for (const binding of bindings) {
+    const markerKey = providerSourceExposureMarkerKey(binding.marker);
+    const previous = latestBindingByMarker.get(markerKey);
+    if (previous === undefined || binding.binding.sourceOrdinal > previous.binding.sourceOrdinal) {
+      latestBindingByMarker.set(markerKey, binding);
+    }
   }
-  return { proofs: boundProofs.sort(), bindings };
+  const selectedBindings = [...latestBindingByMarker.values()].sort((left, right) =>
+    left.providerSerializationProofSha256Hex.localeCompare(
+      right.providerSerializationProofSha256Hex,
+    ),
+  );
+  const proofs = selectedBindings
+    .map((binding) => binding.providerSerializationProofSha256Hex)
+    .sort();
+  return {
+    proofs,
+    bindings: selectedBindings,
+  };
 };
 
 /**

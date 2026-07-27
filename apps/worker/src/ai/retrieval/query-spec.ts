@@ -12,28 +12,23 @@ export interface QuerySpec {
   readonly limit?: number | undefined;
 }
 
-export type SourceAccess =
-  | {
-      readonly kind: "sourceIds";
-      readonly sourceIds: readonly string[];
-    }
-  | {
-      /**
-       * Worker-only live authorization. The predicate is compiled into the
-       * ranked search itself so a disabled source or revoked chat membership
-       * cannot expose a preview or consume a pre-limit result slot.
-       */
-      readonly kind: "liveChatSourceIds";
-      readonly chatId: string;
-      readonly initiatingUserId: string;
-      readonly sourceIds: readonly string[];
-    };
+export type SourceAccess = {
+  /** Immutable source IDs captured by the accepted run or a current catalog read. */
+  readonly kind: "sourceIds";
+  readonly sourceIds: readonly string[];
+};
 
 export interface DocumentPreview {
   readonly kind: "public_source" | "publisher";
   readonly sourceId: string;
   readonly documentId: string;
-  readonly documentVersionId: string;
+  readonly versionId: string;
+  readonly contentHash: string;
+  readonly publisherExtractionId?: string | undefined;
+  /** Full immutable text stays server-side; only an exact source slice preview enters tool output. */
+  readonly text: string;
+  /** Exact UTF-16 spans of the original text that contributed to the preview. */
+  readonly previewRanges: readonly { readonly charStart: number; readonly charEnd: number }[];
   readonly issueId?: string | undefined;
   readonly title: string;
   readonly sourceDisplayName: string;

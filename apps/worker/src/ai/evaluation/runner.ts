@@ -2,15 +2,14 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-import {
-  ConversationResolverPrompt,
-  DirectAnswerPrompt,
-  SynthesisPrompt,
-  TopicAnswerPrompt,
-} from "../prompts";
+import { PlanTurnPrompt, DirectAnswerPrompt, SynthesisPrompt, TopicAnswerPrompt } from "../prompts";
 import { resolveRegisteredModel, usableInputTokens } from "../runtime/model-registry";
-import { providerRequestSha256Hex, type ProviderRequest } from "../runtime/provider-request";
-import { ConversationResolutionProviderSchema } from "../runtime/validators";
+import {
+  providerRequestSha256Hex,
+  serializeAnswerSource,
+  type ProviderRequest,
+} from "../runtime/provider-request";
+import { PlanTurnProviderSchema } from "../runtime/validators";
 import {
   GeneralPlannerEvaluationResultsSchema,
   GoldenEvaluationSetSchema,
@@ -124,7 +123,7 @@ export const productionPacketSha256Hex = (packet: ExactProductionTopicPacket): s
     .update(JSON.stringify(canonicalValue(packet)))
     .digest("hex");
 
-export const exactConversationResolverRequest = (
+export const exactPlanTurnRequest = (
   fixture: GoldenEvaluationCase,
   selectedConversation: readonly ExactProductionConversationBinding[],
   currentDate: string,
@@ -132,7 +131,7 @@ export const exactConversationResolverRequest = (
   requestClass: "fast",
   model: "glm-5-turbo",
   messages: [
-    { role: "system", content: ConversationResolverPrompt },
+    { role: "system", content: PlanTurnPrompt },
     {
       role: "user",
       content: JSON.stringify({
@@ -146,9 +145,9 @@ export const exactConversationResolverRequest = (
   ],
   tools: [
     {
-      name: "emit_conversation_resolution",
-      description: "Emit the validated conversation resolution.",
-      parameters: z.toJSONSchema(ConversationResolutionProviderSchema),
+      name: "emit_plan_turn",
+      description: "Emit the validated plan-turn result.",
+      parameters: z.toJSONSchema(PlanTurnProviderSchema),
     },
   ],
   toolChoice: "auto",
@@ -156,7 +155,7 @@ export const exactConversationResolverRequest = (
   reasoning: "medium",
 });
 
-export const attestExactConversationResolverRequest = (
+export const attestExactPlanTurnRequest = (
   fixture: GoldenEvaluationCase,
   selectedConversation: readonly ExactProductionConversationBinding[],
   currentDate: string,
@@ -165,7 +164,7 @@ export const attestExactConversationResolverRequest = (
   readonly usableInputTokens: number;
   readonly requestSha256Hex: string;
 } => {
-  const request = exactConversationResolverRequest(fixture, selectedConversation, currentDate);
+  const request = exactPlanTurnRequest(fixture, selectedConversation, currentDate);
   const model = resolveRegisteredModel(request.model);
   return {
     inputTokens: model.countRequestTokens(request),
@@ -235,11 +234,15 @@ const canonicalEvaluationRequest = (
           ? `Canonical golden web evidence ${fixture.id}`
           : null;
     return [
-      [
-        `<source key=${JSON.stringify(productionSourceKey ?? source.sourceId)} kind=${JSON.stringify(source.kind)}${options.productionSourceKeys === undefined || productionLabel === null ? "" : ` label=${JSON.stringify(productionLabel)}`}>`,
-        content,
-        "</source>",
-      ].join("\n"),
+      serializeAnswerSource({
+        key: productionSourceKey ?? source.sourceId,
+        kind: source.kind,
+        label:
+          options.productionSourceKeys === undefined || productionLabel === null
+            ? null
+            : productionLabel,
+        text: content,
+      }),
     ];
   });
   if (selectedEvidence.length !== selections.length) {
@@ -261,9 +264,9 @@ const canonicalEvaluationRequest = (
     }));
   const question =
     options.question ??
-    (fixture.labels.resolution.mode === "continue"
-      ? fixture.labels.resolution.canonicalRetrievalQuestion
-      : fixture.currentMessage);
+    (fixture.labels.planTurn.mode === "clarify"
+      ? fixture.currentMessage
+      : fixture.labels.planTurn.question);
   return {
     requestClass: "main",
     model: CanonicalEvaluationTokenGate.modelId,
@@ -394,11 +397,12 @@ const exactProductionEvidence = (
               .map((range) => sourceContent.slice(range.charStart, range.charEnd))
               .join("\n…\n")
           : sourceContent;
-      return [
-        `<source key=${JSON.stringify(binding.sourceKey)} kind=${JSON.stringify(source.kind)}${binding.label === null ? "" : ` label=${JSON.stringify(binding.label)}`}>`,
+      return serializeAnswerSource({
+        key: binding.sourceKey,
+        kind: source.kind,
+        label: binding.label,
         text,
-        "</source>",
-      ].join("\n");
+      });
     })
     .join("\n\n");
 };
@@ -604,7 +608,7 @@ export const canonicalEvaluationUsableInputTokens = (): number => {
 
 export const EvaluationGateThresholds = {
   conversationTurnSelectionF1: 1,
-  retrievalQuestionFidelity: 0.85,
+  planQuestionFidelity: 0.85,
   clarificationPrecision: 1,
   clarificationRecall: 1,
   fanoutPrecision: 1,
@@ -642,7 +646,7 @@ export const EvaluationGateThresholds = {
 
 export type EvaluationMetricName =
   | "conversation.turn_selection_f1"
-  | "conversation.retrieval_question_fidelity"
+  | "conversation.plan_question_fidelity"
   | "conversation.clarification_precision"
   | "conversation.clarification_recall"
   | "planner.fanout_precision"
@@ -691,7 +695,7 @@ export interface EvaluationGate {
 }
 
 export interface EvaluationReport {
-  readonly goldenSetVersion: 2;
+  readonly goldenSetVersion: 3;
   readonly caseCount: number;
   readonly specializedRunIds: readonly string[];
   readonly baselineRunIds: readonly string[];
@@ -796,10 +800,31 @@ const setIntersectionCount = (left: ReadonlySet<string>, right: ReadonlySet<stri
   return count;
 };
 
+const sameStringSequence = (left: readonly string[], right: readonly string[]): boolean =>
+  left.length === right.length && left.every((value, index) => value === right[index]);
+
 const sameStringSet = (left: readonly string[], right: readonly string[]): boolean => {
   if (left.length !== right.length) return false;
   const rightSet = new Set(right);
   return left.every((value) => rightSet.has(value));
+};
+
+const fanoutMatchesGoldenTopics = (
+  fixture: GoldenEvaluationCase,
+  plan: Extract<SpecializedEvaluationResult["planTurn"], { mode: "fanout" }>,
+): boolean => {
+  if (fixture.labels.planTurn.mode !== "fanout") return false;
+  const expected = fixture.labels.planTurn.topics;
+  if (plan.topics.length !== expected.length) return false;
+  return plan.topics.every((topic, index) => {
+    const golden = expected[index];
+    return (
+      golden !== undefined &&
+      topic.topicId === golden.topicId &&
+      topic.question === golden.question &&
+      sameUniqueStringSet(topic.relevantTurnIds, golden.relevantTurnIds)
+    );
+  });
 };
 
 const sameRanges = (left: readonly EvaluationRange[], right: readonly EvaluationRange[]): boolean =>
@@ -1114,6 +1139,70 @@ type ProductionTerminal = Extract<
 >["terminal"];
 type ProductionLedger = ProductionTerminal["ledger"];
 
+const productionConversationFixtureTurnIds = (
+  conversation: readonly { readonly fixtureTurnId: string }[],
+): readonly string[] => conversation.map((entry) => entry.fixtureTurnId);
+
+const sameUniqueStringSet = (left: readonly string[], right: readonly string[]): boolean =>
+  new Set(left).size === left.length &&
+  new Set(right).size === right.length &&
+  sameStringSet(left, right);
+
+const assertLedgerMatchesPlanTurn = (
+  fixture: GoldenEvaluationCase,
+  planTurn: SpecializedEvaluationResult["planTurn"],
+  ledger: ProductionLedger,
+  path: string,
+): void => {
+  const actualTurns = productionConversationFixtureTurnIds(ledger.selectedConversation);
+  if (ledger.requestKind === "direct") {
+    if (
+      planTurn.mode !== "single" ||
+      ledger.question !== planTurn.question ||
+      !sameStringSequence(actualTurns, planTurn.relevantTurnIds)
+    ) {
+      throw new EvaluationInputError(
+        `specialized/${fixture.id} ${path} direct ledger differs from plan-turn`,
+      );
+    }
+    return;
+  }
+  if (ledger.requestKind !== "topic" || planTurn.mode !== "fanout") {
+    throw new EvaluationInputError(
+      `specialized/${fixture.id} ${path} ledger route differs from plan-turn`,
+    );
+  }
+  const topic = planTurn.topics.find((candidate) => candidate.topicId === ledger.topicId);
+  if (
+    topic === undefined ||
+    ledger.question !== topic.question ||
+    !sameUniqueStringSet(actualTurns, topic.relevantTurnIds)
+  ) {
+    throw new EvaluationInputError(
+      `specialized/${fixture.id} ${path} topic ledger differs from plan-turn`,
+    );
+  }
+};
+
+const assertSynthesisConversationMatchesPlanTurn = (
+  fixture: GoldenEvaluationCase,
+  planTurn: SpecializedEvaluationResult["planTurn"],
+  ledger: Extract<ProductionLedger, { readonly requestKind: "synthesis" }>,
+): void => {
+  if (planTurn.mode !== "fanout") {
+    throw new EvaluationInputError(
+      `specialized/${fixture.id} synthesis ledger exists without a fanout plan-turn`,
+    );
+  }
+  const expectedTurns = planTurn.topics.flatMap((topic) => topic.relevantTurnIds);
+  const actualTurns = productionConversationFixtureTurnIds(ledger.selectedConversation);
+  if (!sameStringSequence(actualTurns, expectedTurns)) {
+    throw new EvaluationInputError(
+      `specialized/${fixture.id} synthesis ledger conversation differs from plan-turn`,
+    );
+  }
+};
+
 const usageCoordinateKey = (coordinate: {
   readonly taskId: string;
   readonly loopIteration: number;
@@ -1320,32 +1409,32 @@ const attestProductionTopology = (
 ): { readonly shouldReduce: boolean; readonly converged: boolean; readonly planValid: boolean } => {
   const production = result.productionContext;
   if (production.mode === "clarification") {
-    const resolver = production.resolverRequest;
-    const exact = attestExactConversationResolverRequest(
+    const planTurnRequest = production.planTurnRequest;
+    const exact = attestExactPlanTurnRequest(
       fixture,
-      resolver.conversation,
-      resolver.currentDate,
+      planTurnRequest.conversation,
+      planTurnRequest.currentDate,
     );
-    const requestId = usageCoordinateKey(resolver.terminalUsageCoordinate);
+    const requestId = usageCoordinateKey(planTurnRequest.terminalUsageCoordinate);
     const valid = result.promptMeasurements.some(
       (measurement) =>
         measurement.requestId === requestId &&
-        measurement.requestSha256Hex === resolver.requestSha256Hex &&
+        measurement.requestSha256Hex === planTurnRequest.requestSha256Hex &&
         measurement.localInputTokens === production.providerInputTokens &&
         measurement.providerInputTokens === production.providerInputTokens &&
         measurement.gatePassed,
     );
     if (
       !valid ||
-      resolver.terminalUsageCoordinate.taskId !== "resolve-conversation" ||
-      resolver.currentUserMessageId.length === 0 ||
-      resolver.inputTokens !== exact.inputTokens ||
-      resolver.usableInputTokens !== exact.usableInputTokens ||
-      resolver.requestSha256Hex !== exact.requestSha256Hex ||
-      resolver.requestedOutputTokens !== 2048
+      planTurnRequest.terminalUsageCoordinate.taskId !== "plan-turn" ||
+      planTurnRequest.currentUserMessageId.length === 0 ||
+      planTurnRequest.inputTokens !== exact.inputTokens ||
+      planTurnRequest.usableInputTokens !== exact.usableInputTokens ||
+      planTurnRequest.requestSha256Hex !== exact.requestSha256Hex ||
+      planTurnRequest.requestedOutputTokens !== 2048
     ) {
       throw new EvaluationInputError(
-        `specialized/${fixture.id} clarification lacks exact resolver usage`,
+        `specialized/${fixture.id} clarification lacks exact plan-turn usage`,
       );
     }
     return { shouldReduce: false, converged: true, planValid: true };
@@ -1354,6 +1443,13 @@ const attestProductionTopology = (
     if (production.initial.requestKind !== "direct") {
       throw new EvaluationInputError(`specialized/${fixture.id} single-fit ledger is not direct`);
     }
+    assertLedgerMatchesPlanTurn(fixture, result.planTurn, production.initial, "single initial");
+    assertLedgerMatchesPlanTurn(
+      fixture,
+      result.planTurn,
+      production.terminal.ledger,
+      "single terminal",
+    );
     attestArtifactProductionLedger(fixture, production.initial);
     assertTerminalProductionLedger(fixture, result, production.terminal, "direct", "single-answer");
     const valid =
@@ -1372,6 +1468,13 @@ const attestProductionTopology = (
         `specialized/${fixture.id} single-reduced ledger is not direct`,
       );
     }
+    assertLedgerMatchesPlanTurn(fixture, result.planTurn, production.initial, "single initial");
+    assertLedgerMatchesPlanTurn(
+      fixture,
+      result.planTurn,
+      production.terminal.ledger,
+      "single terminal",
+    );
     attestArtifactProductionLedger(fixture, production.initial);
     assertTerminalProductionLedger(fixture, result, production.terminal, "direct", "single-answer");
     const planValid = productionDecisionPlanValid(
@@ -1392,7 +1495,12 @@ const attestProductionTopology = (
   let shouldReduce = false;
   let converged = true;
   let planValid = true;
-  const expectedTopicIds = (["t1", "t2", "t3"] as const).slice(0, production.topics.length);
+  if (result.planTurn.mode !== "fanout") {
+    throw new EvaluationInputError(
+      `specialized/${fixture.id} fanout production exists without a fanout plan-turn`,
+    );
+  }
+  const expectedTopicIds = result.planTurn.topics.map((topic) => topic.topicId);
   if (
     JSON.stringify(production.topics.map((topic) => topic.topicId)) !==
     JSON.stringify(expectedTopicIds)
@@ -1408,6 +1516,18 @@ const attestProductionTopology = (
     ) {
       throw new EvaluationInputError(`specialized/${fixture.id} has a route-mismatched topic`);
     }
+    assertLedgerMatchesPlanTurn(
+      fixture,
+      result.planTurn,
+      topic.initial,
+      `${topic.topicId} initial`,
+    );
+    assertLedgerMatchesPlanTurn(
+      fixture,
+      result.planTurn,
+      topic.terminal.ledger,
+      `${topic.topicId} terminal`,
+    );
     attestArtifactProductionLedger(fixture, topic.initial);
     assertTerminalProductionLedger(
       fixture,
@@ -1451,6 +1571,7 @@ const attestProductionTopology = (
   ) {
     throw new EvaluationInputError(`specialized/${fixture.id} synthesis route mismatch`);
   }
+  assertSynthesisConversationMatchesPlanTurn(fixture, result.planTurn, production.synthesis.ledger);
   converged &&=
     production.synthesis.ledger.inputTokens <= production.synthesis.ledger.usableInputTokens;
   return { shouldReduce, converged, planValid };
@@ -1584,48 +1705,60 @@ export const evaluateSuite = (
     specializedSerializedContextTokens += exactSerializedTokens;
     baselineSerializedContextTokens += exactBaselineSerializedTokens;
     const expectedTurns = new Set(fixture.labels.relevantTurnIds);
-    if (result.conversationResolution.mode === "continue") {
-      const selectedTurns = new Set(result.conversationResolution.selectedTurnIds);
+    if (result.planTurn.mode === "single" || result.planTurn.mode === "fanout") {
+      const selectedTurnIds =
+        result.planTurn.mode === "single"
+          ? result.planTurn.relevantTurnIds
+          : result.planTurn.topics.flatMap((topic) => topic.relevantTurnIds);
+      const selectedTurns = new Set<string>(selectedTurnIds);
       selectedTurnCorrect += setIntersectionCount(selectedTurns, expectedTurns);
       selectedTurnPredicted += selectedTurns.size;
       selectedTurnExpected += expectedTurns.size;
-      if (fixture.labels.resolution.mode === "continue") {
+      if (fixture.labels.planTurn.mode !== "fanout") {
         const termCoverage = termGroupCoverage(
-          result.conversationResolution.retrievalQuestion,
-          fixture.labels.resolution.requiredTermGroups,
+          result.planTurn.question,
+          fixture.labels.planTurn.mode === "single"
+            ? fixture.labels.planTurn.requiredTermGroups
+            : fixture.labels.planTurn.requiredQuestionTermGroups,
         );
         retrievalFidelities.push(
           0.7 * termCoverage +
             0.3 *
-              tokenF1(
-                result.conversationResolution.retrievalQuestion,
-                fixture.labels.resolution.canonicalRetrievalQuestion,
-              ),
+              (fixture.labels.planTurn.mode === "single"
+                ? tokenF1(result.planTurn.question, fixture.labels.planTurn.question)
+                : 1),
         );
       }
     } else {
       selectedTurnExpected += expectedTurns.size;
       clarifyPredicted += 1;
       if (
-        fixture.labels.resolution.mode === "clarify" &&
+        fixture.labels.planTurn.mode === "clarify" &&
         termGroupCoverage(
-          result.conversationResolution.question,
-          fixture.labels.resolution.requiredQuestionTermGroups,
+          result.planTurn.question,
+          fixture.labels.planTurn.requiredQuestionTermGroups,
         ) === 1
       ) {
         clarifyTruePositive += 1;
       }
     }
-    if (fixture.labels.resolution.mode === "clarify") clarifyExpected += 1;
+    if (fixture.labels.planTurn.mode === "clarify") clarifyExpected += 1;
 
-    const predictedFanout = result.executionPlan.mode === "fanout";
-    const suitableForFanout = fixture.labels.fanoutSuitability !== "forbidden";
+    const predictedFanout = result.planTurn.mode === "fanout";
+    const suitableForFanout = fixture.labels.planTurn.mode === "fanout";
     if (predictedFanout) {
       fanoutPredicted += 1;
-      if (suitableForFanout) fanoutTruePositive += 1;
-      else falseDecompositions += 1;
+      if (
+        suitableForFanout &&
+        fanoutMatchesGoldenTopics(
+          fixture,
+          result.planTurn as Extract<typeof result.planTurn, { mode: "fanout" }>,
+        )
+      ) {
+        fanoutTruePositive += 1;
+      } else falseDecompositions += 1;
     }
-    if (fixture.labels.fanoutSuitability === "required") {
+    if (fixture.labels.planTurn.mode === "fanout") {
       fanoutRequired += 1;
       if (predictedFanout) fanoutRequiredSelected += 1;
     }
@@ -1891,7 +2024,7 @@ export const evaluateSuite = (
 
   const metrics: Record<EvaluationMetricName, number> = {
     "conversation.turn_selection_f1": f1(turnPrecision, turnRecall),
-    "conversation.retrieval_question_fidelity": mean(retrievalFidelities),
+    "conversation.plan_question_fidelity": mean(retrievalFidelities),
     "conversation.clarification_precision": precision({
       correct: clarifyTruePositive,
       predicted: clarifyPredicted,
@@ -1961,9 +2094,9 @@ export const evaluateSuite = (
       EvaluationGateThresholds.conversationTurnSelectionF1,
     ),
     gateAtLeast(
-      "conversation.retrieval_question_fidelity",
-      metrics["conversation.retrieval_question_fidelity"],
-      EvaluationGateThresholds.retrievalQuestionFidelity,
+      "conversation.plan_question_fidelity",
+      metrics["conversation.plan_question_fidelity"],
+      EvaluationGateThresholds.planQuestionFidelity,
     ),
     gateAtLeast(
       "conversation.clarification_precision",

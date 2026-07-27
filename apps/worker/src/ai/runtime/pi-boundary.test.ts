@@ -4,16 +4,22 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ExactPiBoundary } from "./pi-boundary";
 import { ProviderSemaphore } from "./provider-semaphore";
-import { namespacedDocumentEvidenceIdentity, sha256Base64Url } from "./canonicalization";
+import {
+  chatMessageEvidenceIdentity,
+  namespacedDocumentEvidenceIdentity,
+  sha256Base64Url,
+} from "./canonicalization";
 import {
   normalizeProviderRequest,
+  providerRequestSourceExposureProofs,
   providerRequestSha256Hex,
-  providerVisibleSourceExposureProofSha256Hex,
   stableJson,
   type LiveProviderRequest,
   type ProviderVisibleSourceExposureMarker,
 } from "./provider-request";
 import { resolveRegisteredModel } from "./model-registry";
+
+const officialProviderEndpoint = "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4";
 
 const assistant = (text: string): AssistantMessage => ({
   role: "assistant",
@@ -154,6 +160,7 @@ describe("exact Pi boundary", () => {
     });
     boundary.bindAcceptedProviderProfile({
       providerServiceId: "zai_coding_plan_official",
+      providerEndpointIdentity: officialProviderEndpoint,
       fastModelId: "glm-5-turbo",
       mainModelId: "glm-5-turbo",
     });
@@ -278,6 +285,7 @@ describe("exact Pi boundary", () => {
     });
     boundary.bindAcceptedProviderProfile({
       providerServiceId: "zai_coding_plan_official",
+      providerEndpointIdentity: officialProviderEndpoint,
       fastModelId: "glm-5-turbo",
       mainModelId: "glm-5-turbo",
     });
@@ -367,6 +375,7 @@ describe("exact Pi boundary", () => {
       expect.objectContaining({ passed: true, requestedOutputTokens: 64 }),
       normalizeProviderRequest(request),
       [],
+      [],
     );
     expect(onUsage).toHaveBeenCalledWith(
       coordinates,
@@ -415,6 +424,7 @@ describe("exact Pi boundary", () => {
           { role: "user", content: "Question" },
         ],
       }),
+      [],
       [],
     );
   });
@@ -468,15 +478,12 @@ describe("exact Pi boundary", () => {
 
   it("passes only independently recounted source-exposure proofs to durable measurement", async () => {
     const visibleText = "exact visible document preview";
-    const logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
-      { kind: "public", sourceId: "public:source-1" },
-      "doc-1",
-    );
+    const logicalSourceIdentity = chatMessageEvidenceIdentity("message-1");
     const marker: ProviderVisibleSourceExposureMarker = {
-      sourceKind: "document",
+      sourceKind: "chat_message",
       logicalSourceIdentity,
-      contentItemIdentity: `${logicalSourceIdentity}:version-1:${sha256Base64Url(visibleText)}`,
-      exposureStage: "internal_search_preview",
+      contentItemIdentity: "message-1",
+      exposureStage: "internal_inspection",
       visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
     };
     const sourceRequest: LiveProviderRequest = {
@@ -502,17 +509,15 @@ describe("exact Pi boundary", () => {
           content: JSON.stringify({
             items: [
               {
-                kind: "public_source",
-                sourceId: "public:source-1",
-                documentId: "doc-1",
-                documentVersionId: "version-1",
+                kind: "chat_message",
+                messageId: "message-1",
                 snippet: visibleText,
               },
             ],
-            __briefSourceExposures: [marker],
           }),
         },
       ],
+      sourceExposureProofs: [marker],
     };
     const onMeasurement = vi.fn();
     const complete = vi.fn(async () => assistant("done"));
@@ -534,7 +539,10 @@ describe("exact Pi boundary", () => {
       coordinates,
       expect.objectContaining({ passed: true }),
       normalizeProviderRequest(sourceRequest),
-      [providerVisibleSourceExposureProofSha256Hex(marker)],
+      providerRequestSourceExposureProofs(sourceRequest, (text) =>
+        resolveRegisteredModel("glm-5-turbo").countTextTokens(text),
+      ),
+      expect.any(Array),
     );
     expect(complete).toHaveBeenCalledOnce();
   });
@@ -575,17 +583,15 @@ describe("exact Pi boundary", () => {
           content: JSON.stringify({
             items: [
               {
-                kind: "public_source",
-                sourceId: "public:source-1",
+                kind: "document",
                 documentId: "doc-1",
-                documentVersionId: "version-1",
                 snippet: visibleText,
               },
             ],
-            __briefSourceExposures: [marker],
           }),
         },
       ],
+      sourceExposureProofs: [marker],
     };
     const onMeasurement = vi.fn();
     const complete = vi.fn(async () => assistant("must not run"));
@@ -816,6 +822,7 @@ describe("exact Pi boundary", () => {
         inputTokens: resolveRegisteredModel("glm-5-turbo").countRequestTokens(normalized),
       }),
       normalized,
+      [],
       [],
     );
   });

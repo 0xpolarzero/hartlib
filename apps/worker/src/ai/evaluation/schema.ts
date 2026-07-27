@@ -37,6 +37,16 @@ const uniqueStrings = z.array(nonEmpty).superRefine((values, context) => {
   }
 });
 
+const orderedTopicIds = (topicIds: readonly string[], context: z.RefinementCtx): void => {
+  const expected = ["t1", "t2", "t3"].slice(0, topicIds.length);
+  if (topicIds.some((topicId, index) => topicId !== expected[index])) {
+    context.addIssue({
+      code: "custom",
+      message: "fanout topic IDs must be ordered t1, t2, t3",
+    });
+  }
+};
+
 export const EvaluationRangeSchema = z
   .object({
     charStart: z.number().int().nonnegative(),
@@ -126,20 +136,105 @@ const GoldenMemoryProposalSchema = z
 
 export type GoldenMemoryProposal = z.infer<typeof GoldenMemoryProposalSchema>;
 
-const ContinueResolutionLabelSchema = z
-  .object({
-    mode: z.literal("continue"),
-    canonicalRetrievalQuestion: nonEmpty,
-    requiredTermGroups: z.array(z.array(nonEmpty).min(1)).min(1),
-  })
-  .strict();
+const PlanTurnGoldenLabelSchema = z.discriminatedUnion("mode", [
+  z
+    .object({
+      mode: z.literal("clarify"),
+      question: nonEmpty,
+      relevantTurnIds: uniqueStrings,
+      requiredQuestionTermGroups: z.array(z.array(nonEmpty).min(1)).min(1),
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("single"),
+      question: nonEmpty,
+      relevantTurnIds: uniqueStrings,
+      requiredTermGroups: z.array(z.array(nonEmpty).min(1)).min(1),
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("fanout"),
+      question: nonEmpty,
+      topics: z
+        .array(
+          z
+            .object({
+              topicId: z.enum(["t1", "t2", "t3"]),
+              question: nonEmpty,
+              relevantTurnIds: uniqueStrings,
+            })
+            .strict(),
+        )
+        .min(2)
+        .max(3)
+        .superRefine((topics, context) =>
+          orderedTopicIds(
+            topics.map((topic) => topic.topicId),
+            context,
+          ),
+        )
+        .superRefine((topics, context) => {
+          const questions = topics.map((topic) => topic.question);
+          if (new Set(questions).size !== questions.length) {
+            context.addIssue({ code: "custom", message: "fanout topic questions must be unique" });
+          }
+          const turnIds = topics.flatMap((topic) => topic.relevantTurnIds);
+          if (new Set(turnIds).size !== turnIds.length) {
+            context.addIssue({
+              code: "custom",
+              message: "fanout relevant turn IDs must be unique",
+            });
+          }
+        }),
+    })
+    .strict(),
+]);
 
-const ClarifyResolutionLabelSchema = z
-  .object({
-    mode: z.literal("clarify"),
-    requiredQuestionTermGroups: z.array(z.array(nonEmpty).min(1)).min(1),
-  })
-  .strict();
+export const EvaluationPlanTurnSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("clarify"), question: nonEmpty }).strict(),
+  z
+    .object({ mode: z.literal("single"), question: nonEmpty, relevantTurnIds: uniqueStrings })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("fanout"),
+      question: nonEmpty,
+      topics: z
+        .array(
+          z
+            .object({
+              topicId: z.enum(["t1", "t2", "t3"]),
+              question: nonEmpty,
+              relevantTurnIds: uniqueStrings,
+            })
+            .strict(),
+        )
+        .min(2)
+        .max(3)
+        .superRefine((topics, context) =>
+          orderedTopicIds(
+            topics.map((topic) => topic.topicId),
+            context,
+          ),
+        )
+        .superRefine((topics, context) => {
+          const questions = topics.map((topic) => topic.question);
+          if (new Set(questions).size !== questions.length) {
+            context.addIssue({ code: "custom", message: "fanout topic questions must be unique" });
+          }
+          const turnIds = topics.flatMap((topic) => topic.relevantTurnIds);
+          if (new Set(turnIds).size !== turnIds.length) {
+            context.addIssue({
+              code: "custom",
+              message: "fanout relevant turn IDs must be unique",
+            });
+          }
+        }),
+    })
+    .strict(),
+]);
 
 const SupportedClaimSchema = z
   .object({
@@ -158,10 +253,7 @@ const ExpectedGapSchema = z
 const GoldenLabelsSchema = z
   .object({
     relevantTurnIds: uniqueStrings,
-    resolution: z.discriminatedUnion("mode", [
-      ContinueResolutionLabelSchema,
-      ClarifyResolutionLabelSchema,
-    ]),
+    planTurn: PlanTurnGoldenLabelSchema,
     retrievalSelectors: z.array(SelectorRoleSchema).superRefine((values, context) => {
       if (new Set(values).size !== values.length) {
         context.addIssue({ code: "custom", message: "retrieval selectors must be unique" });
@@ -171,7 +263,6 @@ const GoldenLabelsSchema = z
     relevantSourceIds: uniqueStrings,
     acceptableOmissionSourceIds: uniqueStrings,
     acceptableRanges: z.record(nonEmpty, z.array(EvaluationRangeSchema).min(1)),
-    fanoutSuitability: z.enum(["required", "allowed", "forbidden"]),
     supportedClaims: z.array(SupportedClaimSchema).superRefine((claims, context) => {
       const ids = claims.map((claim) => claim.claimId);
       if (new Set(ids).size !== ids.length) {
@@ -223,6 +314,46 @@ export const GoldenEvaluationCaseSchema = z
       if (!turnIds.includes(turnId)) {
         context.addIssue({ code: "custom", message: `unknown relevant turn ${turnId}` });
       }
+    }
+    const planTurnIds =
+      fixture.labels.planTurn.mode === "clarify"
+        ? fixture.labels.planTurn.relevantTurnIds
+        : fixture.labels.planTurn.mode === "single"
+          ? fixture.labels.planTurn.relevantTurnIds
+          : fixture.labels.planTurn.topics.flatMap((topic) => topic.relevantTurnIds);
+    for (const turnId of planTurnIds) {
+      if (!turnIds.includes(turnId)) {
+        context.addIssue({ code: "custom", message: `unknown selected plan turn ${turnId}` });
+      }
+    }
+    if (fixture.labels.planTurn.mode === "fanout") {
+      const topicIds = fixture.labels.planTurn.topics.map((topic) => topic.topicId);
+      orderedTopicIds(topicIds, context);
+      for (const topic of fixture.labels.planTurn.topics) {
+        for (const turnId of topic.relevantTurnIds) {
+          if (!turnIds.includes(turnId)) {
+            context.addIssue({ code: "custom", message: `unknown selected topic turn ${turnId}` });
+          }
+        }
+      }
+      const topicTurnIds = fixture.labels.planTurn.topics.flatMap((topic) => topic.relevantTurnIds);
+      if (
+        new Set(topicTurnIds).size !== topicTurnIds.length ||
+        JSON.stringify(topicTurnIds) !== JSON.stringify(fixture.labels.relevantTurnIds)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "fanout turn selections must match the ordered relevant turn union",
+        });
+      }
+    } else if (
+      JSON.stringify(fixture.labels.planTurn.relevantTurnIds) !==
+      JSON.stringify(fixture.labels.relevantTurnIds)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "plan-turn selected turns must exactly match relevantTurnIds",
+      });
     }
 
     const evidenceIds = fixture.evidence.map((source) => source.sourceId);
@@ -319,11 +450,16 @@ export const GoldenEvaluationCaseSchema = z
       context.addIssue({ code: "custom", message: "web-ineligible case cannot require W" });
     }
     if (
-      fixture.labels.resolution.mode === "clarify" &&
-      (fixture.labels.retrievalSelectors.length > 0 ||
+      fixture.labels.planTurn.mode === "clarify" &&
+      (fixture.labels.relevantTurnIds.length > 0 ||
+        fixture.labels.planTurn.relevantTurnIds.length > 0 ||
+        fixture.labels.retrievalSelectors.length > 0 ||
         fixture.labels.requiredSourceIds.length > 0 ||
         fixture.labels.relevantSourceIds.length > 0 ||
-        fixture.labels.fanoutSuitability !== "forbidden")
+        fixture.labels.acceptableOmissionSourceIds.length > 0 ||
+        Object.keys(fixture.labels.acceptableRanges).length > 0 ||
+        fixture.labels.supportedClaims.length > 0 ||
+        fixture.labels.expectedGaps.length > 0)
     ) {
       context.addIssue({
         code: "custom",
@@ -336,7 +472,7 @@ export type GoldenEvaluationCase = z.infer<typeof GoldenEvaluationCaseSchema>;
 
 export const GoldenEvaluationSetSchema = z
   .object({
-    version: z.literal(2),
+    version: z.literal(3),
     cases: z.array(GoldenEvaluationCaseSchema).min(1),
   })
   .strict()
@@ -493,8 +629,8 @@ const AnswerEvaluationSchema = z
 
 const CommonTurnResultSchema = z
   .object({
-    artifactVersion: z.literal(2),
-    goldenSetVersion: z.literal(2),
+    artifactVersion: z.literal(3),
+    goldenSetVersion: z.literal(3),
     caseId: nonEmpty,
     capture: CaptureSchema,
     promptMeasurements: z.array(PromptMeasurementSchema).min(1),
@@ -544,7 +680,7 @@ const ProductionSourceBindingSchema = z
   .object({
     candidateId: nonEmpty,
     sourceId: nonEmpty,
-    sourceKey: z.string().regex(/^k_[A-Za-z0-9_-]{22}_[1-9][0-9]*$/u),
+    sourceKey: z.string().regex(/^k_cn_[A-Za-z0-9_-]{22}_[1-9][0-9]*$/u),
     kind: z.enum(["document", "chat_message", "memory", "web"]),
     purpose: nonEmpty,
     label: z.string().nullable(),
@@ -639,7 +775,7 @@ const ProductionDecisionSchema = z.discriminatedUnion("action", [
     .strict(),
 ]);
 
-const ConversationResolverAttestationSchema = z
+const PlanTurnAttestationSchema = z
   .object({
     modelId: z.literal("glm-5-turbo"),
     requestSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
@@ -657,7 +793,7 @@ const ProductionTopologyAttestationSchema = z.discriminatedUnion("mode", [
   z
     .object({
       mode: z.literal("clarification"),
-      resolverRequest: ConversationResolverAttestationSchema,
+      planTurnRequest: PlanTurnAttestationSchema,
       providerInputTokens: z.number().int().nonnegative(),
     })
     .strict(),
@@ -694,7 +830,13 @@ const ProductionTopologyAttestationSchema = z.discriminatedUnion("mode", [
             .strict(),
         )
         .min(2)
-        .max(3),
+        .max(3)
+        .superRefine((topics, context) =>
+          orderedTopicIds(
+            topics.map((topic) => topic.topicId),
+            context,
+          ),
+        ),
       synthesis: ProductionTerminalLedgerSchema,
     })
     .strict(),
@@ -702,20 +844,7 @@ const ProductionTopologyAttestationSchema = z.discriminatedUnion("mode", [
 
 export const SpecializedEvaluationResultSchema = CommonTurnResultSchema.extend({
   topology: z.literal("specialized"),
-  conversationResolution: z.discriminatedUnion("mode", [
-    z
-      .object({
-        mode: z.literal("continue"),
-        retrievalQuestion: nonEmpty,
-        selectedTurnIds: uniqueStrings,
-      })
-      .strict(),
-    z.object({ mode: z.literal("clarify"), question: nonEmpty }).strict(),
-  ]),
-  executionPlan: z.discriminatedUnion("mode", [
-    z.object({ mode: z.literal("single") }).strict(),
-    z.object({ mode: z.literal("fanout"), topicCount: z.number().int().min(2).max(3) }).strict(),
-  ]),
+  planTurn: EvaluationPlanTurnSchema,
   selectorSelections: z
     .object({
       A: uniqueStrings,
@@ -737,12 +866,158 @@ export const SpecializedEvaluationResultSchema = CommonTurnResultSchema.extend({
     })
     .strict(),
   productionContext: ProductionTopologyAttestationSchema,
-}).strict();
+})
+  .strict()
+  .superRefine((result, context) => {
+    const conversationTurnIds = (
+      conversation: readonly { readonly fixtureTurnId: string }[],
+    ): readonly string[] => conversation.map((entry) => entry.fixtureTurnId);
+    const sameSequence = (left: readonly string[], right: readonly string[]): boolean =>
+      left.length === right.length && left.every((value, index) => value === right[index]);
+    const sameUniqueSet = (left: readonly string[], right: readonly string[]): boolean => {
+      if (new Set(left).size !== left.length || new Set(right).size !== right.length) return false;
+      return left.length === right.length && left.every((value) => right.includes(value));
+    };
+    const issue = (path: (string | number)[], message: string): void => {
+      context.addIssue({ code: "custom", path, message });
+    };
+
+    const directPlan = result.planTurn.mode === "single" ? result.planTurn : undefined;
+    const fanoutPlan = result.planTurn.mode === "fanout" ? result.planTurn : undefined;
+    const production = result.productionContext;
+
+    if (result.planTurn.mode === "clarify") {
+      if (production.mode !== "clarification") {
+        issue(
+          ["productionContext", "mode"],
+          "clarification plan-turn requires clarification production",
+        );
+      }
+      return;
+    }
+
+    if (directPlan !== undefined) {
+      if (production.mode !== "single_fit" && production.mode !== "single_reduced") {
+        issue(["productionContext", "mode"], "single plan-turn requires a direct production route");
+        return;
+      }
+      const ledgers = [
+        ["initial", production.initial] as const,
+        ["terminal", production.terminal.ledger] as const,
+      ];
+      for (const [name, ledger] of ledgers) {
+        if (ledger.requestKind !== "direct") {
+          issue(["productionContext", name], "single production ledger must be direct");
+          continue;
+        }
+        if (ledger.question !== directPlan.question) {
+          issue(
+            ["productionContext", name, "question"],
+            "direct ledger differs from plan-turn: question",
+          );
+        }
+        if (
+          !sameSequence(
+            conversationTurnIds(ledger.selectedConversation),
+            directPlan.relevantTurnIds,
+          )
+        ) {
+          issue(
+            ["productionContext", name, "selectedConversation"],
+            "direct ledger differs from plan-turn: selected conversation",
+          );
+        }
+      }
+      return;
+    }
+
+    if (fanoutPlan === undefined) return;
+    if (production.mode !== "fanout") {
+      issue(["productionContext", "mode"], "fanout plan-turn requires fanout production");
+      return;
+    }
+
+    const expectedTopicIds = fanoutPlan.topics.map((topic) => topic.topicId);
+    const actualTopicIds = production.topics.map((topic) => topic.topicId);
+    if (!sameSequence(actualTopicIds, expectedTopicIds)) {
+      issue(
+        ["productionContext", "topics"],
+        "fanout production topics must match the complete plan-turn topic sequence",
+      );
+    }
+    for (let index = 0; index < fanoutPlan.topics.length; index += 1) {
+      const expected = fanoutPlan.topics[index];
+      const actual = production.topics[index];
+      if (expected === undefined || actual === undefined) continue;
+      if (actual.topicId !== expected.topicId) {
+        issue(["productionContext", "topics", index, "topicId"], "topic ID differs from plan-turn");
+      }
+      for (const [name, ledger] of [
+        ["initial", actual.initial] as const,
+        ["terminal", actual.terminal.ledger] as const,
+      ]) {
+        if (ledger.requestKind !== "topic") {
+          issue(
+            ["productionContext", "topics", index, name],
+            "fanout topic ledger must be a topic route",
+          );
+          continue;
+        }
+        if (ledger.topicId !== expected.topicId) {
+          issue(
+            ["productionContext", "topics", index, name, "topicId"],
+            "topic ledger differs from plan-turn: topic ID",
+          );
+        }
+        if (ledger.question !== expected.question) {
+          issue(
+            ["productionContext", "topics", index, name, "question"],
+            "topic ledger differs from plan-turn: question",
+          );
+        }
+        if (
+          !sameUniqueSet(conversationTurnIds(ledger.selectedConversation), expected.relevantTurnIds)
+        ) {
+          issue(
+            ["productionContext", "topics", index, name, "selectedConversation"],
+            "topic ledger differs from plan-turn: selected conversation",
+          );
+        }
+      }
+    }
+
+    const synthesis = production.synthesis.ledger;
+    if (synthesis.requestKind !== "synthesis") {
+      issue(["productionContext", "synthesis", "ledger"], "fanout synthesis ledger is missing");
+      return;
+    }
+    if (
+      !sameSequence(
+        synthesis.packets.map((packet) => packet.topicId),
+        expectedTopicIds,
+      )
+    ) {
+      issue(
+        ["productionContext", "synthesis", "ledger", "packets"],
+        "synthesis packet IDs must match the complete plan-turn topic sequence",
+      );
+    }
+    const expectedSynthesisTurns = fanoutPlan.topics.flatMap((topic) => topic.relevantTurnIds);
+    if (
+      !sameSequence(conversationTurnIds(synthesis.selectedConversation), expectedSynthesisTurns)
+    ) {
+      issue(
+        ["productionContext", "synthesis", "ledger", "selectedConversation"],
+        "synthesis selected conversation differs from plan-turn",
+      );
+    }
+  });
 
 export type SpecializedEvaluationResult = z.infer<typeof SpecializedEvaluationResultSchema>;
 
 export const GeneralPlannerEvaluationResultSchema = CommonTurnResultSchema.extend({
   topology: z.literal("general_planner"),
+  planTurn: EvaluationPlanTurnSchema,
 }).strict();
 
 export type GeneralPlannerEvaluationResult = z.infer<typeof GeneralPlannerEvaluationResultSchema>;

@@ -19,9 +19,7 @@ describe("canonical Smithers cleanup inventory", () => {
     expect(AI_CHAT_OUTPUT_TABLES).toEqual([
       "ai_chat_load_turn",
       "ai_chat_memory",
-      "ai_chat_resolution",
-      "ai_chat_plan",
-      "ai_chat_normalized_plan",
+      "ai_chat_plan_turn",
       "ai_chat_internal",
       "ai_chat_memories",
       "ai_chat_web",

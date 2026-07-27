@@ -7,7 +7,7 @@ const documentLocator: Extract<FinalSourceRecord["locator"], { readonly kind: "d
   kind: "document",
   sourceId: "public:source-1",
   documentId: "document-1",
-  documentVersionId: "version-1",
+  versionId: "version-1",
   contentHash: "hash-1",
   ranges: [{ charStart: 2, charEnd: 9 }],
 };
@@ -66,7 +66,7 @@ describe("canonical public source projection", () => {
           ...documentLocator,
           publisherIssueId: "issue-1",
           publisherDocumentId: "publisher-document-1",
-        },
+        } as never,
       }),
     ).toThrow(/lacks sourceName/u);
     expect(() =>

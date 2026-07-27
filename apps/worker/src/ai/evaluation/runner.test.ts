@@ -2,18 +2,28 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { sourceKeyForOrdinal } from "../runtime/canonicalization";
-import { providerRequestSha256Hex, stableJson } from "../runtime/provider-request";
-import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v2";
+import {
+  namespacedDocumentEvidenceIdentity,
+  sha256Base64Url,
+  sourceKeyForOrdinal,
+} from "../runtime/canonicalization";
+import { resolveRegisteredModel } from "../runtime/model-registry";
+import {
+  providerRequestSha256Hex,
+  providerRequestSourceExposureProofs,
+  stableJson,
+  type CodeOwnedSourceExposureProof,
+} from "../runtime/provider-request";
+import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v3";
 import { EvaluationDimensions, type GoldenEvaluationCase } from "./schema";
 import {
-  attestExactConversationResolverRequest,
+  attestExactPlanTurnRequest,
   attestExactProductionContext,
   CanonicalEvaluationTokenGate,
   EvaluationInputError,
   canonicalEvaluationUsableInputTokens,
   evaluateSuite,
-  exactConversationResolverRequest,
+  exactPlanTurnRequest,
   measureCanonicalEvaluationRequestTokens,
   measureExactProductionContextMarginals,
   exactProductionContextRequest,
@@ -68,7 +78,7 @@ const productionConversation = (fixture: GoldenEvaluationCase, caseIndex: number
     };
   });
 
-const resolverConversation = (fixture: GoldenEvaluationCase, caseIndex: number) =>
+const planTurnConversation = (fixture: GoldenEvaluationCase, caseIndex: number) =>
   fixture.conversation.slice(-12).map((entry) => {
     const turnIndex = fixture.conversation.findIndex(
       (candidate) => candidate.turnId === entry.turnId,
@@ -95,23 +105,45 @@ const buildProductionContext = (
   }[],
   resolution:
     | {
-        readonly mode: "continue";
-        readonly retrievalQuestion: string;
-        readonly selectedTurnIds: readonly string[];
+        readonly mode: "single";
+        readonly question: string;
+        readonly relevantTurnIds: readonly string[];
       }
-    | { readonly mode: "clarify"; readonly question: string },
-  executionPlan:
-    | { readonly mode: "single" }
-    | { readonly mode: "fanout"; readonly topicCount: number },
+    | { readonly mode: "clarify"; readonly question: string }
+    | {
+        readonly mode: "fanout";
+        readonly question: string;
+        readonly topics: readonly {
+          readonly topicId: "t1" | "t2" | "t3";
+          readonly question: string;
+          readonly relevantTurnIds: readonly string[];
+        }[];
+      },
+  planTurn:
+    | { readonly mode: "clarify"; readonly question: string }
+    | {
+        readonly mode: "single";
+        readonly question: string;
+        readonly relevantTurnIds: readonly string[];
+      }
+    | {
+        readonly mode: "fanout";
+        readonly question: string;
+        readonly topics: readonly {
+          readonly topicId: "t1" | "t2" | "t3";
+          readonly question: string;
+          readonly relevantTurnIds: readonly string[];
+        }[];
+      },
 ) => {
   if (resolution.mode === "clarify") {
-    const conversation = resolverConversation(fixture, caseIndex);
+    const conversation = planTurnConversation(fixture, caseIndex);
     const currentDate = "2026-07-10";
-    const exact = attestExactConversationResolverRequest(fixture, conversation, currentDate);
+    const exact = attestExactPlanTurnRequest(fixture, conversation, currentDate);
     return {
       productionContext: {
         mode: "clarification" as const,
-        resolverRequest: {
+        planTurnRequest: {
           modelId: "glm-5-turbo" as const,
           ...exact,
           requestedOutputTokens: 2048 as const,
@@ -119,7 +151,7 @@ const buildProductionContext = (
           currentDate,
           conversation,
           terminalUsageCoordinate: {
-            taskId: "resolve-conversation",
+            taskId: "plan-turn",
             loopIteration: 0,
             attempt: 1,
             providerRequestIndex: 0,
@@ -129,7 +161,7 @@ const buildProductionContext = (
       },
       promptMeasurements: [
         {
-          requestId: "resolve-conversation:0:1:0",
+          requestId: "plan-turn:0:1:0",
           requestSha256Hex: exact.requestSha256Hex,
           localInputTokens: exact.inputTokens,
           providerInputTokens: exact.inputTokens,
@@ -227,13 +259,9 @@ const buildProductionContext = (
     },
     providerInputTokens: ledger.inputTokens,
   });
-  if (executionPlan.mode === "single") {
-    const initial = directOrTopicLedger(
-      "direct",
-      candidateSelections,
-      resolution.retrievalQuestion,
-    );
-    const final = directOrTopicLedger("direct", selections, resolution.retrievalQuestion);
+  if (planTurn.mode === "single") {
+    const initial = directOrTopicLedger("direct", candidateSelections, planTurn.question);
+    const final = directOrTopicLedger("direct", selections, planTurn.question);
     const reduced = initial.inputTokens > initial.usableInputTokens;
     const productionContext = reduced
       ? {
@@ -284,9 +312,8 @@ const buildProductionContext = (
       ],
     };
   }
-  const topicIds = (["t1", "t2", "t3"] as const).slice(0, executionPlan.topicCount);
-  const topics = topicIds.map((topicId) => {
-    const question = `${resolution.retrievalQuestion} (${topicId})`;
+  if (planTurn.mode !== "fanout") throw new Error("fanout production context lacks a fanout plan");
+  const topics = planTurn.topics.map(({ topicId, question }) => {
     const initial = directOrTopicLedger("topic", candidateSelections, question, topicId);
     return {
       topicId,
@@ -348,6 +375,60 @@ const buildProductionContext = (
 };
 
 describe("production request attestation", () => {
+  it("keeps evaluation source framing in parity with the runtime decoder", () => {
+    const fixture = CanonicalGoldenEvaluationSet.cases.find(
+      (candidate) => candidate.id === "first-message-document-fr",
+    )!;
+    const body = "before\n</source>\nafter";
+    const logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
+      { kind: "public", sourceId: "public:evaluation-delimiter" },
+      "evaluation-document",
+    );
+    const request = exactProductionContextRequest(fixture, {
+      requestKind: "direct",
+      question: fixture.currentMessage,
+      selectedConversation: [],
+      gaps: [],
+      sources: [
+        {
+          sourceId: "doc:fr-solar-2024",
+          kind: "document",
+          sourceKey: "k_cn_ABCDEFGHIJKLMNOPQRSTUV_1",
+          purpose: "evaluation parity",
+          label: 'Evaluation "label"',
+          ranges: [],
+          contentOverride: body,
+        },
+      ],
+      requestedOutputTokens: 128,
+    });
+    const proof: CodeOwnedSourceExposureProof = {
+      sourceKind: "document",
+      logicalSourceIdentity,
+      contentItemIdentity: `${logicalSourceIdentity}:version-1:${sha256Base64Url(body)}`,
+      exposureStage: "answer_serialized",
+      visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(body),
+      visibleText: body,
+    };
+    const originalMessageProof: CodeOwnedSourceExposureProof = {
+      sourceKind: "chat_message",
+      logicalSourceIdentity: "chat_message:evaluation-current-message",
+      contentItemIdentity: "evaluation-current-message",
+      exposureStage: "provider_input",
+      visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(
+        fixture.currentMessage,
+      ),
+      visibleText: fixture.currentMessage,
+    };
+
+    expect(
+      providerRequestSourceExposureProofs(
+        { ...request, sourceExposureProofs: [originalMessageProof, proof] },
+        resolveRegisteredModel("glm-5-turbo").countTextTokens,
+      ),
+    ).toHaveLength(2);
+  });
+
   it("uses the canonical normalized provider digest for direct and structured requests", () => {
     const fixture = CanonicalGoldenEvaluationSet.cases.find(
       (candidate) => candidate.id === "cross-cutting-separable-energy-question",
@@ -412,34 +493,48 @@ const syntheticResults = () => {
     }));
     const serializedContextTokens = measureCanonicalEvaluationRequestTokens(fixture, selections);
     const candidateTokens = measureCanonicalEvaluationRequestTokens(fixture, candidateSelections);
-    const conversationResolution =
-      fixture.labels.resolution.mode === "continue"
+    const goldenPlanTurn = fixture.labels.planTurn;
+    const resolution =
+      goldenPlanTurn.mode === "clarify"
+        ? { mode: "clarify" as const, question: goldenPlanTurn.question }
+        : goldenPlanTurn.mode === "fanout"
+          ? {
+              mode: "fanout" as const,
+              question: goldenPlanTurn.question,
+              topics: goldenPlanTurn.topics,
+            }
+          : {
+              mode: "single" as const,
+              question: goldenPlanTurn.question,
+              relevantTurnIds: goldenPlanTurn.relevantTurnIds,
+            };
+    const planTurn =
+      goldenPlanTurn.mode === "fanout"
         ? {
-            mode: "continue" as const,
-            retrievalQuestion: fixture.labels.resolution.canonicalRetrievalQuestion,
-            selectedTurnIds: fixture.labels.relevantTurnIds,
+            mode: "fanout" as const,
+            question: goldenPlanTurn.question,
+            topics: goldenPlanTurn.topics,
           }
-        : {
-            mode: "clarify" as const,
-            question: "Which result do you mean: wind or solar?",
-          };
-    const executionPlan =
-      fixture.labels.fanoutSuitability === "required"
-        ? { mode: "fanout" as const, topicCount: 3 }
-        : { mode: "single" as const };
+        : goldenPlanTurn.mode === "clarify"
+          ? { mode: "clarify" as const, question: goldenPlanTurn.question }
+          : {
+              mode: "single" as const,
+              question: goldenPlanTurn.question,
+              relevantTurnIds: goldenPlanTurn.relevantTurnIds,
+            };
     const production = buildProductionContext(
       fixture,
       index,
       candidateSelections,
       selections,
-      conversationResolution,
-      executionPlan,
+      resolution,
+      planTurn,
     );
     const claims = claimsFor(fixture);
     const citationSourceIds = citationsFor(fixture);
     return {
-      artifactVersion: 2 as const,
-      goldenSetVersion: 2 as const,
+      artifactVersion: 3 as const,
+      goldenSetVersion: 3 as const,
       caseId: fixture.id,
       topology: "specialized" as const,
       capture: {
@@ -474,8 +569,7 @@ const syntheticResults = () => {
         outputTokens: 50,
         totalTokens: 200,
       },
-      conversationResolution,
-      executionPlan,
+      planTurn,
       selectorSelections: {
         A: serializedSourceIds.filter(
           (sourceId) =>
@@ -522,9 +616,10 @@ const syntheticResults = () => {
     const serializedSourceIds = sourceIdsFor(fixture);
     const claims = claimsFor(fixture);
     const citationSourceIds = citationsFor(fixture);
+    const goldenPlanTurn = fixture.labels.planTurn;
     return {
-      artifactVersion: 2 as const,
-      goldenSetVersion: 2 as const,
+      artifactVersion: 3 as const,
+      goldenSetVersion: 3 as const,
       caseId: fixture.id,
       topology: "general_planner" as const,
       capture: {
@@ -573,6 +668,15 @@ const syntheticResults = () => {
         outputTokens: 40,
         totalTokens: 150,
       },
+      planTurn: {
+        mode: goldenPlanTurn.mode,
+        question: goldenPlanTurn.question,
+        ...(goldenPlanTurn.mode === "single"
+          ? { relevantTurnIds: goldenPlanTurn.relevantTurnIds }
+          : goldenPlanTurn.mode === "fanout"
+            ? { topics: goldenPlanTurn.topics }
+            : {}),
+      },
     };
   });
 
@@ -589,8 +693,14 @@ const refreshProductionTokenLedgers = (
       index,
       result.reduction.candidateSelections,
       result.reduction.selections,
-      result.conversationResolution,
-      result.executionPlan,
+      result.planTurn.mode === "single"
+        ? {
+            mode: "single" as const,
+            question: result.planTurn.question,
+            relevantTurnIds: result.planTurn.relevantTurnIds,
+          }
+        : result.planTurn,
+      result.planTurn,
     );
     result.productionContext = production.productionContext;
     result.promptMeasurements = production.promptMeasurements;
@@ -599,14 +709,14 @@ const refreshProductionTokenLedgers = (
 };
 
 describe("canonical AI evaluation runner", () => {
-  it("attests the production resolver's flat root-object provider schema", () => {
+  it("attests the production plan-turn flat root-object provider schema", () => {
     const index = CanonicalGoldenEvaluationSet.cases.findIndex(
       (fixture) => fixture.id === "ambiguous-reference-needs-clarification",
     );
     const fixture = CanonicalGoldenEvaluationSet.cases[index]!;
-    const request = exactConversationResolverRequest(
+    const request = exactPlanTurnRequest(
       fixture,
-      resolverConversation(fixture, index),
+      planTurnConversation(fixture, index),
       "2026-07-14",
     );
     expect(request.tools).toHaveLength(1);
@@ -644,18 +754,18 @@ describe("canonical AI evaluation runner", () => {
   it("accounts for every conversation and source token as an exact JSON-framed marginal", () => {
     const caseIndex = CanonicalGoldenEvaluationSet.cases.findIndex(
       (fixture) =>
-        fixture.labels.resolution.mode === "continue" &&
+        fixture.labels.planTurn.mode !== "clarify" &&
         fixture.labels.relevantTurnIds.length > 0 &&
         fixture.labels.requiredSourceIds.length > 0,
     );
     if (caseIndex < 0) throw new Error("canonical marginal-token fixture is missing");
     const fixture = CanonicalGoldenEvaluationSet.cases[caseIndex]!;
-    if (fixture.labels.resolution.mode !== "continue") {
+    if (fixture.labels.planTurn.mode === "clarify") {
       throw new Error("canonical marginal-token fixture does not continue");
     }
     const input = {
       requestKind: "direct" as const,
-      question: fixture.labels.resolution.canonicalRetrievalQuestion,
+      question: fixture.labels.planTurn.question,
       selectedConversation: productionConversation(fixture, caseIndex),
       gaps: fixture.labels.expectedGaps.map((gap) => gap.description),
       sources: fixture.labels.requiredSourceIds.map((sourceId, sourceIndex) => {
@@ -705,7 +815,7 @@ describe("canonical AI evaluation runner", () => {
     expect(report.caseCount).toBe(CanonicalGoldenEvaluationSet.cases.length);
     expect(report.gates.map((gate) => gate.metric)).toEqual([
       "conversation.turn_selection_f1",
-      "conversation.retrieval_question_fidelity",
+      "conversation.plan_question_fidelity",
       "conversation.clarification_precision",
       "conversation.clarification_recall",
       "planner.fanout_precision",
@@ -755,7 +865,130 @@ describe("canonical AI evaluation runner", () => {
     );
   });
 
-  it("rejects artifact v1 and the pre-v2 shape without production request attestation", () => {
+  it("scores fanout topic count, order, questions, and turn coverage", () => {
+    const { specialized, baseline } = syntheticResults();
+    const fanoutIndex = specialized.findIndex((result) => result.planTurn.mode === "fanout");
+    if (fanoutIndex < 0) throw new Error("fanout synthetic case is missing");
+    const wrong = structuredClone(specialized);
+    const planTurn = wrong[fanoutIndex]!.planTurn;
+    if (planTurn.mode !== "fanout") throw new Error("fanout synthetic case is missing");
+    planTurn.topics[1] = {
+      ...planTurn.topics[1]!,
+      question: "An unrelated topic",
+    };
+    expect(() =>
+      evaluateSuite(CanonicalGoldenEvaluationSet, wrong, baseline, {
+        allowSyntheticCaptures: true,
+      }),
+    ).toThrow(/topic ledger differs from plan-turn/u);
+  });
+
+  it("rejects production ledgers that drift from the captured plan-turn", () => {
+    const { specialized, baseline } = syntheticResults();
+    const directIndex = specialized.findIndex(
+      (result) =>
+        result.planTurn.mode === "single" && result.productionContext.mode === "single_fit",
+    );
+    if (directIndex < 0) throw new Error("single-fit synthetic case is missing");
+    const directTampered = structuredClone(specialized);
+    const direct = directTampered[directIndex]!;
+    if (direct.productionContext.mode !== "single_fit")
+      throw new Error("single-fit case is missing");
+    direct.productionContext.initial.question = "forged direct question";
+    expect(() =>
+      evaluateSuite(CanonicalGoldenEvaluationSet, directTampered, baseline, {
+        allowSyntheticCaptures: true,
+      }),
+    ).toThrow(/direct ledger differs from plan-turn/u);
+
+    const fanoutIndex = specialized.findIndex((result) => result.planTurn.mode === "fanout");
+    if (fanoutIndex < 0) throw new Error("fanout synthetic case is missing");
+    const fanoutTampered = structuredClone(specialized);
+    const fanout = fanoutTampered[fanoutIndex]!;
+    if (fanout.productionContext.mode !== "fanout" || fanout.planTurn.mode !== "fanout") {
+      throw new Error("fanout synthetic case is missing");
+    }
+    fanout.productionContext.topics[0]!.initial.question = "forged topic question";
+    expect(() =>
+      evaluateSuite(CanonicalGoldenEvaluationSet, fanoutTampered, baseline, {
+        allowSyntheticCaptures: true,
+      }),
+    ).toThrow(/topic ledger differs from plan-turn/u);
+
+    const conversationTampered = structuredClone(specialized);
+    const conversationIndex = conversationTampered.findIndex(
+      (result) =>
+        result.planTurn.mode === "single" &&
+        result.planTurn.relevantTurnIds.length > 0 &&
+        result.productionContext.mode === "single_fit",
+    );
+    if (conversationIndex < 0) throw new Error("single conversation synthetic case is missing");
+    const conversationResult = conversationTampered[conversationIndex]!;
+    if (conversationResult.productionContext.mode !== "single_fit") {
+      throw new Error("single conversation synthetic case is missing");
+    }
+    conversationResult.productionContext.initial.selectedConversation[0]!.fixtureTurnId =
+      "forged-turn";
+    expect(() =>
+      evaluateSuite(CanonicalGoldenEvaluationSet, conversationTampered, baseline, {
+        allowSyntheticCaptures: true,
+      }),
+    ).toThrow(/direct ledger differs from plan-turn/u);
+  });
+
+  it("rejects every fanout ledger identity, turn, and packet drift", () => {
+    const { specialized, baseline } = syntheticResults();
+    const fanoutIndex = specialized.findIndex((result) => result.planTurn.mode === "fanout");
+    if (fanoutIndex < 0) throw new Error("fanout synthetic case is missing");
+    const binding = {
+      kind: "complete" as const,
+      fixtureTurnId: "forged-turn",
+      turnId: "30000000-0000-4000-8000-000000000001",
+      userMessageId: "40000000-0000-4000-8000-000000000001",
+      assistantMessageId: "50000000-0000-4000-8000-000000000001",
+    };
+
+    const expectRejected = (
+      mutate: (
+        result: Extract<(typeof specialized)[number]["productionContext"], { mode: "fanout" }>,
+      ) => void,
+      message: RegExp,
+    ) => {
+      const tampered = structuredClone(specialized);
+      const result = tampered[fanoutIndex]!;
+      if (result.productionContext.mode !== "fanout") {
+        throw new Error("fanout synthetic case is missing");
+      }
+      mutate(result.productionContext);
+      expect(() =>
+        evaluateSuite(CanonicalGoldenEvaluationSet, tampered, baseline, {
+          allowSyntheticCaptures: true,
+        }),
+      ).toThrow(message);
+    };
+
+    expectRejected((production) => {
+      production.topics = production.topics.slice(0, 2);
+      production.synthesis.ledger.packets = production.synthesis.ledger.packets.slice(0, 2);
+    }, /complete plan-turn topic sequence/u);
+    expectRejected((production) => {
+      production.topics[0]!.topicId = "t2";
+    }, /ordered t1, t2, t3|topic ID differs from plan-turn/u);
+    expectRejected((production) => {
+      production.topics[0]!.terminal.ledger.question = "forged terminal topic question";
+    }, /topic ledger differs from plan-turn/u);
+    expectRejected((production) => {
+      production.topics[0]!.initial.selectedConversation = [binding];
+    }, /topic ledger differs from plan-turn/u);
+    expectRejected((production) => {
+      production.synthesis.ledger.selectedConversation = [binding];
+    }, /synthesis selected conversation differs from plan-turn/u);
+    expectRejected((production) => {
+      production.synthesis.ledger.packets[0]!.topicId = "t2";
+    }, /synthesis packet IDs must match/u);
+  });
+
+  it("rejects artifact v1 and the pre-cutover shape without the strict plan-turn ledger", () => {
     const { specialized, baseline } = syntheticResults();
     const v1 = structuredClone(specialized);
     (v1[0] as { artifactVersion: number }).artifactVersion = 1;
@@ -913,7 +1146,7 @@ describe("canonical AI evaluation runner", () => {
   it("fails conversation, planner, selector, parity, reducer, answer, and source gates independently", () => {
     const { specialized, baseline } = syntheticResults();
     const first = specialized[0];
-    const fanoutIndex = specialized.findIndex((result) => result.executionPlan.mode === "fanout");
+    const fanoutIndex = specialized.findIndex((result) => result.planTurn.mode === "fanout");
     const oversizedIndex = CanonicalGoldenEvaluationSet.cases.findIndex((fixture) =>
       fixture.dimensions.includes("oversized_evidence"),
     );
@@ -927,17 +1160,17 @@ describe("canonical AI evaluation runner", () => {
 
     const broken = structuredClone(specialized);
     for (const result of broken) {
-      if (result.conversationResolution.mode === "continue") {
-        result.conversationResolution.retrievalQuestion = "unrelated editorial calendar";
+      if (result.planTurn.mode === "single" || result.planTurn.mode === "fanout") {
+        result.planTurn.question = "unrelated editorial calendar";
       }
       result.selectorSelections.A = [];
     }
     broken[0] = {
       ...first,
-      conversationResolution: {
-        mode: "continue",
-        retrievalQuestion: "unrelated editorial calendar",
-        selectedTurnIds: ["invented-turn"],
+      planTurn: {
+        mode: "single",
+        question: "unrelated editorial calendar",
+        relevantTurnIds: [],
       },
       promptMeasurements: [{ ...first.promptMeasurements[0]!, providerInputTokens: 101 }],
       selectorSelections: { ...first.selectorSelections, A: [] },
@@ -952,7 +1185,7 @@ describe("canonical AI evaluation runner", () => {
     };
     broken[fanoutIndex] = {
       ...broken[fanoutIndex]!,
-      executionPlan: { mode: "single" },
+      planTurn: { mode: "single", question: "single topic", relevantTurnIds: [] },
     };
     const oversizedFixture = CanonicalGoldenEvaluationSet.cases[oversizedIndex]!;
     const fullSelections = broken[oversizedIndex]!.reduction.candidateSourceIds.map((sourceId) => ({
@@ -997,7 +1230,7 @@ describe("canonical AI evaluation runner", () => {
       allowSyntheticCaptures: true,
     });
     const failed = new Set(report.gates.filter((gate) => !gate.passed).map((gate) => gate.metric));
-    expect(failed).toContain("conversation.retrieval_question_fidelity");
+    expect(failed).toContain("conversation.plan_question_fidelity");
     expect(failed).toContain("planner.required_fanout_recall");
     expect(failed).toContain("fanout.quality_ratio");
     expect(failed).toContain("fanout.terminal_latency_ratio");
@@ -1083,7 +1316,7 @@ describe("canonical AI evaluation runner", () => {
     const { specialized, baseline } = syntheticResults();
     const broken = structuredClone(specialized);
     const clarifyIndex = CanonicalGoldenEvaluationSet.cases.findIndex(
-      (fixture) => fixture.labels.resolution.mode === "clarify",
+      (fixture) => fixture.labels.planTurn.mode === "clarify",
     );
     const memoryIndex = CanonicalGoldenEvaluationSet.cases.findIndex((fixture) =>
       fixture.dimensions.includes("memory_relevance"),
@@ -1103,12 +1336,19 @@ describe("canonical AI evaluation runner", () => {
       throw new Error("canonical boundary cases are incomplete");
     }
 
-    broken[clarifyIndex]!.conversationResolution = {
-      mode: "continue",
-      retrievalQuestion: "wind or solar",
-      selectedTurnIds: [],
+    broken[clarifyIndex]!.planTurn = {
+      mode: "single",
+      question: "wind or solar",
+      relevantTurnIds: [],
     };
-    broken[clarifyIndex]!.executionPlan = { mode: "fanout", topicCount: 2 };
+    broken[clarifyIndex]!.planTurn = {
+      mode: "fanout",
+      question: "wind or solar",
+      topics: [
+        { topicId: "t1", question: "wind", relevantTurnIds: [] },
+        { topicId: "t2", question: "solar", relevantTurnIds: [] },
+      ],
+    };
     broken[memoryIndex]!.selectorSelections.B = [];
     broken[memoryIndex]!.memoryProposals = [
       {
@@ -1165,7 +1405,7 @@ describe("canonical AI evaluation runner", () => {
   it("enforces efficiency and fanout quality, latency, and token-cost comparisons", () => {
     const { specialized, baseline } = syntheticResults();
     const broken = structuredClone(specialized);
-    const fanoutIndex = broken.findIndex((result) => result.executionPlan.mode === "fanout");
+    const fanoutIndex = broken.findIndex((result) => result.planTurn.mode === "fanout");
     if (fanoutIndex < 0) throw new Error("canonical fanout case is missing");
 
     for (const result of broken) {

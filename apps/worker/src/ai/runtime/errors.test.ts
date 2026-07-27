@@ -168,11 +168,11 @@ describe("AI run error classification", () => {
   it("does not infer retryability from arbitrary transport-looking fields", () => {
     const normalized = toAiRuntimeError(
       Object.assign(new Error("service unavailable"), { statusCode: 503 }),
-      "execution_planner_failed",
+      "plan_turn_failed",
     );
 
     expect(normalized).toMatchObject({
-      code: "execution_planner_failed",
+      code: "plan_turn_failed",
       providerStatus: null,
       retryable: true,
       details: undefined,
@@ -205,8 +205,7 @@ describe("AI run error classification", () => {
   });
 
   it.each([
-    ["conversation_resolver", "conversation_resolution_failed"],
-    ["execution_planner", "execution_planner_failed"],
+    ["plan_turn", "plan_turn_failed"],
     ["internal_retrieval", "internal_retrieval_failed"],
     ["memory_selector", "memory_selector_failed"],
     ["web_research", "web_research_failed"],

@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { loadWorkerConfig } from "../../config";
 import { closeSmithersWorkflowRuntime } from "../smithers-interop";
-import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v2";
+import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v3";
 import {
   bindEvaluationAnnotations,
   captureEvaluationSession,
@@ -165,8 +165,8 @@ const main = async (): Promise<void> => {
     await writeStdout(
       `${JSON.stringify(
         {
-          artifactVersion: 2,
-          goldenSetVersion: 2,
+          artifactVersion: 3,
+          goldenSetVersion: 3,
           canonicalCaseIds: CanonicalGoldenEvaluationSet.cases.map((fixture) => fixture.id),
           specializedResult: z.toJSONSchema(SpecializedEvaluationResultSchema),
           generalPlannerResult: z.toJSONSchema(GeneralPlannerEvaluationResultSchema),

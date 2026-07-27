@@ -217,7 +217,15 @@ export const executeGeneralPlannerProviderTurn = async (
     }) => {
       readonly logicalSourceIdentity: string;
       readonly contentItemIdentity: string;
+      readonly documentId?: string | undefined;
     };
+    readonly sourceIdentitySidecar?: (input: {
+      readonly sourceId: string;
+      readonly sourceKind: "document" | "chat_message" | "memory" | "web";
+      readonly charStart: number;
+      readonly charEnd: number;
+      readonly visibleText: string;
+    }) => Readonly<Record<string, unknown>> | undefined;
     readonly onEvidenceVisible?: (
       exposure: {
         readonly sourceId: string;
@@ -368,28 +376,43 @@ export const executeGeneralPlannerProviderTurn = async (
       })
       .strict()
       .parse(value);
-  const sourceExposureMarker = (input: {
+  const sourceExposureIdentity = (input: {
     readonly sourceId: string;
     readonly sourceKind: "document" | "chat_message" | "memory" | "web";
     readonly charStart: number;
     readonly charEnd: number;
     readonly visibleText: string;
-    readonly stage: "search" | "inspect";
-  }) => {
-    const identity = options?.sourceExposureIdentity?.(input) ?? {
+  }) =>
+    options?.sourceExposureIdentity?.(input) ?? {
       logicalSourceIdentity: input.sourceId,
       contentItemIdentity: `${input.sourceId}:${input.charStart}:${input.charEnd}:${createHash("sha256").update(input.visibleText, "utf8").digest("hex")}`,
     };
+  const sourceExposureMarker = (
+    input: {
+      readonly sourceId: string;
+      readonly sourceKind: "document" | "chat_message" | "memory" | "web";
+      readonly charStart: number;
+      readonly charEnd: number;
+      readonly visibleText: string;
+      readonly stage: "search" | "inspect";
+    },
+    identity = sourceExposureIdentity(input),
+  ) => {
     return {
       sourceKind: input.sourceKind,
       logicalSourceIdentity: identity.logicalSourceIdentity,
       contentItemIdentity: identity.contentItemIdentity,
       exposureStage: `evaluation_general_planner_${input.stage}`,
-      visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(
-        input.visibleText,
-      ),
+      visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(input.visibleText),
     } as const;
   };
+  const sourceIdentitySidecar = (input: {
+    readonly sourceId: string;
+    readonly sourceKind: "document" | "chat_message" | "memory" | "web";
+    readonly charStart: number;
+    readonly charEnd: number;
+    readonly visibleText: string;
+  }): Readonly<Record<string, unknown>> | undefined => options?.sourceIdentitySidecar?.(input);
   return agent.toolLoop({
     requestClass: "main",
     model: "glm-5-turbo",
@@ -449,7 +472,26 @@ export const executeGeneralPlannerProviderTurn = async (
           }
           const next = offset + matches.length;
           return {
-            matches,
+            matches: matches.map((match) => {
+              const sourceInput = {
+                sourceId: match.sourceId,
+                sourceKind: match.kind,
+                charStart: match.charStart,
+                charEnd: match.charEnd,
+                visibleText: match.text,
+              } as const;
+              const exposureIdentity = sourceExposureIdentity(sourceInput);
+              const privateIdentity = sourceIdentitySidecar(sourceInput);
+              return {
+                ...match,
+                ...(match.kind === "document" && exposureIdentity.documentId !== undefined
+                  ? { documentId: exposureIdentity.documentId }
+                  : {}),
+                ...(privateIdentity === undefined
+                  ? {}
+                  : { __briefSourceIdentity: privateIdentity }),
+              };
+            }),
             complete: next >= all.length,
             truncated: next < all.length,
             cursor: next >= all.length ? null : next,
@@ -562,13 +604,31 @@ export const executeGeneralPlannerProviderTurn = async (
               },
               coordinates,
             );
+            const privateIdentity = sourceIdentitySidecar({
+              sourceId: source.sourceId,
+              sourceKind: source.kind,
+              charStart: 0,
+              charEnd: source.content.length,
+              visibleText: source.content,
+            });
+            const exposureIdentity = sourceExposureIdentity({
+              sourceId: source.sourceId,
+              sourceKind: source.kind,
+              charStart: 0,
+              charEnd: source.content.length,
+              visibleText: source.content,
+            });
             return {
               found: true,
               complete: true,
               sourceId: source.sourceId,
               kind: source.kind,
+              ...(exposureIdentity.documentId === undefined
+                ? {}
+                : { documentId: exposureIdentity.documentId }),
               range: { charStart: 0, charEnd: source.content.length },
               text: source.content,
+              ...(privateIdentity === undefined ? {} : { __briefSourceIdentity: privateIdentity }),
               __briefSourceExposures: [
                 sourceExposureMarker({
                   sourceId: source.sourceId,
@@ -609,13 +669,32 @@ export const executeGeneralPlannerProviderTurn = async (
             },
             coordinates,
           );
+          const visibleText = source.content.slice(parsed.range.charStart, parsed.range.charEnd);
+          const privateIdentity = sourceIdentitySidecar({
+            sourceId: source.sourceId,
+            sourceKind: source.kind,
+            charStart: parsed.range.charStart,
+            charEnd: parsed.range.charEnd,
+            visibleText,
+          });
+          const exposureIdentity = sourceExposureIdentity({
+            sourceId: source.sourceId,
+            sourceKind: source.kind,
+            charStart: parsed.range.charStart,
+            charEnd: parsed.range.charEnd,
+            visibleText,
+          });
           return {
             found: true,
             complete: true,
             sourceId: source.sourceId,
             kind: source.kind,
+            ...(exposureIdentity.documentId === undefined
+              ? {}
+              : { documentId: exposureIdentity.documentId }),
             range: parsed.range,
-            text: source.content.slice(parsed.range.charStart, parsed.range.charEnd),
+            text: visibleText,
+            ...(privateIdentity === undefined ? {} : { __briefSourceIdentity: privateIdentity }),
             __briefSourceExposures: [
               sourceExposureMarker({
                 sourceId: source.sourceId,

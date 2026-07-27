@@ -4,11 +4,10 @@ import { normalizeCharacterRanges, type TopicId } from "./canonicalization";
 import type {
   AnswerCandidate,
   ContextDecision,
-  ConversationResolution,
+  PlanTurnResult,
   MemoryExtractionResult,
   MemoryProposal,
   MemorySnapshot,
-  NormalizedExecutionPlan,
   TopicPacket,
 } from "./types";
 
@@ -23,36 +22,19 @@ export class AgentOutputValidationError extends Error {
 }
 
 const nonEmpty = z.string().trim().min(1);
-export const ConversationResolutionSchema = z.discriminatedUnion("mode", [
+export const PlanTurnSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("clarify"), question: nonEmpty }).strict(),
   z
     .object({
-      mode: z.literal("continue"),
-      retrievalQuestion: nonEmpty,
-      selectedTurnIds: z.array(nonEmpty),
+      mode: z.literal("single"),
+      question: nonEmpty,
+      relevantTurnIds: z.array(nonEmpty),
     })
     .strict(),
-  z.object({ mode: z.literal("clarify"), question: nonEmpty }).strict(),
-]);
-
-// Z.AI function parameters require one root object. Keep both branch fields
-// optional only at the transport boundary; ConversationResolutionSchema and
-// validateConversationResolution still enforce the exact strict union after
-// the provider returns arguments.
-export const ConversationResolutionProviderSchema = z
-  .object({
-    mode: z.enum(["continue", "clarify"]),
-    retrievalQuestion: nonEmpty.optional(),
-    selectedTurnIds: z.array(nonEmpty).optional(),
-    question: nonEmpty.optional(),
-  })
-  .strict();
-
-const ExecutionPlanSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("single"), reason: nonEmpty }).strict(),
   z
     .object({
       mode: z.literal("fanout"),
-      reason: nonEmpty,
+      question: nonEmpty,
       topics: z
         .array(z.object({ question: nonEmpty, relevantTurnIds: z.array(nonEmpty) }).strict())
         .min(2)
@@ -61,61 +43,61 @@ const ExecutionPlanSchema = z.discriminatedUnion("mode", [
     .strict(),
 ]);
 
+// Z.AI function parameters require one root object. Keep branch fields optional
+// only at the transport boundary; validatePlanTurn enforces the strict union.
+export const PlanTurnProviderSchema = z
+  .object({
+    mode: z.enum(["clarify", "single", "fanout"]),
+    question: nonEmpty.optional(),
+    relevantTurnIds: z.array(nonEmpty).optional(),
+    topics: z
+      .array(z.object({ question: nonEmpty, relevantTurnIds: z.array(nonEmpty) }).strict())
+      .optional(),
+  })
+  .strict();
+
 const parseIssues = (error: z.ZodError): readonly string[] =>
   error.issues.map((issue) => `${issue.path.join(".") || "output"}: ${issue.message}`);
 
 const unique = (values: readonly string[]): boolean => new Set(values).size === values.length;
 
-export const validateConversationResolution = (
+export const validatePlanTurn = (
   value: unknown,
   inventoryTurnIds: readonly string[],
-): ConversationResolution => {
-  const parsed = ConversationResolutionSchema.safeParse(value);
-  if (!parsed.success)
-    throw new AgentOutputValidationError("conversation_resolver", parseIssues(parsed.error));
+  maximumTopics: number,
+): PlanTurnResult => {
+  const parsed = PlanTurnSchema.safeParse(value);
+  if (!parsed.success) throw new AgentOutputValidationError("plan_turn", parseIssues(parsed.error));
   if (parsed.data.mode === "clarify") return parsed.data;
 
   const allowed = new Set(inventoryTurnIds);
   const issues: string[] = [];
-  if (!unique(parsed.data.selectedTurnIds)) issues.push("selected turn ids must be unique");
-  for (const id of parsed.data.selectedTurnIds) {
+  const ids =
+    parsed.data.mode === "single"
+      ? parsed.data.relevantTurnIds
+      : parsed.data.topics.flatMap((topic) => topic.relevantTurnIds);
+  if (parsed.data.mode === "fanout" && parsed.data.topics.length > Math.min(maximumTopics, 3)) {
+    issues.push("fanout exceeds topic limit");
+  }
+  if (!unique(ids)) issues.push("selected turn ids must be unique");
+  for (const id of ids) {
     if (!allowed.has(id)) issues.push(`selected turn ${id} is outside the supplied inventory`);
   }
-  if (issues.length > 0) throw new AgentOutputValidationError("conversation_resolver", issues);
-  return parsed.data;
-};
-
-const topicIds: readonly TopicId[] = ["t1", "t2", "t3"];
-
-export const validateAndNormalizeExecutionPlan = (
-  value: unknown,
-  selectedTurnIds: readonly string[],
-  maximumTopics: number,
-): NormalizedExecutionPlan => {
-  const parsed = ExecutionPlanSchema.safeParse(value);
-  if (!parsed.success)
-    throw new AgentOutputValidationError("execution_planner", parseIssues(parsed.error));
-  if (parsed.data.mode === "single") return parsed.data;
-
-  const issues: string[] = [];
-  const allowed = new Set(selectedTurnIds);
-  if (parsed.data.topics.length > Math.min(maximumTopics, 3))
-    issues.push("fanout exceeds topic limit");
-  if (!unique(parsed.data.topics.map((topic) => topic.question)))
-    issues.push("topic questions must be unique");
-  for (const [index, topic] of parsed.data.topics.entries()) {
-    if (!unique(topic.relevantTurnIds)) issues.push(`topic ${index + 1} repeats a turn id`);
-    for (const id of topic.relevantTurnIds) {
-      if (!allowed.has(id)) issues.push(`topic ${index + 1} references an unselected turn`);
+  if (parsed.data.mode === "fanout") {
+    if (!unique(parsed.data.topics.map((topic) => topic.question))) {
+      issues.push("topic questions must be unique");
+    }
+    for (const [index, topic] of parsed.data.topics.entries()) {
+      if (!unique(topic.relevantTurnIds)) issues.push(`topic ${index + 1} repeats a turn id`);
     }
   }
-  if (issues.length > 0) throw new AgentOutputValidationError("execution_planner", issues);
-
+  if (issues.length > 0) throw new AgentOutputValidationError("plan_turn", issues);
+  if (parsed.data.mode === "single") return parsed.data;
   return {
     mode: "fanout",
-    reason: parsed.data.reason,
+    question: parsed.data.question,
     topics: parsed.data.topics.map((topic, index) => ({
-      topicId: topicIds[index]!,
+      topicId: (["t1", "t2", "t3"] as const)[index]!,
       question: topic.question,
       relevantTurnIds: topic.relevantTurnIds,
     })),
@@ -235,6 +217,7 @@ export const validateTopicPacket = (
 export const validateMemoryProposals = (
   proposals: readonly MemoryProposal[],
   active: readonly MemorySnapshot[],
+  discovered: ReadonlySet<string>,
 ): MemoryExtractionResult => {
   const snapshotById = new Map(active.map((memory) => [memory.memoryId, memory]));
   const activePairs = new Set(
@@ -262,7 +245,10 @@ export const validateMemoryProposals = (
       // Target uniqueness is a property of the provider output, not only of the
       // proposals that survive content-pair deduplication.
       targeted.add(proposal.targetMemoryId);
-      if (target === undefined) {
+      if (
+        target === undefined ||
+        !discovered.has(`${proposal.targetMemoryId}:${target.memoryRevisionId}`)
+      ) {
         discardedCount += 1;
         continue;
       }

@@ -96,16 +96,15 @@ describe("compileQuerySpec", () => {
     expect(recencyText).toContain("order by d.content_hash, recency_at desc, d.document_id asc");
   });
 
-  it("runs snippet generation after dedupe and limit", () => {
+  it("returns immutable source text after dedupe and limit", () => {
     const [text] = compile({ terms: "inflation" });
-    const headlineIndex = text.indexOf("ts_headline");
     const selectedIndex = text.indexOf(") selected");
 
-    expect(headlineIndex).toBeGreaterThanOrEqual(0);
     expect(selectedIndex).toBeGreaterThanOrEqual(0);
-    expect(headlineIndex).toBeLessThan(selectedIndex);
-    expect(text).toContain("ts_headline(language_to_regconfig(selected.language), selected.text");
-    expect(text).not.toContain("ts_headline(language_to_regconfig(d.language), d.text");
+    expect(text).not.toContain("ts_headline");
+    expect(text).toContain('document_id as "versionId"');
+    expect(text).toContain('content_hash as "contentHash"');
+    expect(text).toContain("text,");
     expect(text).toContain("limit $");
   });
 
@@ -228,32 +227,16 @@ describe("compileQuerySpec", () => {
     expect(emptySourceIdsParams).toEqual([]);
   });
 
-  it("compiles live chat, membership, user, company, and source-setting authorization before ranking", () => {
-    const access = {
-      kind: "liveChatSourceIds" as const,
-      chatId: "00000000-0000-4000-8000-000000000001",
-      initiatingUserId: "user-live",
-      sourceIds: ["source-live"],
-    };
+  it("compiles only the accepted source IDs before ranking", () => {
+    const access = { kind: "sourceIds" as const, sourceIds: ["source-saved"] };
     const [text, params] = compiler.compile(buildSourceAccessClause(access), false);
 
     expect(text).toContain("d.source_id in ($1)");
-    expect(text).toContain("authorized_chat.deleted_at is null");
-    expect(text).toContain("authorized_membership.revoked_at is null");
-    expect(text).toContain("authorized_user.recovery_deleted_at is null");
-    expect(text).toContain("authorized_company.purged_at is null");
-    expect(text).toContain("authorized_setting.enabled");
-    expect(params).toEqual([
-      "source-live",
-      "user-live",
-      "00000000-0000-4000-8000-000000000001",
-      "user-live",
-    ]);
+    expect(text).not.toContain("authorized_");
+    expect(params).toEqual(["source-saved"]);
 
-    const [searchText] = compile({ terms: "authorized" }, { access });
-    expect(searchText.indexOf("authorized_setting.enabled")).toBeLessThan(
-      searchText.lastIndexOf("limit"),
-    );
+    const [searchText] = compile({ terms: "saved" }, { access });
+    expect(searchText).not.toContain("authorized_setting.enabled");
   });
 
   it("composes access into the statement", () => {

@@ -143,8 +143,7 @@ const exactCount = (request: ProviderRequest, modelId: RegisteredModel["id"]): n
   // than the pinned local template rendering. It also adds one out-of-template
   // token only for a trailing assistant continuation. Historical tool-call
   // turns are already represented in the provider's prompt count.
-  const toolDefinitionAdjustment =
-    (normalizeProviderRequest(request).tools?.length ?? 0) * 4;
+  const toolDefinitionAdjustment = (normalizeProviderRequest(request).tools?.length ?? 0) * 4;
   return modelId === "glm-5-turbo"
     ? templateTokens - toolDefinitionAdjustment + turboProviderAccountingOverhead(request)
     : templateTokens;

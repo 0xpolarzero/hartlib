@@ -10,12 +10,7 @@ import { canonicalizeWebUrl } from "../runtime/canonicalization";
 import { forwardAbortSignal, taskAbortError, throwIfAborted } from "../runtime/task-cancellation";
 import { WebBoundaryError, toWebBoundaryError, withFailureAccounting } from "./errors";
 import { assertDomainAllowed, assertSavedWebPolicy, canonicalAllowedDomains } from "./policy";
-import type {
-  WebFetch,
-  WebOperationAccounting,
-  WebSearchResponse,
-  WebSearchResult,
-} from "./types";
+import type { WebFetch, WebOperationAccounting, WebSearchResponse, WebSearchResult } from "./types";
 
 export const TINYFISH_SEARCH_ENDPOINT = "https://api.search.tinyfish.ai";
 export const TINYFISH_SEARCH_PROVIDER_SERVICE_ID = "tinyfish_search_official" as const;

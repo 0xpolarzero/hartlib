@@ -15,6 +15,12 @@ import {
   type QuerySpec,
   type SourceAccess,
 } from "./query-spec";
+import {
+  findNormalizedSubstringRanges,
+  isWellFormedUtf16,
+  normalizeAndCaseFold,
+  type ExactTextRange,
+} from "./exact-text";
 
 export interface SearchDocumentsOptions {
   readonly access: SourceAccess;
@@ -27,14 +33,97 @@ export interface SearchDocumentsOptions {
 interface SearchRow {
   readonly sourceId: string;
   readonly documentId: string;
+  readonly versionId: string;
+  readonly contentHash: string;
+  readonly text: string;
   readonly title: string;
   readonly sourceDisplayName: string;
   readonly publishedAt: Date | null;
   readonly language: string;
   readonly documentType: string;
   readonly textCharCount: number;
-  readonly snippet: string;
 }
+
+export type PreviewRange = ExactTextRange;
+
+const SEARCH_OPERATOR_WORDS = new Set(["and", "or", "not"]);
+const searchTerms = (terms: string): readonly string[] =>
+  !isWellFormedUtf16(terms)
+    ? []
+    : (terms.match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}_'’-]*/gu) ?? []).filter(
+        (term) => !SEARCH_OPERATOR_WORDS.has(normalizeAndCaseFold(term)),
+      );
+
+const mergeRanges = (ranges: readonly PreviewRange[]): readonly PreviewRange[] => {
+  const merged: PreviewRange[] = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (previous !== undefined && range.charStart <= previous.charEnd) {
+      merged[merged.length - 1] = {
+        charStart: previous.charStart,
+        charEnd: Math.max(previous.charEnd, range.charEnd),
+      };
+    } else {
+      merged.push(range);
+    }
+  }
+  return merged;
+};
+
+const exactPrefixPreview = (
+  text: string,
+  maxChars: number,
+): {
+  readonly snippet: string;
+  readonly ranges: readonly PreviewRange[];
+} | null => {
+  if (text.length === 0) return null;
+  let end = Math.min(Math.floor(maxChars), text.length);
+  if (
+    end > 0 &&
+    end < text.length &&
+    text.charCodeAt(end - 1) >= 0xd800 &&
+    text.charCodeAt(end - 1) <= 0xdbff &&
+    text.charCodeAt(end) >= 0xdc00 &&
+    text.charCodeAt(end) <= 0xdfff
+  ) {
+    end -= 1;
+  }
+  const snippet = text.slice(0, end);
+  return snippet.length === 0
+    ? null
+    : { snippet, ranges: [{ charStart: 0, charEnd: snippet.length }] };
+};
+
+/** Build a preview only from exact UTF-16 spans in immutable source text. */
+export const previewFromImmutableText = (
+  text: string,
+  terms: string | undefined,
+  maxChars: number,
+): { readonly snippet: string; readonly ranges: readonly PreviewRange[] } | null => {
+  if (text.length === 0 || !Number.isFinite(maxChars) || maxChars < 1) return null;
+  if (terms?.trim().length === 0 || terms === undefined) {
+    return exactPrefixPreview(text, maxChars);
+  }
+  const normalizedTerms = searchTerms(terms);
+  if (normalizedTerms.length === 0) return null;
+  const allRanges = mergeRanges(findNormalizedSubstringRanges(text, normalizedTerms));
+  if (allRanges.length === 0) return null;
+  const ranges: PreviewRange[] = [];
+  let snippetLength = 0;
+  for (const range of allRanges) {
+    const nextLength =
+      snippetLength +
+      (ranges.length === 0 ? 0 : "\n…\n".length) +
+      (range.charEnd - range.charStart);
+    if (nextLength > maxChars) break;
+    ranges.push(range);
+    snippetLength = nextLength;
+  }
+  if (ranges.length === 0) return null;
+  const snippet = ranges.map((range) => text.slice(range.charStart, range.charEnd)).join("\n…\n");
+  return { snippet, ranges };
+};
 
 export const searchDocuments = (
   spec: QuerySpec,
@@ -59,19 +148,34 @@ export const searchDocuments = (
       },
     });
     const rows = yield* sql<SearchRow>`${fragment}`;
-    return rows.map((row) => ({
-      kind: "public_source" as const,
-      sourceId: `public:${row.sourceId}`,
-      documentId: row.documentId,
-      documentVersionId: row.documentId,
-      title: row.title,
-      sourceDisplayName: row.sourceDisplayName,
-      publishedAt: row.publishedAt,
-      language: row.language,
-      documentType: row.documentType,
-      textCharCount: row.textCharCount,
-      snippet: row.snippet,
-    }));
+    const snippetMaxChars = options.snippetMaxChars ?? 300;
+    return rows.flatMap((row) => {
+      const exactPreview = previewFromImmutableText(row.text, spec.terms, snippetMaxChars);
+      if (exactPreview === null) return [];
+      const { snippet, ranges: mappedRanges } = exactPreview;
+      const result = {
+        kind: "public_source" as const,
+        sourceId: `public:${row.sourceId}`,
+        documentId: row.documentId,
+        versionId: row.versionId,
+        contentHash: row.contentHash,
+        title: row.title,
+        sourceDisplayName: row.sourceDisplayName,
+        publishedAt: row.publishedAt,
+        language: row.language,
+        documentType: row.documentType,
+        textCharCount: row.text.length,
+        snippet,
+      } as DocumentPreview;
+      Object.defineProperties(result, {
+        text: { value: row.text, enumerable: false },
+        previewRanges: {
+          value: mappedRanges,
+          enumerable: false,
+        },
+      });
+      return [result];
+    });
   });
 
 export interface PeekDocumentOptions {

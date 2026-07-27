@@ -27,30 +27,16 @@ export interface FailedConversationEntry {
 
 export type ConversationEntry = CompleteConversationEntry | FailedConversationEntry;
 
-export type ConversationResolution =
+export type PlanTurnResult =
+  | { readonly mode: "clarify"; readonly question: string }
   | {
-      readonly mode: "continue";
-      readonly retrievalQuestion: string;
-      readonly selectedTurnIds: readonly string[];
+      readonly mode: "single";
+      readonly question: string;
+      readonly relevantTurnIds: readonly string[];
     }
-  | { readonly mode: "clarify"; readonly question: string };
-
-export type ExecutionPlan =
-  | { readonly mode: "single"; readonly reason: string }
   | {
       readonly mode: "fanout";
-      readonly reason: string;
-      readonly topics: ReadonlyArray<{
-        readonly question: string;
-        readonly relevantTurnIds: readonly string[];
-      }>;
-    };
-
-export type NormalizedExecutionPlan =
-  | { readonly mode: "single"; readonly reason: string }
-  | {
-      readonly mode: "fanout";
-      readonly reason: string;
+      readonly question: string;
       readonly topics: ReadonlyArray<{
         readonly topicId: TopicId;
         readonly question: string;
@@ -63,7 +49,8 @@ export type InternalQuery =
       readonly target: "documents";
       readonly terms?: string | undefined;
       readonly purpose: string;
-      readonly sourceIds?: readonly string[] | undefined;
+      /** Opaque, one-use server handoff minted by lookup_named_source. */
+      readonly lookupRef?: string | undefined;
       readonly countries?: readonly string[] | undefined;
       readonly languages?: readonly string[] | undefined;
       readonly documentTypes?: readonly string[] | undefined;
@@ -93,7 +80,9 @@ export type InternalReference =
   | {
       readonly kind: "document";
       readonly documentId: string;
-      readonly documentVersionId: string;
+      /** Server-owned binding fields are populated after provider validation. */
+      readonly versionId: string;
+      readonly publisherExtractionId?: string | undefined;
       readonly source: DocumentSource;
       readonly ranges?: readonly CharacterRange[] | undefined;
       readonly purpose: string;
@@ -122,7 +111,8 @@ export interface DocumentCandidate {
   readonly purpose: string;
   readonly sourceId: string;
   readonly documentId: string;
-  readonly documentVersionId: string;
+  readonly versionId: string;
+  readonly publisherExtractionId?: string | undefined;
   readonly publisherIssueId?: string | undefined;
   readonly publisherDocumentId?: string | undefined;
   readonly contentHash: string;
@@ -177,8 +167,7 @@ export type CandidateRejectionReason =
   | "invalid_range"
   | "ambiguous_provenance"
   | "duplicate"
-  | "overlap_merged"
-  | "access_revoked";
+  | "overlap_merged";
 
 export interface CandidateRejection {
   readonly candidateId: string;
@@ -211,18 +200,34 @@ export interface SerializedSourceUse {
   readonly ranges: readonly CharacterRange[];
 }
 
+export type PublisherDocumentLocator = {
+  readonly kind: "document";
+  readonly sourceId: `publisher:${string}`;
+  readonly documentId: string;
+  readonly versionId: string;
+  readonly contentHash: string;
+  readonly ranges: readonly CharacterRange[];
+  readonly publisherExtractionId: string;
+  readonly publisherIssueId: string;
+  readonly publisherDocumentId: string;
+};
+
+export type PublicDocumentLocator = {
+  readonly kind: "document";
+  readonly sourceId: string;
+  readonly documentId: string;
+  readonly versionId: string;
+  readonly contentHash: string;
+  readonly ranges: readonly CharacterRange[];
+  /** Publisher identity fields are forbidden on public locators. */
+  readonly publisherExtractionId?: never;
+  readonly publisherIssueId?: never;
+  readonly publisherDocumentId?: never;
+};
+
 export type SourceLocator =
-  | {
-      readonly kind: "document";
-      /** Namespaced durable source identity (`public:<source>` or `publisher:<subscription>`). */
-      readonly sourceId: string;
-      readonly documentId: string;
-      readonly documentVersionId: string;
-      readonly contentHash: string;
-      readonly ranges: readonly CharacterRange[];
-      readonly publisherIssueId?: string | undefined;
-      readonly publisherDocumentId?: string | undefined;
-    }
+  | PublicDocumentLocator
+  | PublisherDocumentLocator
   | { readonly kind: "chat_message"; readonly messageId: string }
   | {
       readonly kind: "memory";

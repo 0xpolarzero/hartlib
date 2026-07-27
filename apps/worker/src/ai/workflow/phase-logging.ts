@@ -84,8 +84,8 @@ export const safeAiPhaseLogFields = (entry: AiPhaseLogEntry): AiPhaseLogEntry =>
 
 type OperationName =
   | "loadTurn"
-  | "resolveConversation"
-  | "planExecution"
+  | "planTurn"
+  | "planTurn"
   | "extractMemory"
   | "freezeContext"
   | "selectMemories"
@@ -145,19 +145,12 @@ const rules: Record<OperationName, PhaseRule> = {
     model: null,
     fallbackErrorCode: "finalization_failed",
   },
-  resolveConversation: {
-    phase: "conversation_resolution",
+  planTurn: {
+    phase: "plan_turn",
     asynchronous: true,
-    taskId: fixed("resolve-conversation"),
+    taskId: fixed("plan-turn"),
     model: "fast",
-    fallbackErrorCode: "conversation_resolution_failed",
-  },
-  planExecution: {
-    phase: "execution_planning",
-    asynchronous: true,
-    taskId: fixed("plan-execution"),
-    model: "fast",
-    fallbackErrorCode: "execution_planner_failed",
+    fallbackErrorCode: "plan_turn_failed",
   },
   extractMemory: {
     phase: "memory_extraction",
@@ -254,7 +247,7 @@ const rules: Record<OperationName, PhaseRule> = {
     asynchronous: true,
     taskId: fixed("clarify"),
     model: null,
-    fallbackErrorCode: "conversation_resolution_failed",
+    fallbackErrorCode: "plan_turn_failed",
   },
   allocateFanout: {
     phase: "fanout_allocation_exact_gate",

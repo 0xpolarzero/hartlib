@@ -19,7 +19,7 @@ export interface RankedCandidateIdentity {
 
 export class CanonicalizationError extends Error {
   readonly code:
-    | "invalid_citation_nonce"
+    | "invalid_citation_namespace"
     | "invalid_source_ordinal"
     | "invalid_url"
     | "invalid_range"
@@ -33,20 +33,20 @@ export class CanonicalizationError extends Error {
 }
 
 /**
- * A run citation nonce is exactly 128 random bits. Its public spelling is
+ * A run citation namespace is exactly 128 random bits. Its public spelling is
  * unpadded base64url, which is always 22 characters for a 16-byte input.
  */
-export const createCitationNonce = (): Uint8Array => new Uint8Array(randomBytes(16));
+export const createCitationNamespace = (): string => `cn_${randomBytes(16).toString("base64url")}`;
 
-export const encodeCitationNonce = (nonce: Uint8Array): string => {
+export const encodeCitationNamespace = (nonce: Uint8Array): string => {
   if (nonce.byteLength !== 16) {
     throw new CanonicalizationError(
-      "invalid_citation_nonce",
-      "citation nonce must contain exactly 16 bytes",
+      "invalid_citation_namespace",
+      "citation namespace seed must contain exactly 16 bytes",
     );
   }
 
-  return Buffer.from(nonce).toString("base64url");
+  return `cn_${Buffer.from(nonce).toString("base64url")}`;
 };
 
 export const sourceKeyForOrdinal = (nonce: Uint8Array, ordinal: number): string => {
@@ -57,11 +57,27 @@ export const sourceKeyForOrdinal = (nonce: Uint8Array, ordinal: number): string 
     );
   }
 
-  return `k_${encodeCitationNonce(nonce)}_${ordinal}`;
+  return `k_${encodeCitationNamespace(nonce)}_${ordinal}`;
+};
+
+export const sourceKeyForNamespace = (namespace: string, ordinal: number): string => {
+  if (!/^cn_[A-Za-z0-9_-]{22}$/u.test(namespace)) {
+    throw new CanonicalizationError(
+      "invalid_citation_namespace",
+      "citation namespace must match the final handle namespace",
+    );
+  }
+  if (!Number.isSafeInteger(ordinal) || ordinal < 1) {
+    throw new CanonicalizationError(
+      "invalid_source_ordinal",
+      "source ordinal must be a positive safe integer",
+    );
+  }
+  return `k_${namespace}_${ordinal}`;
 };
 
 export const sourceOrdinalFromKey = (sourceKey: string): number => {
-  const match = /^k_[A-Za-z0-9_-]{22}_([1-9][0-9]*)$/.exec(sourceKey);
+  const match = /^k_cn_[A-Za-z0-9_-]{22}_([1-9][0-9]*)$/.exec(sourceKey);
   const ordinal = match === null ? Number.NaN : Number(match[1]);
   if (!Number.isSafeInteger(ordinal) || ordinal < 1) {
     throw new CanonicalizationError("invalid_source_ordinal", "source key has no valid ordinal");

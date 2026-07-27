@@ -2,9 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   ContextReductionPrompt,
-  ConversationResolverPrompt,
+  PlanTurnPrompt,
   DirectAnswerPrompt,
-  ExecutionPlannerPrompt,
   InternalRetrievalPrompt,
   MemoryExtractorPrompt,
   MemorySelectorPrompt,
@@ -14,8 +13,7 @@ import {
 } from "./index";
 
 const rolePrompts = {
-  ConversationResolverPrompt,
-  ExecutionPlannerPrompt,
+  PlanTurnPrompt,
   InternalRetrievalPrompt,
   MemorySelectorPrompt,
   WebResearchPrompt,
@@ -40,78 +38,54 @@ describe("canonical AI role prompts", () => {
     },
   );
 
-  it("pins the conversation resolver inventory, union, and only terminal tool", () => {
-    expect(ConversationResolverPrompt).toContain('"currentMessage"');
-    expect(ConversationResolverPrompt).toContain('"currentDate"');
-    expect(ConversationResolverPrompt).toContain('"assistantContent"');
-    expect(ConversationResolverPrompt).toContain('"retryable"');
-    expect(ConversationResolverPrompt).toContain("emit_conversation_resolution only");
-    expect(ConversationResolverPrompt).toContain('"mode":"continue"');
-    expect(ConversationResolverPrompt).toContain('"mode":"clarify"');
-    expect(ConversationResolverPrompt).toContain("selectedTurnIds: []");
-    expect(ConversationResolverPrompt).toContain("A bounded retry means");
-    expect(ConversationResolverPrompt).toContain("multiple plausible same-kind antecedents");
-    expect(ConversationResolverPrompt).toContain(
-      "exactly one supplied whole entry matches the modifier",
-    );
-    expect(ConversationResolverPrompt).toContain("Do not infer a recency pairing");
-    expect(ConversationResolverPrompt).toContain("Name the competing candidates");
-    expect(ConversationResolverPrompt).toContain("Shared generic terms");
-    expect(ConversationResolverPrompt).toContain("Ignore unrelated later entries");
+  it("pins the plan-turn inventory, union, and only terminal tool", () => {
+    expect(PlanTurnPrompt).toContain('"currentMessage"');
+    expect(PlanTurnPrompt).toContain('"currentDate"');
+    expect(PlanTurnPrompt).toContain('"assistantContent"');
+    expect(PlanTurnPrompt).toContain('"retryable"');
+    expect(PlanTurnPrompt).toContain("emit_plan_turn only");
+    expect(PlanTurnPrompt).toContain('"mode":"clarify"');
+    expect(PlanTurnPrompt).toContain("relevantTurnIds: []");
+    expect(PlanTurnPrompt).toContain("A bounded retry means");
+    expect(PlanTurnPrompt).toContain("multiple plausible same-kind antecedents");
+    expect(PlanTurnPrompt).toContain("exactly one supplied whole entry matches the modifier");
+    expect(PlanTurnPrompt).toContain("Do not infer a recency pairing");
+    expect(PlanTurnPrompt).toContain("Name the competing candidates");
+    expect(PlanTurnPrompt).toContain("Shared generic terms");
+    expect(PlanTurnPrompt).toContain("Ignore unrelated later entries");
   });
 
-  it("pins semantic execution planning without workflow-owned IDs", () => {
+  it("pins plan-turn routing without workflow-owned IDs", () => {
     for (const field of [
-      '"originalMessage"',
-      '"resolvedQuestion"',
-      '"selectedEntries"',
+      '"currentMessage"',
+      '"entries"',
       '"locale"',
       '"market"',
-      '"webRequested"',
-      '"maxFanoutTopicCount"',
+      '"currentDate"',
     ]) {
-      expect(ExecutionPlannerPrompt).toContain(field);
+      expect(PlanTurnPrompt).toContain(field);
     }
-    expect(ExecutionPlannerPrompt).toContain("emit_execution_plan only");
-    expect(ExecutionPlannerPrompt).toContain('"mode":"single"');
-    expect(ExecutionPlannerPrompt).toContain('"mode":"fanout"');
-    expect(ExecutionPlannerPrompt).toContain("contain no topicId or route field");
-    expect(ExecutionPlannerPrompt).toContain("cross-cutting");
-    expect(ExecutionPlannerPrompt).toContain("memory application, memory update");
+    expect(PlanTurnPrompt).toContain("emit_plan_turn only");
+    expect(PlanTurnPrompt).toContain('"mode":"single"');
+    expect(PlanTurnPrompt).toContain('"mode":"fanout"');
+    expect(PlanTurnPrompt).toContain("relevantTurnIds");
+    expect(PlanTurnPrompt).toContain("resolved question");
   });
 
   it("pins every selector tool inventory and strict manifest shape", () => {
     for (const tool of ["search_internal", "inspect_internal", "emit_internal_manifest"]) {
       expect(InternalRetrievalPrompt).toContain(tool);
     }
-    for (const field of [
-      "documentVersionId",
-      '"source":{"kind":"public","sourceId":string}',
-      '"source":{"kind":"publisher","sourceId":string,"issueId":string,"documentId":string}',
-      "nested publisher documentId must equal the outer documentId",
-      "charStart",
-      "chat_message",
-      "purpose",
-    ]) {
+    for (const field of ['"documentId":string', "chat_message", "purpose"]) {
       expect(InternalRetrievalPrompt).toContain(field);
     }
-    expect(InternalRetrievalPrompt).toContain("public:<public_sources.source_id>");
-    expect(InternalRetrievalPrompt).toContain("publisher:<publisher_subscriptions.id>");
-    expect(InternalRetrievalPrompt).toContain(
-      "Never remove, replace, or duplicate either namespace prefix",
-    );
+    expect(InternalRetrievalPrompt).toContain("authorized search scope is compiled by Brief code");
     expect(InternalRetrievalPrompt).toContain("unquoted whitespace requires every lexeme");
+    expect(InternalRetrievalPrompt).toContain("sparse high-recall lexical query");
     expect(InternalRetrievalPrompt).toContain(
-      "the first search MUST include sparse English content lexemes",
-    );
-    expect(InternalRetrievalPrompt).toContain(
-      "the sole permitted refinement MUST simplify to one or two English content nouns",
+      "sole permitted refinement must be a strict deletion-only subset",
     );
     expect(InternalRetrievalPrompt).toContain("replace every hyphen joining words with a space");
-    expect(InternalRetrievalPrompt).toContain(
-      "search the stable subject identity first: use storage pilot, not storage pilot reduction",
-    );
-    expect(InternalRetrievalPrompt).toContain("target chat_messages before documents");
     expect(InternalRetrievalPrompt).toContain(
       "Saved memories are owned by the separate memory selector B",
     );
@@ -143,7 +117,6 @@ describe("canonical AI role prompts", () => {
     );
     expect(InternalRetrievalPrompt).toContain("Feed-recap rule");
     expect(InternalRetrievalPrompt).toContain("bounded recency listing");
-    expect(InternalRetrievalPrompt).toContain("or its exact recoveryReferences echo");
     expect(InternalRetrievalPrompt).toContain(
       "Reserve the final provider turn for emit_internal_manifest",
     );
@@ -243,7 +216,7 @@ describe("canonical AI role prompts", () => {
     for (const prompt of [DirectAnswerPrompt, SynthesisPrompt]) {
       expect(prompt).toContain("Allowed tools: None");
       expect(prompt).toContain("ordinary assistant text");
-      expect(prompt).toContain("[[cite:k_<nonce>_<ordinal>]]");
+      expect(prompt).toContain("[[cite:k_<citationNamespace>_<ordinal>]]");
       expect(prompt).toContain("exact-token-gate failure");
     }
     expect(DirectAnswerPrompt).toContain('"evidence"');
@@ -269,8 +242,8 @@ describe("canonical AI role prompts", () => {
       expect(MemoryExtractorPrompt).toContain(tool);
     }
     expect(MemoryExtractorPrompt).toContain('"currentUserMessage"');
-    expect(MemoryExtractorPrompt).toContain('"activeMemories"');
     expect(MemoryExtractorPrompt).toContain('"activeMemoryCount"');
+    expect(MemoryExtractorPrompt).not.toContain('"activeMemories"');
     expect(MemoryExtractorPrompt).toContain('"toolBounds"');
     expect(MemoryExtractorPrompt).toContain("search_memories(query, cursor?)");
     expect(MemoryExtractorPrompt).not.toContain("search_memories(terms");

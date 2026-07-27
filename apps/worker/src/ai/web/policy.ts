@@ -38,11 +38,7 @@ export const assertSavedWebPolicy = (policy: EffectiveWebPolicy): EnabledWebPoli
     domains !== null &&
     (domains.length === 0 || JSON.stringify(domains) !== JSON.stringify(policy.allowedDomains))
   ) {
-    throw new WebBoundaryError(
-      "unsupported_policy",
-      "saved web allowlist is not canonical",
-      false,
-    );
+    throw new WebBoundaryError("unsupported_policy", "saved web allowlist is not canonical", false);
   }
   return {
     enabled: true,

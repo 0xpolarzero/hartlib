@@ -5,7 +5,7 @@ import {
   canonicalizeWebUrl,
   documentEvidenceIdentity,
   namespacedDocumentEvidenceIdentity,
-  encodeCitationNonce,
+  encodeCitationNamespace,
   normalizeCharacterRanges,
   normalizeWebQuote,
   orderRankedCandidates,
@@ -25,9 +25,9 @@ describe("AI evidence canonicalization golden contract", () => {
       0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
       0x0f,
     ]);
-    expect(encodeCitationNonce(nonce)).toBe("AAECAwQFBgcICQoLDA0ODw");
-    expect(sourceKeyForOrdinal(nonce, 1)).toBe("k_AAECAwQFBgcICQoLDA0ODw_1");
-    expect(() => encodeCitationNonce(new Uint8Array(15))).toThrow(CanonicalizationError);
+    expect(encodeCitationNamespace(nonce)).toBe("cn_AAECAwQFBgcICQoLDA0ODw");
+    expect(sourceKeyForOrdinal(nonce, 1)).toBe("k_cn_AAECAwQFBgcICQoLDA0ODw_1");
+    expect(() => encodeCitationNamespace(new Uint8Array(15))).toThrow(CanonicalizationError);
     expect(() => sourceKeyForOrdinal(nonce, 0)).toThrow(CanonicalizationError);
   });
 

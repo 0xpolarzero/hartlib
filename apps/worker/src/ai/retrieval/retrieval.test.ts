@@ -5,7 +5,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runMigrations } from "../../db/migrate";
 import { InvalidQuerySpecError } from "./compile-query-spec";
-import { peekDocument, searchDocuments } from "./retrieval";
+import {
+  findNormalizedSubstringRanges,
+  normalizeAndCaseFold,
+  normalizeWithOriginalSpans,
+} from "./exact-text";
+import { peekDocument, previewFromImmutableText, searchDocuments } from "./retrieval";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
@@ -30,6 +35,17 @@ const stagFrText =
 const peekText = "0123456789".repeat(40);
 const dirigeableText =
   "Le dirigeable stratosphérique français réussit son premier vol d'essai longue durée au-dessus des Landes.";
+const repeatedHeadlineText =
+  "Needle first signal appears in the opening paragraph with enough context for a useful headline fragment. " +
+  "filler ".repeat(30) +
+  "Needle second signal appears in the closing paragraph with enough context for another useful headline fragment.";
+const unicodeHeadlineText =
+  "😀 " +
+  "prefix ".repeat(30) +
+  "needle match follows supplementary characters with enough surrounding words for a stable preview fragment.";
+const unmappableHeadlineText =
+  "This body deliberately contains a run event whose indexed stem matches the requested form. " +
+  "The fixture keeps enough stable source content to pass the readable-document invariant.";
 
 const sourceDatabaseUrl = () => {
   if (databaseUrl === undefined) {
@@ -52,6 +68,73 @@ const isolatedDatabaseUrl = () => {
 };
 
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
+
+describe("immutable text normalization", () => {
+  it("fails closed at a blocked Hangul trailing-jamo boundary", () => {
+    const text = "가\u0327\u11a8";
+    const mapped = normalizeWithOriginalSpans(text);
+
+    expect(mapped.text).toBe(normalizeAndCaseFold(text));
+    expect(mapped.text).toBe("가\u0327\u11a8");
+    expect(findNormalizedSubstringRanges(text, ["각", "각\u0327"])).toEqual([]);
+    expect(findNormalizedSubstringRanges(text, ["가"])).toEqual([{ charStart: 0, charEnd: 1 }]);
+  });
+
+  it("does not cross a blocked combining-mark boundary", () => {
+    const text = "a\u0323\u0301";
+    const mapped = normalizeWithOriginalSpans(text);
+
+    expect(mapped.text).toBe(normalizeAndCaseFold(text));
+    expect(mapped.text).toBe("ạ\u0301");
+    expect(findNormalizedSubstringRanges(text, ["á"])).toEqual([]);
+    expect(findNormalizedSubstringRanges(text, ["ạ"])).toEqual([{ charStart: 0, charEnd: 2 }]);
+  });
+
+  it("maps compatibility compositions and supplementary UTF-16 spans exactly", () => {
+    const text = "😀 \u09cc";
+    const mapped = normalizeWithOriginalSpans(text);
+
+    expect(mapped.text).toBe(normalizeAndCaseFold(text));
+    expect(findNormalizedSubstringRanges(text, ["😀"])).toEqual([{ charStart: 0, charEnd: 2 }]);
+    expect(findNormalizedSubstringRanges(text, ["\u09cc"])).toEqual([{ charStart: 3, charEnd: 4 }]);
+    expect(previewFromImmutableText("😀 ﬃ", "ffi", 100)).toEqual({
+      snippet: "ﬃ",
+      ranges: [{ charStart: 3, charEnd: 4 }],
+    });
+    expect(previewFromImmutableText("😀 prefix", undefined, 1)).toBeNull();
+    expect(previewFromImmutableText("😀 prefix", undefined, 2)).toEqual({
+      snippet: "😀",
+      ranges: [{ charStart: 0, charEnd: 2 }],
+    });
+  });
+
+  it("rejects ill-formed queries and keeps valid supplementary matches on UTF-16 boundaries", () => {
+    const text = "x😀 needle";
+    expect(findNormalizedSubstringRanges(text, ["\ud83d"])).toEqual([]);
+    expect(findNormalizedSubstringRanges(text, ["\ude00"])).toEqual([]);
+    expect(findNormalizedSubstringRanges(text, ["😀"])).toEqual([{ charStart: 1, charEnd: 3 }]);
+    expect(previewFromImmutableText(text, "needle\ud800", 100)).toBeNull();
+    expect(previewFromImmutableText(text, "needle", 100)).toEqual({
+      snippet: "needle",
+      ranges: [{ charStart: 4, charEnd: 10 }],
+    });
+  });
+
+  it("keeps attached combining marks in preview search terms", () => {
+    const text = "prefix e\u0301 suffix";
+
+    expect(previewFromImmutableText(text, "e\u0301", 100)).toEqual({
+      snippet: "e\u0301",
+      ranges: [{ charStart: 7, charEnd: 9 }],
+    });
+    expect(previewFromImmutableText(text, "é", 100)).toEqual({
+      snippet: "e\u0301",
+      ranges: [{ charStart: 7, charEnd: 9 }],
+    });
+    expect(previewFromImmutableText("a\u0323\u0301", "á", 100)).toBeNull();
+    expect(previewFromImmutableText("가\u0327\u11a8", "각\u0327", 100)).toBeNull();
+  });
+});
 
 function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
   return Effect.runPromise(
@@ -265,6 +348,36 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     publishedAt: daysAgo(1),
     documentType: "article",
     contentHash: "ret-h-15",
+  },
+  {
+    documentId: "ret-doc-repeated-headline",
+    sourceId: "ret-us",
+    language: "en-US",
+    title: "Repeated headline terms",
+    text: repeatedHeadlineText,
+    publishedAt: daysAgo(1),
+    documentType: "article",
+    contentHash: "ret-h-16",
+  },
+  {
+    documentId: "ret-doc-unicode-headline",
+    sourceId: "ret-us",
+    language: "en-US",
+    title: "Unicode headline terms",
+    text: unicodeHeadlineText,
+    publishedAt: daysAgo(1),
+    documentType: "article",
+    contentHash: "ret-h-17",
+  },
+  {
+    documentId: "ret-doc-unmappable-headline",
+    sourceId: "ret-us",
+    language: "en-US",
+    title: "Unmappable headline fixture",
+    text: unmappableHeadlineText,
+    publishedAt: daysAgo(1),
+    documentType: "article",
+    contentHash: "ret-h-18",
   },
 ].map((fixture) => ({ ...fixture, contentHash: sha256(fixture.text) }));
 
@@ -538,28 +651,19 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           { terms: "sémaphore" },
           { ...baseOptions, recencyHalfLifeDays: 10_000 },
         );
-        expect(orderedDocumentIds(flatDecayPreviews)).toEqual([
-          "ret-doc-sem-title",
-          "ret-doc-sem-body",
-        ]);
+        expect(orderedDocumentIds(flatDecayPreviews)).toEqual(["ret-doc-sem-body"]);
 
         const steepDecayPreviews = yield* searchDocuments(
           { terms: "sémaphore" },
           { ...baseOptions, recencyHalfLifeDays: 5 },
         );
-        expect(orderedDocumentIds(steepDecayPreviews)).toEqual([
-          "ret-doc-sem-body",
-          "ret-doc-sem-title",
-        ]);
+        expect(orderedDocumentIds(steepDecayPreviews)).toEqual(["ret-doc-sem-body"]);
 
         const recencyPreviews = yield* searchDocuments(
           { terms: "sémaphore", orderBy: "recency" },
           baseOptions,
         );
-        expect(orderedDocumentIds(recencyPreviews)).toEqual([
-          "ret-doc-sem-body",
-          "ret-doc-sem-title",
-        ]);
+        expect(orderedDocumentIds(recencyPreviews)).toEqual(["ret-doc-sem-body"]);
       }),
     );
   });
@@ -623,12 +727,111 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
         expect(preview.snippet).toEqual(expect.any(String));
         expect(preview.snippet.length).toBeGreaterThan(0);
         expect(preview.snippet.length).toBeLessThanOrEqual(300);
-        expect(preview.snippet).toContain("<b>");
         expect(preview.snippet.toLowerCase()).toContain("stagflation");
+        expect(preview.previewRanges).toEqual([
+          expect.objectContaining({ charStart: expect.any(Number), charEnd: expect.any(Number) }),
+        ]);
+        expect(
+          preview.previewRanges
+            .map((range) => preview.text.slice(range.charStart, range.charEnd))
+            .join("\n…\n"),
+        ).toBe(preview.snippet);
         expect(Object.keys(preview)).not.toContain("text");
       }),
     );
   });
+
+  it(
+    "maps repeated multi-fragment headlines to exact UTF-16 source spans",
+    { timeout: 60_000 },
+    async () => {
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const previews = yield* searchDocuments(
+            { terms: "needle", languages: ["en-US"], sourceIds: ["ret-us"] },
+            baseOptions,
+          );
+          const preview = previews.find(
+            (candidate) => candidate.documentId === "ret-doc-repeated-headline",
+          );
+          if (preview === undefined) throw new Error("Missing repeated-headline preview");
+          const firstStart = repeatedHeadlineText.indexOf("Needle");
+          const secondStart = repeatedHeadlineText.lastIndexOf("Needle");
+          expect(preview.previewRanges).toEqual([
+            { charStart: firstStart, charEnd: firstStart + "Needle".length },
+            { charStart: secondStart, charEnd: secondStart + "Needle".length },
+          ]);
+          for (const [index, range] of preview.previewRanges.entries()) {
+            expect(range.charStart).toBeGreaterThanOrEqual(0);
+            expect(range.charEnd).toBeLessThanOrEqual(preview.text.length);
+            expect(range.charEnd).toBeGreaterThan(range.charStart);
+            if (index > 0) {
+              expect(range.charStart).toBeGreaterThanOrEqual(
+                preview.previewRanges[index - 1]!.charEnd,
+              );
+            }
+            expect(preview.text.slice(range.charStart, range.charEnd)).toBe(
+              preview.snippet.split("\n…\n")[index],
+            );
+            expect(preview.text.slice(range.charStart, range.charEnd).toLowerCase()).toContain(
+              "needle",
+            );
+          }
+        }),
+      );
+    },
+  );
+
+  it("keeps supplementary-character offsets in UTF-16 units", { timeout: 60_000 }, async () => {
+    await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const previews = yield* searchDocuments(
+          { terms: "needle", languages: ["en-US"], sourceIds: ["ret-us"] },
+          baseOptions,
+        );
+        const preview = previews.find(
+          (candidate) => candidate.documentId === "ret-doc-unicode-headline",
+        );
+        if (preview === undefined) throw new Error("Missing unicode-headline preview");
+        const firstRange = preview.previewRanges[0];
+        if (firstRange === undefined) throw new Error("Missing unicode preview range");
+        const expectedStart = unicodeHeadlineText.indexOf("needle");
+        expect(firstRange).toEqual({
+          charStart: expectedStart,
+          charEnd: expectedStart + "needle".length,
+        });
+        expect(preview.text.slice(firstRange.charStart, firstRange.charEnd)).toBe(preview.snippet);
+        expect(preview.text.slice(0, 2)).toBe("😀");
+      }),
+    );
+  });
+
+  it(
+    "fails closed when a database hit has no exact immutable-text occurrence",
+    { timeout: 60_000 },
+    async () => {
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const hits = yield* sql<{ readonly count: number }>`
+            select count(*)::int as count
+            from public_source_documents
+            where document_id = 'ret-doc-unmappable-headline'
+              and search_vector @@ websearch_to_tsquery('english', 'running')
+          `;
+          expect(hits[0]?.count).toBe(1);
+          const previews = yield* searchDocuments(
+            { terms: "running", languages: ["en-US"], sourceIds: ["ret-us"] },
+            baseOptions,
+          );
+          expect(previews).toEqual([]);
+        }),
+      );
+    },
+  );
 
   it("derives access from the caller", { timeout: 60_000 }, async () => {
     await runDb(

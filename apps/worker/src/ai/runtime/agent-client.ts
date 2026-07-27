@@ -12,9 +12,17 @@ import type {
   ProviderMessage,
   ProviderRequest,
   ProviderToolDefinition,
+  SourceExposureProof,
+  ProviderVisibleSourceExposureMarker,
+} from "./provider-request";
+import {
+  providerRequestSourceExposureProofBindings,
+  providerSourceExposureProofFromToolResult,
+  redactProviderToolResult,
 } from "./provider-request";
 import { aiRunErrorCodeForRole, toAiRuntimeError } from "./errors";
 import { requireCurrentTaskCoordinates } from "./task-cancellation";
+import { resolveRuntimeModel } from "./model-registry";
 
 export interface StructuredCallInput<Output> {
   readonly requestClass: ProviderRequest["requestClass"];
@@ -29,6 +37,8 @@ export interface StructuredCallInput<Output> {
   readonly reasoning: ProviderRequest["reasoning"];
   readonly coordinates: PiBoundaryCoordinates;
   readonly onBeforeRequest?: BeforeProviderRequest | undefined;
+  /** Code-owned exposure proofs stay outside provider-visible messages. */
+  readonly sourceExposureProofs?: readonly SourceExposureProof[] | undefined;
 }
 
 export interface ToolLoopTool {
@@ -50,6 +60,8 @@ export interface ToolLoopInput<Output> {
   readonly model: LiveProviderRequest["model"];
   readonly system: string;
   readonly user: string;
+  /** Code-owned exposure proofs stay outside provider-visible messages. */
+  readonly sourceExposureProofs?: readonly SourceExposureProof[] | undefined;
   readonly tools: readonly ToolLoopTool[];
   /**
    * Optionally hide code-owned tools after a successful phase transition. A
@@ -166,10 +178,66 @@ const parseExactlyOneTerminal = <Output>(
   return validate(calls[0]?.arguments);
 };
 
-const toolResultJson = (value: Readonly<Record<string, unknown>>): string => JSON.stringify(value);
+const exposureMarkersFromResult = (
+  value: Readonly<Record<string, unknown>>,
+): readonly ProviderVisibleSourceExposureMarker[] => {
+  const raw = value.__briefSourceExposures;
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new Error("source exposure inventory must be an array");
+  return raw.map((item) => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error("source exposure inventory contains an invalid marker");
+    }
+    const marker = item as Record<string, unknown>;
+    if (
+      Object.keys(marker).length !== 5 ||
+      (marker.sourceKind !== "document" &&
+        marker.sourceKind !== "chat_message" &&
+        marker.sourceKind !== "memory" &&
+        marker.sourceKind !== "web") ||
+      typeof marker.logicalSourceIdentity !== "string" ||
+      marker.logicalSourceIdentity.length === 0 ||
+      typeof marker.contentItemIdentity !== "string" ||
+      marker.contentItemIdentity.length === 0 ||
+      typeof marker.exposureStage !== "string" ||
+      marker.exposureStage.length === 0 ||
+      typeof marker.visibleTokenCount !== "number" ||
+      !Number.isSafeInteger(marker.visibleTokenCount) ||
+      marker.visibleTokenCount < 0
+    ) {
+      throw new Error("source exposure inventory contains an invalid marker");
+    }
+    return marker as unknown as ProviderVisibleSourceExposureMarker;
+  });
+};
+
+const exposureProofKey = (marker: ProviderVisibleSourceExposureMarker): string =>
+  JSON.stringify([
+    marker.sourceKind,
+    marker.logicalSourceIdentity,
+    marker.contentItemIdentity,
+    marker.exposureStage,
+    marker.visibleTokenCount,
+  ]);
+
+const canonicalExposureMarker = (
+  marker: ProviderVisibleSourceExposureMarker,
+): ProviderVisibleSourceExposureMarker => ({
+  sourceKind: marker.sourceKind,
+  logicalSourceIdentity: marker.logicalSourceIdentity,
+  contentItemIdentity: marker.contentItemIdentity,
+  exposureStage: marker.exposureStage,
+  visibleTokenCount: marker.visibleTokenCount,
+});
+
+// Exposure proofs are a code-owned side channel. They must never enter a
+// provider tool message, even though retrieval keeps them on its private
+// result object for the durable exposure ledger.
+const toolResultJson = (value: Readonly<Record<string, unknown>>): string =>
+  JSON.stringify(redactProviderToolResult(value));
 const emptyToolResultShape = (toolName: string): Readonly<Record<string, unknown>> => ({
   ...(toolName === "search_internal" ? { items: [] } : {}),
-  ...(toolName === "search_within_candidate" ? { matchPreviews: [] } : {}),
+  ...(toolName === "search_within_candidate" ? { matches: [], matchPreviews: [] } : {}),
 });
 
 const malformedToolResult = (toolName: string): Readonly<Record<string, unknown>> => ({
@@ -332,6 +400,8 @@ const rangeFromArguments = (
     const nested = reference as Readonly<Record<string, unknown>>;
     const ranges = rangeSetFromValue(nested.ranges);
     if (ranges !== undefined) return ranges;
+    const range = rangeSetFromValue(nested.range);
+    if (range !== undefined) return range;
   }
   return rangeSetFromValue(arguments_.ranges) ?? rangeSetFromValue(arguments_.range);
 };
@@ -388,6 +458,20 @@ const rangeFromIncompleteResult = (
 const continuationKey = (name: string, arguments_: Readonly<Record<string, unknown>>): string =>
   `${name}:${stableJson(arguments_)}`;
 
+const continuationForCall = (
+  obligations: ReadonlyMap<string, ToolContinuationObligation>,
+  name: string,
+  arguments_: Readonly<Record<string, unknown>>,
+): { readonly key: string; readonly obligation: ToolContinuationObligation } | undefined => {
+  const exactKey = continuationKey(name, arguments_);
+  const exact = obligations.get(exactKey);
+  if (exact !== undefined) return { key: exactKey, obligation: exact };
+  const narrower = [...obligations.entries()].filter(
+    ([key, obligation]) => key.startsWith(`${name}:`) && obligation.narrowerRangeRequired,
+  );
+  return narrower.length === 1 ? { key: narrower[0]![0], obligation: narrower[0]![1] } : undefined;
+};
+
 const resultIsIncomplete = (result: Readonly<Record<string, unknown>>): boolean =>
   result.complete === false || result.truncated === true;
 
@@ -436,7 +520,14 @@ export class CanonicalAgentClient {
       toolChoice: "auto",
       requestedOutputTokens: input.requestedOutputTokens,
       reasoning: input.reasoning,
+      ...(input.sourceExposureProofs === undefined
+        ? {}
+        : { sourceExposureProofs: input.sourceExposureProofs }),
     } as const satisfies LiveProviderRequest;
+    providerRequestSourceExposureProofBindings(
+      request,
+      resolveRuntimeModel(request.model).countTextTokens,
+    );
     let completion: PiCompletion;
     try {
       completion = await this.boundary.complete(
@@ -459,6 +550,7 @@ export class CanonicalAgentClient {
       { role: "system", content: input.system },
       { role: "user", content: input.user },
     ];
+    const sourceExposureProofs: SourceExposureProof[] = [...(input.sourceExposureProofs ?? [])];
     const tools = new Map(input.tools.map((tool) => [tool.definition.name, tool]));
     const continuationObligations = new Map<string, ToolContinuationObligation>();
 
@@ -486,24 +578,26 @@ export class CanonicalAgentClient {
       const visibleToolsByName = new Map(visibleTools.map((tool) => [tool.definition.name, tool]));
       let completion: PiCompletion;
       try {
-        completion = await this.boundary.complete(
-          {
-            requestClass: input.requestClass,
-            model: input.model,
-            messages: [...messages],
-            tools: terminalTurn
-              ? [terminalTool!.definition]
-              : visibleTools.map((tool) => tool.definition),
-            // Z.AI currently supports automatic tool selection only. The
-            // prompts and terminal-tool-only turn shape enforce the loop
-            // protocol while preserving the provider's supported posture.
-            toolChoice: "auto",
-            requestedOutputTokens: input.requestedOutputTokens,
-            reasoning: input.reasoning,
-          },
-          coordinates,
-          input.onBeforeRequest,
+        const request = {
+          requestClass: input.requestClass,
+          model: input.model,
+          messages: [...messages],
+          tools: terminalTurn
+            ? [terminalTool!.definition]
+            : visibleTools.map((tool) => tool.definition),
+          sourceExposureProofs: [...sourceExposureProofs],
+          // Z.AI currently supports automatic tool selection only. The
+          // prompts and terminal-tool-only turn shape enforce the loop
+          // protocol while preserving the provider's supported posture.
+          toolChoice: "auto" as const,
+          requestedOutputTokens: input.requestedOutputTokens,
+          reasoning: input.reasoning,
+        } satisfies LiveProviderRequest;
+        providerRequestSourceExposureProofBindings(
+          request,
+          resolveRuntimeModel(request.model).countTextTokens,
         );
+        completion = await this.boundary.complete(request, coordinates, input.onBeforeRequest);
       } catch (error) {
         throw toAiRuntimeError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
       }
@@ -661,8 +755,13 @@ export class CanonicalAgentClient {
             aiRunErrorCodeForRole(input.coordinates.agentRole),
           );
         }
-        const key = continuationKey(call.name, call.arguments);
-        const obligation = priorContinuationObligations.get(key);
+        const continuation = continuationForCall(
+          priorContinuationObligations,
+          call.name,
+          call.arguments,
+        );
+        const key = continuation?.key ?? continuationKey(call.name, call.arguments);
+        const obligation = continuation?.obligation;
         if (obligation === undefined) continue;
         if (preflightContinuationKeys.has(key)) {
           throw providerOutputError(
@@ -787,8 +886,13 @@ export class CanonicalAgentClient {
             aiRunErrorCodeForRole(input.coordinates.agentRole),
           );
         }
-        const obligationKey = continuationKey(call.name, call.arguments);
-        const obligation = priorContinuationObligations.get(obligationKey);
+        const continuation = continuationForCall(
+          priorContinuationObligations,
+          call.name,
+          call.arguments,
+        );
+        const obligationKey = continuation?.key ?? continuationKey(call.name, call.arguments);
+        const obligation = continuation?.obligation;
         if (
           (priorContinuationObligations.size > 0 && obligation === undefined) ||
           continuationCreatedInCurrentResponse
@@ -843,6 +947,32 @@ export class CanonicalAgentClient {
           continuationCreatedInCurrentResponse = true;
         } else if (obligation !== undefined) {
           continuationObligations.delete(obligationKey);
+        }
+        const resultMarkers = exposureMarkersFromResult(result);
+        const mintedProofs =
+          resultMarkers.length === 0
+            ? []
+            : providerSourceExposureProofFromToolResult(
+                call.name,
+                result,
+                call,
+                resolveRuntimeModel(input.model).countTextTokens,
+              );
+        for (const marker of mintedProofs) {
+          const markerKey = exposureProofKey(marker);
+          const existingMarkers = sourceExposureProofs.filter(
+            (existing) => exposureProofKey(existing) === markerKey,
+          );
+          if (
+            existingMarkers.some(
+              (existingMarker) =>
+                JSON.stringify(canonicalExposureMarker(existingMarker)) !==
+                JSON.stringify(canonicalExposureMarker(marker)),
+            )
+          ) {
+            throw new Error("source exposure proof identity was rebound to new content");
+          }
+          sourceExposureProofs.push(marker);
         }
         messages.push({
           role: "tool",

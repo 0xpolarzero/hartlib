@@ -53,6 +53,10 @@ const oversizedMemoryEvidence = [
         "separate, and preserve a concise verification note. ",
     ).join(""),
 }));
+const oversizedRequestPadding = Array.from(
+  { length: 450 },
+  (_, index) => `Deterministic audit constraint ${index + 1}: retain the binding conclusion.`,
+).join(" ");
 const solarEvidence =
   "Solar additions reached 4.6 GW, while connection queues grew by 9 percent year over year.";
 const storageEvidence =
@@ -70,8 +74,8 @@ const longConversation = Array.from({ length: 13 }, (_, index) => ({
     index === 0 ? oldChatEvidence : `Unrelated answer about publication workflow ${index + 1}.`,
 }));
 
-export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
-  version: 2,
+const canonicalGoldenEvaluationSet = {
+  version: 3,
   cases: [
     {
       id: "first-message-document-fr",
@@ -93,9 +97,10 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       webPolicyEnabled: false,
       labels: {
         relevantTurnIds: [],
-        resolution: {
-          mode: "continue",
-          canonicalRetrievalQuestion: "Capacité solaire raccordée en France en 2024",
+        planTurn: {
+          mode: "single",
+          question: "Capacité solaire raccordée en France en 2024",
+          relevantTurnIds: [],
           requiredTermGroups: [["solaire"], ["France"], ["2024"], ["raccordée", "raccordement"]],
         },
         retrievalSelectors: ["A"],
@@ -105,7 +110,6 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
         acceptableRanges: {
           "doc:fr-solar-2024": [{ charStart: 0, charEnd: firstMessageDocument.length }],
         },
-        fanoutSuitability: "forbidden",
         supportedClaims: [
           { claimId: "fr-solar-added-2024", supportingSourceIds: ["doc:fr-solar-2024"] },
         ],
@@ -144,9 +148,10 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       webPolicyEnabled: false,
       labels: {
         relevantTurnIds: ["turn-solar-2024"],
-        resolution: {
-          mode: "continue",
-          canonicalRetrievalQuestion: "Projection des raccordements solaires en France pour 2025",
+        planTurn: {
+          mode: "single",
+          question: "Projection des raccordements solaires en France pour 2025",
+          relevantTurnIds: ["turn-solar-2024"],
           requiredTermGroups: [["projection", "prévision"], ["solaire"], ["France"], ["2025"]],
         },
         retrievalSelectors: ["A"],
@@ -156,7 +161,6 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
         acceptableRanges: {
           "doc:fr-solar-2025": [{ charStart: 0, charEnd: followUpDocument.length }],
         },
-        fanoutSuitability: "forbidden",
         supportedClaims: [
           { claimId: "fr-solar-outlook-2025", supportingSourceIds: ["doc:fr-solar-2025"] },
         ],
@@ -187,8 +191,10 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       webPolicyEnabled: false,
       labels: {
         relevantTurnIds: [],
-        resolution: {
+        planTurn: {
           mode: "clarify",
+          question: "wind solar which clarify",
+          relevantTurnIds: [],
           requiredQuestionTermGroups: [["wind"], ["solar"], ["which", "clarify"]],
         },
         retrievalSelectors: [],
@@ -196,7 +202,6 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
         relevantSourceIds: [],
         acceptableOmissionSourceIds: [],
         acceptableRanges: {},
-        fanoutSuitability: "forbidden",
         supportedClaims: [],
         expectedGaps: [],
         expectedMemoryProposals: [],
@@ -222,9 +227,10 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       webPolicyEnabled: false,
       labels: {
         relevantTurnIds: [],
-        resolution: {
-          mode: "continue",
-          canonicalRetrievalQuestion: "Reduction achieved by the earlier regional storage pilot",
+        planTurn: {
+          mode: "single",
+          question: "Reduction achieved by the earlier regional storage pilot",
+          relevantTurnIds: [],
           requiredTermGroups: [
             ["reduction", "reduced"],
             ["storage"],
@@ -237,7 +243,6 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
         relevantSourceIds: ["chat:turn-old-storage"],
         acceptableOmissionSourceIds: [],
         acceptableRanges: {},
-        fanoutSuitability: "forbidden",
         supportedClaims: [
           { claimId: "old-storage-reduction", supportingSourceIds: ["chat:turn-old-storage"] },
         ],
@@ -272,9 +277,10 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       webPolicyEnabled: false,
       labels: {
         relevantTurnIds: ["turn-format"],
-        resolution: {
-          mode: "continue",
-          canonicalRetrievalQuestion: "Préférence enregistrée de format et nouvelle unité MWh",
+        planTurn: {
+          mode: "single",
+          question: "Préférence enregistrée de format et nouvelle unité MWh",
+          relevantTurnIds: ["turn-format"],
           requiredTermGroups: [["préférence"], ["format", "quantités"], ["MWh"]],
         },
         retrievalSelectors: ["B"],
@@ -282,7 +288,6 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
         relevantSourceIds: ["memory:pref-1:r1"],
         acceptableOmissionSourceIds: [],
         acceptableRanges: {},
-        fanoutSuitability: "forbidden",
         supportedClaims: [
           { claimId: "saved-format-preference", supportingSourceIds: ["memory:pref-1:r1"] },
         ],
@@ -322,9 +327,10 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       webPolicyEnabled: true,
       labels: {
         relevantTurnIds: [],
-        resolution: {
-          mode: "continue",
-          canonicalRetrievalQuestion: "Latest official interconnector status and exact date",
+        planTurn: {
+          mode: "single",
+          question: "Latest official interconnector status and exact date",
+          relevantTurnIds: [],
           requiredTermGroups: [["latest"], ["official"], ["interconnector"], ["date"]],
         },
         retrievalSelectors: ["W"],
@@ -332,7 +338,6 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
         relevantSourceIds: ["web:operator-interconnector-2026-03-14"],
         acceptableOmissionSourceIds: [],
         acceptableRanges: {},
-        fanoutSuitability: "forbidden",
         supportedClaims: [
           {
             claimId: "interconnector-return-date",
@@ -356,10 +361,10 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       webPolicyEnabled: false,
       labels: {
         relevantTurnIds: [],
-        resolution: {
-          mode: "continue",
-          canonicalRetrievalQuestion:
-            "Remember comparison instruction for absolute and percentage change",
+        planTurn: {
+          mode: "single",
+          question: "Remember comparison instruction for absolute and percentage change",
+          relevantTurnIds: [],
           requiredTermGroups: [["remember"], ["comparison"], ["absolute"], ["percentage"]],
         },
         retrievalSelectors: [],
@@ -367,7 +372,6 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
         relevantSourceIds: [],
         acceptableOmissionSourceIds: [],
         acceptableRanges: {},
-        fanoutSuitability: "forbidden",
         supportedClaims: [],
         expectedGaps: [],
         expectedMemoryProposals: [
@@ -415,10 +419,10 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       webPolicyEnabled: false,
       labels: {
         relevantTurnIds: [],
-        resolution: {
-          mode: "continue",
-          canonicalRetrievalQuestion:
-            "Curtailment reductions across six regional storage-dispatch trials using all four saved audit-rule sets",
+        planTurn: {
+          mode: "single",
+          question: `Curtailment reductions across six regional storage-dispatch trials using all four saved audit-rule sets ${oversizedRequestPadding}`,
+          relevantTurnIds: [],
           requiredTermGroups: [
             ["curtailment"],
             ["storage"],
@@ -445,7 +449,6 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
             [document.acceptableRange],
           ]),
         ),
-        fanoutSuitability: "forbidden",
         supportedClaims: oversizedEvidenceDocuments
           .map((document, regionIndex) => ({
             claimId: `coordinated-storage-curtailment-region-${regionIndex + 1}`,
@@ -506,11 +509,26 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       webPolicyEnabled: true,
       labels: {
         relevantTurnIds: [],
-        resolution: {
-          mode: "continue",
-          canonicalRetrievalQuestion:
-            "Solar connections, storage operations, and current market-price signal",
-          requiredTermGroups: [["solar"], ["storage"], ["market"], ["price"]],
+        planTurn: {
+          mode: "fanout",
+          question: "Solar connections, storage operations, and current market-price signal",
+          topics: [
+            {
+              topicId: "t1",
+              question: "What do the solar connection sources report?",
+              relevantTurnIds: [],
+            },
+            {
+              topicId: "t2",
+              question: "What do the storage operation sources report?",
+              relevantTurnIds: [],
+            },
+            {
+              topicId: "t3",
+              question: "What is the current official market-price signal?",
+              relevantTurnIds: [],
+            },
+          ],
         },
         retrievalSelectors: ["A", "W"],
         requiredSourceIds: [
@@ -530,7 +548,6 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
           "doc:storage-operations": [{ charStart: 0, charEnd: storageEvidence.length }],
           "doc:optional-grid-background": [{ charStart: 0, charEnd: 70 }],
         },
-        fanoutSuitability: "required",
         supportedClaims: [
           { claimId: "solar-connection-result", supportingSourceIds: ["doc:solar-connections"] },
           { claimId: "storage-operation-result", supportingSourceIds: ["doc:storage-operations"] },
@@ -552,9 +569,10 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       webPolicyEnabled: false,
       labels: {
         relevantTurnIds: [],
-        resolution: {
-          mode: "continue",
-          canonicalRetrievalQuestion: "Verified 2027 lunar-grid capacity award",
+        planTurn: {
+          mode: "single",
+          question: "Verified 2027 lunar-grid capacity award",
+          relevantTurnIds: [],
           requiredTermGroups: [["2027"], ["lunar"], ["grid"], ["capacity"], ["award"]],
         },
         retrievalSelectors: [],
@@ -562,7 +580,6 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
         relevantSourceIds: [],
         acceptableOmissionSourceIds: [],
         acceptableRanges: {},
-        fanoutSuitability: "forbidden",
         supportedClaims: [],
         expectedGaps: [
           {
@@ -574,4 +591,9 @@ export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
       },
     },
   ],
+} as const;
+
+export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
+  version: 3,
+  cases: canonicalGoldenEvaluationSet.cases,
 });
