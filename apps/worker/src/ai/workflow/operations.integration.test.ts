@@ -1886,50 +1886,6 @@ class WebManifestAgent extends CanonicalAgentClient {
   }
 }
 
-class AuthorizationProbeAgent extends CanonicalAgentClient {
-  streamAttempts = 0;
-  providerInvocations = 0;
-  streamedDeltas = 0;
-
-  constructor() {
-    super(testProviderBoundary());
-  }
-
-  override async stream(
-    request: LiveProviderRequest,
-    coordinates: PiBoundaryCoordinates,
-    onDelta: (delta: string, index: number) => Promise<void> | void,
-    onBeforeRequest?: BeforeProviderRequest,
-  ): Promise<PiCompletion> {
-    this.streamAttempts += 1;
-    await onBeforeRequest?.(
-      request,
-      {
-        ...coordinates,
-        providerRequestIndex: 0,
-        providerRequestSha256Hex: providerRequestSha256Hex(request),
-      },
-      passedMeasurement(request.model),
-    );
-    this.providerInvocations += 1;
-    await onDelta("must not stream after revocation", 0);
-    this.streamedDeltas += 1;
-    return {
-      text: "unexpected provider result",
-      toolCalls: [],
-      usage: {
-        inputTokens: 1,
-        outputTokens: 1,
-        cachedTokens: 0,
-        reasoningTokens: 0,
-        totalTokens: 2,
-        stopReason: "stop",
-      },
-      stopReason: "stop",
-    };
-  }
-}
-
 class MemoryManifestAgent extends CanonicalAgentClient {
   constructor(private readonly entries: readonly MemoryReference[]) {
     super(testProviderBoundary());
@@ -5581,8 +5537,11 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "tinyfish" as const,
     } satisfies CanonicalAiConfig;
-    const probe = new AuthorizationProbeAgent();
-    const operations = new CanonicalWorkflowOperations(databaseUrlFor(databaseName), config, probe);
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      config,
+      new CanonicalAgentClient(testProviderBoundary()),
+    );
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
