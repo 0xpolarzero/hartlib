@@ -10,10 +10,7 @@ import { platformSupportRoutes } from "../domain/platform-support";
 import { publisherDocumentContentRoute } from "../domain/publisher-documents";
 import { publisherOnboardingRoute } from "../domain/publisher-onboarding";
 import { publisherWorkspaceRoutes } from "../domain/publisher-workspace";
-import {
-  publicSourceDocumentContentRoute,
-  publicSourceRoutes,
-} from "../domain/public-sources";
+import { publicSourceDocumentContentRoute, publicSourceRoutes } from "../domain/public-sources";
 import { stripeWebhookRoute } from "../domain/stripe-webhook";
 import { workspaceMembershipRoutes } from "../domain/workspace-memberships";
 
