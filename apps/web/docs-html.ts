@@ -170,9 +170,11 @@ export const DOCS_HTML: string = `<!doctype html>
     chat, company, exact source and access IDs, memory mode and revision IDs,
     provider and model identities, requested and effective web state, and the
     canonical domain allowlist. Later membership, grant, source-setting,
-    memory, provider, or web-policy changes affect later runs only. Delivered
-    publication access is historical but client viewers still need an unrevoked
-    current company membership and the exact recipient recorded at delivery. A
+    memory, provider, or web-policy changes do not alter this run's execution
+    scope; they affect later runs. Current chat reads and streams still check
+    the viewer's current chat and membership access. Delivered publication
+    access is historical, but client viewers also need an unrevoked current
+    company membership and the exact recipient recorded at delivery. A
     membership revocation denies that client viewer without changing the historical
     row. Current subscription, grant, source-setting, and policy changes do not
     revoke an earlier delivery, and a later grant does not unlock one.
@@ -357,8 +359,39 @@ export const DOCS_HTML: string = `<!doctype html>
     — a durable, resume-capable task graph. Most tasks call a method on a
     single operations object (<code>CanonicalWorkflowOperations</code>) that
     owns the database, the LLM client, and the web research boundary; the rest
-    route or validate outputs from earlier tasks. The graph is:
+    route or validate outputs from earlier tasks.
   </p>
+  <h3>What <code>load-turn</code> carries</h3>
+  <p>
+    <code>load-turn</code> validates the saved scope and returns a small
+    coordination value:
+  </p>
+  <pre><code>LoadedTurn = {
+  aiRunId, chatId, initiatingUserId, userMessageId, userMessage,
+  locale, market, currentDate,
+  citationNamespace,
+  acceptanceScope
+}</code></pre>
+  <p>
+    The acceptance scope contains the IDs and provider/web choices fixed when
+    the API accepted the message. It is an authorization boundary, not a cache
+    of database rows. <code>load-turn</code> does not preload conversation
+    bodies, memories, source metadata, document text, hashes, or policy rows.
+    Each task loads only the rows it needs, restricted by the saved IDs.
+    Brief code owns those queries; models see only their declared inputs and
+    tool results. Later setting changes affect later runs, not this one.
+  </p>
+  <p>
+    <code>citationNamespace</code> is a fresh random run-local namespace that
+    stays stable across retries and replay. Code combines it with a stable
+    evidence ordinal to form keys such as
+    <code>k_cn_x7Q2M6F8N4V3J9P5T1X6Cg_1</code>. It is not proof that a claim has
+    support and does not stop a model from typing a citation-shaped string.
+    The final parser accepts a key only when the current run's exact source map
+    contains it; an invented or copied key has no matching evidence and fails
+    validation.
+  </p>
+  <p>The graph is:</p>
   <pre><code>Sequence
 ├─ load-turn                markAiRunStarted  →  emits run_started
 ├─ Parallel turn-lanes

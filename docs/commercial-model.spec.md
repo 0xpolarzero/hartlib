@@ -87,8 +87,9 @@ Credits are consumed by AI chats.
 AI chats can answer in text with summaries, comparisons, explicit web research, and Markdown tables. Generated graphs, visualizations, and executable artifacts are not part of the current runtime.
 
 Current catalog access and future delivery follow the subscription. Reading,
-downloading, and basic archive search for a delivered issue follow the exact
-delivery-time recipient record.
+downloading, and basic archive search for a delivered issue require an
+unrevoked current company membership and the exact delivery-time recipient
+record.
 
 Monthly credits renew each month.
 

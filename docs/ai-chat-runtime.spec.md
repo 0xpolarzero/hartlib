@@ -69,8 +69,6 @@ type LoadedTurn = {
   locale: "fr-FR" | "en-US";
   market: "FR" | "US";
   currentDate: string;
-  webRequested: boolean;
-  memoryMode: "private_owner" | "disabled";
   citationNamespace: string;
   acceptanceScope: RunAcceptanceScope;
 };
@@ -88,10 +86,10 @@ type RunAcceptanceScope = {
   memoryRevisionIds: string[];
   webRequested: boolean;
   webEnabled: boolean;
-  provider: string;
+  provider: "zai_coding_plan_official" | "deterministic_test" | "openai_compatible_custom";
   providerEndpointIdentity: string;
-  fastModelId: string;
-  mainModelId: string;
+  fastModelId: "glm-5-turbo";
+  mainModelId: "glm-5-turbo";
   webTransportProvider: "tinyfish" | null;
   allowedDomains: string[] | null;
 };
@@ -1428,7 +1426,19 @@ If a required task fails fatally before `finalize`, the worker failure handler a
 
 The stream endpoint is `GET /v1/ai-runs/:runId/stream`.
 
-The API incrementally polls `ai_run_events`, emits each monotonic `seq` as the SSE `id`, sends keep-alive comments, and replays after `Last-Event-ID` or `afterSeq`. The handshake authorizes the viewer against the owner/shared-chat boundary before returning `200`; it does not reauthorize the accepted run's saved sources, memory revisions, provider, or web policy. Every poll reads the run's immutable event ledger and saved source projection under the chat and execution locks. Later membership grants, subscription or source settings, exposed-memory state, provider capability, or web-policy changes do not prune or close an already accepted run stream. Account deletion, purge, legal restriction, and an exact viewer/chat identity mismatch remain explicit access denials.
+The API incrementally polls `ai_run_events`, emits each monotonic `seq` as the
+SSE `id`, sends keep-alive comments, and replays after `Last-Event-ID` or
+`afterSeq`. The handshake and each poll authorize the authenticated viewer
+against current chat visibility: an unrevoked current company membership, the
+active organization when present, and either chat ownership or a shared chat.
+Failure closes the stream without revealing whether the run exists. This
+viewer check does not reauthorize the accepted run's saved sources, memory
+revisions, provider, or web policy. Each poll reads viewer state and event rows
+in one query; it takes no source-policy lock and reads no later source, memory,
+provider, or web setting. Later subscription, grant, source, memory, provider,
+or web-policy changes therefore do not prune or close an accepted run stream.
+Membership revocation, organization rebinding, account deletion, or loss of
+chat visibility ends that viewer's stream access without failing the run.
 
 Production and demo browsers treat a `401`, `403`, or `404` stream handshake as definitive: they clear the cursor and provisional draft, perform one authoritative chat/memory reconciliation, and do not reconnect that cursor. A transient disconnect may be retried only after that reconciliation reports the same active run; an unauthorized reconciliation terminates and clears without a retry loop.
 
@@ -1756,7 +1766,16 @@ All product migrations are forward-only and follow the repository's guarded migr
 
 `client_companies`: id, non-empty name, created at, updated at. The demo creates one deterministic workspace for its user; production company identity remains authoritative product state.
 
-`client_company_memberships`: company id, user id, role, created at, nullable revoked at, nullable revoked-by user id; primary key on company/user with an all-or-nothing revocation shape. This retained row is the authoritative user-to-company identity required by durable chat and related foreign keys. Acceptance reads it once while holding the membership lock and copies the resulting identity into the immutable run scope. Later membership or grant changes affect later runs only; account deletion, purge, and legal restrictions remain explicit exceptional denies.
+`client_company_memberships`: company id, user id, role, created at, nullable
+revoked at, nullable revoked-by user id; primary key on company/user with an
+all-or-nothing revocation shape. This retained row is the authoritative
+user-to-company identity required by durable chat and related foreign keys.
+Acceptance reads it once while holding the membership lock and binds the user
+and company in the immutable run scope. Later membership or grant changes do
+not alter that accepted run's execution scope, but current chat reads and
+streams still require current viewer membership. Those changes affect the
+scope of later runs. Account deletion, purge, and legal restrictions remain
+explicit exceptional denies.
 
 `client_company_ai_settings`: company id, web-search-enabled defaulting to false, nullable normalized web-domain allowlist, created at, updated at. A null allowlist means no company domain restriction; an active allowlist is non-empty and contains no null items. The deterministic demo fixture explicitly opts its company in so the demo web path is exercisable when the adapter is configured; this fixture exception does not change the disabled default for new production companies.
 
