@@ -8591,7 +8591,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           upgradeUrl,
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
-            yield* applyMigrationsThrough("0064_ai_chat_runtime_cutover.sql");
+            yield* applyMigrationsThrough("0068_ai_acceptance_provider_endpoint_identity.sql");
             const legacySessionId = crypto.randomUUID();
             yield* sql`
               insert into ai_evaluation_sessions (
@@ -8604,7 +8604,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               )
             `;
             const migration = yield* Effect.promise(() =>
-              Bun.file(new URL("0065_ai_evaluation_schema_versions.sql", migrationsUrl)).text(),
+              Bun.file(new URL("0069_ai_evaluation_schema_versions.sql", migrationsUrl)).text(),
             );
             const preflightExit = yield* Effect.exit(sql.unsafe(migration).raw);
             expect(preflightExit._tag).toBe("Failure");

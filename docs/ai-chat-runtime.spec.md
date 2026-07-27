@@ -1815,7 +1815,7 @@ explicit exceptional denies.
 
 `ai_evaluation_sessions`, `ai_evaluation_case_runs`, and `ai_evaluation_annotations`: versioned fixture digest, immutable canonical execution-config digest, exact provider-endpoint identity, and session state; exactly bound case/topology/run identity plus immutable seed manifest, resumable execution state, optional baseline provider output, and terminal durable-evidence digest; and append-only human claims/gaps bound to the exact run-evidence and assistant-output digests. Preparing sessions have no execution identity; entering running atomically binds both values. Running, awaiting-annotation, complete, and failed sessions retain them. Case identity and terminal rows are immutable, every state or immutable-output transition must affect exactly one expected row or validate an already-terminal idempotent replay, state transitions are forward-only, annotations cannot be replaced, and no annotation can bind before its exact case run succeeds. An evaluation-bound run's complete event ledger is retained whenever its session is not failed, its evidence digest is retained, or an annotation refers to it. Evaluation failure rows persist only the content-free `evaluation_case_execution_failed` code, never raw provider, database, prompt, or credential-bearing error text.
 
-Migration `0065_ai_evaluation_schema_versions.sql` keeps immutable terminal v2
+Migration `0069_ai_evaluation_schema_versions.sql` keeps immutable terminal v2
 sessions as historical evidence. It blocks deployment when any v2 session is
 still nonterminal, taking an exclusive table lock before that drain check so no
 old-code insert can race the migration. It then installs the v3-only version
