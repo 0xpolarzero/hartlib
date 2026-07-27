@@ -3062,7 +3062,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     }
   }, 120_000);
 
-  it("hydrates only selected delivered publisher versions from the accepted scope", async () => {
+  it("keeps accepted publisher access after source disable and excludes it from later runs", async () => {
     const fixture = await runDb(
       createFixtureWithCanonicalText(
         "Liquidity conditions improved while inflation expectations remained anchored.",
@@ -3105,6 +3105,10 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           update client_employee_subscription_grants
           set revoked_at = now(), revoked_by_user_id = ${fixture.userId}
           where access_id = ${fixture.accessId} and user_id = ${fixture.userId}
+        `;
+        yield* sql`
+          delete from chat_subscription_sources
+          where chat_id = ${load.chatId}
         `;
       }),
     );
@@ -3234,10 +3238,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           update ai_runs
           set failed_at = now(), error_code = 'finalization_failed', retryable = false
           where id = ${fixture.runId}
-        `;
-        yield* sql`
-          delete from chat_subscription_sources
-          where chat_id = ${load.chatId}
         `;
         const messages = yield* sql<{ readonly id: string }>`
           insert into chat_messages (chat_id, author, content)
