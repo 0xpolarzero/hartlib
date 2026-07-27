@@ -21,6 +21,7 @@ import {
   WorkspaceAuthorizationError,
 } from "@brief/workspace";
 import { json, jsonFromSchema, type Route } from "../http";
+import { withAdministrativeAuditing } from "./administrative-audit";
 
 export { publicSourcesResponseFromRows } from "@brief/backend-domain/public-sources";
 
@@ -95,6 +96,11 @@ export const publicSourceToggleRoute: Route = {
       );
     }),
 };
+
+export const publicSourceRoutes: readonly Route[] = withAdministrativeAuditing(
+  [publicSourcesRoute, publicSourceToggleRoute],
+  ApiDatabaseLayer,
+);
 
 export const publicSourceDocumentResponseFromRow = (row: RawPublicSourceDocument): Response => {
   const mediaType = displayablePublicSourceMediaType(row.media_type);

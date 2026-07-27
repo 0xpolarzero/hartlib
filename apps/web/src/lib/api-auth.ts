@@ -6,7 +6,9 @@ let tokenProvider: ApiTokenProvider = async () => null;
 const { apiBaseUrl } = loadWebApiConfig(import.meta.env);
 
 export const apiResourceUrl = (path: string): string =>
-  apiBaseUrl !== "" && path.startsWith("/") ? `${apiBaseUrl}${path}` : path;
+  apiBaseUrl !== "" && path.startsWith("/") && globalThis.location !== undefined
+    ? `${apiBaseUrl}${path}`
+    : path;
 
 export const setApiTokenProvider = (provider: ApiTokenProvider): (() => void) => {
   tokenProvider = provider;

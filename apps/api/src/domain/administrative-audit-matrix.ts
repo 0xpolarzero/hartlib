@@ -123,6 +123,13 @@ export const administrativeMutationAuditMatrix = [
   ),
   policy(
     "PUT",
+    "/v1/public-sources/:sourceId",
+    ["client.public_source.update"],
+    "public_source",
+    "sourceId",
+  ),
+  policy(
+    "PUT",
     "/v1/client-companies/:companyId/web-policy",
     ["client.web_policy.update"],
     "client_company",

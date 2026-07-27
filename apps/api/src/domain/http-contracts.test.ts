@@ -76,6 +76,7 @@ describe("shared HTTP contract matrix", () => {
       "GET /v1/client-companies/:companyId/archive",
       "GET /v1/client-companies/:companyId/notifications",
       "GET /v1/public-sources",
+      "PUT /v1/public-sources/:sourceId",
     ]);
     expect(headerRoutes).toEqual([
       ["GET /v1/ai-runs/:runId/stream", ["last-event-id"]],
