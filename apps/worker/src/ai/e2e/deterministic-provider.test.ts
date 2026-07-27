@@ -494,7 +494,7 @@ describe("deterministic evaluation and memory roles", () => {
         }),
         tools: memoryLoopTools().map((tool) => ({
           ...tool,
-          execute: async (arguments_: Readonly<Record<string, unknown>>, coordinates: unknown) => {
+          execute: async (arguments_: Readonly<Record<string, unknown>>, _coordinates: unknown) => {
             calls.push(tool.definition.name);
             return tool.execute(arguments_);
           },

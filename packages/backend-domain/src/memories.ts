@@ -27,10 +27,6 @@ interface RevisionRow {
   readonly created_at: Date;
 }
 
-interface ActiveRunRow {
-  readonly id: string;
-}
-
 const memoryKinds: readonly MemoryKind[] = [
   "profile",
   "preference",

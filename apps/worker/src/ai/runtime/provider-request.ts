@@ -1005,24 +1005,20 @@ const expectedCandidateInspectionExposures = (
     if (typeof result.memoryId === "string" && memoryId !== result.memoryId) {
       throw sourceExposureFailure("inspect_candidate memory result differs from its candidate");
     }
+    const memoryRevisionId =
+      typeof result.memoryRevisionId === "string"
+        ? result.memoryRevisionId
+        : privateIdentity !== undefined && typeof privateIdentity.memoryRevisionId === "string"
+          ? privateIdentity.memoryRevisionId
+          : undefined;
     if (
       typeof memoryId === "string" &&
       memoryId.length > 0 &&
-      (typeof result.memoryRevisionId === "string"
-        ? result.memoryRevisionId
-        : privateIdentity?.memoryRevisionId) !== undefined &&
-      (
-        (typeof result.memoryRevisionId === "string"
-          ? result.memoryRevisionId
-          : privateIdentity?.memoryRevisionId) as string
-      ).length > 0
+      memoryRevisionId !== undefined &&
+      memoryRevisionId.length > 0
     ) {
       logicalSourceIdentity = `memory:${memoryId}`;
-      contentItemIdentity = (
-        typeof result.memoryRevisionId === "string"
-          ? result.memoryRevisionId
-          : privateIdentity?.memoryRevisionId
-      ) as string;
+      contentItemIdentity = memoryRevisionId;
     } else {
       requiresPrivateCommitment = true;
     }

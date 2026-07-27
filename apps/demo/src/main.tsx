@@ -158,14 +158,14 @@ function App() {
     () => resolveDemoRoute(getDemoRouteFromPath(window.location.pathname), initialPublications),
     [initialPublications],
   );
-  const [issues, setIssues, resetIssues] = useSessionState<readonly BriefPublication[]>(
+  const [issues, , resetIssues] = useSessionState<readonly BriefPublication[]>(
     "brief:demo:issues:v1",
     initialPublications,
     DemoPublications,
   );
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(initialRoute.sourceId);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(initialRoute.issueId);
-  const [resetVersion, setResetVersion] = useState(0);
+  const [, setResetVersion] = useState(0);
   const [loadedPublicContent, setLoadedPublicContent] = useState<MarketPublicContentState>(() => ({
     market,
     status: "loading",
@@ -174,7 +174,6 @@ function App() {
   const visiblePublicContent = currentMarketPublicContent(loadedPublicContent, market);
   const publicContent = visiblePublicContent.content;
   const publicContentStatus = visiblePublicContent.status;
-  const publicationsBySourceId = useMemo(() => buildPublicationsBySourceId(issues), [issues]);
   const sources = useMemo(
     () => [...demoDataset.sources, ...publicContent.sources],
     [publicContent.sources],
@@ -1375,18 +1374,6 @@ function isEditableIssue(issue: BriefPublication) {
     issue.publicationDate !== null &&
     new Date(issue.publicationDate).getTime() > Date.now()
   );
-}
-
-function buildPublicationsBySourceId(issues: readonly BriefPublication[]) {
-  const map = new Map<string, BriefPublication[]>();
-  for (const issue of [...issues].sort((a, b) =>
-    (b.publicationDate ?? "").localeCompare(a.publicationDate ?? ""),
-  )) {
-    const sourceIssues = map.get(issue.sourceId) ?? [];
-    sourceIssues.push(issue);
-    map.set(issue.sourceId, sourceIssues);
-  }
-  return map;
 }
 
 function clonePublication(issue: BriefPublication): BriefPublication {

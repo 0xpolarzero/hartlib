@@ -22,7 +22,6 @@ import {
   normalizeProviderRequest,
   providerRequestSha256Hex,
   providerRequestSourceExposureProofBindings,
-  providerRequestSourceExposureProofs,
   requireLiveProviderRequest,
 } from "../runtime/provider-request";
 import {
@@ -154,16 +153,6 @@ const isStrictlyNarrower = (
     )
   );
 };
-
-const priorToolArguments = (
-  request: ProviderRequest,
-  name: string,
-): readonly Record<string, unknown>[] =>
-  request.messages.flatMap((message) =>
-    message.role === "assistant"
-      ? (message.toolCalls ?? []).filter((call) => call.name === name).map((call) => call.arguments)
-      : [],
-  );
 
 const toolHistory = (
   request: ProviderRequest,
@@ -927,10 +916,6 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
             return requestWithoutProofs;
           })()
         : normalizedRequest;
-    const measuredSourceExposureProofSha256Hexes = providerRequestSourceExposureProofs(
-      proofRequest,
-      (text) => model.countTextTokens(text),
-    );
     const measuredSourceExposureProofBindings = providerRequestSourceExposureProofBindings(
       proofRequest,
       (text) => model.countTextTokens(text),

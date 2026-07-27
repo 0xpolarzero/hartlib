@@ -3,7 +3,6 @@ import * as SmithersTaskRuntimeModule from "@smithers-orchestrator/driver/task-r
 import { describe, expect, it, vi } from "vitest";
 
 import { CanonicalAgentClient } from "./agent-client";
-import { AiRuntimeError } from "./errors";
 import { ExactPiBoundary, type PiCompletion } from "./pi-boundary";
 import { WebBoundaryError } from "../web/errors";
 import { chatMessageEvidenceIdentity } from "./canonicalization";

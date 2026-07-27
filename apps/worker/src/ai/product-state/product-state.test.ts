@@ -1365,40 +1365,6 @@ const createPublicExposureFixture = (
     return { sourceId, documentId, contentHash };
   });
 
-const publisherSourceFor = (
-  source: PublisherSourceFixture,
-  fixture: Pick<Fixture, "citationNamespace">,
-): FinalSourceRecord => ({
-  sourceKey: sourceKeyFor(fixture),
-  locator: {
-    kind: "document",
-    sourceId: `publisher:${source.subscriptionId}` as `publisher:${string}`,
-    documentId: source.documentId,
-    versionId: source.versionId,
-    contentHash: source.contentHash,
-    publisherExtractionId: source.extractionId,
-    publisherIssueId: source.issueId,
-    publisherDocumentId: source.documentId,
-    ranges: [{ charStart: 0, charEnd: 8 }],
-  },
-  label: "Fence document",
-  publicProvenance: {
-    sourceName: "Fence publisher",
-    issueTitle: "Fence issue",
-    documentTitle: "Fence document",
-    citationUrl: `/v1/issues/${source.issueId}/documents/${source.documentId}/content`,
-    publishedAt: new Date().toISOString(),
-  },
-  uses: [
-    {
-      consumerTaskId: "single-answer",
-      contextOrder: 0,
-      renderedTokenCount: 8,
-      ranges: [{ charStart: 0, charEnd: 8 }],
-    },
-  ],
-});
-
 describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
   beforeAll(async () => {
     await runDb(
