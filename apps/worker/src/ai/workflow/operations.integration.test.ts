@@ -4746,7 +4746,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     const officialQuote = "The official report records a 4.2 percent increase.";
     const web: WebResearchBoundary = {
-      search: async (_query, _locale, _market, policy) => {
+      search: async (_query, _locale, _market, _policy) => {
         return {
           results: [
             {
@@ -4767,7 +4767,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           },
         };
       },
-      fetch: async (_url, policy) => {
+      fetch: async (_url, _policy) => {
         return {
           url: "https://official.example/final-report",
           title: "Official report title",
@@ -4822,7 +4822,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       ],
     });
     const fallbackWeb: WebResearchBoundary = {
-      search: async (_query, _locale, _market, policy) => {
+      search: async (_query, _locale, _market, _policy) => {
         return {
           results: [
             {
@@ -4850,7 +4850,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           },
         };
       },
-      fetch: async (url, policy) => {
+      fetch: async (url, _policy) => {
         if (url.endsWith(".pdf")) {
           throw new WebBoundaryError(
             "unsupported_content_type",
