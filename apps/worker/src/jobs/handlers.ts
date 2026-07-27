@@ -581,15 +581,7 @@ export const makeWebResearchBoundary = (
     const text =
       "Deterministic web evidence reports that French solar-grid monitoring should track connection queues and storage availability.";
     return {
-      search: async (
-        _query,
-        _locale,
-        _market,
-        acceptedPolicy,
-        coordinates,
-        _cursor,
-        signal,
-      ) => {
+      search: async (_query, _locale, _market, acceptedPolicy, coordinates, _cursor, signal) => {
         throwIfAborted(signal);
         if (!acceptedPolicy.enabled || acceptedPolicy.provider !== "tinyfish") {
           throw new WebBoundaryError(
@@ -678,15 +670,7 @@ export const makeWebResearchBoundary = (
   }
 
   return {
-    search: async (
-      query,
-      locale,
-      market,
-      acceptedPolicy,
-      coordinates,
-      _cursor,
-      signal,
-    ) => {
+    search: async (query, locale, market, acceptedPolicy, coordinates, _cursor, signal) => {
       try {
         throwIfAborted(signal);
         const response = await searchTinyfishWeb(query, 10, {
@@ -1214,7 +1198,7 @@ export const handleAiChatRunJob = (
             payload.aiRunId,
             smithersRunId,
             terminalFailureStatus,
-            runResultError(result),
+            runResultError(result) ?? result,
           ),
         catch: (error) => error,
       });

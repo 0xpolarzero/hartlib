@@ -70,8 +70,8 @@ describe("canonical export source ordering", () => {
     const body = new TextEncoder().encode(JSON.stringify(mapped));
     const archive = buildTarArchive([{ name: "metadata/chats.json", body }]);
     const archiveText = new TextDecoder().decode(archive);
-    expect(archiveText.indexOf('"sourceKey":"k_BwcHBwcHBwcHBwcHBwcHBw_1"')).toBeLessThan(
-      archiveText.indexOf('"sourceKey":"k_BwcHBwcHBwcHBwcHBwcHBw_10"'),
+    expect(archiveText.indexOf(`"sourceKey":"${sourceKeyForOrdinal(nonce, 1)}"`)).toBeLessThan(
+      archiveText.indexOf(`"sourceKey":"${sourceKeyForOrdinal(nonce, 10)}"`),
     );
     expect(mapped.flatMap((entry) => entry.source.uses)).toHaveLength(11);
   });

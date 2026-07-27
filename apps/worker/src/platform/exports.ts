@@ -380,7 +380,7 @@ const loadExportFiles = (
                        sources.public_provenance as "publicProvenance"
                 from assistant_message_sources sources
                 where ${sql.in("sources.assistant_message_id", chatMessageIds)}
-                  and sources.publisher_document_version_id is null
+                  and sources.publisher_extraction_id is null
                 order by sources.assistant_message_id
                 for share of sources
               `;
@@ -393,12 +393,15 @@ const loadExportFiles = (
                        sources.locator, sources.display_label as "displayLabel",
                        sources.public_provenance as "publicProvenance"
                 from assistant_message_sources sources
+                join brief_document_extractions extractions
+                  on extractions.id = sources.publisher_extraction_id
+                join brief_documents documents on documents.id = extractions.brief_document_id
                 join brief_document_versions versions
-                  on versions.id = sources.publisher_document_version_id
-                join brief_documents documents on documents.id = versions.brief_document_id
+                  on versions.brief_document_id = documents.id
+                 and versions.id::text = sources.version_id
                 join publisher_issues issues on issues.id = documents.issue_id
                 where ${sql.in("sources.assistant_message_id", chatMessageIds)}
-                  and sources.publisher_document_version_id is not null
+                  and sources.publisher_extraction_id is not null
                   and documents.deleted_at is null
                   and issues.deleted_at is null
                   and issues.restricted_at is null

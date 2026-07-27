@@ -6,6 +6,7 @@ import {
   EXPORT_ARCHIVE_FILE_EXTENSION,
   EXPORT_ARCHIVE_MEDIA_TYPE,
 } from "@brief/shared/export-contract";
+import { makeRunAcceptanceScope } from "@brief/shared/chat";
 import { SERVER_NUMERIC_SETTING_HARD_MAXIMA } from "@brief/config";
 
 import { runMigrations } from "../db/migrate";
@@ -299,13 +300,74 @@ const createTerminalRun = (chatId: string, content: string) =>
       values (${chatId}, 'user', ${content})
       returning id::text
     `;
+    const [chat] = yield* sql<{
+      readonly companyId: string;
+      readonly userId: string;
+      readonly memoryMode: "private_owner" | "disabled";
+    }>`
+      select company_id::text as "companyId", user_id as "userId", memory_mode as "memoryMode"
+      from chats
+      where id = ${chatId}
+    `;
+    if (chat === undefined) throw new Error(`missing chat ${chatId}`);
+    const subscriptions = yield* sql<{ readonly id: string }>`
+      select subscription_id::text as id
+      from chat_subscription_sources
+      where chat_id = ${chatId}
+      order by subscription_id
+    `;
+    const accesses = yield* sql<{ readonly id: string }>`
+      select access_id::text as id
+      from chat_subscription_sources
+      where chat_id = ${chatId}
+      order by access_id
+    `;
+    const acceptanceScope = makeRunAcceptanceScope({
+      userId: chat.userId,
+      chatId,
+      companyId: chat.companyId,
+      subscriptionIds: subscriptions.map((row) => row.id),
+      accessIds: accesses.map((row) => row.id),
+      memoryMode: chat.memoryMode,
+    });
     const runs = yield* sql<{ readonly id: string }>`
       insert into ai_runs (
-        chat_id, initiating_user_id, user_message_id, locale, market, finished_at
-      ) values (${chatId}, ${userId}, ${messages[0]!.id}, 'en-US', 'US', ${now})
+        chat_id, initiating_user_id, user_message_id, locale, market,
+        acceptance_scope, finished_at
+      ) values (
+        ${chatId}, ${userId}, ${messages[0]!.id}, 'en-US', 'US',
+        ${sql.json(acceptanceScope)}, ${now}
+      )
       returning id::text
     `;
     return runs[0]!.id;
+  });
+
+const attachAssistantMessage = (runId: string, assistantMessageId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    yield* sql`
+      update chat_messages
+      set assistant_ai_run_id = ${runId}
+      where id = ${assistantMessageId}
+    `;
+    yield* sql`
+      update ai_runs
+      set assistant_message_id = ${assistantMessageId}
+      where id = ${runId}
+    `;
+  });
+
+const sourceKeyForRun = (runId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const [row] = yield* sql<{ readonly citationNamespace: string }>`
+      select citation_namespace as "citationNamespace"
+      from ai_runs
+      where id = ${runId}
+    `;
+    if (row === undefined) throw new Error(`missing run ${runId}`);
+    return `k_${row.citationNamespace}_1`;
   });
 
 const insertStripeEvent = (id: string, type: string, object: Record<string, unknown>) => {
@@ -3080,11 +3142,21 @@ describe.skipIf(!isBun || !databaseUrl)(
                   values (${chatId}, 'user', ${`Chat GC ${provenance}`})
                   returning id::text
                 `;
+                const acceptanceScope = makeRunAcceptanceScope({
+                  userId,
+                  chatId,
+                  companyId,
+                  subscriptionIds: [],
+                  accessIds: [],
+                  memoryMode: "private_owner",
+                });
                 const runs = yield* sql<{ readonly id: string }>`
                   insert into ai_runs (
-                    chat_id, initiating_user_id, user_message_id, locale, market, finished_at
+                    chat_id, initiating_user_id, user_message_id, locale, market,
+                    acceptance_scope, finished_at
                   ) values (
-                    ${chatId}, ${userId}, ${messages[0]!.id}, 'en-US', 'US', now()
+                    ${chatId}, ${userId}, ${messages[0]!.id}, 'en-US', 'US',
+                    ${sql.json(acceptanceScope)}, now()
                   )
                   returning id::text
                 `;
@@ -3695,6 +3767,11 @@ describe.skipIf(!isBun || !databaseUrl)(
 
     it("excludes deleted issues/documents and security-restricted issues from a snapshotted export", async () => {
       const chatId = await runDb(isolatedUrl(), seedBase);
+      const citedRunId = await runDb(
+        isolatedUrl(),
+        createTerminalRun(chatId, "Historical citation run"),
+      );
+      const citedSourceKey = await runDb(isolatedUrl(), sourceKeyForRun(citedRunId));
       const delivered = await runDb(isolatedUrl(), seedDeliveredIssue);
       const deletedIssueId = crypto.randomUUID();
       const restrictedIssueId = crypto.randomUUID();
@@ -3745,16 +3822,30 @@ describe.skipIf(!isBun || !databaseUrl)(
               (
                 ${restrictedDocumentId}, ${restrictedIssueId}, 'Restricted export document',
                 'restricted.pdf', 'exports-fixture/restricted.pdf', 'application/pdf',
-                4, ${"b".repeat(64)}, now(), null, null, null, ${userId}
+                4, ${createHash("sha256").update("Restricted export text", "utf8").digest("hex")}, now(), null, null, null, ${userId}
               )
           `;
           const restrictedText = "Restricted export text";
+          const [extractionJob] = yield* sql<{ readonly id: string }>`
+            insert into jobs (kind, payload) values ('extract_pdf_text', '{}'::jsonb)
+            returning id::text
+          `;
+          const [extraction] = yield* sql<{ readonly id: string }>`
+            insert into brief_document_extractions (
+              brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+            ) values (
+              ${restrictedDocumentId}, ${createHash("sha256").update(restrictedText, "utf8").digest("hex")},
+              ${JSON.stringify([{ pageNumber: 1, text: restrictedText }])}::jsonb,
+              ${restrictedText.length}, ${extractionJob!.id}
+            )
+            returning id::text
+          `;
           yield* sql`
             insert into brief_document_versions (
-              id, brief_document_id, content_hash, language, canonical_text,
+              id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
               text_char_count, page_ranges
             ) values (
-              ${restrictedVersionId}, ${restrictedDocumentId}, encode(digest(convert_to(${restrictedText}, 'UTF8'), 'sha256'), 'hex'),
+              ${restrictedVersionId}, ${restrictedDocumentId}, ${extraction!.id}, encode(digest(convert_to(${restrictedText}, 'UTF8'), 'sha256'), 'hex'),
               'fr-FR', ${restrictedText}, ${restrictedText.length},
               ${JSON.stringify([
                 { pageNumber: 1, charStart: 0, charEnd: restrictedText.length },
@@ -3784,23 +3875,31 @@ describe.skipIf(!isBun || !databaseUrl)(
           `;
           const assistantMessageId = crypto.randomUUID();
           yield* sql`
-            insert into chat_messages (id, chat_id, author, content)
-            values (${assistantMessageId}, ${chatId}, 'assistant', 'Historical answer.')
+            insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id)
+            values (${assistantMessageId}, ${chatId}, 'assistant', 'Historical answer.', ${citedRunId})
           `;
+          yield* attachAssistantMessage(citedRunId, assistantMessageId);
           yield* sql`
             insert into assistant_message_sources (
               assistant_message_id, source_key, kind, locator,
-              document_version_id, publisher_document_version_id,
+              version_id, publisher_extraction_id, document_source_id, document_id, content_hash,
               display_label, public_provenance
             ) values (
-              ${assistantMessageId}, 'S1', 'document',
+              ${assistantMessageId}, ${citedSourceKey}, 'document',
               ${sql.json({
                 kind: "document",
-                documentVersionId: restrictedVersionId,
+                sourceId: `publisher:${subscription.id}`,
+                documentId: restrictedDocumentId,
+                versionId: restrictedVersionId,
                 contentHash: createHash("sha256").update(restrictedText, "utf8").digest("hex"),
-                ranges: [{ pageNumber: 1, charStart: 0, charEnd: restrictedText.length }],
+                publisherIssueId: restrictedIssueId,
+                publisherDocumentId: restrictedDocumentId,
+                publisherExtractionId: extraction!.id,
+                ranges: [{ charStart: 0, charEnd: restrictedText.length }],
               })},
-              ${restrictedVersionId}, ${restrictedVersionId},
+              ${restrictedVersionId}, (select id from brief_document_extractions where brief_document_id = ${restrictedDocumentId} limit 1),
+              ${`publisher:${subscription.id}`}, ${restrictedDocumentId},
+              ${createHash("sha256").update(restrictedText, "utf8").digest("hex")},
               'Restricted citation label',
               ${sql.json({
                 citationUrl: `/v1/issues/${restrictedIssueId}/documents/${restrictedDocumentId}/content`,
@@ -3883,7 +3982,108 @@ describe.skipIf(!isBun || !databaseUrl)(
 
     it("exports issue pull totals independently from document pull totals", async () => {
       const chatId = await runDb(isolatedUrl(), seedBase);
-      const delivered = await runDb(isolatedUrl(), seedDeliveredIssue);
+      const documentId = crypto.randomUUID();
+      const versionId = crypto.randomUUID();
+      const extractionText = "Issue pull evidence";
+      const contentHash = createHash("sha256").update(extractionText, "utf8").digest("hex");
+      const delivered = await runDb(
+        isolatedUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const publisherCompanyId = crypto.randomUUID();
+          const subscriptionId = crypto.randomUUID();
+          const accessId = crypto.randomUUID();
+          const issueId = crypto.randomUUID();
+          yield* sql`
+            insert into publisher_companies (id, name)
+            values (${publisherCompanyId}, 'Issue pull publisher')
+          `;
+          yield* sql`
+            insert into publisher_subscriptions (id, publisher_company_id, name, created_by_user_id)
+            values (${subscriptionId}, ${publisherCompanyId}, 'Issue pull subscription', ${userId})
+          `;
+          yield* sql`
+            insert into client_subscription_accesses (
+              id, subscription_id, client_company_id, state, first_admin_email,
+              accepted_at, subscribed_at, created_by_user_id
+            ) values (
+              ${accessId}, ${subscriptionId}, ${companyId}, 'active', 'demo@example.test',
+              now(), now(), ${userId}
+            )
+          `;
+          yield* sql`
+            insert into client_employee_subscription_grants (
+              access_id, client_company_id, user_id, granted_by_user_id
+            ) values (${accessId}, ${companyId}, ${userId}, ${userId})
+          `;
+          yield* sql`
+            insert into publisher_issues (
+              id, subscription_id, title, status, created_by_user_id
+            ) values (${issueId}, ${subscriptionId}, 'Issue pull issue', 'draft', ${userId})
+          `;
+          const [extractionJob] = yield* sql<{ readonly id: string }>`
+            insert into jobs (kind, payload) values ('extract_pdf_text', '{}'::jsonb)
+            returning id::text
+          `;
+          yield* sql`
+            insert into brief_documents (
+              id, issue_id, title, original_file_name, object_key, media_type,
+              byte_size, sha256_hex, upload_completed_at, created_by_user_id
+            ) values (
+              ${documentId}, ${issueId}, 'Issue pull evidence',
+              'issue-pull.pdf', 'issue-pull/issue-pull.pdf', 'application/pdf',
+              ${extractionText.length}, ${contentHash}, now(), ${userId}
+            )
+          `;
+          const [extraction] = yield* sql<{ readonly id: string }>`
+            insert into brief_document_extractions (
+              brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+            ) values (
+              ${documentId}, ${contentHash},
+              ${JSON.stringify([{ pageNumber: 1, text: extractionText }])}::jsonb,
+              ${extractionText.length}, ${extractionJob!.id}
+            )
+            returning id::text
+          `;
+          yield* sql`
+            insert into brief_document_versions (
+              id, brief_document_id, publisher_extraction_id, content_hash, language,
+              canonical_text, text_char_count, page_ranges
+            ) values (
+              ${versionId}, ${documentId}, ${extraction!.id}, ${contentHash}, 'en-US',
+              ${extractionText}, ${extractionText.length},
+              ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: extractionText.length }])}::jsonb
+            )
+          `;
+          yield* sql`
+            update brief_documents set current_version_id = ${versionId}
+            where id = ${documentId}
+          `;
+          yield* sql`
+            update publisher_issues
+            set status = 'published', publication_at = now(), published_at = now()
+            where id = ${issueId}
+          `;
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`
+                insert into issue_deliveries (
+                  issue_id, subscription_id, access_id, client_company_id, historical
+                ) values (${issueId}, ${subscriptionId}, ${accessId}, ${companyId}, false)
+              `;
+              yield* sql`
+                insert into issue_delivery_recipients (
+                  issue_id, client_company_id, user_id, delivered_at
+                )
+                select issue_id, client_company_id, ${userId}, delivered_at
+                from issue_deliveries
+                where issue_id = ${issueId} and client_company_id = ${companyId}
+              `;
+            }),
+          );
+          return { issueId, publisherCompanyId, subscriptionId };
+        }),
+      );
       const runOne = await runDb(isolatedUrl(), createTerminalRun(chatId, "Issue pull one"));
       const runTwo = await runDb(isolatedUrl(), createTerminalRun(chatId, "Issue pull two"));
       const exportId = crypto.randomUUID();
@@ -3891,38 +4091,34 @@ describe.skipIf(!isBun || !databaseUrl)(
         isolatedUrl(),
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          const publisher = (yield* sql<{ readonly publisherCompanyId: string }>`
-            select subscriptions.publisher_company_id::text as "publisherCompanyId"
-            from publisher_issues issues
-            join publisher_subscriptions subscriptions
-              on subscriptions.id = issues.subscription_id
-            where issues.id = ${delivered.issueId}
-          `)[0]!;
           yield* sql`
             insert into ai_source_exposures (
               run_id, task_id, loop_iteration, attempt, provider_request_index,
-              source_kind, logical_source_identity, publisher_issue_id,
+              source_kind, logical_source_identity, publisher_issue_id, publisher_document_id,
               content_item_identity, exposure_stage, visible_token_count,
-              document_source_id, document_id, document_version_id,
-              document_content_hash, document_ranges
+              document_source_id, document_id, version_id,
+              publisher_extraction_id, content_hash, document_ranges
             ) values
               (
                 ${runOne}, 'publisher-metric', 0, 0, 0, 'document',
-                'document:one', ${delivered.issueId}, 'version:one', 'answer', 10,
-                ${`publisher:${delivered.issueId}`}, 'document:one', 'version:one',
-                ${"a".repeat(64)}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
+                'document:one', ${delivered.issueId}, ${documentId}, 'version:one', 'answer', 10,
+                ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${versionId},
+                (select id from brief_document_extractions where brief_document_id = ${documentId}),
+                ${contentHash}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               ),
               (
                 ${runOne}, 'publisher-metric', 0, 0, 0, 'document',
-                'document:two', ${delivered.issueId}, 'version:two', 'answer', 12,
-                ${`publisher:${delivered.issueId}`}, 'document:two', 'version:two',
-                ${"b".repeat(64)}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
+                'document:two', ${delivered.issueId}, ${documentId}, 'version:two', 'answer', 12,
+                ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${versionId},
+                (select id from brief_document_extractions where brief_document_id = ${documentId}),
+                ${contentHash}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               ),
               (
                 ${runTwo}, 'publisher-metric', 0, 0, 0, 'document',
-                'document:three', ${delivered.issueId}, 'version:three', 'answer', 14,
-                ${`publisher:${delivered.issueId}`}, 'document:three', 'version:three',
-                ${"c".repeat(64)}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
+                'document:three', ${delivered.issueId}, ${documentId}, 'version:three', 'answer', 14,
+                ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${versionId},
+                (select id from brief_document_extractions where brief_document_id = ${documentId}),
+                ${contentHash}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               )
           `;
           yield* sql`
@@ -3930,13 +4126,13 @@ describe.skipIf(!isBun || !databaseUrl)(
               id, requester_user_id, scope_kind, scope_id,
               authorization_snapshot, idempotency_key
             ) values (
-              ${exportId}, ${userId}, 'publisher_company', ${publisher.publisherCompanyId},
+              ${exportId}, ${userId}, 'publisher_company', ${delivered.publisherCompanyId},
               ${sql.json({
                 version: 1,
                 authorizedAt: now.toISOString(),
                 requesterUserId: userId,
                 scopeKind: "publisher_company",
-                scopeId: publisher.publisherCompanyId,
+                scopeId: delivered.publisherCompanyId,
                 role: "admin",
                 clientCompanyIds: [],
                 accessIds: [],
@@ -4646,36 +4842,41 @@ describe.skipIf(!isBun || !databaseUrl)(
 
     it("generates an authorization-snapshotted tar export, excludes later chats, and records final failure", async () => {
       const chatId = await runDb(isolatedUrl(), seedBase);
-      await runDb(isolatedUrl(), createTerminalRun(chatId, "Included snapshot message"));
+      const includedRunId = await runDb(
+        isolatedUrl(),
+        createTerminalRun(chatId, "Included snapshot message"),
+      );
+      const includedSourceKey = await runDb(isolatedUrl(), sourceKeyForRun(includedRunId));
       await runDb(
         isolatedUrl(),
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           const assistantMessageId = crypto.randomUUID();
           yield* sql`
-            insert into chat_messages (id, chat_id, author, content)
-            values (${assistantMessageId}, ${chatId}, 'assistant', 'Answer with a visible source [S1].')
+            insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id)
+            values (${assistantMessageId}, ${chatId}, 'assistant', 'Answer with a visible source [S1].', ${includedRunId})
           `;
+          yield* attachAssistantMessage(includedRunId, assistantMessageId);
           yield* sql`
             insert into assistant_message_sources (
               assistant_message_id, source_key, kind, locator,
               display_label, public_provenance
             ) values (
-              ${assistantMessageId}, 'S1', 'web',
+              ${assistantMessageId}, ${includedSourceKey}, 'web',
               ${sql.json({
                 kind: "web",
                 url: "https://example.test/evidence",
                 title: "Exported evidence",
                 domain: "example.test",
                 quote: "Visible selected evidence",
-                quoteHash: "c".repeat(64),
-                publishedAt: null,
+                quoteHash: createHash("sha256")
+                  .update("Visible selected evidence", "utf8")
+                  .digest("base64url"),
                 capturedAt: now.toISOString(),
               })},
               'Exported evidence',
               ${sql.json({
                 citationUrl: "https://example.test/evidence",
-                documentTitle: "Exported evidence",
               })}
             )
           `;
@@ -4684,7 +4885,7 @@ describe.skipIf(!isBun || !databaseUrl)(
               assistant_message_id, source_key, consumer_task_id, topic_id,
               rendered_token_count, context_order, ranges
             ) values (
-              ${assistantMessageId}, 'S1', 'direct-answer', null, 12, 0, '[]'::jsonb
+              ${assistantMessageId}, ${includedSourceKey}, 'direct-answer', null, 12, 0, '[]'::jsonb
             )
           `;
         }),
@@ -4729,31 +4930,34 @@ describe.skipIf(!isBun || !databaseUrl)(
         isolatedUrl(),
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
+          const lateRunId = yield* createTerminalRun(chatId, "Late post-acceptance run");
+          const lateSourceKey = yield* sourceKeyForRun(lateRunId);
           const [message] = yield* sql<{ readonly id: string }>`
-            insert into chat_messages (chat_id, author, content)
-            values (${chatId}, 'assistant', 'Late post-acceptance answer [LATE].')
+            insert into chat_messages (chat_id, author, content, assistant_ai_run_id)
+            values (${chatId}, 'assistant', 'Late post-acceptance answer [LATE].', ${lateRunId})
             returning id::text
           `;
+          yield* attachAssistantMessage(lateRunId, message!.id);
           yield* sql`
             insert into assistant_message_sources (
               assistant_message_id, source_key, kind, locator,
               display_label, public_provenance
             ) values (
-              ${message!.id}, 'LATE', 'web',
+              ${message!.id}, ${lateSourceKey}, 'web',
               ${sql.json({
                 kind: "web",
                 url: "https://late.example.test/evidence",
                 title: "Late evidence",
                 domain: "late.example.test",
                 quote: "Evidence committed after export acceptance",
-                quoteHash: "d".repeat(64),
-                publishedAt: null,
+                quoteHash: createHash("sha256")
+                  .update("Evidence committed after export acceptance", "utf8")
+                  .digest("base64url"),
                 capturedAt: now.toISOString(),
               })},
               'Late evidence',
               ${sql.json({
                 citationUrl: "https://late.example.test/evidence",
-                documentTitle: "Late evidence",
               })}
             )
           `;
@@ -4762,7 +4966,7 @@ describe.skipIf(!isBun || !databaseUrl)(
               assistant_message_id, source_key, consumer_task_id, topic_id,
               rendered_token_count, context_order, ranges
             ) values (
-              ${message!.id}, 'LATE', 'direct-answer', null, 7, 0, '[]'::jsonb
+              ${message!.id}, ${lateSourceKey}, 'direct-answer', null, 7, 0, '[]'::jsonb
             )
           `;
           return message!.id;
@@ -4829,10 +5033,12 @@ describe.skipIf(!isBun || !databaseUrl)(
       expect(archiveText).toContain("Included snapshot message");
       expect(archiveText).toContain('"formatVersion": 1');
       expect(archiveText).toContain('"chatSourceCount": 1');
-      expect(archiveText).toContain('"sourceKey": "S1"');
+      expect(archiveText).toContain(`"sourceKey": "${includedSourceKey}"`);
       expect(archiveText).toContain("https://example.test/evidence");
       expect(archiveText).toContain(
-        '"quoteHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"',
+        `"quoteHash": "${createHash("sha256")
+          .update("Visible selected evidence", "utf8")
+          .digest("base64url")}"`,
       );
       expect(archiveText).toContain('"ranges": []');
       expect(archiveText).not.toContain("direct-answer");

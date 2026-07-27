@@ -1437,10 +1437,21 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
         const issueId = crypto.randomUUID();
         const documentId = crypto.randomUUID();
         const versionId = crypto.randomUUID();
+        const extractionJobId = crypto.randomUUID();
+        const extractionId = crypto.randomUUID();
+        const publisherText = "Late publisher evidence";
+        const publishedAt = new Date(Date.now() - 60_000).toISOString();
+        const publisherContentHash = createHash("sha256")
+          .update(publisherText, "utf8")
+          .digest("hex");
         yield* sql`
           insert into publisher_issues (
-            id, subscription_id, title, status, created_by_user_id
-          ) values (${issueId}, ${subscriptionId}, 'Late cited issue', 'draft', 'publisher-admin')
+            id, subscription_id, title, status, publication_at, published_at,
+            created_at, created_by_user_id
+          ) values (
+            ${issueId}, ${subscriptionId}, 'Late cited issue', 'draft',
+            null, null, ${publishedAt}, 'publisher-admin'
+          )
         `;
         yield* sql`
           insert into brief_documents (
@@ -1453,24 +1464,59 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
           )
         `;
         yield* sql`
+          insert into jobs (id, kind, payload)
+          values (${extractionJobId}, 'extract_pdf_text', '{}'::jsonb)
+        `;
+        yield* sql`
+          insert into brief_document_extractions (
+            id, brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+          ) values (
+            ${extractionId}, ${documentId}, ${"a".repeat(64)},
+            ${JSON.stringify([{ pageNumber: 1, text: publisherText }])}::jsonb,
+            ${publisherText.length}, ${extractionJobId}
+          )
+        `;
+        yield* sql`
           insert into brief_document_versions (
-            id, brief_document_id, content_hash, language, canonical_text,
+            id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${versionId}, ${documentId}, encode(digest(convert_to('Late publisher evidence', 'UTF8'), 'sha256'), 'hex'), 'en-US',
-            'Late publisher evidence', 23,
-            '[{"pageNumber":1,"charStart":0,"charEnd":23}]'::jsonb
+            ${versionId}, ${documentId}, ${extractionId}, ${publisherContentHash}, 'en-US',
+            ${publisherText}, ${publisherText.length},
+            ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: publisherText.length }])}::jsonb
           )
         `;
         yield* sql`
           update brief_documents set current_version_id = ${versionId} where id = ${documentId}
+        `;
+        yield* sql`
+          update publisher_issues
+          set status = 'published', publication_at = ${publishedAt}, published_at = ${publishedAt}
+          where id = ${issueId}
+        `;
+        yield* sql`
+          insert into issue_deliveries (
+            issue_id, subscription_id, access_id, client_company_id, delivered_at, historical
+          ) values (
+            ${issueId}, ${subscriptionId}, ${accessId}, ${companyId}, now(), false
+          )
         `;
         const [acceptedMessage] = yield* sql<{ readonly id: string }>`
           insert into chat_messages (chat_id, author, content)
           values (${chatId}, 'user', 'Message present at export acceptance')
           returning id::text
         `;
-        return { issueId, documentId, versionId, acceptedMessageId: acceptedMessage!.id };
+        return {
+          companyId,
+          chatId,
+          issueId,
+          documentId,
+          versionId,
+          extractionId,
+          textLength: publisherText.length,
+          publishedAt,
+          acceptedMessageId: acceptedMessage!.id,
+        };
       }),
     );
 
@@ -1508,34 +1554,92 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
         isolatedUrl(),
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          const [lateMessage] = yield* sql<{ readonly id: string }>`
-            insert into chat_messages (chat_id, author, content)
-            values (${chatId}, 'assistant', 'Late answer with publisher evidence')
+          const lateRunId = crypto.randomUUID();
+          yield* sql`
+            insert into ai_runs (
+              id, chat_id, initiating_user_id, user_message_id, locale, market,
+              acceptance_scope, citation_namespace,
+              finished_at
+            ) values (
+              ${lateRunId}, ${chatId}, 'demo-user', ${fixture.acceptedMessageId}, 'en-US', 'US',
+              ${sql.json({
+                userId: "demo-user",
+                chatId,
+                companyId: fixture.companyId,
+                subscriptionIds: [subscriptionId],
+                accessIds: [accessId],
+                publicSourceIds: [],
+                memoryMode: "private_owner",
+                memoryRevisionIds: [],
+                webRequested: false,
+                webEnabled: false,
+                provider: "zai_coding_plan_official",
+                providerEndpointIdentity:
+                  "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
+                fastModelId: "glm-5-turbo",
+                mainModelId: "glm-5-turbo",
+                webTransportProvider: null,
+                allowedDomains: null,
+              })},
+              ${"cn_" + "B".repeat(22)}, now()
+            )
+          `;
+          const [assistantMessage] = yield* sql<{ readonly id: string }>`
+            insert into chat_messages (chat_id, author, content, assistant_ai_run_id)
+            values (
+              ${chatId}, 'assistant',
+              ${`Late answer with publisher evidence [[cite:k_cn_${"B".repeat(22)}_1]]`},
+              ${lateRunId}
+            )
             returning id::text
+          `;
+          yield* sql`
+            update ai_runs set assistant_message_id = ${assistantMessage!.id}
+            where id = ${lateRunId}
           `;
           yield* sql`
             insert into assistant_message_sources (
               assistant_message_id, source_key, kind, locator,
-              document_version_id, publisher_document_version_id,
+              version_id, publisher_extraction_id, document_source_id, document_id, content_hash,
               display_label, public_provenance
             ) values (
-              ${lateMessage!.id}, 'S1', 'document',
+              ${assistantMessage!.id}, ${"k_cn_" + "B".repeat(22) + "_1"}, 'document',
               ${sql.json({
                 kind: "document",
-                documentVersionId: fixture.versionId,
+                sourceId: `publisher:${subscriptionId}`,
+                documentId: fixture.documentId,
+                versionId: fixture.versionId,
                 contentHash: createHash("sha256")
                   .update("Late publisher evidence", "utf8")
                   .digest("hex"),
-                ranges: [{ pageNumber: 1, charStart: 0, charEnd: 23 }],
+                publisherIssueId: fixture.issueId,
+                publisherDocumentId: fixture.documentId,
+                publisherExtractionId: fixture.extractionId,
+                ranges: [{ charStart: 0, charEnd: fixture.textLength }],
               })},
-              ${fixture.versionId}, ${fixture.versionId}, 'Late publisher evidence',
+              ${fixture.versionId}, ${fixture.extractionId}, ${`publisher:${subscriptionId}`},
+              ${fixture.documentId}, ${createHash("sha256").update("Late publisher evidence", "utf8").digest("hex")},
+              'Late cited document',
               ${sql.json({
                 citationUrl: `/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
-                documentTitle: "Late publisher evidence",
+                sourceName: "Publisher",
+                issueTitle: "Late cited issue",
+                documentTitle: "Late cited document",
+                publishedAt: fixture.publishedAt,
               })}
             )
           `;
-          return lateMessage!.id;
+          yield* sql`
+            insert into assistant_message_source_uses (
+              assistant_message_id, source_key, consumer_task_id,
+              rendered_token_count, context_order, ranges
+            ) values (
+              ${assistantMessage!.id}, ${"k_cn_" + "B".repeat(22) + "_1"},
+              'single-answer', 12, 0,
+              ${JSON.stringify([{ charStart: 0, charEnd: fixture.textLength }])}::jsonb
+            )
+          `;
+          return assistantMessage!.id;
         }),
       );
     } catch (error) {

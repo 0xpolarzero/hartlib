@@ -939,9 +939,13 @@ const normalizeSearchableText = (extractionId: string, jobId: string) =>
           for update
         `;
         if (activeDocument[0] === undefined) return null;
-        const versions = yield* sql<{ readonly id: string }>`
+        const versions = yield* sql<{
+          readonly id: string;
+          readonly publisherExtractionId: string;
+        }>`
           insert into brief_document_versions (
             brief_document_id,
+            publisher_extraction_id,
             content_hash,
             language,
             canonical_text,
@@ -951,6 +955,7 @@ const normalizeSearchableText = (extractionId: string, jobId: string) =>
           )
           values (
             ${extraction.documentId},
+            ${extractionId},
             ${contentHash},
             ${extraction.language},
             ${canonical.text},
@@ -959,19 +964,23 @@ const normalizeSearchableText = (extractionId: string, jobId: string) =>
             ${jobId}
           )
           on conflict (brief_document_id, content_hash) do nothing
-          returning id::text
+          returning id::text, publisher_extraction_id::text as "publisherExtractionId"
         `;
         const versionId =
-          versions[0]?.id ??
-          (yield* sql<{ readonly id: string }>`
-              select id::text
+          versions[0] ??
+          (yield* sql<{ readonly id: string; readonly publisherExtractionId: string }>`
+              select id::text, publisher_extraction_id::text as "publisherExtractionId"
               from brief_document_versions
               where brief_document_id = ${extraction.documentId}
                 and content_hash = ${contentHash}
-            `)[0]!.id;
+            `)[0];
+        if (versionId === undefined || versionId.publisherExtractionId !== extractionId) {
+          return yield* Effect.fail(new Error("publisher version extraction binding conflict"));
+        }
+        const resolvedVersionId = versionId.id;
         yield* sql`
           update brief_documents
-          set current_version_id = ${versionId},
+          set current_version_id = ${resolvedVersionId},
               indexing_error_code = null,
               updated_at = now()
           where id = ${extraction.documentId}
@@ -993,7 +1002,7 @@ const normalizeSearchableText = (extractionId: string, jobId: string) =>
               available_at = case when jobs.status in ('completed', 'failed') then now() else jobs.available_at end,
               updated_at = now()
         `;
-        return versionId;
+        return resolvedVersionId;
       }),
     );
   });
@@ -2789,10 +2798,10 @@ const purgeDeletedFiles = (): Effect.Effect<
             update brief_documents set current_version_id = null where id = ${current.id}
           `;
           yield* sql`
-            delete from brief_document_extractions where brief_document_id = ${current.id}
+            delete from brief_document_versions where brief_document_id = ${current.id}
           `;
           yield* sql`
-            delete from brief_document_versions where brief_document_id = ${current.id}
+            delete from brief_document_extractions where brief_document_id = ${current.id}
           `;
           const rows = yield* sql<{ readonly id: string }>`
             delete from brief_documents

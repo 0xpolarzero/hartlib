@@ -1365,6 +1365,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         const [row] = yield* sql<{
           readonly text: string;
           readonly pageRanges: unknown;
+          readonly publisherExtractionId: string;
           readonly issueStatus: string;
           readonly extractionCount: number;
           readonly versionCount: number;
@@ -1373,6 +1374,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
           select
             versions.canonical_text as text,
             versions.page_ranges as "pageRanges",
+            versions.publisher_extraction_id::text as "publisherExtractionId",
             issues.indexing_status as "issueStatus",
             (
               select count(*)::int from brief_document_extractions
@@ -1400,11 +1402,24 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         { pageNumber: 1, charStart: 0, charEnd: 10 },
         { pageNumber: 2, charStart: 12, charEnd: 23 },
       ],
+      publisherExtractionId: expect.any(String),
       issueStatus: "ready",
       extractionCount: 1,
       versionCount: 1,
       searchable: true,
     });
+    expect(indexed!.publisherExtractionId).toBe(
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const [row] = yield* sql<{ readonly id: string }>`
+            select id::text from brief_document_extractions
+            where brief_document_id = ${fixture.documentId}
+          `;
+          return row!.id;
+        }),
+      ),
+    );
 
     await expect(
       runDb(
@@ -1413,6 +1428,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
           yield* sql`
             insert into brief_document_versions (
               brief_document_id,
+              publisher_extraction_id,
               content_hash,
               language,
               canonical_text,
@@ -1422,6 +1438,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
             )
             values (
               ${fixture.documentId},
+              (select id from brief_document_extractions where brief_document_id = ${fixture.documentId} limit 1),
               ${crypto.randomUUID().replaceAll("-", "")},
               'en-US',
               'invalid ranges',
@@ -1457,14 +1474,14 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
                   source_key,
                   kind,
                   locator,
-                  document_version_id,
+                  version_id,
                   public_provenance
                 )
                 values (
                   ${assistant!.id},
                   'doc-missing',
                   'document',
-                  ${sql.json({ kind: "document", documentVersionId: missingVersionId })},
+                  ${sql.json({ kind: "document", versionId: missingVersionId })},
                   ${missingVersionId},
                   '{}'::jsonb
                 )
@@ -1599,13 +1616,15 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
               subscriptionIds: [fixture.subscriptionId],
               accessIds: [fixture.accessId],
               publicSourceIds: [],
-              memoryMode: 'private_owner',
+              memoryMode: "private_owner",
               memoryRevisionIds: [],
               webRequested: false,
               webEnabled: false,
-              provider: 'zai_coding_plan_official',
-              fastModelId: 'glm-5-turbo',
-              mainModelId: 'glm-5-turbo',
+              provider: "zai_coding_plan_official",
+              providerEndpointIdentity:
+                "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
+              fastModelId: "glm-5-turbo",
+              mainModelId: "glm-5-turbo",
               webTransportProvider: null,
               allowedDomains: null,
             })},

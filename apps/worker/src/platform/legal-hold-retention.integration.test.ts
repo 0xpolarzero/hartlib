@@ -2,6 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { makeRunAcceptanceScope } from "@brief/shared/chat";
 
 import { purgeUserMemoryTombstones } from "../ai/product-state/retention";
 import { runMigrations } from "../db/migrate";
@@ -141,7 +142,7 @@ const seedPlatformFixture = (label: string) =>
       ) values (
         ${documentId}, ${issueId}, ${`Document ${label}`}, 'document.pdf',
         ${`publisher/${publisherCompanyId}/${documentId}.pdf`}, 'application/pdf',
-        1, ${"a".repeat(64)}, now(), ${publisherUserId}, 'en-US'
+        1, ${createHash("sha256").update("Cited publisher evidence", "utf8").digest("hex")}, now(), ${publisherUserId}, 'en-US'
       )
     `;
     yield* sql`
@@ -331,13 +332,30 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         const versionId = crypto.randomUUID();
+        const contentHash = createHash("sha256")
+          .update("Cited publisher evidence", "utf8")
+          .digest("hex");
         const assistantMessageId = crypto.randomUUID();
+        const [job] = yield* sql<{ readonly id: string }>`
+          insert into jobs (kind, payload) values ('extract_pdf_text', '{}'::jsonb)
+          returning id::text
+        `;
+        const [extraction] = yield* sql<{ readonly id: string }>`
+          insert into brief_document_extractions (
+            brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+          ) values (
+            ${fixture.documentId}, ${contentHash},
+            '[{"pageNumber":1,"text":"Cited publisher evidence"}]'::jsonb,
+            24, ${job!.id}
+          )
+          returning id::text
+        `;
         yield* sql`
           insert into brief_document_versions (
-            id, brief_document_id, content_hash, language, canonical_text,
+            id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${versionId}, ${fixture.documentId}, encode(digest(convert_to('Cited publisher evidence', 'UTF8'), 'sha256'), 'hex'), 'en-US',
+            ${versionId}, ${fixture.documentId}, ${extraction!.id}, encode(digest(convert_to('Cited publisher evidence', 'UTF8'), 'sha256'), 'hex'), 'en-US',
             'Cited publisher evidence', 24,
             '[{"pageNumber":1,"charStart":0,"charEnd":24}]'::jsonb
           )
@@ -347,25 +365,65 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           where id = ${fixture.documentId}
         `;
         yield* sql`
+          insert into chat_messages (chat_id, author, content)
+          values (${fixture.chatId}, 'user', 'Cited publisher question')
+        `;
+        const acceptanceScope = makeRunAcceptanceScope({
+          userId: fixture.userId,
+          chatId: fixture.chatId,
+          companyId: fixture.clientCompanyId,
+          subscriptionIds: [],
+          accessIds: [],
+          memoryMode: "private_owner",
+        });
+        const [run] = yield* sql<{ readonly id: string; readonly citationNamespace: string }>`
+          insert into ai_runs (
+            chat_id, initiating_user_id, user_message_id, locale, market,
+            acceptance_scope, finished_at
+          )
+          select ${fixture.chatId}, ${fixture.userId}, messages.id, 'en-US', 'US',
+                 ${sql.json(acceptanceScope)}, now()
+          from chat_messages messages
+          where messages.chat_id = ${fixture.chatId} and messages.author = 'user'
+          order by messages.created_at desc, messages.id desc
+          limit 1
+          returning id::text, citation_namespace as "citationNamespace"
+        `;
+        yield* sql`
           insert into chat_messages (id, chat_id, author, content)
           values (${assistantMessageId}, ${fixture.chatId}, 'assistant', 'Cited answer')
         `;
         yield* sql`
-          insert into assistant_message_sources (
-            assistant_message_id, source_key, kind, locator,
-            document_version_id, publisher_document_version_id,
+          update chat_messages set assistant_ai_run_id = ${run!.id}
+          where id = ${assistantMessageId}
+        `;
+        yield* sql`
+          update ai_runs set assistant_message_id = ${assistantMessageId}
+          where id = ${run!.id}
+        `;
+        yield* sql`
+            insert into assistant_message_sources (
+              assistant_message_id, source_key, kind, locator,
+            version_id, publisher_extraction_id, document_source_id, document_id, content_hash,
             display_label, public_provenance
           ) values (
-            ${assistantMessageId}, 'S1', 'document',
+            ${assistantMessageId}, ${`k_${run!.citationNamespace}_1`}, 'document',
             ${sql.json({
               kind: "document",
-              documentVersionId: versionId,
+              sourceId: `publisher:${fixture.subscriptionId}`,
+              documentId: fixture.documentId,
+              versionId: versionId,
               contentHash: createHash("sha256")
                 .update("Cited publisher evidence", "utf8")
                 .digest("hex"),
-              ranges: [{ pageNumber: 1, charStart: 0, charEnd: 24 }],
+              publisherIssueId: fixture.issueId,
+              publisherDocumentId: fixture.documentId,
+              publisherExtractionId: extraction!.id,
+              ranges: [{ charStart: 0, charEnd: 24 }],
             })},
-            ${versionId}, ${versionId}, 'Cited publisher evidence',
+              ${versionId}, (select id from brief_document_extractions where brief_document_id = ${fixture.documentId} limit 1),
+              ${`publisher:${fixture.subscriptionId}`}, ${fixture.documentId}, ${contentHash},
+              'Cited publisher evidence',
             ${sql.json({
               citationUrl: `/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
               documentTitle: "Cited publisher evidence",

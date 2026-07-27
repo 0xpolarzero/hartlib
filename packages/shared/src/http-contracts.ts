@@ -429,7 +429,10 @@ export const httpRouteContracts: Readonly<Record<string, HttpRouteContract>> = {
     PublicSourcesQuery,
   ),
   "PUT /v1/public-sources/:sourceId": withQuery(
-    contract(jsonBody(UpdateClientPublicSourceRequest, 16 * 1024), jsonSuccess(PublicSourcesResponse)),
+    contract(
+      jsonBody(UpdateClientPublicSourceRequest, 16 * 1024),
+      jsonSuccess(PublicSourcesResponse),
+    ),
     PublicSourcesQuery,
   ),
   "GET /public-source-documents/:documentId/content": contract(

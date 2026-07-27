@@ -4,14 +4,22 @@ import {
   readAuthorizedPublicSourceDocument,
   type RawPublicSourceDocument,
 } from "@brief/backend-domain/public-sources";
-import { PublicSourcesResponse, type Market, type UpdateClientPublicSourceRequest } from "@brief/shared";
+import {
+  PublicSourcesResponse,
+  type Market,
+  type UpdateClientPublicSourceRequest,
+} from "@brief/shared";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity, type RequestIdentityResult } from "../auth";
 import { ApiDatabaseLayer, type ApiDatabaseLayer as ApiDatabaseLayerType } from "../database";
 import { loadApiConfig, type ApiConfig } from "../config";
 import { ensureDemoChat } from "@brief/backend-domain/chat-runtime";
-import { requestIdForAudit, updateClientPublicSource, WorkspaceAuthorizationError } from "@brief/workspace";
+import {
+  requestIdForAudit,
+  updateClientPublicSource,
+  WorkspaceAuthorizationError,
+} from "@brief/workspace";
 import { json, jsonFromSchema, type Route } from "../http";
 
 export { publicSourcesResponseFromRows } from "@brief/backend-domain/public-sources";
@@ -76,10 +84,7 @@ export const publicSourceToggleRoute: Route = {
       if (!result.ok) {
         const error = result.error;
         if (error instanceof WorkspaceAuthorizationError) {
-          return json(
-            { code: error.code },
-            { status: error.code === "mfa_required" ? 403 : 404 },
-          );
+          return json({ code: error.code }, { status: error.code === "mfa_required" ? 403 : 404 });
         }
         return yield* Effect.fail(error);
       }

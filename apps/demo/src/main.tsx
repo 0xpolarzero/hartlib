@@ -8,11 +8,7 @@ import {
   persistRunStreamState,
   restoreRunStreamState,
 } from "@brief/api-client/stream";
-import {
-  demoDataset,
-  type BriefPublication,
-  type BriefSource,
-} from "@brief/demo-data";
+import { demoDataset, type BriefPublication, type BriefSource } from "@brief/demo-data";
 import {
   I18nProvider,
   LOCALES,
@@ -95,10 +91,7 @@ import {
   type ChatStreamEvent,
 } from "./chat-stream";
 import { buildTranscriptMessages } from "./chat-transcript";
-import {
-  DemoPublications,
-  readStoredOr,
-} from "./demo-state";
+import { DemoPublications, readStoredOr } from "./demo-state";
 import "./styles.css";
 import { loadDemoBrowserConfig } from "./config";
 import {
@@ -249,7 +242,6 @@ function App() {
       cancelled = true;
     };
   }, [market]);
-
 
   function handleResetDemoStorage() {
     resetDemoStorage();
@@ -1343,7 +1335,6 @@ function buildBreadcrumbs({
   return [{ label: chatLabel }];
 }
 
-
 function computeSourceLastDate(
   source: BriefSource,
   publisherSourceIds: ReadonlySet<string>,
@@ -1378,7 +1369,6 @@ function toPublicationDetailIssue(
   };
 }
 
-
 function isEditableIssue(issue: BriefPublication) {
   return (
     issue.status === "scheduled" &&
@@ -1409,7 +1399,6 @@ function clonePublication(issue: BriefPublication): BriefPublication {
     metrics: { ...issue.metrics },
   };
 }
-
 
 function createDraftDocument(
   issueId: string,
