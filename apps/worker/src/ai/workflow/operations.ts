@@ -338,7 +338,10 @@ interface InternalProviderExposure {
   readonly publisherIssueId?: string | undefined;
   readonly publisherDocumentId?: string | undefined;
   readonly documentReconstruction?: AiDocumentExposureReconstruction | undefined;
-  readonly stage: "internal_search_preview" | "internal_inspection";
+  readonly stage:
+    | "internal_search_preview"
+    | "internal_chat_search_preview"
+    | "internal_inspection";
   readonly visibleTokenCount: number;
 }
 
@@ -349,6 +352,7 @@ interface NamedSourceLookup {
   readonly attempt: number;
   readonly sourceIds: readonly string[];
   consumed: boolean;
+  logicalQueryKey?: string | undefined;
 }
 
 /** Stable namespace-aware identity used for every document exposure and citation. */
@@ -2466,25 +2470,28 @@ export class CanonicalWorkflowOperations {
       };
     };
     const exactRecoveryReferences = (): readonly InternalReference[] => {
-      const references = new Map<string, InternalReference>();
+      const exposures = new Map<string, InternalProviderExposure>();
       for (const exposure of providerExposures.values()) {
         const reference = exposure.reference;
         const identity =
           reference.kind === "document"
             ? documentDiscoveryKey(reference)
             : `chat_message:${reference.messageId}`;
-        const previous = references.get(identity);
+        const previous = exposures.get(identity);
         if (
           previous === undefined ||
+          (reference.kind === "chat_message" &&
+            previous.stage === "internal_chat_search_preview" &&
+            exposure.stage === "internal_inspection") ||
           (reference.kind === "document" &&
-            previous.kind === "document" &&
-            previous.ranges === undefined &&
+            previous.reference.kind === "document" &&
+            previous.reference.ranges === undefined &&
             reference.ranges !== undefined)
         ) {
-          references.set(identity, reference);
+          exposures.set(identity, exposure);
         }
       }
-      return [...references.values()];
+      return [...exposures.values()].map((exposure) => exposure.reference);
     };
     const inspectionComplete = (reference: InternalReference): boolean => {
       if (reference.kind === "chat_message") {
@@ -2737,6 +2744,26 @@ export class CanonicalWorkflowOperations {
             if (query.target === "documents") {
               await this.assertBoundPublisherDocumentVersions(boundPublisherDocumentVersions);
             }
+            const namedSourceLookup =
+              query.target === "documents" && query.lookupRef !== undefined
+                ? namedSourceLookups.get(query.lookupRef)
+                : undefined;
+            const namedSourceQueryKey =
+              namedSourceLookup === undefined ? undefined : canonicalInternalSearchQueryKey(query);
+            if (query.target === "documents" && query.lookupRef !== undefined) {
+              if (
+                namedSourceLookup === undefined ||
+                namedSourceLookup.runId !== load.aiRunId ||
+                namedSourceLookup.taskId !== taskId ||
+                namedSourceLookup.loopIteration !== coordinates.loopIteration ||
+                namedSourceLookup.attempt !== coordinates.attempt ||
+                (namedSourceLookup.consumed &&
+                  (parsed.cursor === undefined ||
+                    namedSourceLookup.logicalQueryKey !== namedSourceQueryKey))
+              ) {
+                throw new Error("named-source lookupRef is invalid, expired, or already used");
+              }
+            }
             try {
               searchProtocol.beforeSearch(query, parsed.cursor, coordinates.providerRequestIndex);
             } catch (error) {
@@ -2757,21 +2784,17 @@ export class CanonicalWorkflowOperations {
             if (query.target === "documents") {
               let selectedSourceIds: readonly string[];
               if (query.lookupRef !== undefined) {
-                const lookup = namedSourceLookups.get(query.lookupRef);
-                if (
-                  lookup === undefined ||
-                  lookup.consumed ||
-                  lookup.runId !== load.aiRunId ||
-                  lookup.taskId !== taskId ||
-                  lookup.loopIteration !== coordinates.loopIteration ||
-                  lookup.attempt !== coordinates.attempt
-                ) {
+                const lookup = namedSourceLookup;
+                if (lookup === undefined || namedSourceQueryKey === undefined) {
                   throw new Error("named-source lookupRef is invalid, expired, or already used");
                 }
                 await this.validateSavedScope(load);
                 const current = new Set(await this.savedScopeSourceIds(load));
                 selectedSourceIds = lookup.sourceIds.filter((sourceId) => current.has(sourceId));
-                lookup.consumed = true;
+                if (!lookup.consumed) {
+                  lookup.consumed = true;
+                  lookup.logicalQueryKey = namedSourceQueryKey;
+                }
               } else {
                 selectedSourceIds = await this.savedScopeSourceIds(load);
               }
@@ -2979,7 +3002,7 @@ export class CanonicalWorkflowOperations {
                   sourceKind: "chat_message",
                   logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
                   contentItemIdentity: item.messageId,
-                  stage: "internal_inspection",
+                  stage: "internal_chat_search_preview",
                   visibleTokenCount: this.visibleTokenCount(
                     item.snippet,
                     load.acceptanceScope.fastModelId,
@@ -2997,7 +3020,7 @@ export class CanonicalWorkflowOperations {
                 sourceKind: "chat_message",
                 logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
                 contentItemIdentity: item.messageId,
-                stage: "internal_inspection",
+                stage: "internal_chat_search_preview",
                 visibleTokenCount: this.visibleTokenCount(
                   item.snippet,
                   load.acceptanceScope.fastModelId,
@@ -3030,7 +3053,7 @@ export class CanonicalWorkflowOperations {
                   sourceKind: "chat_message",
                   logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
                   contentItemIdentity: item.messageId,
-                  stage: "internal_inspection",
+                  stage: "internal_chat_search_preview",
                   visibleTokenCount: this.visibleTokenCount(
                     item.snippet,
                     load.acceptanceScope.fastModelId,

@@ -483,7 +483,7 @@ describe("exact Pi boundary", () => {
       sourceKind: "chat_message",
       logicalSourceIdentity,
       contentItemIdentity: "message-1",
-      exposureStage: "internal_inspection",
+      exposureStage: "internal_chat_search_preview",
       visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
     };
     const sourceRequest: LiveProviderRequest = {

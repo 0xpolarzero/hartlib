@@ -200,9 +200,11 @@ const canonicalEvaluationRequest = (
     // evidence width. Apply the same canonicalization when validating a live
     // capture so storage-backed ranges and fixture-backed scoring agree.
     const canonicalSourceContent =
-      source.kind === "document" && source.content.length < 100
-        ? source.content.padEnd(100, " ")
-        : source.content;
+      source.kind === "memory"
+        ? source.content.trim()
+        : source.kind === "document" && source.content.length < 100
+          ? source.content.padEnd(100, " ")
+          : source.content;
     if (
       ranges.some(
         (range) =>
@@ -367,9 +369,11 @@ const exactProductionEvidence = (
       }
       const sourceContent =
         binding.contentOverride ??
-        (source.kind === "document" && source.content.length < 100
-          ? source.content.padEnd(100, " ")
-          : source.content);
+        (source.kind === "memory"
+          ? source.content.trim()
+          : source.kind === "document" && source.content.length < 100
+            ? source.content.padEnd(100, " ")
+            : source.content);
       if (
         binding.ranges.some(
           (range) =>

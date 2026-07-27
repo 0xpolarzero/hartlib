@@ -1822,7 +1822,9 @@ const baselineSourceMap = async (
               storedDocuments.get(selection.sourceId)!.text.slice(range.charStart, range.charEnd),
             )
             .join("\n…\n")
-        : source.content;
+        : source.kind === "memory"
+          ? source.content.trim()
+          : source.content;
     const use = {
       consumerTaskId: output.planTurn.mode === "fanout" ? "fanout-synthesis" : "single-answer",
       contextOrder: index,
@@ -5481,14 +5483,18 @@ const expectedExposureVisibleTokenCount = (
         ? reconstructDocumentExposureText(manifest, exposure, sourceId, source, storedDocuments)
         : source.kind === "chat_message"
           ? stripHistoricalCitationTags(source.content)
-          : source.content;
+          : source.kind === "memory"
+            ? source.content.trim()
+            : source.content;
   } else if (exposure.exposureStage === "memory_tool_result") {
-    visibleText = source.content;
+    visibleText = source.kind === "memory" ? source.content.trim() : source.content;
   } else if (exposure.exposureStage === "answer_serialized") {
     visibleText =
       source.kind === "document"
         ? reconstructDocumentExposureText(manifest, exposure, sourceId, source, storedDocuments)
-        : source.content;
+        : source.kind === "memory"
+          ? source.content.trim()
+          : source.content;
   } else {
     throw new Error(`${manifest.caseId} exposure stage lacks exact visible-token semantics`);
   }
@@ -7306,7 +7312,9 @@ const expectedTerminalContextEvidence = (
           ? selection.ranges
               .map((range) => source.content.slice(range.charStart, range.charEnd))
               .join("\n…\n")
-          : source.content;
+          : source.kind === "memory"
+            ? source.content.trim()
+            : source.content;
       return {
         sourceKey: durableSource.sourceKey,
         consumerTaskId: output.planTurn.mode === "fanout" ? "fanout-synthesis" : "single-answer",

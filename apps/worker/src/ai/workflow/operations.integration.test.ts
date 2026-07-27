@@ -2371,6 +2371,129 @@ class SecondSearchCursorContinuationAgent extends CanonicalAgentClient {
   }
 }
 
+class NamedSourceCursorContinuationAgent extends CanonicalAgentClient {
+  continuationCalls = 0;
+  reboundReuseRejected = false;
+
+  constructor() {
+    super(testProviderBoundary());
+  }
+
+  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
+    type NamedSourcePage = {
+      readonly complete: boolean;
+      readonly cursor: number | null;
+      readonly items: readonly {
+        readonly documentId: string;
+        readonly __briefSourceIdentity?: {
+          readonly source?: { readonly kind?: string } | undefined;
+        };
+      }[];
+    };
+    const lookup = input.tools.find((tool) => tool.definition.name === "lookup_named_source");
+    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
+    const inspect = input.tools.find((tool) => tool.definition.name === "inspect_internal");
+    if (lookup === undefined || search === undefined || inspect === undefined) {
+      throw new Error("missing named-source retrieval tools");
+    }
+    const baseCoordinates: PiBoundaryCoordinates = {
+      ...input.coordinates,
+      loopIteration: 0,
+      providerRequestIndex: 0,
+    };
+    await invokeToolLoopProviderHook(input, baseCoordinates);
+    const lookupResult = (await lookup.execute(
+      { name: "Canonical Publisher" },
+      baseCoordinates,
+    )) as {
+      readonly found: boolean;
+      readonly lookupRef: string | null;
+    };
+    if (!lookupResult.found || lookupResult.lookupRef === null) {
+      throw new Error("named-source lookup did not find the publisher");
+    }
+    const query = {
+      target: "documents" as const,
+      terms: "liquidity",
+      purpose: "paginate a named-source search",
+      lookupRef: lookupResult.lookupRef,
+      limit: 50,
+    };
+    let providerRequestIndex = 1;
+    let coordinates = { ...baseCoordinates, providerRequestIndex };
+    await invokeToolLoopProviderHook(input, coordinates);
+    let page = (await search.execute({ query }, coordinates)) as unknown as NamedSourcePage;
+    if (page.complete !== false || typeof page.cursor !== "number") {
+      throw new Error("named-source search did not create a cursor obligation");
+    }
+    const discoveredItems = [...page.items];
+    let previousCursor = -1;
+    while (page.complete !== true) {
+      const cursor = page.cursor;
+      if (typeof cursor !== "number") throw new Error("named-source page omitted its cursor");
+      if (cursor <= previousCursor) {
+        throw new Error("named-source cursor did not advance");
+      }
+      previousCursor = cursor;
+      providerRequestIndex += 1;
+      coordinates = { ...baseCoordinates, providerRequestIndex };
+      await invokeToolLoopProviderHook(input, coordinates);
+      page = (await search.execute({ query, cursor }, coordinates)) as unknown as NamedSourcePage;
+      discoveredItems.push(...page.items);
+      this.continuationCalls += 1;
+      if (this.continuationCalls > 20) {
+        throw new Error("named-source cursor continuation did not terminate");
+      }
+    }
+    if (this.continuationCalls === 0 || discoveredItems.length < 2) {
+      throw new Error("named-source pagination did not expose all documents");
+    }
+
+    providerRequestIndex += 1;
+    coordinates = { ...baseCoordinates, providerRequestIndex };
+    await invokeToolLoopProviderHook(input, coordinates);
+    try {
+      await search.execute(
+        {
+          query: {
+            ...query,
+            terms: "anchored",
+            purpose: "try to reuse the named-source handoff",
+          },
+        },
+        coordinates,
+      );
+    } catch (error) {
+      this.reboundReuseRejected =
+        error instanceof Error && error.message.includes("named-source lookupRef");
+    }
+    if (!this.reboundReuseRejected) {
+      throw new Error("named-source handoff was rebound to another search");
+    }
+
+    const item = discoveredItems[0];
+    if (item === undefined || item.__briefSourceIdentity?.source?.kind !== "publisher") {
+      throw new Error(
+        `named-source search returned no publisher document: ${JSON.stringify(item)}`,
+      );
+    }
+    const reference = {
+      kind: "document" as const,
+      documentId: item.documentId,
+      purpose: "paginate a named-source search",
+    };
+    const inspection = await inspect.execute({ reference }, coordinates);
+    if (inspection.found !== true || inspection.complete !== true) {
+      throw new Error("named-source inspection failed");
+    }
+    await invokeToolLoopProviderHook(input, {
+      ...baseCoordinates,
+      providerRequestIndex: providerRequestIndex + 1,
+    });
+    return input.validateTerminal({ entries: [reference] });
+  }
+}
+
 class PublicRetrievalAgent extends CanonicalAgentClient {
   constructor(private readonly expectedSearchSnippet: string) {
     super(testProviderBoundary());
@@ -3614,6 +3737,136 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(inspectableAgent.inspectionAvailable).toBe(true);
     expect(inspectableAgent.terminalReady).toBe(true);
   });
+
+  it("continues a named-source search through token pages and rejects handoff rebinding", async () => {
+    const fixture = await runDb(createFixture);
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const issueRows = yield* sql<{ readonly createdByUserId: string }>`
+          select created_by_user_id as "createdByUserId"
+          from publisher_issues
+          where id = ${fixture.issueId}
+        `;
+        const createdByUserId = issueRows[0]?.createdByUserId;
+        if (createdByUserId === undefined) {
+          return yield* Effect.fail(new Error("publisher issue owner is missing"));
+        }
+        const issueId = crypto.randomUUID();
+        const documentId = crypto.randomUUID();
+        const versionId = crypto.randomUUID();
+        const canonicalText =
+          "Liquidity conditions improved while inflation expectations remained anchored in the second brief.";
+        const contentHash = createHash("sha256").update(canonicalText, "utf8").digest("hex");
+        const jobs = yield* sql<{ readonly id: string }>`
+          insert into jobs (kind, payload)
+          values ('extract_pdf_text', '{}'::jsonb)
+          returning id::text
+        `;
+        yield* sql`
+          insert into publisher_issues (
+            id, subscription_id, title, status, publication_at, published_at,
+            indexing_status, created_by_user_id
+          ) values (
+            ${issueId}, ${fixture.subscriptionId}, 'Second Macro Brief', 'draft', null, null,
+            'pending', ${createdByUserId}
+          )
+        `;
+        yield* sql`
+          insert into brief_documents (
+            id, issue_id, title, original_file_name, object_key, media_type, byte_size,
+            sha256_hex, upload_completed_at, created_by_user_id
+          ) values (
+            ${documentId}, ${issueId}, 'Second Liquidity Outlook', 'second-liquidity.pdf',
+            ${`publisher/second-liquidity/${documentId}.pdf`}, 'application/pdf', 42,
+            ${contentHash}, now(), ${createdByUserId}
+          )
+        `;
+        const extractions = yield* sql<{ readonly id: string }>`
+          insert into brief_document_extractions (
+            brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+          ) values (
+            ${documentId}, ${contentHash},
+            ${JSON.stringify([{ pageNumber: 1, text: canonicalText }])}::jsonb,
+            ${canonicalText.length}, ${jobs[0]!.id}
+          )
+          returning id::text
+        `;
+        yield* sql`
+          insert into brief_document_versions (
+            id, brief_document_id, publisher_extraction_id, content_hash, language,
+            canonical_text, text_char_count, page_ranges
+          ) values (
+            ${versionId}, ${documentId}, ${extractions[0]!.id}, ${contentHash}, 'english',
+            ${canonicalText}, ${canonicalText.length},
+            ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: canonicalText.length }])}::jsonb
+          )
+        `;
+        yield* sql`
+          update brief_documents set current_version_id = ${versionId} where id = ${documentId}
+        `;
+        yield* sql`
+          update publisher_issues
+          set status = 'published', publication_at = now(), published_at = now(), indexing_status = 'ready'
+          where id = ${issueId}
+        `;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              insert into issue_deliveries (
+                issue_id, subscription_id, access_id, client_company_id, historical
+              ) values (
+                ${issueId}, ${fixture.subscriptionId}, ${fixture.accessId}, ${fixture.companyId}, false
+              )
+            `;
+            yield* sql`
+              insert into issue_delivery_recipients (issue_id, client_company_id, user_id, delivered_at)
+              values (${issueId}, ${fixture.companyId}, ${fixture.userId}, now())
+            `;
+          }),
+        );
+      }),
+    );
+    const config: CanonicalAiConfig = {
+      aiMainModel: "glm-5-turbo",
+      aiFastModel: "glm-5-turbo",
+      aiMainInputMaxTokens: 100_000,
+      aiMainOutputMaxTokens: 4096,
+      aiFastInputMaxTokens: 100_000,
+      aiFastOutputMaxTokens: 700,
+      aiConversationRecentTurns: 12,
+      aiFanoutMaxTopics: 3,
+      aiRetrievalMaxTurns: 8,
+      aiInternalMaxSearches: 8,
+      aiInternalMaxInspections: 4,
+      aiWebMaxSearches: 2,
+      aiWebMaxFetches: 2,
+      aiWebMaxDomainFilters: 8,
+      aiContextReductionMaxIterations: 2,
+      aiMemoryToolResultMaxItems: 20,
+      webResearchProvider: "",
+    };
+    const agent = new NamedSourceCursorContinuationAgent();
+    const operations = new CanonicalWorkflowOperations(databaseUrlFor(databaseName), config, agent);
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    await expect(
+      inTask("named-source-retrieve", () =>
+        operations.retrieveInternal(
+          load,
+          "find liquidity in the named source",
+          "named-source-retrieve",
+          [],
+        ),
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        kind: "document",
+        purpose: "paginate a named-source search",
+      }),
+    ]);
+    expect(agent.continuationCalls).toBeGreaterThan(0);
+    expect(agent.reboundReuseRejected).toBe(true);
+  }, 120_000);
 
   it("preserves discovered evidence after malformed inspection recovery", async () => {
     const fixture = await runDb(createFixture);

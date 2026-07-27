@@ -169,7 +169,7 @@ describe("canonical agent tool loop", () => {
                       sourceKind: "chat_message",
                       logicalSourceIdentity: chatMessageEvidenceIdentity("restricted-message"),
                       contentItemIdentity: "restricted-message",
-                      exposureStage: "internal_inspection",
+                      exposureStage: "internal_chat_search_preview",
                       visibleTokenCount:
                         resolveRegisteredModel("glm-5-turbo").countTextTokens(
                           "restricted search text",
@@ -501,7 +501,7 @@ describe("canonical agent tool loop", () => {
                   sourceKind: "chat_message",
                   logicalSourceIdentity: chatMessageEvidenceIdentity("public-message"),
                   contentItemIdentity: "public-message",
-                  exposureStage: "internal_inspection",
+                  exposureStage: "internal_chat_search_preview",
                   visibleTokenCount:
                     resolveRegisteredModel("glm-5-turbo").countTextTokens("visible"),
                 },
@@ -538,7 +538,7 @@ describe("canonical agent tool loop", () => {
         sourceKind: "chat_message",
         logicalSourceIdentity: chatMessageEvidenceIdentity("public-message"),
         contentItemIdentity: "public-message",
-        exposureStage: "internal_inspection",
+        exposureStage: "internal_chat_search_preview",
         visibleTokenCount: 1,
         visibleText: "visible",
         immutableContentHash: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
@@ -590,7 +590,7 @@ describe("canonical agent tool loop", () => {
                       sourceKind: "chat_message" as const,
                       logicalSourceIdentity: chatMessageEvidenceIdentity("same-message"),
                       contentItemIdentity: "same-message",
-                      exposureStage: "internal_inspection",
+                      exposureStage: "internal_chat_search_preview",
                       visibleTokenCount: countTextTokens(snippet),
                     },
                   ],

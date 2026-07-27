@@ -266,7 +266,7 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
     readonly topicFailure: "context_plan_unfit" | undefined = undefined,
   ) {
     super(
-      "postgres://unused",
+      databaseUrl ?? "postgres://unused",
       {
         aiMainModel: "glm-5-turbo",
         aiFastModel: "glm-5-turbo",
@@ -461,16 +461,22 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
     _sourceMap: readonly FinalSourceRecord[],
     _topicContexts: readonly ContextState[],
     _allocation: FanoutAllocation,
-  ) {
+  ): Promise<ContextState> {
     this.calls.push("fanout-synthesis-measure");
+    const synthesisRequest = {
+      ...request,
+      messages: [{ role: "user" as const, content: JSON.stringify({ packets }) }],
+    };
     return packets.length === 0
       ? {
           ...context(),
+          request: synthesisRequest,
           status: "failed" as const,
           failureCode: "synthesis_budget_mismatch" as const,
         }
-      : context();
+      : { ...context(), request: synthesisRequest };
   }
+  override async recordSynthesisContextMeasurement(): Promise<void> {}
   override async synthesize(
     _load: LoadedTurn,
     _state: ContextState,

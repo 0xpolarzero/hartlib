@@ -418,7 +418,7 @@ describe("provider-visible source exposure proofs", () => {
       sourceKind: "chat_message",
       logicalSourceIdentity: "chat_message:message-2",
       contentItemIdentity: "message-2",
-      exposureStage: "internal_inspection",
+      exposureStage: "internal_chat_search_preview",
       visibleTokenCount: countTextTokens(secondSnippet),
     };
     const call: ProviderToolCall = {
@@ -1288,7 +1288,7 @@ describe("provider-visible source exposure proofs", () => {
       sourceKind: "chat_message",
       logicalSourceIdentity: "chat_message:repeated-message",
       contentItemIdentity: "repeated-message",
-      exposureStage: "internal_inspection",
+      exposureStage: "internal_chat_search_preview",
       visibleTokenCount: countTextTokens(snippet),
     };
     const exchange = (callId: string): ToolExchange => ({

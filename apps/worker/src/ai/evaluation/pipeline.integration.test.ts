@@ -32,7 +32,11 @@ import {
   webQuoteHash,
 } from "../runtime/canonicalization";
 import { CanonicalAgentClient, type ToolLoopInput } from "../runtime/agent-client";
-import { measureProviderRequest, resolveRegisteredModel } from "../runtime/model-registry";
+import {
+  measureProviderRequest,
+  resolveRegisteredModel,
+  type AcceptedProviderProfile,
+} from "../runtime/model-registry";
 import { validateTopicPacket } from "../runtime/validators";
 import { TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY } from "../web/tinyfish-search";
 import { createSmithersStorage } from "../smithers-interop";
@@ -393,6 +397,21 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
   inspectedDocumentCount = 0;
   selectedMemoryCount = 0;
   private reductionDecisions: readonly ContextDecision[] = [];
+  private acceptedProviderProfile: AcceptedProviderProfile | undefined;
+
+  bindAcceptedProviderProfile(profile: AcceptedProviderProfile): void {
+    const current = this.acceptedProviderProfile;
+    if (
+      current !== undefined &&
+      (current.providerServiceId !== profile.providerServiceId ||
+        current.providerEndpointIdentity !== profile.providerEndpointIdentity ||
+        current.fastModelId !== profile.fastModelId ||
+        current.mainModelId !== profile.mainModelId)
+    ) {
+      throw new Error("oversized selector provider profile cannot be rebound");
+    }
+    this.acceptedProviderProfile = profile;
+  }
 
   setReductionDecisions(decisions: readonly ContextDecision[]): void {
     this.reductionDecisions = decisions;
@@ -973,7 +992,9 @@ const completeDurableCaptureSession = async (
           ? selection.ranges
               .map((range) => source.content.slice(range.charStart, range.charEnd))
               .join("\n…\n")
-          : source.content;
+          : source.kind === "memory"
+            ? source.content.trim()
+            : source.content;
       const uses = isSpecializedFanout
         ? fanoutTopicIds.map((topicId) => ({
             consumerTaskId: `topic-${topicId}-answer`,
@@ -1410,7 +1431,7 @@ const completeDurableCaptureSession = async (
             ? use.ranges
                 .map((range) => evidence.content.slice(range.charStart, range.charEnd))
                 .join("\n…\n")
-            : evidence.content;
+            : providerVisibleContentFor(evidence);
         const logicalSourceIdentity =
           locator.kind === "document"
             ? binding.kind === "document"
@@ -1538,6 +1559,8 @@ const completeDurableCaptureSession = async (
       source.kind === "document"
         ? [{ charStart: 0, charEnd: Math.min(300, source.content.length) }]
         : [];
+    const providerVisibleContentFor = (source: (typeof fixture.evidence)[number]): string =>
+      source.kind === "memory" ? source.content.trim() : source.content;
     const previewMarkerFor = (sourceId: string) => {
       const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId)!;
       const binding = manifest.sourceBindings.find(
@@ -1566,8 +1589,8 @@ const completeDurableCaptureSession = async (
         exposureStage,
         visibleTokenCount: model.countTextTokens(
           exposureStage === "internal_search_preview" || exposureStage === "web_search_preview"
-            ? source.content.slice(0, 300)
-            : source.content,
+            ? providerVisibleContentFor(source).slice(0, 300)
+            : providerVisibleContentFor(source),
         ),
       } as const;
     };
@@ -1645,7 +1668,7 @@ const completeDurableCaptureSession = async (
                 ? binding.memoryRevisionId
                 : `${canonicalizeWebUrl(binding.url)}:${webQuoteHash(source.content)}`,
         exposureStage: "context_candidate_inspection",
-        visibleTokenCount: model.countTextTokens(source.content),
+        visibleTokenCount: model.countTextTokens(providerVisibleContentFor(source)),
         ...(binding.kind === "document"
           ? {
               documentReconstruction: {
@@ -1825,8 +1848,8 @@ const completeDurableCaptureSession = async (
               text:
                 candidate.exposureStage === "internal_search_preview" ||
                 candidate.exposureStage === "web_search_preview"
-                  ? source.content.slice(0, 300)
-                  : source.content,
+                  ? providerVisibleContentFor(source).slice(0, 300)
+                  : providerVisibleContentFor(source),
               ...(source.kind === "document" ? { ranges: previewRangesFor(source) } : {}),
             };
           })(),
@@ -1842,7 +1865,7 @@ const completeDurableCaptureSession = async (
                       exposureStage: candidate.exposureStage,
                       visibleTokenCount: candidate.visibleTokenCount,
                     },
-                    text: source.content,
+                    text: providerVisibleContentFor(source),
                   };
                 })(),
               ]
@@ -1905,7 +1928,7 @@ const completeDurableCaptureSession = async (
                       exposureStage: candidate.exposureStage,
                       visibleTokenCount: candidate.visibleTokenCount,
                     },
-                    text: source.content,
+                    text: providerVisibleContentFor(source),
                     ranges: source.ranges,
                   };
                 })(),
@@ -1929,7 +1952,7 @@ const completeDurableCaptureSession = async (
               ? answerUse.ranges
                   .map((range) => source.content.slice(range.charStart, range.charEnd))
                   .join("\n…\n")
-              : source.content;
+              : providerVisibleContentFor(source);
           const answerMarkerMatch =
             answerUse !== undefined && answerSource !== undefined
               ? (() => {
@@ -3671,7 +3694,7 @@ const completeDurableCaptureSession = async (
               logicalSourceIdentity: reductionMarker.logicalSourceIdentity,
               contentItemIdentity: reductionMarker.contentItemIdentity,
               exposureStage: "context_candidate_inspection",
-              visibleTokenCount: model.countTextTokens(source.content),
+              visibleTokenCount: model.countTextTokens(providerVisibleContentFor(source)),
               ...(reductionMarker.sourceKind === "document" &&
               "documentReconstruction" in reductionMarker &&
               reductionMarker.documentReconstruction !== undefined

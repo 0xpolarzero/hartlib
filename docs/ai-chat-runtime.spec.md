@@ -612,13 +612,16 @@ type NamedSourceLookupResult = {
 
 Brief stores the lookup's exact saved-scope document set in the current task
 ledger and binds `lookupRef` to the run, task, iteration, attempt, and lookup
-result. A subsequent `search_internal` may include that `lookupRef` once; code
-checks the reference and scopes that search to the
-stored set before consuming the handoff. Code then accepts only document
+result. A subsequent `search_internal` may include that `lookupRef` for one
+logical search; code binds the handoff to that exact query and scopes the search
+to the stored set before consuming the handoff. If the bounded result returns a
+cursor, only an exact cursor continuation of that same query may reuse the
+handoff. Code then accepts only document
 references returned by that saved lookup or its scoped search, checks each ledger
 entry and saved scope, and rejects repeats.
 Invented, foreign, stale, already-consumed, or cross-task references fail
-closed. When a normal search omits `lookupRef`, code searches the full saved
+closed, as does a second query that tries to reuse the handoff. When a normal
+search omits `lookupRef`, code searches the full saved
 document scope; a model can never supply a source ID to create or
 widen that scope.
 
@@ -1797,7 +1800,7 @@ explicit exceptional denies.
 
 `brief_document_versions`: publisher document id, exact one-to-one `publisher_extraction_id` foreign key to `brief_document_extractions`, immutable canonical text, lowercase content hash, page ranges, and search projection. The foreign key is unique, points to an extraction for the same PDF row, and is required for a publisher version. Ready-state constraints reject extraction replacement, version-pointer movement, PDF/text/hash/range mutation, and ordinary deletion; only the fenced complete-record purge may remove the bound rows.
 
-`ai_source_exposures`: run id, task id, loop iteration, attempt, provider-request index, source kind, logical source identity, publisher issue/document/extraction IDs when applicable, content-item identity, exposure stage, exact visible token count, and created at; unique on all execution coordinates, stage, and content-item identity. Every content-bearing document row, including `internal_search_preview`, persists a namespaced source ID, document ID, immutable version ID, lowercase SHA-256 content hash, normalized non-overlapping UTF-16 range array, and, for publisher documents only, the exact `publisher_extraction_id` as one required set. The publisher extraction ID has a foreign key to the version's one-to-one binding; public rows must keep it null. Metadata-only lookup creates no row. Rows contain no copied source body. Exact replay of an exposure and its provider-request attestation is idempotent; any conflict in a bound exposure or attestation field, including extraction identity, fails closed inside the transaction. Run-level exposed-item counts derive by distinct run/content-item identity, publisher issue/document pulls by their separate distinct run/logical IDs, and the full per-attempt rows support the detailed funnel.
+`ai_source_exposures`: run id, task id, loop iteration, attempt, provider-request index, source kind, logical source identity, publisher issue/document/extraction IDs when applicable, content-item identity, exposure stage, exact visible token count, and created at; unique on all execution coordinates, stage, and content-item identity. Document search previews use `internal_search_preview`; chat-message search previews use `internal_chat_search_preview`, so a later full `internal_inspection` remains a distinct exposure. Every content-bearing document row, including `internal_search_preview`, persists a namespaced source ID, document ID, immutable version ID, lowercase SHA-256 content hash, normalized non-overlapping UTF-16 range array, and, for publisher documents only, the exact `publisher_extraction_id` as one required set. The publisher extraction ID has a foreign key to the version's one-to-one binding; public rows must keep it null. Metadata-only lookup creates no row. Rows contain no copied source body. Exact replay of an exposure and its provider-request attestation is idempotent; any conflict in a bound exposure or attestation field, including extraction identity, fails closed inside the transaction. Run-level exposed-item counts derive by distinct run/content-item identity, publisher issue/document pulls by their separate distinct run/logical IDs, and the full per-attempt rows support the detailed funnel.
 
 `assistant_message_sources`: assistant message id, source key, kind, typed immutable locator JSON matching `SourceLocator`, kind-specific indexed identity columns including namespaced `sourceId` plus document/version/content hash for documents and the exact `publisher_extraction_id` for publisher documents, `version_id`, `message_id`, and `memory_revision_id`, snapshotted nullable display label, snapshotted public provenance JSON, created at; unique on message and source key. The extraction column has a foreign key to the version's required one-to-one extraction binding and is null for public documents. The locator therefore persists document namespace/source/version/hash/range union and publisher extraction identity, message identity, exact memory revision, or web URL/title/domain/quote/quote hash/publication/capture times without later derivation from mutable state. The indexed extraction and memory revisions are protected references used by provenance retention and GC. These rows are the immutable turn-local source map; extraction identity is omitted from every public projection.
 

@@ -617,7 +617,7 @@ const expectedInternalSearchExposures = (
             logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
             contentItemIdentity: messageId,
           }),
-      exposureStage: "internal_inspection",
+      exposureStage: "internal_chat_search_preview",
       visibleText: value.snippet,
       providerVisibleBinding: stableJson({
         sourceKind: "chat_message",
@@ -2245,6 +2245,7 @@ const assertCodeOwnedMarkerShape = (proof: CodeOwnedSourceExposureProof): void =
       "provider_input",
       "answer_serialized",
       "internal_search_preview",
+      "internal_chat_search_preview",
       "internal_inspection",
       "context_candidate_inspection",
       "memory_tool_result",
