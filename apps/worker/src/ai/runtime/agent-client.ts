@@ -13,6 +13,7 @@ import type {
   ProviderRequest,
   ProviderToolDefinition,
   SourceExposureProof,
+  CodeOwnedSourceExposureProof,
   ProviderVisibleSourceExposureMarker,
 } from "./provider-request";
 import {
@@ -211,24 +212,36 @@ const exposureMarkersFromResult = (
   });
 };
 
-const exposureProofKey = (marker: ProviderVisibleSourceExposureMarker): string =>
+const exposureProofIdentityKey = (marker: ProviderVisibleSourceExposureMarker): string =>
   JSON.stringify([
     marker.sourceKind,
     marker.logicalSourceIdentity,
     marker.contentItemIdentity,
     marker.exposureStage,
-    marker.visibleTokenCount,
   ]);
 
-const canonicalExposureMarker = (
-  marker: ProviderVisibleSourceExposureMarker,
-): ProviderVisibleSourceExposureMarker => ({
-  sourceKind: marker.sourceKind,
-  logicalSourceIdentity: marker.logicalSourceIdentity,
-  contentItemIdentity: marker.contentItemIdentity,
-  exposureStage: marker.exposureStage,
-  visibleTokenCount: marker.visibleTokenCount,
-});
+const codeOwnedExposureContent = (proof: SourceExposureProof): string | undefined => {
+  if (!("visibleText" in proof) || typeof proof.visibleText !== "string") return undefined;
+  const codeOwnedProof = proof as CodeOwnedSourceExposureProof;
+  return JSON.stringify([
+    codeOwnedProof.visibleText,
+    codeOwnedProof.visibleTokenCount,
+    codeOwnedProof.immutableContentHash,
+    codeOwnedProof.immutableSourceIdentityCommitment,
+  ]);
+};
+
+const exposureProofContentChanged = (
+  existing: SourceExposureProof,
+  next: CodeOwnedSourceExposureProof,
+): boolean => {
+  if (existing.visibleTokenCount !== next.visibleTokenCount) return true;
+  const existingContent = codeOwnedExposureContent(existing);
+  const nextContent = codeOwnedExposureContent(next);
+  return (
+    existingContent !== undefined && nextContent !== undefined && existingContent !== nextContent
+  );
+};
 
 // Exposure proofs are a code-owned side channel. They must never enter a
 // provider tool message, even though retrieval keeps them on its private
@@ -959,15 +972,13 @@ export class CanonicalAgentClient {
                 resolveRuntimeModel(input.model).countTextTokens,
               );
         for (const marker of mintedProofs) {
-          const markerKey = exposureProofKey(marker);
+          const markerKey = exposureProofIdentityKey(marker);
           const existingMarkers = sourceExposureProofs.filter(
-            (existing) => exposureProofKey(existing) === markerKey,
+            (existing) => exposureProofIdentityKey(existing) === markerKey,
           );
           if (
-            existingMarkers.some(
-              (existingMarker) =>
-                JSON.stringify(canonicalExposureMarker(existingMarker)) !==
-                JSON.stringify(canonicalExposureMarker(marker)),
+            existingMarkers.some((existingMarker) =>
+              exposureProofContentChanged(existingMarker, marker),
             )
           ) {
             throw new Error("source exposure proof identity was rebound to new content");

@@ -189,7 +189,7 @@ describe("canonical agent tool loop", () => {
                   complete: true,
                   message: {
                     messageId: "restricted-message",
-                    content: "restricted inspected text",
+                    content: "restricted search text",
                   },
                   __briefSourceExposures: [
                     {
@@ -546,6 +546,72 @@ describe("canonical agent tool loop", () => {
         immutableSourceCommitment: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
       }),
     ]);
+  });
+
+  it("rejects a same-token-count exposure identity rebound to different text", async () => {
+    const countTextTokens = resolveRegisteredModel("glm-5-turbo").countTextTokens;
+    const snippets = ["one", "two"];
+    expect(countTextTokens(snippets[0]!)).toBe(countTextTokens(snippets[1]!));
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce(
+        completion([{ id: "search-1", name: "search_internal", arguments: {} }]),
+      )
+      .mockResolvedValueOnce(
+        completion([{ id: "search-2", name: "search_internal", arguments: {} }]),
+      )
+      .mockResolvedValueOnce(
+        completion([{ id: "terminal", name: "emit", arguments: { ok: true } }]),
+      );
+    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
+    let searchIndex = 0;
+
+    await expect(
+      inTask(() =>
+        client.toolLoop({
+          requestClass: "fast",
+          model: "glm-5-turbo",
+          system: "system",
+          user: "user",
+          tools: [
+            {
+              definition: {
+                name: "search_internal",
+                description: "Search",
+                parameters: {},
+              },
+              execute: async () => {
+                const snippet = snippets[searchIndex++]!;
+                return {
+                  complete: true,
+                  items: [{ messageId: "same-message", snippet }],
+                  __briefSourceExposures: [
+                    {
+                      sourceKind: "chat_message" as const,
+                      logicalSourceIdentity: chatMessageEvidenceIdentity("same-message"),
+                      contentItemIdentity: "same-message",
+                      exposureStage: "internal_inspection",
+                      visibleTokenCount: countTextTokens(snippet),
+                    },
+                  ],
+                };
+              },
+            },
+            {
+              definition: { name: "emit", description: "Emit", parameters: {} },
+              execute: async () => ({ complete: true }),
+            },
+          ],
+          terminalToolName: "emit",
+          validateTerminal: (value) => value,
+          maximumTurns: 3,
+          requestedOutputTokens: 64,
+          reasoning: "medium",
+          coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
+        }),
+      ),
+    ).rejects.toThrow("source exposure proof identity was rebound to new content");
+    expect(complete).toHaveBeenCalledTimes(2);
   });
 
   it("binds opaque conversation inspections through the real serialized tool transcript", async () => {
