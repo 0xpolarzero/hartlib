@@ -222,7 +222,7 @@ const addDeterministicDocumentIdentity = (
           ...document,
           ranges,
           __briefSourceIdentity: {
-            versionId: "version-1",
+            snapshotId: "version-1",
             contentHash: deterministicDocumentContentHash(document.snippet as string),
             ranges,
             source: { kind: "public", sourceId: "public:test-source" },
@@ -250,7 +250,7 @@ const addDeterministicDocumentIdentity = (
       return {
         ...result,
         __briefSourceIdentity: {
-          versionId: "version-1",
+          snapshotId: "version-1",
           contentHash: deterministicDocumentContentHash(result.text as string),
           ranges,
           source: { kind: "public", sourceId: "public:test-source" },

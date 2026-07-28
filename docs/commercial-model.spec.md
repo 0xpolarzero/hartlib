@@ -231,7 +231,7 @@ Each billed model call is one direct Pi provider request inside one Smithers
 compute task. Brief records the exact request coordinates and provider usage;
 Smithers agent execution is not a billable or production chat path. Saved
 citations use immutable document `documentId` evidence bound by kind: public
-evidence uses the exact public document row, immutable version identity, hash,
+evidence uses the exact public document row, immutable snapshot identity, hash,
 source scope, and ranges with no extraction ID; publisher evidence additionally
 uses the exact extraction row and required one-to-one version relation. A turn-local
 `citationNamespace` scopes citation handles only; it is not claim proof.

@@ -13,7 +13,7 @@ const citationNamespaceHex = citationNamespace;
 const integrityDigest = "0".repeat(64);
 const documentSourceId = "public:test-source";
 const documentId = "test-document";
-const versionId = "test-document-version";
+const snapshotId = "test-document-version";
 const documentContentHash = "a".repeat(64);
 
 describe("creditLimitReached", () => {
@@ -171,14 +171,14 @@ describe("chatMessagesResponseFromRows", () => {
           publisher_extraction_id: null,
           source_id: documentSourceId,
           document_id: documentId,
-          version_id: versionId,
+          snapshot_id: snapshotId,
           content_hash: documentContentHash,
           kind: "document",
           locator: {
             kind: "document",
             sourceId: documentSourceId,
             documentId,
-            versionId,
+            snapshotId,
             contentHash: documentContentHash,
             ranges: [{ pageNumber: 2, charStart: 10, charEnd: 50 }],
           },
@@ -248,7 +248,7 @@ describe("chatMessagesResponseFromRows", () => {
       publisher_extraction_id: null,
       source_id: documentSourceId,
       document_id: documentId,
-      version_id: versionId,
+      snapshot_id: snapshotId,
       content_hash: documentContentHash,
       canonical_url: citationUrl,
       kind: "document" as const,
@@ -256,7 +256,7 @@ describe("chatMessagesResponseFromRows", () => {
         kind: "document",
         sourceId: documentSourceId,
         documentId,
-        versionId,
+        snapshotId,
         contentHash: documentContentHash,
         ranges: [{ charStart: 0, charEnd: 8 }],
       },

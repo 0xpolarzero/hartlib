@@ -30,6 +30,15 @@ describe("buildTranscriptMessages", () => {
     const messages = buildTranscriptMessages([], "run-1", "answering", {
       assistantText: "Answer [[cite:k_nonce_2]] and [[cite:k_nonce_1,k_nonce_2]]",
       sourcesRead: sources,
+      activities: [
+        {
+          type: "activity",
+          stage: "evidence",
+          code: "internal_sources",
+          status: "complete",
+        },
+      ],
+      error: null,
     });
     const assistant = messages[0];
     expect(assistant?.author).toBe("assistant");
@@ -40,14 +49,30 @@ describe("buildTranscriptMessages", () => {
     ]);
     expect(assistant.sourcesRead).toEqual(sources);
     expect(assistant.streaming).toBe(true);
+    expect(assistant.activities).toMatchObject([{ code: "internal_sources", status: "complete" }]);
   });
 
-  it("never renders a provisional message after terminal error", () => {
-    expect(
-      buildTranscriptMessages([], "run-1", "error", {
-        assistantText: "discard me",
-        sourcesRead: sources,
-      }),
-    ).toEqual([]);
+  it("keeps the failed activity card after a terminal error", () => {
+    const messages = buildTranscriptMessages([], "run-1", "error", {
+      assistantText: "",
+      sourcesRead: [],
+      activities: [
+        {
+          type: "activity",
+          stage: "evidence",
+          code: "internal_sources",
+          status: "failed",
+        },
+      ],
+      error: { code: "internal_retrieval_failed", retryable: true },
+    });
+    const assistant = messages[0];
+    expect(assistant?.author).toBe("assistant");
+    if (assistant?.author !== "assistant") throw new Error("expected assistant");
+    expect(assistant.content).toBe("");
+    expect(assistant.activityFailure).toEqual({
+      code: "internal_retrieval_failed",
+      retryable: true,
+    });
   });
 });

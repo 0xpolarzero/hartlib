@@ -408,10 +408,10 @@ Retrieval results carry typed provenance. Agents emit references or selected quo
 The turn starts with one server-derived immutable acceptance scope; no broad
 source list enters provider input. Model-visible internal references contain only
 `documentId`. For public evidence, Brief binds each returned ID to the exact
-public document row, immutable version identity, lowercase content hash, source
+public document row, immutable snapshot identity, lowercase content hash, source
 scope, and normalized UTF-16 ranges, with no extraction ID. For publisher
 evidence, Brief additionally binds the ID to the exact extraction row through
-the required one-to-one version relation, with the same immutable version, hash,
+the required one-to-one version relation, with the same immutable snapshot, hash,
 source scope, and ranges. Web evidence stores the canonical HTTPS URL, capture metadata,
 an integrity hash, and the exact normalized quotation that the model saw.
 Brief creates one random `citationNamespace` at request acceptance; it scopes

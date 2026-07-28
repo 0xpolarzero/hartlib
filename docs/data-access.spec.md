@@ -247,14 +247,14 @@ The main answer, topic-answer, and synthesis agents have no retrieval tools. Bri
 The chat turn keeps the saved authorized internal search scope in Brief code. No
 broad source list enters provider input. A model-visible document reference
 contains only `documentId`. For public evidence, code binds it to the exact
-public document row, immutable version identity, lowercase content hash, source
+public document row, immutable snapshot identity, lowercase content hash, source
 scope, and normalized ranges, with no extraction ID. For publisher evidence,
 code additionally binds it to the exact extraction row through the required
-one-to-one version relation, with the same immutable version, hash, source
+one-to-one version relation, with the same immutable snapshot, hash, source
 scope, and ranges.
 Metadata-only search and lookup results create no exposure or evidence row. Any
 content-bearing document preview, including a search preview, carries the
-complete source namespace, document ID, immutable version, exact text hash,
+complete source namespace, document ID, immutable snapshot, exact text hash,
 and normalized ranges.
 The server creates one random per-answer `citationNamespace` at request
 acceptance. It scopes local citation handles only; the saved scope and exact

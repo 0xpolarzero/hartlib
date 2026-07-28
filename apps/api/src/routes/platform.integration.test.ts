@@ -1436,7 +1436,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
         const sql = yield* PgClient.PgClient;
         const issueId = crypto.randomUUID();
         const documentId = crypto.randomUUID();
-        const versionId = crypto.randomUUID();
+        const snapshotId = crypto.randomUUID();
         const extractionJobId = crypto.randomUUID();
         const extractionId = crypto.randomUUID();
         const publisherText = "Late publisher evidence";
@@ -1481,13 +1481,13 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
             id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${versionId}, ${documentId}, ${extractionId}, ${publisherContentHash}, 'en-US',
+            ${snapshotId}, ${documentId}, ${extractionId}, ${publisherContentHash}, 'en-US',
             ${publisherText}, ${publisherText.length},
             ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: publisherText.length }])}::jsonb
           )
         `;
         yield* sql`
-          update brief_documents set current_version_id = ${versionId} where id = ${documentId}
+          update brief_documents set current_version_id = ${snapshotId} where id = ${documentId}
         `;
         yield* sql`
           update publisher_issues
@@ -1511,7 +1511,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
           chatId,
           issueId,
           documentId,
-          versionId,
+          snapshotId,
           extractionId,
           textLength: publisherText.length,
           publishedAt,
@@ -1600,7 +1600,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
           yield* sql`
             insert into assistant_message_sources (
               assistant_message_id, source_key, kind, locator,
-              version_id, publisher_extraction_id, document_source_id, document_id, content_hash,
+              snapshot_id, publisher_extraction_id, document_source_id, document_id, content_hash,
               display_label, public_provenance
             ) values (
               ${assistantMessage!.id}, ${"k_cn_" + "B".repeat(22) + "_1"}, 'document',
@@ -1608,7 +1608,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
                 kind: "document",
                 sourceId: `publisher:${subscriptionId}`,
                 documentId: fixture.documentId,
-                versionId: fixture.versionId,
+                snapshotId: fixture.snapshotId,
                 contentHash: createHash("sha256")
                   .update("Late publisher evidence", "utf8")
                   .digest("hex"),
@@ -1617,7 +1617,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
                 publisherExtractionId: fixture.extractionId,
                 ranges: [{ charStart: 0, charEnd: fixture.textLength }],
               })},
-              ${fixture.versionId}, ${fixture.extractionId}, ${`publisher:${subscriptionId}`},
+              ${fixture.snapshotId}, ${fixture.extractionId}, ${`publisher:${subscriptionId}`},
               ${fixture.documentId}, ${createHash("sha256").update("Late publisher evidence", "utf8").digest("hex")},
               'Late cited document',
               ${sql.json({

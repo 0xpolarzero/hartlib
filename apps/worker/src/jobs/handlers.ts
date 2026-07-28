@@ -7,7 +7,7 @@ import { PgClient } from "@effect/sql-pg";
 import { Cause, Effect } from "effect";
 import { z } from "zod";
 import { loadDatabaseUrl } from "@brief/config";
-import type { AiProviderEndpointIdentity } from "@brief/shared";
+import type { AiProviderEndpointIdentity, AiRunActivityEvent } from "@brief/shared";
 import { CanonicalAgentClient } from "../ai/runtime/agent-client";
 import {
   ExactPiBoundary,
@@ -50,10 +50,12 @@ import { decodeRunAcceptanceScope } from "../ai/workflow/types";
 import {
   safeAiPhaseLogFields,
   withAiPhaseLogging,
+  type AiActivityLogger,
   type AiPhaseLogger,
 } from "../ai/workflow/phase-logging";
 import {
   AiRunSmithersRunIdMismatch,
+  appendAiRunEvent,
   failAiRun,
   insertAiExternalToolUsage,
   insertAiObservation,
@@ -293,6 +295,23 @@ const runResultError = (result: unknown): unknown =>
     ? (result as { readonly error?: unknown }).error
     : undefined;
 
+const makeDurableAiActivityLogger =
+  (connectionString: string): AiActivityLogger =>
+  async (event: AiRunActivityEvent, entry) => {
+    const attempt = event.attempt ?? 1;
+    const topic = event.topicId ?? "all";
+    const task = entry.taskId ?? "ai-chat";
+    await runAiProductState(
+      connectionString,
+      appendAiRunEvent({
+        runId: entry.runId,
+        emissionKey: `activity:${event.code}:${topic}:${entry.phase}:${event.status}:${attempt}`,
+        event,
+        emittedByTask: task,
+      }),
+    );
+  };
+
 const topicFromTaskId = (taskId: string): "t1" | "t2" | "t3" | undefined => {
   const topicId = /^topic-(t[123])-/u.exec(taskId)?.[1];
   return topicId === "t1" || topicId === "t2" || topicId === "t3" ? topicId : undefined;
@@ -524,6 +543,7 @@ export const makeWebResearchBoundary = (
   config: WorkerConfig,
 ): WebResearchBoundary => {
   const requestIndexes = new Map<string, number>();
+  const phaseLogger = localAiPhaseLogger;
   const persist = async (
     coordinates: PiBoundaryCoordinates,
     operation: WebOperationAccounting,
@@ -560,7 +580,7 @@ export const makeWebResearchBoundary = (
       signal === undefined ? undefined : { signal },
     );
     throwIfAborted(signal);
-    await localAiPhaseLogger({
+    await phaseLogger({
       phase: operation.kind === "search" ? "web_search_call" : "web_fetch_call",
       status: operation.outcome === "failed" ? "failed" : "succeeded",
       runId: aiRunId,
@@ -779,6 +799,7 @@ export const makeDurableProviderBoundary = (
   aiRunId: string,
   config: WorkerConfig,
 ): ExactPiBoundary | DeterministicE2eProviderBoundary => {
+  const phaseLogger = localAiPhaseLogger;
   const providerServiceId = providerServiceIdForConfig(config);
   const providerEndpointIdentity = providerEndpointIdentityForConfig(config);
   const boundaryOptions: PiBoundaryOptions = {
@@ -875,7 +896,7 @@ export const makeDurableProviderBoundary = (
           signal === undefined ? undefined : { signal },
         );
         throwIfAborted(signal);
-        await localAiPhaseLogger({
+        await phaseLogger({
           phase: "exact_provider_gate",
           status: measurement.passed ? "passed" : "rejected",
           runId: aiRunId,
@@ -920,7 +941,7 @@ export const makeDurableProviderBoundary = (
           signal === undefined ? undefined : { signal },
         );
         throwIfAborted(signal);
-        await localAiPhaseLogger({
+        await phaseLogger({
           phase: "provider_call",
           status: "succeeded",
           runId: aiRunId,
@@ -1071,6 +1092,7 @@ export const handleAiChatRunJob = (
       makeCanonicalOperations(connectionString, payload.aiRunId, config);
     const operations = withAiPhaseLogging(unloggedOperations, {
       logger: localAiPhaseLogger,
+      activityLogger: makeDurableAiActivityLogger(connectionString),
       fastModel: RUNTIME_MODEL_ID,
       mainModel: RUNTIME_MODEL_ID,
     });

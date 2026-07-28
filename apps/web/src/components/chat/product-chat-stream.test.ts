@@ -64,10 +64,17 @@ describe("product chat stream resume state", () => {
   it("persists and restores the exact cursor with its provisional transcript", () => {
     const storage = memoryStorage();
     persistRunStreamState(storage, {
-      version: 1,
+      version: 2,
       runId: "run-1",
       lastSeq: 12,
-      draft: { runId: "run-1", text: "partial", attempt: 1, sourcesRead: [] },
+      draft: {
+        runId: "run-1",
+        text: "partial",
+        attempt: 1,
+        sourcesRead: [],
+        activities: [],
+        terminalFailure: null,
+      },
     });
     expect(restoreRunStreamState(storage, "run-1")).toMatchObject({
       lastSeq: 12,
@@ -114,13 +121,56 @@ describe("product chat stream resume state", () => {
     expect(retry.draft).toMatchObject({ text: "", attempt: 1 });
   });
 
+  it("updates one logical activity through retries and ignores replay duplicates", () => {
+    const initial = emptyStreamDraft("run-1");
+    const running = reduceRunStreamEvent("run-1", 0, initial, 1, {
+      type: "activity",
+      stage: "evidence",
+      code: "internal_sources",
+      status: "running",
+      attempt: 1,
+    });
+    const retrying = reduceRunStreamEvent("run-1", 1, running.draft!, 2, {
+      type: "activity",
+      stage: "evidence",
+      code: "internal_sources",
+      status: "retrying",
+      attempt: 1,
+      resultCount: 0,
+    });
+    const replay = reduceRunStreamEvent("run-1", 2, retrying.draft!, 2, {
+      type: "activity",
+      stage: "evidence",
+      code: "internal_sources",
+      status: "complete",
+      attempt: 1,
+      resultCount: 2,
+    });
+    const complete = reduceRunStreamEvent("run-1", 2, retrying.draft!, 3, {
+      type: "activity",
+      stage: "evidence",
+      code: "internal_sources",
+      status: "complete",
+      attempt: 2,
+      resultCount: 2,
+    });
+    expect(replay.applied).toBe(false);
+    expect(complete.draft?.activities).toHaveLength(1);
+    expect(complete.draft?.activities[0]).toMatchObject({ status: "complete", attempt: 2 });
+  });
+
   it("marks terminal events and caps persistent exponential reconnects", () => {
     const terminal = reduceRunStreamEvent("run-1", 7, emptyStreamDraft("run-1"), 8, {
       type: "error",
       code: "answer_failed",
       retryable: true,
     });
-    expect(terminal).toMatchObject({ applied: true, terminal: true, lastSeq: 8, draft: null });
+    expect(terminal).toMatchObject({
+      applied: true,
+      terminal: true,
+      lastSeq: 8,
+      draft: { text: "", terminalFailure: { code: "answer_failed", retryable: true } },
+    });
     expect([0, 1, 2, 3, 4, 5, 50].map(reconnectDelayMs)).toEqual([
       250, 500, 1_000, 2_000, 4_000, 4_000, 4_000,
     ]);

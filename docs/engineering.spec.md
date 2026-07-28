@@ -401,7 +401,7 @@ The chat runtime uses the composed workflow in `docs/ai-chat-runtime.spec.md`:
 - the direct answer, topic-answer, and synthesis agents have zero tools
 - fanout topic packets are bounded, citation-bearing intermediate state; only final synthesis streams
 - memory extraction starts only after a valid `plan-turn` result, runs in parallel with the selected answer lane, and is required before finalization and `done`
-- model-visible document references contain only `documentId`; public evidence binds it to the exact public document row, immutable version identity, hash, source scope, and ranges with no extraction ID, while publisher evidence additionally binds it to the exact extraction row and required one-to-one version relation; the turn-local source map uses `citationNamespace` only for local citation handles
+- model-visible document references contain only `documentId`; public evidence binds it to the exact public document row, immutable snapshot identity, hash, source scope, and ranges with no extraction ID, while publisher evidence additionally binds it to the exact extraction row and required one-to-one version relation; the turn-local source map uses `citationNamespace` only for local citation handles
 - provider usage and planning/measurement observations are written idempotently by their owning tasks; finalization validates them, atomically stores memory changes, the final assistant message, immutable source map/uses, citation observations, aggregate usage event, and terminal outcome
 
 The chat stream SSE vocabulary is the one in `docs/ai-chat-runtime.spec.md`:

@@ -1018,7 +1018,7 @@ const completeDurableCaptureSession = async (
                 kind: "document",
                 sourceId: binding.source.sourceId as `publisher:${string}`,
                 documentId: binding.documentId,
-                versionId: binding.versionId,
+                snapshotId: binding.snapshotId,
                 contentHash: binding.contentHash,
                 ranges: selection.ranges,
                 publisherIssueId: binding.source.issueId,
@@ -1033,7 +1033,7 @@ const completeDurableCaptureSession = async (
                 kind: "document",
                 sourceId: binding.source.sourceId,
                 documentId: binding.documentId,
-                versionId: binding.versionId,
+                snapshotId: binding.snapshotId,
                 contentHash: binding.contentHash,
                 ranges: selection.ranges,
               };
@@ -1444,7 +1444,7 @@ const completeDurableCaptureSession = async (
                 : webEvidenceIdentity(locator.url, text);
         const contentItemIdentity =
           locator.kind === "document"
-            ? `${logicalSourceIdentity}:${locator.versionId}:${sha256Base64Url(JSON.stringify(use.ranges))}`
+            ? `${logicalSourceIdentity}:${locator.snapshotId}:${sha256Base64Url(JSON.stringify(use.ranges))}`
             : locator.kind === "chat_message"
               ? locator.messageId
               : locator.kind === "memory"
@@ -1580,7 +1580,7 @@ const completeDurableCaptureSession = async (
           binding.kind === "web" ? canonicalizeWebUrl(binding.url) : candidateIdFor(sourceId),
         contentItemIdentity:
           binding.kind === "document"
-            ? `${candidateIdFor(sourceId)}:${binding.versionId}:${sha256Base64Url(JSON.stringify(previewRangesFor(source)))}`
+            ? `${candidateIdFor(sourceId)}:${binding.snapshotId}:${sha256Base64Url(JSON.stringify(previewRangesFor(source)))}`
             : binding.kind === "chat_message"
               ? binding.messageId
               : binding.kind === "memory"
@@ -1614,13 +1614,13 @@ const completeDurableCaptureSession = async (
           binding.source,
           binding.documentId,
         ),
-        contentItemIdentity: `${namespacedDocumentEvidenceIdentity(binding.source, binding.documentId)}:${binding.versionId}:${sha256Base64Url(JSON.stringify(ranges))}`,
+        contentItemIdentity: `${namespacedDocumentEvidenceIdentity(binding.source, binding.documentId)}:${binding.snapshotId}:${sha256Base64Url(JSON.stringify(ranges))}`,
         exposureStage: "internal_inspection" as const,
         visibleTokenCount: model.countTextTokens(text),
         documentReconstruction: {
           sourceId: binding.sourceId,
           documentId: binding.documentId,
-          versionId: binding.versionId,
+          snapshotId: binding.snapshotId,
           contentHash: binding.contentHash,
           ranges,
         },
@@ -1661,7 +1661,7 @@ const completeDurableCaptureSession = async (
         logicalSourceIdentity: candidateIdFor(sourceId),
         contentItemIdentity:
           binding.kind === "document"
-            ? `${candidateIdFor(sourceId)}:${binding.versionId}:${sha256Base64Url(JSON.stringify(source.ranges))}`
+            ? `${candidateIdFor(sourceId)}:${binding.snapshotId}:${sha256Base64Url(JSON.stringify(source.ranges))}`
             : binding.kind === "chat_message"
               ? binding.messageId
               : binding.kind === "memory"
@@ -1674,7 +1674,7 @@ const completeDurableCaptureSession = async (
               documentReconstruction: {
                 sourceId: binding.sourceId,
                 documentId: binding.documentId,
-                versionId: binding.versionId,
+                snapshotId: binding.snapshotId,
                 contentHash: binding.contentHash,
                 ranges: source.ranges,
               },
@@ -1734,7 +1734,7 @@ const completeDurableCaptureSession = async (
         documentReconstruction: {
           sourceId: documentBinding.sourceId,
           documentId: documentBinding.documentId,
-          versionId: documentBinding.versionId,
+          snapshotId: documentBinding.snapshotId,
           contentHash: documentBinding.contentHash,
           ranges: documentSource.ranges,
         },
@@ -1969,7 +1969,7 @@ const completeDurableCaptureSession = async (
                           : webEvidenceIdentity(locator.url, answerText);
                   const contentItemIdentity =
                     locator.kind === "document"
-                      ? `${logicalSourceIdentity}:${locator.versionId}:${sha256Base64Url(JSON.stringify(answerUse.ranges))}`
+                      ? `${logicalSourceIdentity}:${locator.snapshotId}:${sha256Base64Url(JSON.stringify(answerUse.ranges))}`
                       : locator.kind === "chat_message"
                         ? locator.messageId
                         : locator.kind === "memory"
@@ -2084,7 +2084,7 @@ const completeDurableCaptureSession = async (
                       ...(details.binding.kind === "document"
                         ? {
                             __briefSourceIdentity: {
-                              versionId: details.binding.versionId,
+                              snapshotId: details.binding.snapshotId,
                               contentHash: details.binding.contentHash,
                               ranges: details.ranges,
                               ...(details.binding.publisherExtractionId === null
@@ -2136,7 +2136,7 @@ const completeDurableCaptureSession = async (
                   ...(details.binding.kind === "document"
                     ? {
                         __briefSourceIdentity: {
-                          versionId: details.binding.versionId,
+                          snapshotId: details.binding.snapshotId,
                           contentHash: details.binding.contentHash,
                           ...(details.binding.publisherExtractionId === null
                             ? {}
@@ -2207,13 +2207,13 @@ const completeDurableCaptureSession = async (
                   complete: true,
                   text: details.text,
                   documentId: details.binding.kind === "document" ? details.binding.documentId : "",
-                  versionId: details.binding.kind === "document" ? details.binding.versionId : "",
+                  snapshotId: details.binding.kind === "document" ? details.binding.snapshotId : "",
                   source: details.binding.kind === "document" ? details.binding.source : {},
                   ranges: details.ranges,
                   ...(details.binding.kind === "document"
                     ? {
                         __briefSourceIdentity: {
-                          versionId: details.binding.versionId,
+                          snapshotId: details.binding.snapshotId,
                           contentHash: details.binding.contentHash,
                           ...(details.binding.publisherExtractionId === null
                             ? {}
@@ -2465,7 +2465,7 @@ const completeDurableCaptureSession = async (
             logicalSourceIdentity,
             contentItemIdentity:
               binding.kind === "document"
-                ? `${logicalSourceIdentity}:${binding.versionId}:${sha256Base64Url(JSON.stringify(source.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd }))))}`
+                ? `${logicalSourceIdentity}:${binding.snapshotId}:${sha256Base64Url(JSON.stringify(source.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd }))))}`
                 : `${logicalSourceIdentity}:0:${source.content.length}:${createHash("sha256").update(source.content).digest("hex")}`,
             exposureStage: "evaluation_general_planner_inspect",
             visibleTokenCount: model.countTextTokens(source.content),
@@ -3057,7 +3057,7 @@ const completeDurableCaptureSession = async (
                     references.push({
                       kind: "document",
                       documentId: binding.documentId,
-                      versionId: binding.versionId,
+                      snapshotId: binding.snapshotId,
                       source: binding.source,
                       ranges: fullCandidateSelections.find(
                         (selection) => selection.sourceId === sourceId,
@@ -3378,7 +3378,7 @@ const completeDurableCaptureSession = async (
                         documentReconstruction: {
                           sourceId: source.locator.sourceId,
                           documentId: source.locator.documentId,
-                          versionId: source.locator.versionId,
+                          snapshotId: source.locator.snapshotId,
                           contentHash: source.locator.contentHash,
                           ranges:
                             source.uses.find((use) => use.consumerTaskId === "single-answer")
@@ -3566,7 +3566,7 @@ const completeDurableCaptureSession = async (
               : tamper === "wrong_document_version" && binding.kind === "document"
                 ? `unknown-evaluation-version:${marker.contentItemIdentity.split(":").at(-1)}`
                 : tamper === "coordinated_document_hash" && binding.kind === "document"
-                  ? `${binding.versionId}:${"A".repeat(43)}`
+                  ? `${binding.snapshotId}:${"A".repeat(43)}`
                   : tamper === "wrong_memory_revision" && binding.kind === "memory"
                     ? "00000000-0000-4000-8000-000000000099"
                     : tamper === "wrong_web_identity" && binding.kind === "web"
@@ -3578,7 +3578,7 @@ const completeDurableCaptureSession = async (
               : sourceId;
           const canonicalBaselineIdentity =
             binding.kind === "document"
-              ? `${baselineLogicalIdentity}:${binding.versionId}:${sha256Base64Url(JSON.stringify(source.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd }))))}`
+              ? `${baselineLogicalIdentity}:${binding.snapshotId}:${sha256Base64Url(JSON.stringify(source.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd }))))}`
               : `${baselineLogicalIdentity}:0:${source.content.length}:${createHash("sha256")
                   .update(source.content)
                   .digest("hex")}`;
@@ -3649,7 +3649,7 @@ const completeDurableCaptureSession = async (
                       documentReconstruction: {
                         sourceId: binding.sourceId,
                         documentId: binding.documentId,
-                        versionId: binding.versionId,
+                        snapshotId: binding.snapshotId,
                         contentHash:
                           tamper === "tampered_document_reconstruction"
                             ? "b".repeat(64)
@@ -3836,7 +3836,7 @@ const completeDurableCaptureSession = async (
                       documentReconstruction: {
                         sourceId: documentBinding.sourceId,
                         documentId: documentBinding.documentId,
-                        versionId: documentBinding.versionId,
+                        snapshotId: documentBinding.snapshotId,
                         contentHash: documentBinding.contentHash,
                         ranges: details.ranges,
                         ...(documentBinding.publisherExtractionId === null
@@ -3944,7 +3944,7 @@ const completeDurableCaptureSession = async (
                       documentReconstruction: {
                         sourceId: locator.sourceId,
                         documentId: locator.documentId,
-                        versionId: locator.versionId,
+                        snapshotId: locator.snapshotId,
                         contentHash: locator.contentHash,
                         ranges:
                           source.uses.find((use) => use.consumerTaskId === taskId)?.ranges ?? [],
@@ -4019,7 +4019,7 @@ const completeDurableCaptureSession = async (
             documentReconstruction: {
               sourceId: forgedBinding.sourceId,
               documentId: forgedBinding.documentId,
-              versionId: forgedBinding.versionId,
+              snapshotId: forgedBinding.snapshotId,
               contentHash: forgedBinding.contentHash,
               ranges: [{ charStart: 0, charEnd: Math.min(300, forgedSource.content.length) }],
             },
@@ -4688,7 +4688,7 @@ const focusedProductionRuntimeEvidence = (aiRunId: string) =>
         readonly exposureStage: string;
         readonly documentSourceId: string | null;
         readonly documentId: string | null;
-        readonly versionId: string | null;
+        readonly snapshotId: string | null;
         readonly contentHash: string | null;
         readonly documentRanges:
           | readonly { readonly charStart: number; readonly charEnd: number }[]
@@ -4696,7 +4696,7 @@ const focusedProductionRuntimeEvidence = (aiRunId: string) =>
       }>`
         select source_kind as "sourceKind", exposure_stage as "exposureStage",
                document_source_id as "documentSourceId", document_id as "documentId",
-               version_id as "versionId", content_hash as "contentHash",
+               snapshot_id as "snapshotId", content_hash as "contentHash",
                document_ranges as "documentRanges"
         from ai_source_exposures
         where run_id = ${aiRunId}
@@ -4749,7 +4749,7 @@ const assertFocusedTurboRuntimeEvidence = (
     readonly references?: readonly {
       readonly kind?: unknown;
       readonly documentId?: unknown;
-      readonly versionId?: unknown;
+      readonly snapshotId?: unknown;
       readonly source?: unknown;
       readonly ranges?: unknown;
       readonly purpose?: unknown;
@@ -4761,7 +4761,7 @@ const assertFocusedTurboRuntimeEvidence = (
   const expectedReferenceIdentity = {
     kind: "document",
     documentId: expectedDocument.documentId,
-    versionId: expectedDocument.versionId,
+    snapshotId: expectedDocument.snapshotId,
     source: expectedDocument.source,
   } as const;
   if (expectedProviderServiceId === "deterministic_test") {
@@ -4782,7 +4782,7 @@ const assertFocusedTurboRuntimeEvidence = (
     kind: "document",
     sourceId: expectedDocument.source.sourceId,
     documentId: expectedDocument.documentId,
-    versionId: expectedDocument.versionId,
+    snapshotId: expectedDocument.snapshotId,
     contentHash: expectedDocument.contentHash,
   } as const;
   expect(evidence.sources).toEqual([
@@ -4798,7 +4798,7 @@ const assertFocusedTurboRuntimeEvidence = (
       exposure.exposureStage === "internal_inspection" &&
       exposure.documentSourceId === expectedDocument.source.sourceId &&
       exposure.documentId === expectedDocument.documentId &&
-      exposure.versionId === expectedDocument.versionId &&
+      exposure.snapshotId === expectedDocument.snapshotId &&
       exposure.contentHash === expectedDocument.contentHash,
   );
   expect(inspectedExposures).toHaveLength(1);
@@ -5966,7 +5966,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       const binding = manifest.sourceBindings.find((candidate) => {
         if (candidate.kind !== source.locator.kind) return false;
         if (candidate.kind === "document" && source.locator.kind === "document") {
-          return candidate.versionId === source.locator.versionId;
+          return candidate.snapshotId === source.locator.snapshotId;
         }
         if (candidate.kind === "memory" && source.locator.kind === "memory") {
           return candidate.memoryRevisionId === source.locator.memoryRevisionId;
@@ -6004,7 +6004,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         };
       }
       if (candidate.kind !== "document") throw new Error("unexpected oversized candidate kind");
-      const binding = documentBindings.find((item) => item.versionId === candidate.versionId);
+      const binding = documentBindings.find((item) => item.snapshotId === candidate.snapshotId);
       if (binding === undefined) throw new Error("oversized candidate binding is missing");
       const ranges = fixture.labels.acceptableRanges[evaluationBindingGoldenSourceId(binding)];
       if (ranges === undefined) throw new Error("oversized range label is missing");

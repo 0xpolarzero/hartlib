@@ -237,6 +237,21 @@ function errorText(error: unknown): string {
   return parts.join("\n");
 }
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
 describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
   beforeAll(async () => {
     const sourceUrl = adminDatabaseUrl();
@@ -417,27 +432,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     },
   );
 
-  it("executes the final AI chat cutover body twice on the same clean schema", async () => {
+  it("executes the snapshot identity migration body twice on the final schema", async () => {
     const body = await Bun.file(
-      new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
-    ).text();
-    const providerServicesMigration = await Bun.file(
-      new URL(
-        "../../../../db/migrations/0066_ai_acceptance_provider_services.sql",
-        import.meta.url,
-      ),
-    ).text();
-    const scopeIdentityMigration = await Bun.file(
-      new URL(
-        "../../../../db/migrations/0067_ai_acceptance_scope_update_identity.sql",
-        import.meta.url,
-      ),
-    ).text();
-    const endpointIdentityMigration = await Bun.file(
-      new URL(
-        "../../../../db/migrations/0068_ai_acceptance_provider_endpoint_identity.sql",
-        import.meta.url,
-      ),
+      new URL("../../../../db/migrations/0070_ai_snapshot_identity.sql", import.meta.url),
     ).text();
     const result = await runDb(
       isolatedDatabaseUrl(),
@@ -445,35 +442,425 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         const sql = yield* PgClient.PgClient;
         yield* sql.unsafe(body).raw;
         yield* sql.unsafe(body).raw;
-        // 0064 predates the provider endpoint field. Restore the later
-        // migrations after exercising its idempotent body so this shared
-        // schema remains at the final cutover shape for following tests.
-        yield* sql.unsafe(providerServicesMigration).raw;
-        yield* sql`drop trigger if exists ai_runs_validate_acceptance_scope_insert on ai_runs`;
-        yield* sql`drop trigger if exists ai_runs_validate_acceptance_scope_update on ai_runs`;
-        yield* sql.unsafe(scopeIdentityMigration).raw;
-        yield* sql.unsafe(endpointIdentityMigration).raw;
-        return yield* sql<{ readonly count: number }>`
-          select count(*)::int as count
-          from pg_constraint constraints
-          join pg_class relations on relations.oid = constraints.conrelid
-          where constraints.connamespace = 'public'::regnamespace
-            and not constraints.convalidated
-            and relations.relname in (
-              'ai_runs',
-              'ai_observations',
-              'ai_run_usage',
-              'ai_source_exposures',
-              'assistant_message_sources',
-              'assistant_message_source_uses',
-              'brief_document_versions',
-              'public_source_documents'
-            )
+        return yield* sql<{ readonly count: number; readonly helperCount: number }>`
+          select
+            (
+              select count(*)::int
+              from pg_constraint constraints
+              join pg_class relations on relations.oid = constraints.conrelid
+              where constraints.connamespace = 'public'::regnamespace
+                and not constraints.convalidated
+                and relations.relname in (
+                  'ai_runs', 'ai_observations', 'ai_run_usage', 'ai_source_exposures',
+                  'assistant_message_sources', 'assistant_message_source_uses',
+                  'brief_document_versions', 'public_source_documents'
+                )
+            ) as count,
+            (
+              select count(*)::int from pg_proc functions
+              join pg_namespace namespaces on namespaces.oid = functions.pronamespace
+              where namespaces.nspname = 'public' and functions.proname like 'brief_snapshot_%'
+            ) as "helperCount"
         `;
       }),
     );
     expect(result[0]?.count).toBe(0);
+    expect(result[0]?.helperCount).toBe(0);
   }, 60_000);
+
+  it(
+    "rewrites populated pre-cutover evidence and retained JSON payloads",
+    { timeout: 60_000 },
+    async () => {
+      const databaseName = `brief_snapshot_upgrade_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+      const targetUrl = databaseUrlForName(databaseName);
+      const userId = `snapshot-upgrade-${crypto.randomUUID()}`;
+      const companyId = crypto.randomUUID();
+      const chatId = crypto.randomUUID();
+      const userMessageId = crypto.randomUUID();
+      const assistantMessageId = crypto.randomUUID();
+      const runId = crypto.randomUUID();
+      const sessionId = crypto.randomUUID();
+      const activeRunId = crypto.randomUUID();
+      const activeUserMessageId = crypto.randomUUID();
+      const activeAssistantMessageId = crypto.randomUUID();
+      const snapshot = "public-document";
+      const publicSourceId = "snapshot-upgrade";
+      const sourceId = `public:${publicSourceId}`;
+      const rawArtifactId = crypto.randomUUID();
+      const documentText = "x".repeat(100);
+      const publicUrl = "https://snapshot-upgrade.example/document";
+      const contentHash = sha256Hex(documentText);
+      const ranges = [{ charStart: 0, charEnd: documentText.length }];
+      const logicalSourceIdentity = `${sourceId}:${snapshot}`;
+      const contentItemIdentity = `${logicalSourceIdentity}:range`;
+      const binding = {
+        messageIndex: 0,
+        sourceOrdinal: 0,
+        serializedField: "messages[0].content",
+        orderedSourceDescriptor: "document:0",
+      };
+      const providerRequestSha256Hex = "a".repeat(64);
+      const providerSerializationProofSha256Hex = sha256Hex(
+        stableJson({
+          binding,
+          contentItemIdentity,
+          exposureStage: "internal_inspection",
+          logicalSourceIdentity,
+          sourceKind: "document",
+          visibleTokenCount: 1,
+        }),
+      );
+      const reconstruction = {
+        contentHash,
+        documentId: snapshot,
+        ranges,
+        sourceId,
+        versionId: snapshot,
+      };
+      const oldKeyWithProof = `source_exposure_attestation:evaluation-general-planner:0:0:1:${sha256Hex(
+        stableJson([
+          "document",
+          logicalSourceIdentity,
+          contentItemIdentity,
+          "internal_inspection",
+          1,
+          providerRequestSha256Hex,
+          providerSerializationProofSha256Hex,
+          binding,
+          reconstruction,
+        ]),
+      )}`;
+      const oldKey = `source_exposure_attestation:evaluation-general-planner:0:0:0:${sha256Hex(
+        stableJson([
+          "document",
+          logicalSourceIdentity,
+          contentItemIdentity,
+          "internal_inspection",
+          1,
+          providerRequestSha256Hex,
+          binding,
+          reconstruction,
+        ]),
+      )}`;
+      const executionOutput = { answer: "snapshot answer" };
+      const expectedExecutionOutputDigest = sha256Hex(stableJson(executionOutput));
+      const staleExecutionOutputDigest = "e".repeat(64);
+      const staleRunEvidenceDigest = "f".repeat(64);
+      const annotations = { claims: [], reportedGapIds: [] };
+      const annotationDigest = sha256Hex(stableJson(annotations));
+      const scope = makeRunAcceptanceScope({ userId, chatId, companyId, memoryMode: "disabled" });
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`);
+        }),
+      );
+      try {
+        await runDb(targetUrl, applyMigrationsThrough("0069_ai_evaluation_schema_versions.sql"));
+        await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+            insert into platform_users (id, primary_email, display_name, clerk_user_id)
+            values (${userId}, ${`${userId}@example.test`}, 'Snapshot upgrade', ${`clerk-${userId}`})
+          `;
+            yield* sql`insert into client_companies (id, name) values (${companyId}, 'Snapshot upgrade')`;
+            yield* sql`insert into client_company_memberships (company_id, user_id, role) values (${companyId}, ${userId}, 'admin')`;
+            yield* sql`insert into client_company_ai_settings (company_id) values (${companyId})`;
+            yield* sql`
+            insert into public_sources (
+              source_id, display_name, publisher_name, description,
+              ingestion_method, discovery_url, average_chars_per_item
+            ) values (
+              ${publicSourceId}, 'Snapshot source', 'Snapshot publisher',
+              'Snapshot migration source', 'rss', ${publicUrl}, 1
+            )
+          `;
+            yield* sql`
+            insert into public_source_raw_artifacts (
+              id, source_id, canonical_url, fetched_at, media_type, body, body_hash
+            ) values (
+              ${rawArtifactId}, ${publicSourceId}, ${publicUrl}, now(), 'text/html',
+              ${documentText}, ${contentHash}
+            )
+          `;
+            yield* sql`
+            insert into public_source_documents (
+              document_id, source_id, canonical_url, title, discovered_at, fetched_at,
+              language, document_type, text, text_char_count, content_hash, raw_artifact_id
+            ) values (
+              ${snapshot}, ${publicSourceId}, ${publicUrl}, 'Snapshot document',
+              now(), now(), 'en', 'text', ${documentText}, ${documentText.length}, ${contentHash}, ${rawArtifactId}
+            )
+          `;
+            yield* sql`insert into chats (id, user_id, company_id, memory_mode) values (${chatId}, ${userId}, ${companyId}, 'disabled')`;
+            yield* sql`insert into chat_messages (id, chat_id, author, content) values (${userMessageId}, ${chatId}, 'user', 'snapshot migration')`;
+            yield* sql`
+            insert into ai_runs (id, chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope, citation_namespace, started_at, finished_at)
+            values (${runId}, ${chatId}, ${userId}, ${userMessageId}, 'en-US', 'US', ${sql.json(scope)}, 'cn_AAAAAAAAAAAAAAAAAAAAAA', now(), now())
+          `;
+            yield* sql`insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id) values (${assistantMessageId}, ${chatId}, 'assistant', 'answer', ${runId})`;
+            yield* sql`update ai_runs set assistant_message_id = ${assistantMessageId} where id = ${runId}`;
+            yield* sql`
+            insert into chat_messages (id, chat_id, author, content)
+            values (${activeUserMessageId}, ${chatId}, 'user', 'active snapshot migration')
+          `;
+            yield* sql`
+            insert into ai_runs (
+              id, chat_id, initiating_user_id, user_message_id, locale, market,
+              acceptance_scope, citation_namespace, started_at
+            ) values (
+              ${activeRunId}, ${chatId}, ${userId}, ${activeUserMessageId}, 'en-US', 'US',
+              ${sql.json(scope)}, 'cn_BBBBBBBBBBBBBBBBBBBBBB', now()
+            )
+          `;
+            yield* sql`alter table assistant_message_sources disable trigger user`;
+            yield* sql`
+            insert into assistant_message_sources (
+              assistant_message_id, source_key, kind, locator, version_id,
+              document_source_id, document_id, content_hash, source_identity_digest, message_id
+            ) values (
+              ${assistantMessageId}, 'k_cn_AAAAAAAAAAAAAAAAAAAAAA_1', 'chat_message',
+              ${sql.json({ kind: "chat_message", messageId: userMessageId })},
+              null, null, null, null, ${"0".repeat(64)}, ${userMessageId}
+            )
+          `;
+            yield* sql`alter table assistant_message_sources enable trigger user`;
+            yield* sql`
+            insert into assistant_message_sources (
+              assistant_message_id, source_key, kind, locator, version_id,
+              document_source_id, document_id, content_hash, display_label, public_provenance
+            ) values (
+              ${assistantMessageId}, 'k_cn_AAAAAAAAAAAAAAAAAAAAAA_2', 'document',
+              ${sql.json({
+                kind: "document",
+                sourceId,
+                documentId: snapshot,
+                versionId: snapshot,
+                contentHash,
+                ranges,
+              })},
+              ${snapshot}, ${sourceId}, ${snapshot}, ${contentHash}, 'Snapshot document',
+              ${sql.json({ documentTitle: "Snapshot document", citationUrl: publicUrl })}
+            )
+          `;
+            yield* sql`alter table ai_source_exposures disable trigger user`;
+            yield* sql`
+            insert into ai_source_exposures (
+              run_id, task_id, loop_iteration, attempt, provider_request_index, source_kind,
+              logical_source_identity, content_item_identity, exposure_stage, visible_token_count,
+              document_source_id, document_id, version_id, content_hash, document_ranges
+            ) values (
+              ${runId}, 'evaluation-general-planner', 0, 0, 0, 'document', ${logicalSourceIdentity},
+              ${contentItemIdentity}, 'internal_inspection', 1, ${sourceId}, ${snapshot}, ${snapshot},
+              ${contentHash}, ${JSON.stringify(ranges)}::jsonb
+            )
+          `;
+            yield* sql`alter table ai_source_exposures enable trigger user`;
+            yield* sql`alter table ai_observations disable trigger user`;
+            yield* sql`
+            insert into ai_observations (run_id, chat_id, emitting_task, loop_iteration, attempt, observation_key, kind, payload)
+            values (
+              ${runId}, ${chatId}, 'evaluation-general-planner', 0, 0,
+              'evaluation-general-planner:0:0:retrieval_manifest:result', 'retrieval_manifest',
+              ${sql.json({ selectorRole: "general_planner", references: [{ kind: "document", documentId: snapshot, versionId: snapshot, source: { kind: "public", sourceId }, ranges }] })}
+            ), (
+              ${runId}, ${chatId}, 'evaluation-general-planner', 0, 0, ${oldKey}, 'source_exposure_attestation',
+              ${sql.json({
+                providerRequestIndex: 0,
+                providerRequestSha256Hex,
+                sourceKind: "document",
+                logicalSourceIdentity,
+                contentItemIdentity,
+                exposureStage: "internal_inspection",
+                visibleTokenCount: 1,
+                providerSerializationProofSha256Hex,
+                providerSerializationProofBinding: binding,
+                documentSourceId: sourceId,
+                documentId: snapshot,
+                versionId: snapshot,
+                documentContentHash: contentHash,
+                documentRanges: ranges,
+              })}
+          ), (
+            ${runId}, ${chatId}, 'evaluation-general-planner', 0, 0, ${oldKeyWithProof}, 'source_exposure_attestation',
+            ${sql.json({
+              providerRequestIndex: 1,
+              providerRequestSha256Hex,
+              sourceKind: "document",
+              logicalSourceIdentity,
+              contentItemIdentity,
+              exposureStage: "internal_inspection",
+              visibleTokenCount: 1,
+              providerSerializationProofSha256Hex,
+              providerSerializationProofBinding: binding,
+              documentSourceId: sourceId,
+              documentId: snapshot,
+              versionId: snapshot,
+              documentContentHash: contentHash,
+              documentRanges: ranges,
+            })}
+            )
+          `;
+            yield* sql`alter table ai_observations enable trigger user`;
+            yield* sql`
+            insert into ai_evaluation_sessions (id, artifact_version, golden_set_version, fixture_sha256_hex, execution_config_sha256_hex, provider_endpoint_identity, status)
+            values (${sessionId}, 3, 3, ${"c".repeat(64)}, ${"d".repeat(64)}, 'zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4', 'running')
+          `;
+            yield* sql`alter table ai_evaluation_case_runs disable trigger user`;
+            yield* sql`
+            insert into ai_evaluation_case_runs (
+              session_id, case_id, topology, ai_run_id, seed_manifest,
+              execution_output, execution_output_sha256_hex, run_evidence_sha256_hex,
+              status, started_at, finished_at
+            )
+            values (
+              ${sessionId}, 'snapshot-case', 'general_planner', ${runId},
+              ${sql.json({ caseId: "snapshot-case", sourceBindings: [{ kind: "document", documentId: snapshot, versionId: snapshot, contentHash, ranges }] })},
+              ${sql.json(executionOutput)}, ${staleExecutionOutputDigest}, ${staleRunEvidenceDigest},
+              'succeeded', now(), now()
+            )
+          `;
+            yield* sql`alter table ai_evaluation_case_runs enable trigger user`;
+            yield* sql`
+            insert into ai_evaluation_annotations (
+              session_id, case_id, topology, ai_run_id, run_evidence_sha256_hex,
+              assistant_output_sha256_hex, annotations, annotations_sha256_hex
+            ) values (
+              ${sessionId}, 'snapshot-case', 'general_planner', ${runId}, ${staleRunEvidenceDigest},
+              ${sha256Hex("answer")}, ${sql.json(annotations)}, ${annotationDigest}
+            )
+          `;
+            yield* sql`create table ai_execution_seeds (run_id uuid primary key, payload jsonb not null)`;
+            yield* sql`create table ai_task_outputs (run_id uuid primary key, payload jsonb not null)`;
+            yield* sql`
+            insert into ai_execution_seeds values (
+              ${runId}, ${sql.json({ sourceBindings: [{ documentId: snapshot, versionId: snapshot }] })}
+            )
+          `;
+            yield* sql`
+            insert into ai_task_outputs values (
+              ${runId}, ${sql.json({ references: [{ documentId: snapshot, versionId: snapshot }] })}
+            )
+          `;
+          }),
+        );
+        const migration = await Bun.file(
+          new URL("../../../../db/migrations/0070_ai_snapshot_identity.sql", import.meta.url),
+        ).text();
+        const result = await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* Effect.flip(sql.unsafe(migration).raw);
+            const legacyColumn = yield* sql<{ readonly count: number }>`
+            select count(*)::int as count
+            from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'assistant_message_sources'
+              and column_name = 'version_id'
+          `;
+            yield* sql`
+            insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id)
+            values (
+              ${activeAssistantMessageId}, ${chatId}, 'assistant',
+              'active run finished for migration', ${activeRunId}
+            )
+          `;
+            yield* sql`
+            update ai_runs
+            set assistant_message_id = ${activeAssistantMessageId}, finished_at = now()
+            where id = ${activeRunId}
+          `;
+            yield* sql.unsafe(migration).raw;
+            yield* sql.unsafe(migration).raw;
+            return yield* sql<{
+              readonly locator: Record<string, unknown>;
+              readonly payload: Record<string, unknown>;
+              readonly seedManifest: Record<string, unknown>;
+              readonly sourceSnapshotId: string;
+              readonly exposureSnapshotId: string;
+              readonly sourceIdentityDigest: string;
+              readonly expectedSourceIdentityDigest: string;
+              readonly executionOutputDigest: string;
+              readonly caseEvidenceDigest: string;
+              readonly annotationEvidenceDigest: string;
+              readonly convertedAttestations: number;
+              readonly staleAttestationKeys: number;
+              readonly staleOutputs: number;
+              readonly snapshotHelperCount: number;
+              readonly preflightLegacyColumnCount: number;
+            }>`
+            select sources.locator, manifest.payload, cases.seed_manifest as "seedManifest",
+                   ${legacyColumn[0]?.count ?? 0}::int as "preflightLegacyColumnCount",
+                   sources.snapshot_id as "sourceSnapshotId",
+                   (select snapshot_id from ai_source_exposures where run_id = ${runId} limit 1) as "exposureSnapshotId",
+                   sources.source_identity_digest as "sourceIdentityDigest",
+                   assistant_message_source_identity_digest(
+                     sources.assistant_message_id, sources.source_key, sources.kind, sources.locator,
+                     sources.snapshot_id, sources.publisher_extraction_id, sources.message_id,
+                     sources.memory_revision_id, sources.display_label, sources.public_provenance
+                   ) as "expectedSourceIdentityDigest",
+                   cases.execution_output_sha256_hex as "executionOutputDigest",
+                   cases.run_evidence_sha256_hex as "caseEvidenceDigest",
+                   (select run_evidence_sha256_hex from ai_evaluation_annotations
+                    where session_id = ${sessionId} and case_id = 'snapshot-case'
+                      and topology = 'general_planner') as "annotationEvidenceDigest",
+                   (select count(*) from ai_observations
+                    where run_id = ${runId} and kind = 'source_exposure_attestation'
+                      and payload ? 'snapshotId' and not payload ? 'versionId')::int as "convertedAttestations",
+                   (select count(*) from ai_observations
+                    where run_id = ${runId} and kind = 'source_exposure_attestation'
+                      and observation_key in (${oldKey}, ${oldKeyWithProof}))::int as "staleAttestationKeys",
+                   ((select count(*) from ai_execution_seeds where payload::text like '%versionId%')
+                    + (select count(*) from ai_task_outputs where payload::text like '%versionId%'))::int as "staleOutputs",
+                   (select count(*) from pg_proc
+                    where pronamespace = 'public'::regnamespace
+                      and proname like 'brief_snapshot_%')::int as "snapshotHelperCount"
+            from assistant_message_sources sources
+            join ai_observations manifest on manifest.run_id = ${runId} and manifest.kind = 'retrieval_manifest'
+            join ai_evaluation_case_runs cases on cases.ai_run_id = ${runId}
+            where sources.assistant_message_id = ${assistantMessageId}
+              and sources.kind = 'document'
+          `;
+          }),
+        );
+        const row = result[0];
+        expect(row?.preflightLegacyColumnCount).toBe(1);
+        expect(row?.locator).not.toHaveProperty("versionId");
+        expect(row?.locator).toHaveProperty("snapshotId", snapshot);
+        const references = row?.payload.references as Array<Record<string, unknown>> | undefined;
+        const sourceBindings = row?.seedManifest.sourceBindings as
+          | Array<Record<string, unknown>>
+          | undefined;
+        expect(references?.[0]).toHaveProperty("snapshotId", snapshot);
+        expect(sourceBindings?.[0]).toHaveProperty("snapshotId", snapshot);
+        expect(row?.sourceSnapshotId).toBe(snapshot);
+        expect(row?.exposureSnapshotId).toBe(snapshot);
+        expect(row?.sourceIdentityDigest).toBe(row?.expectedSourceIdentityDigest);
+        expect(row?.executionOutputDigest).toBe(expectedExecutionOutputDigest);
+        expect(row?.caseEvidenceDigest).not.toBe(staleRunEvidenceDigest);
+        expect(row?.caseEvidenceDigest).toMatch(/^[0-9a-f]{64}$/);
+        expect(row?.annotationEvidenceDigest).toBe(row?.caseEvidenceDigest);
+        expect(row?.convertedAttestations).toBe(2);
+        expect(row?.staleAttestationKeys).toBe(0);
+        expect(row?.staleOutputs).toBe(0);
+        expect(row?.snapshotHelperCount).toBe(0);
+      } finally {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`select pg_terminate_backend(pid) from pg_stat_activity where datname = ${databaseName} and pid <> pg_backend_pid()`;
+            yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
+          }),
+        );
+      }
+    },
+  );
 
   it("freezes only proven delivery recipients and rejects later changes", async () => {
     const result = await runDb(
@@ -8346,14 +8733,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           kind: "document",
           sourceId: "public:missing",
           documentId: "missing",
-          versionId: "missing",
+          snapshotId: "missing",
           contentHash: "a".repeat(64),
           ranges: [{ charStart: 0, charEnd: 1 }],
         },
         documentSourceId: null,
         documentId: "missing",
         contentHash: "a".repeat(64),
-        versionId: "missing",
+        snapshotId: "missing",
         publisherExtractionId: null,
         messageId: null,
         memoryRevisionId: null,
@@ -8364,14 +8751,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           kind: "document",
           sourceId: "public:missing",
           documentId: "missing",
-          versionId: "missing",
+          snapshotId: "missing",
           contentHash: "a".repeat(64),
           ranges: [{ charStart: 0, charEnd: 1 }],
         },
         documentSourceId: "public:missing",
         documentId: null,
         contentHash: "a".repeat(64),
-        versionId: "missing",
+        snapshotId: "missing",
         publisherExtractionId: null,
         messageId: null,
         memoryRevisionId: null,
@@ -8382,14 +8769,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           kind: "document",
           sourceId: "public:missing",
           documentId: "missing",
-          versionId: "missing",
+          snapshotId: "missing",
           contentHash: "a".repeat(64),
           ranges: [{ charStart: 0, charEnd: 1 }],
         },
         documentSourceId: "public:missing",
         documentId: "missing",
         contentHash: null,
-        versionId: "missing",
+        snapshotId: "missing",
         publisherExtractionId: null,
         messageId: null,
         memoryRevisionId: null,
@@ -8400,14 +8787,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           kind: "document",
           sourceId: "public:missing",
           documentId: "missing",
-          versionId: "missing",
+          snapshotId: "missing",
           contentHash: "a".repeat(64),
           ranges: [{ charStart: 0, charEnd: 1 }],
         },
         documentSourceId: "public:missing",
         documentId: "missing",
         contentHash: "a".repeat(64),
-        versionId: null,
+        snapshotId: null,
         publisherExtractionId: null,
         messageId: null,
         memoryRevisionId: null,
@@ -8418,7 +8805,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             "documentSourceId",
             "documentId",
             "contentHash",
-            "versionId",
+            "snapshotId",
             "publisherExtractionId",
           ] as const
         ).map((forbiddenColumn) => ({
@@ -8440,7 +8827,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           documentSourceId: forbiddenColumn === "documentSourceId" ? "public:malformed" : null,
           documentId: forbiddenColumn === "documentId" ? "malformed" : null,
           contentHash: forbiddenColumn === "contentHash" ? "a".repeat(64) : null,
-          versionId: forbiddenColumn === "versionId" ? "malformed" : null,
+          snapshotId: forbiddenColumn === "snapshotId" ? "malformed" : null,
           publisherExtractionId:
             forbiddenColumn === "publisherExtractionId" ? crypto.randomUUID() : null,
           messageId: kind === "chat_message" ? ids.message : null,
@@ -8457,11 +8844,11 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           const failure = yield* Effect.flip(sql`
             insert into assistant_message_sources (
               assistant_message_id, source_key, kind, locator,
-              version_id, publisher_extraction_id, document_source_id, document_id,
+              snapshot_id, publisher_extraction_id, document_source_id, document_id,
               content_hash, message_id, memory_revision_id, source_identity_digest
             ) values (
               ${ids.assistant}, ${`k_cn_${"M".repeat(22)}_${index + 100}`}, ${row.kind},
-              ${sql.json(row.locator)}, ${row.versionId}, ${row.publisherExtractionId},
+              ${sql.json(row.locator)}, ${row.snapshotId}, ${row.publisherExtractionId},
               ${row.documentSourceId}, ${row.documentId}, ${row.contentHash},
               ${row.messageId}, ${row.memoryRevisionId}, ${"0".repeat(64)}
             )
@@ -12478,7 +12865,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               run_id, task_id, loop_iteration, attempt, provider_request_index,
               source_kind, logical_source_identity, content_item_identity,
               exposure_stage, visible_token_count,
-              document_source_id, document_id, version_id,
+              document_source_id, document_id, snapshot_id,
               content_hash, document_ranges
             ) values (
               ${evaluationRunId}, 'reconstructable-inspection', 0, 0, 0,
@@ -12505,7 +12892,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 run_id, task_id, loop_iteration, attempt, provider_request_index,
                 source_kind, logical_source_identity, content_item_identity,
                 exposure_stage, visible_token_count,
-                document_source_id, document_id, version_id,
+                document_source_id, document_id, snapshot_id,
                 content_hash, document_ranges
               ) values (
                 ${evaluationRunId}, 'overlapping-reconstruction', 0, 0, 0,
@@ -12522,7 +12909,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 run_id, task_id, loop_iteration, attempt, provider_request_index,
                 source_kind, logical_source_identity, content_item_identity,
                 exposure_stage, visible_token_count,
-                document_source_id, document_id, version_id,
+                document_source_id, document_id, snapshot_id,
                 content_hash, document_ranges
               ) values (
                 ${evaluationRunId}, 'unscoped-reconstruction', 0, 0, 0,
@@ -12536,7 +12923,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 run_id, task_id, loop_iteration, attempt, provider_request_index,
                 source_kind, logical_source_identity, content_item_identity,
                 exposure_stage, visible_token_count,
-                document_source_id, document_id, version_id,
+                document_source_id, document_id, snapshot_id,
                 content_hash, document_ranges
               ) values (
                 ${evaluationRunId}, 'too-long-reconstruction', 0, 0, 0,
@@ -12550,7 +12937,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 run_id, task_id, loop_iteration, attempt, provider_request_index,
                 source_kind, logical_source_identity, content_item_identity,
                 exposure_stage, visible_token_count,
-                document_source_id, document_id, version_id,
+                document_source_id, document_id, snapshot_id,
                 content_hash
               ) values (
                 ${evaluationRunId}, 'partial-reconstruction', 0, 0, 0,
@@ -12585,7 +12972,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                   run_id, task_id, loop_iteration, attempt, provider_request_index,
                   source_kind, logical_source_identity, content_item_identity,
                   exposure_stage, visible_token_count,
-                  document_source_id, document_id, version_id,
+                  document_source_id, document_id, snapshot_id,
                   content_hash, document_ranges
                 ) values (
                   ${evaluationRunId}, 'invalid-source-id', 0, 0, 0,

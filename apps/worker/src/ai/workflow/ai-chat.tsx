@@ -120,7 +120,7 @@ const BoundInternalReferenceSchema = z.union([
     .strictObject({
       kind: z.literal("document"),
       documentId: z.string(),
-      versionId: z.string(),
+      snapshotId: z.string(),
       publisherExtractionId: z.string().optional(),
       source: z.union([
         z.strictObject({ kind: z.literal("public"), sourceId: z.string() }),
@@ -265,7 +265,7 @@ const DocumentCandidateSchema = z
     purpose: z.string(),
     sourceId: z.string(),
     documentId: z.string(),
-    versionId: z.string(),
+    snapshotId: z.string(),
     publisherExtractionId: z.string().trim().min(1).optional(),
     publisherIssueId: z.string().optional(),
     publisherDocumentId: z.string().optional(),
@@ -368,7 +368,7 @@ const PublicDocumentLocatorSchema = z.strictObject({
   kind: z.literal("document"),
   sourceId: PublicDocumentSourceIdSchema,
   documentId: z.string(),
-  versionId: z.string(),
+  snapshotId: z.string(),
   contentHash: Sha256HexSchema,
   ranges: NormalizedDocumentRangesSchema,
 });
@@ -377,7 +377,7 @@ const PublisherDocumentLocatorSchema = z
     kind: z.literal("document"),
     sourceId: PublisherDocumentSourceIdSchema,
     documentId: z.string(),
-    versionId: z.string(),
+    snapshotId: z.string(),
     contentHash: Sha256HexSchema,
     ranges: NormalizedDocumentRangesSchema,
     publisherExtractionId: z.string().trim().min(1),

@@ -446,7 +446,7 @@ const SOURCE_IDENTITY_FIELD = "__briefSourceIdentity";
 const HIDDEN_PROVIDER_TOOL_RESULT_FIELDS = new Set([
   SOURCE_EXPOSURE_FIELD,
   SOURCE_IDENTITY_FIELD,
-  "versionId",
+  "snapshotId",
   "contentHash",
   "publisherExtractionId",
   "source",
@@ -535,8 +535,8 @@ const expectedInternalSearchExposures = (
         : undefined;
       const hasPrivateIdentity =
         privateIdentity !== undefined &&
-        typeof privateIdentity.versionId === "string" &&
-        privateIdentity.versionId.length > 0 &&
+        typeof privateIdentity.snapshotId === "string" &&
+        privateIdentity.snapshotId.length > 0 &&
         typeof privateIdentity.contentHash === "string" &&
         /^[a-f0-9]{64}$/u.test(privateIdentity.contentHash) &&
         isJsonRecord(privateIdentity.source);
@@ -575,7 +575,7 @@ const expectedInternalSearchExposures = (
           namespace,
           value.documentId as string,
         );
-        contentItemIdentity = `${logicalSourceIdentity}:${privateIdentity!.versionId}:${sha256Base64Url(
+        contentItemIdentity = `${logicalSourceIdentity}:${privateIdentity!.snapshotId}:${sha256Base64Url(
           JSON.stringify(ranges),
         )}`;
       }
@@ -749,7 +749,7 @@ const expectedInternalInspectionExposures = (
       namespace,
       reference.documentId as string,
     );
-    contentItemIdentity = `${logicalSourceIdentity}:${privateIdentity.versionId}:${sha256Base64Url(
+    contentItemIdentity = `${logicalSourceIdentity}:${privateIdentity.snapshotId}:${sha256Base64Url(
       JSON.stringify(ranges),
     )}`;
   }
@@ -942,7 +942,7 @@ const expectedCandidateInspectionExposures = (
       }
     }
     documentRangeHash = sha256Base64Url(JSON.stringify(ranges));
-    const hasVersion = typeof result.versionId === "string" && result.versionId.length > 0;
+    const hasVersion = typeof result.snapshotId === "string" && result.snapshotId.length > 0;
     const hasSource = Object.hasOwn(result, "source");
     if (hasVersion !== hasSource) {
       throw sourceExposureFailure(
@@ -964,7 +964,7 @@ const expectedCandidateInspectionExposures = (
         }
       }
       logicalSourceIdentity = expectedCandidateId;
-      contentItemIdentity = `${expectedCandidateId}:${result.versionId}:${documentRangeHash}`;
+      contentItemIdentity = `${expectedCandidateId}:${result.snapshotId}:${documentRangeHash}`;
     } else {
       requiresPrivateCommitment = true;
     }
@@ -1186,21 +1186,21 @@ const expectedCandidateSearchExposures = (
     ? result[SOURCE_IDENTITY_FIELD]
     : undefined;
   const privateVersion =
-    privateIdentity !== undefined && typeof privateIdentity.versionId === "string"
-      ? privateIdentity.versionId
+    privateIdentity !== undefined && typeof privateIdentity.snapshotId === "string"
+      ? privateIdentity.snapshotId
       : undefined;
   const privateSource = privateIdentity?.source;
   const hasVersion =
-    (typeof result.versionId === "string" && result.versionId.length > 0) ||
+    (typeof result.snapshotId === "string" && result.snapshotId.length > 0) ||
     (privateVersion !== undefined && privateVersion.length > 0);
   const hasSource = Object.hasOwn(result, "source") || privateSource !== undefined;
   if (hasVersion !== hasSource) {
     throw sourceExposureFailure("search_within_candidate result has a partial immutable identity");
   }
   if (
-    typeof result.versionId === "string" &&
+    typeof result.snapshotId === "string" &&
     privateVersion !== undefined &&
-    result.versionId !== privateVersion
+    result.snapshotId !== privateVersion
   ) {
     throw sourceExposureFailure(
       "search_within_candidate version differs from its private identity",
@@ -1271,7 +1271,7 @@ const expectedCandidateSearchExposures = (
       ...(logicalSourceIdentity === undefined ? {} : { logicalSourceIdentity }),
       ...(hasVersion && logicalSourceIdentity !== undefined
         ? {
-            contentItemIdentity: `${logicalSourceIdentity}:${privateVersion ?? String(result.versionId)}:${rangeHash}`,
+            contentItemIdentity: `${logicalSourceIdentity}:${privateVersion ?? String(result.snapshotId)}:${rangeHash}`,
           }
         : {}),
       exposureStage: "context_candidate_inspection",
@@ -1450,14 +1450,12 @@ const documentContentIdentityMatchesSnippet = (
   const expectedHash = sha256Base64Url(snippet);
   const prefix = `${marker.logicalSourceIdentity}:`;
   const suffix = marker.contentItemIdentity.startsWith(prefix)
-    ? marker.contentItemIdentity.slice(prefix.length).split(":")
-    : [];
-  return (
-    marker.sourceKind === "document" &&
-    suffix.length === 2 &&
-    suffix[0]!.length > 0 &&
-    suffix[1] === expectedHash
-  );
+    ? marker.contentItemIdentity.slice(prefix.length)
+    : "";
+  const separator = suffix.lastIndexOf(":");
+  const snapshotId = separator > 0 ? suffix.slice(0, separator) : "";
+  const contentHash = separator > 0 ? suffix.slice(separator + 1) : "";
+  return marker.sourceKind === "document" && snapshotId.length > 0 && contentHash === expectedHash;
 };
 
 const documentContentIdentityMatchesRange = (
@@ -1467,14 +1465,12 @@ const documentContentIdentityMatchesRange = (
   (() => {
     const prefix = `${marker.logicalSourceIdentity}:`;
     const suffix = marker.contentItemIdentity.startsWith(prefix)
-      ? marker.contentItemIdentity.slice(prefix.length).split(":")
-      : [];
-    return (
-      marker.sourceKind === "document" &&
-      suffix.length === 2 &&
-      suffix[0]!.length > 0 &&
-      suffix[1] === rangeHash
-    );
+      ? marker.contentItemIdentity.slice(prefix.length)
+      : "";
+    const separator = suffix.lastIndexOf(":");
+    const snapshotId = separator > 0 ? suffix.slice(0, separator) : "";
+    const contentHash = separator > 0 ? suffix.slice(separator + 1) : "";
+    return marker.sourceKind === "document" && snapshotId.length > 0 && contentHash === rangeHash;
   })();
 
 const assertExactSourceExposureMarker = (
@@ -1685,14 +1681,14 @@ const validatePrivateDocumentIdentity = (
   if (
     Object.keys(privateIdentity).some(
       (key) =>
-        !["versionId", "contentHash", "publisherExtractionId", "source", "ranges"].includes(key),
+        !["snapshotId", "contentHash", "publisherExtractionId", "source", "ranges"].includes(key),
     )
   ) {
     throw sourceExposureFailure(`${context} has unknown immutable identity fields`);
   }
   if (
-    typeof privateIdentity.versionId !== "string" ||
-    privateIdentity.versionId.length === 0 ||
+    typeof privateIdentity.snapshotId !== "string" ||
+    privateIdentity.snapshotId.length === 0 ||
     typeof privateIdentity.contentHash !== "string" ||
     !/^[a-f0-9]{64}$/u.test(privateIdentity.contentHash)
   ) {
@@ -1830,7 +1826,8 @@ export const providerSourceExposureProofFromToolResult = (
         );
         if (
           toolName !== "search_internal" &&
-          ((Object.hasOwn(result, "versionId") && result.versionId !== privateIdentity.versionId) ||
+          ((Object.hasOwn(result, "snapshotId") &&
+            result.snapshotId !== privateIdentity.snapshotId) ||
             (Object.hasOwn(result, "contentHash") &&
               result.contentHash !== privateIdentity.contentHash) ||
             (Object.hasOwn(result, "publisherExtractionId") &&
@@ -1854,7 +1851,7 @@ export const providerSourceExposureProofFromToolResult = (
             `${toolName} marker namespace differs from its private identity`,
           );
         }
-        const privateContentIdentity = `${privateLogicalIdentity}:${privateIdentity.versionId}:${
+        const privateContentIdentity = `${privateLogicalIdentity}:${privateIdentity.snapshotId}:${
           item.documentRangeHash ?? sha256Base64Url(item.visibleText)
         }`;
         if (marker.contentItemIdentity !== privateContentIdentity) {

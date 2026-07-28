@@ -102,7 +102,7 @@ describe("compileQuerySpec", () => {
 
     expect(selectedIndex).toBeGreaterThanOrEqual(0);
     expect(text).not.toContain("ts_headline");
-    expect(text).toContain('document_id as "versionId"');
+    expect(text).toContain('document_id as "snapshotId"');
     expect(text).toContain('content_hash as "contentHash"');
     expect(text).toContain("text,");
     expect(text).toContain("limit $");

@@ -5,6 +5,7 @@ import {
   AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT,
   AI_WEB_MAX_DOMAIN_FILTERS_HARD_MAX,
   AiRunEvent,
+  activityCodeForPhase,
   EffectiveWebPolicy,
   GetChatResponse,
   MemoryRecord,
@@ -161,6 +162,29 @@ describe("canonical chat schemas", () => {
         sourcesRead: [{ ...contextReady.sourcesRead[0], forged: true }],
       }),
     ).toThrow();
+  });
+
+  it("strictly decodes safe activity progress and rejects opaque fields", () => {
+    const decode = Schema.decodeUnknownSync(AiRunEvent, { onExcessProperty: "error" });
+    const activity = {
+      type: "activity",
+      stage: "evidence",
+      code: "web_research",
+      status: "retrying",
+      topicId: "t2",
+      attempt: 2,
+      durationMs: 120,
+      resultCount: 0,
+      reason: "search_adjusted",
+    } as const;
+    expect(decode(activity)).toEqual(activity);
+    expect(() => decode({ ...activity, rawQuery: "private query" })).toThrow();
+    expect(() => decode({ ...activity, code: "provider_internal_operation" })).toThrow();
+  });
+
+  it("does not expose low-level provider calls as answer progress", () => {
+    expect(activityCodeForPhase("provider_call")).toBeUndefined();
+    expect(activityCodeForPhase("direct_answer_call")).toBe("answer_generation");
   });
 
   it("models append-only memory revisions with an exact current head", () => {

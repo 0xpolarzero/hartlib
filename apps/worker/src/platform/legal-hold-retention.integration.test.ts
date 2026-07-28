@@ -331,7 +331,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        const versionId = crypto.randomUUID();
+        const snapshotId = crypto.randomUUID();
         const contentHash = createHash("sha256")
           .update("Cited publisher evidence", "utf8")
           .digest("hex");
@@ -355,13 +355,13 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
             id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${versionId}, ${fixture.documentId}, ${extraction!.id}, encode(digest(convert_to('Cited publisher evidence', 'UTF8'), 'sha256'), 'hex'), 'en-US',
+            ${snapshotId}, ${fixture.documentId}, ${extraction!.id}, encode(digest(convert_to('Cited publisher evidence', 'UTF8'), 'sha256'), 'hex'), 'en-US',
             'Cited publisher evidence', 24,
             '[{"pageNumber":1,"charStart":0,"charEnd":24}]'::jsonb
           )
         `;
         yield* sql`
-          update brief_documents set current_version_id = ${versionId}
+          update brief_documents set current_version_id = ${snapshotId}
           where id = ${fixture.documentId}
         `;
         yield* sql`
@@ -404,7 +404,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
         yield* sql`
             insert into assistant_message_sources (
               assistant_message_id, source_key, kind, locator,
-            version_id, publisher_extraction_id, document_source_id, document_id, content_hash,
+            snapshot_id, publisher_extraction_id, document_source_id, document_id, content_hash,
             display_label, public_provenance
           ) values (
             ${assistantMessageId}, ${`k_${run!.citationNamespace}_1`}, 'document',
@@ -412,7 +412,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
               kind: "document",
               sourceId: `publisher:${fixture.subscriptionId}`,
               documentId: fixture.documentId,
-              versionId: versionId,
+              snapshotId: snapshotId,
               contentHash: createHash("sha256")
                 .update("Cited publisher evidence", "utf8")
                 .digest("hex"),
@@ -421,7 +421,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
               publisherExtractionId: extraction!.id,
               ranges: [{ charStart: 0, charEnd: 24 }],
             })},
-              ${versionId}, (select id from brief_document_extractions where brief_document_id = ${fixture.documentId} limit 1),
+              ${snapshotId}, (select id from brief_document_extractions where brief_document_id = ${fixture.documentId} limit 1),
               ${`publisher:${fixture.subscriptionId}`}, ${fixture.documentId}, ${contentHash},
               'Cited publisher evidence',
             ${sql.json({

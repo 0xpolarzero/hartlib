@@ -387,25 +387,25 @@ const documentCandidateIdentity = (candidate: {
 
 const documentContentItemIdentity = (
   namespace: string,
-  versionId: string,
+  snapshotId: string,
   content: string,
-): string => `${namespace}:${versionId}:${content}`;
+): string => `${namespace}:${snapshotId}:${content}`;
 
 const documentDiscoveryKey = (
   reference: Extract<InternalReference, { kind: "document" }>,
 ): string =>
-  `${reference.source.kind}:${reference.source.sourceId}:${reference.source.kind === "publisher" ? reference.source.issueId : ""}:${reference.documentId}:${reference.versionId}`;
+  `${reference.source.kind}:${reference.source.sourceId}:${reference.source.kind === "publisher" ? reference.source.issueId : ""}:${reference.documentId}:${reference.snapshotId}`;
 
 const documentReferenceSelectionKey = (
   reference: Extract<InternalReference, { kind: "document" }>,
 ): string =>
-  `${documentReferenceIdentity(reference)}:${reference.versionId}:${JSON.stringify(reference.ranges ?? [])}`;
+  `${documentReferenceIdentity(reference)}:${reference.snapshotId}:${JSON.stringify(reference.ranges ?? [])}`;
 
 const documentReferenceRangeKey = (
   reference: Extract<InternalReference, { kind: "document" }>,
   range: { readonly charStart: number; readonly charEnd: number },
 ): string =>
-  `${documentReferenceIdentity(reference)}:${reference.versionId}:${JSON.stringify(range)}`;
+  `${documentReferenceIdentity(reference)}:${reference.snapshotId}:${JSON.stringify(range)}`;
 
 const documentPreviewIdentity = (item: DocumentPreview): string =>
   item.kind === "publisher"
@@ -516,7 +516,7 @@ const BoundInternalReferenceSchema = z
       .object({
         kind: z.literal("document"),
         documentId: z.string(),
-        versionId: z.string(),
+        snapshotId: z.string(),
         publisherExtractionId: z.string().optional(),
         source: z.discriminatedUnion("kind", [
           z
@@ -1140,7 +1140,7 @@ const immutableSourceIdentity = (source: FinalSourceRecord): string => {
           kind: locator.kind,
           sourceId: locator.sourceId,
           documentId: locator.documentId,
-          versionId: locator.versionId,
+          snapshotId: locator.snapshotId,
           contentHash: locator.contentHash,
           publisherExtractionId: locator.publisherExtractionId,
           publisherIssueId: locator.publisherIssueId,
@@ -2101,7 +2101,7 @@ export class CanonicalWorkflowOperations {
           candidate.kind === "document"
             ? documentContentItemIdentity(
                 logicalSourceIdentity,
-                candidate.versionId,
+                candidate.snapshotId,
                 sha256Base64Url(JSON.stringify(candidate.ranges)),
               )
             : candidate.kind === "chat_message"
@@ -2212,7 +2212,7 @@ export class CanonicalWorkflowOperations {
           candidate.kind === "document"
             ? documentContentItemIdentity(
                 logicalSourceIdentity,
-                candidate.versionId,
+                candidate.snapshotId,
                 sha256Base64Url(JSON.stringify(candidate.ranges)),
               )
             : candidate.kind === "chat_message"
@@ -2244,7 +2244,7 @@ export class CanonicalWorkflowOperations {
                   documentReconstruction: {
                     sourceId: candidate.sourceId,
                     documentId: candidate.documentId,
-                    versionId: candidate.versionId,
+                    snapshotId: candidate.snapshotId,
                     contentHash: candidate.contentHash,
                     ...(candidate.publisherExtractionId === undefined
                       ? {}
@@ -2855,7 +2855,7 @@ export class CanonicalWorkflowOperations {
                     logicalSourceIdentity: documentPreviewIdentity(item),
                     contentItemIdentity: documentContentItemIdentity(
                       documentPreviewIdentity(item),
-                      item.versionId,
+                      item.snapshotId,
                       exactPreviewContentHash(item),
                     ),
                     stage: "internal_search_preview",
@@ -2867,7 +2867,7 @@ export class CanonicalWorkflowOperations {
               });
               for (const item of bounded.items) {
                 discoveredDocuments.add(
-                  `${item.kind === "publisher" ? "publisher" : "public"}:${item.sourceId}:${item.issueId ?? ""}:${item.documentId}:${item.versionId}`,
+                  `${item.kind === "publisher" ? "publisher" : "public"}:${item.sourceId}:${item.issueId ?? ""}:${item.documentId}:${item.snapshotId}`,
                 );
               }
               for (const item of bounded.items) {
@@ -2887,14 +2887,14 @@ export class CanonicalWorkflowOperations {
                 const logicalSourceIdentity = documentPreviewIdentity(item);
                 const contentItemIdentity = documentContentItemIdentity(
                   logicalSourceIdentity,
-                  item.versionId,
+                  item.snapshotId,
                   exactPreviewContentHash(item),
                 );
                 const exposure: InternalProviderExposure = {
                   reference: {
                     kind: "document",
                     documentId: item.documentId,
-                    versionId: item.versionId,
+                    snapshotId: item.snapshotId,
                     ...(item.publisherExtractionId === undefined
                       ? {}
                       : { publisherExtractionId: item.publisherExtractionId }),
@@ -2907,7 +2907,7 @@ export class CanonicalWorkflowOperations {
                   documentReconstruction: {
                     sourceId: item.sourceId,
                     documentId: item.documentId,
-                    versionId: item.versionId,
+                    snapshotId: item.snapshotId,
                     contentHash: item.contentHash,
                     ...(item.publisherExtractionId === undefined
                       ? {}
@@ -2947,7 +2947,7 @@ export class CanonicalWorkflowOperations {
                 title: item.title,
                 publishedAt: item.publishedAt?.toISOString() ?? null,
                 ["__briefSourceIdentity"]: {
-                  versionId: item.versionId,
+                  snapshotId: item.snapshotId,
                   contentHash: item.contentHash,
                   ranges: exactPreviewRanges(item),
                   ...(item.publisherExtractionId === undefined
@@ -2975,7 +2975,7 @@ export class CanonicalWorkflowOperations {
                     logicalSourceIdentity: documentPreviewIdentity(item),
                     contentItemIdentity: documentContentItemIdentity(
                       documentPreviewIdentity(item),
-                      item.versionId,
+                      item.snapshotId,
                       exactPreviewContentHash(item),
                     ),
                     stage: "internal_search_preview",
@@ -3170,12 +3170,12 @@ export class CanonicalWorkflowOperations {
       if (reference.kind === "document") {
         const identity = documentReferenceIdentity(reference);
         const previousVersion = boundManifestVersions.get(identity);
-        if (previousVersion !== undefined && previousVersion !== reference.versionId) {
+        if (previousVersion !== undefined && previousVersion !== reference.snapshotId) {
           throw new Error(
             `publisher document ${reference.documentId} resolved to multiple immutable versions in one selector attempt`,
           );
         }
-        boundManifestVersions.set(identity, reference.versionId);
+        boundManifestVersions.set(identity, reference.snapshotId);
         return documentReferenceSelectionKey(reference);
       }
       return `chat_message:${reference.messageId}`;
@@ -3241,9 +3241,9 @@ export class CanonicalWorkflowOperations {
         if (boundDocumentIds.length > 0) {
           const currentPointers = yield* sql<{
             readonly documentId: string;
-            readonly versionId: string;
+            readonly snapshotId: string;
           }>`
-            select id::text as "documentId", current_version_id::text as "versionId"
+            select id::text as "documentId", current_version_id::text as "snapshotId"
             from brief_documents
             where id::text in (
               select value from jsonb_array_elements_text(${JSON.stringify(boundDocumentIds)}::jsonb)
@@ -3251,7 +3251,7 @@ export class CanonicalWorkflowOperations {
           `;
           for (const pointer of currentPointers) {
             const boundVersion = boundPublisherDocumentVersions.get(pointer.documentId);
-            if (boundVersion !== undefined && boundVersion !== pointer.versionId) {
+            if (boundVersion !== undefined && boundVersion !== pointer.snapshotId) {
               throw new Error(
                 `publisher document ${pointer.documentId} changed immutable version during selector attempt`,
               );
@@ -3261,7 +3261,7 @@ export class CanonicalWorkflowOperations {
         const rows = yield* sql<{
           readonly sourceId: string;
           readonly documentId: string;
-          readonly versionId: string;
+          readonly snapshotId: string;
           readonly contentHash: string;
           readonly text: string;
           readonly publisherExtractionId: string;
@@ -3276,7 +3276,7 @@ export class CanonicalWorkflowOperations {
         }>`
           select subscriptions.id::text as "sourceId",
                  documents.id::text as "documentId",
-                 versions.id::text as "versionId",
+                 versions.id::text as "snapshotId",
                  versions.content_hash as "contentHash",
                  versions.publisher_extraction_id::text as "publisherExtractionId",
                  issues.id::text as "issueId",
@@ -3364,12 +3364,12 @@ export class CanonicalWorkflowOperations {
         `;
         for (const row of rows) {
           const boundVersion = boundPublisherDocumentVersions.get(row.documentId);
-          if (boundVersion !== undefined && boundVersion !== row.versionId) {
+          if (boundVersion !== undefined && boundVersion !== row.snapshotId) {
             throw new Error(
               `publisher document ${row.documentId} changed immutable version during selector attempt`,
             );
           }
-          boundPublisherDocumentVersions.set(row.documentId, row.versionId);
+          boundPublisherDocumentVersions.set(row.documentId, row.snapshotId);
         }
         return rows.flatMap((row): readonly DocumentPreview[] => {
           const exactPreview = previewFromImmutableText(row.text, query.terms, 300);
@@ -3379,7 +3379,7 @@ export class CanonicalWorkflowOperations {
             kind: "publisher" as const,
             sourceId: `publisher:${row.sourceId}`,
             documentId: row.documentId,
-            versionId: row.versionId,
+            snapshotId: row.snapshotId,
             contentHash: row.contentHash,
             publisherExtractionId: row.publisherExtractionId,
             issueId: row.issueId,
@@ -3414,9 +3414,9 @@ export class CanonicalWorkflowOperations {
         const sql = yield* PgClient.PgClient;
         const currentPointers = yield* sql<{
           readonly documentId: string;
-          readonly versionId: string;
+          readonly snapshotId: string;
         }>`
-          select id::text as "documentId", current_version_id::text as "versionId"
+          select id::text as "documentId", current_version_id::text as "snapshotId"
           from brief_documents
           where id::text in (
             select value from jsonb_array_elements_text(${JSON.stringify(boundDocumentIds)}::jsonb)
@@ -3424,7 +3424,7 @@ export class CanonicalWorkflowOperations {
         `;
         for (const pointer of currentPointers) {
           const boundVersion = boundPublisherDocumentVersions.get(pointer.documentId);
-          if (boundVersion !== undefined && boundVersion !== pointer.versionId) {
+          if (boundVersion !== undefined && boundVersion !== pointer.snapshotId) {
             throw new Error(
               `publisher document ${pointer.documentId} changed immutable version during selector attempt`,
             );
@@ -3583,7 +3583,7 @@ export class CanonicalWorkflowOperations {
           return { found: false, complete: true };
         }
         const boundVersion = boundPublisherDocumentVersions.get(reference.documentId);
-        if (boundVersion !== undefined && boundVersion !== reference.versionId) {
+        if (boundVersion !== undefined && boundVersion !== reference.snapshotId) {
           throw new Error(
             `publisher document ${reference.documentId} changed immutable version during selector attempt`,
           );
@@ -3615,7 +3615,7 @@ export class CanonicalWorkflowOperations {
           where ${reference.source.kind === "public"}
             and public_source_documents.source_id = ${reference.source.kind === "public" ? reference.source.sourceId.slice("public:".length) : ""}
             and public_source_documents.document_id = ${reference.documentId}
-            and public_source_documents.document_id = ${reference.versionId}
+            and public_source_documents.document_id = ${reference.snapshotId}
           union all
           select versions.canonical_text as text,
                  versions.text_char_count as "textCharCount",
@@ -3645,7 +3645,7 @@ export class CanonicalWorkflowOperations {
            and documents.deleted_at is null
           join brief_document_versions versions
             on versions.brief_document_id = documents.id
-           and versions.id::text = ${reference.versionId}
+           and versions.id::text = ${reference.snapshotId}
           join chats publisher_chat
             on publisher_chat.id = ${load.chatId}
            and publisher_chat.deleted_at is null
@@ -3687,7 +3687,7 @@ export class CanonicalWorkflowOperations {
           documentReconstruction: {
             sourceId: reference.source.sourceId,
             documentId: reference.documentId,
-            versionId: reference.versionId,
+            snapshotId: reference.snapshotId,
             contentHash: row.contentHash,
             ...(row.publisherExtractionId === null
               ? {}
@@ -3696,7 +3696,7 @@ export class CanonicalWorkflowOperations {
           },
           contentItemIdentity: documentContentItemIdentity(
             documentReferenceIdentity(reference),
-            reference.versionId,
+            reference.snapshotId,
             sha256Base64Url(JSON.stringify(ranges)),
           ),
           stage: "internal_inspection",
@@ -3732,7 +3732,7 @@ export class CanonicalWorkflowOperations {
           ranges,
           textCharCount: row.text.length,
           ["__briefSourceIdentity"]: {
-            versionId: reference.versionId,
+            snapshotId: reference.snapshotId,
             contentHash: row.contentHash,
             ...(row.publisherExtractionId === null
               ? {}
@@ -4452,7 +4452,7 @@ export class CanonicalWorkflowOperations {
           );
         }
         if (
-          previous.versionId !== candidate.versionId ||
+          previous.snapshotId !== candidate.snapshotId ||
           previous.contentHash !== candidate.contentHash
         ) {
           throw new Error(
@@ -4564,7 +4564,7 @@ export class CanonicalWorkflowOperations {
             const rows = yield* sql<{
               readonly sourceId: string;
               readonly documentId: string;
-              readonly versionId: string;
+              readonly snapshotId: string;
               readonly publisherExtractionId: string | null;
               readonly contentHash: string;
               readonly text: string;
@@ -4575,7 +4575,7 @@ export class CanonicalWorkflowOperations {
               readonly issueTitle: string | null;
               readonly publishedAt: Date | null;
             }>`
-              select d.source_id as "sourceId", d.document_id as "documentId", d.document_id as "versionId",
+              select d.source_id as "sourceId", d.document_id as "documentId", d.document_id as "snapshotId",
                      null::text as "publisherExtractionId",
                      d.content_hash as "contentHash", d.text,
                      d.title, d.canonical_url as "canonicalUrl", s.display_name as "sourceName",
@@ -4601,11 +4601,11 @@ export class CanonicalWorkflowOperations {
               where ${reference.source.kind === "public"}
                 and d.source_id = ${reference.source.kind === "public" ? reference.source.sourceId.slice("public:".length) : ""}
                 and d.document_id = ${reference.documentId}
-                and d.document_id = ${reference.versionId}
+                and d.document_id = ${reference.snapshotId}
               union all
               select subscriptions.id::text as "sourceId",
                      documents.id::text as "documentId",
-                     versions.id::text as "versionId",
+                     versions.id::text as "snapshotId",
                      versions.publisher_extraction_id::text as "publisherExtractionId",
                      versions.content_hash as "contentHash",
                      versions.canonical_text as text,
@@ -4635,7 +4635,7 @@ export class CanonicalWorkflowOperations {
                and documents.deleted_at is null
               join brief_document_versions versions
                 on versions.brief_document_id = documents.id
-               and versions.id::text = ${reference.versionId}
+               and versions.id::text = ${reference.snapshotId}
               join chats publisher_chat
                 on publisher_chat.id = ${load.chatId}
                and publisher_chat.deleted_at is null
@@ -4661,7 +4661,7 @@ export class CanonicalWorkflowOperations {
         );
         if (row === null) {
           rejections.push({
-            candidateId: `${documentReferenceIdentity(reference)}:${reference.versionId}`,
+            candidateId: `${documentReferenceIdentity(reference)}:${reference.snapshotId}`,
             reason: "inaccessible",
           });
           continue;
@@ -4674,7 +4674,7 @@ export class CanonicalWorkflowOperations {
               row.publisherExtractionId !== reference.publisherExtractionId))
         ) {
           rejections.push({
-            candidateId: `${documentReferenceIdentity(reference)}:${reference.versionId}`,
+            candidateId: `${documentReferenceIdentity(reference)}:${reference.snapshotId}`,
             reason: "ambiguous_provenance",
           });
           continue;
@@ -4684,7 +4684,7 @@ export class CanonicalWorkflowOperations {
           ranges = normalizeSelectedDocumentRanges(reference.ranges, row.text.length);
         } catch {
           rejections.push({
-            candidateId: `${documentReferenceIdentity(reference)}:${reference.versionId}`,
+            candidateId: `${documentReferenceIdentity(reference)}:${reference.snapshotId}`,
             reason: "invalid_range",
           });
           continue;
@@ -4696,7 +4696,7 @@ export class CanonicalWorkflowOperations {
           purpose: reference.purpose,
           sourceId: reference.source.sourceId,
           documentId: row.documentId,
-          versionId: row.versionId,
+          snapshotId: row.snapshotId,
           ...(row.publisherExtractionId === null
             ? {}
             : { publisherExtractionId: row.publisherExtractionId }),
@@ -4870,7 +4870,7 @@ export class CanonicalWorkflowOperations {
                 kind: "document" as const,
                 sourceId: candidate.sourceId as `publisher:${string}`,
                 documentId: candidate.documentId,
-                versionId: candidate.versionId,
+                snapshotId: candidate.snapshotId,
                 contentHash: candidate.contentHash,
                 ranges: candidate.ranges,
                 publisherExtractionId: candidate.publisherExtractionId,
@@ -4884,7 +4884,7 @@ export class CanonicalWorkflowOperations {
               // never repair a raw or double-prefixed value at this boundary.
               sourceId: candidate.sourceId,
               documentId: candidate.documentId,
-              versionId: candidate.versionId,
+              snapshotId: candidate.snapshotId,
               contentHash: candidate.contentHash,
               ranges: candidate.ranges,
             };
@@ -5435,7 +5435,7 @@ export class CanonicalWorkflowOperations {
                 : item.kind === "document"
                   ? documentContentItemIdentity(
                       documentCandidateIdentity(item),
-                      item.versionId,
+                      item.snapshotId,
                       sha256Base64Url(
                         JSON.stringify(
                           parsed.range === undefined
@@ -5485,7 +5485,7 @@ export class CanonicalWorkflowOperations {
                     ...(item.kind === "document"
                       ? {
                           documentId: item.documentId,
-                          versionId: item.versionId,
+                          snapshotId: item.snapshotId,
                           source:
                             item.publisherIssueId !== undefined &&
                             item.publisherDocumentId !== undefined
@@ -5512,7 +5512,7 @@ export class CanonicalWorkflowOperations {
                     ["__briefSourceIdentity"]:
                       item.kind === "document"
                         ? {
-                            versionId: item.versionId,
+                            snapshotId: item.snapshotId,
                             contentHash: item.contentHash,
                             ...(item.publisherExtractionId === undefined
                               ? {}
@@ -5617,7 +5617,7 @@ export class CanonicalWorkflowOperations {
                     documentReconstruction: {
                       sourceId: item.sourceId,
                       documentId: item.documentId,
-                      versionId: item.versionId,
+                      snapshotId: item.snapshotId,
                       contentHash: item.contentHash,
                       ...(item.publisherExtractionId === undefined
                         ? {}
@@ -5677,7 +5677,7 @@ export class CanonicalWorkflowOperations {
                 ? result.matchPreviews.map((preview) => {
                     const contentItemIdentity = documentContentItemIdentity(
                       documentCandidateIdentity(item),
-                      item.versionId,
+                      item.snapshotId,
                       sha256Base64Url(JSON.stringify([preview.range])),
                     );
                     const visibleTokenCount = this.visibleTokenCount(
@@ -5691,7 +5691,7 @@ export class CanonicalWorkflowOperations {
                       documentReconstruction: {
                         sourceId: item.sourceId,
                         documentId: item.documentId,
-                        versionId: item.versionId,
+                        snapshotId: item.snapshotId,
                         contentHash: item.contentHash,
                         ...(item.publisherExtractionId === undefined
                           ? {}
@@ -5713,11 +5713,11 @@ export class CanonicalWorkflowOperations {
               found: true,
               kind: item.kind,
               ...(item.kind === "document" ? { documentId: item.documentId } : {}),
-              ...(item.kind === "document" ? { versionId: item.versionId } : {}),
+              ...(item.kind === "document" ? { snapshotId: item.snapshotId } : {}),
               ...(item.kind === "document"
                 ? {
                     ["__briefSourceIdentity"]: {
-                      versionId: item.versionId,
+                      snapshotId: item.snapshotId,
                       contentHash: item.contentHash,
                       ...(item.publisherExtractionId === undefined
                         ? {}

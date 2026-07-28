@@ -112,6 +112,27 @@ describe("provider-visible source exposure proofs", () => {
       ),
     );
   });
+  it("accepts opaque Service Public snapshot IDs containing colons", () => {
+    const snippet = "service public evidence";
+    const logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
+      { kind: "public", sourceId: "public:service-public" },
+      "doc-1",
+    );
+    const snapshotId = "https://www.service-public.fr/particuliers/vosdroits/F12345";
+    const marker: ProviderVisibleSourceExposureMarker = {
+      sourceKind: "document",
+      logicalSourceIdentity,
+      contentItemIdentity: `${logicalSourceIdentity}:${snapshotId}:${sha256Base64Url(snippet)}`,
+      exposureStage: "internal_search_preview",
+      visibleTokenCount: countTextTokens(snippet),
+    };
+    expect(() =>
+      providerRequestSourceExposureProofs(
+        requestWithToolResults(documentSearchExchange("call-1", snippet, marker)),
+        countTextTokens,
+      ),
+    ).not.toThrow();
+  });
 
   it("rejects legacy or unchecked document identity fields before transport", () => {
     const snippet = "visible source text";
@@ -120,7 +141,7 @@ describe("provider-visible source exposure proofs", () => {
     const result = exchange.result as {
       readonly items: readonly Readonly<Record<string, unknown>>[];
     };
-    for (const field of ["sourceId", "versionId", "contentHash"]) {
+    for (const field of ["sourceId", "snapshotId", "contentHash"]) {
       expect(() =>
         providerRequestSourceExposureProofs(
           requestWithToolResults({
@@ -192,7 +213,7 @@ describe("provider-visible source exposure proofs", () => {
           documentId: "doc-1",
           snippet,
           __briefSourceIdentity: {
-            versionId: "version-1",
+            snapshotId: "version-1",
             contentHash: immutableHash("complete immutable document"),
             ranges: [{ charStart: 0, charEnd: snippet.length }],
             source: { kind: "public", sourceId: "public:sidecar" },
@@ -383,7 +404,7 @@ describe("provider-visible source exposure proofs", () => {
         complete: true,
         text: snippet,
         documentId: "doc-1",
-        versionId: "version-1",
+        snapshotId: "version-1",
         source: { kind: "public", sourceId: "public:source-1" },
         ranges: [{ charStart: 0, charEnd: snippet.length }],
         __briefSourceExposures: [marker],
@@ -543,7 +564,7 @@ describe("provider-visible source exposure proofs", () => {
       text,
       ranges,
       __briefSourceIdentity: {
-        versionId: "version-1",
+        snapshotId: "version-1",
         contentHash: immutableHash(source),
         source: { kind: "public", sourceId: "public:source-1" },
       },
@@ -623,7 +644,7 @@ describe("provider-visible source exposure proofs", () => {
         complete: true,
         text,
         documentId: "doc-1",
-        versionId: "version-1",
+        snapshotId: "version-1",
         source: { kind: "public", sourceId: "public:source-1" },
         ranges: [range],
         __briefSourceExposures: [marker],
@@ -679,7 +700,7 @@ describe("provider-visible source exposure proofs", () => {
       complete: true,
       kind: "document",
       documentId: "doc-1",
-      versionId: "version-1",
+      snapshotId: "version-1",
       source: { kind: "public", sourceId: "public:source-1" },
       scope: {
         kind: "selected_document_ranges",
@@ -690,7 +711,7 @@ describe("provider-visible source exposure proofs", () => {
       matches,
       matchPreviews: previews,
       __briefSourceIdentity: {
-        versionId: "version-1",
+        snapshotId: "version-1",
         contentHash: immutableHash(source),
         source: { kind: "public", sourceId: "public:source-1" },
       },
@@ -1110,7 +1131,7 @@ describe("provider-visible source exposure proofs", () => {
       complete: true,
       text: documentText,
       documentId: "document-1",
-      versionId: "version-1",
+      snapshotId: "version-1",
       source: { kind: "public", sourceId: "public:source-1" },
       ranges: [documentRange],
       __briefSourceExposures: [documentMarker],
@@ -1119,7 +1140,7 @@ describe("provider-visible source exposure proofs", () => {
       providerRequestSourceExposureProofs(
         requestWithToolResults({
           call: documentCall,
-          result: { ...documentResult, versionId: "version-2" },
+          result: { ...documentResult, snapshotId: "version-2" },
         }),
         countTextTokens,
       ),
@@ -1225,7 +1246,7 @@ describe("provider-visible source exposure proofs", () => {
             documentId: "doc-1",
             snippet: firstText,
             __briefSourceIdentity: {
-              versionId: "version-1",
+              snapshotId: "version-1",
               contentHash: immutableHash("first complete body"),
               ranges: [{ charStart: 0, charEnd: firstText.length }],
               source: { kind: "public", sourceId: "public:ordered-a" },
@@ -1236,7 +1257,7 @@ describe("provider-visible source exposure proofs", () => {
             documentId: "doc-2",
             snippet: secondText,
             __briefSourceIdentity: {
-              versionId: "version-1",
+              snapshotId: "version-1",
               contentHash: immutableHash("second complete body"),
               ranges: [{ charStart: 0, charEnd: secondText.length }],
               source: { kind: "public", sourceId: "public:ordered-b" },
@@ -1344,7 +1365,7 @@ describe("provider-visible source exposure proofs", () => {
           documentId: "same-doc",
           snippet,
           __briefSourceIdentity: {
-            versionId: "version-1",
+            snapshotId: "version-1",
             contentHash: immutableHash("public immutable body"),
             ranges: [{ charStart: 0, charEnd: snippet.length }],
             source: { kind: "public", sourceId: "public:source-1" },
@@ -1355,7 +1376,7 @@ describe("provider-visible source exposure proofs", () => {
           documentId: "same-doc",
           snippet,
           __briefSourceIdentity: {
-            versionId: "version-1",
+            snapshotId: "version-1",
             contentHash: immutableHash("publisher immutable body"),
             ranges: [{ charStart: 0, charEnd: snippet.length }],
             publisherExtractionId: "extract-1",
@@ -1567,7 +1588,7 @@ describe("provider-visible source exposure proofs", () => {
     const forbiddenFields = [
       "__briefSourceExposures",
       "__briefSourceIdentity",
-      "versionId",
+      "snapshotId",
       "contentHash",
       "publisherExtractionId",
       "source",
@@ -1585,12 +1606,12 @@ describe("provider-visible source exposure proofs", () => {
     }
 
     const safe = requestWithContent({
-      versionIdentifier: "visible",
+      snapshotIdentifier: "visible",
       contentHashAlgorithm: "sha256",
       publisherExtractionIdentifier: "visible",
       sourceName: "Visible source",
       sourceUrl: "https://example.com/source",
-      text: "source versionId contentHash publisherExtractionId",
+      text: "source snapshotId contentHash publisherExtractionId",
       nested: [{ sourceLabel: "Visible" }],
     });
     expect(requireLiveProviderRequest(safe)).toBe(safe);
@@ -1937,12 +1958,12 @@ describe("provider-visible source exposure proofs", () => {
         complete: true,
         kind: "document",
         documentId: "doc-1",
-        versionId: "version-1",
+        snapshotId: "version-1",
         source: { kind: "public", sourceId: "public:redacted" },
         ranges: [range],
         text,
         __briefSourceIdentity: {
-          versionId: "version-1",
+          snapshotId: "version-1",
           contentHash: immutableHash(source),
           source: { kind: "public", sourceId: "public:redacted" },
         },
@@ -2062,7 +2083,7 @@ describe("provider-visible source exposure proofs", () => {
         complete: true,
         kind: "document",
         documentId,
-        versionId: "version-1",
+        snapshotId: "version-1",
         source: namespace,
         matches: [range],
         matchPreviews: [{ range, text: body.slice(range.charStart, range.charEnd) }],
@@ -2073,7 +2094,7 @@ describe("provider-visible source exposure proofs", () => {
           maximumMatches: 500,
         },
         __briefSourceIdentity: {
-          versionId: "version-1",
+          snapshotId: "version-1",
           contentHash: immutableHash(body),
           ...(namespace.kind === "publisher" ? { publisherExtractionId: "extract-2" } : {}),
           source: namespace,
@@ -2275,7 +2296,7 @@ describe("provider-visible source exposure proofs", () => {
         kind: "document" as const,
         text: "publisher exact range text",
         privateIdentity: {
-          versionId: "publisher-version-1",
+          snapshotId: "publisher-version-1",
           contentHash: immutableHash("publisher exact range text"),
           publisherExtractionId: "extract-1",
           source: {
@@ -2309,7 +2330,7 @@ describe("provider-visible source exposure proofs", () => {
         ...(candidate.kind === "document"
           ? {
               documentId: "publisher-doc",
-              versionId: "publisher-version-1",
+              snapshotId: "publisher-version-1",
               source: candidate.privateIdentity.source,
               ranges: [range],
             }

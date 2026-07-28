@@ -3,6 +3,8 @@ import { Effect } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 import { z } from "zod";
 import {
+  activityCodeForAiRunError,
+  activityStageForCode,
   canonicalPublicSourceHttpsUrl,
   isCanonicalPublicDocumentSourceId,
   isCanonicalPublisherDocumentSourceId,
@@ -438,7 +440,7 @@ const RetrievalReferenceSchema = z.union([
     .object({
       kind: z.literal("document"),
       documentId: z.string().trim().min(1),
-      versionId: z.string().trim().min(1),
+      snapshotId: z.string().trim().min(1),
       publisherExtractionId: z.string().trim().min(1).optional(),
       source: RetrievalDocumentSourceSchema,
       ranges: z.array(RetrievalRangeSchema).optional(),
@@ -879,7 +881,7 @@ const validateDurableObservability = (
       readonly sourceKind: string;
       readonly exposureStage: string;
       readonly visibleTokenCount: number;
-      readonly versionId: string | null;
+      readonly snapshotId: string | null;
       readonly contentHash: string | null;
       readonly documentSourceId: string | null;
       readonly documentId: string | null;
@@ -896,7 +898,7 @@ const validateDurableObservability = (
              content_item_identity as "contentItemIdentity",
              source_kind as "sourceKind", exposure_stage as "exposureStage",
              visible_token_count as "visibleTokenCount",
-             version_id as "versionId", content_hash as "contentHash",
+             snapshot_id as "snapshotId", content_hash as "contentHash",
              document_source_id as "documentSourceId", document_id as "documentId",
              publisher_issue_id::text as "publisherIssueId",
              publisher_document_id::text as "publisherDocumentId",
@@ -910,7 +912,7 @@ const validateDurableObservability = (
       }
       if (exposure.sourceKind === "document") {
         if (
-          exposure.versionId === null ||
+          exposure.snapshotId === null ||
           exposure.contentHash === null ||
           exposure.documentSourceId === null ||
           exposure.documentId === null ||
@@ -937,7 +939,7 @@ const validateDurableObservability = (
             documentReconstruction: {
               sourceId: exposure.documentSourceId,
               documentId: exposure.documentId,
-              versionId: exposure.versionId,
+              snapshotId: exposure.snapshotId,
               contentHash: exposure.contentHash,
               ranges: exposure.documentRanges,
               ...(exposure.publisherExtractionId === null
@@ -953,7 +955,7 @@ const validateDurableObservability = (
           );
         }
       } else if (
-        exposure.versionId !== null ||
+        exposure.snapshotId !== null ||
         exposure.contentHash !== null ||
         exposure.documentSourceId !== null ||
         exposure.documentId !== null ||
@@ -1082,7 +1084,7 @@ const validateDurableObservability = (
       const reconstructionFields = [
         "documentSourceId",
         "documentId",
-        "versionId",
+        "snapshotId",
         "documentContentHash",
         "documentRanges",
         "publisherExtractionId",
@@ -1091,7 +1093,7 @@ const validateDurableObservability = (
         if (
           row.payload.documentSourceId !== exposure.documentSourceId ||
           row.payload.documentId !== exposure.documentId ||
-          row.payload.versionId !== exposure.versionId ||
+          row.payload.snapshotId !== exposure.snapshotId ||
           row.payload.documentContentHash !== exposure.contentHash ||
           canonicalJson(row.payload.documentRanges) !== canonicalJson(exposure.documentRanges) ||
           (row.payload.publisherExtractionId ?? null) !== exposure.publisherExtractionId
@@ -2507,7 +2509,7 @@ const validateDurableObservability = (
             return {
               sourceKind: locator.kind,
               logicalSourceIdentity,
-              contentItemIdentity: `${logicalSourceIdentity}:${locator.versionId}:${sha256Base64Url(JSON.stringify(use.ranges))}`,
+              contentItemIdentity: `${logicalSourceIdentity}:${locator.snapshotId}:${sha256Base64Url(JSON.stringify(use.ranges))}`,
               documentRanges: use.ranges,
             };
           }
@@ -2579,14 +2581,14 @@ const validateDurableObservability = (
                 ? exposure.documentRanges === null &&
                   exposure.documentSourceId === null &&
                   exposure.documentId === null &&
-                  exposure.versionId === null &&
+                  exposure.snapshotId === null &&
                   exposure.contentHash === null &&
                   exposure.publisherExtractionId === null
                 : exposure.documentRanges !== null &&
                   rangesEqual(exposure.documentRanges, identity.documentRanges) &&
                   exposure.documentSourceId === expectedDocument?.sourceId &&
                   exposure.documentId === expectedDocument?.documentId &&
-                  exposure.versionId === expectedDocument?.versionId &&
+                  exposure.snapshotId === expectedDocument?.snapshotId &&
                   exposure.contentHash === expectedDocument?.contentHash &&
                   exposure.publisherExtractionId ===
                     (expectedDocument?.publisherExtractionId ?? null)),
@@ -3379,7 +3381,7 @@ const validateTerminalProductLedger = (
         readonly locator: unknown;
         readonly label: string | null;
         readonly publicProvenance: unknown;
-        readonly versionId: string | null;
+        readonly snapshotId: string | null;
         readonly publisherExtractionId: string | null;
         readonly documentSourceId: string | null;
         readonly documentId: string | null;
@@ -3388,7 +3390,7 @@ const validateTerminalProductLedger = (
         readonly memoryRevisionId: string | null;
       }>`
         select source_key as "sourceKey", kind, locator, display_label as label,
-               public_provenance as "publicProvenance", version_id::text as "versionId",
+               public_provenance as "publicProvenance", snapshot_id::text as "snapshotId",
                publisher_extraction_id::text as "publisherExtractionId",
                document_source_id as "documentSourceId", document_id as "documentId",
                content_hash as "contentHash", message_id::text as "messageId",
@@ -3405,7 +3407,7 @@ const validateTerminalProductLedger = (
         const expectedIndexedIdentity =
           expected?.locator.kind === "document"
             ? {
-                versionId: expected.locator.versionId,
+                snapshotId: expected.locator.snapshotId,
                 publisherExtractionId: expected.locator.publisherExtractionId ?? null,
                 documentSourceId: expected.locator.sourceId,
                 documentId: expected.locator.documentId,
@@ -3415,7 +3417,7 @@ const validateTerminalProductLedger = (
               }
             : expected?.locator.kind === "chat_message"
               ? {
-                  versionId: null,
+                  snapshotId: null,
                   publisherExtractionId: null,
                   documentSourceId: null,
                   documentId: null,
@@ -3425,7 +3427,7 @@ const validateTerminalProductLedger = (
                 }
               : expected?.locator.kind === "memory"
                 ? {
-                    versionId: null,
+                    snapshotId: null,
                     publisherExtractionId: null,
                     documentSourceId: null,
                     documentId: null,
@@ -3434,7 +3436,7 @@ const validateTerminalProductLedger = (
                     memoryRevisionId: expected.locator.memoryRevisionId,
                   }
                 : {
-                    versionId: null,
+                    snapshotId: null,
                     publisherExtractionId: null,
                     documentSourceId: null,
                     documentId: null,
@@ -3449,7 +3451,7 @@ const validateTerminalProductLedger = (
           canonicalJson(row.locator) !== canonicalJson(expected.locator) ||
           row.label !== expected.label ||
           canonicalJson(row.publicProvenance) !== canonicalJson(expected.publicProvenance) ||
-          row.versionId !== expectedIndexedIdentity.versionId ||
+          row.snapshotId !== expectedIndexedIdentity.snapshotId ||
           row.publisherExtractionId !== expectedIndexedIdentity.publisherExtractionId ||
           row.documentSourceId !== expectedIndexedIdentity.documentSourceId ||
           row.documentId !== expectedIndexedIdentity.documentId ||
@@ -3606,7 +3608,7 @@ const sourceIdentity = (source: FinalSourceRecord): string => {
         locator.publisherIssueId === undefined
           ? "public"
           : `publisher:${locator.publisherIssueId}:${locator.publisherDocumentId ?? ""}`
-      }:${locator.versionId}:${locator.contentHash}:${locator.publisherExtractionId ?? ""}`;
+      }:${locator.snapshotId}:${locator.contentHash}:${locator.publisherExtractionId ?? ""}`;
     case "chat_message":
       return `chat_message:${locator.messageId}`;
     case "memory":
@@ -3705,7 +3707,7 @@ export const assertFinalSourceMap = (
           isCanonicalPublisherDocumentSourceId(source.locator.sourceId)
         ) ||
         source.locator.documentId.trim() === "" ||
-        source.locator.versionId.trim() === "" ||
+        source.locator.snapshotId.trim() === "" ||
         !/^[a-f0-9]{64}$/u.test(source.locator.contentHash)
       ) {
         throw new Error("document locator identity is incomplete");
@@ -3867,7 +3869,7 @@ const persistAssistantSources = (
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     for (const source of sourceMap) {
-      const versionId = source.locator.kind === "document" ? source.locator.versionId : null;
+      const snapshotId = source.locator.kind === "document" ? source.locator.snapshotId : null;
       const messageId = source.locator.kind === "chat_message" ? source.locator.messageId : null;
       const memoryRevisionId =
         source.locator.kind === "memory" ? source.locator.memoryRevisionId : null;
@@ -3899,7 +3901,7 @@ const persistAssistantSources = (
              and documents.deleted_at is null
             join brief_document_versions versions
               on versions.brief_document_id = documents.id
-             and versions.id::text = ${source.locator.versionId}
+             and versions.id::text = ${source.locator.snapshotId}
              and versions.content_hash = ${source.locator.contentHash}
              and versions.publisher_extraction_id::text = ${source.locator.publisherExtractionId ?? ""}
             where deliveries.client_company_id = ${acceptanceScope.companyId}
@@ -3921,7 +3923,7 @@ const persistAssistantSources = (
              and documents.deleted_at is null
             join brief_document_versions versions
               on versions.brief_document_id = documents.id
-             and versions.id::text = ${source.locator.versionId}
+             and versions.id::text = ${source.locator.snapshotId}
              and versions.content_hash = ${source.locator.contentHash}
              and versions.publisher_extraction_id = extractions.id
             join publisher_issues issues
@@ -3946,7 +3948,7 @@ const persistAssistantSources = (
             select document_id as id
             from public_source_documents
             where source_id = ${source.locator.sourceId.slice("public:".length)}
-              and document_id = ${source.locator.versionId}
+              and document_id = ${source.locator.snapshotId}
               and document_id = ${source.locator.documentId}
               and content_hash = ${source.locator.contentHash}
               and canonical_url = ${source.publicProvenance.citationUrl ?? ""}
@@ -3954,7 +3956,7 @@ const persistAssistantSources = (
           `;
           if (publicVersions[0] === undefined) {
             return yield* Effect.fail(
-              new Error(`public document version not found: ${source.locator.versionId}`),
+              new Error(`public document version not found: ${source.locator.snapshotId}`),
             );
           }
         }
@@ -3965,7 +3967,7 @@ const persistAssistantSources = (
           source_key,
           kind,
           locator,
-          version_id,
+          snapshot_id,
           publisher_extraction_id,
           document_source_id,
           document_id,
@@ -3980,7 +3982,7 @@ const persistAssistantSources = (
           ${source.sourceKey},
           ${source.locator.kind},
           ${sql.json(source.locator)},
-          ${versionId},
+          ${snapshotId},
           ${publisherExtractionId},
           ${source.locator.kind === "document" ? source.locator.sourceId : null},
           ${source.locator.kind === "document" ? source.locator.documentId : null},
@@ -4068,6 +4070,18 @@ const transitionToFailure = (
 > =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
+    const activityCode = activityCodeForAiRunError(code);
+    yield* appendAiRunEventInTransaction({
+      runId,
+      emissionKey: `activity:${activityCode}:failed`,
+      event: {
+        type: "activity",
+        stage: activityStageForCode(activityCode),
+        code: activityCode,
+        status: "failed",
+      },
+      emittedByTask,
+    });
     yield* sql`
       update ai_runs
       set failed_at = now(),
@@ -4451,6 +4465,18 @@ export const finalizeAiRun = (
           answer.sourceMap,
           input.coordinates,
         );
+        yield* appendAiRunEventInTransaction({
+          runId: run.id,
+          emissionKey: `activity:finalization:all:finalization:complete:${input.coordinates.attempt}`,
+          event: {
+            type: "activity",
+            stage: "finishing",
+            code: "finalization",
+            status: "complete",
+            attempt: input.coordinates.attempt,
+          },
+          emittedByTask: "finalize",
+        });
         yield* sql`
           update ai_runs
           set assistant_message_id = ${assistantMessageId},

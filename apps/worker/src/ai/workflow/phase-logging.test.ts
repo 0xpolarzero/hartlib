@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { MemoryConflictError } from "../product-state/memory";
 import type { CanonicalWorkflowOperations } from "./operations";
-import { safeAiPhaseLogFields, withAiPhaseLogging, type AiPhaseLogEntry } from "./phase-logging";
+import {
+  publicActivityFromPhase,
+  safeAiPhaseLogFields,
+  withAiPhaseLogging,
+  type AiPhaseLogEntry,
+} from "./phase-logging";
 
 describe("AI phase structured logging", () => {
   it("traces canonical phases with stable metadata and never serializes content", async () => {
@@ -16,7 +21,7 @@ describe("AI phase structured logging", () => {
         {
           kind: "document",
           documentId: "doc-1",
-          versionId: "doc-1",
+          snapshotId: "doc-1",
           purpose: secretSource,
         },
       ],
@@ -190,4 +195,91 @@ describe("AI phase structured logging", () => {
       expect(entries.at(-1)).toMatchObject({ errorCode: "context_assembly_failed" });
     },
   );
+
+  it("suppresses setup and duplicate stream phases from public activity", () => {
+    const entry = { status: "started", runId: "run-activity" } as const;
+
+    expect(publicActivityFromPhase({ ...entry, phase: "load_turn" })).toBeUndefined();
+    expect(publicActivityFromPhase({ ...entry, phase: "answer_stream" })).toBeUndefined();
+    expect(publicActivityFromPhase({ ...entry, phase: "plan_turn" })).toMatchObject({
+      code: "request_understanding",
+      status: "running",
+    });
+    expect(publicActivityFromPhase({ ...entry, phase: "direct_answer_call" })).toMatchObject({
+      code: "answer_generation",
+      status: "running",
+    });
+  });
+
+  it("applies memory and web activity guards from operation arguments", async () => {
+    const activities: Array<{ readonly code: string; readonly status: string }> = [];
+    const operations = {
+      selectMemories: async () => [],
+      retrieveWeb: async () => [],
+    } as unknown as CanonicalWorkflowOperations;
+    const wrapped = withAiPhaseLogging(operations, {
+      logger: () => undefined,
+      activityLogger: (event) => {
+        activities.push({ code: event.code, status: event.status });
+      },
+      fastModel: "glm-5-turbo",
+      mainModel: "glm-5-turbo",
+    });
+    const enabled = {
+      aiRunId: "run-activity",
+      acceptanceScope: { memoryMode: "private_owner", webRequested: true, webEnabled: true },
+    };
+    const disabled = {
+      aiRunId: "run-activity",
+      acceptanceScope: { memoryMode: "disabled", webRequested: true, webEnabled: false },
+    };
+    const unrequested = {
+      aiRunId: "run-activity",
+      acceptanceScope: { memoryMode: "private_owner", webRequested: false, webEnabled: true },
+    };
+
+    await wrapped.selectMemories(enabled as never, "question", "single-select-memories");
+    await wrapped.selectMemories(disabled as never, "question", "single-select-memories");
+    await wrapped.retrieveWeb(enabled as never, "question", "single-retrieve-web");
+    await wrapped.retrieveWeb(disabled as never, "question", "single-retrieve-web");
+    await wrapped.retrieveWeb(unrequested as never, "question", "single-retrieve-web");
+
+    expect(activities.filter(({ code }) => code === "saved_context")).toHaveLength(2);
+    expect(activities.filter(({ code }) => code === "web_research")).toHaveLength(2);
+  });
+
+  it("does not publish complete for resolved answer failures or finalization", async () => {
+    const activities: Array<{ readonly code: string; readonly status: string }> = [];
+    const operations = {
+      answerDirect: async () => ({
+        status: "failed",
+        code: "answer_failed",
+        retryable: false,
+      }),
+      finalize: async () => ({ status: "failed", code: "answer_failed", retryable: false }),
+    } as unknown as CanonicalWorkflowOperations;
+    const wrapped = withAiPhaseLogging(operations, {
+      logger: () => undefined,
+      activityLogger: (event) => {
+        activities.push({ code: event.code, status: event.status });
+      },
+      fastModel: "glm-5-turbo",
+      mainModel: "glm-5-turbo",
+    });
+
+    await wrapped.answerDirect(
+      { aiRunId: "run-failure" } as never,
+      { status: "ready" } as never,
+      "single-answer",
+    );
+    await wrapped.finalize(
+      { aiRunId: "run-failure" } as never,
+      {} as never,
+      {} as never,
+      "ai-chat:run-failure",
+    );
+
+    expect(activities).not.toContainEqual({ code: "answer_generation", status: "complete" });
+    expect(activities).not.toContainEqual({ code: "finalization", status: "complete" });
+  });
 });

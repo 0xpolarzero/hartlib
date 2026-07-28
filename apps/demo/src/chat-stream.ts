@@ -1,9 +1,10 @@
-import type {
-  ActiveAiRunConflict,
-  AiRunEvent,
-  GetChatResponse,
-  PublicSourceRecord,
-  SendChatMessageRequest,
+import {
+  aiRunActivityKey,
+  type ActiveAiRunConflict,
+  type AiRunEvent,
+  type GetChatResponse,
+  type PublicSourceRecord,
+  type SendChatMessageRequest,
 } from "@brief/shared";
 import { ApiResponseError } from "@brief/api-client";
 import type { PersistedRunStreamState } from "@brief/api-client/stream";
@@ -115,6 +116,7 @@ export type ChatStreamState = {
   readonly attempt: number;
   readonly mode: "clarification" | "single" | "synthesis" | null;
   readonly sourcesRead: readonly PublicSourceRecord[];
+  readonly activities: readonly Extract<AiRunEvent, { readonly type: "activity" }>[];
   readonly memoryUpdated: {
     readonly created: number;
     readonly updated: number;
@@ -130,6 +132,7 @@ export const initialChatStreamState: ChatStreamState = {
   attempt: 0,
   mode: null,
   sourcesRead: [],
+  activities: [],
   memoryUpdated: null,
   error: null,
 };
@@ -192,17 +195,21 @@ export const resolveAmbiguousUserScopedConflict = (
 
 export const restoreChatStreamState = (
   persisted: PersistedRunStreamState | null,
-): ChatStreamState =>
-  persisted === null
-    ? initialChatStreamState
-    : {
-        ...initialChatStreamState,
-        phase: persisted.draft.text === "" ? "preparing" : "answering",
-        assistantText: persisted.draft.text,
-        seq: persisted.lastSeq,
-        attempt: persisted.draft.attempt,
-        sourcesRead: persisted.draft.sourcesRead,
-      };
+): ChatStreamState => {
+  if (persisted === null) return initialChatStreamState;
+  const terminalFailure = persisted.draft.terminalFailure;
+  return {
+    ...initialChatStreamState,
+    phase:
+      terminalFailure !== null ? "error" : persisted.draft.text === "" ? "preparing" : "answering",
+    assistantText: terminalFailure === null ? persisted.draft.text : "",
+    seq: persisted.lastSeq,
+    attempt: persisted.draft.attempt,
+    sourcesRead: persisted.draft.sourcesRead,
+    activities: persisted.draft.activities,
+    error: terminalFailure,
+  };
+};
 
 const assertNever = (value: never): never => {
   throw new Error(`Unhandled chat stream event: ${JSON.stringify(value)}`);
@@ -215,6 +222,21 @@ export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput)
   switch (input.event.type) {
     case "run_started":
       return { ...base, phase: "preparing", error: null };
+    case "activity": {
+      const key = aiRunActivityKey(input.event.code, input.event.topicId);
+      const activities = [...state.activities];
+      const index = activities.findIndex(
+        (activity) => aiRunActivityKey(activity.code, activity.topicId) === key,
+      );
+      if (index === -1) activities.push(input.event);
+      else activities[index] = input.event;
+      return {
+        ...base,
+        phase: state.phase === "idle" ? "preparing" : state.phase,
+        activities,
+        error: null,
+      };
+    }
     case "context_ready":
       return {
         ...base,
@@ -250,14 +272,24 @@ export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput)
       return base;
     case "done":
       return { ...base, phase: "done" };
-    case "error":
+    case "error": {
+      const activities = [...state.activities];
+      for (let index = activities.length - 1; index >= 0; index -= 1) {
+        const activity = activities[index];
+        if (activity?.status === "running" || activity?.status === "retrying") {
+          activities[index] = { ...activity, status: "failed" };
+          break;
+        }
+      }
       return {
         ...base,
         phase: "error",
         assistantText: "",
         sourcesRead: [],
+        activities,
         error: { code: input.event.code, retryable: input.event.retryable },
       };
+    }
   }
 
   return assertNever(input.event);

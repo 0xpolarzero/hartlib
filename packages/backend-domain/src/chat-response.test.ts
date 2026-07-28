@@ -69,7 +69,7 @@ const documentSource = (url: string, publisher = false): SourceRow => ({
     kind: "document",
     sourceId: publisher ? "publisher:publisher-source-1" : "public:public-source-1",
     documentId: publisher ? "223e4567-e89b-12d3-a456-426614174000" : "public-document-1",
-    versionId: publisher ? "publisher-version-1" : "public-version-1",
+    snapshotId: publisher ? "publisher-version-1" : "public-version-1",
     contentHash: documentContentHash,
     ...(publisher
       ? {
@@ -84,7 +84,7 @@ const documentSource = (url: string, publisher = false): SourceRow => ({
   source_id: publisher ? "publisher:publisher-source-1" : "public:public-source-1",
   canonical_url: publisher ? null : url,
   document_id: publisher ? "223e4567-e89b-12d3-a456-426614174000" : "public-document-1",
-  version_id: publisher ? "publisher-version-1" : "public-version-1",
+  snapshot_id: publisher ? "publisher-version-1" : "public-version-1",
   content_hash: documentContentHash,
   public_provenance: publisher
     ? {
@@ -205,13 +205,13 @@ describe("chat response reload boundaries", () => {
         ...source,
         source_id: "public:public-source-1",
         document_id: collidingId,
-        version_id: collidingId,
+        snapshot_id: collidingId,
         content_hash: documentContentHash,
         locator: {
           kind: "document",
           sourceId: "public:public-source-1",
           documentId: collidingId,
-          versionId: collidingId,
+          snapshotId: collidingId,
           contentHash: documentContentHash,
           ranges: [{ charStart: 0, charEnd: 8 }],
         },
@@ -287,7 +287,7 @@ describe("chat response reload boundaries", () => {
     for (const mutation of [
       { source_id: "public:other-source" },
       { document_id: "other-document" },
-      { version_id: "other-version" },
+      { snapshot_id: "other-version" },
       { content_hash: "b".repeat(64) },
       {
         source_identity_valid: false,

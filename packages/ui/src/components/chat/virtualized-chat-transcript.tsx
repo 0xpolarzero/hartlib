@@ -5,6 +5,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { FormattedMessage, useIntl } from "@brief/i18n";
 import type {
+  AiRunActivityEvent,
   EffectiveWebPolicy,
   PublicCitationRecord,
   PublicSourceRecord,
@@ -32,6 +33,8 @@ export type ChatTranscriptMessage =
       readonly content: string;
       readonly citations: readonly PublicCitationRecord[];
       readonly sourcesRead: readonly PublicSourceRecord[];
+      readonly activities?: readonly AiRunActivityEvent[];
+      readonly activityFailure?: { readonly code: string; readonly retryable: boolean } | null;
       readonly streaming?: boolean;
     };
 
@@ -141,6 +144,8 @@ export function ChatBubble({
   readonly onOpenAuthenticatedDocument?: AuthenticatedDocumentOpener;
 }) {
   const isAssistant = message.author === "assistant";
+  const activities = isAssistant ? (message.activities ?? []) : [];
+  const activityFailure = isAssistant ? (message.activityFailure ?? null) : null;
   const intl = useIntl();
   const citations = isAssistant ? message.citations : [];
   const citationsById = useMemo(
@@ -160,6 +165,7 @@ export function ChatBubble({
     ? parsed.segments
     : [{ type: "text" as const, text: message.content }];
   const [documentOpenFailed, setDocumentOpenFailed] = useState(false);
+  const [progressDetailsOpen, setProgressDetailsOpen] = useState(() => message.content === "");
 
   const handleSourceClick = (
     source: PublicCitationRecord | PublicSourceRecord,
@@ -231,13 +237,53 @@ export function ChatBubble({
           })}
         </div>
         {isAssistant && message.streaming ? (
-          <div
-            className="mt-1 font-mono text-[11px] text-muted"
-            data-testid="chat-provisional-draft"
-            role="status"
-          >
-            <FormattedMessage id="chat.provisionalDraft" />
-          </div>
+          <>
+            <div
+              className="mt-1 font-mono text-[11px] text-muted"
+              data-testid="chat-provisional-draft"
+              role="status"
+              aria-live="polite"
+            >
+              <FormattedMessage
+                id={
+                  activityFailure === null
+                    ? message.content === ""
+                      ? "chat.progress.active"
+                      : "chat.provisionalDraft"
+                    : "chat.progress.failed"
+                }
+              />
+            </div>
+            <details
+              className="mt-2"
+              open={progressDetailsOpen}
+              onToggle={(event) => setProgressDetailsOpen(event.currentTarget.open)}
+            >
+              <summary className="cursor-pointer font-mono text-[11px] text-accent">
+                <FormattedMessage id="chat.progress.details" />
+              </summary>
+              <ol className="mt-2 space-y-1.5" data-testid="chat-progress-activities">
+                {activities.map((activity) => (
+                  <li
+                    key={`${activity.code}:${activity.topicId ?? "all"}`}
+                    className="flex items-center justify-between gap-3 font-mono text-[11px]"
+                  >
+                    <span className="text-muted">
+                      <FormattedMessage id={`chat.progress.code.${activity.code}`} />
+                      {activity.topicId === undefined ? null : ` · ${activity.topicId}`}
+                    </span>
+                    <span className="text-ink">
+                      <FormattedMessage id={`chat.progress.status.${activity.status}`} />
+                      {activity.attempt === undefined ? null : ` · ${activity.attempt}`}
+                      {activity.durationMs === undefined ? null : ` · ${activity.durationMs}ms`}
+                      {activity.sourceCount === undefined ? null : ` · ${activity.sourceCount}`}
+                      {activity.resultCount === undefined ? null : ` · ${activity.resultCount}`}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          </>
         ) : null}
         {isAssistant && message.citations.length > 0 ? (
           <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1" data-testid="chat-citations">

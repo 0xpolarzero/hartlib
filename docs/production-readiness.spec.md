@@ -167,7 +167,7 @@ Pi retries remain disabled. The provider decision must cover that exact
 transport, not a Smithers agent or workflow-authoring agent. The runtime creates
 the turn's random `citationNamespace` at request acceptance and binds every
 public document citation from its model-visible `documentId` to the exact public
-document row, immutable version identity, hash, source-scope, and range
+document row, immutable snapshot identity, hash, source-scope, and range
 evidence, with no extraction ID; publisher evidence additionally binds the
 exact extraction row and required one-to-one version relation.
 

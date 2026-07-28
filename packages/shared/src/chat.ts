@@ -565,7 +565,162 @@ export const PublicContextConsumer = Schema.Struct({
 });
 export type PublicContextConsumer = Schema.Schema.Type<typeof PublicContextConsumer>;
 
+export const AiRunActivityStage = Schema.Literals([
+  "understanding",
+  "evidence",
+  "preparing",
+  "writing",
+  "finishing",
+]);
+export type AiRunActivityStage = Schema.Schema.Type<typeof AiRunActivityStage>;
+
+export const AiRunActivityCode = Schema.Literals([
+  "request_understanding",
+  "internal_sources",
+  "saved_context",
+  "web_research",
+  "context_preparation",
+  "answer_generation",
+  "finalization",
+]);
+export type AiRunActivityCode = Schema.Schema.Type<typeof AiRunActivityCode>;
+
+export const AiRunActivityStatus = Schema.Literals([
+  "waiting",
+  "running",
+  "complete",
+  "retrying",
+  "failed",
+  "skipped",
+]);
+export type AiRunActivityStatus = Schema.Schema.Type<typeof AiRunActivityStatus>;
+
+export const AiRunActivityEvent = Schema.Struct({
+  type: Schema.Literal("activity"),
+  stage: AiRunActivityStage,
+  code: AiRunActivityCode,
+  status: AiRunActivityStatus,
+  topicId: Schema.optional(Schema.Literals(["t1", "t2", "t3"])),
+  attempt: Schema.optional(Schema.Number),
+  durationMs: Schema.optional(Schema.Number),
+  sourceCount: Schema.optional(Schema.Number),
+  resultCount: Schema.optional(Schema.Number),
+  reason: Schema.optional(Schema.Literals(["search_adjusted", "source_validation_failed"])),
+});
+export type AiRunActivityEvent = Schema.Schema.Type<typeof AiRunActivityEvent>;
+
+export const aiRunActivityKey = (code: AiRunActivityCode, topicId?: "t1" | "t2" | "t3"): string =>
+  `${code}${topicId === undefined ? "" : `:${topicId}`}`;
+
+export const AiRunActivityFailureCode = Schema.Literals([
+  "plan_turn_failed",
+  "internal_retrieval_failed",
+  "memory_selector_failed",
+  "web_research_failed",
+  "context_assembly_failed",
+  "context_reducer_failed",
+  "answer_failed",
+  "topic_answer_failed",
+  "synthesis_failed",
+  "memory_extraction_failed",
+  "finalization_failed",
+  "workflow_resume_incompatible",
+]);
+export type AiRunActivityFailureCode = Schema.Schema.Type<typeof AiRunActivityFailureCode>;
+
+export const activityCodeForAiRunError = (code: string): AiRunActivityCode => {
+  switch (code) {
+    case "plan_turn_failed":
+      return "request_understanding";
+    case "internal_retrieval_failed":
+      return "internal_sources";
+    case "memory_selector_failed":
+    case "memory_extraction_failed":
+      return "saved_context";
+    case "web_research_failed":
+      return "web_research";
+    case "context_assembly_failed":
+    case "context_reducer_failed":
+      return "context_preparation";
+    case "answer_failed":
+    case "topic_answer_failed":
+    case "synthesis_failed":
+      return "answer_generation";
+    case "finalization_failed":
+    case "workflow_resume_incompatible":
+    default:
+      return "finalization";
+  }
+};
+
+export const activityStageForCode = (code: AiRunActivityCode): AiRunActivityStage => {
+  switch (code) {
+    case "request_understanding":
+      return "understanding";
+    case "internal_sources":
+    case "saved_context":
+    case "web_research":
+      return "evidence";
+    case "context_preparation":
+      return "preparing";
+    case "answer_generation":
+      return "writing";
+    case "finalization":
+      return "finishing";
+  }
+};
+
+export const activityCodeForPhase = (phase: string): AiRunActivityCode | undefined => {
+  switch (phase) {
+    case "load_turn":
+    case "plan_turn":
+      return "request_understanding";
+    case "internal_retrieval":
+      return "internal_sources";
+    case "memory_selection":
+    case "memory_extraction":
+      return "saved_context";
+    case "web_retrieval":
+    case "web_search_call":
+    case "web_fetch_call":
+      return "web_research";
+    case "context_assembly":
+    case "context_measurement_exact_gate":
+    case "context_freeze_gate":
+    case "fanout_source_merge":
+    case "context_reduction_plan":
+    case "context_reduction_measure":
+    case "fanout_allocation_exact_gate":
+    case "synthesis_assembly_exact_gate":
+      return "context_preparation";
+    case "direct_answer_call":
+    case "topic_answer_call":
+    case "synthesis_call":
+    case "answer_stream":
+    case "clarification":
+      return "answer_generation";
+    case "finalization":
+      return "finalization";
+    default:
+      return undefined;
+  }
+};
+
+export const activityStageForPhase = (phase: string): AiRunActivityStage | undefined => {
+  const code = activityCodeForPhase(phase);
+  return code === undefined ? undefined : activityStageForCode(code);
+};
+
+export const activityCodeForFailure = (code: string): AiRunActivityCode =>
+  activityCodeForAiRunError(code);
+
+export const activityFailureReasonForAiRunError = (
+  code: string,
+): "source_validation_failed" | undefined =>
+  code.includes("source") || code.includes("context") ? "source_validation_failed" : undefined;
+
 export const AiRunEvent = Schema.Union([
+  AiRunActivityEvent,
   Schema.Struct({ type: Schema.Literal("run_started") }),
   Schema.Struct({
     type: Schema.Literal("context_ready"),

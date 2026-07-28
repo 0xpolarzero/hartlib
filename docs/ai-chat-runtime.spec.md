@@ -116,10 +116,10 @@ type DocumentReference = {
 
 After a provider returns a reference, Brief code applies one kind-specific
 binding. Public evidence binds `documentId` to the exact public document row,
-immutable version identity, lowercase content hash, source scope, and
+immutable snapshot identity, lowercase content hash, source scope, and
 normalized ranges, with no extraction ID. Publisher evidence binds `documentId`
 to the logical publisher document row and the exact extraction row through the
-required one-to-one version relation, plus the immutable version identity,
+required one-to-one version relation, plus the immutable snapshot identity,
 content hash, source scope, and normalized ranges. Those bindings stay
 internal. Memory evidence stores the exact revision that the model saw; web
 evidence stores the exact normalized quotation, canonical URL, and capture
@@ -206,7 +206,7 @@ Conversion is deterministic:
   terminal state is retained exactly and no active run passes the guard.
 - Every retained `assistant_message_sources` row becomes one strict
   `FinalSourceRecord`. Document locators retain the namespaced `sourceId`,
-  `documentId`, immutable `versionId`, exact lowercase SHA-256 `contentHash`,
+  `documentId`, immutable `snapshotId`, exact lowercase SHA-256 `contentHash`,
   normalized ranges, the complete publisher issue/document tuple, and the exact
   `publisherExtractionId` when applicable. Chat locators retain the exact message ID; memory locators
   retain the memory ID and exact revision ID; web locators retain the
@@ -227,7 +227,7 @@ Conversion is deterministic:
   the retained fields and accepts a row only when the stored digest matches.
 - Every retained source-exposure row is classified by its actual provider
   input. A content-bearing document preview or inspection must carry the full
-  namespaced source ID, document ID, immutable version ID, exact text hash,
+  namespaced source ID, document ID, immutable snapshot ID, exact text hash,
   and normalized ranges; the preflight resolves and verifies that tuple before
   copying the row. A row proven to be metadata-only produces no final exposure
   row. A row without content metadata that might have shown content, or any
@@ -252,6 +252,26 @@ agent execution adapters, Pi agent plugin packages, legacy schema fields, and
 observations that exist only for removed paths. Evaluation-only comparison
 code remains outside production routing and configuration.
 
+Migration `0070_ai_snapshot_identity.sql` is the later identity cutover after
+`0069`. It runs as one fenced transaction and is safe to rerun on the final
+schema. Before changing data, it takes the shared Smithers schema fence
+exclusively, locks every affected product and Smithers relation in sorted
+order, and refuses to run while any product AI run is active, any Smithers run
+row remains, or any current AI-chat output table is non-empty. The operator
+must finish or fail product runs and drain Smithers before retrying.
+
+The migration renames only the AI-owned `assistant_message_sources.version_id`
+and `ai_source_exposures.version_id` columns to `snapshot_id`. Publisher
+storage keeps its true version names. It changes only the exact `versionId`
+key to `snapshotId` in retained AI-owned JSON, rejects conflicting dual keys,
+and verifies each retained source-exposure attestation against its canonical
+pre-cutover or final key before any rewrite. It then recomputes source
+identity digests, attestation keys, execution-output digests, successful
+evaluation evidence seals, and bound annotation seals from the converted
+data. Temporary conversion functions are dropped in the same transaction.
+Only fully drained Smithers run and AI-chat output tables are dropped for the
+current producer to recreate. No alias, fallback read, or dual column remains.
+
 ### Failure and terminal rules
 
 Every task has a finite timeout and retry budget. Cancellation reaches the
@@ -261,7 +281,7 @@ failure skips `finalize`, commits one idempotent product failure transition,
 then emits `error` before Smithers cleanup. Clarification is a successful
 terminal answer. No-source and requested-web failures are typed results, not
 silent fallbacks. Finalization validates the immutable acceptance scope and
-exact source, document version, hash, locator, memory revision, quotation,
+source, document snapshot, hash, locator, memory revision, quotation,
 usage, and run identities while holding the canonical storage locks. Later
 settings changes do not reject an accepted run; malformed or tampered scope and
 source-integrity data still fail closed.
@@ -665,7 +685,7 @@ evidence, Brief code binds that ID to the exact public document row, immutable
 version identity, lowercase content hash, source scope, and inspected ranges,
 with no extraction ID. For publisher evidence, it binds the ID to the exact
 publisher extraction row through the required one-to-one version relation, plus
-the immutable version identity, hash, source scope, and inspected ranges. It
+the immutable snapshot identity, hash, source scope, and inspected ranges. It
 rejects stale, invented, duplicate, cross-scope, or ambiguous identities.
 Search matching preserves exact zero-based half-open UTF-16 contributor spans
 at code-point granularity through NFKC composition, case-fold expansion,
@@ -821,7 +841,7 @@ type SourceLocator =
       /** Explicit durable namespace/source identity (`public:<sourceId>` or `publisher:<subscriptionId>`). */
       sourceId: string;
       documentId: string;
-      versionId: string;
+      snapshotId: string;
       contentHash: string;
       ranges: SourceRange[];
       /** Present together only for publisher documents; internal, never model/API-visible. */
@@ -866,7 +886,7 @@ public document, `documentId` binds to the exact
 `public_source_documents.document_id` row. For a publisher document,
 `documentId` binds to the logical `brief_documents.id` row,
 `publisherDocumentId` binds that same publisher document inside its issue,
-`versionId` binds `brief_document_versions.id`, and `publisherExtractionId`
+`snapshotId` binds `brief_document_versions.id`, and `publisherExtractionId`
 binds the exact `brief_document_extractions.id` row that produced that version.
 The forward migration adds a required one-to-one
 `brief_document_versions.publisher_extraction_id` foreign key and uniqueness
@@ -881,9 +901,9 @@ projections.
 
 For a document, `locator.ranges` is the normalized union used anywhere in the turn; each `uses[].ranges` is the exact subset rendered for that consumer, and finalization rejects unless the union of every consumer subset equals the locator union exactly. For non-document evidence, `uses[].ranges` is empty. `uses` contains direct/topic answer consumers only, not selector previews or synthesis packets. Every use's `renderedTokenCount` is the non-negative marginal from the exact normalized provider request: start with the mandatory request, append selected conversation turns in stable order, then append sources in stable order and subtract each preceding prefix count. The marginals therefore include the exact JSON framing and separators actually introduced by that turn or source. `contextOrder` is the source's zero-based position in the terminal consumer ledger, not discovery order or a stale pre-reduction ordinal; every consumer's orders must be unique and contiguous from zero. `publicProvenance` is snapshotted during assembly and is never rebuilt from mutable metadata during finalization. Single context selection creates its final records immediately. Fanout topic selectors first create per-topic records, then `fanout-collect` merges them by source key into the union locator and stable list of exact consumer uses. Omitted candidates never enter `FinalSourceRecord[]`. This immutable record is sufficient to reproduce provenance even if the current document metadata or memory head later changes.
 
-For a document locator, `sourceId`, `documentId`, `versionId`, `contentHash`, and normalized non-empty ranges are required. `sourceId` is an explicit durable namespace identity matching the anchored grammar `^public:[^:\s]+$` for `public:<public_sources.source_id>` or `^publisher:[^:\s]+$` for `publisher:<publisher_subscriptions.id>`; ECMAScript `\s` covers Unicode whitespace, line terminators, and `FEFF`, so raw IDs, empty/whitespace suffixes, embedded `:`, double prefixes, and wrong-kind values fail closed. The publisher tuple is all-or-nothing and must include `publisherIssueId`, `publisherDocumentId`, and `publisherExtractionId`; it must match the document, indexed publisher version, and exact `brief_document_extractions` row. Public documents carry none of those publisher fields. The candidate and source-locator schemas enforce this discriminator before durable resume, and finalization/replay enforce it again. No durable boundary repairs or synthesizes a missing namespace prefix. `publicProvenance.documentTitle` and `citationUrl` are required. A publisher document uses the current authorized in-app URL `/v1/issues/{issueId}/documents/{documentId}/content`; a public-source document uses the exact official `public_source_documents.canonical_url`, and its citation URL is rejected if it differs from that row. Public replay binds the complete `(sourceId, documentId, versionId, contentHash, canonical_url)` tuple; publisher replay binds the complete namespaced source/issue/document/version/hash/extraction tuple and the required one-to-one version-to-extraction relation. Replay accepts the in-app route only when the durable source's indexed publisher version and extraction IDs equal the locator's values and the exact publisher issue/document tuple is present; a row without that relation is invalid, not a public-source row. The publisher route checks the authenticated viewer's unrevoked current client-company membership plus exact historical delivery-recipient record (or the current publisher lane) and exceptional issue restrictions, then returns a private, non-cacheable object-store redirect that expires after five minutes. When the document belongs to a publisher issue, `sourceName`, `issueTitle`, and `publishedAt` are also required; `documentTitle` is the brief-document title. Public-source documents may omit `issueTitle` but still require their document title. Every durable `publicProvenance` object is recursively strict: only its declared string fields are accepted, unknown keys, non-object values, partial publisher tuples, and wrong field types fail closed. The API's document `PublicSourceLocator.url` is the direct projection of `citationUrl`, not a client-constructed or generic title mapping.
+For a document locator, `sourceId`, `documentId`, `snapshotId`, `contentHash`, and normalized non-empty ranges are required. Snapshot IDs are opaque strings: they may contain arbitrary colons and identity parsing uses the structured fields rather than delimiter splitting. `sourceId` is an explicit durable namespace identity matching the anchored grammar `^public:[^:\s]+$` for `public:<public_sources.source_id>` or `^publisher:[^:\s]+$` for `publisher:<publisher_subscriptions.id>`; ECMAScript `\s` covers Unicode whitespace, line terminators, and `FEFF`, so raw IDs, empty/whitespace suffixes, embedded `:`, double prefixes, and wrong-kind values fail closed. The publisher tuple is all-or-nothing and must include `publisherIssueId`, `publisherDocumentId`, and `publisherExtractionId`; it must match the document, indexed publisher version, and exact `brief_document_extractions` row. Public documents carry none of those publisher fields. The candidate and source-locator schemas enforce this discriminator before durable resume, and finalization/replay enforce it again. No durable boundary repairs or synthesizes a missing namespace prefix. `publicProvenance.documentTitle` and `citationUrl` are required. A publisher document uses the current authorized in-app URL `/v1/issues/{issueId}/documents/{documentId}/content`; a public-source document uses the exact official `public_source_documents.canonical_url`, and its citation URL is rejected if it differs from that row. Public replay binds the complete `(sourceId, documentId, snapshotId, contentHash, canonical_url)` tuple; publisher replay binds the complete namespaced source/issue/document/version/hash/extraction tuple and the required one-to-one version-to-extraction relation. Replay accepts the in-app route only when the durable source's indexed publisher version and extraction IDs equal the locator's values and the exact publisher issue/document tuple is present; a row without that relation is invalid, not a public-source row. The publisher route checks the authenticated viewer's unrevoked current client-company membership plus exact historical delivery-recipient record (or the current publisher lane) and exceptional issue restrictions, then returns a private, non-cacheable object-store redirect that expires after five minutes. When the document belongs to a publisher issue, `sourceName`, `issueTitle`, and `publishedAt` are also required; `documentTitle` is the brief-document title. Public-source documents may omit `issueTitle` but still require their document title. Every durable `publicProvenance` object is recursively strict: only its declared string fields are accepted, unknown keys, non-object values, partial publisher tuples, and wrong field types fail closed. The API's document `PublicSourceLocator.url` is the direct projection of `citationUrl`, not a client-constructed or generic title mapping.
 
-Internal document references and candidate identities carry an explicit `public` or `publisher` namespace, including the public source ID or publisher source/issue/document tuple. Retrieval, inspection, materialization, fanout source-key assignment, internal exposure proofs, and deduplication preserve this discriminator; identical raw document/version/hash values from the two namespaces are never merged, and malformed or ambiguous provenance fails closed.
+Internal document references and candidate identities carry an explicit `public` or `publisher` namespace, including the public source ID or publisher source/issue/document tuple. Retrieval, inspection, materialization, fanout source-key assignment, internal exposure proofs, and deduplication preserve this discriminator; identical raw document/snapshot/hash values from the two namespaces are never merged, and malformed or ambiguous provenance fails closed.
 
 For publisher documents, every internal identity carries the same exact
 `publisherExtractionId` as the bound version relation. When an issue reaches
@@ -1064,7 +1084,7 @@ type ContextDecision =
   | { id: string; action: "omit"; reason: string };
 ```
 
-`range` is valid only for document candidates, whose immutable version has stable verbatim offsets. Plan-turn-selected recent conversation entries, A-selected older chat messages, memories, and selected web quotations are kept or omitted as whole units, so every non-document `SerializedSourceUse.ranges` remains empty. Plan-turn-selected entries remain role-preserving conversation input rather than citable evidence and never enter `FinalSourceRecord[]`; their original ledger and exact costs persist across both correction iterations even after an earlier plan omitted them.
+`range` is valid only for document candidates, whose immutable snapshot has stable verbatim offsets. Plan-turn-selected recent conversation entries, A-selected older chat messages, memories, and selected web quotations are kept or omitted as whole units, so every non-document `SerializedSourceUse.ranges` remains empty. Plan-turn-selected entries remain role-preserving conversation input rather than citable evidence and never enter `FinalSourceRecord[]`; their original ledger and exact costs persist across both correction iterations even after an earlier plan omitted them.
 
 External documents and web evidence remain verbatim. O does not rewrite factual evidence into a summary. Any lost coverage is represented by explicit omission reasons and passed to the answer prompt as a gap.
 
@@ -1465,6 +1485,7 @@ Every event append supplies a deterministic logical emission key. Under the run-
 - `usage:request:<kind>:<taskId>:<iteration>:<taskAttempt>:<requestIndex>`
 - `usage:run`
 - `terminal`, whose payload kind is exactly `done` or `error`
+- `activity:<publicCode>:<topic|all>:<internalPhase>:<status>:<attempt>`
 
 Answer retries intentionally use a new `answerAttempt`, so their start and delta events remain separate while replay within one attempt is idempotent.
 
@@ -1477,6 +1498,7 @@ The public event vocabulary is:
 - `memory_updated`: created, updated, and discarded counts
 - `usage`: one completed model/web-tool request or the final run aggregate, distinguished by `scope: "request" | "run"` and request `kind: "model" | "web_search" | "web_fetch"`
 - `done`: assistant message ID
+- `activity`: safe progress transition with a stable public stage, code, status, optional topic, attempt, elapsed duration, source/result count, or content-free reason
 - `error`: terminal code and retryable flag
 
 The `usage` payload is:
@@ -1555,6 +1577,54 @@ Each retry of a user-visible answer appends a new `answer_started` with a strict
 All streamed deltas are provisional until `done`. If terminal `error` arrives after any deltas—including when only the required memory lane failed—the client discards the provisional assistant text, refetches the durable user-message run outcome, and renders its localized unsaved-turn state with a resubmit action only when retryable. It never leaves an apparently successful answer that will disappear silently on reload.
 
 The stream closes after `done` or `error`. Ordinary `ai_run_events` are restricted, transient, and pruned 24 hours after the terminal event. An event ledger bound to an evaluation case is retained while its non-failed evaluation session or sealed evidence/annotation can still be revalidated; the ordinary 24-hour prune must not destroy trusted evaluation evidence.
+
+### Public activity contract and replay
+
+`activity` is the only progress event. Its strict public shape is:
+
+```ts
+type ActivityEvent = {
+  type: "activity";
+  stage: "understanding" | "evidence" | "preparing" | "writing" | "finishing";
+  code:
+    | "request_understanding"
+    | "internal_sources"
+    | "saved_context"
+    | "web_research"
+    | "context_preparation"
+    | "answer_generation"
+    | "finalization";
+  status: "waiting" | "running" | "complete" | "retrying" | "failed" | "skipped";
+  topicId?: "t1" | "t2" | "t3";
+  attempt?: number;
+  durationMs?: number;
+  sourceCount?: number;
+  resultCount?: number;
+  reason?: "search_adjusted" | "source_validation_failed";
+};
+```
+
+The worker maps internal operations to these code-owned keys before writing
+them to `ai_run_events`. It awaits each product write. Infrastructure-only
+load-turn and low-level provider-stream phases do not create public progress
+items. A task retry uses a new attempt-bearing emission key and updates the
+same logical code/topic item. A retry is `retrying`, not a terminal run
+failure. When a terminal failure maps to a public code, the transition writes
+one `failed` activity for that code before `error`; the terminal `error`
+remains the last event. Activity never carries prompts, search queries, source
+snippets, memory content, opaque source or snapshot IDs, provider logs, stack
+traces, or raw provider errors.
+
+The browser stores the latest activity item for each code/topic key beside the
+last SSE sequence in session storage schema version 2. It ignores repeated or
+out-of-order sequences, applies replayed transitions in sequence order, and
+never adds a second row for a retry. `run_started` creates an empty assistant
+progress card. The card uses an accessible live status and an expandable
+activity list. It stays compact once answer text streams. `done` replaces it
+with the saved assistant message. `error` keeps the safe failed activity card
+on the current route while the user message keeps its localized failure and
+resubmit controls. A new request or route change clears that failed local
+activity state.
 
 ## Demo API
 
@@ -1800,9 +1870,9 @@ explicit exceptional denies.
 
 `brief_document_versions`: publisher document id, exact one-to-one `publisher_extraction_id` foreign key to `brief_document_extractions`, immutable canonical text, lowercase content hash, page ranges, and search projection. The foreign key is unique, points to an extraction for the same PDF row, and is required for a publisher version. Ready-state constraints reject extraction replacement, version-pointer movement, PDF/text/hash/range mutation, and ordinary deletion; only the fenced complete-record purge may remove the bound rows.
 
-`ai_source_exposures`: run id, task id, loop iteration, attempt, provider-request index, source kind, logical source identity, publisher issue/document/extraction IDs when applicable, content-item identity, exposure stage, exact visible token count, and created at; unique on all execution coordinates, stage, and content-item identity. Document search previews use `internal_search_preview`; chat-message search previews use `internal_chat_search_preview`, so a later full `internal_inspection` remains a distinct exposure. Every content-bearing document row, including `internal_search_preview`, persists a namespaced source ID, document ID, immutable version ID, lowercase SHA-256 content hash, normalized non-overlapping UTF-16 range array, and, for publisher documents only, the exact `publisher_extraction_id` as one required set. The publisher extraction ID has a foreign key to the version's one-to-one binding; public rows must keep it null. Metadata-only lookup creates no row. Rows contain no copied source body. Exact replay of an exposure and its provider-request attestation is idempotent; any conflict in a bound exposure or attestation field, including extraction identity, fails closed inside the transaction. Run-level exposed-item counts derive by distinct run/content-item identity, publisher issue/document pulls by their separate distinct run/logical IDs, and the full per-attempt rows support the detailed funnel.
+`ai_source_exposures`: run id, task id, loop iteration, attempt, provider-request index, source kind, logical source identity, publisher issue/document/extraction IDs when applicable, content-item identity, exposure stage, exact visible token count, and created at; unique on all execution coordinates, stage, and content-item identity. Document search previews use `internal_search_preview`; chat-message search previews use `internal_chat_search_preview`, so a later full `internal_inspection` remains a distinct exposure. Every content-bearing document row, including `internal_search_preview`, persists a namespaced source ID, document ID, immutable snapshot ID, lowercase SHA-256 content hash, normalized non-overlapping UTF-16 range array, and, for publisher documents only, the exact `publisher_extraction_id` as one required set. The publisher extraction ID has a foreign key to the version's one-to-one binding; public rows must keep it null. Metadata-only lookup creates no row. Rows contain no copied source body. Exact replay of an exposure and its provider-request attestation is idempotent; any conflict in a bound exposure or attestation field, including extraction identity, fails closed inside the transaction. Run-level exposed-item counts derive by distinct run/content-item identity, publisher issue/document pulls by their separate distinct run/logical IDs, and the full per-attempt rows support the detailed funnel.
 
-`assistant_message_sources`: assistant message id, source key, kind, typed immutable locator JSON matching `SourceLocator`, kind-specific indexed identity columns including namespaced `sourceId` plus document/version/content hash for documents and the exact `publisher_extraction_id` for publisher documents, `version_id`, `message_id`, and `memory_revision_id`, snapshotted nullable display label, snapshotted public provenance JSON, created at; unique on message and source key. The extraction column has a foreign key to the version's required one-to-one extraction binding and is null for public documents. The locator therefore persists document namespace/source/version/hash/range union and publisher extraction identity, message identity, exact memory revision, or web URL/title/domain/quote/quote hash/publication/capture times without later derivation from mutable state. The indexed extraction and memory revisions are protected references used by provenance retention and GC. These rows are the immutable turn-local source map; extraction identity is omitted from every public projection.
+`assistant_message_sources`: assistant message id, source key, kind, typed immutable locator JSON matching `SourceLocator`, kind-specific indexed identity columns including namespaced `sourceId` plus document/snapshot hash for documents and the exact `publisher_extraction_id` for publisher documents, `snapshot_id`, `message_id`, and `memory_revision_id`, snapshotted nullable display label, snapshotted public provenance JSON, created at; unique on message and source key. The extraction column has a foreign key to the version's required one-to-one extraction binding and is null for public documents. The locator therefore persists document namespace/source/snapshot/hash/range union and publisher extraction identity, message identity, exact memory revision, or web URL/title/domain/quote/quote hash/publication/capture times without later derivation from mutable state. The indexed extraction and memory revisions are protected references used by provenance retention and GC. These rows are the immutable turn-local source map; extraction identity is omitted from every public projection.
 
 `assistant_message_source_uses`: assistant message id, source key, consumer task ID, topic ID when applicable, exact rendered token count, deterministic context order, exact ranges JSON, created at; unique on message, source key, and consumer task. These rows reproduce which slice each direct/topic consumer received and power aggregate `sourcesRead` metadata.
 
@@ -1855,7 +1925,7 @@ Observation kinds are:
 - `memory_application`: exact consumed extraction task/loop/attempt/key/digest and proposal/discarded counts
 - `memory_written`: numeric proposal ordinal, memory ID, new revision ID, independent previous revision ID or null, and create/update action
 
-Trusted evaluation interprets these as attempt-aware owned ledgers, not an unordered bag. Provider measurements and external-tool request indices are independently contiguous from zero within every task/loop/attempt. Every provider usage has one exact passed measurement at the same coordinate. A transport failure or abort after Pi's gate may leave exactly one unmatched terminal measurement on an attempt with no provider-authored output; an unmatched nonterminal measurement, multiple unmatched measurements, or any output bound to such an attempt is invalid. Every retained provider-authored output attempt binds to a successful canonical-role, canonical-model, official-provider usage and that attempt's latest exact Pi measurement; the consumed output must also be the latest task measurement and usage, so a later failed or aborted request cannot be hidden behind an earlier success. The terminal `turn_plan` is owned by plan-turn; its selected turns must be unique members of the current chat and its payload must reconcile with the provider output. Clarification has no retrieval ledger. Fanout topic IDs are the stable `t1`/`t2`/`t3` prefix, topic turn sets are subsets of the plan-turn result, and terminal direct/topic/synthesis ledgers must reproduce the exact plan result, questions, turns, topic order, and packet order. Each specialized direct/topic route has one terminal manifest per A/B/W task, with exact selector role, owner, cardinality, order, typed reference identity, ranges, purpose, and quote semantics matching its initial production ledger; clarification has no retrieval manifest. A selected internal reference requires a same-task/loop/attempt internal preview, a selected memory requires a same-coordinate tool-result exposure, and selected web evidence requires its exact same-coordinate fetch. Public evidence binds `documentId` to the exact public document row, immutable version identity, hash, source scope, and ranges, with no extraction ID. Publisher evidence binds `documentId` to the exact publisher extraction row and the required one-to-one version relation, plus immutable version identity, hash, source scope, and ranges. Evaluation rejects a missing, mismatched, replaced, or pointer-drifted binding even when the text hash and ranges still match. Earlier retry outputs may remain, but duplicate outputs at the terminal loop/attempt coordinate or a foreign owner are invalid.
+Trusted evaluation interprets these as attempt-aware owned ledgers, not an unordered bag. Provider measurements and external-tool request indices are independently contiguous from zero within every task/loop/attempt. Every provider usage has one exact passed measurement at the same coordinate. A transport failure or abort after Pi's gate may leave exactly one unmatched terminal measurement on an attempt with no provider-authored output; an unmatched nonterminal measurement, multiple unmatched measurements, or any output bound to such an attempt is invalid. Every retained provider-authored output attempt binds to a successful canonical-role, canonical-model, official-provider usage and that attempt's latest exact Pi measurement; the consumed output must also be the latest task measurement and usage, so a later failed or aborted request cannot be hidden behind an earlier success. The terminal `turn_plan` is owned by plan-turn; its selected turns must be unique members of the current chat and its payload must reconcile with the provider output. Clarification has no retrieval ledger. Fanout topic IDs are the stable `t1`/`t2`/`t3` prefix, topic turn sets are subsets of the plan-turn result, and terminal direct/topic/synthesis ledgers must reproduce the exact plan result, questions, turns, topic order, and packet order. Each specialized direct/topic route has one terminal manifest per A/B/W task, with exact selector role, owner, cardinality, order, typed reference identity, ranges, purpose, and quote semantics matching its initial production ledger; clarification has no retrieval manifest. A selected internal reference requires a same-task/loop/attempt internal preview, a selected memory requires a same-coordinate tool-result exposure, and selected web evidence requires its exact same-coordinate fetch. Public evidence binds `documentId` to the exact public document row, immutable snapshot identity, hash, source scope, and ranges, with no extraction ID. Publisher evidence binds `documentId` to the exact publisher extraction row and the required one-to-one version relation, plus immutable snapshot identity, hash, source scope, and ranges. Evaluation rejects a missing, mismatched, replaced, or pointer-drifted binding even when the text hash and ranges still match. Earlier retry outputs may remain, but duplicate outputs at the terminal loop/attempt coordinate or a foreign owner are invalid.
 
 The measurable funnel is:
 
@@ -2083,10 +2153,10 @@ acceptance scope plus exact user, company, membership, chat, source, publisher,
 memory, web-policy, and domain identities captured at acceptance. It rejects
 any source that was not exposed with an exact identity or whose immutable
 content identity no longer matches. Public document evidence must bind
-`documentId` to the exact public document row, immutable version identity, hash,
+`documentId` to the exact public document row, immutable snapshot identity, hash,
 source scope, and ranges, with no extraction ID. Publisher evidence must
 additionally match the exact extraction row and one-to-one version relation,
-along with its immutable version identity, hash, source scope, and ranges.
+along with its immutable snapshot identity, hash, source scope, and ranges.
 Memory evidence must bind the exact revision; web evidence must bind the exact
 normalized quotation and URL. The citation
 namespace is checked only for local handle shape and numeric order; it never

@@ -23,7 +23,7 @@ export interface AiDocumentExposureReconstruction {
   /** The immutable, namespaced source identity used by the document locator. */
   readonly sourceId: string;
   readonly documentId: string;
-  readonly versionId: string;
+  readonly snapshotId: string;
   /** SHA-256 hex digest of the immutable stored document text. */
   readonly contentHash: string;
   readonly publisherExtractionId?: string | undefined;
@@ -217,7 +217,7 @@ const sourceExposureAttestationPayloadForProof = (
     : {
         documentSourceId: input.documentReconstruction.sourceId,
         documentId: input.documentReconstruction.documentId,
-        versionId: input.documentReconstruction.versionId,
+        snapshotId: input.documentReconstruction.snapshotId,
         documentContentHash: input.documentReconstruction.contentHash,
         documentRanges: input.documentReconstruction.ranges,
         ...(input.documentReconstruction.publisherExtractionId === undefined
@@ -330,12 +330,12 @@ export const assertCanonicalDocumentExposureIdentity = (
   ) {
     throw new Error("document exposure provider binding has a different document ID");
   }
-  const prefix = `${logicalSourceIdentity}:${reconstruction.versionId}:`;
+  const prefix = `${logicalSourceIdentity}:${reconstruction.snapshotId}:`;
   const suffix = input.contentItemIdentity.startsWith(prefix)
-    ? input.contentItemIdentity.slice(prefix.length).split(":")
-    : [];
+    ? input.contentItemIdentity.slice(prefix.length)
+    : "";
   const rangeHash = canonicalRangeHash(reconstruction.ranges);
-  if (suffix.length !== 1 || suffix[0] !== rangeHash) {
+  if (suffix !== rangeHash) {
     throw new Error("document exposure content identity is not bound to its exact ranges");
   }
 };
@@ -426,7 +426,7 @@ export const insertAiSourceExposure = (
               and visible_token_count = ${input.visibleTokenCount}
               and document_source_id is not distinct from ${input.documentReconstruction?.sourceId ?? null}
               and document_id is not distinct from ${input.documentReconstruction?.documentId ?? null}
-              and version_id is not distinct from ${input.documentReconstruction?.versionId ?? null}
+              and snapshot_id is not distinct from ${input.documentReconstruction?.snapshotId ?? null}
               and content_hash is not distinct from ${input.documentReconstruction?.contentHash ?? null}
               and document_ranges is not distinct from ${documentRangesJson}::jsonb
               and publisher_extraction_id is not distinct from ${input.documentReconstruction?.publisherExtractionId ?? null}
@@ -452,7 +452,7 @@ export const insertAiSourceExposure = (
               visible_token_count,
               document_source_id,
               document_id,
-              version_id,
+              snapshot_id,
               content_hash,
               document_ranges,
               publisher_extraction_id
@@ -472,7 +472,7 @@ export const insertAiSourceExposure = (
               ${input.visibleTokenCount},
               ${input.documentReconstruction?.sourceId ?? null},
               ${input.documentReconstruction?.documentId ?? null},
-              ${input.documentReconstruction?.versionId ?? null},
+              ${input.documentReconstruction?.snapshotId ?? null},
               ${input.documentReconstruction?.contentHash ?? null},
               ${documentRangesJson}::jsonb,
               ${input.documentReconstruction === undefined ? null : (input.documentReconstruction.publisherExtractionId ?? null)}

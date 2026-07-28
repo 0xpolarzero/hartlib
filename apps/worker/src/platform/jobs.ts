@@ -2755,7 +2755,7 @@ const purgeDeletedFiles = (): Effect.Effect<
               +
               (select count(*) from assistant_message_sources
                where kind = 'document'
-                 and (version_id = ${current.id}
+                 and (snapshot_id = ${current.id}
                       or publisher_extraction_id in (
                         select id from brief_document_extractions
                         where brief_document_id = ${current.id}::uuid

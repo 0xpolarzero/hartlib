@@ -1474,14 +1474,14 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
                   source_key,
                   kind,
                   locator,
-                  version_id,
+                  snapshot_id,
                   public_provenance
                 )
                 values (
                   ${assistant!.id},
                   'doc-missing',
                   'document',
-                  ${sql.json({ kind: "document", versionId: missingVersionId })},
+                  ${sql.json({ kind: "document", snapshotId: missingVersionId })},
                   ${missingVersionId},
                   '{}'::jsonb
                 )

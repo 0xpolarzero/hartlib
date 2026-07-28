@@ -104,7 +104,7 @@ describe("final source-map validation", () => {
         kind: "document",
         sourceId: "public:source-1",
         documentId: "document-1",
-        versionId: "version-1",
+        snapshotId: "version-1",
         contentHash: "a".repeat(64),
         ranges: [
           { charStart: 0, charEnd: 10 },
@@ -234,7 +234,7 @@ describe("final source-map validation", () => {
         kind: "document",
         sourceId: "public:source-1",
         documentId: "document-1",
-        versionId: "version-1",
+        snapshotId: "version-1",
         contentHash: "a".repeat(64),
         ranges: [
           { charStart: 0, charEnd: 10 },
@@ -311,7 +311,7 @@ describe("final source-map validation", () => {
           kind: "document",
           sourceId: `public:source-${index + 1}`,
           documentId: `document-${index + 1}`,
-          versionId: `version-${index + 1}`,
+          snapshotId: `version-${index + 1}`,
           contentHash: "b".repeat(64),
           ranges: locatorRanges,
         },

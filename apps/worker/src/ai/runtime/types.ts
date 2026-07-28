@@ -81,7 +81,7 @@ export type InternalReference =
       readonly kind: "document";
       readonly documentId: string;
       /** Server-owned binding fields are populated after provider validation. */
-      readonly versionId: string;
+      readonly snapshotId: string;
       readonly publisherExtractionId?: string | undefined;
       readonly source: DocumentSource;
       readonly ranges?: readonly CharacterRange[] | undefined;
@@ -111,7 +111,7 @@ export interface DocumentCandidate {
   readonly purpose: string;
   readonly sourceId: string;
   readonly documentId: string;
-  readonly versionId: string;
+  readonly snapshotId: string;
   readonly publisherExtractionId?: string | undefined;
   readonly publisherIssueId?: string | undefined;
   readonly publisherDocumentId?: string | undefined;
@@ -204,7 +204,7 @@ export type PublisherDocumentLocator = {
   readonly kind: "document";
   readonly sourceId: `publisher:${string}`;
   readonly documentId: string;
-  readonly versionId: string;
+  readonly snapshotId: string;
   readonly contentHash: string;
   readonly ranges: readonly CharacterRange[];
   readonly publisherExtractionId: string;
@@ -216,7 +216,7 @@ export type PublicDocumentLocator = {
   readonly kind: "document";
   readonly sourceId: string;
   readonly documentId: string;
-  readonly versionId: string;
+  readonly snapshotId: string;
   readonly contentHash: string;
   readonly ranges: readonly CharacterRange[];
   /** Publisher identity fields are forbidden on public locators. */

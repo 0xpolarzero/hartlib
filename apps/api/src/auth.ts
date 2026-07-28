@@ -49,10 +49,17 @@ export const resolveRequestIdentity = (
   options?: ResolveIdentityOptions,
 ): Effect.Effect<RequestIdentityResult, Error> => {
   if (config.authMode === "demo") {
+    const cookieValue = readCookie(request.headers.get("cookie"), DEMO_COOKIE_NAME);
+    const visitorId = verifyDemoSessionCookie(
+      cookieValue,
+      config.demoSessionSecret,
+      config.demoPassword,
+    );
+    if (visitorId === null) return Effect.succeed({ authenticated: false });
     return Effect.succeed({
       authenticated: true,
       identity: {
-        userId: config.demoUserId,
+        userId: visitorId,
         organizationId: null,
         sessionId: "demo-session",
         mfaVerified: true,

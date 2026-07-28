@@ -348,13 +348,23 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
       }
     };
 
-    const clearLocalStream = (errorCode?: string) => {
+    const clearLocalStream = (errorCode?: string, preserveFailure = false) => {
       terminal = true;
       closed = true;
       closeConnection();
-      clearRunStreamState(window.sessionStorage, runId);
+      if (preserveFailure && isCurrentRoute()) {
+        setDraft(currentDraft);
+        persistRunStreamState(window.sessionStorage, {
+          version: 2,
+          runId,
+          lastSeq: streamSeq.current,
+          draft: currentDraft,
+        });
+      } else {
+        clearRunStreamState(window.sessionStorage, runId);
+        if (isCurrentRoute()) setDraft(null);
+      }
       if (!isCurrentRoute()) return;
-      setDraft(null);
       setSending(false);
       if (errorCode !== undefined) setError(errorCode);
       void loadMemories();
@@ -365,9 +375,18 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
      * reload. The reload is deliberately not allowed to schedule a retry: a
      * terminal or unauthorized stream must not keep probing the same cursor.
      */
-    const terminate = (errorCode?: string) => {
-      clearLocalStream(errorCode);
+    const terminate = (errorCode?: string, preserveFailure = false) => {
+      clearLocalStream(errorCode, preserveFailure);
       void reconcile();
+    };
+    const scheduleReconnect = () => {
+      if (closed || terminal || reconnectTimer !== null) return;
+      const delay = reconnectDelayMs(reconnectFailures);
+      reconnectFailures += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
     };
 
     const reconcileBeforeRetry = async (): Promise<void> => {
@@ -381,31 +400,21 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
       scheduleReconnect();
     };
 
-    const scheduleReconnect = () => {
-      if (closed || terminal || reconnectTimer !== null) return;
-      const delay = reconnectDelayMs(reconnectFailures);
-      reconnectFailures += 1;
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        connect();
-      }, delay);
-    };
-
     const handleEvent = (seq: number, event: AiRunEventType) => {
       if (closed || terminal) return;
       const reduced = reduceRunStreamEvent(runId, streamSeq.current, currentDraft, seq, event);
       if (!reduced.applied) return;
       streamSeq.current = reduced.lastSeq;
       reconnectFailures = 0;
+      currentDraft = reduced.draft ?? currentDraft;
       if (reduced.terminal) {
-        terminate(event.type === "error" ? event.code : undefined);
+        terminate(event.type === "error" ? event.code : undefined, event.type === "error");
         return;
       }
       if (!isCurrentRoute()) return;
-      currentDraft = reduced.draft ?? currentDraft;
       setDraft(currentDraft);
       persistRunStreamState(window.sessionStorage, {
-        version: 1,
+        version: 2,
         runId,
         lastSeq: streamSeq.current,
         draft: currentDraft,
@@ -442,15 +451,20 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
 
   const messages = useMemo(() => {
     const settled = routeChat === null ? [] : toTranscript(routeChat.messages);
-    if (routeDraft === null || routeDraft.text === "") return settled;
+    if (routeDraft === null) return settled;
     return [
       ...settled,
       {
-        id: `stream:${routeDraft.runId}:${routeDraft.attempt}`,
+        id: `stream:${routeDraft.runId}`,
         author: "assistant" as const,
-        content: routeDraft.text,
-        citations: citationRecordsFromText(routeDraft.text, routeDraft.sourcesRead),
+        content: routeDraft.terminalFailure === null ? routeDraft.text : "",
+        citations: citationRecordsFromText(
+          routeDraft.terminalFailure === null ? routeDraft.text : "",
+          routeDraft.sourcesRead,
+        ),
         sourcesRead: routeDraft.sourcesRead,
+        activities: routeDraft.activities,
+        activityFailure: routeDraft.terminalFailure,
         streaming: true,
       },
     ];
@@ -468,6 +482,10 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
       return;
     setSending(true);
     setError(null);
+    if (routeDraft !== null && routeDraft.terminalFailure !== null) {
+      clearRunStreamState(window.sessionStorage, routeDraft.runId);
+      setDraft(null);
+    }
     const request = {
       text: normalized,
       locale,

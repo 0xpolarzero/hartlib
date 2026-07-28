@@ -13,6 +13,7 @@ import type {
   GetChatResponse,
   SendChatMessageRequest,
 } from "@brief/shared";
+import { aiRunActivityKey } from "@brief/shared";
 
 export { clearRunStreamState, persistRunStreamState, restoreRunStreamState, runStreamStorageKey };
 export type { PersistedRunStreamState, StreamDraftState };
@@ -182,12 +183,13 @@ export interface ReducedRunStreamState {
   readonly lastSeq: number;
   readonly draft: StreamDraftState | null;
 }
-
 export const emptyStreamDraft = (runId: string): StreamDraftState => ({
   runId,
   text: "",
   attempt: 0,
   sourcesRead: [],
+  activities: [],
+  terminalFailure: null,
 });
 
 export const reduceRunStreamEvent = (
@@ -200,8 +202,44 @@ export const reduceRunStreamEvent = (
   if (!Number.isSafeInteger(seq) || seq <= lastSeq) {
     return { applied: false, terminal: false, lastSeq, draft };
   }
-  if (event.type === "done" || event.type === "error") {
+  if (event.type === "done") {
     return { applied: true, terminal: true, lastSeq: seq, draft: null };
+  }
+  if (event.type === "error") {
+    const activities = [...draft.activities];
+    for (let index = activities.length - 1; index >= 0; index -= 1) {
+      const activity = activities[index];
+      if (activity?.status === "running" || activity?.status === "retrying") {
+        activities[index] = { ...activity, status: "failed" };
+        break;
+      }
+    }
+    return {
+      applied: true,
+      terminal: true,
+      lastSeq: seq,
+      draft: {
+        ...draft,
+        text: "",
+        activities,
+        terminalFailure: { code: event.code, retryable: event.retryable },
+      },
+    };
+  }
+  if (event.type === "activity") {
+    const key = aiRunActivityKey(event.code, event.topicId);
+    const activities = [...draft.activities];
+    const index = activities.findIndex(
+      (activity) => aiRunActivityKey(activity.code, activity.topicId) === key,
+    );
+    if (index === -1) activities.push(event);
+    else activities[index] = event;
+    return {
+      applied: true,
+      terminal: false,
+      lastSeq: seq,
+      draft: { ...draft, activities, terminalFailure: null },
+    };
   }
   if (event.type === "context_ready") {
     return {
@@ -217,10 +255,11 @@ export const reduceRunStreamEvent = (
       terminal: false,
       lastSeq: seq,
       draft: {
+        ...draft,
         runId,
         text: event.attempt > draft.attempt ? "" : draft.text,
         attempt: event.attempt,
-        sourcesRead: draft.sourcesRead,
+        terminalFailure: null,
       },
     };
   }

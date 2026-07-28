@@ -71,10 +71,10 @@ const namespacedPublisherDocumentIdentity = (
   ])}`;
 const documentContentItemIdentity = (
   logicalSourceIdentity: string,
-  versionId: string,
+  snapshotId: string,
   ranges: readonly { readonly charStart: number; readonly charEnd: number }[],
 ): string =>
-  `${logicalSourceIdentity}:${versionId}:${createHash("sha256")
+  `${logicalSourceIdentity}:${snapshotId}:${createHash("sha256")
     .update(JSON.stringify(ranges), "utf8")
     .digest("base64url")}`;
 const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>, database = databaseName) =>
@@ -4425,7 +4425,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           const contentHash = createHash("sha256").update(document.text, "utf8").digest("hex");
           const jobId = crypto.randomUUID();
           const extractionId = crypto.randomUUID();
-          const versionId = crypto.randomUUID();
+          const snapshotId = crypto.randomUUID();
           yield* sql`
             insert into brief_documents (
               id, issue_id, title, original_file_name, object_key, media_type,
@@ -4453,13 +4453,13 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
               id, brief_document_id, publisher_extraction_id, content_hash, language,
               canonical_text, text_char_count, page_ranges
             ) values (
-              ${versionId}, ${document.id}, ${extractionId}, ${contentHash}, 'en-US',
+              ${snapshotId}, ${document.id}, ${extractionId}, ${contentHash}, 'en-US',
               ${document.text}, ${document.text.length},
               ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: document.text.length }])}::jsonb
             )
           `;
           yield* sql`
-            update brief_documents set current_version_id = ${versionId}
+            update brief_documents set current_version_id = ${snapshotId}
             where id = ${document.id}
           `;
         }
@@ -4552,7 +4552,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
               source_kind, logical_source_identity, publisher_issue_id,
               publisher_document_id, content_item_identity, exposure_stage,
               visible_token_count, document_source_id, document_id,
-              version_id, content_hash, publisher_extraction_id, document_ranges
+              snapshot_id, content_hash, publisher_extraction_id, document_ranges
             ) values (
               ${exposure.runId}, 'single-retrieve-internal', 0, 0, ${exposure.requestIndex}, 'document',
               ${logicalSourceIdentity}, ${metricsIssueId},

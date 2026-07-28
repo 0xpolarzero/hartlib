@@ -214,7 +214,8 @@ const ApiEnvironment = Schema.Struct({
   AI_BASE_URL: StringWithDefault(ZAI_CODING_PLAN_BASE_URL),
   AI_WEB_MAX_DOMAIN_FILTERS: NumberWithDefault(AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT),
   AUTH_MODE: Schema.optional(Schema.String),
-  DEMO_USER_ID: StringWithDefault("demo-user"),
+  DEMO_PASSWORD: StringWithDefault(""),
+  DEMO_SESSION_SECRET: StringWithDefault(""),
   CLERK_SECRET_KEY: StringWithDefault(""),
   CLERK_PUBLISHABLE_KEY: StringWithDefault(""),
   CLERK_AUTHORIZED_PARTIES: StringWithDefault(""),
@@ -250,7 +251,8 @@ export interface ApiConfig {
     | "openai_compatible_custom";
   readonly aiProviderEndpointIdentity: string;
   readonly authMode: "demo" | "clerk";
-  readonly demoUserId: string;
+  readonly demoPassword: string;
+  readonly demoSessionSecret: string;
   readonly clerkSecretKey: string;
   readonly clerkPublishableKey: string;
   readonly clerkAuthorizedParties: readonly string[];
@@ -319,11 +321,11 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
       return yield* Effect.fail(new Error("invalid AUTH_MODE"));
     }
     if (
-      authMode === "clerk" &&
-      (raw.CLERK_SECRET_KEY.trim() === "" || raw.CLERK_PUBLISHABLE_KEY.trim() === "")
+      authMode === "demo" &&
+      (raw.DEMO_PASSWORD.trim() === "" || raw.DEMO_SESSION_SECRET.trim() === "")
     ) {
       return yield* Effect.fail(
-        new Error("CLERK_SECRET_KEY and CLERK_PUBLISHABLE_KEY are required for Clerk auth"),
+        new Error("DEMO_PASSWORD and DEMO_SESSION_SECRET are required for demo auth"),
       );
     }
     const clerkAuthorizedParties = commaSeparatedUniqueValues(raw.CLERK_AUTHORIZED_PARTIES);
@@ -404,7 +406,8 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
       aiProviderServiceId,
       aiProviderEndpointIdentity: `${aiProviderServiceId}:${aiBaseUrl}`,
       authMode,
-      demoUserId: raw.DEMO_USER_ID,
+      demoPassword: raw.DEMO_PASSWORD,
+      demoSessionSecret: raw.DEMO_SESSION_SECRET,
       clerkSecretKey: raw.CLERK_SECRET_KEY,
       clerkPublishableKey: raw.CLERK_PUBLISHABLE_KEY,
       clerkAuthorizedParties,

@@ -22,7 +22,7 @@ export interface DocumentPreview {
   readonly kind: "public_source" | "publisher";
   readonly sourceId: string;
   readonly documentId: string;
-  readonly versionId: string;
+  readonly snapshotId: string;
   readonly contentHash: string;
   readonly publisherExtractionId?: string | undefined;
   /** Full immutable text stays server-side; only an exact source slice preview enters tool output. */

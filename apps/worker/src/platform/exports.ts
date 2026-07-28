@@ -398,7 +398,7 @@ const loadExportFiles = (
                 join brief_documents documents on documents.id = extractions.brief_document_id
                 join brief_document_versions versions
                   on versions.brief_document_id = documents.id
-                 and versions.id::text = sources.version_id
+                 and versions.id::text = sources.snapshot_id
                 join publisher_issues issues on issues.id = documents.issue_id
                 where ${sql.in("sources.assistant_message_id", chatMessageIds)}
                   and sources.publisher_extraction_id is not null

@@ -468,7 +468,7 @@ const DurableInternalManifestReferenceSchema = z
       .object({
         kind: z.literal("document"),
         documentId: z.string().min(1),
-        versionId: z.string().min(1),
+        snapshotId: z.string().min(1),
         source: DocumentSourceNamespaceSchema,
         ranges: z.array(BindingRangeSchema).optional(),
         purpose: z.string().trim().min(1),
@@ -587,7 +587,7 @@ const EvaluationSourceBindingSchema = z
         goldenSourceId: z.string().min(1),
         kind: z.literal("document"),
         documentId: z.string(),
-        versionId: z.string(),
+        snapshotId: z.string(),
         contentHash: z.string(),
         publisherExtractionId: z.uuid().nullable(),
         source: DocumentSourceNamespaceSchema,
@@ -703,7 +703,7 @@ const documentBindingMatchesLocator = (
     value.kind !== "document" ||
     value.sourceId !== documentBindingSourceId(binding) ||
     value.documentId !== binding.documentId ||
-    value.versionId !== binding.versionId ||
+    value.snapshotId !== binding.snapshotId ||
     value.contentHash !== binding.contentHash ||
     (binding.publisherExtractionId === null
       ? value.publisherExtractionId !== undefined
@@ -715,7 +715,7 @@ const documentBindingMatchesLocator = (
     "kind",
     "sourceId",
     "documentId",
-    "versionId",
+    "snapshotId",
     "contentHash",
     "publisherExtractionId",
     "ranges",
@@ -1028,7 +1028,7 @@ const DurableRunEvidenceSchema = z
             .regex(/^(?:public|publisher):[^:\s]+$/u)
             .nullable(),
           documentId: z.string().min(1).nullable(),
-          versionId: z.string().min(1).nullable(),
+          snapshotId: z.string().min(1).nullable(),
           documentContentHash: z
             .string()
             .regex(/^[0-9a-f]{64}$/u)
@@ -1057,7 +1057,7 @@ const DurableRunEvidenceSchema = z
           sourceKey: z.string().regex(/^k_cn_[A-Za-z0-9_-]{22}_[1-9][0-9]*$/u),
           kind: z.enum(["document", "chat_message", "memory", "web"]),
           locator: JsonObjectSchema,
-          versionId: z.string().nullable(),
+          snapshotId: z.string().nullable(),
           publisherExtractionId: z.uuid().nullable(),
           messageId: z.uuid().nullable(),
           memoryRevisionId: z.uuid().nullable(),
@@ -1198,7 +1198,7 @@ const buildSeedManifest = (
         goldenSourceId: source.sourceId,
         kind: "document" as const,
         documentId,
-        versionId: documentId,
+        snapshotId: documentId,
         contentHash: sha256Hex(storedDocumentText(source.content)),
         publisherExtractionId: publisher
           ? deterministicUuid(identity + ":document:" + index + ":extraction")
@@ -1838,7 +1838,7 @@ const baselineSourceMap = async (
               kind: "document" as const,
               sourceId: documentBindingSourceId(binding) as `publisher:${string}`,
               documentId: binding.documentId,
-              versionId: binding.versionId,
+              snapshotId: binding.snapshotId,
               contentHash: binding.contentHash,
               ranges: selection.ranges,
               publisherIssueId: binding.source.issueId,
@@ -1853,7 +1853,7 @@ const baselineSourceMap = async (
               kind: "document" as const,
               sourceId: documentBindingSourceId(binding),
               documentId: binding.documentId,
-              versionId: binding.versionId,
+              snapshotId: binding.snapshotId,
               contentHash: binding.contentHash,
               ranges: selection.ranges,
             };
@@ -2410,7 +2410,7 @@ const executeBaseline = async (
                     logicalSourceIdentity,
                     contentItemIdentity:
                       binding.kind === "document"
-                        ? `${logicalSourceIdentity}:${binding.versionId}:${sha256Base64Url(
+                        ? `${logicalSourceIdentity}:${binding.snapshotId}:${sha256Base64Url(
                             JSON.stringify([{ charStart, charEnd }]),
                           )}`
                         : `${logicalSourceIdentity}:${charStart}:${charEnd}:${sha256Hex(visibleText)}`,
@@ -2428,7 +2428,7 @@ const executeBaseline = async (
                   }
                   if (binding.kind !== "document") return undefined;
                   return {
-                    versionId: binding.versionId,
+                    snapshotId: binding.snapshotId,
                     contentHash: binding.contentHash,
                     ...(binding.publisherExtractionId === null
                       ? {}
@@ -2484,7 +2484,7 @@ const executeBaseline = async (
                           logicalSourceIdentity,
                           contentItemIdentity:
                             binding.kind === "document"
-                              ? `${logicalSourceIdentity}:${binding.versionId}:${sha256Base64Url(
+                              ? `${logicalSourceIdentity}:${binding.snapshotId}:${sha256Base64Url(
                                   JSON.stringify([
                                     {
                                       charStart: exposure.charStart,
@@ -2501,7 +2501,7 @@ const executeBaseline = async (
                                 documentReconstruction: {
                                   sourceId: binding.sourceId,
                                   documentId: binding.documentId,
-                                  versionId: binding.versionId,
+                                  snapshotId: binding.snapshotId,
                                   contentHash: binding.contentHash,
                                   ranges: [
                                     {
@@ -2866,7 +2866,7 @@ const loadDurableRunEvidence = (
         readonly visibleTokenCount: number;
         readonly documentSourceId: string | null;
         readonly documentId: string | null;
-        readonly versionId: string | null;
+        readonly snapshotId: string | null;
         readonly documentContentHash: string | null;
         readonly documentRanges: EvaluationRange[] | null;
         readonly createdAt: Date;
@@ -2880,7 +2880,7 @@ const loadDurableRunEvidence = (
                exposure_stage as "exposureStage", visible_token_count as "visibleTokenCount",
                document_source_id as "documentSourceId",
                document_id as "documentId",
-               version_id as "versionId",
+               snapshot_id as "snapshotId",
                content_hash as "documentContentHash",
                document_ranges as "documentRanges",
                publisher_extraction_id::text as "publisherExtractionId",
@@ -2905,7 +2905,7 @@ const loadDurableRunEvidence = (
         Omit<DurableRunEvidence["sources"][number], "createdAt"> & { readonly createdAt: Date }
       >`
         select source_key as "sourceKey", kind, locator,
-               version_id as "versionId",
+               snapshot_id as "snapshotId",
                publisher_extraction_id::text as "publisherExtractionId",
                message_id::text as "messageId",
                memory_revision_id::text as "memoryRevisionId",
@@ -3865,7 +3865,7 @@ const attestRelationalEvidence = (
               kind: "document" as const,
               sourceId: documentBindingSourceId(binding),
               documentId: binding.documentId,
-              versionId: binding.versionId,
+              snapshotId: binding.snapshotId,
               contentHash: binding.contentHash,
               ranges: expectedDocumentRanges!,
               publisherIssueId: binding.source.issueId,
@@ -3876,7 +3876,7 @@ const attestRelationalEvidence = (
               kind: "document" as const,
               sourceId: documentBindingSourceId(binding),
               documentId: binding.documentId,
-              versionId: binding.versionId,
+              snapshotId: binding.snapshotId,
               contentHash: binding.contentHash,
               ranges: expectedDocumentRanges!,
             }
@@ -4905,7 +4905,7 @@ const mapReferenceToGolden = (
               (candidate) =>
                 candidate.kind === "document" &&
                 candidate.documentId === reference.documentId &&
-                candidate.versionId === reference.versionId &&
+                candidate.snapshotId === reference.snapshotId &&
                 canonicalJson(candidate.source) === canonicalJson(reference.source),
             );
           })()
@@ -4998,7 +4998,7 @@ const mapBaselineReferenceToGolden = (
 interface StoredEvaluationDocument {
   readonly sourceId: string;
   readonly documentId: string;
-  readonly versionId: string;
+  readonly snapshotId: string;
   readonly text: string;
   readonly contentHash: string;
   readonly textCharCount: number;
@@ -5046,14 +5046,14 @@ const loadStoredEvaluationDocuments = (
         const rows = yield* sql<{
           readonly sourceId: string;
           readonly documentId: string;
-          readonly versionId: string;
+          readonly snapshotId: string;
           readonly text: string;
           readonly contentHash: string;
           readonly textCharCount: number;
         }>`
           select source_id::text as "sourceId",
                  document_id::text as "documentId",
-                 document_id::text as "versionId",
+                 document_id::text as "snapshotId",
                  text, content_hash as "contentHash", text_char_count as "textCharCount"
           from public_source_documents
           where ${binding.source.kind === "public"} = true
@@ -5062,7 +5062,7 @@ const loadStoredEvaluationDocuments = (
           union all
           select subscriptions.id::text as "sourceId",
                  documents.id::text as "documentId",
-                 versions.id::text as "versionId",
+                 versions.id::text as "snapshotId",
                  versions.canonical_text as text, versions.content_hash as "contentHash",
                  versions.text_char_count as "textCharCount"
           from brief_document_versions versions
@@ -5073,7 +5073,7 @@ const loadStoredEvaluationDocuments = (
             and subscriptions.id::text = ${binding.source.kind === "publisher" ? binding.source.sourceId.slice("publisher:".length) : null}
             and issues.id::text = ${binding.source.kind === "publisher" ? binding.source.issueId : null}
             and documents.id::text = ${binding.documentId}
-            and versions.id::text = ${binding.versionId}
+            and versions.id::text = ${binding.snapshotId}
         `;
         if (rows.length !== 1) {
           throw new Error(
@@ -5084,7 +5084,7 @@ const loadStoredEvaluationDocuments = (
         if (
           stored.sourceId !== binding.source.sourceId.slice(`${binding.source.kind}:`.length) ||
           stored.documentId !== binding.documentId ||
-          stored.versionId !== binding.versionId ||
+          stored.snapshotId !== binding.snapshotId ||
           stored.contentHash !== binding.contentHash ||
           sha256Hex(stored.text) !== stored.contentHash
         ) {
@@ -5095,7 +5095,7 @@ const loadStoredEvaluationDocuments = (
         documents.set(evaluationBindingGoldenSourceId(binding), {
           sourceId: stored.sourceId,
           documentId: stored.documentId,
-          versionId: stored.versionId,
+          snapshotId: stored.snapshotId,
           text: stored.text,
           contentHash: stored.contentHash,
           textCharCount: stored.textCharCount,
@@ -5131,7 +5131,7 @@ const SourceExposureAttestationSchema = z
       .regex(/^(?:public|publisher):[^:\s]+$/u)
       .optional(),
     documentId: z.string().min(1).optional(),
-    versionId: z.string().min(1).optional(),
+    snapshotId: z.string().min(1).optional(),
     documentContentHash: z
       .string()
       .regex(/^[0-9a-f]{64}$/u)
@@ -5212,14 +5212,14 @@ const reconstructDocumentExposureText = (
   const metadata = {
     sourceId: exposure.documentSourceId,
     documentId: exposure.documentId,
-    versionId: exposure.versionId,
+    snapshotId: exposure.snapshotId,
     contentHash: exposure.documentContentHash,
     ranges: exposure.documentRanges,
   };
   if (
     metadata.sourceId === null ||
     metadata.documentId === null ||
-    metadata.versionId === null ||
+    metadata.snapshotId === null ||
     metadata.contentHash === null ||
     metadata.ranges === null
   ) {
@@ -5233,7 +5233,7 @@ const reconstructDocumentExposureText = (
   if (
     metadata.sourceId !== binding.sourceId ||
     metadata.documentId !== binding.documentId ||
-    metadata.versionId !== binding.versionId ||
+    metadata.snapshotId !== binding.snapshotId ||
     metadata.contentHash !== binding.contentHash ||
     metadata.contentHash !== sha256Hex(documentText)
   ) {
@@ -5255,7 +5255,7 @@ const reconstructDocumentExposureText = (
   const rangeIdentityJson = JSON.stringify(
     metadata.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd })),
   );
-  const expectedIdentity = `${documentBindingIdentity(binding)}:${binding.versionId}:${sha256Base64Url(rangeIdentityJson)}`;
+  const expectedIdentity = `${documentBindingIdentity(binding)}:${binding.snapshotId}:${sha256Base64Url(rangeIdentityJson)}`;
   if (exposure.logicalSourceIdentity !== documentBindingIdentity(binding)) {
     throw new Error(`${manifest.caseId} document exposure namespace is invalid`);
   }
@@ -5424,7 +5424,7 @@ const expectedExposureVisibleTokenCount = (
       const rangeIdentity = JSON.stringify(
         source.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd })),
       );
-      const expectedContentItemIdentity = `${documentBindingIdentity(binding)}:${binding.versionId}:${sha256Base64Url(rangeIdentity)}`;
+      const expectedContentItemIdentity = `${documentBindingIdentity(binding)}:${binding.snapshotId}:${sha256Base64Url(rangeIdentity)}`;
       if (exposure.contentItemIdentity === expectedContentItemIdentity) {
         visibleText = reconstructDocumentExposureText(
           manifest,
@@ -5593,14 +5593,14 @@ const attestExactSourceExposureRows = (
     const attestedDocumentMetadata = {
       sourceId: payload.documentSourceId ?? null,
       documentId: payload.documentId ?? null,
-      versionId: payload.versionId ?? null,
+      snapshotId: payload.snapshotId ?? null,
       contentHash: payload.documentContentHash ?? null,
       ranges: payload.documentRanges ?? null,
     };
     const durableDocumentMetadata = {
       sourceId: exposure.documentSourceId,
       documentId: exposure.documentId,
-      versionId: exposure.versionId,
+      snapshotId: exposure.snapshotId,
       contentHash: exposure.documentContentHash,
       ranges: exposure.documentRanges,
     };
@@ -5681,13 +5681,13 @@ const validDocumentRangeIdentities = (
   add(fixture.labels.acceptableRanges[evaluationBindingGoldenSourceId(binding)]);
   add([{ charStart: 0, charEnd: stored.text.length }]);
   for (const durableSource of evidence.sources) {
-    if (durableSource.versionId === binding.versionId) {
+    if (durableSource.snapshotId === binding.snapshotId) {
       add(durableSource.locator.ranges);
     }
   }
   const sourceKeys = new Set(
     evidence.sources
-      .filter((durableSource) => durableSource.versionId === binding.versionId)
+      .filter((durableSource) => durableSource.snapshotId === binding.snapshotId)
       .map((durableSource) => durableSource.sourceKey),
   );
   for (const use of evidence.sourceUses) if (sourceKeys.has(use.sourceKey)) add(use.ranges);
@@ -5700,7 +5700,7 @@ const validDocumentRangeIdentities = (
     const record = value as Record<string, unknown>;
     if (
       record.candidateId === documentBindingIdentity(binding) ||
-      record.versionId === binding.versionId
+      record.snapshotId === binding.snapshotId
     ) {
       add(record.ranges);
     }
@@ -5710,7 +5710,7 @@ const validDocumentRangeIdentities = (
   return new Set(
     ranges.map(
       (value) =>
-        `${documentBindingIdentity(binding)}:${binding.versionId}:${sha256Base64Url(JSON.stringify(value.map(({ charStart, charEnd }) => ({ charStart, charEnd }))))}`,
+        `${documentBindingIdentity(binding)}:${binding.snapshotId}:${sha256Base64Url(JSON.stringify(value.map(({ charStart, charEnd }) => ({ charStart, charEnd }))))}`,
     ),
   );
 };
@@ -5893,7 +5893,7 @@ const mapExposureToGolden = (
               const rangeIdentity = JSON.stringify(
                 source.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd })),
               );
-              const expectedContentItemIdentity = `${expectedIdentity}:${binding.versionId}:${sha256Base64Url(rangeIdentity)}`;
+              const expectedContentItemIdentity = `${expectedIdentity}:${binding.snapshotId}:${sha256Base64Url(rangeIdentity)}`;
               return exposure.contentItemIdentity === expectedContentItemIdentity;
             })()
           : exactBaselineExposureMatches(
@@ -5902,7 +5902,7 @@ const mapExposureToGolden = (
               exposure.contentItemIdentity,
             );
     } else if (binding.kind === "document") {
-      const immutablePrefix = `${documentBindingIdentity(binding)}:${binding.versionId}:`;
+      const immutablePrefix = `${documentBindingIdentity(binding)}:${binding.snapshotId}:`;
       const digest = exposure.contentItemIdentity.slice(immutablePrefix.length);
       const structurallyExact =
         exposure.contentItemIdentity.startsWith(immutablePrefix) &&
@@ -6106,7 +6106,7 @@ const sourceAudit = async (
                     join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
                     join publisher_companies companies
                       on companies.id = subscriptions.publisher_company_id
-                    where versions.id::text = ${binding.kind === "document" ? binding.versionId : null}
+                    where versions.id::text = ${binding.kind === "document" ? binding.snapshotId : null}
                       and documents.id::text = ${binding.kind === "document" ? binding.documentId : null}
                       and issues.id::text = ${binding.kind === "document" && binding.source.kind === "publisher" ? binding.source.issueId : null}
                       and documents.id::text = ${binding.kind === "document" && binding.source.kind === "publisher" ? binding.source.documentId : null}
@@ -6116,7 +6116,7 @@ const sourceAudit = async (
                   else exists (
                     select 1 from public_source_documents documents
                     where documents.document_id = ${binding.kind === "document" ? binding.documentId : null}
-                      and documents.document_id = ${binding.kind === "document" ? binding.versionId : null}
+                      and documents.document_id = ${binding.kind === "document" ? binding.snapshotId : null}
                       and documents.source_id = ${binding.kind === "document" && binding.source.kind === "public" ? binding.source.sourceId.slice("public:".length) : null}
                       and ('public:' || documents.source_id) = ${binding.kind === "document" ? binding.source.sourceId : null}
                       and documents.content_hash = ${binding.kind === "document" ? binding.contentHash : null}
@@ -7761,7 +7761,7 @@ const terminalRetrievalManifests = (
           candidateId = documentBindingIdentity(binding);
           exact =
             documentReference.documentId === binding.documentId &&
-            documentReference.versionId === binding.versionId &&
+            documentReference.snapshotId === binding.snapshotId &&
             canonicalJson(documentReference.source) === canonicalJson(binding.source) &&
             documentReference.purpose === source.purpose &&
             canonicalJson(ranges) === canonicalJson(source.ranges);
@@ -7905,7 +7905,7 @@ const terminalRetrievalManifests = (
             // suffix rather than the golden set's full-range identity.
             return [
               source.sourceId,
-              `${documentBindingIdentity(binding)}:${binding.versionId}:`,
+              `${documentBindingIdentity(binding)}:${binding.snapshotId}:`,
             ] as const;
           }),
         );

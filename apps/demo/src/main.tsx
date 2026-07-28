@@ -572,7 +572,7 @@ function ClientFeedsList({
       streamSeqRef.current = next.seq;
       if (event.type !== "done" && event.type !== "error") {
         persistRunStreamState(window.sessionStorage, {
-          version: 1,
+          version: 2,
           runId: activeRunId,
           lastSeq: next.seq,
           draft: {
@@ -580,6 +580,8 @@ function ClientFeedsList({
             text: next.assistantText,
             attempt: next.attempt,
             sourcesRead: next.sourcesRead,
+            activities: next.activities,
+            terminalFailure: null,
           },
         });
       }
@@ -837,8 +839,6 @@ function ClientFeedsList({
     () => buildTranscriptMessages(chatMessages, activeRunId, streamState.phase, streamState),
     [activeRunId, chatMessages, streamState],
   );
-  const showProgress =
-    runActive && (streamState.phase === "idle" || streamState.phase === "preparing");
 
   return (
     <div className="mx-auto max-w-5xl space-y-7">
@@ -858,11 +858,6 @@ function ClientFeedsList({
         {chatStatus === "error" ? (
           <p className="mt-2 font-mono text-[11px] text-accent">
             <FormattedMessage id="chat.unavailable" />
-          </p>
-        ) : null}
-        {showProgress ? (
-          <p className="mt-2 font-mono text-[11px] text-muted">
-            <FormattedMessage id="chat.preparing" />
           </p>
         ) : null}
 

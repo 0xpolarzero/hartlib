@@ -69,7 +69,7 @@ export interface SourceRow {
   /** Immutable canonical URL indexed for public-source documents. */
   readonly canonical_url?: string | null;
   readonly document_id?: string | null;
-  readonly version_id?: string | null;
+  readonly snapshot_id?: string | null;
   readonly content_hash?: string | null;
   readonly source_identity_digest?: string | null;
   readonly source_identity_valid?: boolean;
@@ -362,12 +362,12 @@ export const loadChatRuntimeState = (
                    sources.document_source_id as source_id,
                    public_documents.canonical_url,
                    sources.document_id,
-                   sources.version_id,
+                   sources.snapshot_id,
                    sources.content_hash,
                    sources.source_identity_digest,
                    sources.source_identity_digest = assistant_message_source_identity_digest(
                      sources.assistant_message_id, sources.source_key, sources.kind,
-                     sources.locator, sources.version_id, sources.publisher_extraction_id,
+                     sources.locator, sources.snapshot_id, sources.publisher_extraction_id,
                      sources.message_id, sources.memory_revision_id, sources.display_label,
                      sources.public_provenance
                    ) as source_identity_valid,

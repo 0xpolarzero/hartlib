@@ -492,7 +492,7 @@ describe("canonical agent tool loop", () => {
             execute: async () => ({
               complete: true,
               items: [{ messageId: "public-message", snippet: "visible" }],
-              versionId: "secret",
+              snapshotId: "secret",
               source: { kind: "public", sourceId: "secret" },
               contentHash: "secret",
               publisherExtractionId: "secret",
@@ -2289,7 +2289,7 @@ describe("canonical agent tool loop", () => {
     const reference = {
       kind: "document",
       documentId: "doc",
-      versionId: "version",
+      snapshotId: "version",
       source: { kind: "public", sourceId: "public:source" },
       purpose: "inspect",
     } as const;
@@ -2414,7 +2414,7 @@ describe("canonical agent tool loop", () => {
     const reference = {
       kind: "document",
       documentId: "doc",
-      versionId: "version",
+      snapshotId: "version",
       source: { kind: "public", sourceId: "public:source" },
       purpose: "inspect",
       ranges: [
@@ -2485,7 +2485,7 @@ describe("canonical agent tool loop", () => {
     const reference = {
       kind: "document",
       documentId: "doc",
-      versionId: "version",
+      snapshotId: "version",
       source: { kind: "public", sourceId: "public:source" },
       purpose: "inspect",
       ranges: [

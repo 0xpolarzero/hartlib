@@ -33,7 +33,7 @@ export interface SearchDocumentsOptions {
 interface SearchRow {
   readonly sourceId: string;
   readonly documentId: string;
-  readonly versionId: string;
+  readonly snapshotId: string;
   readonly contentHash: string;
   readonly text: string;
   readonly title: string;
@@ -157,7 +157,7 @@ export const searchDocuments = (
         kind: "public_source" as const,
         sourceId: `public:${row.sourceId}`,
         documentId: row.documentId,
-        versionId: row.versionId,
+        snapshotId: row.snapshotId,
         contentHash: row.contentHash,
         title: row.title,
         sourceDisplayName: row.sourceDisplayName,

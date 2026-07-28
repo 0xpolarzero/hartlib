@@ -334,13 +334,13 @@ const assertSeededCorpusSearchable = Effect.gen(function* () {
   const rows = yield* sql<{
     readonly sourceId: string;
     readonly documentId: string;
-    readonly versionId: string;
+    readonly snapshotId: string;
     readonly canonicalUrl: string;
     readonly contentHash: string;
   }>`
     select d.source_id as "sourceId",
            d.document_id as "documentId",
-           d.document_id as "versionId",
+           d.document_id as "snapshotId",
            d.canonical_url as "canonicalUrl",
            d.content_hash as "contentHash"
     from public_source_documents d
@@ -360,7 +360,7 @@ const assertSeededCorpusSearchable = Effect.gen(function* () {
     return {
       sourceId: expected.sourceId,
       documentId: expected.documentId,
-      versionId: expected.documentId,
+      snapshotId: expected.documentId,
       canonicalUrl: expected.canonicalUrl,
       contentHash: createHash("sha256").update(corpusItem.text).digest("hex"),
     };
@@ -662,7 +662,7 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
   const documents = yield* sql<{
     readonly documentId: string;
-    readonly versionId: string;
+    readonly snapshotId: string;
     readonly extractionId: string;
     readonly title: string;
     readonly contentHash: string;
@@ -670,7 +670,7 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
     readonly publishedAt: Date;
   }>`
     select documents.id::text as "documentId",
-           versions.id::text as "versionId",
+           versions.id::text as "snapshotId",
            extractions.id::text as "extractionId",
            documents.title,
            versions.content_hash as "contentHash",
@@ -764,7 +764,7 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
       yield* sql`
     insert into assistant_message_sources (
       assistant_message_id, source_key, kind, locator,
-      version_id, publisher_extraction_id, document_source_id, document_id, content_hash,
+      snapshot_id, publisher_extraction_id, document_source_id, document_id, content_hash,
       display_label, public_provenance
     ) values (
       ${message!.id}, ${sourceKey}, 'document',
@@ -772,14 +772,14 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
         kind: "document",
         sourceId: `publisher:${publisherPdfFixture.subscriptionId}`,
         documentId: document.documentId,
-        versionId: document.versionId,
+        snapshotId: document.snapshotId,
         contentHash: document.contentHash,
         ranges,
         publisherIssueId: publisherPdfFixture.issueId,
         publisherDocumentId: document.documentId,
         publisherExtractionId: document.extractionId,
       })},
-      ${document.versionId}, ${document.extractionId},
+      ${document.snapshotId}, ${document.extractionId},
       ${`publisher:${publisherPdfFixture.subscriptionId}`}, ${document.documentId}, ${document.contentHash},
       ${document.title},
       ${sql.json({

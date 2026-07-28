@@ -49,10 +49,10 @@ const namespacedPublisherDocumentIdentity = (
 
 const documentContentItemIdentity = (
   logicalSourceIdentity: string,
-  versionId: string,
+  snapshotId: string,
   ranges: readonly { readonly charStart: number; readonly charEnd: number }[],
 ): string =>
-  `${logicalSourceIdentity}:${versionId}:${createHash("sha256")
+  `${logicalSourceIdentity}:${snapshotId}:${createHash("sha256")
     .update(JSON.stringify(ranges), "utf8")
     .digest("base64url")}`;
 
@@ -1810,7 +1810,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           insert into ai_source_exposures (
             run_id, task_id, loop_iteration, attempt, provider_request_index, source_kind,
             logical_source_identity, content_item_identity, exposure_stage, visible_token_count,
-            document_source_id, document_id, version_id, content_hash, document_ranges
+            document_source_id, document_id, snapshot_id, content_hash, document_ranges
             ) values (
               ${accepted.run.id}, 'single-retrieve-internal', 0, 0, 0, 'document',
             ${namespacedPublicDocumentIdentity(sourceId, documentId)},
@@ -1929,7 +1929,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
               run_id, task_id, loop_iteration, attempt, provider_request_index, source_kind,
               logical_source_identity, publisher_document_id, content_item_identity,
               exposure_stage, visible_token_count, document_source_id, document_id,
-              version_id, content_hash, document_ranges
+              snapshot_id, content_hash, document_ranges
             ) values (
               ${runId}, 'single-retrieve-internal', 0, 0, 0, 'document',
               ${identity}, ${publisherDocumentId}, ${documentContentItemIdentity(identity, documentId, ranges)},
@@ -2003,7 +2003,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     const subscriptionId = crypto.randomUUID();
     const accessId = crypto.randomUUID();
     const issueId = crypto.randomUUID();
-    const versionId = crypto.randomUUID();
+    const snapshotId = crypto.randomUUID();
     // Deliberately reuse the same raw document ID as the public namespace fixture
     // below; the namespace tuple must keep the two identities distinct.
     const documentId = crypto.randomUUID();
@@ -2118,14 +2118,14 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
             id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
-            ${versionId}, ${documentId}, ${extractionId}, ${publisherContentHash}, 'en-US', ${publisherText},
+            ${snapshotId}, ${documentId}, ${extractionId}, ${publisherContentHash}, 'en-US', ${publisherText},
             ${publisherText.length},
             ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: publisherText.length }])}::jsonb
           )
         `;
         yield* sql`
           update brief_documents
-          set current_version_id = ${versionId}
+          set current_version_id = ${snapshotId}
           where id = ${documentId}
         `;
         yield* sql`
@@ -2164,12 +2164,12 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
               run_id, task_id, loop_iteration, attempt, provider_request_index, source_kind,
               logical_source_identity, publisher_issue_id, publisher_document_id,
               content_item_identity, exposure_stage, visible_token_count, document_source_id,
-              document_id, version_id, content_hash, publisher_extraction_id, document_ranges
+              document_id, snapshot_id, content_hash, publisher_extraction_id, document_ranges
             ) values (
               ${runId}, 'single-retrieve-internal', 0, 0, 0, 'document', ${identity},
-              ${issueId}, ${documentId}, ${documentContentItemIdentity(identity, versionId, ranges)},
+              ${issueId}, ${documentId}, ${documentContentItemIdentity(identity, snapshotId, ranges)},
               'internal_inspection', 12, ${`publisher:${subscriptionId}`}, ${documentId},
-              ${versionId}, ${publisherContentHash}, ${extractionId},
+              ${snapshotId}, ${publisherContentHash}, ${extractionId},
               ${JSON.stringify(ranges)}::jsonb
             )
           `;

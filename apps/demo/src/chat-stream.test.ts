@@ -111,6 +111,46 @@ describe("reduceChatStream", () => {
     expect(state.assistantText).toBe("second");
   });
 
+  it("updates one activity item per public key and marks the active item on failure", () => {
+    const state = reduceAll([
+      {
+        seq: 1,
+        event: {
+          type: "activity",
+          stage: "understanding",
+          code: "request_understanding",
+          status: "running",
+          attempt: 1,
+        },
+      },
+      {
+        seq: 2,
+        event: {
+          type: "activity",
+          stage: "understanding",
+          code: "request_understanding",
+          status: "retrying",
+          attempt: 2,
+        },
+      },
+      {
+        seq: 3,
+        event: {
+          type: "activity",
+          stage: "evidence",
+          code: "internal_sources",
+          status: "running",
+        },
+      },
+      { seq: 4, event: { type: "error", code: "internal_retrieval_failed", retryable: true } },
+    ]);
+
+    expect(state.activities).toMatchObject([
+      { code: "request_understanding", status: "retrying", attempt: 2 },
+      { code: "internal_sources", status: "failed" },
+    ]);
+  });
+
   it("discards provisional answer and sources on terminal error", () => {
     const state = reduceAll([
       { seq: 1, event: { type: "answer_started", mode: "synthesis", attempt: 1 } },
@@ -132,7 +172,7 @@ describe("reduceChatStream", () => {
   it("restores provisional deltas and their exact replay cursor after reload", () => {
     expect(
       restoreChatStreamState({
-        version: 1,
+        version: 2,
         runId: "run-1",
         lastSeq: 9,
         draft: {
@@ -140,6 +180,15 @@ describe("reduceChatStream", () => {
           text: "provisional answer",
           attempt: 2,
           sourcesRead: [source],
+          activities: [
+            {
+              type: "activity",
+              stage: "evidence",
+              code: "internal_sources",
+              status: "complete",
+            },
+          ],
+          terminalFailure: null,
         },
       }),
     ).toMatchObject({
@@ -148,6 +197,7 @@ describe("reduceChatStream", () => {
       seq: 9,
       attempt: 2,
       sourcesRead: [source],
+      activities: [{ code: "internal_sources", status: "complete" }],
     });
   });
 });

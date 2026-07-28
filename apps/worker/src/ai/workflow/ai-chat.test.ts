@@ -1005,7 +1005,7 @@ describe("canonical ai-chat workflow source contract", () => {
       kind: "document",
       sourceId: "public:source-1",
       documentId: "document-1",
-      versionId: "version-1",
+      snapshotId: "version-1",
       contentHash: "a".repeat(64),
       ranges: [{ charStart: 0, charEnd: 1 }],
     };
@@ -1299,7 +1299,7 @@ describe("canonical ai-chat workflow source contract", () => {
           purpose: "publisher evidence",
           sourceId: "publisher:source-1",
           documentId: "document-1",
-          versionId: "version-1",
+          snapshotId: "version-1",
           publisherIssueId: "issue-1",
           publisherDocumentId: "document-1",
           publisherExtractionId: "extraction-1",
@@ -1324,7 +1324,7 @@ describe("canonical ai-chat workflow source contract", () => {
             kind: "document" as const,
             sourceId: "publisher:subscription-1",
             documentId: "document-1",
-            versionId: "version-1",
+            snapshotId: "version-1",
             contentHash: "a".repeat(64),
             ranges: [{ charStart: 0, charEnd: 14 }],
             publisherIssueId: "issue-1",
@@ -1370,14 +1370,14 @@ describe("canonical ai-chat workflow source contract", () => {
       {
         kind: "document" as const,
         documentId: "public-document-1",
-        versionId: "public-version-1",
+        snapshotId: "public-version-1",
         source: { kind: "public" as const, sourceId: "public:e2e-fr-energie" },
         purpose: "public evidence",
       },
       {
         kind: "document" as const,
         documentId: "publisher-document-1",
-        versionId: "publisher-version-1",
+        snapshotId: "publisher-version-1",
         source: {
           kind: "publisher" as const,
           sourceId: "publisher:e2e-fr-energie",

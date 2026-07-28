@@ -7,7 +7,7 @@ const documentLocator: Extract<FinalSourceRecord["locator"], { readonly kind: "d
   kind: "document",
   sourceId: "public:source-1",
   documentId: "document-1",
-  versionId: "version-1",
+  snapshotId: "version-1",
   contentHash: "hash-1",
   ranges: [{ charStart: 2, charEnd: 9 }],
 };

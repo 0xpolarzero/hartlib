@@ -1,10 +1,12 @@
 import { MemoryConflictError } from "../product-state/memory";
+import { type AiRunActivityEvent, activityCodeForPhase, activityStageForCode } from "@brief/shared";
 import {
   AiRuntimeError,
   isAbortError,
   isAiRuntimeError,
   type AiRunErrorCode,
 } from "../runtime/errors";
+import { currentTaskRuntime } from "../runtime/task-cancellation";
 import type { CanonicalWorkflowOperations } from "./operations";
 
 export type AiPhaseStatus = "started" | "succeeded" | "failed" | "passed" | "rejected";
@@ -46,6 +48,47 @@ export interface AiPhaseLogEntry {
 }
 
 export type AiPhaseLogger = (entry: AiPhaseLogEntry) => Promise<void> | void;
+
+export type AiActivityLogger = (
+  event: AiRunActivityEvent,
+  entry: AiPhaseLogEntry,
+) => Promise<void> | void;
+
+export const publicActivityFromPhase = (
+  entry: AiPhaseLogEntry,
+  args: readonly unknown[] = [],
+): AiRunActivityEvent | undefined => {
+  if (entry.phase === "load_turn" || entry.phase === "answer_stream") return undefined;
+  const code = activityCodeForPhase(entry.phase);
+  if (code === undefined) return undefined;
+  if (entry.phase === "web_retrieval") {
+    const scope = record(record(args[0]).acceptanceScope);
+    if (scope.webRequested !== true || scope.webEnabled !== true) return undefined;
+  }
+  if (entry.phase === "memory_selection") {
+    const scope = record(record(args[0]).acceptanceScope);
+    if (scope.memoryMode !== "private_owner") return undefined;
+  }
+  const status =
+    entry.status === "started"
+      ? "running"
+      : entry.status === "failed"
+        ? "retrying"
+        : entry.status === "rejected"
+          ? "retrying"
+          : "complete";
+  return {
+    type: "activity",
+    stage: activityStageForCode(code),
+    code,
+    status,
+    ...(entry.topicId === undefined ? {} : { topicId: entry.topicId }),
+    ...(entry.attempt === undefined ? {} : { attempt: entry.attempt }),
+    ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
+    ...(entry.sourceCount === undefined ? {} : { sourceCount: entry.sourceCount }),
+    ...(entry.itemCount === undefined ? {} : { resultCount: entry.itemCount }),
+  };
+};
 
 /**
  * Runtime allow-list used at the final console boundary. Unknown properties are
@@ -250,7 +293,7 @@ const rules: Record<OperationName, PhaseRule> = {
   },
   allocateFanout: {
     phase: "fanout_allocation_exact_gate",
-    asynchronous: false,
+    asynchronous: true,
     taskId: fixed("fanout-allocate"),
     model: "main",
     fallbackErrorCode: "synthesis_budget_mismatch",
@@ -265,7 +308,7 @@ const rules: Record<OperationName, PhaseRule> = {
   },
   synthesisContext: {
     phase: "synthesis_assembly_exact_gate",
-    asynchronous: false,
+    asynchronous: true,
     taskId: fixed("fanout-synthesis-measure"),
     model: "main",
     fallbackErrorCode: "synthesis_budget_mismatch",
@@ -353,6 +396,7 @@ export const withAiPhaseLogging = (
   operations: CanonicalWorkflowOperations,
   options: {
     readonly logger: AiPhaseLogger;
+    readonly activityLogger?: AiActivityLogger | undefined;
     readonly fastModel: "glm-5-turbo";
     readonly mainModel: "glm-5-turbo";
     readonly now?: (() => number) | undefined;
@@ -370,30 +414,50 @@ export const withAiPhaseLogging = (
       const invoke = original.bind(target) as (...args: readonly unknown[]) => unknown;
       return (...args: readonly unknown[]): unknown => {
         const startedAt = now();
+        const runtime = currentTaskRuntime();
         const common = {
           runId: runIdFor(name, args),
           ...(rule.taskId(args) === undefined ? {} : { taskId: rule.taskId(args) }),
           ...(rule.topicId?.(args) === undefined ? {} : { topicId: rule.topicId(args) }),
+          ...(runtime === undefined ? {} : { attempt: runtime.attempt }),
           ...(rule.model === null
             ? {}
             : { model: rule.model === "fast" ? options.fastModel : options.mainModel }),
         };
         const phases = [rule.phase, ...(rule.additionalPhases ?? [])];
-        const emit = (entry: Omit<AiPhaseLogEntry, "phase">) =>
-          Promise.all(phases.map((phase) => options.logger({ phase, ...entry }))).then(
-            () => undefined,
-          );
+        const emit = (entry: Omit<AiPhaseLogEntry, "phase">, includePublicActivity = true) =>
+          Promise.all(
+            phases.map((phase) => {
+              const phaseEntry = { phase, ...entry };
+              const publicActivity = includePublicActivity
+                ? publicActivityFromPhase(phaseEntry, args)
+                : undefined;
+              return Promise.all([
+                options.logger(phaseEntry),
+                ...(options.activityLogger === undefined || publicActivity === undefined
+                  ? []
+                  : [options.activityLogger(publicActivity, phaseEntry)]),
+              ]);
+            }),
+          ).then(() => undefined);
         if (rule.asynchronous) {
           return (async () => {
             await emit({ ...common, status: "started" });
             try {
               const result = await invoke(...args);
-              await emit({
-                ...common,
-                ...resultFields(result),
-                status: "succeeded",
-                durationMs: Math.max(0, now() - startedAt),
-              });
+              await emit(
+                {
+                  ...common,
+                  ...resultFields(result),
+                  status: "succeeded",
+                  durationMs: Math.max(0, now() - startedAt),
+                },
+                name !== "finalize" &&
+                  !(
+                    (name === "answerDirect" || name === "answerTopic" || name === "synthesize") &&
+                    record(result).status === "failed"
+                  ),
+              );
               return result;
             } catch (error) {
               const durableError = durableOperationFailure(error, rule.fallbackErrorCode);
@@ -410,12 +474,19 @@ export const withAiPhaseLogging = (
         void emit({ ...common, status: "started" });
         try {
           const result = invoke(...args);
-          void emit({
-            ...common,
-            ...resultFields(result),
-            status: "succeeded",
-            durationMs: Math.max(0, now() - startedAt),
-          });
+          void emit(
+            {
+              ...common,
+              ...resultFields(result),
+              status: "succeeded",
+              durationMs: Math.max(0, now() - startedAt),
+            },
+            name !== "finalize" &&
+              !(
+                (name === "answerDirect" || name === "answerTopic" || name === "synthesize") &&
+                record(result).status === "failed"
+              ),
+          );
           return result;
         } catch (error) {
           const durableError = durableOperationFailure(error, rule.fallbackErrorCode);

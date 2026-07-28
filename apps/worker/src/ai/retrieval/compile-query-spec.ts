@@ -166,7 +166,7 @@ export const compileQuerySpec = (
   return frag`select
   source_id as "sourceId",
   document_id as "documentId",
-  document_id as "versionId",
+  document_id as "snapshotId",
   content_hash as "contentHash",
   text,
   title,

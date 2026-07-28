@@ -80,7 +80,7 @@ const evaluationSourceIdentityOptions = (
               source.sourceId,
               {
                 documentId: source.sourceId,
-                versionId: `test-version-${index + 1}`,
+                snapshotId: `test-version-${index + 1}`,
                 contentHash: createHash("sha256").update(source.content, "utf8").digest("hex"),
                 source: {
                   kind: "public" as const,
@@ -107,7 +107,7 @@ const evaluationSourceIdentityOptions = (
         );
         return {
           logicalSourceIdentity,
-          contentItemIdentity: `${logicalSourceIdentity}:${binding.versionId}:${sha256Base64Url(
+          contentItemIdentity: `${logicalSourceIdentity}:${binding.snapshotId}:${sha256Base64Url(
             JSON.stringify([{ charStart: input.charStart, charEnd: input.charEnd }]),
           )}`,
           documentId: binding.documentId,
@@ -131,7 +131,7 @@ const evaluationSourceIdentityOptions = (
       const binding = documents.get(input.sourceId);
       if (input.sourceKind !== "document" || binding === undefined) return undefined;
       return {
-        versionId: binding.versionId,
+        snapshotId: binding.snapshotId,
         contentHash: binding.contentHash,
         source: binding.source,
         ranges: [{ charStart: input.charStart, charEnd: input.charEnd }],

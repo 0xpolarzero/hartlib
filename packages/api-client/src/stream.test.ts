@@ -138,10 +138,17 @@ describe("reload and generic storage codecs", () => {
       setItem: (key: string, value: string) => values.set(key, value),
     };
     persistRunStreamState(storage, {
-      version: 1,
+      version: 2,
       runId: "run-1",
       lastSeq: 7,
-      draft: { runId: "run-1", text: "partial", attempt: 2, sourcesRead: [] },
+      draft: {
+        runId: "run-1",
+        text: "partial",
+        attempt: 2,
+        sourcesRead: [],
+        activities: [],
+        terminalFailure: null,
+      },
     });
     expect(restoreRunStreamState(storage, "run-1")).toMatchObject({ lastSeq: 7 });
 

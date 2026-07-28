@@ -16,7 +16,7 @@ type IndexedDocumentSourceRow = SourceRow & {
   readonly source_id?: string | null;
   readonly canonical_url?: string | null;
   readonly document_id?: string | null;
-  readonly version_id?: string | null;
+  readonly snapshot_id?: string | null;
   readonly content_hash?: string | null;
 };
 
@@ -168,21 +168,21 @@ const requiredDocumentCitationUrl = (
       throw new Error("invalid persisted publisher document provenance");
     }
     const documentId = indexed.document_id;
-    const versionId = indexed.version_id;
+    const snapshotId = indexed.snapshot_id;
     const contentHash = indexed.content_hash;
     const canonicalUrl = indexed.canonical_url;
     if (
       isCanonicalPublicDocumentSourceId(sourceId) &&
       documentId !== null &&
       documentId !== undefined &&
-      versionId !== null &&
-      versionId !== undefined &&
+      snapshotId !== null &&
+      snapshotId !== undefined &&
       contentHash !== null &&
       contentHash !== undefined &&
       canonicalUrl !== null &&
       canonicalUrl !== undefined &&
       locator.documentId === documentId &&
-      locator.versionId === versionId &&
+      locator.snapshotId === snapshotId &&
       locator.contentHash === contentHash &&
       value === canonicalUrl &&
       canonicalPublicSourceHttpsUrl(canonicalUrl) === canonicalUrl
@@ -192,7 +192,7 @@ const requiredDocumentCitationUrl = (
     throw new Error("invalid persisted source citationUrl");
   }
 
-  const versionId = requiredString(locator, "versionId");
+  const snapshotId = requiredString(locator, "snapshotId");
   const documentId = requiredString(locator, "documentId");
   const publisherIssueId = requiredString(locator, "publisherIssueId");
   const publisherDocumentId = requiredString(locator, "publisherDocumentId");
@@ -200,7 +200,7 @@ const requiredDocumentCitationUrl = (
   if (
     !isCanonicalPublisherDocumentSourceId(sourceId) ||
     indexed.document_id !== documentId ||
-    indexed.version_id !== versionId ||
+    indexed.snapshot_id !== snapshotId ||
     indexed.content_hash !== locator.contentHash ||
     indexedPublisherExtractionId === null ||
     indexedPublisherDocument !== publisherDocumentId ||
@@ -519,7 +519,7 @@ const publicSourceFromRow = (row: SourceRow, uses: readonly SourceUseRow[]): Pub
           "kind",
           "sourceId",
           "documentId",
-          "versionId",
+          "snapshotId",
           "contentHash",
           "ranges",
           "publisherExtractionId",

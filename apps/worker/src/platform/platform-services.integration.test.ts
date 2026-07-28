@@ -3882,7 +3882,7 @@ describe.skipIf(!isBun || !databaseUrl)(
           yield* sql`
             insert into assistant_message_sources (
               assistant_message_id, source_key, kind, locator,
-              version_id, publisher_extraction_id, document_source_id, document_id, content_hash,
+              snapshot_id, publisher_extraction_id, document_source_id, document_id, content_hash,
               display_label, public_provenance
             ) values (
               ${assistantMessageId}, ${citedSourceKey}, 'document',
@@ -3890,7 +3890,7 @@ describe.skipIf(!isBun || !databaseUrl)(
                 kind: "document",
                 sourceId: `publisher:${subscription.id}`,
                 documentId: restrictedDocumentId,
-                versionId: restrictedVersionId,
+                snapshotId: restrictedVersionId,
                 contentHash: createHash("sha256").update(restrictedText, "utf8").digest("hex"),
                 publisherIssueId: restrictedIssueId,
                 publisherDocumentId: restrictedDocumentId,
@@ -3983,7 +3983,7 @@ describe.skipIf(!isBun || !databaseUrl)(
     it("exports issue pull totals independently from document pull totals", async () => {
       const chatId = await runDb(isolatedUrl(), seedBase);
       const documentId = crypto.randomUUID();
-      const versionId = crypto.randomUUID();
+      const snapshotId = crypto.randomUUID();
       const extractionText = "Issue pull evidence";
       const contentHash = createHash("sha256").update(extractionText, "utf8").digest("hex");
       const delivered = await runDb(
@@ -4050,13 +4050,13 @@ describe.skipIf(!isBun || !databaseUrl)(
               id, brief_document_id, publisher_extraction_id, content_hash, language,
               canonical_text, text_char_count, page_ranges
             ) values (
-              ${versionId}, ${documentId}, ${extraction!.id}, ${contentHash}, 'en-US',
+              ${snapshotId}, ${documentId}, ${extraction!.id}, ${contentHash}, 'en-US',
               ${extractionText}, ${extractionText.length},
               ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: extractionText.length }])}::jsonb
             )
           `;
           yield* sql`
-            update brief_documents set current_version_id = ${versionId}
+            update brief_documents set current_version_id = ${snapshotId}
             where id = ${documentId}
           `;
           yield* sql`
@@ -4096,27 +4096,27 @@ describe.skipIf(!isBun || !databaseUrl)(
               run_id, task_id, loop_iteration, attempt, provider_request_index,
               source_kind, logical_source_identity, publisher_issue_id, publisher_document_id,
               content_item_identity, exposure_stage, visible_token_count,
-              document_source_id, document_id, version_id,
+              document_source_id, document_id, snapshot_id,
               publisher_extraction_id, content_hash, document_ranges
             ) values
               (
                 ${runOne}, 'publisher-metric', 0, 0, 0, 'document',
                 'document:one', ${delivered.issueId}, ${documentId}, 'version:one', 'answer', 10,
-                ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${versionId},
+                ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${snapshotId},
                 (select id from brief_document_extractions where brief_document_id = ${documentId}),
                 ${contentHash}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               ),
               (
                 ${runOne}, 'publisher-metric', 0, 0, 0, 'document',
                 'document:two', ${delivered.issueId}, ${documentId}, 'version:two', 'answer', 12,
-                ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${versionId},
+                ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${snapshotId},
                 (select id from brief_document_extractions where brief_document_id = ${documentId}),
                 ${contentHash}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               ),
               (
                 ${runTwo}, 'publisher-metric', 0, 0, 0, 'document',
                 'document:three', ${delivered.issueId}, ${documentId}, 'version:three', 'answer', 14,
-                ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${versionId},
+                ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${snapshotId},
                 (select id from brief_document_extractions where brief_document_id = ${documentId}),
                 ${contentHash}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               )

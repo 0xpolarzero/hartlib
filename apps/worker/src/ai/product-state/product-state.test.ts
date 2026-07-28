@@ -417,7 +417,7 @@ const seedSingleObservability = (
       readonly label?: string | null;
       readonly documentSourceId?: string;
       readonly documentId?: string;
-      readonly versionId?: string;
+      readonly snapshotId?: string;
       readonly contentHash?: string;
       readonly publisherIssueId?: string;
       readonly publisherDocumentId?: string;
@@ -467,7 +467,7 @@ const seedSingleObservability = (
         (source.kind === "chat_message"
           ? fixture.userMessageId
           : source.kind === "document"
-            ? `${source.candidateId ?? `candidate:${source.sourceKey}`}:${source.versionId ?? "fixture-version"}:${sha256Base64Url(JSON.stringify(source.ranges))}`
+            ? `${source.candidateId ?? `candidate:${source.sourceKey}`}:${source.snapshotId ?? "fixture-version"}:${sha256Base64Url(JSON.stringify(source.ranges))}`
             : source.sourceKey),
       exposureStage: "answer_serialized",
       visibleTokenCount: 3,
@@ -488,7 +488,7 @@ const seedSingleObservability = (
             documentReconstruction: {
               sourceId: source.documentSourceId ?? "public:fixture-source",
               documentId: source.documentId ?? "fixture-document",
-              versionId: source.versionId ?? "fixture-version",
+              snapshotId: source.snapshotId ?? "fixture-version",
               contentHash: source.contentHash ?? "f".repeat(64),
               ranges: source.ranges,
               ...(source.publisherExtractionId === undefined
@@ -1231,7 +1231,7 @@ interface PublisherSourceFixture {
   readonly subscriptionId: string;
   readonly issueId: string;
   readonly documentId: string;
-  readonly versionId: string;
+  readonly snapshotId: string;
   readonly extractionId: string;
   readonly contentHash: string;
 }
@@ -1245,7 +1245,7 @@ const createPublisherSourceFixture = (
     const subscriptionId = crypto.randomUUID();
     const issueId = crypto.randomUUID();
     const documentId = crypto.randomUUID();
-    const versionId = crypto.randomUUID();
+    const snapshotId = crypto.randomUUID();
     const contentHash = createHash("sha256").update("Fence source text", "utf8").digest("hex");
     yield* sql`
       insert into publisher_companies (id, name)
@@ -1292,12 +1292,12 @@ const createPublisherSourceFixture = (
         id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
         text_char_count, page_ranges
       ) values (
-        ${versionId}, ${documentId}, ${extractions[0]!.id}, ${contentHash}, 'english', 'Fence source text',
+        ${snapshotId}, ${documentId}, ${extractions[0]!.id}, ${contentHash}, 'english', 'Fence source text',
         17, '[{"pageNumber":1,"charStart":0,"charEnd":17}]'::jsonb
       )
     `;
     yield* sql`
-      update brief_documents set current_version_id = ${versionId} where id = ${documentId}
+      update brief_documents set current_version_id = ${snapshotId} where id = ${documentId}
     `;
     yield* sql`
       update publisher_issues
@@ -1308,7 +1308,7 @@ const createPublisherSourceFixture = (
       subscriptionId,
       issueId,
       documentId,
-      versionId,
+      snapshotId,
       extractionId: extractions[0]!.id,
       contentHash,
     };
@@ -1501,7 +1501,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       documentReconstruction: {
         sourceId: `public:${publicDocument.sourceId}`,
         documentId: publicDocument.documentId,
-        versionId: publicDocument.documentId,
+        snapshotId: publicDocument.documentId,
         contentHash: publicDocument.contentHash,
         ranges: [{ charStart: 0, charEnd: 8 }],
       },
@@ -1692,7 +1692,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       documentReconstruction: {
         sourceId: `publisher:${publisher.subscriptionId}`,
         documentId: publisher.documentId,
-        versionId: publisher.versionId,
+        snapshotId: publisher.snapshotId,
         contentHash: publisher.contentHash,
         publisherExtractionId: publisher.extractionId,
         ranges: [{ charStart: 0, charEnd: 8 }],
@@ -1733,7 +1733,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           ...exposure.documentReconstruction,
           sourceId: `publisher:${alternatePublisher.subscriptionId}`,
           documentId: alternatePublisher.documentId,
-          versionId: alternatePublisher.versionId,
+          snapshotId: alternatePublisher.snapshotId,
           contentHash: alternatePublisher.contentHash,
           publisherExtractionId: alternatePublisher.extractionId,
         },
@@ -1744,7 +1744,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           ...exposure.documentReconstruction,
           sourceId: `publisher:${alternatePublisher.subscriptionId}`,
           documentId: alternatePublisher.documentId,
-          versionId: alternatePublisher.versionId,
+          snapshotId: alternatePublisher.snapshotId,
           contentHash: alternatePublisher.contentHash,
           publisherExtractionId: alternatePublisher.extractionId,
         },
@@ -1755,7 +1755,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           ...exposure.documentReconstruction,
           sourceId: `publisher:${alternatePublisher.subscriptionId}`,
           documentId: alternatePublisher.documentId,
-          versionId: alternatePublisher.versionId,
+          snapshotId: alternatePublisher.snapshotId,
           contentHash: alternatePublisher.contentHash,
           publisherExtractionId: alternatePublisher.extractionId,
         },
@@ -3364,6 +3364,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       "usage:request:model:memory-extract:0:1:0",
       "memory_updated",
       "usage:run",
+      "activity:finalization:all:finalization:complete:1",
       "terminal",
     ]);
   });
@@ -4568,7 +4569,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         kind: "document",
         sourceId: `public:${collision.sourceId}`,
         documentId: collision.publicDocumentId,
-        versionId: collision.publicDocumentId,
+        snapshotId: collision.publicDocumentId,
         contentHash: collision.publicContentHash,
         ranges: [{ charStart: 0, charEnd: 8 }],
       },
@@ -4600,7 +4601,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               ? {
                   documentSourceId: source.locator.sourceId,
                   documentId: source.locator.documentId,
-                  versionId: source.locator.versionId,
+                  snapshotId: source.locator.snapshotId,
                   contentHash: source.locator.contentHash,
                 }
               : {}),
@@ -4628,10 +4629,10 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return (yield* sql<{
-          readonly versionId: string;
+          readonly snapshotId: string;
           readonly publisherExtractionId: string | null;
         }>`
-          select version_id as "versionId",
+          select snapshot_id as "snapshotId",
                  publisher_extraction_id::text as "publisherExtractionId"
           from assistant_message_sources
           where assistant_message_id = (select assistant_message_id from ai_runs where id = ${fixture.runId})
@@ -4639,7 +4640,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       }),
     );
     expect(persisted).toEqual({
-      versionId: collision.publicDocumentId,
+      snapshotId: collision.publicDocumentId,
       publisherExtractionId: null,
     });
 
@@ -4655,7 +4656,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         kind: "document",
         sourceId: `publisher:${collision.subscriptionId}` as `publisher:${string}`,
         documentId: collision.publisherDocumentId,
-        versionId: collision.publicDocumentId,
+        snapshotId: collision.publicDocumentId,
         contentHash: collision.publisherContentHash,
         publisherExtractionId: collision.publisherExtractionId,
         publisherIssueId: wrongIssueId,
@@ -4689,7 +4690,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                 }
               : {}),
             documentId: collision.publisherDocumentId,
-            versionId: collision.publicDocumentId,
+            snapshotId: collision.publicDocumentId,
             contentHash: collision.publisherContentHash,
             publisherExtractionId: collision.publisherExtractionId,
           },
@@ -5063,11 +5064,12 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       "usage:request:model:memory-extract:0:1:0",
       "memory_updated",
       "usage:run",
+      "activity:answer_generation:failed",
       "terminal",
     ]);
     expect(fatalState.memoryCount).toBe(0);
     expect(fatalState.retryable).toBe(false);
-    expect(fatalState.keys).toEqual(["usage:run", "terminal"]);
+    expect(fatalState.keys).toEqual(["usage:run", "activity:saved_context:failed", "terminal"]);
   });
 
   it("binds failed answer context to the measure task's own retry coordinates", async () => {
@@ -5910,7 +5912,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     );
 
     expect(await runDb(pruneFinishedAiRunEvents())).toEqual({
-      deletedEvents: 2,
+      deletedEvents: 3,
       selectedCandidates: 1,
     });
     const counts = await runDb(
@@ -5925,7 +5927,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       }),
     );
     expect(counts.find((row) => row.runId === expired.runId)).toBeUndefined();
-    expect(counts.find((row) => row.runId === retained.runId)?.count).toBe(2);
+    expect(counts.find((row) => row.runId === retained.runId)?.count).toBe(3);
   });
 
   it("retains expired event ledgers for awaiting-annotation and completed evaluations", async () => {
@@ -5992,7 +5994,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       }),
     );
     expect(counts).toHaveLength(2);
-    expect(counts.every((row) => row.count === 2)).toBe(true);
+    expect(counts.every((row) => row.count === 3)).toBe(true);
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;

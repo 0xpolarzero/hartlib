@@ -1,4 +1,10 @@
-import { AiRunEvent, PublicSourceRecord, type AiRunEvent as AiRunEventValue } from "@brief/shared";
+import {
+  AiRunActivityEvent,
+  AiRunEvent,
+  PublicSourceRecord,
+  type AiRunActivityEvent as AiRunActivityEventValue,
+  type AiRunEvent as AiRunEventValue,
+} from "@brief/shared";
 import { Schema } from "effect";
 
 import { ApiResponseError } from "./transport";
@@ -126,10 +132,12 @@ export interface StreamDraftState {
   readonly text: string;
   readonly attempt: number;
   readonly sourcesRead: readonly Schema.Schema.Type<typeof PublicSourceRecord>[];
+  readonly activities: readonly AiRunActivityEventValue[];
+  readonly terminalFailure: { readonly code: string; readonly retryable: boolean } | null;
 }
 
 export interface PersistedRunStreamState {
-  readonly version: 1;
+  readonly version: 2;
   readonly runId: string;
   readonly lastSeq: number;
   readonly draft: StreamDraftState;
@@ -144,9 +152,11 @@ const StreamDraft = Schema.Struct({
   text: Schema.String,
   attempt: NonNegativeInteger,
   sourcesRead: Schema.Array(PublicSourceRecord),
+  activities: Schema.Array(AiRunActivityEvent),
+  terminalFailure: Schema.NullOr(Schema.Struct({ code: Schema.String, retryable: Schema.Boolean })),
 });
 const PersistedRunStream = Schema.Struct({
-  version: Schema.Literal(1),
+  version: Schema.Literal(2),
   runId: Schema.String,
   lastSeq: NonNegativeInteger,
   draft: StreamDraft,

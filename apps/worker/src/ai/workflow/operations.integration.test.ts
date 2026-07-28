@@ -416,7 +416,7 @@ interface Fixture {
   readonly accessId: string;
   readonly issueId: string;
   readonly documentId: string;
-  readonly versionId: string;
+  readonly snapshotId: string;
   readonly extractionId: string;
   readonly contentHash: string;
   readonly runId: string;
@@ -524,7 +524,7 @@ const seedAnswerSerializedExposures = async (
       return {
         sourceKind: "document",
         logicalSourceIdentity,
-        contentItemIdentity: `${logicalSourceIdentity}:${locator.versionId}:${sha256Base64Url(JSON.stringify(source.uses[0]?.ranges ?? []))}`,
+        contentItemIdentity: `${logicalSourceIdentity}:${locator.snapshotId}:${sha256Base64Url(JSON.stringify(source.uses[0]?.ranges ?? []))}`,
         exposureStage: "answer_serialized",
         visibleTokenCount: model.countTextTokens(visibleText),
       };
@@ -658,14 +658,14 @@ const seedAnswerSerializedExposures = async (
                     publisherIssueId: locator.publisherIssueId,
                     publisherDocumentId: locator.publisherDocumentId,
                   }),
-              contentItemIdentity: `${logicalSourceIdentity}:${locator.versionId}:${sha256Base64Url(JSON.stringify(use.ranges))}`,
+              contentItemIdentity: `${logicalSourceIdentity}:${locator.snapshotId}:${sha256Base64Url(JSON.stringify(use.ranges))}`,
               exposureStage: "answer_serialized",
               visibleTokenCount: marker.visibleTokenCount,
               providerSerializationProofBinding: binding,
               documentReconstruction: {
                 sourceId: locator.sourceId,
                 documentId: locator.documentId,
-                versionId: locator.versionId,
+                snapshotId: locator.snapshotId,
                 contentHash: locator.contentHash,
                 ...(locator.publisherExtractionId === undefined
                   ? {}
@@ -1145,7 +1145,7 @@ const createFixtureWithCanonicalText = (
     const accessId = crypto.randomUUID();
     const issueId = crypto.randomUUID();
     const documentId = crypto.randomUUID();
-    const versionId = crypto.randomUUID();
+    const snapshotId = crypto.randomUUID();
     const pdfHash = createHash("sha256").update(canonicalText, "utf8").digest("hex");
     const chatId = crypto.randomUUID();
     yield* sql`
@@ -1260,13 +1260,13 @@ const createFixtureWithCanonicalText = (
       id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
       text_char_count, page_ranges
     ) values (
-      ${versionId}, ${documentId}, ${extractions[0]!.id}, encode(digest(convert_to(${canonicalText}, 'UTF8'), 'sha256'), 'hex'), 'english',
+      ${snapshotId}, ${documentId}, ${extractions[0]!.id}, encode(digest(convert_to(${canonicalText}, 'UTF8'), 'sha256'), 'hex'), 'english',
       ${canonicalText}, ${canonicalText.length},
       ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: canonicalText.length }])}::jsonb
     )
   `;
     yield* sql`
-    update brief_documents set current_version_id = ${versionId} where id = ${documentId}
+    update brief_documents set current_version_id = ${snapshotId} where id = ${documentId}
   `;
     yield* sql`
     update publisher_issues
@@ -1339,7 +1339,7 @@ const createFixtureWithCanonicalText = (
       accessId,
       issueId,
       documentId,
-      versionId,
+      snapshotId,
       extractionId: extractions[0]!.id,
       contentHash: createHash("sha256").update(canonicalText, "utf8").digest("hex"),
       runId,
@@ -1506,7 +1506,7 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
     }
     const item = items[0] as {
       readonly documentId: string;
-      readonly versionId: string;
+      readonly snapshotId: string;
       readonly publisherExtractionId: string;
       readonly source: {
         readonly kind: "publisher";
@@ -1518,7 +1518,7 @@ class PublisherRetrievalAgent extends CanonicalAgentClient {
     const inspectionReference: InternalReference = {
       kind: "document",
       documentId: item.documentId,
-      versionId: item.versionId,
+      snapshotId: item.snapshotId,
       publisherExtractionId: item.publisherExtractionId,
       source: item.source,
       purpose: "answer the liquidity question",
@@ -2943,7 +2943,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       expect.objectContaining({
         kind: "document",
         documentId: fixture.documentId,
-        versionId: fixture.versionId,
+        snapshotId: fixture.snapshotId,
       }),
     ]);
 
@@ -2951,14 +2951,14 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return yield* sql<{
-          readonly versionId: string;
+          readonly snapshotId: string;
           readonly contentHash: string;
           readonly sourceId: string;
           readonly documentId: string;
           readonly publisherExtractionId: string;
           readonly ranges: unknown;
         }>`
-          select version_id as "versionId",
+          select snapshot_id as "snapshotId",
                  content_hash as "contentHash",
                  document_source_id as "sourceId",
                  document_id as "documentId",
@@ -2976,7 +2976,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(firstStart).toBe(3);
     expect(persisted).toEqual([
       {
-        versionId: fixture.versionId,
+        snapshotId: fixture.snapshotId,
         contentHash: fixture.contentHash,
         sourceId: `publisher:${fixture.subscriptionId}`,
         documentId: fixture.documentId,
@@ -3033,7 +3033,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       expect.objectContaining({
         kind: "document",
         documentId: fixture.publicDocumentId,
-        versionId: fixture.publicDocumentId,
+        snapshotId: fixture.publicDocumentId,
         source: { kind: "public", sourceId: `public:${fixture.publicSourceId}` },
       }),
     ]);
@@ -3042,14 +3042,14 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return yield* sql<{
-          readonly versionId: string;
+          readonly snapshotId: string;
           readonly contentHash: string;
           readonly sourceId: string;
           readonly documentId: string;
           readonly publisherExtractionId: string | null;
           readonly ranges: unknown;
         }>`
-          select version_id as "versionId",
+          select snapshot_id as "snapshotId",
                  content_hash as "contentHash",
                  document_source_id as "sourceId",
                  document_id as "documentId",
@@ -3066,7 +3066,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const secondStart = canonicalText.lastIndexOf("Beacon");
     expect(persisted).toEqual([
       {
-        versionId: fixture.publicDocumentId,
+        snapshotId: fixture.publicDocumentId,
         contentHash: fixture.publicContentHash,
         sourceId: `public:${fixture.publicSourceId}`,
         documentId: fixture.publicDocumentId,
@@ -3126,7 +3126,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         expect.objectContaining({
           kind: "document",
           documentId: fixture.documentId,
-          versionId: fixture.versionId,
+          snapshotId: fixture.snapshotId,
         }),
       ]);
     }
@@ -3137,7 +3137,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         kind: "document",
         sourceId: `publisher:${sourceId}` as `publisher:${string}`,
         documentId: fixture.documentId,
-        versionId: fixture.versionId,
+        snapshotId: fixture.snapshotId,
         contentHash: fixture.contentHash,
         ranges: [{ charStart: 0, charEnd: 20 }],
         publisherExtractionId: fixture.extractionId,
@@ -3247,7 +3247,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(references).toEqual([
       expect.objectContaining({
         documentId: fixture.documentId,
-        versionId: fixture.versionId,
+        snapshotId: fixture.snapshotId,
       }),
     ]);
     const context = await assembleAndMeasureContext(
@@ -3323,7 +3323,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     expect(frozenAfterPointerChange.status).toBe("ready");
     expect(frozenAfterPointerChange.sourceMap[0]?.locator).toMatchObject({
-      versionId: fixture.versionId,
+      snapshotId: fixture.snapshotId,
     });
     const exposures = await runDb(
       Effect.gen(function* () {
@@ -3346,7 +3346,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(revokedAccessResult.candidates).toEqual([
       expect.objectContaining({
         documentId: fixture.documentId,
-        versionId: fixture.versionId,
+        snapshotId: fixture.snapshotId,
       }),
     ]);
     expect(revokedAccessResult.sourceMap).toHaveLength(1);
@@ -3754,7 +3754,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         }
         const issueId = crypto.randomUUID();
         const documentId = crypto.randomUUID();
-        const versionId = crypto.randomUUID();
+        const snapshotId = crypto.randomUUID();
         const canonicalText =
           "Liquidity conditions improved while inflation expectations remained anchored in the second brief.";
         const contentHash = createHash("sha256").update(canonicalText, "utf8").digest("hex");
@@ -3797,13 +3797,13 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             id, brief_document_id, publisher_extraction_id, content_hash, language,
             canonical_text, text_char_count, page_ranges
           ) values (
-            ${versionId}, ${documentId}, ${extractions[0]!.id}, ${contentHash}, 'english',
+            ${snapshotId}, ${documentId}, ${extractions[0]!.id}, ${contentHash}, 'english',
             ${canonicalText}, ${canonicalText.length},
             ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: canonicalText.length }])}::jsonb
           )
         `;
         yield* sql`
-          update brief_documents set current_version_id = ${versionId} where id = ${documentId}
+          update brief_documents set current_version_id = ${snapshotId} where id = ${documentId}
         `;
         yield* sql`
           update publisher_issues
@@ -4211,7 +4211,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const reference = (charStart: number, charEnd: number, purpose: string): InternalReference => ({
       kind: "document",
       documentId: fixture.documentId,
-      versionId: fixture.versionId,
+      snapshotId: fixture.snapshotId,
       publisherExtractionId: fixture.extractionId,
       source: {
         kind: "publisher",
@@ -5946,7 +5946,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const undiscoveredReference: InternalReference = {
       kind: "document",
       documentId: fixture.documentId,
-      versionId: fixture.versionId,
+      snapshotId: fixture.snapshotId,
       publisherExtractionId: fixture.extractionId,
       source: {
         kind: "publisher",
@@ -6005,7 +6005,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(wholeReference).toEqual([
       expect.objectContaining({
         documentId: fixture.documentId,
-        versionId: fixture.versionId,
+        snapshotId: fixture.snapshotId,
       }),
     ]);
     expect(wholeReference[0]).not.toHaveProperty("ranges");
@@ -6075,7 +6075,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             {
               kind: "document",
               documentId: fixture.documentId,
-              versionId: fixture.versionId,
+              snapshotId: fixture.snapshotId,
               publisherExtractionId: fixture.extractionId,
               source: {
                 kind: "publisher",
@@ -6212,7 +6212,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             {
               kind: "document",
               documentId: fixture.documentId,
-              versionId: fixture.versionId,
+              snapshotId: fixture.snapshotId,
               publisherExtractionId: fixture.extractionId,
               source: {
                 kind: "publisher",
@@ -6290,7 +6290,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       expect.objectContaining({
         kind: "document",
         documentId: fixture.documentId,
-        versionId: fixture.versionId,
+        snapshotId: fixture.snapshotId,
         publisherExtractionId: fixture.extractionId,
         source: {
           kind: "publisher",
@@ -6305,14 +6305,14 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         const exposures = yield* sql<{
-          readonly versionId: string;
+          readonly snapshotId: string;
           readonly contentHash: string;
           readonly sourceId: string;
           readonly documentId: string;
           readonly publisherExtractionId: string;
           readonly ranges: unknown;
         }>`
-          select version_id as "versionId",
+          select snapshot_id as "snapshotId",
                  content_hash as "contentHash",
                  document_source_id as "sourceId",
                  document_id as "documentId",
@@ -6332,18 +6332,18 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         `;
         const versions = yield* sql<{
           readonly documentId: string;
-          readonly versionId: string;
+          readonly snapshotId: string;
           readonly contentHash: string;
           readonly publisherExtractionId: string;
           readonly canonicalText: string;
         }>`
           select versions.brief_document_id::text as "documentId",
-                  versions.id::text as "versionId",
+                  versions.id::text as "snapshotId",
                   versions.content_hash as "contentHash",
                   versions.publisher_extraction_id::text as "publisherExtractionId",
                   versions.canonical_text as "canonicalText"
              from brief_document_versions versions
-            where versions.id = ${fixture.versionId}
+            where versions.id = ${fixture.snapshotId}
         `;
         const extractions = yield* sql<{
           readonly extractionId: string;
@@ -6361,7 +6361,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     expect(persisted.exposures).toEqual([
       {
-        versionId: fixture.versionId,
+        snapshotId: fixture.snapshotId,
         contentHash: fixture.contentHash,
         sourceId: `publisher:${fixture.subscriptionId}`,
         documentId: fixture.documentId,
@@ -6375,7 +6375,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(persisted.versions).toEqual([
       {
         documentId: fixture.documentId,
-        versionId: fixture.versionId,
+        snapshotId: fixture.snapshotId,
         contentHash: fixture.contentHash,
         publisherExtractionId: fixture.extractionId,
         canonicalText,
@@ -6411,7 +6411,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           {
             kind: "document",
             documentId: fixture.documentId,
-            versionId: fixture.versionId,
+            snapshotId: fixture.snapshotId,
             publisherExtractionId: fixture.extractionId,
             source: {
               kind: "publisher",
@@ -6515,7 +6515,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           {
             kind: "document",
             documentId: fixture.documentId,
-            versionId: fixture.versionId,
+            snapshotId: fixture.snapshotId,
             publisherExtractionId: fixture.extractionId,
             source: {
               kind: "publisher",
