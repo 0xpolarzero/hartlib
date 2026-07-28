@@ -8,6 +8,7 @@ import { acceptClerkWebhook } from "@brief/backend-domain/clerk-webhook";
 import { resolveCompanyDeletionRequest } from "@brief/backend-domain/platform-support";
 import { requireClientCompanyAdmin } from "@brief/workspace";
 import { routeRequest } from "../http";
+import { DEMO_COOKIE_NAME, signDemoSessionCookie } from "../demo-session";
 import { makeBillingRoutes, type BillingStripeGateway } from "../domain/billing";
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
@@ -41,13 +42,19 @@ const pgLayer = () =>
     applicationName: "billing-plan-change-route-test",
   });
 
-const config = (userId: string) =>
+const DEMO_PASSWORD = "demo";
+const DEMO_SECRET = "brief-integration-demo-secret";
+const demoCookie = (userId: string) =>
+  `${DEMO_COOKIE_NAME}=${signDemoSessionCookie(userId, DEMO_SECRET, DEMO_PASSWORD)}`;
+
+const config = (_userId: string) =>
   ConfigProvider.layer(
     ConfigProvider.fromEnv({
       env: {
         NODE_ENV: "test",
         AUTH_MODE: "demo",
-        DEMO_USER_ID: userId,
+        DEMO_PASSWORD,
+        DEMO_SESSION_SECRET: DEMO_SECRET,
         STRIPE_SECRET_KEY: "stripe-test",
         STRIPE_PRICE_LIGHT: "price_light",
         STRIPE_PRICE_TEAM: "price_team",
@@ -66,7 +73,7 @@ const call = (gateway: BillingStripeGateway, userId: string, body: unknown) =>
       makeBillingRoutes(pgLayer(), gateway),
       new Request(`https://brief.test/v1/client-companies/${companyId}/billing/plan-change`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-request-id": crypto.randomUUID() },
+        headers: { cookie: demoCookie(userId), "content-type": "application/json", "x-request-id": crypto.randomUUID() },
         body: JSON.stringify(body),
       }),
     ).pipe(Effect.provide(config(userId))),
@@ -83,7 +90,7 @@ const callCheckout = (
       makeBillingRoutes(pgLayer(), gateway),
       new Request(`https://brief.test/v1/client-companies/${companyId}/billing/checkout`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-request-id": auditRequestId },
+        headers: { cookie: demoCookie(userId), "content-type": "application/json", "x-request-id": auditRequestId },
         body: JSON.stringify(body),
       }),
     ).pipe(Effect.provide(config(userId))),
@@ -95,7 +102,7 @@ const callPortal = (gateway: BillingStripeGateway, userId: string) =>
       makeBillingRoutes(pgLayer(), gateway),
       new Request(`https://brief.test/v1/client-companies/${companyId}/billing/portal`, {
         method: "POST",
-        headers: { "x-request-id": crypto.randomUUID() },
+        headers: { cookie: demoCookie(userId), "x-request-id": crypto.randomUUID() },
       }),
     ).pipe(Effect.provide(config(userId))),
   );

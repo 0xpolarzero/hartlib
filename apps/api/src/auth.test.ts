@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { resolveRequestIdentity, type RequestAuthenticator } from "./auth";
+import { DEMO_COOKIE_NAME, signDemoSessionCookie } from "./demo-session";
 import type { ApiConfig } from "./config";
 
 const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
@@ -15,7 +16,8 @@ const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
   aiProviderServiceId: "zai_coding_plan_official",
   aiProviderEndpointIdentity: "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
   authMode: "clerk",
-  demoUserId: "demo-user",
+  demoPassword: "demo-password",
+  demoSessionSecret: "test-session-secret",
   clerkSecretKey: "secret",
   clerkPublishableKey: "publishable",
   clerkAuthorizedParties: ["https://brief.test"],
@@ -37,26 +39,62 @@ const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
   ...overrides,
 });
 
-const run = (apiConfig: ApiConfig, authenticator?: RequestAuthenticator) =>
+const run = (
+  apiConfig: ApiConfig,
+  authenticator?: RequestAuthenticator,
+  cookie?: string,
+) =>
   Effect.runPromise(
     resolveRequestIdentity(
-      new Request("https://brief.test/v1/chat"),
+      new Request(
+        "https://brief.test/v1/chat",
+        cookie === undefined ? {} : { headers: { cookie } },
+      ),
       apiConfig,
       authenticator === undefined ? undefined : { authenticator },
     ),
   );
 
 describe("request authentication", () => {
-  it("isolates the explicit non-production demo identity", async () => {
-    await expect(run(config({ authMode: "demo", demoUserId: "fixture-user" }))).resolves.toEqual({
+  it("rejects a demo request without a session cookie", async () => {
+    await expect(run(config({ authMode: "demo" }))).resolves.toEqual({ authenticated: false });
+  });
+
+  it("resolves the per-browser visitor id from a valid demo cookie", async () => {
+    const visitorId = "11111111-1111-4111-8111-111111111111";
+    const cookie = `${DEMO_COOKIE_NAME}=${signDemoSessionCookie(
+      visitorId,
+      "test-session-secret",
+      "demo-password",
+    )}`;
+    await expect(run(config({ authMode: "demo" }), undefined, cookie)).resolves.toEqual({
       authenticated: true,
       identity: {
-        userId: "fixture-user",
+        userId: visitorId,
         organizationId: null,
         sessionId: "demo-session",
         mfaVerified: true,
         mode: "demo",
       },
+    });
+  });
+
+  it("rejects a demo cookie signed for a different password", async () => {
+    const visitorId = "22222222-2222-4222-8222-222222222222";
+    const cookie = `${DEMO_COOKIE_NAME}=${signDemoSessionCookie(
+      visitorId,
+      "test-session-secret",
+      "old-password",
+    )}`;
+    await expect(run(config({ authMode: "demo" }), undefined, cookie)).resolves.toEqual({
+      authenticated: false,
+    });
+  });
+
+  it("rejects a forged demo cookie value", async () => {
+    const cookie = `${DEMO_COOKIE_NAME}=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.invalid`;
+    await expect(run(config({ authMode: "demo" }), undefined, cookie)).resolves.toEqual({
+      authenticated: false,
     });
   });
 

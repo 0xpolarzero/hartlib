@@ -31,6 +31,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { RequestIdentity } from "./auth";
 import { routeRequest } from "./http";
+import { DEMO_COOKIE_NAME, signDemoSessionCookie } from "./demo-session";
 import { makeProductChatRoutes } from "./domain/product-chats";
 import { makeChatRoutes } from "./domain/chat";
 import { makeClientWorkspaceRoutes } from "./domain/client-workspace";
@@ -83,6 +84,17 @@ const identity = (
   mode: "clerk",
 });
 
+const DEMO_PASSWORD = "demo";
+const DEMO_SECRET = "brief-integration-demo-secret";
+const demoCookie = (userId: string) =>
+  `${DEMO_COOKIE_NAME}=${signDemoSessionCookie(userId, DEMO_SECRET, DEMO_PASSWORD)}`;
+const demoConfigEnv = {
+  NODE_ENV: "test",
+  AUTH_MODE: "demo",
+  DEMO_PASSWORD,
+  DEMO_SESSION_SECRET: DEMO_SECRET,
+} as const;
+
 const runProductRoute = async (
   userId: string,
   method: string,
@@ -97,16 +109,18 @@ const runProductRoute = async (
   const routes = makeProductChatRoutes(pgLayer);
   const request = new Request(`https://brief.test${path}`, {
     method,
-    ...(body === undefined
-      ? {}
-      : { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
+    headers: {
+      cookie: demoCookie(userId),
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   return Effect.runPromise(
     routeRequest(routes, request).pipe(
       Effect.provide(
         ConfigProvider.layer(
           ConfigProvider.fromEnv({
-            env: { NODE_ENV: "test", AUTH_MODE: "demo", DEMO_USER_ID: userId },
+            env: demoConfigEnv,
           }),
         ),
       ),
@@ -133,6 +147,7 @@ const runPlatformRoute = async (
   const request = new Request(`https://brief.test${path}`, {
     method,
     headers: {
+      cookie: demoCookie(userId),
       "x-request-id": crypto.randomUUID(),
       ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
@@ -143,7 +158,7 @@ const runPlatformRoute = async (
       Effect.provide(
         ConfigProvider.layer(
           ConfigProvider.fromEnv({
-            env: { NODE_ENV: "test", AUTH_MODE: "demo", DEMO_USER_ID: userId },
+            env: demoConfigEnv,
           }),
         ),
       ),
@@ -527,6 +542,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           new Request(`https://brief.test${path}`, {
             method,
             headers: {
+              cookie: demoCookie("owner"),
               "x-request-id": crypto.randomUUID(),
               ...(body === undefined ? {} : { "content-type": "application/json" }),
             },
@@ -539,7 +555,8 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_USER_ID: "owner",
+                  DEMO_PASSWORD,
+                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   TINYFISH_API_KEY: "test-key",
                   AI_WEB_MAX_DOMAIN_FILTERS: "2",
                 },
@@ -820,7 +837,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       Effect.runPromise(
         routeRequest(
           makeChatRoutes(chatLayer),
-          new Request(`https://brief.test/v1/chats/${fixture.sharedChatId}`),
+          new Request(`https://brief.test/v1/chats/${fixture.sharedChatId}`, { headers: { cookie: demoCookie(userId) } }),
         ).pipe(
           Effect.provide(
             ConfigProvider.layer(
@@ -828,7 +845,8 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_USER_ID: userId,
+                  DEMO_PASSWORD,
+                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   TINYFISH_API_KEY: "tinyfish-test",
                   AI_WEB_MAX_DOMAIN_FILTERS: "2",
                 },
@@ -1209,7 +1227,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       Effect.runPromise(
         routeRequest(
           makeChatRoutes(chatLayer),
-          new Request(`https://brief.test/v1/chats/${fixture.sharedChatId}`),
+          new Request(`https://brief.test/v1/chats/${fixture.sharedChatId}`, { headers: { cookie: demoCookie("viewer") } }),
         ).pipe(
           Effect.provide(
             ConfigProvider.layer(
@@ -1217,7 +1235,8 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_USER_ID: "viewer",
+                  DEMO_PASSWORD,
+                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   TINYFISH_API_KEY: "tinyfish-test",
                   AI_WEB_MAX_DOMAIN_FILTERS: "2",
                 },
@@ -1401,6 +1420,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     });
     const request = new Request(
       `https://brief.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
+      { headers: { cookie: demoCookie("owner") } },
     );
     const response = await Effect.runPromise(
       route
@@ -1420,7 +1440,8 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_USER_ID: "owner",
+                  DEMO_PASSWORD,
+                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   RAILWAY_BUCKET_ENDPOINT: "https://storage.test",
                   RAILWAY_BUCKET_NAME: "private",
                   RAILWAY_BUCKET_ACCESS_KEY_ID: "access",
@@ -1455,7 +1476,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       async () => "https://private-storage.test/saved-citation",
     );
     const readCitation = (userId: string) => {
-      const request = new Request(`https://brief.test${citationUrl}`);
+      const request = new Request(`https://brief.test${citationUrl}`, { headers: { cookie: demoCookie(userId) } });
       return Effect.runPromise(
         route
           .execute(
@@ -1471,7 +1492,8 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                   env: {
                     NODE_ENV: "test",
                     AUTH_MODE: "demo",
-                    DEMO_USER_ID: userId,
+                    DEMO_PASSWORD,
+                    DEMO_SESSION_SECRET: DEMO_SECRET,
                     RAILWAY_BUCKET_ENDPOINT: "https://storage.test",
                     RAILWAY_BUCKET_NAME: "private",
                     RAILWAY_BUCKET_ACCESS_KEY_ID: "access",
@@ -1575,10 +1597,10 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       pgLayer,
       async () => "https://private-storage.test/signed-document-cors",
     );
-    const request = (origin: string) =>
+    const request = (origin: string, userId: string) =>
       new Request(
         `https://brief.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
-        { headers: { origin } },
+        { headers: { cookie: demoCookie(userId), origin } },
       );
     const run = (
       origin: string,
@@ -1590,12 +1612,13 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
         routeRequest(
           [route],
           method === "GET"
-            ? request(origin)
+            ? request(origin, userId)
             : new Request(
                 `https://brief.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
                 {
                   method,
                   headers: {
+                    cookie: demoCookie(userId),
                     origin,
                     "access-control-request-method": "GET",
                   },
@@ -1608,7 +1631,8 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_USER_ID: userId,
+                  DEMO_PASSWORD,
+                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   RAILWAY_BUCKET_ENDPOINT: "https://storage.test",
                   RAILWAY_BUCKET_NAME: "private",
                   RAILWAY_BUCKET_ACCESS_KEY_ID: "access",
@@ -1997,6 +2021,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     });
     const request = new Request(
       `https://brief.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
+      { headers: { cookie: demoCookie("viewer") } },
     );
     const response = Effect.runPromise(
       route
@@ -2013,7 +2038,8 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_USER_ID: "viewer",
+                  DEMO_PASSWORD,
+                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   RAILWAY_BUCKET_ENDPOINT: "https://storage.test",
                   RAILWAY_BUCKET_NAME: "private",
                   RAILWAY_BUCKET_ACCESS_KEY_ID: "access",
@@ -2434,6 +2460,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     );
     const request = new Request(
       `https://brief.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
+      { headers: { cookie: demoCookie("owner") } },
     );
     const denied = await Effect.runPromise(
       documentRoute
@@ -2450,7 +2477,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           Effect.provide(
             ConfigProvider.layer(
               ConfigProvider.fromEnv({
-                env: { NODE_ENV: "test", AUTH_MODE: "demo", DEMO_USER_ID: "owner" },
+                env: { NODE_ENV: "test", AUTH_MODE: "demo", DEMO_PASSWORD, DEMO_SESSION_SECRET: DEMO_SECRET },
               }),
             ),
           ),

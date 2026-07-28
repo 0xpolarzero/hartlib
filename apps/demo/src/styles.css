@@ -62,3 +62,62 @@ button {
     animation: none;
   }
 }
+
+.demo-auth-gate {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: var(--color-canvas);
+}
+
+.demo-auth-gate__form {
+  display: flex;
+  width: 100%;
+  max-width: 24rem;
+  flex-direction: column;
+  gap: 0.75rem;
+  border-radius: 0.75rem;
+  background: var(--color-surface, var(--color-canvas));
+  padding: 1.75rem;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+}
+
+.demo-auth-gate__title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.demo-auth-gate__prompt {
+  margin: 0;
+  color: var(--color-muted, inherit);
+  font-size: 0.9rem;
+}
+
+.demo-auth-gate__label {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.demo-auth-gate__input {
+  width: 100%;
+  border: 1px solid var(--color-border, rgb(0 0 0 / 0.15));
+  border-radius: 0.5rem;
+  background: var(--color-canvas);
+  padding: 0.6rem 0.75rem;
+  color: var(--color-ink);
+  font: inherit;
+}
+
+.demo-auth-gate__error {
+  margin: 0;
+  color: var(--color-danger, rgb(180 0 0));
+  font-size: 0.85rem;
+}
+
+.demo-auth-gate--checking {
+  color: var(--color-muted, inherit);
+  font-size: 0.9rem;
+}

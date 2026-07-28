@@ -214,8 +214,8 @@ const ApiEnvironment = Schema.Struct({
   AI_BASE_URL: StringWithDefault(ZAI_CODING_PLAN_BASE_URL),
   AI_WEB_MAX_DOMAIN_FILTERS: NumberWithDefault(AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT),
   AUTH_MODE: Schema.optional(Schema.String),
-  DEMO_PASSWORD: StringWithDefault(""),
-  DEMO_SESSION_SECRET: StringWithDefault(""),
+  DEMO_PASSWORD: StringWithDefault("demo"),
+  DEMO_SESSION_SECRET: StringWithDefault("insecure-dev-demo-session-secret"),
   CLERK_SECRET_KEY: StringWithDefault(""),
   CLERK_PUBLISHABLE_KEY: StringWithDefault(""),
   CLERK_AUTHORIZED_PARTIES: StringWithDefault(""),
@@ -326,6 +326,14 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
     ) {
       return yield* Effect.fail(
         new Error("DEMO_PASSWORD and DEMO_SESSION_SECRET are required for demo auth"),
+      );
+    }
+    if (
+      authMode === "clerk" &&
+      (raw.CLERK_SECRET_KEY.trim() === "" || raw.CLERK_PUBLISHABLE_KEY.trim() === "")
+    ) {
+      return yield* Effect.fail(
+        new Error("CLERK_SECRET_KEY and CLERK_PUBLISHABLE_KEY are required for Clerk auth"),
       );
     }
     const clerkAuthorizedParties = commaSeparatedUniqueValues(raw.CLERK_AUTHORIZED_PARTIES);

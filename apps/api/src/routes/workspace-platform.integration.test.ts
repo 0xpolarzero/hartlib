@@ -23,6 +23,7 @@ import { hasProductChatAccess } from "@brief/backend-domain/product-chats";
 
 import { loadApiConfig } from "../config";
 import { routeRequest, type Route } from "../http";
+import { DEMO_COOKIE_NAME, signDemoSessionCookie } from "../demo-session";
 import { makeBillingRoutes, type BillingStripeGateway } from "../domain/billing";
 import { preflightCredits } from "../domain/chat";
 import { makeClerkWebhookRoute } from "../domain/clerk-webhook";
@@ -95,13 +96,19 @@ const pgLayer = () =>
     applicationName: "workspace-platform-route-test",
   });
 
-const config = (userId = "admin-user", extra: Record<string, string> = {}) =>
+const DEMO_PASSWORD = "demo";
+const DEMO_SECRET = "brief-integration-demo-secret";
+const demoCookie = (userId: string) =>
+  `${DEMO_COOKIE_NAME}=${signDemoSessionCookie(userId, DEMO_SECRET, DEMO_PASSWORD)}`;
+
+const config = (_userId = "admin-user", extra: Record<string, string> = {}) =>
   ConfigProvider.layer(
     ConfigProvider.fromEnv({
       env: {
         NODE_ENV: "test",
         AUTH_MODE: "demo",
-        DEMO_USER_ID: userId,
+        DEMO_PASSWORD,
+        DEMO_SESSION_SECRET: DEMO_SECRET,
         CLERK_WEBHOOK_SIGNING_SECRET: "whsec_test",
         CLERK_INVITATION_REDIRECT_URL: "https://brief.test/invitations/accept",
         TINYFISH_API_KEY: "tinyfish-test",
@@ -129,6 +136,7 @@ const call = (
   const request = new Request(`https://brief.test${path}`, {
     method,
     headers: {
+      cookie: demoCookie(userId),
       ...(body === undefined ? {} : { "content-type": "application/json" }),
       "x-request-id": crypto.randomUUID(),
       ...(options?.origin === undefined ? {} : { origin: options.origin }),

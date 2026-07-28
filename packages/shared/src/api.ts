@@ -6,6 +6,19 @@ export const HealthResponse = Schema.Struct({
 });
 export type HealthResponse = Schema.Schema.Type<typeof HealthResponse>;
 
+export const DemoSessionRequest = Schema.Struct({
+  password: Schema.String.pipe(
+    Schema.check(Schema.isNonEmpty()),
+    Schema.check(Schema.isMaxLength(1024)),
+  ),
+});
+export type DemoSessionRequest = Schema.Schema.Type<typeof DemoSessionRequest>;
+
+export const DemoSessionResponse = Schema.Struct({
+  ok: Schema.Literal(true),
+});
+export type DemoSessionResponse = Schema.Schema.Type<typeof DemoSessionResponse>;
+
 export const UuidPathParameter = Schema.String.pipe(
   Schema.check(
     Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu),

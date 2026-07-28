@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import { HealthResponse, UuidPathParameter } from "./api";
+import { DemoSessionRequest, DemoSessionResponse, HealthResponse, UuidPathParameter } from "./api";
 import {
   ActiveAiRunConflict,
   CreateProductChatRequest,
@@ -486,6 +486,10 @@ export const httpRouteContracts: Readonly<Record<string, HttpRouteContract>> = {
     jsonSuccess(AiUsageResolutionResponse),
   ),
   "GET /v1/chat": contract(noBody, jsonSuccess(GetChatResponse)),
+  "POST /v1/demo/session": contract(
+    jsonBody(DemoSessionRequest, 4 * 1024),
+    jsonSuccess(DemoSessionResponse),
+  ),
   "POST /v1/chat/messages": errorBodyContract(
     jsonBody(SendChatMessageRequest),
     jsonSuccess(SendChatMessageAccepted, [202]),

@@ -14,8 +14,10 @@ import { publicSourceDocumentContentRoute, publicSourceRoutes } from "../domain/
 import { stripeWebhookRoute } from "../domain/stripe-webhook";
 import { workspaceMembershipRoutes } from "../domain/workspace-memberships";
 
+import { demoSessionRoutes } from "../domain/demo-session";
 export const routes = [
   healthRoute,
+  ...demoSessionRoutes,
   ...publicSourceRoutes,
   publicSourceDocumentContentRoute,
   clerkWebhookRoute,

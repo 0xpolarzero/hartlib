@@ -1,5 +1,6 @@
 import {
   CreateProductChatResponse,
+  DemoSessionResponse,
   GetChatResponse,
   ListMemoriesResponse,
   MemoryRecord,
@@ -50,6 +51,7 @@ export interface ProductApiClient {
   readonly createChat: (input: CreateProductChatRequest) => Promise<CreatedChat>;
   readonly setChatShared: (chatId: string, shared: boolean) => Promise<void>;
   readonly deleteChat: (chatId: string) => Promise<void>;
+  readonly createDemoSession: (password: string) => Promise<DemoSessionResponse>;
   readonly getChat: (chatId?: string) => Promise<GetChat>;
   readonly sendChatMessage: (
     input: SendChatMessageRequest,
@@ -125,6 +127,10 @@ export const createProductApiClient = (options: ApiTransportOptions): ProductApi
     },
     deleteChat: (chatId) =>
       transport.empty("DELETE /v1/chats/:chatId", `/v1/chats/${encodeURIComponent(chatId)}`),
+    createDemoSession: (password) =>
+      transport.json("POST /v1/demo/session", "/v1/demo/session", DemoSessionResponse, {
+        json: { password },
+      }),
     getChat: (chatId) =>
       chatId === undefined
         ? transport.json("GET /v1/chat", "/v1/chat", GetChatResponse)

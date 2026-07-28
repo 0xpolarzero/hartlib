@@ -95,6 +95,7 @@ const applyCors = (request: Request, response: Response) =>
     if (origin === null) return response;
     if (configured.includes(origin)) {
       response.headers.set("access-control-allow-origin", origin);
+      response.headers.set("access-control-allow-credentials", "true");
       response.headers.append("vary", "Origin");
     }
     return response;
@@ -108,6 +109,7 @@ const preflight = (request: Request, methods: ReadonlyArray<string>) =>
     const headers = new Headers();
     if (origin !== null && allowed) {
       headers.set("access-control-allow-origin", origin);
+      headers.set("access-control-allow-credentials", "true");
       headers.append("vary", "Origin");
     }
     headers.set("access-control-allow-methods", [...new Set(methods)].join(", "));

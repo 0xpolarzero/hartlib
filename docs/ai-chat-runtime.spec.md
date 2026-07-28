@@ -1628,10 +1628,13 @@ activity state.
 
 ## Demo API
 
+Demo identity is per-browser, not shared. A visitor enters the shared demo password once; `POST /v1/demo/session` checks it against `DEMO_PASSWORD` and sets a signed `brief_demo` cookie that carries a fresh visitor id. Every demo request resolves its identity from that cookie, HMAC-bound to the current `DEMO_PASSWORD`, so rotating the password revokes every outstanding session. A request without a valid cookie is rejected with `401`; there is no fallback identity. Each visitor id drives its own user, company, and chat through the demo helper, so two browsers never share a conversation, a memory lane, or a run conflict. `DEMO_PASSWORD` and `DEMO_SESSION_SECRET` replace the former single `DEMO_USER_ID`.
+
 The demo `GET /v1/chat` helper idempotently ensures a canonical private chat for the demo user. The schema intentionally permits multiple chats per user; when more than one live chat exists, the helper selects the oldest by `(created_at, id)` under the per-user demo advisory lane. This deterministic compatibility route does not impose a one-chat-per-user database invariant.
 
 Public endpoints:
 
+- `POST /v1/demo/session`
 - `GET /v1/chat`
 - `POST /v1/chat/messages`
 - `GET /v1/ai-runs/:runId/stream`

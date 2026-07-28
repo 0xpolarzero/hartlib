@@ -1,6 +1,7 @@
 import { createClerkClient } from "@clerk/backend";
 import { Effect } from "effect";
 
+import { DEMO_COOKIE_NAME, readCookie, verifyDemoSessionCookie } from "./demo-session";
 import type { ApiConfig } from "./config";
 
 export interface RequestIdentity {

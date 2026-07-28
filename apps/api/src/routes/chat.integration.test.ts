@@ -11,11 +11,19 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { RequestAuthenticator } from "../auth";
 import { routeRequest, type Route } from "../http";
+import {
+  DEMO_COOKIE_NAME,
+  signDemoSessionCookie,
+} from "../demo-session";
 import { makeChatRoutes, type AiRunEventPoller } from "../domain/chat";
 import { makeMemoryRoutes } from "../domain/memories";
 
 const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
 const isBun = typeof process.versions.bun === "string";
+
+const DEMO_PASSWORD = "demo";
+const DEMO_SECRET = "brief-integration-demo-secret";
+const demoCookie = `${DEMO_COOKIE_NAME}=${signDemoSessionCookie("demo-user", DEMO_SECRET, DEMO_PASSWORD)}`;
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const databaseName = `brief_api_contract_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
@@ -131,6 +139,9 @@ const waitForDatabaseBlocker = async (
   throw new Error(`${waitingApplicationName} was not blocked by ${blockingApplicationName}`);
 };
 
+const pgLayer = () =>
+  PgClient.layer({ url: Redacted.make(isolatedUrl()), applicationName: "brief-api-contract-test" });
+
 const migrate = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
   const files = [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })].sort();
@@ -146,13 +157,12 @@ const migrate = Effect.gen(function* () {
     yield* sql`insert into schema_migrations (name) values (${file})`;
   }
 });
-
-const pgLayer = () =>
-  PgClient.layer({ url: Redacted.make(isolatedUrl()), applicationName: "brief-api-contract-test" });
-
 const configLayer = ConfigProvider.layer(
   ConfigProvider.fromEnv({
     env: {
+      AUTH_MODE: "demo",
+      DEMO_PASSWORD,
+      DEMO_SESSION_SECRET: DEMO_SECRET,
       AI_STREAM_POLL_MS: "5",
       AI_STREAM_KEEPALIVE_MS: "10",
       TINYFISH_API_KEY: "test-key",
@@ -180,7 +190,11 @@ const routes = (): readonly Route[] => [
   ...makeMemoryRoutes(pgLayer()),
 ];
 const request = (method: string, path: string, init?: RequestInit) =>
-  new Request(`http://brief.test${path}`, { ...init, method });
+  new Request(`http://brief.test${path}`, {
+    ...init,
+    method,
+    headers: { cookie: demoCookie, ...(init?.headers as Record<string, string> | undefined) },
+  });
 const route = (value: Request) =>
   Effect.runPromise(routeRequest(routes(), value).pipe(Effect.provide(configLayer)));
 const body = <A>(response: Response): Promise<A> => response.json() as Promise<A>;

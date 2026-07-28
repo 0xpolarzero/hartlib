@@ -330,7 +330,8 @@ export interface AuthenticatedMutationExemption {
     | "user_chat_content"
     | "personal_memory"
     | "personal_chat_lifecycle"
-    | "personal_notification_state";
+    | "personal_notification_state"
+    | "demo_session";
 }
 
 export const authenticatedMutationAuditExemptions = [
@@ -346,6 +347,7 @@ export const authenticatedMutationAuditExemptions = [
   { method: "POST", path: "/v1/memories/:memoryId/revert", reason: "personal_memory" },
   { method: "DELETE", path: "/v1/memories/:memoryId", reason: "personal_memory" },
   { method: "POST", path: "/v1/chats", reason: "personal_chat_lifecycle" },
+  { method: "POST", path: "/v1/demo/session", reason: "demo_session" },
   {
     method: "POST",
     path: "/v1/chats/:chatId/share",

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { routeRequest } from "../http";
+import { DEMO_COOKIE_NAME, signDemoSessionCookie } from "../demo-session";
 import { createExportRequest } from "@brief/backend-domain/exports";
 import { acceptClerkWebhook } from "@brief/backend-domain/clerk-webhook";
 import {
@@ -106,18 +107,30 @@ const migrate = Effect.gen(function* () {
 
 const pgLayer = () =>
   PgClient.layer({ url: Redacted.make(isolatedUrl()), applicationName: "brief-platform-api-test" });
+const DEMO_PASSWORD = "demo";
+const DEMO_SECRET = "brief-integration-demo-secret";
+const demoCookie = (userId: string) =>
+  `${DEMO_COOKIE_NAME}=${signDemoSessionCookie(userId, DEMO_SECRET, DEMO_PASSWORD)}`;
 const configLayer = ConfigProvider.layer(
   ConfigProvider.fromEnv({
     env: {
       AUTH_MODE: "demo",
-      DEMO_USER_ID: "demo-user",
+      DEMO_PASSWORD,
+      DEMO_SESSION_SECRET: DEMO_SECRET,
       STRIPE_SECRET_KEY: "stripe-secret",
       STRIPE_WEBHOOK_SECRET: "webhook-secret",
     },
   }),
 );
 const request = (method: string, path: string, init?: RequestInit) =>
-  new Request(`http://brief.test${path}`, { ...init, method });
+  new Request(`http://brief.test${path}`, {
+    ...init,
+    method,
+    headers: {
+      cookie: demoCookie("demo-user"),
+      ...(init?.headers as Record<string, string> | undefined),
+    },
+  });
 const jsonBody = <A>(response: Response): Promise<A> => response.json() as Promise<A>;
 
 const completeExportRequest = (exportRequestId: string, expiresInMs = 60 * 60 * 1_000) =>
@@ -1953,7 +1966,8 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       ConfigProvider.fromEnv({
         env: {
           AUTH_MODE: "demo",
-          DEMO_USER_ID: "demo-user",
+          DEMO_PASSWORD,
+          DEMO_SESSION_SECRET: DEMO_SECRET,
           EXPORT_BUCKET_ENDPOINT: "https://storage.test",
           EXPORT_BUCKET_NAME: "private-exports",
           EXPORT_BUCKET_ACCESS_KEY_ID: "access",
@@ -2004,7 +2018,8 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       ConfigProvider.fromEnv({
         env: {
           AUTH_MODE: "demo",
-          DEMO_USER_ID: "not-the-requester",
+          DEMO_PASSWORD,
+          DEMO_SESSION_SECRET: DEMO_SECRET,
           EXPORT_BUCKET_ENDPOINT: "https://storage.test",
           EXPORT_BUCKET_NAME: "private-exports",
           EXPORT_BUCKET_ACCESS_KEY_ID: "access",
@@ -2013,7 +2028,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       }),
     );
     const denied = await Effect.runPromise(
-      routeRequest(routes, request("GET", `/v1/exports/${createdBody.export.id}/download`)).pipe(
+      routeRequest(routes, request("GET", `/v1/exports/${createdBody.export.id}/download`, { headers: { cookie: demoCookie("not-the-requester") } })).pipe(
         Effect.provide(otherUserLayer),
       ),
     );
@@ -2061,7 +2076,8 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       ConfigProvider.fromEnv({
         env: {
           AUTH_MODE: "demo",
-          DEMO_USER_ID: "demo-user",
+          DEMO_PASSWORD,
+          DEMO_SESSION_SECRET: DEMO_SECRET,
           EXPORT_BUCKET_ENDPOINT: "https://storage.test",
           EXPORT_BUCKET_NAME: "private-exports",
           EXPORT_BUCKET_ACCESS_KEY_ID: "access",
@@ -2153,7 +2169,8 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       ConfigProvider.fromEnv({
         env: {
           AUTH_MODE: "demo",
-          DEMO_USER_ID: "demo-user",
+          DEMO_PASSWORD,
+          DEMO_SESSION_SECRET: DEMO_SECRET,
           EXPORT_BUCKET_ENDPOINT: "https://storage.test",
           EXPORT_BUCKET_NAME: "private-exports",
           EXPORT_BUCKET_ACCESS_KEY_ID: "access",
