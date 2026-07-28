@@ -747,6 +747,11 @@ export const generateExport = (input: {
 
 export const purgeExpiredExportObjects = (store: ExportObjectStore, now?: Date) =>
   Effect.gen(function* () {
+    // The scheduled handler reports the disabled state before calling this.
+    // Keep direct purge callers safe from the disabled adapter too.
+    if (store.configured === false) {
+      return 0;
+    }
     const sql = yield* PgClient.PgClient;
     yield* verifyPhysicalDeletionSafety(store);
     const candidates = yield* sql<ExportObjectGenerationRow>`

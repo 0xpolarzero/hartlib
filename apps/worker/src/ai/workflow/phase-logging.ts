@@ -1,4 +1,5 @@
 import { MemoryConflictError } from "../product-state/memory";
+import { captureCause } from "../../diagnostic-cause";
 import { type AiRunActivityEvent, activityCodeForPhase, activityStageForCode } from "@brief/shared";
 import {
   AiRuntimeError,
@@ -386,6 +387,7 @@ const errorCodeFor = (error: unknown, fallback: AiRunErrorCode): AiRunErrorCode 
 
 const durableOperationFailure = (error: unknown, fallback: AiRunErrorCode): Error => {
   if (isAbortError(error) || isAiRuntimeError(error)) return error;
+  captureCause("workflow_operation", error);
   if (error instanceof MemoryConflictError) {
     return new AiRuntimeError("memory_conflict", "memory head changed during finalization");
   }

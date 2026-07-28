@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { captureCause } from "../../diagnostic-cause";
+
 export const AI_RUN_ERROR_CODES = [
   "plan_turn_failed",
   "internal_retrieval_failed",
@@ -262,6 +264,7 @@ export const toAiRuntimeError = (
     options.retryable ??
     (providerStatus === undefined ? undefined : retryableStatus(providerStatus));
   const taskRetryable = options.taskRetryable ?? inferredRetryable;
+  captureCause("ai_runtime_boundary", error);
   return new AiRuntimeError(fallbackCode, "runtime boundary failed", {
     ...(providerStatus === undefined ? {} : { providerStatus }),
     ...(inferredRetryable === undefined

@@ -1,4 +1,5 @@
 import { Duration, Effect, Schedule } from "effect";
+import { captureCause } from "../diagnostic-cause";
 import { handleJob, type HandleJobOptions } from "./handlers";
 import { JobRepository, type JobRepositoryShape } from "./repository";
 import type { JobRecord } from "./types";
@@ -47,9 +48,10 @@ export const makeWorkerTick = (options?: HandleJobOptions) =>
 
     const result = yield* handleJobWithHeartbeat(jobs, job, options).pipe(
       Effect.catch((error) =>
-        Effect.sync(() =>
-          captureWorkerOperationalError("job_execution_failed", { jobKind: job.kind }),
-        ).pipe(
+        Effect.sync(() => {
+          captureCause("job_execution", error);
+          return captureWorkerOperationalError("job_execution_failed", { jobKind: job.kind });
+        }).pipe(
           Effect.andThen(jobs.markFailed(job, error)),
           Effect.as({
             status: "failed",
@@ -68,8 +70,11 @@ export const runWorkerTick = makeWorkerTick();
 
 export const makeWorkerSafeTick = (options?: HandleJobOptions) =>
   makeWorkerTick(options).pipe(
-    Effect.catch(() =>
-      Effect.sync(() => captureWorkerOperationalError("worker_tick_failed")).pipe(
+    Effect.catch((error) =>
+      Effect.sync(() => {
+        captureCause("worker_tick", error);
+        return captureWorkerOperationalError("worker_tick_failed");
+      }).pipe(
         Effect.andThen(Effect.logError("worker job tick failed")),
         Effect.annotateLogs({
           errorCode: "worker_tick_failed",

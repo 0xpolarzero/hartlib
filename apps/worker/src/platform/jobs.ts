@@ -3051,6 +3051,19 @@ export const handlePlatformJob = (
     if (job.kind === "purge_expired_exports") {
       parseEmptyPayload(job.payload, job.kind);
       const store = yield* ExportObjectStoreService;
+      if (store.configured === false) {
+        yield* Effect.logInfo("export object storage is not set; purge skipped").pipe(
+          Effect.annotateLogs({
+            component: "export_gc",
+            jobId: job.id,
+            jobKind: job.kind,
+          }),
+        );
+        return {
+          status: "completed",
+          message: "export object storage is not set; purge skipped",
+        };
+      }
       const count = yield* runDb(url, purgeExpiredExportObjects(store));
       return { status: "completed", message: `purged ${count} expired export objects` };
     }

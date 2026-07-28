@@ -335,10 +335,19 @@ const findJob = (kind: JobKind, payloadKey: string, payloadValue: string) =>
     return row satisfies JobRecord;
   });
 
+const unusedExportObjectStore = ExportObjectStoreService.of({
+  verifyPhysicalDeletionSafety: () => Promise.reject(new Error("unused")),
+  get: () => Promise.reject(new Error("unused")),
+  head: () => Promise.reject(new Error("unused")),
+  delete: () => Promise.reject(new Error("unused")),
+  put: () => Promise.reject(new Error("unused")),
+});
+
 const runPlatformJob = (
   job: JobRecord,
   fileStore: Pick<InMemoryPlatformFileStore, "layer">,
   pages: ReadonlyArray<{ readonly pageNumber: number; readonly text: string }> = [],
+  exportStore = unusedExportObjectStore,
 ) =>
   Effect.runPromise(
     handlePlatformJob(job).pipe(
@@ -348,16 +357,7 @@ const runPlatformJob = (
         NotificationEmailService,
         NotificationEmailService.of({ send: () => Promise.reject(new Error("unused")) }),
       ),
-      Effect.provideService(
-        ExportObjectStoreService,
-        ExportObjectStoreService.of({
-          verifyPhysicalDeletionSafety: () => Promise.reject(new Error("unused")),
-          get: () => Promise.reject(new Error("unused")),
-          head: () => Promise.reject(new Error("unused")),
-          delete: () => Promise.reject(new Error("unused")),
-          put: () => Promise.reject(new Error("unused")),
-        }),
-      ),
+      Effect.provideService(ExportObjectStoreService, exportStore),
     ),
   );
 
@@ -386,6 +386,31 @@ describe("publisher text normalization", () => {
     expect(() => canonicalizeExtractedPages([{ pageNumber: 0, text: "invalid" }])).toThrow(
       /positive integers/i,
     );
+  });
+});
+
+describe("export cleanup", () => {
+  it("reports unset export storage and completes without retry", async () => {
+    const job = {
+      id: crypto.randomUUID(),
+      kind: "purge_expired_exports",
+      payload: {},
+      attempts: 1,
+    } satisfies JobRecord;
+    const result = await runPlatformJob(
+      job,
+      makeInMemoryPlatformFileStore(),
+      [],
+      ExportObjectStoreService.of({
+        ...unusedExportObjectStore,
+        configured: false,
+      }),
+    );
+
+    expect(result).toEqual({
+      status: "completed",
+      message: "export object storage is not set; purge skipped",
+    });
   });
 });
 

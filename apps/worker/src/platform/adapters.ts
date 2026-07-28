@@ -102,6 +102,8 @@ export interface ExportObjectStore {
     },
     options: { readonly signal: AbortSignal },
   ) => Promise<void>;
+  /** True when a real bucket backs the store; false when export storage is disabled. Omitted by in-memory test doubles. */
+  readonly configured?: boolean;
 }
 
 export class ExportObjectStoreService extends Context.Service<
@@ -223,10 +225,12 @@ export const ExportObjectStoreServiceLive = Layer.effect(
         head: () => Promise.reject(new Error("export object storage is not configured")),
         delete: () => Promise.reject(new Error("export object storage is not configured")),
         put: () => Promise.reject(new Error("export object storage is not configured")),
+        configured: false,
       });
     }
-    return ExportObjectStoreService.of(
-      makeS3ExportObjectStore({ endpoint, bucket, accessKeyId, secretAccessKey }),
-    );
+    return ExportObjectStoreService.of({
+      ...makeS3ExportObjectStore({ endpoint, bucket, accessKeyId, secretAccessKey }),
+      configured: true,
+    });
   }),
 );
