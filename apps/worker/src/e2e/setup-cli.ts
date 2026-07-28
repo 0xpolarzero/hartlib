@@ -486,9 +486,17 @@ const readRuntimeState = Effect.gen(function* () {
     readonly id: string;
     readonly companyId: string;
     readonly webEnabled: boolean;
+    readonly archivedAt: Date | null;
+    readonly replacedByChatId: string | null;
+    readonly deletedAt: Date | null;
+    readonly purgeAfter: Date | null;
   }>`
     select chats.id::text, chats.company_id::text as "companyId",
-           settings.web_search_enabled as "webEnabled"
+           settings.web_search_enabled as "webEnabled",
+           chats.archived_at as "archivedAt",
+           chats.replaced_by_chat_id::text as "replacedByChatId",
+           chats.deleted_at as "deletedAt",
+           chats.purge_after as "purgeAfter"
     from chats
     join client_company_ai_settings settings on settings.company_id = chats.company_id
     where chats.user_id = 'demo-user'

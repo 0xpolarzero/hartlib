@@ -71,6 +71,7 @@ export const {
   getClientWebPolicy,
   getCurrentUserWorkspaces,
   getIssueDetail,
+  getPublisherIssue,
   getNotificationPreferences,
   getPlatformOperations,
   getProductExport,

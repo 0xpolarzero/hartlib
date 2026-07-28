@@ -56,6 +56,28 @@ describe("authenticated API fetch", () => {
     expect(headers.has("authorization")).toBe(false);
   });
 
+  it("sends demo cookies and establishes a session once after an unauthorized response", async () => {
+    const fetchMock = vi.fn<
+      (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    >();
+    fetchMock
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authenticatedFetch("http://127.0.0.1:43110/v1/chats");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ credentials: "include" });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("http://localhost:3000/v1/demo/session");
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      method: "POST",
+      credentials: "include",
+    });
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ credentials: "include" });
+  });
+
   it("adds an idempotency-capable request id to mutations and preserves a supplied one", async () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
       async () => new Response(null, { status: 204 }),

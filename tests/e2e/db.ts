@@ -40,6 +40,10 @@ export interface E2eRuntimeState {
     readonly id: string;
     readonly companyId: string;
     readonly webEnabled: boolean;
+    readonly archivedAt: string | null;
+    readonly replacedByChatId: string | null;
+    readonly deletedAt: string | null;
+    readonly purgeAfter: string | null;
   }>;
   readonly runs: ReadonlyArray<{
     readonly id: string;

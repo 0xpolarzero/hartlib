@@ -10,6 +10,8 @@ import {
   GetChatResponse,
   MemoryRecord,
   PublicSourceRecord,
+  ResetProductChatRequest,
+  ResetProductChatResponse,
   SendChatMessageRequest,
 } from "./chat";
 
@@ -22,6 +24,7 @@ describe("canonical chat schemas", () => {
         memoryMode: "disabled",
         createdAt: "2026-07-10T00:00:00.000Z",
         updatedAt: "2026-07-10T00:00:00.000Z",
+        archivedAt: null,
       },
       messages: [],
       effectiveWebPolicy: {
@@ -34,6 +37,56 @@ describe("canonical chat schemas", () => {
     });
     expect(response.canWrite).toBe(false);
     expect(() => decode({ ...response, canWrite: undefined })).toThrow();
+  });
+
+  it("strictly validates chat reset identities and the complete replacement projection", () => {
+    const decodeRequest = Schema.decodeUnknownSync(ResetProductChatRequest, {
+      onExcessProperty: "error",
+    });
+    const replacementChatId = "123e4567-e89b-12d3-a456-426614174002";
+    expect(decodeRequest({ replacementChatId })).toEqual({ replacementChatId });
+    expect(() => decodeRequest({ replacementChatId: replacementChatId.toUpperCase() })).toThrow();
+    expect(() => decodeRequest({ replacementChatId: "not-a-uuid" })).toThrow();
+    expect(() => decodeRequest({ replacementChatId, extra: true })).toThrow();
+
+    const decodeResponse = Schema.decodeUnknownSync(ResetProductChatResponse, {
+      onExcessProperty: "error",
+    });
+    const replacement = Schema.decodeUnknownSync(GetChatResponse)({
+      chat: {
+        id: replacementChatId,
+        memoryMode: "disabled",
+        createdAt: "2026-07-10T00:00:00.000Z",
+        updatedAt: "2026-07-10T00:00:00.000Z",
+        archivedAt: null,
+      },
+      messages: [],
+      effectiveWebPolicy: {
+        enabled: false,
+        reason: "company_disabled",
+        allowlistActive: false,
+      },
+      activeRun: null,
+      canWrite: true,
+    });
+    expect(
+      decodeResponse({
+        archivedChatId: "123e4567-e89b-12d3-a456-426614174001",
+        replacement,
+      }),
+    ).toMatchObject({ archivedChatId: "123e4567-e89b-12d3-a456-426614174001" });
+    expect(() =>
+      decodeResponse({
+        archivedChatId: "123e4567-e89b-12d3-a456-426614174001",
+        replacement: { ...replacement, extra: true },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeResponse({
+        archivedChatId: "123e4567-e89b-12d3-a456-426614174001",
+        replacement: { ...replacement, canWrite: false },
+      }),
+    ).toThrow();
   });
 
   it("exports the shared code-owned web-domain fanout bounds", () => {

@@ -7,6 +7,8 @@ import {
   MemoryRevisionResponse,
   ProductChatListResponse,
   PublicSourcesResponse,
+  ResetProductChatResponse,
+  type ResetProductChatResponse as ResetProductChatResult,
   SendChatMessageAccepted,
   type CreateProductChatRequest,
   type GetChatResponse as GetChat,
@@ -22,7 +24,7 @@ import {
 import { decodeAiRunSse, type AiRunStreamFrame } from "./stream";
 import { ApiResponseError, createApiTransport, type ApiTransportOptions } from "./transport";
 
-export type ChatListView = "mine" | "shared";
+export type ChatListView = "mine" | "shared" | "archived";
 export type ChatSummary = ProductChatSummary;
 
 export type PublisherDocumentOpenTarget =
@@ -51,6 +53,10 @@ export interface ProductApiClient {
   readonly createChat: (input: CreateProductChatRequest) => Promise<CreatedChat>;
   readonly setChatShared: (chatId: string, shared: boolean) => Promise<void>;
   readonly deleteChat: (chatId: string) => Promise<void>;
+  readonly resetChat: (
+    chatId: string,
+    replacementChatId: string,
+  ) => Promise<ResetProductChatResult>;
   readonly createDemoSession: () => Promise<DemoSessionResponse>;
   readonly getChat: (chatId?: string) => Promise<GetChat>;
   readonly sendChatMessage: (
@@ -127,6 +133,13 @@ export const createProductApiClient = (options: ApiTransportOptions): ProductApi
     },
     deleteChat: (chatId) =>
       transport.empty("DELETE /v1/chats/:chatId", `/v1/chats/${encodeURIComponent(chatId)}`),
+    resetChat: (chatId, replacementChatId) =>
+      transport.json(
+        "POST /v1/chats/:chatId/reset",
+        `/v1/chats/${encodeURIComponent(chatId)}/reset`,
+        ResetProductChatResponse,
+        { json: { replacementChatId } },
+      ),
     createDemoSession: () =>
       transport.json("POST /v1/demo/session", "/v1/demo/session", DemoSessionResponse),
     getChat: (chatId) =>

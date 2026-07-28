@@ -96,8 +96,7 @@ const pgLayer = () =>
     applicationName: "workspace-platform-route-test",
   });
 
-const demoCookie = (userId: string) =>
-  `${DEMO_COOKIE_NAME}=${userId}`;
+const demoCookie = (userId: string) => `${DEMO_COOKIE_NAME}=${userId}`;
 
 const config = (_userId = "admin-user", extra: Record<string, string> = {}) =>
   ConfigProvider.layer(
@@ -4029,6 +4028,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
       user_id: "admin-user",
       company_id: clientCompanyId,
       memory_mode: "private_owner" as const,
+      archived_at: null,
       created_at: new Date(),
       updated_at: new Date(),
     };

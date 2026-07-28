@@ -44,7 +44,7 @@ import {
   type StreamDraftState,
   type UserScopedConflict,
 } from "./product-chat-stream";
-import { chatComposerEnabled } from "./chat-permissions";
+import { chatComposerEnabled, chatIsArchived } from "./chat-permissions";
 import { chatForRoute, conflictBelongsToRoute } from "./chat-route-state";
 
 const toTranscript = (messages: readonly ChatMessage[]): readonly ChatTranscriptMessage[] =>
@@ -307,6 +307,7 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
   const routeChat = chatForRoute(chatId, loadedChatId, chat);
   const runId = routeChat?.activeRun?.id ?? null;
   const canWrite = chatComposerEnabled(routeChat);
+  const archived = chatIsArchived(routeChat);
   const routeStateCurrent = routeStateChatId === chatId;
   const routeDraft = routeStateCurrent ? draft : null;
   const routeText = routeStateCurrent ? text : "";
@@ -579,6 +580,15 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
               )}
         </p>
       </header>
+      {archived ? (
+        <div
+          className="rounded-sm border border-accent/30 bg-accent/5 px-3 py-2 text-sm text-muted"
+          role="status"
+          data-testid="archived-chat-banner"
+        >
+          {intl.formatMessage({ id: "web.chat.archivedBanner" })}
+        </div>
+      ) : null}
       <section
         className="rounded-sm border border-rule bg-paper p-3"
         aria-label={intl.formatMessage({ id: "web.memories.title" })}
@@ -723,72 +733,77 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
           setError(null);
         }}
       />
-      <form
-        className="border-t border-rule pt-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void send(routeText).catch((cause: unknown) =>
-            setError(cause instanceof Error ? cause.message : "chat_send_failed"),
-          );
-        }}
-      >
-        <label htmlFor="chat-composer" className="sr-only">
-          {intl.formatMessage({ id: "chat.placeholder" })}
-        </label>
-        <textarea
-          id="chat-composer"
-          data-testid="chat-composer-input"
-          value={routeText}
-          onChange={(event) => setText(event.currentTarget.value)}
-          placeholder={intl.formatMessage({ id: "chat.placeholder" })}
-          disabled={
-            !canWrite || routeSending || routeChat?.activeRun !== null || routeConflict !== null
-          }
-          rows={3}
-          className="w-full resize-y rounded-sm border border-rule bg-paper px-3 py-2 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        />
-        <div className="mt-2 flex items-center justify-between gap-3">
-          {routeChat === null ? null : (
-            <ChatWebSearchToggle
-              policy={routeChat.effectiveWebPolicy}
-              checked={webSearchEnabled}
-              disabled={
-                !canWrite || routeSending || routeChat.activeRun !== null || routeConflict !== null
-              }
-              onChange={setWebSearchEnabled}
-            />
-          )}
-          <button
-            type="submit"
-            data-testid="chat-send-button"
+      {archived ? null : (
+        <form
+          className="border-t border-rule pt-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void send(routeText).catch((cause: unknown) =>
+              setError(cause instanceof Error ? cause.message : "chat_send_failed"),
+            );
+          }}
+        >
+          <label htmlFor="chat-composer" className="sr-only">
+            {intl.formatMessage({ id: "chat.placeholder" })}
+          </label>
+          <textarea
+            id="chat-composer"
+            data-testid="chat-composer-input"
+            value={routeText}
+            onChange={(event) => setText(event.currentTarget.value)}
+            placeholder={intl.formatMessage({ id: "chat.placeholder" })}
             disabled={
-              routeText.trim() === "" ||
-              !canWrite ||
-              routeSending ||
-              routeChat?.activeRun !== null ||
-              routeConflict !== null
+              !canWrite || routeSending || routeChat?.activeRun !== null || routeConflict !== null
             }
-            className="rounded-sm bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {intl.formatMessage({ id: "web.chat.send" })}
-          </button>
-        </div>
-        {!canWrite ? (
-          <p className="mt-2 font-mono text-[11px] text-muted" role="status">
-            {intl.formatMessage({ id: "web.chat.readOnly" })}
-          </p>
-        ) : null}
-        {routeConflict !== null ? (
-          <p className="mt-2 font-mono text-[11px] text-muted" role="status">
-            {intl.formatMessage({ id: "chat.runActive" })}
-          </p>
-        ) : null}
-        {routeError !== null && routeError !== "chat_not_found" ? (
-          <p className="mt-2 font-mono text-[11px] text-danger" role="alert">
-            {intl.formatMessage({ id: "web.chat.error" }, { code: routeError })}
-          </p>
-        ) : null}
-      </form>
+            rows={3}
+            className="w-full resize-y rounded-sm border border-rule bg-paper px-3 py-2 text-sm text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          />
+          <div className="mt-2 flex items-center justify-between gap-3">
+            {routeChat === null ? null : (
+              <ChatWebSearchToggle
+                policy={routeChat.effectiveWebPolicy}
+                checked={webSearchEnabled}
+                disabled={
+                  !canWrite ||
+                  routeSending ||
+                  routeChat.activeRun !== null ||
+                  routeConflict !== null
+                }
+                onChange={setWebSearchEnabled}
+              />
+            )}
+            <button
+              type="submit"
+              data-testid="chat-send-button"
+              disabled={
+                routeText.trim() === "" ||
+                !canWrite ||
+                routeSending ||
+                routeChat?.activeRun !== null ||
+                routeConflict !== null
+              }
+              className="rounded-sm bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {intl.formatMessage({ id: "web.chat.send" })}
+            </button>
+          </div>
+          {!canWrite ? (
+            <p className="mt-2 font-mono text-[11px] text-muted" role="status">
+              {intl.formatMessage({ id: "web.chat.readOnly" })}
+            </p>
+          ) : null}
+          {routeConflict !== null ? (
+            <p className="mt-2 font-mono text-[11px] text-muted" role="status">
+              {intl.formatMessage({ id: "chat.runActive" })}
+            </p>
+          ) : null}
+          {routeError !== null && routeError !== "chat_not_found" ? (
+            <p className="mt-2 font-mono text-[11px] text-danger" role="alert">
+              {intl.formatMessage({ id: "web.chat.error" }, { code: routeError })}
+            </p>
+          ) : null}
+        </form>
+      )}
     </section>
   );
 }

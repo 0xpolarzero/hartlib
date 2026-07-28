@@ -70,3 +70,29 @@ describe("notification preference contract", () => {
     });
   });
 });
+
+describe("publisher issue detail contract", () => {
+  it("uses the publisher issue route", async () => {
+    const issue = {
+      id: "issue-1",
+      subscriptionId: "subscription-1",
+      title: "Week 28",
+      status: "draft",
+      publicationAt: null,
+      publishedAt: null,
+      historical: false,
+      indexingStatus: "pending",
+      indexingErrorCode: null,
+      createdAt: "2026-07-10T00:00:00.000Z",
+      updatedAt: "2026-07-10T00:00:00.000Z",
+    } as const;
+    const fetch = vi.fn<Fetch>(async () => Response.json({ issue, documents: [] }));
+    const client = createPlatformApiClient({ fetch });
+
+    await expect(client.getPublisherIssue("issue /1")).resolves.toEqual({
+      issue,
+      documents: [],
+    });
+    expect(fetch.mock.calls[0]?.[0]).toBe("/v1/publisher-issues/issue%20%2F1");
+  });
+});

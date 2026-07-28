@@ -834,4 +834,36 @@ describe("routeRequest", () => {
     expect(emptyResponse.status).toBe(500);
     expect(redirectResponse.status).toBe(500);
   });
+
+  it("does not write an error body after the request has been aborted", async () => {
+    const controller = new AbortController();
+    controller.abort("client_disconnected");
+    const guarded: Route = {
+      method: "GET",
+      path: "/aborted",
+      contract: testContract(Schema.Struct({ ok: Schema.Literal(true) })),
+      execute: () => Effect.fail(new Error("request failed after disconnect")),
+    };
+
+    const response = await Effect.runPromise(
+      routeRequest([guarded], new Request("http://brief.test/aborted", { signal: controller.signal })),
+    );
+    expect(response.status).toBe(499);
+    expect(await response.text()).toBe("");
+  });
+
+  it("does not turn an interrupted request into an error response", async () => {
+    const interrupted: Route = {
+      method: "GET",
+      path: "/interrupted",
+      contract: testContract(Schema.Struct({ ok: Schema.Literal(true) })),
+      execute: () => Effect.interrupt,
+    };
+
+    const response = await Effect.runPromise(
+      routeRequest([interrupted], new Request("http://brief.test/interrupted")),
+    );
+    expect(response.status).toBe(499);
+    expect(await response.text()).toBe("");
+  });
 });

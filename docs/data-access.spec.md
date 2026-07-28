@@ -225,6 +225,22 @@ Client users do not see aggregate AI context pull analytics.
 
 Client company admins do not see private employee chats.
 
+## Chat reset authorization and retention
+
+`POST /v1/chats/:chatId/reset` is an authenticated personal chat lifecycle mutation. Its body is exactly `{ replacementChatId }`, where the replacement ID is a strict lowercase UUID. The route returns `401` for an unauthenticated request and `403` for a missing chat, non-owner, organization mismatch, revoked membership, deleted workspace, or any selected subscription source that the caller can no longer write. These denials create neither a replacement nor archive state.
+
+Malformed, uppercase, or excess bodies fail at the shared boundary with `400 { code: "invalid_body" }`; no decoder strips unknown fields before authorization.
+
+The reset transaction locks the predecessor and the established company-membership, chat-execution, and create-chat lanes. It rechecks ownership, organization binding, live membership, and every selected source grant before writing. It inserts one empty private replacement with the client-supplied ID, copying the predecessor's company, immutable memory mode, and exact selected source rows. It then fails active predecessor runs with `chat_archived`, sets `archived_at`, `archived_by_user_id`, and `replaced_by_chat_id`, and commits both rows in one transaction. It never deletes or tombstones saved memories and never sets `purge_after`.
+
+The archive shape forbids replacement lineage on active rows. An archived predecessor may keep a null successor pointer only after its replacement is physically deleted while the predecessor remains. The replacement foreign key uses `ON DELETE SET NULL`, so this case clears `replaced_by_chat_id` without clearing `archived_at` or `archived_by_user_id` and without starting a purge clock for the predecessor.
+
+The replacement ID is the idempotency key for the predecessor. The same predecessor and replacement IDs replay the same committed replacement. A different replacement ID after archive returns `409` with `{ error: "chat_already_reset", archivedChatId }`. A replacement ID already used by another chat returns `409` with `{ error: "replacement_id_conflict" }`. Created and replayed responses return one complete replacement projection; the client does not issue a follow-up read.
+
+An archived chat remains readable to an authorized viewer through its existing owner or shared-chat boundary, including its transcript, citations, sources, usage, and export identity. It cannot accept a message or run, and it cannot be newly shared. Its creator may unshare it and may delete it. Active mine and shared lists exclude it; the owned archived list includes it. Export eligibility includes an archived predecessor until explicit deletion or another exceptional account, legal, security, or retention restriction.
+
+Archive is distinct from deletion. Archive alone starts no 30-day purge window and writes no purge clock. The existing deletion transaction remains the only path that starts the 30-day reversible deletion and legal-hold process. After explicit deletion, the existing retention worker and hold checks apply; archived history is then excluded from search, AI context, analytics, support views, and later exports under the existing deletion rules.
+
 ## AI Provider Access
 
 The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`. Fixtures and fake accounts remain acceptable for non-chat demo data.
@@ -395,7 +411,7 @@ When a client company account is deleted, chats enter a 180-day recovery retenti
 
 Legal hold pauses deletion for the affected data.
 
-Client users can export their chats while they have subscription access.
+Client users can export their chats while they have subscription access. This includes eligible archived chats until explicit deletion or an exceptional restriction.
 
 Publisher users can export their own issues, brief documents, issue metadata, and global AI context pull counts.
 

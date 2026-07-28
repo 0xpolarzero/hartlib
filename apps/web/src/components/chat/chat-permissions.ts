@@ -1,4 +1,12 @@
 import type { GetChatResponse } from "@brief/shared";
 
-export const chatComposerEnabled = (chat: Pick<GetChatResponse, "canWrite"> | null): boolean =>
-  chat?.canWrite === true;
+type ChatArchiveProjection = {
+  readonly chat: Pick<GetChatResponse["chat"], "archivedAt">;
+};
+
+export const chatComposerEnabled = (
+  chat: (Pick<GetChatResponse, "canWrite"> & ChatArchiveProjection) | null,
+): boolean => chat?.canWrite === true && chat.chat.archivedAt === null;
+
+export const chatIsArchived = (chat: ChatArchiveProjection | null): boolean =>
+  chat?.chat.archivedAt !== null && chat?.chat.archivedAt !== undefined;

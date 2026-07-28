@@ -53,7 +53,7 @@ Use TanStack DB first for:
 - issue archive lists and filters
 - subscription source selectors
 - admin tables with local filtering and joins
-- chat lists and shared chat lists
+- chat lists, shared chat lists, and owned archived chat lists
 - optimistic UI around client-side edits
 
 Avoid for MVP:
@@ -348,6 +348,9 @@ Backend API style:
 - register only the exact lowercase canonical path templates; uppercase and trailing-slash aliases are 404
 - decode and validate captured path parameters through shared Effect schemas before dispatch, including canonical RFC 9562 UUID versions 1–8, then pass those validated values to adapters instead of reparsing raw URLs
 - define every production request and response body in one complete route-specific `@brief/shared` Effect Schema contract matrix, including exact success statuses; the web client imports the same codecs
+- expose `POST /v1/chats/:chatId/reset` as the one archive-and-replace mutation. Its strict body is `{ replacementChatId }` with a lowercase UUID, and its `200` body is the complete `ResetProductChatResponse` replacement projection.
+- reject malformed, uppercase, or excess reset bodies at the shared request boundary with the bounded `400 { code: "invalid_body" }` response; the decoder never strips unknown fields.
+- map reset outcomes exactly: unauthenticated is `401 { error: "unauthorized" }`; authorization or source-access failure is `403 { error: "forbidden" }`; a different retry ID after archive is `409 { error: "chat_already_reset", archivedChatId }`; and a replacement UUID already in use is `409 { error: "replacement_id_conflict" }`. The route is an authenticated personal-chat lifecycle mutation, so it is exempt from the administrative audit matrix.
 - read request bodies through a streaming bound that cancels at the first byte beyond the route limit; invalid, oversized, or unsupported bodies never enter business logic
 - validate every response body, media type, and success status against its route contract before release
 - keep route handlers thin
@@ -361,6 +364,20 @@ Backend API style:
   at the route boundary and never emit wildcard `Access-Control-Allow-Origin`.
 - avoid WebSockets for MVP
 - avoid a separate REST framework for MVP
+
+## Chat reset client and collections
+
+The typed product client exposes `resetChat(chatId, replacementChatId)`. It posts the exact JSON body to the encoded reset path, strictly decodes the complete success projection, and preserves the typed `chat_already_reset` conflict body. A successful reset never causes a client follow-up GET.
+
+The demo reset controller owns one generation for the active chat projection. Before network work it generates one replacement UUID and snapshots the predecessor projection, draft text, active run ID, stream generation, cursor owner, and route. In the same interaction frame it shows an empty replacement projection with `canWrite: false`, clears the visible transcript, focuses the composer, aborts the old SSE connection without deleting its cursor, and keeps the page shell out of its initial loading state. Typing remains allowed while Send and other writes stay disabled. Late predecessor GET and SSE actions are ignored when their generation is stale.
+
+On success the controller adopts the mutation response, enables Send only after the committed projection is writable, clears the predecessor cursor, runs existing local demo cleanup, and invalidates all three chat-list views. On failure it restores the predecessor projection, route, active run, stream generation, and cursor-based reconnect while retaining text typed during the attempt; local demo keys, IndexedDB PDFs, issue fixtures, subscription fixtures, and saved server memories remain unchanged. A `chat_already_reset` response loads the authoritative committed replacement for the losing tab, using the conflict's `archivedChatId` and no second reset identity.
+
+Mine, shared, and archived chat collections have distinct query keys and collection identities. Reset invalidation marks all three lists stale because the predecessor leaves active views and enters archived history while the replacement enters an active view. Authentication cleanup releases every scoped collection, including the archived collection; unrelated collections are not invalidated.
+
+`GET /v1/chats` accepts `view=mine`, `view=shared`, or `view=archived`. Mine and Shared return active rows only; Archived returns only rows owned by the caller whose `archivedAt` is set.
+
+Reset copy is part of the localized contract. English uses “Start a new chat” and says that the current chat moves to Archived. French supplies a natural equivalent and the same meaning. Both catalogs include the Archived tab and empty state, archived transcript banner, quiet pending state, and non-blocking rollback error. The pending state never describes deletion, and the failure state does not claim that local data was cleared.
 
 ## AI Integration
 
@@ -493,6 +510,7 @@ Backend tests should be exhaustive where product rules matter.
 Use real Postgres integration tests for:
 
 - authorization
+- chat archive-and-replace migration constraints, ownership, organization binding, source revalidation, replay, competing IDs, concurrent reset, and retained history after physical replacement deletion
 - issue publication
 - PDF extraction state
 - search and retrieval
@@ -504,6 +522,7 @@ Use real Postgres integration tests for:
 - credits
 - Stripe webhook state changes
 - support access logging
+- archived chat reads, write denial, creator unshare/delete, mine/shared/archived list partitioning, export eligibility, and archive-versus-delete retention
 
 Postgres integration tests that can mutate or truncate tables must use an explicit test database URL, not a developer's normal application database. Worker job repository integration tests read `WORKER_POSTGRES_TEST_DATABASE_URL` and are skipped when it is unset.
 
@@ -518,6 +537,8 @@ Use pure unit tests for:
 - exact provider-request token counting
 - complete keep/range/omit accounting and fanout output allocation
 - topic-packet and synthesis citation preservation
+- reset reducer/controller generation fencing, optimistic empty projection, pending send gate, success reconciliation, rollback with preserved draft text, and two-tab conflict recovery
+- chat composer permission gating across authoritative write access and active versus archived state
 
 Use Effect test layers for service tests.
 
@@ -537,6 +558,7 @@ Use frontend tests mainly for:
 - critical forms
 - API integration assumptions
 - TanStack DB synchronization behavior
+- mine/shared/archived chat tabs, archived empty state, and the archived card action matrix
 
 Keep MVP E2E coverage narrow. The required `bun run e2e` gate runs both
 canonical Playwright projects: `brief-ai-chat-runtime` and `brief-platform`.
@@ -552,6 +574,25 @@ Critical MVP E2E paths:
 - clarification, web-toggle, and fanout final-only streaming behavior
 - the next message is accepted only after prior memory writes commit
 - client admin billing flow via Stripe webhook simulation
+- start a new chat with a delayed reset response: optimistic empty transcript, typing while pending, commit without a follow-up GET, predecessor read-only history, replacement writability, same-ID replay, competing-ID conflict, stale run fencing, and rollback of transcript, route, cursor, and pending text
+
+## Required chat-reset test gates
+
+The reset contract is not complete until these focused checks and the full repository gates pass:
+
+```sh
+bunx --bun vitest run packages/backend-domain/src/product-chats.integration.test.ts packages/backend-domain/src/chat-runtime.integration.test.ts apps/api/src/authorization.integration.test.ts
+bunx --bun vitest run apps/demo/src/*chat-reset*.test.ts packages/api-client/src/product-client.test.ts
+bunx --bun vitest run apps/worker/src/ai/product-state/product-state.test.ts -t "real reset"
+bunx --bun vitest run apps/web/src/components/chat/chat-permissions.test.ts apps/web/src/components/chat/chat-workspace-page.test.tsx apps/web/src/lib/db.test.ts apps/api/src/domain/administrative-audit-matrix.test.ts
+BRIEF_E2E_STACK=1 bunx --bun playwright test tests/e2e/chat.spec.ts --project=brief-ai-chat-runtime --grep "start a new chat"
+bun run check
+bun run lint
+bun run test
+bun run e2e
+```
+
+The browser test titles contain `start a new chat`. The focused tests prove the migration shape and no-purge-clock rule, atomic archive and replacement, exact company/memory/source copying, authorization and status mapping, both reset/finalization lock outcomes, three-collection invalidation, composer and archived-card permissions, the reset audit exemption, optimistic success and rollback, strict client decoding, late predecessor rejection, and losing-tab adoption. Archived export eligibility remains part of the full test gate. `bun run e2e` runs both canonical Playwright projects.
 
 The deterministic platform Playwright stack uses a process-shared local S3-compatible fixture. Its publisher path uploads an existing valid PDF through the UI, waits for worker extraction and publication, opens the delivered document as an authorized client, verifies the private five-minute signed redirect, and compares the returned object bytes exactly with the uploaded fixture. Except for `/health` and CORS `OPTIONS`, the fixture independently reconstructs and verifies the method-bound SigV4 canonical request before any bucket or object state is read or mutated. It validates the configured credential scope, signing time, presigned expiry, signed headers, payload mode, payload hash when signed, and HMAC for versioning, `PUT`, `GET`, `HEAD`, and `DELETE`; missing, expired, wrong-credential, wrong-method, or tampered authorization receives only a content-free generic denial. Mutation requests require a lowercase 64-hex signed payload hash that matches the exact received bytes. Streaming signature-marker modes fail closed because the fixture does not emulate AWS chunk-signature chains; checksum-framed `aws-chunked` bytes remain supported when those exact encoded bytes are hash-signed.
 

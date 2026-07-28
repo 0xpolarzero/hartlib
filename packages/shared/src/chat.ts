@@ -377,6 +377,7 @@ export const GetChatResponse = Schema.Struct({
     memoryMode: Schema.Literals(["private_owner", "disabled"]),
     createdAt: Schema.String,
     updatedAt: Schema.String,
+    archivedAt: Schema.NullOr(Schema.String),
   }),
   messages: Schema.Array(ChatMessage),
   effectiveWebPolicy: EffectiveWebPolicy,
@@ -494,6 +495,8 @@ export const ProductChatSummary = Schema.Struct({
   creatorUserId: Schema.String,
   memoryMode: Schema.Literals(["private_owner", "disabled"]),
   sharedAt: Schema.NullOr(Schema.String),
+  archivedAt: Schema.NullOr(Schema.String),
+  replacedByChatId: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
   updatedAt: Schema.String,
   sourceCount: Schema.Number,
@@ -511,6 +514,47 @@ export const CreateProductChatResponse = Schema.Struct({
     createdAt: Schema.String,
   }),
 });
+
+const chatIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/** Lowercase canonical UUID used for chat and replacement identities. */
+export const ChatIdUuid = Schema.String.pipe(
+  Schema.check(Schema.isPattern(chatIdPattern)),
+  Schema.check(Schema.isLowercased()),
+);
+export type ChatIdUuid = Schema.Schema.Type<typeof ChatIdUuid>;
+
+/**
+ * The client generates the replacement UUID before the request. It is both the
+ * optimistic identity shown while the reset is pending and the replay key: a
+ * retry with the same old id and replacement id returns the same committed row.
+ */
+export const ResetProductChatRequest = Schema.Struct({
+  replacementChatId: ChatIdUuid,
+});
+export type ResetProductChatRequest = Schema.Schema.Type<typeof ResetProductChatRequest>;
+
+/**
+ * The replacement projection is complete so the client never needs a follow-up
+ * read. It starts empty and writable with the copied company, memory mode, and
+ * source set; the archived predecessor id is returned for lineage.
+ */
+export const ResetProductChatResponse = Schema.Struct({
+  archivedChatId: Schema.String,
+  replacement: GetChatResponse.pipe(
+    Schema.check(
+      Schema.makeFilter<GetChatResponse>((value) =>
+        value.chat.archivedAt === null &&
+        value.messages.length === 0 &&
+        value.activeRun === null &&
+        value.canWrite
+          ? undefined
+          : "reset replacement must be empty, active, and writable",
+      ),
+    ),
+  ),
+});
+export type ResetProductChatResponse = Schema.Schema.Type<typeof ResetProductChatResponse>;
 
 export const RequestModelUsage = Schema.Struct({
   scope: Schema.Literal("request"),

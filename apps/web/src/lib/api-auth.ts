@@ -4,6 +4,8 @@ export type ApiTokenProvider = () => Promise<string | null>;
 
 let tokenProvider: ApiTokenProvider = async () => null;
 const { apiBaseUrl } = loadWebApiConfig(import.meta.env);
+const demoMode = String(import.meta.env.VITE_AUTH_MODE ?? "demo") === "demo";
+const demoSessionUrl = `${apiBaseUrl}/v1/demo/session`;
 
 export const apiResourceUrl = (path: string): string =>
   apiBaseUrl !== "" && path.startsWith("/") && globalThis.location !== undefined
@@ -35,7 +37,16 @@ export const authenticatedFetch = async (
   if (!["GET", "HEAD", "OPTIONS"].includes(method) && !headers.has("x-request-id")) {
     headers.set("x-request-id", crypto.randomUUID());
   }
-  return fetch(target, { ...init, headers });
+  const requestInit: RequestInit = {
+    ...init,
+    headers,
+    ...(demoMode ? { credentials: "include" as const } : {}),
+  };
+  const response = await fetch(target, requestInit);
+  if (!demoMode || response.status !== 401) return response;
+
+  await fetch(demoSessionUrl, { method: "POST", credentials: "include" });
+  return fetch(target, requestInit);
 };
 
 export const isSecureBearerTarget = (

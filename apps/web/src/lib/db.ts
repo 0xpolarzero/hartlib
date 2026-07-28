@@ -118,6 +118,13 @@ const chatCollections = registry<ReturnType<typeof createChatListCollection>>();
 export const chatListCollection = (view: ChatListView) =>
   cached(chatCollections, view, () => createChatListCollection({ view }));
 
+/** Mark every chat collection stale after an archive-and-replace mutation. */
+export const invalidateProductChatCollections = async (
+  client: QueryClient = queryClient,
+): Promise<void> => {
+  await client.invalidateQueries({ queryKey: ["product-chats"] });
+};
+
 const ARCHIVE_PAGE_LIMIT = 100;
 
 export const fetchArchiveWindow = async (options: {

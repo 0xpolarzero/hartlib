@@ -296,9 +296,10 @@ const verifyHeaderSignedRequest = async (
 const accessDenied = (): Response =>
   new Response(null, { status: 403, headers: responseHeaders() });
 
-const responseHeaders = (extra: HeadersInit = {}): Headers => {
+const responseHeaders = (extra: HeadersInit = {}, origin: string | null = null): Headers => {
   const headers = new Headers(extra);
-  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-allow-origin", origin ?? "*");
+  if (origin !== null) headers.set("access-control-allow-credentials", "true");
   headers.set(
     "access-control-expose-headers",
     "content-disposition, content-length, etag, x-brief-e2e-authorization-received",
@@ -491,7 +492,7 @@ export const makeS3Fixture = (
           "x-brief-e2e-authorization-received": request.headers.has("authorization")
             ? "present"
             : "absent",
-        });
+        }, request.headers.get("origin"));
         for (const [name, value] of Object.entries(object.metadata)) {
           headers.set(`x-amz-meta-${name}`, value);
         }

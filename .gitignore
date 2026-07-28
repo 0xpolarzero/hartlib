@@ -12,3 +12,5 @@ test-results
 smithers.db
 smithers.db-shm
 smithers.db-wal
+artifacts
+.agents

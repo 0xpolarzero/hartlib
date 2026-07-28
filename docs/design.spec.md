@@ -552,6 +552,12 @@ Shared chat links open the shared chat inside the platform.
 
 Shared chat viewers are read-only: only the creator can submit a new message or change the chat's sharing state.
 
+An archived chat is readable history, not a writable chat. It keeps its messages, citations, sources, usage, export identity, and `archivedAt` value. Its `canWrite` value is false. The creator may unshare or delete it, but no user may send a message, start a new run, or newly share it.
+
+Active chat lists exclude archived rows. The owned Archived view lists archived chats, and an existing chat link opens the full read-only transcript. An eligible archived chat remains exportable until the creator explicitly deletes it.
+
+Archive is not deletion and sets no `purge_after` value or purge clock. The normal retention, legal-hold, export, and explicit deletion rules continue to apply until the creator deletes the archived chat.
+
 Shared chat viewers must belong to the same live client company and chat. The
 viewer check does not reauthorize every source in an accepted run.
 
@@ -570,6 +576,18 @@ The creator can unshare shared chats.
 The creator can delete shared chats.
 
 Deleted chats disappear immediately and are purged from active storage within 30 days.
+
+### Start a new chat
+
+Start a new chat uses archive-and-replace. The client generates one lowercase UUID before the request and uses it as both the optimistic replacement identity and the replay key for `POST /v1/chats/:chatId/reset`.
+
+The server locks the predecessor and the existing company-membership, chat-execution, and create-chat authorization lanes in their established order. It verifies that the caller owns the predecessor, matches the company's active organization, and still has write access to every selected subscription source. It then inserts one empty private replacement with the supplied UUID, copying the predecessor's company, immutable memory mode, and exact selected source rows; the replacement stays private even when the predecessor was shared. It archives the predecessor with `archived_at`, `archived_by_user_id`, and `replaced_by_chat_id`; fails any active predecessor run with `chat_archived`; and commits the archive and replacement together. Saved memories are not deleted or tombstoned.
+
+An active chat cannot hold replacement lineage. An archived chat may keep a null `replaced_by_chat_id` after its replacement is physically deleted while the predecessor remains under a separate retention or legal-hold rule. That deletion clears only the lineage pointer; it does not unarchive or delete the predecessor.
+
+The success body contains the complete writable replacement projection, with `archivedAt: null`, no messages, and no active run, so the client does not need a follow-up read. A retry with the same predecessor and replacement IDs returns the same replacement. A different replacement ID for an archived predecessor returns `409 chat_already_reset` with `archivedChatId`; a replacement UUID already used by another chat returns `409 replacement_id_conflict`. Unauthenticated requests return `401`, and ownership, organization, membership, or source-access failures return `403` without creating or archiving anything.
+
+The navbar action is labeled “Start a new chat” and explains that the current chat moves to Archived. Reset shows a quiet pending state, lets the user type, keeps Send disabled until commit, and reports a failed attempt with non-blocking copy. No destructive confirmation is needed because the predecessor remains history.
 
 `plan-turn` can select bounded recent complete user/assistant turns and terminal failed user-only turns from the current chat; provisional failed drafts never enter history. Internal retriever A can search older messages only in that same accessible chat. Deleted chats and messages are excluded immediately from both paths.
 
@@ -767,10 +785,13 @@ Client company deletion is handled through a support request in the MVP.
 
 Client company settings include a request company deletion action.
 
-Users have two chat views:
+Users have three chat views:
 
 - my chats
 - shared chats
+- archived chats owned by the current user
+
+My chats and Shared chats contain active rows only. Archived contains only the current user's archived rows; it does not include another user's archived shared chat.
 
 ## Business Model
 

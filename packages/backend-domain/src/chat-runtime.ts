@@ -31,6 +31,7 @@ export interface ChatRow {
   readonly user_id: string;
   readonly company_id: string;
   readonly memory_mode: "private_owner" | "disabled";
+  readonly archived_at: Date | null;
   readonly created_at: Date;
   readonly updated_at: Date;
 }
@@ -156,11 +157,12 @@ const ensureDemoChatInTransaction = (userId: string) =>
     `;
     const existing = yield* sql<ChatRow>`
       select chat.id::text, chat.user_id, chat.company_id::text, chat.memory_mode,
-             chat.created_at, chat.updated_at
+             chat.archived_at, chat.created_at, chat.updated_at
       from chats chat
       join client_companies company on company.id = chat.company_id
       where chat.user_id = ${userId}
         and chat.deleted_at is null
+        and chat.archived_at is null
         and company.recovery_deleted_at is null
         and company.purged_at is null
       order by chat.created_at, chat.id
@@ -233,15 +235,16 @@ const ensureDemoChatInTransaction = (userId: string) =>
     const inserted = yield* sql<ChatRow>`
       insert into chats (user_id, company_id, memory_mode)
       values (${userId}, ${companyId}, 'private_owner')
-      returning id::text, user_id, company_id::text, memory_mode, created_at, updated_at
+      returning id::text, user_id, company_id::text, memory_mode, archived_at, created_at, updated_at
     `;
     if (inserted[0] !== undefined) return inserted[0];
     const raced = yield* sql<ChatRow>`
       select chat.id::text, chat.user_id, chat.company_id::text, chat.memory_mode,
-             chat.created_at, chat.updated_at
+             chat.archived_at, chat.created_at, chat.updated_at
       from chats chat
       join client_companies company on company.id = chat.company_id
       where chat.user_id = ${userId} and chat.deleted_at is null
+        and chat.archived_at is null
         and company.recovery_deleted_at is null
         and company.purged_at is null
       order by chat.created_at, chat.id
@@ -303,7 +306,7 @@ export const loadChatRuntimeState = (
         ? yield* ensureDemoChat(userId)
         : (yield* sql<ChatRow>`
             select chat.id::text, chat.user_id, chat.company_id::text, chat.memory_mode,
-                   chat.created_at, chat.updated_at
+                   chat.archived_at, chat.created_at, chat.updated_at
             from chats chat
             join client_companies company on company.id = chat.company_id
             join platform_users creator
@@ -717,7 +720,7 @@ export const createUserMessageAndRun = (
             ? yield* ensureDemoChatInTransaction(userId)
             : (yield* sql<ChatRow>`
                 select chat.id::text, chat.user_id, chat.company_id::text, chat.memory_mode,
-                       chat.created_at, chat.updated_at
+                       chat.archived_at, chat.created_at, chat.updated_at
                 from chats chat
                 join client_companies company on company.id = chat.company_id
                 join client_company_memberships membership
@@ -726,6 +729,7 @@ export const createUserMessageAndRun = (
                  and membership.created_at <= now()
                 where chat.id = ${chatId} and chat.user_id = ${userId}
                   and chat.deleted_at is null
+                  and chat.archived_at is null
                   and company.recovery_deleted_at is null
                   and company.purged_at is null
                   and (
@@ -823,7 +827,7 @@ export const loadOwnedChat = (userId: string, chatId: string, organizationId: st
     const sql = yield* PgClient.PgClient;
     const rows = yield* sql<ChatRow>`
       select chat.id::text, chat.user_id, chat.company_id::text, chat.memory_mode,
-             chat.created_at, chat.updated_at
+             chat.archived_at, chat.created_at, chat.updated_at
       from chats chat
       join client_companies company on company.id = chat.company_id
       join client_company_memberships membership

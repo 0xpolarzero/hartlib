@@ -27,6 +27,7 @@ import {
 } from "@brief/i18n";
 import type {
   EffectiveWebPolicy,
+  GetChatResponse,
   MemoryRevisionResponse,
   PublicSourcesResponse,
 } from "@brief/shared";
@@ -100,6 +101,11 @@ import {
   scopePublicContentToMarket,
   type MarketPublicContentState,
 } from "./market-content";
+import {
+  createChatResetController,
+  type ChatResetController,
+  type ChatResetSnapshot,
+} from "./chat-reset";
 
 const publicApiBaseUrl = loadDemoBrowserConfig(import.meta.env).apiBaseUrl;
 const demoSessionUrl = `${publicApiBaseUrl}/v1/demo/session`;
@@ -135,6 +141,26 @@ async function fetchPublicContent(market: Market): Promise<PublicSourcesResponse
 async function fetchDemoChat(): Promise<ChatApiResponse> {
   return demoApi.getChat();
 }
+
+const emptyResetChatId = "00000000-0000-4000-8000-000000000000";
+
+const emptyResetProjection = (): GetChatResponse => ({
+  chat: {
+    id: emptyResetChatId,
+    memoryMode: "disabled",
+    createdAt: "1970-01-01T00:00:00.000Z",
+    updatedAt: "1970-01-01T00:00:00.000Z",
+    archivedAt: null,
+  },
+  messages: [],
+  effectiveWebPolicy: {
+    enabled: false,
+    reason: "deployment_unavailable",
+    allowlistActive: false,
+  },
+  activeRun: null,
+  canWrite: false,
+});
 
 async function postDemoChatMessage(input: {
   readonly text: string;
@@ -179,7 +205,39 @@ function App() {
   );
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(initialRoute.sourceId);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(initialRoute.issueId);
-  const [, setResetVersion] = useState(0);
+  const resetHostRef = useRef<{
+    readonly start: (snapshot: ChatResetSnapshot<string>) => void;
+    readonly succeed: (response: { readonly replacement: GetChatResponse }) => Promise<void>;
+    readonly fail: (cause: unknown, snapshot: ChatResetSnapshot<string>) => Promise<void>;
+  }>({
+    start: () => {},
+    succeed: () => Promise.resolve(),
+    fail: () => Promise.resolve(),
+  });
+  const resetSnapshotRef = useRef<ChatResetSnapshot<string> | null>(null);
+  const resetControllerRef = useRef<ChatResetController<string> | null>(null);
+  if (resetControllerRef.current === null) {
+    resetControllerRef.current = createChatResetController<string>({
+      initial: {
+        projection: emptyResetProjection(),
+        draft: "",
+        activeRunId: null,
+        streamGeneration: 0,
+        cursor: null,
+        route: typeof window === "undefined" ? "" : window.location.pathname,
+      },
+      api: {
+        resetChat: (chatId, replacementChatId) => demoApi.resetChat(chatId, replacementChatId),
+        getCommittedChat: fetchDemoChat,
+      },
+      onStart: (snapshot) => resetHostRef.current.start(snapshot),
+      onSuccess: (response) => resetHostRef.current.succeed(response),
+      onFailure: (cause, snapshot) => resetHostRef.current.fail(cause, snapshot),
+    });
+  }
+  const resetController = resetControllerRef.current;
+  const [resetPending, setResetPending] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
   const [loadedPublicContent, setLoadedPublicContent] = useState<MarketPublicContentState>(() => ({
     market,
     status: "loading",
@@ -256,12 +314,120 @@ function App() {
     };
   }, [market]);
 
-  function handleResetDemoStorage() {
+  useEffect(
+    () =>
+      resetController.subscribe(() => {
+        setResetPending(resetController.getState().phase === "pending");
+      }),
+    [resetController],
+  );
+
+  useEffect(() => {
+    if (initialRoute.sourceId === null) return;
+    if (resetController.getState().projection.chat.id !== emptyResetChatId) return;
+    let cancelled = false;
+    void fetchDemoChat()
+      .then((chat) => {
+        if (cancelled || resetController.getState().phase === "pending") return;
+        const activeRunId = chat.activeRun?.id ?? null;
+        const restored =
+          activeRunId === null ? null : restoreRunStreamState(window.sessionStorage, activeRunId);
+        resetController.dispatch({
+          type: "hydrate",
+          projection: chat,
+          activeRunId,
+          streamGeneration: resetController.getState().streamGeneration,
+          cursor:
+            activeRunId === null || restored === null
+              ? null
+              : { runId: activeRunId, lastSeq: restored.lastSeq },
+          route: window.location.pathname,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setResetError(intl.formatMessage({ id: "chat.resetFailed" }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialRoute.sourceId, intl, resetController]);
+
+  async function handleResetChat() {
+    if (resetController.getState().phase === "pending") return;
+    const route = window.location.pathname;
+    let state = resetController.getState();
+    if (state.projection.chat.id === emptyResetChatId) {
+      try {
+        const chat = await fetchDemoChat();
+        const activeRunId = chat.activeRun?.id ?? null;
+        const restored =
+          activeRunId === null ? null : restoreRunStreamState(window.sessionStorage, activeRunId);
+        resetController.dispatch({
+          type: "hydrate",
+          projection: chat,
+          activeRunId,
+          streamGeneration: state.streamGeneration,
+          cursor:
+            activeRunId === null || restored === null
+              ? null
+              : { runId: activeRunId, lastSeq: restored.lastSeq },
+          route,
+        });
+      } catch {
+        setResetError(intl.formatMessage({ id: "chat.resetFailed" }));
+        return;
+      }
+      state = resetController.getState();
+    } else if (state.route !== route) {
+      const restored =
+        state.activeRunId === null
+          ? null
+          : restoreRunStreamState(window.sessionStorage, state.activeRunId);
+      resetController.dispatch({
+        type: "hydrate",
+        projection: state.projection,
+        activeRunId: state.activeRunId,
+        streamGeneration: state.streamGeneration,
+        cursor:
+          state.activeRunId === null || restored === null
+            ? state.cursor
+            : { runId: state.activeRunId, lastSeq: restored.lastSeq },
+        route,
+      });
+      state = resetController.getState();
+    }
+    await resetController.reset(state.projection.chat.id, route);
+  }
+
+  function finishResetDemoStorage() {
     resetDemoStorage();
     resetIssues(demoDataset.issues.map(clonePublication));
     applyDemoRoute({ locale, role: "client", sourceId: null, issueId: null }, "replace");
-    setResetVersion((version) => version + 1);
   }
+
+  resetHostRef.current = {
+    start: (snapshot) => {
+      resetSnapshotRef.current = snapshot;
+      setResetError(null);
+      applyDemoRoute({ locale, role: "client", sourceId: null, issueId: null }, "replace");
+    },
+    succeed: async () => {
+      const previousRunId =
+        resetSnapshotRef.current?.cursor?.runId ?? resetSnapshotRef.current?.activeRunId;
+      if (previousRunId !== null && previousRunId !== undefined) {
+        clearRunStreamState(window.sessionStorage, previousRunId);
+      }
+      setResetError(null);
+      resetSnapshotRef.current = null;
+      finishResetDemoStorage();
+    },
+    fail: async (cause, snapshot) => {
+      setResetError(intl.formatMessage({ id: "chat.resetFailed" }));
+      applyDemoRoute(getDemoRouteFromPath(snapshot.route), "replace");
+      resetSnapshotRef.current = null;
+      void cause;
+    },
+  };
   function handleToggleSubscribed(sourceId: string) {
     const source = sources.find((candidate) => candidate.id === sourceId);
     if (!source) return;
@@ -305,7 +471,8 @@ function App() {
                     variant="ghost"
                     size="icon"
                     className="size-7 text-faint/70 hover:bg-rule/45 hover:text-muted"
-                    onClick={handleResetDemoStorage}
+                    onClick={() => void handleResetChat()}
+                    disabled={resetPending}
                     aria-label={intl.formatMessage({ id: "action.reset" })}
                   >
                     <RotateCcw className="size-3" aria-hidden="true" />
@@ -330,6 +497,11 @@ function App() {
                 applyDemoRoute,
               })}
             />
+            {resetError ? (
+              <p className="mt-2 text-sm text-accent" data-testid="chat-reset-error">
+                {resetError}
+              </p>
+            ) : null}
           </div>
           {selectedFeed && selectedClientIssue ? (
             <ClientPublicationDetail issue={selectedClientIssue} sourceById={sourceById} />
@@ -356,6 +528,7 @@ function App() {
                 applyDemoRoute({ locale, role: "client", sourceId: feedId, issueId: null })
               }
               onToggleSubscribed={handleToggleSubscribed}
+              resetController={resetController}
             />
           )}
         </div>
@@ -450,6 +623,7 @@ function ClientFeedsList({
   publicContentStatus,
   onSelectFeed,
   onToggleSubscribed,
+  resetController,
 }: {
   market: Market;
   sources: readonly BriefSource[];
@@ -457,28 +631,35 @@ function ClientFeedsList({
   publicContentStatus: "loading" | "ready" | "error";
   onSelectFeed: (feedId: string) => void;
   onToggleSubscribed: (feedId: string) => void;
+  resetController: ChatResetController<string>;
 }) {
   const intl = useIntl();
   const locale = useLocale();
   const publishedIssues = publications.filter((issue) => issue.status === "published");
-  const [chatMessages, setChatMessages] = useState<readonly ChatTranscriptMessage[]>([]);
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const initialResetState = useMemo(() => resetController.getState(), [resetController]);
+  const [chatMessages, setChatMessages] = useState<readonly ChatTranscriptMessage[]>(() =>
+    mapApiMessagesToTranscript(initialResetState.projection.messages),
+  );
+  const [activeRunId, setActiveRunId] = useState<string | null>(initialResetState.activeRunId);
   const [userScopedConflict, setUserScopedConflict] = useState<UserScopedConflict | null>(null);
-  const [effectiveWebPolicy, setEffectiveWebPolicy] = useState<EffectiveWebPolicy>({
-    enabled: false,
-    reason: "deployment_unavailable",
-    allowlistActive: false,
-  });
+  const [effectiveWebPolicy, setEffectiveWebPolicy] = useState<EffectiveWebPolicy>(
+    initialResetState.projection.effectiveWebPolicy,
+  );
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
-  const [chatStatus, setChatStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [draftMessage, setDraftMessage] = useState("");
+  const [chatStatus, setChatStatus] = useState<"loading" | "ready" | "error">(
+    initialResetState.projection.chat.id === emptyResetChatId ? "loading" : "ready",
+  );
+  const [draftMessage, setDraftMessage] = useState(initialResetState.draft);
   const [sendStatus, setSendStatus] = useState<"idle" | "sending">("idle");
-  const [chatNotice, setChatNotice] = useState<string | null>(null);
+  const [chatNotice, setChatNotice] = useState<string | null>(() =>
+    initialResetState.phase === "pending" ? intl.formatMessage({ id: "chat.resetPending" }) : null,
+  );
   const [chatError, setChatError] = useState<string | null>(null);
   const [failedMessage, setFailedMessage] = useState<string | null>(null);
   const [streamState, setStreamState] = useState(initialChatStreamState);
   const streamSeqRef = useRef(0);
   const chatRefreshSequenceRef = useRef(0);
+  const [resetPending, setResetPending] = useState(initialResetState.phase === "pending");
   const [memories, setMemories] = useState<readonly MemoryResponse[]>([]);
   const [memoriesStatus, setMemoriesStatus] = useState<"loading" | "ready" | "error">("loading");
   const [memoryError, setMemoryError] = useState<string | null>(null);
@@ -495,17 +676,68 @@ function ClientFeedsList({
     [],
   );
 
-  const refreshChat = useCallback(async (preserveActiveRunId?: string) => {
-    const sequence = ++chatRefreshSequenceRef.current;
-    const chat = await fetchDemoChat();
-    if (sequence !== chatRefreshSequenceRef.current) return chat;
-    setChatMessages(mapApiMessagesToTranscript(chat.messages));
-    setActiveRunId(preserveActiveRunId ?? chat.activeRun?.id ?? null);
-    setEffectiveWebPolicy(chat.effectiveWebPolicy);
-    if (!chat.effectiveWebPolicy.enabled) setWebSearchEnabled(false);
-    setChatStatus("ready");
-    return chat;
-  }, []);
+  useEffect(() => {
+    if (!resetPending) return;
+    document.querySelector<HTMLTextAreaElement>('[data-testid="chat-composer-input"]')?.focus();
+  }, [resetPending]);
+
+  useEffect(() => {
+    let previous = resetController.getState();
+    return resetController.subscribe(() => {
+      const next = resetController.getState();
+      const started = next.phase === "pending" && previous.phase !== "pending";
+      const completed = next.phase === "idle" && previous.phase === "pending";
+      if (started) {
+        chatRefreshSequenceRef.current += 1;
+        setChatMessages([]);
+        setActiveRunId(null);
+        setStreamState(initialChatStreamState);
+        setChatStatus("ready");
+        setChatNotice(intl.formatMessage({ id: "chat.resetPending" }));
+        setChatError(null);
+        setFailedMessage(null);
+        document.querySelector<HTMLTextAreaElement>('[data-testid="chat-composer-input"]')?.focus();
+      } else if (completed) {
+        setChatMessages(mapApiMessagesToTranscript(next.projection.messages));
+        setActiveRunId(next.activeRunId);
+        setEffectiveWebPolicy(next.projection.effectiveWebPolicy);
+        setStreamState(initialChatStreamState);
+        setChatNotice(null);
+      }
+      setDraftMessage(next.draft);
+      setResetPending(next.phase === "pending");
+      previous = next;
+    });
+  }, [intl, resetController]);
+
+  const refreshChat = useCallback(
+    async (preserveActiveRunId?: string) => {
+      const sequence = ++chatRefreshSequenceRef.current;
+      const resetGeneration = resetController.getState().generation;
+      const chat = await fetchDemoChat();
+      if (sequence !== chatRefreshSequenceRef.current) return chat;
+      const resetState = resetController.getState();
+      if (resetState.generation !== resetGeneration) return chat;
+      setChatMessages(mapApiMessagesToTranscript(chat.messages));
+      setActiveRunId(preserveActiveRunId ?? chat.activeRun?.id ?? null);
+      setEffectiveWebPolicy(chat.effectiveWebPolicy);
+      if (!chat.effectiveWebPolicy.enabled) setWebSearchEnabled(false);
+      setChatStatus("ready");
+      resetController.dispatch({
+        type: "hydrate",
+        projection: chat,
+        activeRunId: preserveActiveRunId ?? chat.activeRun?.id ?? null,
+        streamGeneration: resetController.getState().streamGeneration,
+        cursor:
+          preserveActiveRunId === undefined || preserveActiveRunId === null
+            ? null
+            : resetController.getState().cursor,
+        route: window.location.pathname,
+      });
+      return chat;
+    },
+    [resetController],
+  );
 
   const refreshMemories = useCallback(async () => {
     const result = await fetchDemoMemories();
@@ -516,6 +748,10 @@ function ClientFeedsList({
   }, []);
 
   useEffect(() => {
+    if (resetController.getState().projection.chat.id !== emptyResetChatId) {
+      setChatStatus("ready");
+      return;
+    }
     let cancelled = false;
     setChatStatus("loading");
     void refreshChat()
@@ -534,7 +770,7 @@ function ClientFeedsList({
     return () => {
       cancelled = true;
     };
-  }, [refreshChat]);
+  }, [refreshChat, resetController]);
 
   useEffect(() => {
     let cancelled = false;
@@ -565,6 +801,7 @@ function ClientFeedsList({
     let closed = false;
     let controller: AbortController | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetGeneration = resetController.getState().generation;
     const restored = restoreRunStreamState(window.sessionStorage, activeRunId);
     let currentStreamState = restoreChatStreamState(restored);
     streamSeqRef.current = restored?.lastSeq ?? 0;
@@ -580,10 +817,16 @@ function ClientFeedsList({
     };
 
     const handleStreamEvent = (seq: number, event: ChatStreamEvent) => {
-      if (closed) return;
+      if (closed || resetController.getState().generation !== resetGeneration) return;
       const next = reduceChatStream(currentStreamState, { seq, event });
       currentStreamState = next;
       streamSeqRef.current = next.seq;
+      resetController.dispatch({
+        type: "late_stream",
+        generation: resetController.getState().generation,
+        streamGeneration: resetController.getState().streamGeneration,
+        cursor: { runId: activeRunId, lastSeq: next.seq },
+      });
       if (event.type !== "done" && event.type !== "error") {
         persistRunStreamState(window.sessionStorage, {
           version: 2,
@@ -734,6 +977,7 @@ function ClientFeedsList({
       } as const;
       if (
         trimmed.length === 0 ||
+        resetPending ||
         sendStatus === "sending" ||
         activeRunId !== null ||
         userScopedConflict !== null
@@ -748,6 +992,7 @@ function ClientFeedsList({
       try {
         const body = await postDemoChatMessage(request);
         setDraftMessage("");
+        resetController.dispatch({ type: "draft", draft: "" });
         setUserScopedConflict(null);
         setActiveRunId(body.run.id);
         await refreshChat();
@@ -802,6 +1047,7 @@ function ClientFeedsList({
       locale,
       market,
       refreshChat,
+      resetPending,
       sendStatus,
       userScopedConflict,
       webSearchEnabled,
@@ -887,14 +1133,18 @@ function ClientFeedsList({
             <ChatWebSearchToggle
               policy={effectiveWebPolicy}
               checked={webSearchEnabled}
-              disabled={runActive || sendStatus === "sending"}
+              disabled={resetPending || runActive || sendStatus === "sending"}
               onChange={setWebSearchEnabled}
             />
           </div>
           <div className="flex items-end gap-2">
             <Textarea
               value={draftMessage}
-              onChange={(event) => setDraftMessage(event.currentTarget.value)}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setDraftMessage(value);
+                resetController.dispatch({ type: "draft", draft: value });
+              }}
               placeholder={intl.formatMessage({ id: "chat.placeholder" })}
               disabled={runActive || sendStatus === "sending"}
               rows={2}
@@ -903,7 +1153,12 @@ function ClientFeedsList({
             />
             <Button
               type="submit"
-              disabled={runActive || sendStatus === "sending" || draftMessage.trim().length === 0}
+              disabled={
+                resetPending ||
+                runActive ||
+                sendStatus === "sending" ||
+                draftMessage.trim().length === 0
+              }
               data-testid="chat-send-button"
             >
               <Send className="size-4" aria-hidden="true" />
@@ -1641,7 +1896,6 @@ function LocaleMarketSwitcher() {
     </div>
   );
 }
-
 
 /**
  * Root shell that owns the (locale, market) pair, wires it into the i18n

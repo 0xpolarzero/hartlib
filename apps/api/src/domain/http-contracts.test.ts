@@ -1,4 +1,10 @@
-import { httpRouteContracts } from "@brief/shared";
+import {
+  HttpErrorResponse,
+  ResetProductChatRequest,
+  ResetProductChatResponse,
+  httpRouteContracts,
+} from "@brief/shared";
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { routes } from "../routes";
@@ -101,5 +107,33 @@ describe("shared HTTP contract matrix", () => {
       expect(new Set(names).size).toBe(names.length);
       expect(names.every((name) => name === name.toLowerCase())).toBe(true);
     }
+  });
+
+  it("keeps the reset request, success, and conflict contracts strict", () => {
+    const reset = httpRouteContracts["POST /v1/chats/:chatId/reset"];
+    expect(reset).toBeDefined();
+    expect(reset?.requestBody).toMatchObject({ kind: "json", schema: ResetProductChatRequest });
+    expect(reset?.success).toEqual([
+      { kind: "json", schema: ResetProductChatResponse, statuses: [200] },
+    ]);
+
+    const decodeError = (value: unknown) =>
+      Schema.decodeUnknownSync(HttpErrorResponse, { onExcessProperty: "error" })(value);
+    expect(
+      decodeError({
+        error: "chat_already_reset",
+        archivedChatId: "123e4567-e89b-12d3-a456-426614174001",
+      }),
+    ).toEqual({
+      error: "chat_already_reset",
+      archivedChatId: "123e4567-e89b-12d3-a456-426614174001",
+    });
+    expect(() =>
+      decodeError({
+        error: "chat_already_reset",
+        archivedChatId: "123e4567-e89b-12d3-a456-426614174001",
+        extra: true,
+      }),
+    ).toThrow();
   });
 });

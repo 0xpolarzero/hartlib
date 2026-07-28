@@ -359,6 +359,7 @@ export const authenticatedMutationAuditExemptions = [
     reason: "personal_chat_lifecycle",
   },
   { method: "DELETE", path: "/v1/chats/:chatId", reason: "personal_chat_lifecycle" },
+  { method: "POST", path: "/v1/chats/:chatId/reset", reason: "personal_chat_lifecycle" },
 ] as const satisfies ReadonlyArray<AuthenticatedMutationExemption>;
 
 export const mutationRouteKey = (method: string, path: string): string => `${method} ${path}`;

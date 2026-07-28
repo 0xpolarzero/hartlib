@@ -4840,6 +4840,157 @@ describe.skipIf(!isBun || !databaseUrl)(
       },
     );
 
+    it("keeps archived chats exportable until explicit deletion", async () => {
+      const chatId = await runDb(isolatedUrl(), seedBase);
+      await runDb(isolatedUrl(), seedDeliveredIssue);
+      const archivedMessageId = crypto.randomUUID();
+      await runDb(
+        isolatedUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            insert into chat_messages (id, chat_id, author, content)
+            values (${archivedMessageId}, ${chatId}, 'user', 'Archived export message')
+          `;
+        }),
+      );
+      const replacementChatId = crypto.randomUUID();
+      await runDb(
+        isolatedUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            insert into chats (id, company_id, user_id, memory_mode)
+            select ${replacementChatId}, company_id, user_id, memory_mode
+            from chats where id = ${chatId}
+          `;
+          yield* sql`
+            update chats
+            set archived_at = now(), archived_by_user_id = ${userId},
+                replaced_by_chat_id = ${replacementChatId}
+            where id = ${chatId}
+          `;
+        }),
+      );
+      const exportId = crypto.randomUUID();
+      await runDb(
+        isolatedUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            insert into export_requests (
+              id, requester_user_id, scope_kind, scope_id, authorization_snapshot, idempotency_key
+            ) values (
+              ${exportId}, ${userId}, 'user_chats', 'me',
+              ${sql.json({
+                version: 1,
+                authorizedAt: now.toISOString(),
+                requesterUserId: userId,
+                scopeKind: "user_chats",
+                scopeId: "me",
+                role: "self",
+                clientCompanyIds: [companyId],
+                accessIds: [],
+                issueIds: [],
+                documentIds: [],
+                chatIds: [chatId, replacementChatId],
+                chatMessageIds: [archivedMessageId],
+              })},
+              'archived-chat-export'
+            )
+          `;
+        }),
+      );
+      const snapshot = await runDb(
+        isolatedUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return (yield* sql<{ readonly chatIds: string[] }>`
+            select authorization_snapshot->'chatIds' as "chatIds"
+            from export_requests where id = ${exportId}
+          `)[0]!.chatIds;
+        }),
+      );
+      expect(snapshot).toContain(chatId);
+      expect(snapshot).toContain(replacementChatId);
+
+      let saved: { readonly body: Uint8Array } | undefined;
+      const store: ExportObjectStore = {
+        verifyPhysicalDeletionSafety: async () => undefined,
+        get: async () => new Uint8Array(),
+        head: async () => null,
+        delete: async () => undefined,
+        put: async (input) => {
+          saved = input;
+        },
+      };
+      await expect(
+        runDb(
+          isolatedUrl(),
+          generateExport({
+            exportRequestId: exportId,
+            store,
+            publisherStore: publisherStoreFrom(store),
+          }),
+        ),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(new TextDecoder().decode(saved?.body)).toContain(chatId);
+
+      await runDb(
+        isolatedUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update chats
+            set deleted_at = now(), deleted_by_user_id = ${userId},
+                purge_after = now() + interval '30 days'
+            where id = ${chatId}
+          `;
+        }),
+      );
+      const afterDeleteId = crypto.randomUUID();
+      await runDb(
+        isolatedUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            insert into export_requests (
+              id, requester_user_id, scope_kind, scope_id, authorization_snapshot, idempotency_key
+            ) values (
+              ${afterDeleteId}, ${userId}, 'user_chats', 'me',
+              ${sql.json({
+                version: 1,
+                authorizedAt: now.toISOString(),
+                requesterUserId: userId,
+                scopeKind: "user_chats",
+                scopeId: "me",
+                role: "self",
+                clientCompanyIds: [companyId],
+                accessIds: [],
+                issueIds: [],
+                documentIds: [],
+                chatIds: [replacementChatId],
+                chatMessageIds: [],
+              })},
+              'archived-chat-export-after-delete'
+            )
+          `;
+        }),
+      );
+      const deletedSnapshot = await runDb(
+        isolatedUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return (yield* sql<{ readonly chatIds: string[] }>`
+            select authorization_snapshot->'chatIds' as "chatIds"
+            from export_requests where id = ${afterDeleteId}
+          `)[0]!.chatIds;
+        }),
+      );
+      expect(deletedSnapshot).not.toContain(chatId);
+      expect(deletedSnapshot).toContain(replacementChatId);
+    });
+
     it("generates an authorization-snapshotted tar export, excludes later chats, and records final failure", async () => {
       const chatId = await runDb(isolatedUrl(), seedBase);
       const includedRunId = await runDb(

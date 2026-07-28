@@ -31,7 +31,11 @@ import {
   type ChatListView,
   type ChatSummary,
 } from "@/lib/api";
-import { chatListCollection, clientSubscriptionAccessCollection } from "@/lib/db";
+import {
+  chatListCollection,
+  clientSubscriptionAccessCollection,
+  invalidateProductChatCollections,
+} from "@/lib/db";
 import { buildCreateChatInput } from "@/lib/chat-form";
 import { workspaceErrorLabel, workspaceStateLabel } from "@/lib/workspace-labels";
 
@@ -40,11 +44,17 @@ const dateLabel = (value: string, locale: string): string =>
     new Date(value),
   );
 
-export function ChatWorkspacePage({ companyId }: { readonly companyId: string }) {
+export function ChatWorkspacePage({
+  companyId,
+  initialView = "mine",
+}: {
+  readonly companyId: string;
+  readonly initialView?: ChatListView;
+}) {
   const intl = useIntl();
   const locale = useLocale();
   const queryClient = useQueryClient();
-  const [view, setView] = useState<ChatListView>("mine");
+  const [view, setView] = useState<ChatListView>(initialView);
   const chatsCollection = chatListCollection(view);
   const chats = useLiveQuery(chatsCollection);
   const sourcesCollection = clientSubscriptionAccessCollection(companyId);
@@ -62,7 +72,7 @@ export function ChatWorkspacePage({ companyId }: { readonly companyId: string })
       initializedSources.current = companyId;
     }
   }, [companyId, sourceForm, sources.data, sources.isError, sources.isLoading]);
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["product-chats"] });
+  const refresh = () => invalidateProductChatCollections(queryClient);
   const create = useMutation({
     mutationFn: (input: {
       readonly memoryMode: "private_owner" | "disabled";
@@ -222,8 +232,11 @@ export function ChatWorkspacePage({ companyId }: { readonly companyId: string })
               <TabsTrigger value="shared">
                 {intl.formatMessage({ id: "workspace.chats.shared" })}
               </TabsTrigger>
+              <TabsTrigger value="archived">
+                {intl.formatMessage({ id: "workspace.chats.archived" })}
+              </TabsTrigger>
             </TabsList>
-            {(["mine", "shared"] as const).map((tab) => (
+            {(["mine", "shared", "archived"] as const).map((tab) => (
               <TabsContent key={tab} value={tab} className="mt-4">
                 {view !== tab ? null : chats.isLoading ? (
                   <WorkspaceState title={intl.formatMessage({ id: "workspace.loading" })} />
@@ -247,8 +260,13 @@ export function ChatWorkspacePage({ companyId }: { readonly companyId: string })
                       id:
                         tab === "mine"
                           ? "workspace.chats.emptyMine"
-                          : "workspace.chats.emptyShared",
+                          : tab === "shared"
+                            ? "workspace.chats.emptyShared"
+                            : "workspace.chats.emptyArchived",
                     })}
+                    {...(tab === "archived"
+                      ? { body: intl.formatMessage({ id: "workspace.chats.archivedDescription" }) }
+                      : {})}
                   />
                 ) : (
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -257,7 +275,7 @@ export function ChatWorkspacePage({ companyId }: { readonly companyId: string })
                         key={chat.id}
                         chat={chat}
                         locale={locale}
-                        manageable={tab === "mine"}
+                        manageable={tab === "mine" || tab === "archived"}
                         pending={share.isPending || remove.isPending}
                         onShare={(shared) => share.mutate({ chatId: chat.id, shared })}
                         onDelete={() => remove.mutate(chat.id)}
@@ -291,6 +309,7 @@ function ChatCard({
 }) {
   const intl = useIntl();
   const shareable = chat.memoryMode === "disabled";
+  const archived = chat.archivedAt !== null;
   return (
     <Card className="shadow-none">
       <CardHeader>
@@ -320,7 +339,7 @@ function ChatCard({
         </Button>
         {manageable ? (
           <div className="flex items-center gap-1">
-            {shareable ? (
+            {shareable && !archived ? (
               <Button
                 size="sm"
                 variant="ghost"
@@ -330,6 +349,10 @@ function ChatCard({
                 {intl.formatMessage({
                   id: chat.sharedAt === null ? "workspace.chats.share" : "workspace.chats.unshare",
                 })}
+              </Button>
+            ) : chat.sharedAt !== null && archived ? (
+              <Button size="sm" variant="ghost" disabled={pending} onClick={() => onShare(false)}>
+                {intl.formatMessage({ id: "workspace.chats.unshare" })}
               </Button>
             ) : null}
             <ConfirmingDeleteButton

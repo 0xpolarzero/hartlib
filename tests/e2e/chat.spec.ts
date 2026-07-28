@@ -621,7 +621,7 @@ test.describe("deterministic canonical runtime", () => {
       sessionStorage.setItem(
         `brief:web:ai-run-stream:${runId}`,
         JSON.stringify({
-          version: 1,
+          version: 2,
           runId,
           lastSeq: 4,
           draft: {
@@ -629,6 +629,8 @@ test.describe("deterministic canonical runtime", () => {
             text: "provisional answer",
             attempt: 1,
             sourcesRead: [],
+            activities: [],
+            terminalFailure: null,
           },
         }),
       );
@@ -878,6 +880,474 @@ test.describe("deterministic canonical runtime", () => {
     await waitForIdle(page);
     await expect(page.getByTestId("chat-message-assistant")).toHaveCount(1);
     expect(readE2eRuntimeState().runs.map((run) => run.status)).toEqual(["failed", "succeeded"]);
+  });
+
+  test("start a new chat archives the predecessor and reconciles the optimistic replacement", async ({
+    page,
+  }) => {
+    const predecessor = readE2eRuntimeState().chats.find((chat) => chat.archivedAt === null);
+    expect(predecessor).toBeDefined();
+    let replacementId = "";
+    let resetRequests = 0;
+    let chatGetsAfterClick = 0;
+    let resetStarted = false;
+    const recordRequest = (request: { method(): string; url(): string }): void => {
+      const url = new URL(request.url());
+      if (resetStarted && request.method() === "GET" && url.pathname === "/v1/chat") {
+        chatGetsAfterClick += 1;
+      }
+    };
+    page.on("request", recordRequest);
+    let release!: () => void;
+    const delayed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/v1/chats/*/reset", async (route) => {
+      resetRequests += 1;
+      const request = route.request();
+      const body = request.postDataJSON() as { readonly replacementChatId: string };
+      replacementId = body.replacementChatId;
+      const response = await route.fetch();
+      const bytes = await response.body();
+      await delayed;
+      await route.fulfill({ response, body: bytes });
+    });
+
+    try {
+      resetStarted = true;
+      await page.getByRole("button", { name: "Démarrer un nouveau chat" }).click();
+      await expect(page.getByTestId("chat-transcript")).toBeVisible();
+      await expect(page.getByTestId("chat-composer-input")).toBeEnabled();
+      await expect(page.getByText("Démarrage d’un nouveau chat…")).toBeVisible();
+      await page.getByTestId("chat-composer-input").fill("typed while reset is pending");
+      await expect(page.getByTestId("chat-send-button")).toBeDisabled();
+      await expect.poll(() => replacementId).not.toBe("");
+      await page.getByRole("button", { name: "Démarrer un nouveau chat" }).click({ force: true });
+      expect(resetRequests).toBe(1);
+
+      release();
+      await expect(page.getByTestId("chat-send-button")).toBeEnabled({ timeout: 30_000 });
+      await page.waitForTimeout(100);
+      expect(resetRequests).toBe(1);
+      expect(chatGetsAfterClick).toBe(0);
+      const state = readE2eRuntimeState();
+      const archived = state.chats.find((chat) => chat.id === predecessor!.id);
+      const replacement = state.chats.find((chat) => chat.id === replacementId);
+      expect(archived?.archivedAt).not.toBeNull();
+      expect(archived?.replacedByChatId).toBe(replacementId);
+      expect(archived?.deletedAt).toBeNull();
+      expect(archived?.purgeAfter).toBeNull();
+      expect(replacement?.archivedAt).toBeNull();
+      expect(state.chats.filter((chat) => chat.replacedByChatId !== null)).toHaveLength(1);
+
+      const oldResponse = await page.request.get(
+        `${apiBaseUrl}/v1/chats/${encodeURIComponent(predecessor!.id)}`,
+      );
+      expect(oldResponse.status()).toBe(200);
+      await expect(oldResponse.json()).resolves.toMatchObject({
+        chat: { id: predecessor!.id, archivedAt: expect.any(String) },
+        canWrite: false,
+      });
+      const replay = await page.request.post(
+        `${apiBaseUrl}/v1/chats/${encodeURIComponent(predecessor!.id)}/reset`,
+        { data: { replacementChatId: replacementId } },
+      );
+      expect(replay.status()).toBe(200);
+      const competing = await page.request.post(
+        `${apiBaseUrl}/v1/chats/${encodeURIComponent(predecessor!.id)}/reset`,
+        { data: { replacementChatId: crypto.randomUUID() } },
+      );
+      expect(competing.status()).toBe(409);
+    } finally {
+      release();
+      page.off("request", recordRequest);
+      await page.unroute("**/v1/chats/*/reset");
+    }
+  });
+
+  test("start a new chat rolls back after a lost reset response and keeps typed text", async ({
+    page,
+  }) => {
+    await sendAndWait(page, "Keep this transcript when reset fails.");
+    let release!: () => void;
+    const delayedFailure = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/v1/chats/*/reset", async (route) => {
+      await delayedFailure;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "unavailable" }),
+      });
+    });
+
+    try {
+      await page.getByRole("button", { name: "Démarrer un nouveau chat" }).click();
+      await expect(page.getByTestId("chat-message-user")).toHaveCount(0);
+      await expect(page.getByText("Démarrage d’un nouveau chat…")).toBeVisible();
+      await page.getByTestId("chat-composer-input").fill("typed before rollback");
+      await expect(page.getByTestId("chat-send-button")).toBeDisabled();
+      release();
+      await expect(page.getByText("Impossible de démarrer un nouveau chat.")).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(page.getByText("Keep this transcript when reset fails.")).toBeVisible();
+      await expect(page.getByTestId("chat-composer-input")).toHaveValue("typed before rollback");
+      await expect(page.getByTestId("chat-send-button")).toBeEnabled();
+    } finally {
+      release();
+      await page.unroute("**/v1/chats/*/reset");
+    }
+  });
+
+  test("start a new chat from a nested feed restores the route, cursor, and active run on failure", async ({
+    page,
+  }) => {
+    const seeded = seedActiveRun("chat");
+    await page.evaluate((runId) => {
+      sessionStorage.setItem(
+        `brief:web:ai-run-stream:${runId}`,
+        JSON.stringify({
+          version: 2,
+          runId,
+          lastSeq: 4,
+          draft: {
+            runId,
+            text: "held predecessor draft",
+            attempt: 1,
+            sourcesRead: [],
+            activities: [],
+            terminalFailure: null,
+          },
+        }),
+      );
+    }, seeded.runId);
+
+    const publicResponse = await page.request.get(`${apiBaseUrl}/v1/public-sources?market=FR`);
+    expect(publicResponse.status()).toBe(200);
+    const publicBody = (await publicResponse.json()) as {
+      readonly sources: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+    };
+    const source = publicBody.sources[0];
+    expect(source).toBeDefined();
+    const nestedPath = `/fr-FR/client/sources/${encodeURIComponent(source!.id)}`;
+    await page.reload();
+    await expect(page.getByTestId("chat-composer-input")).toBeDisabled();
+    await page.getByText(source!.name, { exact: true }).first().click();
+    await expect(page).toHaveURL(new RegExp(`${nestedPath.replaceAll("/", "\\/")}$`, "u"));
+
+    let release!: () => void;
+    const delayedFailure = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let resetRequests = 0;
+    await page.route("**/v1/chats/*/reset", async (route) => {
+      resetRequests += 1;
+      await delayedFailure;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "unavailable" }),
+      });
+    });
+
+    try {
+      await page.getByRole("button", { name: "Démarrer un nouveau chat" }).click();
+      await expect(page).toHaveURL(/\/fr-FR\/client$/u);
+      await expect(page.getByText("Démarrage d’un nouveau chat…")).toBeVisible();
+      await expect(page.getByTestId("chat-send-button")).toBeDisabled();
+      expect(resetRequests).toBe(1);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            (runId) => sessionStorage.getItem(`brief:web:ai-run-stream:${runId}`),
+            seeded.runId,
+          ),
+        )
+        .not.toBeNull();
+
+      release();
+      await expect(page).toHaveURL(new RegExp(`${nestedPath.replaceAll("/", "\\/")}$`, "u"));
+      await expect(page.getByTestId("chat-reset-error")).toBeVisible();
+      expect(readE2eRuntimeState().runs).toContainEqual(
+        expect.objectContaining({
+          id: seeded.runId,
+          chatId: seeded.chatId,
+          status: "queued",
+        }),
+      );
+      expect(
+        readE2eRuntimeState().chats.find((chat) => chat.id === seeded.chatId)?.archivedAt,
+      ).toBeNull();
+      await expect
+        .poll(() =>
+          page.evaluate((runId) => {
+            const raw = sessionStorage.getItem(`brief:web:ai-run-stream:${runId}`);
+            return raw === null ? null : (JSON.parse(raw) as { lastSeq?: unknown }).lastSeq;
+          }, seeded.runId),
+        )
+        .toBe(4);
+
+      await page.goto("/fr-FR/client");
+      await expect(page.getByTestId("chat-composer-input")).toBeDisabled();
+      await expect(page.getByTestId("chat-send-button")).toBeDisabled();
+    } finally {
+      release();
+      await page.unroute("**/v1/chats/*/reset");
+    }
+  });
+
+  test("start a new chat ignores a late predecessor GET", async ({ page }) => {
+    await sendAndWait(page, "This predecessor response must stay stale.");
+    let releaseOldGet!: () => void;
+    const oldGetReleased = new Promise<void>((resolve) => {
+      releaseOldGet = resolve;
+    });
+    let oldGetCaptured!: () => void;
+    const oldGetReady = new Promise<void>((resolve) => {
+      oldGetCaptured = resolve;
+    });
+    let chatGets = 0;
+    let resetRequests = 0;
+    await page.route("**/v1/chat", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      chatGets += 1;
+      if (chatGets !== 1) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      const body = await response.body();
+      oldGetCaptured();
+      await oldGetReleased;
+      await route.fulfill({ response, body });
+    });
+    await page.route("**/v1/chats/*/reset", async (route) => {
+      resetRequests += 1;
+      await route.continue();
+    });
+
+    try {
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await oldGetReady;
+      await page.getByRole("button", { name: "Démarrer un nouveau chat" }).click();
+      await expect(page.getByTestId("chat-send-button")).toBeDisabled();
+      await expect.poll(() => resetRequests).toBe(1);
+      await expect(page.getByTestId("chat-composer-input")).toBeEnabled();
+      releaseOldGet();
+      await expect(page.getByText("This predecessor response must stay stale.")).toHaveCount(0);
+      await page.waitForTimeout(100);
+      expect(chatGets).toBe(2);
+      expect(resetRequests).toBe(1);
+      await expect(page.getByTestId("chat-message-user")).toHaveCount(0);
+      await expect(page.getByTestId("chat-message-assistant")).toHaveCount(0);
+    } finally {
+      releaseOldGet();
+      await page.unroute("**/v1/chat");
+      await page.unroute("**/v1/chats/*/reset");
+    }
+  });
+
+  test("start a new chat ignores a late predecessor SSE response", async ({ page }) => {
+    const seeded = seedActiveRun("chat");
+    let signalStreamCaptured!: () => void;
+    const streamCaptured = new Promise<void>((resolve) => {
+      signalStreamCaptured = resolve;
+    });
+    let releaseStream!: () => void;
+    const streamReleased = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    let signalDeliveryAttempted!: () => void;
+    const deliveryAttempted = new Promise<void>((resolve) => {
+      signalDeliveryAttempted = resolve;
+    });
+    await page.route(`**/v1/ai-runs/${seeded.runId}/stream*`, async (route) => {
+      signalStreamCaptured();
+      await streamReleased;
+      try {
+        await route.fulfill({
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+            "cache-control": "no-cache",
+          },
+          body: [
+            'id: 1\nevent: run_started\ndata: {"type":"run_started"}\n',
+            'id: 2\nevent: answer_started\ndata: {"type":"answer_started","attempt":1}\n',
+            'id: 3\nevent: text_delta\ndata: {"type":"text_delta","delta":"late predecessor delta"}\n',
+          ].join("\n"),
+        });
+      } catch {
+        // Reset aborts the predecessor request. Whether the browser has
+        // already closed the route or reads this response, the stale payload
+        // must not reach the replacement projection.
+      } finally {
+        signalDeliveryAttempted();
+      }
+    });
+
+    try {
+      await page.reload();
+      await streamCaptured;
+      const resetResponse = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          response.request().method() === "POST" &&
+          /^\/v1\/chats\/[^/]+\/reset$/u.test(url.pathname)
+        );
+      });
+      await page.getByRole("button", { name: "Démarrer un nouveau chat" }).click();
+      expect((await resetResponse).status()).toBe(200);
+
+      releaseStream();
+      await deliveryAttempted;
+      await page.waitForTimeout(100);
+      await expect(page.getByText("late predecessor delta")).toHaveCount(0);
+      await expect(page.getByTestId("chat-provisional-draft")).toHaveCount(0);
+      await expect(page.getByTestId("chat-message-assistant")).toHaveCount(0);
+    } finally {
+      releaseStream();
+      await page.unroute(`**/v1/ai-runs/${seeded.runId}/stream*`);
+    }
+  });
+
+  test("start a new chat rejects late predecessor SSE and stops its held run from publishing an answer or memory", async ({
+    page,
+  }) => {
+    const gateId = "archive-predecessor-publication";
+    const gate = await holdE2eStreamGate(gateId);
+    try {
+      const accepted = await sendMessageWithAcceptance(
+        page,
+        `[e2e-stream-gate:${gateId}] Do not publish this predecessor answer.`,
+      );
+      await expect
+        .poll(
+          () =>
+            readE2eRuntimeState().events.filter(
+              (event) => event.runId === accepted.body.run.id && event.type === "text_delta",
+            ).length,
+          { timeout: 60_000 },
+        )
+        .toBe(1);
+      await expect(page.getByTestId("chat-provisional-draft")).toBeVisible();
+      const before = readE2eRuntimeState();
+
+      const resetResponse = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          response.request().method() === "POST" &&
+          /^\/v1\/chats\/[^/]+\/reset$/u.test(url.pathname)
+        );
+      });
+      await page.getByRole("button", { name: "Démarrer un nouveau chat" }).click();
+      expect((await resetResponse).status()).toBe(200);
+      await expect(page.getByTestId("chat-provisional-draft")).toHaveCount(0);
+      await expect(page.getByTestId("chat-message-assistant")).toHaveCount(0);
+
+      await gate.release();
+      await expect
+        .poll(() => readE2eRuntimeState().runs.find((run) => run.id === accepted.body.run.id))
+        .toEqual(
+          expect.objectContaining({
+            status: "failed",
+            errorCode: "chat_archived",
+            retryable: false,
+          }),
+        );
+      await page.waitForTimeout(250);
+      const after = readE2eRuntimeState();
+      expect(after.memories).toEqual(before.memories);
+      expect(after.revisions).toEqual(before.revisions);
+      expect(
+        after.events.filter(
+          (event) =>
+            event.runId === accepted.body.run.id &&
+            (event.type === "done" || event.type === "answer_final"),
+        ),
+      ).toHaveLength(0);
+      await expect(page.getByTestId("chat-message-assistant")).toHaveCount(0);
+    } finally {
+      await gate.release();
+    }
+  });
+
+  test("start a new chat adopts the committed replacement in a losing tab", async ({
+    page,
+    context,
+  }) => {
+    const secondPage = await context.newPage();
+    await gotoDemoChat(secondPage);
+    let winnerReplacementId = "";
+    let releaseWinner!: () => void;
+    const winnerReleased = new Promise<void>((resolve) => {
+      releaseWinner = resolve;
+    });
+    let winnerResetRequests = 0;
+    let loserResetRequests = 0;
+    let loserCommittedGets = 0;
+    const recordLoserRequest = (request: { method(): string; url(): string }): void => {
+      const url = new URL(request.url());
+      if (request.method() === "GET" && url.pathname === "/v1/chat") {
+        loserCommittedGets += 1;
+      }
+    };
+    secondPage.on("request", recordLoserRequest);
+    await page.route("**/v1/chats/*/reset", async (route) => {
+      winnerResetRequests += 1;
+      winnerReplacementId = (
+        route.request().postDataJSON() as { readonly replacementChatId: string }
+      ).replacementChatId;
+      const response = await route.fetch();
+      const body = await response.body();
+      await winnerReleased;
+      await route.fulfill({ response, body });
+    });
+    await secondPage.route("**/v1/chats/*/reset", async (route) => {
+      loserResetRequests += 1;
+      await route.continue();
+    });
+
+    try {
+      await page.getByRole("button", { name: "Démarrer un nouveau chat" }).click();
+      await expect.poll(() => winnerReplacementId).not.toBe("");
+      await secondPage.getByRole("button", { name: "Démarrer un nouveau chat" }).click();
+      await expect(secondPage.getByTestId("chat-composer-input")).toBeEnabled();
+      await secondPage.getByTestId("chat-composer-input").fill("message from the adopted chat");
+      await expect(secondPage.getByTestId("chat-send-button")).toBeEnabled();
+      const accepted = secondPage.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return response.request().method() === "POST" && url.pathname === "/v1/chat/messages";
+      });
+      await secondPage.getByTestId("chat-send-button").click();
+      expect((await accepted).status()).toBe(202);
+
+      expect(winnerResetRequests).toBe(1);
+      expect(loserResetRequests).toBe(1);
+      expect(loserCommittedGets).toBe(1);
+      await expect
+        .poll(() => readE2eRuntimeState().runs.some((run) => run.chatId === winnerReplacementId))
+        .toBe(true);
+      const state = readE2eRuntimeState();
+      expect(state.chats.find((chat) => chat.id === winnerReplacementId)?.archivedAt).toBeNull();
+      expect(
+        state.chats.filter((chat) => chat.replacedByChatId === winnerReplacementId),
+      ).toHaveLength(1);
+
+      releaseWinner();
+      await expect(page.getByTestId("chat-composer-input")).toBeEnabled();
+    } finally {
+      releaseWinner();
+      secondPage.off("request", recordLoserRequest);
+      await page.unroute("**/v1/chats/*/reset");
+      await secondPage.unroute("**/v1/chats/*/reset");
+      await secondPage.close();
+    }
   });
 });
 

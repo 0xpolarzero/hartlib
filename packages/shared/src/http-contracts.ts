@@ -11,6 +11,8 @@ import {
   MemoryRevisionResponse,
   MemorySnapshot,
   ProductChatListResponse,
+  ResetProductChatRequest,
+  ResetProductChatResponse,
   RevertMemoryRequest,
   SendChatMessageAccepted,
   SendChatMessageRequest,
@@ -144,6 +146,10 @@ const BoundedErrorCode = Schema.String.pipe(
 );
 
 export const HttpErrorResponse = Schema.Union([
+  Schema.Struct({
+    error: Schema.Literal("chat_already_reset"),
+    archivedChatId: Schema.String,
+  }),
   Schema.Struct({ code: BoundedErrorCode }),
   Schema.Struct({ error: BoundedErrorCode }),
   Schema.Struct({ code: Schema.Literal("active_ai_run"), runId: Schema.String }),
@@ -247,7 +253,7 @@ const PositiveSequence = safeDecimalSequence(1);
 export const EmptyQuery = Schema.Struct({});
 export const PublicSourcesQuery = Schema.Struct({ market: Schema.optional(MarketSchema) });
 export const ProductChatsQuery = Schema.Struct({
-  view: Schema.optional(Schema.Literals(["mine", "shared"])),
+  view: Schema.optional(Schema.Literals(["mine", "shared", "archived"])),
 });
 export const AiRunStreamQuery = Schema.Struct({ afterSeq: Schema.optional(NonnegativeSequence) });
 export const AiRunStreamHeaders = Schema.Struct({
@@ -578,6 +584,10 @@ export const httpRouteContracts: Readonly<Record<string, HttpRouteContract>> = {
   "POST /v1/chats/:chatId/share": errorBodyContract(emptyBody, jsonSuccess(ShareChatResponse)),
   "POST /v1/chats/:chatId/unshare": errorBodyContract(emptyBody, jsonSuccess(UnshareChatResponse)),
   "DELETE /v1/chats/:chatId": errorBodyContract(emptyBody, emptySuccess),
+  "POST /v1/chats/:chatId/reset": errorBodyContract(
+    jsonBody(ResetProductChatRequest),
+    jsonSuccess(ResetProductChatResponse),
+  ),
   "GET /v1/platform/company-deletion-requests": contract(
     noBody,
     jsonSuccess(PlatformCompanyDeletionRequestsResponse),

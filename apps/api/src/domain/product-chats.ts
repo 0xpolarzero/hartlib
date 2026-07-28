@@ -2,14 +2,21 @@ import {
   createProductChat,
   listProductChats,
   mutateProductChat,
+  resetProductChat,
 } from "@brief/backend-domain/product-chats";
-import type { CreateProductChatRequest } from "@brief/shared";
+import {
+  ResetProductChatResponse,
+  type CreateProductChatRequest,
+  type ResetProductChatRequest,
+} from "@brief/shared";
+import { WorkspaceAuthorizationError } from "@brief/workspace";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity } from "../auth";
 import { loadApiConfig } from "../config";
 import { ApiDatabaseLayer, type ApiDatabaseLayer as ApiDatabaseLayerType } from "../database";
-import { json, type Route } from "../http";
+import { json, jsonFromSchema, type Route } from "../http";
+import { readChat } from "./chat";
 
 export { CHAT_ACTIVE_PURGE_WINDOW_DAYS } from "@brief/backend-domain/product-chats";
 
@@ -32,7 +39,7 @@ export const makeProductChatRoutes = (
       Effect.gen(function* () {
         const authentication = yield* requireIdentity(request);
         if (!authentication.authenticated) return unauthorized();
-        const view = (input.query.view as "mine" | "shared" | undefined) ?? "mine";
+        const view = (input.query.view as "mine" | "shared" | "archived" | undefined) ?? "mine";
         const chats = yield* listProductChats(authentication.identity, view).pipe(
           Effect.provide(databaseLayer),
         );
@@ -96,6 +103,50 @@ export const makeProductChatRoutes = (
           "delete",
         ).pipe(Effect.provide(databaseLayer));
         return result === "ok" ? new Response(null, { status: 204 }) : forbidden();
+      }),
+  },
+  {
+    method: "POST",
+    path: "/v1/chats/:chatId/reset",
+    execute: (request, _url, pathParameters, input) =>
+      Effect.gen(function* () {
+        const authentication = yield* requireIdentity(request);
+        if (!authentication.authenticated) return unauthorized();
+        const config = yield* loadApiConfig;
+        const body = input.body as ResetProductChatRequest;
+        const result = yield* resetProductChat(
+          authentication.identity,
+          pathParameters.chatId!,
+          body.replacementChatId,
+        ).pipe(Effect.provide(databaseLayer));
+        if (result.kind === "forbidden") return forbidden();
+        if (result.kind === "already_reset") {
+          return json(
+            { error: "chat_already_reset", archivedChatId: result.archivedChatId },
+            { status: 409 },
+          );
+        }
+        if (result.kind === "replacement_conflict") {
+          return json({ error: "replacement_id_conflict" }, { status: 409 });
+        }
+        const replacement = yield* readChat(
+          authentication.identity,
+          config,
+          result.replacementChatId,
+        ).pipe(
+          Effect.provide(databaseLayer),
+          Effect.catch((error) =>
+            error instanceof WorkspaceAuthorizationError && error.code === "not_found"
+              ? Effect.succeed(null)
+              : Effect.fail(error),
+          ),
+        );
+        if (replacement === null) return forbidden();
+        return jsonFromSchema(
+          ResetProductChatResponse,
+          { archivedChatId: result.archivedChatId, replacement },
+          { status: 200 },
+        );
       }),
   },
 ];

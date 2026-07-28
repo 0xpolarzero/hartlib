@@ -84,8 +84,7 @@ const identity = (
   mode: "clerk",
 });
 
-const demoCookie = (userId: string) =>
-  `${DEMO_COOKIE_NAME}=${userId}`;
+const demoCookie = (userId: string) => `${DEMO_COOKIE_NAME}=${userId}`;
 const demoConfigEnv = {
   NODE_ENV: "test",
   AUTH_MODE: "demo",
@@ -113,6 +112,66 @@ const runProductRoute = async (
   });
   return Effect.runPromise(
     routeRequest(routes, request).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: demoConfigEnv,
+          }),
+        ),
+      ),
+    ),
+  );
+};
+
+const runUnauthenticatedProductRoute = async (
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<Response> => {
+  const url = databaseUrlFor(isolatedDatabaseName);
+  const pgLayer = PgClient.layer({
+    url: Redacted.make(url),
+    applicationName: "brief-product-chat-unauthenticated-test",
+  });
+  const request = new Request(`https://brief.test${path}`, {
+    method,
+    headers: body === undefined ? {} : { "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return Effect.runPromise(
+    routeRequest(makeProductChatRoutes(pgLayer), request).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: demoConfigEnv,
+          }),
+        ),
+      ),
+    ),
+  );
+};
+
+const runChatRoute = async (
+  userId: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<Response> => {
+  const url = databaseUrlFor(isolatedDatabaseName);
+  const pgLayer = PgClient.layer({
+    url: Redacted.make(url),
+    applicationName: "brief-chat-route-test",
+  });
+  const request = new Request(`https://brief.test${path}`, {
+    method,
+    headers: {
+      cookie: demoCookie(userId),
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return Effect.runPromise(
+    routeRequest(makeChatRoutes(pgLayer), request).pipe(
       Effect.provide(
         ConfigProvider.layer(
           ConfigProvider.fromEnv({
@@ -831,7 +890,9 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       Effect.runPromise(
         routeRequest(
           makeChatRoutes(chatLayer),
-          new Request(`https://brief.test/v1/chats/${fixture.sharedChatId}`, { headers: { cookie: demoCookie(userId) } }),
+          new Request(`https://brief.test/v1/chats/${fixture.sharedChatId}`, {
+            headers: { cookie: demoCookie(userId) },
+          }),
         ).pipe(
           Effect.provide(
             ConfigProvider.layer(
@@ -1070,6 +1131,159 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     ).toBe(204);
   });
 
+  it("authorizes reset, exposes archived history, and blocks archived writes", async () => {
+    const url = databaseUrlFor(isolatedDatabaseName);
+    const createdResponse = await runProductRoute("owner", "POST", "/v1/chats", {
+      companyId: fixture.clientCompanyId,
+      memoryMode: "private_owner",
+      sourceAccessIds: [fixture.accessId],
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = (await createdResponse.json()) as { readonly chat: { readonly id: string } };
+    const replacementChatId = crypto.randomUUID();
+
+    try {
+      expect(
+        (
+          await runUnauthenticatedProductRoute("POST", `/v1/chats/${created.chat.id}/reset`, {
+            replacementChatId: crypto.randomUUID(),
+          })
+        ).status,
+      ).toBe(401);
+      expect(
+        (
+          await runProductRoute("viewer", "POST", `/v1/chats/${created.chat.id}/reset`, {
+            replacementChatId: crypto.randomUUID(),
+          })
+        ).status,
+      ).toBe(403);
+
+      const reset = await runProductRoute("owner", "POST", `/v1/chats/${created.chat.id}/reset`, {
+        replacementChatId,
+      });
+      expect(reset.status).toBe(200);
+      await expect(reset.json()).resolves.toMatchObject({
+        archivedChatId: created.chat.id,
+        replacement: {
+          chat: { id: replacementChatId, archivedAt: null },
+          messages: [],
+          activeRun: null,
+          canWrite: true,
+        },
+      });
+
+      const mine = await runProductRoute("owner", "GET", "/v1/chats?view=mine");
+      const archived = await runProductRoute("owner", "GET", "/v1/chats?view=archived");
+      const mineRows = (await mine.json()) as { readonly chats: readonly ChatListFixture[] };
+      const archivedRows = (await archived.json()) as {
+        readonly chats: readonly ChatListFixture[];
+      };
+      expect(mineRows.chats.map((chat) => chat.id)).not.toContain(created.chat.id);
+      expect(mineRows.chats.map((chat) => chat.id)).toContain(replacementChatId);
+      expect(archivedRows.chats.map((chat) => chat.id)).toContain(created.chat.id);
+
+      const oldRead = await runChatRoute("owner", "GET", `/v1/chats/${created.chat.id}`);
+      expect(oldRead.status).toBe(200);
+      await expect(oldRead.json()).resolves.toMatchObject({
+        chat: { id: created.chat.id, archivedAt: expect.any(String) },
+        canWrite: false,
+      });
+      const oldWrite = await runChatRoute(
+        "owner",
+        "POST",
+        `/v1/chats/${created.chat.id}/messages`,
+        { text: "blocked", locale: "fr-FR", market: "FR", webSearchEnabled: false },
+      );
+      expect(oldWrite.status).toBe(403);
+      expect(
+        (await runProductRoute("owner", "POST", `/v1/chats/${created.chat.id}/share`)).status,
+      ).toBe(403);
+      expect(
+        (await runProductRoute("owner", "POST", `/v1/chats/${created.chat.id}/unshare`)).status,
+      ).toBe(200);
+
+      const replay = await runProductRoute("owner", "POST", `/v1/chats/${created.chat.id}/reset`, {
+        replacementChatId,
+      });
+      expect(replay.status).toBe(200);
+      const competing = await runProductRoute(
+        "owner",
+        "POST",
+        `/v1/chats/${created.chat.id}/reset`,
+        { replacementChatId: crypto.randomUUID() },
+      );
+      expect(competing.status).toBe(409);
+      await expect(competing.json()).resolves.toEqual({
+        error: "chat_already_reset",
+        archivedChatId: created.chat.id,
+      });
+
+      const replacementConflictChat = await runProductRoute("owner", "POST", "/v1/chats", {
+        companyId: fixture.clientCompanyId,
+        memoryMode: "disabled",
+      });
+      expect(replacementConflictChat.status).toBe(201);
+      const conflictChat = (await replacementConflictChat.json()) as {
+        readonly chat: { readonly id: string };
+      };
+      const conflict = await runProductRoute(
+        "owner",
+        "POST",
+        `/v1/chats/${conflictChat.chat.id}/reset`,
+        {
+          replacementChatId,
+        },
+      );
+      expect(conflict.status).toBe(409);
+      await expect(conflict.json()).resolves.toEqual({ error: "replacement_id_conflict" });
+      await runProductRoute("owner", "DELETE", `/v1/chats/${conflictChat.chat.id}`);
+
+      const revokedSourceResponse = await runProductRoute("owner", "POST", "/v1/chats", {
+        companyId: fixture.clientCompanyId,
+        memoryMode: "disabled",
+        sourceAccessIds: [fixture.accessId],
+      });
+      const revokedSourceChat = (await revokedSourceResponse.json()) as {
+        readonly chat: { readonly id: string };
+      };
+      await runDb(
+        url,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update client_employee_subscription_grants
+            set revoked_at = now(), revoked_by_user_id = 'owner'
+            where access_id = ${fixture.accessId} and client_company_id = ${fixture.clientCompanyId}
+              and user_id = 'owner'
+          `;
+        }),
+      );
+      const revokedReset = await runProductRoute(
+        "owner",
+        "POST",
+        `/v1/chats/${revokedSourceChat.chat.id}/reset`,
+        { replacementChatId: crypto.randomUUID() },
+      );
+      expect(revokedReset.status).toBe(403);
+      await runProductRoute("owner", "DELETE", `/v1/chats/${revokedSourceChat.chat.id}`);
+      await runDb(
+        url,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update client_employee_subscription_grants
+            set revoked_at = null, revoked_by_user_id = null
+            where access_id = ${fixture.accessId} and client_company_id = ${fixture.clientCompanyId}
+              and user_id = 'owner'
+          `;
+        }),
+      );
+    } finally {
+      await runProductRoute("owner", "DELETE", `/v1/chats/${created.chat.id}`);
+      await runProductRoute("owner", "DELETE", `/v1/chats/${replacementChatId}`);
+    }
+  });
+
   it("linearizes membership revocation before concurrent chat share and delete mutations", async () => {
     const url = databaseUrlFor(isolatedDatabaseName);
     const waitForAdvisoryWaiters = async (expected: number): Promise<void> => {
@@ -1219,7 +1433,9 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       Effect.runPromise(
         routeRequest(
           makeChatRoutes(chatLayer),
-          new Request(`https://brief.test/v1/chats/${fixture.sharedChatId}`, { headers: { cookie: demoCookie("viewer") } }),
+          new Request(`https://brief.test/v1/chats/${fixture.sharedChatId}`, {
+            headers: { cookie: demoCookie("viewer") },
+          }),
         ).pipe(
           Effect.provide(
             ConfigProvider.layer(
@@ -1464,7 +1680,9 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       async () => "https://private-storage.test/saved-citation",
     );
     const readCitation = (userId: string) => {
-      const request = new Request(`https://brief.test${citationUrl}`, { headers: { cookie: demoCookie(userId) } });
+      const request = new Request(`https://brief.test${citationUrl}`, {
+        headers: { cookie: demoCookie(userId) },
+      });
       return Effect.runPromise(
         route
           .execute(

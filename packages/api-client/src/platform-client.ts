@@ -141,6 +141,13 @@ export const createPlatformApiClient = (options: ApiTransportOptions) => {
         )
       ).issue,
 
+    getPublisherIssue: (issueId: string): Promise<IssueDetail> =>
+      transport.json(
+        "GET /v1/publisher-issues/:issueId",
+        `/v1/publisher-issues/${encodeURIComponent(issueId)}`,
+        Shared.IssueDetailResponse,
+      ),
+
     listPublisherClientAccesses: async (
       subscriptionId: string,
     ): Promise<readonly PublisherSubscriptionClientAccess[]> =>

@@ -135,6 +135,36 @@ interface Fixture {
 
 type TurnPlanMode = "clarify" | "single" | "fanout";
 
+type ResetProductChatResult =
+  | {
+      readonly kind: "created" | "replay";
+      readonly archivedChatId: string;
+      readonly replacementChatId: string;
+    }
+  | { readonly kind: "already_reset"; readonly archivedChatId: string }
+  | { readonly kind: "replacement_conflict" | "forbidden" };
+
+type ResetProductChat = (
+  identity: {
+    readonly mode: "demo" | "clerk";
+    readonly userId: string;
+    readonly organizationId: string | null;
+  },
+  chatId: string,
+  replacementChatId: string,
+) => Effect.Effect<ResetProductChatResult, unknown, PgClient.PgClient>;
+
+const loadResetProductChat = async (): Promise<ResetProductChat> => {
+  const moduleUrl: string = new URL(
+    "../../../../../packages/backend-domain/src/product-chats.ts",
+    import.meta.url,
+  ).href;
+  const productChats = (await import(moduleUrl)) as {
+    readonly resetProductChat: ResetProductChat;
+  };
+  return productChats.resetProductChat;
+};
+
 const newCitationNamespace = (): string =>
   `cn_${crypto.randomUUID().replaceAll("-", "").slice(0, 22)}`;
 
@@ -4835,6 +4865,297 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       assistantCount: 1,
       finished: true,
       assistantMessageId: expect.any(String),
+    });
+  });
+
+  it("orders real reset before finalization with no answer or memory publication", async () => {
+    const resetProductChat = await loadResetProductChat();
+    const fixture = await runDb(createFixture("archive-before-finalization"));
+    await runDb(seedSingleObservability(fixture));
+    const replacementChatId = crypto.randomUUID();
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, {
+        proposals: [{ kind: "fact", content: "Must stay unpublished" }],
+        discardedCount: 0,
+      }),
+    );
+    let signalLaneHeld!: () => void;
+    const laneHeld = new Promise<void>((resolve) => {
+      signalLaneHeld = resolve;
+    });
+    let releaseLane!: () => void;
+    const laneReleased = new Promise<void>((resolve) => {
+      releaseLane = resolve;
+    });
+    const holder = runDbAs(
+      "brief-archive-before-finalization-holder",
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              select pg_advisory_xact_lock(
+                hashtext(${`brief:user-memory:${fixture.userId}`})
+              )
+            `;
+            yield* Effect.sync(signalLaneHeld);
+            yield* Effect.promise(() => laneReleased);
+          }),
+        );
+      }),
+    );
+    await laneHeld;
+
+    const reset = runDbAs(
+      "brief-archive-before-finalization-reset",
+      resetProductChat(
+        { mode: "demo", userId: fixture.userId, organizationId: null },
+        fixture.chatId,
+        replacementChatId,
+      ),
+    );
+    await waitForDatabaseLock("brief-archive-before-finalization-reset");
+    const finalization = runDbAs(
+      "brief-archive-before-finalization-finalize",
+      Effect.exit(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "late answer", sourceMap: [] },
+          memory,
+        }),
+      ),
+    );
+    try {
+      await waitForDatabaseLock("brief-archive-before-finalization-finalize");
+    } finally {
+      releaseLane();
+    }
+    await holder;
+    await expect(reset).resolves.toEqual({
+      kind: "created",
+      archivedChatId: fixture.chatId,
+      replacementChatId,
+    });
+    await expect(finalization).resolves.toMatchObject({ _tag: "Failure" });
+
+    const state = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const [run] = yield* sql<{
+          readonly errorCode: string | null;
+          readonly finishedAt: Date | null;
+          readonly failedAt: Date | null;
+          readonly assistantMessageId: string | null;
+        }>`
+          select error_code as "errorCode", finished_at as "finishedAt", failed_at as "failedAt",
+                 assistant_message_id::text as "assistantMessageId"
+          from ai_runs where id = ${fixture.runId}
+        `;
+        const [counts] = yield* sql<{
+          readonly assistants: number;
+          readonly memories: number;
+          readonly replacementMessages: number;
+          readonly replacementRuns: number;
+        }>`
+          select
+            (
+              select count(*)::int
+              from chat_messages
+              where chat_id = ${fixture.chatId} and author = 'assistant'
+            ) as assistants,
+            (
+              select count(*)::int
+              from user_memories
+              where user_id = ${fixture.userId}
+            ) as memories,
+            (
+              select count(*)::int
+              from chat_messages
+              where chat_id = ${replacementChatId}
+            ) as "replacementMessages",
+            (
+              select count(*)::int
+              from ai_runs
+              where chat_id = ${replacementChatId}
+            ) as "replacementRuns"
+        `;
+        return { run, counts };
+      }),
+    );
+    expect(state.run).toMatchObject({
+      errorCode: "chat_archived",
+      finishedAt: null,
+      failedAt: expect.any(Date),
+      assistantMessageId: null,
+    });
+    expect(state.counts).toEqual({
+      assistants: 0,
+      memories: 0,
+      replacementMessages: 0,
+      replacementRuns: 0,
+    });
+  });
+
+  it("commits final answer and memory wholly before real reset archives the chat", async () => {
+    const resetProductChat = await loadResetProductChat();
+    const fixture = await runDb(createFixture("finalization-before-archive", "clarify"));
+    await runDb(seedSingleObservability(fixture));
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, {
+        proposals: [{ kind: "preference", content: "Keep complete results" }],
+        discardedCount: 0,
+      }),
+    );
+    const replacementChatId = crypto.randomUUID();
+    let signalLaneHeld!: () => void;
+    const laneHeld = new Promise<void>((resolve) => {
+      signalLaneHeld = resolve;
+    });
+    let releaseLane!: () => void;
+    const laneReleased = new Promise<void>((resolve) => {
+      releaseLane = resolve;
+    });
+    const holder = runDbAs(
+      "brief-finalization-before-archive-holder",
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              select pg_advisory_xact_lock(
+                hashtext(${`brief:user-memory:${fixture.userId}`})
+              )
+            `;
+            yield* Effect.sync(signalLaneHeld);
+            yield* Effect.promise(() => laneReleased);
+          }),
+        );
+      }),
+    );
+    await laneHeld;
+
+    const finalization = runDbAs(
+      "brief-finalization-before-archive-finalize",
+      finalizeAiRun({
+        runId: fixture.runId,
+        expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+        coordinates: finalizeCoordinates,
+        answer: {
+          status: "ok",
+          mode: "clarification",
+          content: "Complete before archive",
+          sourceMap: [],
+        },
+        memory,
+      }),
+    );
+    await waitForDatabaseLock("brief-finalization-before-archive-finalize");
+    const reset = runDbAs(
+      "brief-finalization-before-archive-reset",
+      resetProductChat(
+        { mode: "demo", userId: fixture.userId, organizationId: null },
+        fixture.chatId,
+        replacementChatId,
+      ),
+    );
+    try {
+      await waitForDatabaseLock("brief-finalization-before-archive-reset");
+    } finally {
+      releaseLane();
+    }
+    await holder;
+    await expect(finalization).resolves.toMatchObject({
+      status: "succeeded",
+      alreadyTerminal: false,
+      memory: { created: 1, updated: 0 },
+    });
+    await expect(reset).resolves.toEqual({
+      kind: "created",
+      archivedChatId: fixture.chatId,
+      replacementChatId,
+    });
+
+    const state = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const [run] = yield* sql<{
+          readonly errorCode: string | null;
+          readonly finishedAt: Date | null;
+          readonly failedAt: Date | null;
+          readonly assistantMessageId: string | null;
+          readonly assistantContent: string | null;
+        }>`
+          select run.error_code as "errorCode",
+                 run.finished_at as "finishedAt",
+                 run.failed_at as "failedAt",
+                 run.assistant_message_id::text as "assistantMessageId",
+                 assistant.content as "assistantContent"
+          from ai_runs run
+          left join chat_messages assistant on assistant.id = run.assistant_message_id
+          where run.id = ${fixture.runId}
+        `;
+        const [counts] = yield* sql<{
+          readonly assistants: number;
+          readonly memories: number;
+          readonly revisions: number;
+          readonly replacementMessages: number;
+          readonly replacementRuns: number;
+          readonly archived: boolean;
+        }>`
+          select
+            (
+              select count(*)::int
+              from chat_messages
+              where chat_id = ${fixture.chatId} and author = 'assistant'
+            ) as assistants,
+            (
+              select count(*)::int
+              from user_memories
+              where user_id = ${fixture.userId}
+            ) as memories,
+            (
+              select count(*)::int
+              from user_memory_revisions revisions
+              join user_memories memories on memories.id = revisions.memory_id
+              where memories.user_id = ${fixture.userId}
+            ) as revisions,
+            (
+              select count(*)::int
+              from chat_messages
+              where chat_id = ${replacementChatId}
+            ) as "replacementMessages",
+            (
+              select count(*)::int
+              from ai_runs
+              where chat_id = ${replacementChatId}
+            ) as "replacementRuns",
+            (
+              select archived_at is not null
+                and archived_by_user_id = ${fixture.userId}
+                and replaced_by_chat_id = ${replacementChatId}
+              from chats
+              where id = ${fixture.chatId}
+            ) as archived
+        `;
+        return { run, counts };
+      }),
+    );
+    expect(state.run).toMatchObject({
+      errorCode: null,
+      finishedAt: expect.any(Date),
+      failedAt: null,
+      assistantMessageId: expect.any(String),
+      assistantContent: "Complete before archive",
+    });
+    expect(state.counts).toEqual({
+      assistants: 1,
+      memories: 1,
+      revisions: 1,
+      replacementMessages: 0,
+      replacementRuns: 0,
+      archived: true,
     });
   });
 

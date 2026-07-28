@@ -4139,6 +4139,7 @@ export const finalizeAiRun = (
               and runs.chat_id = ${run.chatId}
               and runs.initiating_user_id = ${run.initiatingUserId}
               and chat.deleted_at is null
+              and chat.archived_at is null
               and company.id = ${acceptanceScope.companyId}::uuid
               and company.recovery_deleted_at is null
               and company.purged_at is null

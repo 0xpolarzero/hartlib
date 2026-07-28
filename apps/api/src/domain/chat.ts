@@ -51,7 +51,7 @@ export type AiRunEventPoller = (
   signal?: AbortSignal,
 ) => Promise<AuthorizedAiRunEventPoll>;
 
-const readChat = (identity: RequestIdentity, config: ApiConfig, chatId?: string) =>
+export const readChat = (identity: RequestIdentity, config: ApiConfig, chatId?: string) =>
   (chatId === undefined
     ? loadDemoChatRuntimeState(identity, config)
     : loadAuthorizedChatRuntimeState(identity, config, chatId)
@@ -68,6 +68,8 @@ const readChat = (identity: RequestIdentity, config: ApiConfig, chatId?: string)
               memoryMode: loaded.chat.memory_mode,
               createdAt: loaded.chat.created_at.toISOString(),
               updatedAt: loaded.chat.updated_at.toISOString(),
+              archivedAt:
+                loaded.chat.archived_at === null ? null : loaded.chat.archived_at.toISOString(),
             },
             messages: chatMessagesResponseFromRows(
               loaded.messages,
@@ -77,7 +79,7 @@ const readChat = (identity: RequestIdentity, config: ApiConfig, chatId?: string)
             ),
             effectiveWebPolicy: loaded.effectivePolicy,
             activeRun: active === null ? null : runDescriptor(active),
-            canWrite: loaded.chat.user_id === identity.userId,
+            canWrite: loaded.chat.user_id === identity.userId && loaded.chat.archived_at === null,
           }) satisfies GetChatResponse,
         catch: () => new AuthorizationError("not_found"),
       });

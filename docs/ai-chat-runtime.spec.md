@@ -299,8 +299,9 @@ cleanup behavior defined here.
 ## Runtime Stack
 
 Smithers (`smithers-orchestrator`) uses its Postgres backend on the existing `DATABASE_URL`. The worker opens the backend once at startup and closes it during graceful shutdown. Startup schema provisioning is protected by a short-lived shared schema fence; each workflow producer operation takes that shared fence for its own lifetime, leaving terminal cleanup and retention free to acquire the exclusive side. The finite evaluation CLI additionally closes Smithers' process-local SingleRunner runtime after its operation, including failed operations, so Effect Cluster fibers cannot keep the command alive; cleanup failures are reported as exit `2` and never force termination with `process.exit`.
+Smithers 0.31.0 provides the public `closeSingleRunnerRuntime` and `reopenSingleRunnerRuntime` lifecycle surface; Brief carries no local Smithers dependency patch.
 
-Smithers 0.30.0 provisions one node-postgres client for that backend. The interop adapter fail-closes if the expected Postgres descriptor is absent and serializes that client's durable-state queries in submission order, including recovery after a rejected query. This transport serialization does not serialize workflow compute tasks, selector/model calls, or their independent Brief database work; Smithers `Parallel` branches still execute concurrently. Brief product-state calls retain that independence but share a process-wide 32-permit gate because each call's managed Pg pool is short-lived; the gate bounds pool creation without serializing the underlying workflow branches. Every AI workflow registers a run-level Smithers `maxConcurrency` of one memory-lane slot plus the maximum of three single selectors, `AI_TOPIC_RESEARCH_MAX_CONCURRENCY`, and `AI_TOPIC_ANSWER_MAX_CONCURRENCY`. That registration is immutable for the workflow object. Initial execution and resume use the same derived value, so Smithers' own default global limit cannot weaken an inner canonical concurrency bound while memory extraction is still running. A caller may repeat that exact value explicitly, but the adapter rejects any explicit value that differs from the registered cap instead of silently weakening or drifting from the workflow configuration.
+Smithers 0.31.0 provisions one node-postgres client for that backend. The interop adapter fail-closes if the expected Postgres descriptor is absent and serializes that client's durable-state queries in submission order, including recovery after a rejected query. This transport serialization does not serialize workflow compute tasks, selector/model calls, or their independent Brief database work; Smithers `Parallel` branches still execute concurrently. Brief product-state calls retain that independence but share a process-wide 32-permit gate because each call's managed Pg pool is short-lived; the gate bounds pool creation without serializing the underlying workflow branches. Every AI workflow registers a run-level Smithers `maxConcurrency` of one memory-lane slot plus the maximum of three single selectors, `AI_TOPIC_RESEARCH_MAX_CONCURRENCY`, and `AI_TOPIC_ANSWER_MAX_CONCURRENCY`. That registration is immutable for the workflow object. Initial execution and resume use the same derived value, so Smithers' own default global limit cannot weaken an inner canonical concurrency bound while memory extraction is still running. A caller may repeat that exact value explicitly, but the adapter rejects any explicit value that differs from the registered cap instead of silently weakening or drifting from the workflow configuration.
 
 Pi (`@earendil-works/pi-ai`) performs every model call. Brief uses Pi directly
 from Smithers compute tasks. Smithers `agent=` tasks, `PiAgent`,
@@ -354,6 +355,16 @@ apply only to later runs. No public documentation promises a fixed agent or
 provider-call count.
 
 Partial unique indexes for unterminated runs are the server-side authority for one active turn per chat and one active memory-producing turn per initiating user. Client input state is only a convenience.
+
+## Archive, reset, and generation fences
+
+`chats.archived_at` is the durable boundary between an active chat and its read-only history. `ensureDemoChat`, active chat discovery, message acceptance, run creation, and worker finalization require `archived_at is null`. An explicit authorized chat read may return an archived transcript with `archivedAt` set and `canWrite: false`; reads and eligible exports do not reopen the chat for writes or new AI execution.
+
+`POST /v1/chats/:chatId/reset` uses the client-generated replacement UUID as its replay identity. The transaction locks the predecessor and the established company-membership, chat-execution, and create-chat lanes, rechecks owner, organization, membership, and every selected source grant, copies company, immutable memory mode, and exact selected source rows into one empty private replacement, fails any unfinished predecessor run with `chat_archived`, and archives the predecessor in the same commit. A replay with the same predecessor and replacement IDs returns the committed replacement. A competing replacement ID returns `chat_already_reset`; an already-used replacement UUID returns `replacement_id_conflict`. No saved memory row changes and archive sets no purge clock.
+
+Message acceptance and reset are ordered by the shared chat execution lane. A message accepted before archive belongs wholly to the predecessor; a message checked after archive is rejected and inserts neither a message nor a run. Finalization uses the same user-memory, chat-row, company-membership, and chat-execution ordering. If finalization wins first, its assistant answer, memory revision, usage, source map, terminal status, and `done` event commit before archive. If archive wins first, the locked finalization guard finds the chat archived, leaves no assistant message or memory revision, and keeps the predecessor run terminal with `chat_archived`. No answer, source, usage, or memory update can cross into the replacement.
+
+The demo controller owns a monotonically increasing projection generation. It creates the replacement UUID and snapshots the predecessor projection, draft, active run, stream generation, cursor owner, and route before the reset request. It publishes the empty replacement projection in the same interaction frame, keeps the shell mounted, permits typing, and disables Send until the mutation commits. It aborts the predecessor SSE stream without deleting its cursor while pending; success adopts the complete mutation projection and then clears the old cursor, while failure restores the predecessor and reconnects from its saved cursor without discarding text typed during reset. Any predecessor GET or SSE action whose generation is not current is ignored. A two-tab `chat_already_reset` response adopts the committed replacement rather than creating a second successor.
 
 ## State Ownership
 
@@ -527,7 +538,7 @@ These components expand to `Sequence`, `Parallel`, `Branch`, `Loop`, and `Task` 
 
 Production adaptation is data-driven. Plan-turn and O persist typed outputs; Smithers re-renders and mounts the selected stable graph. The runtime never copies or edits workflow source per turn. Smithers hot reload is limited to development or controlled operator work and is not an ordinary chat-planning mechanism.
 
-All model calls remain Smithers compute tasks whose async child invokes Pi. Brief does not use Smithers `agent=` execution. Brief async compute tasks do not use the Smithers `deps` prop: in installed 0.30.0, that shape invokes the function during render and treats the result as static. Components use structural ordering, optional `dependsOn` edges to nodes that are always mounted, and `ctx.output` or `ctx.outputMaybe` inside compute closures.
+All model calls remain Smithers compute tasks whose async child invokes Pi. Brief does not use Smithers `agent=` execution. Brief async compute tasks do not use the Smithers `deps` prop: in installed 0.31.0, that shape invokes the function during render and treats the result as static. Components use structural ordering, optional `dependsOn` edges to nodes that are always mounted, and `ctx.output` or `ctx.outputMaybe` inside compute closures.
 
 Inside every reduction loop, the plan task reads the previous measurement with `ctx.latest`; the measure task reads the just-completed plan with `ctx.latest` while the enclosing `Sequence` provides ordering; and the loop `until` condition reads the latest measure with `ctx.latest`. This remains correct when several sibling topic loops run concurrently.
 
@@ -1200,7 +1211,7 @@ fixedSynthesisInput
 
 The allowance is divided deterministically across two or three topics. Each per-topic allowance is capped by both `AI_MAIN_OUTPUT_MAX_TOKENS` and the registered model maximum output before it is placed on a topic request. A fanout plan is invalid if it cannot allocate enough tokens for each packet's required schema. Topic answer requests must also satisfy their own model input-plus-output invariant.
 
-Each topic runs focused A, B, and eligible W selectors. All topic/domain selector tasks are flattened into one `Parallel` group whose `maxConcurrency` is `AI_TOPIC_RESEARCH_MAX_CONCURRENCY`. `TopicResearch` returns task elements to that group; it does not create a nested `Parallel`, because Smithers 0.30.0 applies scheduling limits from the innermost parallel group. The derived run-level Smithers cap reserves the concurrent memory slot and is therefore never lower than this group or the topic-answer group. The worker-level provider semaphore remains the global provider limit.
+Each topic runs focused A, B, and eligible W selectors. All topic/domain selector tasks are flattened into one `Parallel` group whose `maxConcurrency` is `AI_TOPIC_RESEARCH_MAX_CONCURRENCY`. `TopicResearch` returns task elements to that group; it does not create a nested `Parallel`, because Smithers 0.31.0 applies scheduling limits from the innermost parallel group. The derived run-level Smithers cap reserves the concurrent memory slot and is therefore never lower than this group or the topic-answer group. The worker-level provider semaphore remains the global provider limit.
 
 After all topic research joins, `fanout-merge-sources` operates only on the persisted selector manifests: it deduplicates shared candidate identities and assigns namespace-prefixed keys in stable topic-ID, domain, rank, and source-identity order. It performs no database hydration, context assembly, exact measurement, or measurement observation. An inaccessible candidate may therefore leave an unused preassigned ordinal, but can never cause the keys of later manifest identities to change during a retry.
 
@@ -2089,10 +2100,20 @@ Pure tests cover:
 - memory normalization, zero-to-many proposal validation, deduplication, update ownership, and revisions
 - stream emission-key idempotency, replay, and answer-attempt reset behavior
 - open-stream replay plus proof that later ordinary membership, source, or policy changes do not alter an accepted run; exceptional account, purge, legal, and identity denials remain covered
+- reset reducer and controller behavior for the optimistic empty projection, one replacement identity, success without a follow-up read, rollback with current draft text, stale-generation rejection, and losing-tab adoption
+
+Web component tests cover:
+
+- composer enablement only when the authoritative projection has both `canWrite: true` and `archivedAt: null`
+- the Mine, Shared, and Archived tabs, their separate collection choice, the archived empty state, and archived card open, unshare, delete, and no-share actions
+
+The API architecture test keeps reset in the personal chat lifecycle exemption and proves that it does not appear in the administrative audit matrix.
 
 Postgres integration tests cover:
 
 - transactional message/run/job creation and the one-active-run indexes per chat and initiating user
+- archive-and-replace migration constraints, transaction copy rules, same-ID replay, competing IDs, concurrent resets, source revocation, no purge clock on archive, and retained history after physical replacement deletion
+- archived transcript reads, active-list exclusion, message/run rejection after archive, reset-versus-message ordering, and reset-versus-finalization ordering
 - same-chat older-message search and deleted-message exclusion
 - source authorization at search and hydration time
 - final-context and finalization integrity handling, including later ordinary authorization changes that must not reject an accepted run
@@ -2106,6 +2127,8 @@ Postgres integration tests cover:
 - worker crash resume and Smithers cleanup
 - atomic `done` only after memory and answer persistence
 - terminal failure event handling
+
+The reset browser cases delay success and failure responses and prove that the empty replacement appears before success, the page never enters initial loading, typing remains possible while Send is disabled, and success reconciles without a follow-up GET. Separate rollback, nested-route, late-GET, late-SSE, held-run, and losing-tab cases prove transcript, route, cursor, and active-run restoration; stale predecessor rejection; no late answer or memory publication; and adoption of the committed replacement in a second tab.
 
 Workflow graph tests cover:
 

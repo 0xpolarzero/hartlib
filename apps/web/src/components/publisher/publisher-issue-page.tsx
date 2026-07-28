@@ -14,7 +14,7 @@ import {
 import {
   deletePublisherDocument,
   deletePublisherIssue,
-  getIssueDetail,
+  getPublisherIssue,
   publishPublisherIssue,
   schedulePublisherIssue,
   updatePublisherIssue,
@@ -37,7 +37,7 @@ export function PublisherIssuePage({
   const queryClient = useQueryClient();
   const detail = useQuery({
     queryKey: ["issue-detail", issueId],
-    queryFn: () => getIssueDetail(issueId),
+    queryFn: () => getPublisherIssue(issueId),
   });
   const [title, setTitle] = useState("");
   const [publicationAt, setPublicationAt] = useState("");

@@ -12,6 +12,7 @@ export default defineConfig({
     fileParallelism: false,
     include: [
       "apps/**/*.test.ts",
+      "apps/**/*.test.tsx",
       "packages/**/*.test.ts",
       "packages/**/**/*.test.ts",
       "tests/e2e/**/*.test.ts",

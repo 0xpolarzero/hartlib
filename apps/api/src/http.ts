@@ -1,4 +1,4 @@
-import { Context, Effect, Schema } from "effect";
+import { Cause, Context, Effect, Schema } from "effect";
 import { httpRouteContract, type HttpRouteContract } from "@brief/shared";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import type { HttpMethod } from "effect/unstable/http/HttpMethod";
@@ -132,8 +132,24 @@ const webRequest = (request: HttpServerRequest.HttpServerRequest): Request => {
   return request.source;
 };
 
-const operationalFailure = (request: Request) =>
+const isCause = (value: unknown): value is Cause.Cause<unknown> =>
+  typeof value === "object" &&
+  value !== null &&
+  "reasons" in value &&
+  Array.isArray((value as { readonly reasons?: unknown }).reasons);
+
+const operationalFailure = (request: Request, cause?: unknown) =>
   Effect.gen(function* () {
+    // A disconnected client cannot receive an error body. Returning an empty
+    // local response avoids writing to the aborted Bun socket while keeping
+    // the failure boundary fail-closed.
+    if (
+      request.signal.aborted ||
+      (isCause(cause) && Cause.hasInterruptsOnly(cause))
+    ) {
+      return new Response(null, { status: 499 });
+    }
+
     captureApiOperationalError("request_failed", {
       method: request.method,
     });
@@ -438,7 +454,7 @@ const effectRoute = (route: Route): HttpRouter.Route<never, never> =>
         }
         return response;
       }).pipe(
-        Effect.catchCause(() => operationalFailure(request)),
+        Effect.catchCause((cause) => operationalFailure(request, cause)),
         Effect.tap(
           (response) =>
             route.administrativeAudit?.(
@@ -449,7 +465,7 @@ const effectRoute = (route: Route): HttpRouter.Route<never, never> =>
             ) ?? Effect.void,
         ),
         Effect.flatMap((response) => applyCors(request, response)),
-        Effect.catchCause(() => operationalFailure(request)),
+        Effect.catchCause((cause) => operationalFailure(request, cause)),
         Effect.map(HttpServerResponse.fromWeb),
         Effect.provide(JsonLoggerLayer),
       );
@@ -550,7 +566,7 @@ export const routeRequest = (
     return yield* Effect.tryPromise({
       try: () => api!.handler(request, context),
       catch: (cause) => new Error("Effect HTTP request failed", { cause }),
-    }).pipe(Effect.catch(() => operationalFailure(request)));
+    }).pipe(Effect.catch((cause) => operationalFailure(request, cause)));
   });
 
 export const serverSentEvents = (

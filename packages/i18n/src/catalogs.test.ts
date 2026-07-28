@@ -19,4 +19,13 @@ describe("localization catalogs", () => {
     expect(messageForLocale("en-US", "web.error.reload")).toBe("Reload");
     expect(messageForLocale("fr-FR", "web.error.reload")).toBe("Recharger");
   });
+
+  it("keeps reset copy focused on archiving in both locales", () => {
+    expect(enUS["action.reset"]).toBe("Start a new chat");
+    expect(frFR["action.reset"]).toBe("Démarrer un nouveau chat");
+    expect(enUS["chat.resetArchiveNotice"]).toContain("does not delete");
+    expect(frFR["chat.resetArchiveNotice"]).toContain("ne la supprime pas");
+    expect(enUS["web.chat.archivedReadOnly"]).toContain("read-only");
+    expect(frFR["web.chat.archivedReadOnly"]).toContain("lecture seule");
+  });
 });

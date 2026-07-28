@@ -8,6 +8,7 @@ const chat = {
     memoryMode: "disabled" as const,
     createdAt: "2026-07-10T00:00:00.000Z",
     updatedAt: "2026-07-10T00:00:00.000Z",
+    archivedAt: null,
   },
   messages: [],
   effectiveWebPolicy: {
@@ -98,6 +99,50 @@ describe("product API client codecs", () => {
       fetch: async () => Response.json({ ...chat, extra: true }),
     });
     await expect(client.getChat()).rejects.toMatchObject({ code: "invalid_response_body" });
+  });
+
+  it("posts one exact replacement UUID and decodes the complete reset projection", async () => {
+    const calls: Array<{ readonly input: string; readonly init: RequestInit | undefined }> = [];
+    const reset = {
+      archivedChatId: "old-chat",
+      replacement: chat,
+    };
+    const client = createProductApiClient({
+      baseUrl: "https://api.brief.example",
+      fetch: async (input, init) => {
+        calls.push({ input: String(input), init });
+        return Response.json(reset);
+      },
+    });
+    await expect(
+      client.resetChat("old/chat", "11111111-1111-4111-8111-111111111111"),
+    ).resolves.toEqual(reset);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.input).toBe("https://api.brief.example/v1/chats/old%2Fchat/reset");
+    expect(calls[0]?.init).toMatchObject({ method: "POST" });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      replacementChatId: "11111111-1111-4111-8111-111111111111",
+    });
+    const excess = createProductApiClient({
+      fetch: async () =>
+        Response.json({
+          ...reset,
+          replacement: { ...reset.replacement, extra: true },
+        }),
+    });
+    await expect(
+      excess.resetChat("old/chat", "11111111-1111-4111-8111-111111111111"),
+    ).rejects.toMatchObject({ code: "invalid_response_body" });
+  });
+
+  it("retains the typed archived conflict body", async () => {
+    const conflict = { error: "chat_already_reset", archivedChatId: "old-chat" } as const;
+    const client = createProductApiClient({
+      fetch: async () => Response.json(conflict, { status: 409 }),
+    });
+    await expect(
+      client.resetChat("old-chat", "11111111-1111-4111-8111-111111111111"),
+    ).rejects.toMatchObject({ status: 409, code: "chat_already_reset", body: conflict });
   });
 
   it("fetches and strictly decodes an exact provenance-only memory revision", async () => {

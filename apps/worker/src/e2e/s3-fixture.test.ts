@@ -209,6 +209,9 @@ describe("deterministic S3-compatible E2E fixture", () => {
     signedUrl.searchParams.set("response-content-disposition", 'inline; filename="fixture.pdf"');
     const authorizedUrl = presign({ url: signedUrl.href });
     const first = await fixture.fetch(new Request(authorizedUrl));
+    const browser = await fixture.fetch(
+      new Request(authorizedUrl, { headers: { origin: "http://127.0.0.1:46112" } }),
+    );
     const second = await fixture.fetch(
       new Request(authorizedUrl, { headers: { authorization: "Bearer must-not-leak" } }),
     );
@@ -218,6 +221,8 @@ describe("deterministic S3-compatible E2E fixture", () => {
     expect(first.headers.get("content-type")).toBe("application/pdf");
     expect(first.headers.get("content-disposition")).toBe('inline; filename="fixture.pdf"');
     expect(first.headers.get("x-brief-e2e-authorization-received")).toBe("absent");
+    expect(browser.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:46112");
+    expect(browser.headers.get("access-control-allow-credentials")).toBe("true");
     expect(second.headers.get("x-brief-e2e-authorization-received")).toBe("present");
     expect(new Uint8Array(await first.arrayBuffer())).toEqual(body);
     expect(new Uint8Array(await second.arrayBuffer())).toEqual(body);

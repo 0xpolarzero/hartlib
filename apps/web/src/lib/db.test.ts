@@ -16,6 +16,7 @@ import {
   decodeArchiveSourceSelection,
   encodeArchiveSourceSelection,
   fetchArchiveWindow,
+  invalidateProductChatCollections,
 } from "./db";
 
 const client = () =>
@@ -29,6 +30,8 @@ const chat = (id: string, updatedAt = "2026-07-11T00:00:00.000Z"): ChatSummary =
   creatorUserId: "user-1",
   memoryMode: "disabled",
   sharedAt: null,
+  archivedAt: null,
+  replacedByChatId: null,
   createdAt: "2026-07-10T00:00:00.000Z",
   updatedAt,
   sourceCount: 0,
@@ -198,21 +201,39 @@ describe("TanStack DB server synchronization", () => {
     await collection.cleanup();
   });
 
-  it("isolates mine and shared chat collections and their query keys", async () => {
+  it("isolates mine, shared, and archived chat collections and their query keys", async () => {
     const queryClient = client();
-    const fetch = vi.fn(async (view: "mine" | "shared") => [chat(`${view}-chat`)]);
+    const fetch = vi.fn(async (view: "mine" | "shared" | "archived") => [chat(`${view}-chat`)]);
     const mine = createChatListCollection({ view: "mine", client: queryClient, fetch });
     const shared = createChatListCollection({ view: "shared", client: queryClient, fetch });
+    const archived = createChatListCollection({ view: "archived", client: queryClient, fetch });
 
-    const [mineRows, sharedRows] = await Promise.all([
+    const [mineRows, sharedRows, archivedRows] = await Promise.all([
       queryOnce((query) => query.from({ chat: mine })),
       queryOnce((query) => query.from({ chat: shared })),
+      queryOnce((query) => query.from({ chat: archived })),
     ]);
     expect(mineRows.map((row) => row.id)).toEqual(["mine-chat"]);
     expect(sharedRows.map((row) => row.id)).toEqual(["shared-chat"]);
-    expect(fetch.mock.calls.map(([view]) => view).sort()).toEqual(["mine", "shared"]);
+    expect(archivedRows.map((row) => row.id)).toEqual(["archived-chat"]);
+    expect(fetch.mock.calls.map(([view]) => view).sort()).toEqual(["archived", "mine", "shared"]);
 
-    await Promise.all([mine.cleanup(), shared.cleanup()]);
+    await Promise.all([mine.cleanup(), shared.cleanup(), archived.cleanup()]);
+  });
+
+  it("invalidates all chat views without touching unrelated queries", async () => {
+    const queryClient = client();
+    queryClient.setQueryData(["product-chats", "mine"], [chat("mine-chat")]);
+    queryClient.setQueryData(["product-chats", "shared"], [chat("shared-chat")]);
+    queryClient.setQueryData(["product-chats", "archived"], [chat("archived-chat")]);
+    queryClient.setQueryData(["memories"], []);
+
+    await invalidateProductChatCollections(queryClient);
+
+    expect(queryClient.getQueryState(["product-chats", "mine"])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(["product-chats", "shared"])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(["product-chats", "archived"])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(["memories"])?.isInvalidated).toBe(false);
   });
 
   it("loads an on-demand archive subset through a live query", async () => {
