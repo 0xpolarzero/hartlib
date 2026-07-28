@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { resolveRequestIdentity, type RequestAuthenticator } from "./auth";
-import { DEMO_COOKIE_NAME, signDemoSessionCookie } from "./demo-session";
+import { DEMO_COOKIE_NAME } from "./demo-session";
 import type { ApiConfig } from "./config";
 
 const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
@@ -16,8 +16,6 @@ const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
   aiProviderServiceId: "zai_coding_plan_official",
   aiProviderEndpointIdentity: "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
   authMode: "clerk",
-  demoPassword: "demo-password",
-  demoSessionSecret: "test-session-secret",
   clerkSecretKey: "secret",
   clerkPublishableKey: "publishable",
   clerkAuthorizedParties: ["https://brief.test"],
@@ -62,11 +60,7 @@ describe("request authentication", () => {
 
   it("resolves the per-browser visitor id from a valid demo cookie", async () => {
     const visitorId = "11111111-1111-4111-8111-111111111111";
-    const cookie = `${DEMO_COOKIE_NAME}=${signDemoSessionCookie(
-      visitorId,
-      "test-session-secret",
-      "demo-password",
-    )}`;
+    const cookie = `${DEMO_COOKIE_NAME}=${visitorId}`;
     await expect(run(config({ authMode: "demo" }), undefined, cookie)).resolves.toEqual({
       authenticated: true,
       identity: {
@@ -79,13 +73,8 @@ describe("request authentication", () => {
     });
   });
 
-  it("rejects a demo cookie signed for a different password", async () => {
-    const visitorId = "22222222-2222-4222-8222-222222222222";
-    const cookie = `${DEMO_COOKIE_NAME}=${signDemoSessionCookie(
-      visitorId,
-      "test-session-secret",
-      "old-password",
-    )}`;
+  it("rejects a demo cookie value containing a dot", async () => {
+    const cookie = `${DEMO_COOKIE_NAME}=not.allowed`;
     await expect(run(config({ authMode: "demo" }), undefined, cookie)).resolves.toEqual({
       authenticated: false,
     });

@@ -214,8 +214,6 @@ const ApiEnvironment = Schema.Struct({
   AI_BASE_URL: StringWithDefault(ZAI_CODING_PLAN_BASE_URL),
   AI_WEB_MAX_DOMAIN_FILTERS: NumberWithDefault(AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT),
   AUTH_MODE: Schema.optional(Schema.String),
-  DEMO_PASSWORD: StringWithDefault("demo"),
-  DEMO_SESSION_SECRET: StringWithDefault("insecure-dev-demo-session-secret"),
   CLERK_SECRET_KEY: StringWithDefault(""),
   CLERK_PUBLISHABLE_KEY: StringWithDefault(""),
   CLERK_AUTHORIZED_PARTIES: StringWithDefault(""),
@@ -251,8 +249,6 @@ export interface ApiConfig {
     | "openai_compatible_custom";
   readonly aiProviderEndpointIdentity: string;
   readonly authMode: "demo" | "clerk";
-  readonly demoPassword: string;
-  readonly demoSessionSecret: string;
   readonly clerkSecretKey: string;
   readonly clerkPublishableKey: string;
   readonly clerkAuthorizedParties: readonly string[];
@@ -319,14 +315,6 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
     const authMode = raw.AUTH_MODE ?? "demo";
     if (authMode !== "demo" && authMode !== "clerk") {
       return yield* Effect.fail(new Error("invalid AUTH_MODE"));
-    }
-    if (
-      authMode === "demo" &&
-      (raw.DEMO_PASSWORD.trim() === "" || raw.DEMO_SESSION_SECRET.trim() === "")
-    ) {
-      return yield* Effect.fail(
-        new Error("DEMO_PASSWORD and DEMO_SESSION_SECRET are required for demo auth"),
-      );
     }
     if (
       authMode === "clerk" &&
@@ -414,8 +402,6 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
       aiProviderServiceId,
       aiProviderEndpointIdentity: `${aiProviderServiceId}:${aiBaseUrl}`,
       authMode,
-      demoPassword: raw.DEMO_PASSWORD,
-      demoSessionSecret: raw.DEMO_SESSION_SECRET,
       clerkSecretKey: raw.CLERK_SECRET_KEY,
       clerkPublishableKey: raw.CLERK_PUBLISHABLE_KEY,
       clerkAuthorizedParties,

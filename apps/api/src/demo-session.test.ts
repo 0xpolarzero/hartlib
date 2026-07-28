@@ -4,17 +4,8 @@ import { describe, expect, it } from "vitest";
 import { resolveRequestIdentity } from "./auth";
 import type { ApiConfig } from "./config";
 import { demoSessionRoutes } from "./domain/demo-session";
-import {
-  DEMO_COOKIE_NAME,
-  createDemoSession,
-  readCookie,
-  signDemoSessionCookie,
-  verifyDemoSessionCookie,
-} from "./demo-session";
+import { DEMO_COOKIE_NAME, createDemoSession, readCookie, verifyDemoSessionCookie } from "./demo-session";
 import { routeRequest } from "./http";
-
-const SECRET = "test-session-secret";
-const PASSWORD = "demo-password";
 
 const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
   host: "127.0.0.1",
@@ -27,8 +18,6 @@ const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
   aiProviderServiceId: "zai_coding_plan_official",
   aiProviderEndpointIdentity: "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4",
   authMode: "demo",
-  demoPassword: PASSWORD,
-  demoSessionSecret: SECRET,
   clerkSecretKey: "",
   clerkPublishableKey: "",
   clerkAuthorizedParties: [],
@@ -51,45 +40,27 @@ const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
 });
 
 describe("demo session cookie", () => {
-  it("round-trips a visitor id through sign and verify", () => {
-    const visitorId = "11111111-1111-4111-8111-111111111111";
-    const cookie = signDemoSessionCookie(visitorId, SECRET, PASSWORD);
-    expect(verifyDemoSessionCookie(cookie, SECRET, PASSWORD)).toBe(visitorId);
+  it("accepts a cookie-safe slug and returns it as the visitor id", () => {
+    expect(verifyDemoSessionCookie("demo-user")).toBe("demo-user");
+    expect(verifyDemoSessionCookie("11111111-1111-4111-8111-111111111111")).toBe(
+      "11111111-1111-4111-8111-111111111111",
+    );
   });
 
-  it("rejects a cookie signed for a different password", () => {
-    const visitorId = "22222222-2222-4222-8222-222222222222";
-    const cookie = signDemoSessionCookie(visitorId, SECRET, "old-password");
-    expect(verifyDemoSessionCookie(cookie, SECRET, PASSWORD)).toBeNull();
+  it("rejects absent, empty, and non-cookie-safe values", () => {
+    expect(verifyDemoSessionCookie(null)).toBeNull();
+    expect(verifyDemoSessionCookie("")).toBeNull();
+    expect(verifyDemoSessionCookie("has space")).toBeNull();
+    expect(verifyDemoSessionCookie("has.dot")).toBeNull();
+    expect(verifyDemoSessionCookie("has;semicolon")).toBeNull();
   });
 
-  it("rejects a cookie signed for a different secret", () => {
-    const visitorId = "33333333-3333-4333-8333-333333333333";
-    const cookie = signDemoSessionCookie(visitorId, "other-secret", PASSWORD);
-    expect(verifyDemoSessionCookie(cookie, SECRET, PASSWORD)).toBeNull();
-  });
-
-  it("rejects malformed and empty cookie values", () => {
-    expect(verifyDemoSessionCookie(null, SECRET, PASSWORD)).toBeNull();
-    expect(verifyDemoSessionCookie("", SECRET, PASSWORD)).toBeNull();
-    expect(verifyDemoSessionCookie("garbage", SECRET, PASSWORD)).toBeNull();
-    expect(
-      verifyDemoSessionCookie(
-        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.forged",
-        SECRET,
-        PASSWORD,
-      ),
-    ).toBeNull();
-  });
-
-  it("mints a session whose cookie verifies", () => {
-    const session = createDemoSession(SECRET, PASSWORD);
+  it("mints a uuid visitor id whose cookie value is the id itself", () => {
+    const session = createDemoSession();
     expect(session.visitorId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
     );
-    expect(verifyDemoSessionCookie(session.cookieValue, SECRET, PASSWORD)).toBe(
-      session.visitorId,
-    );
+    expect(session.cookieValue).toBe(session.visitorId);
   });
 
   it("reads a named cookie from a header", () => {
@@ -104,29 +75,14 @@ const call = (request: Request) =>
   Effect.runPromise(
     routeRequest(demoSessionRoutes, request).pipe(
       Effect.provide(
-        ConfigProvider.layer(
-          ConfigProvider.fromEnv({
-            env: {
-              NODE_ENV: "test",
-              AUTH_MODE: "demo",
-              DEMO_PASSWORD: PASSWORD,
-              DEMO_SESSION_SECRET: SECRET,
-            },
-          }),
-        ),
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: { NODE_ENV: "test", AUTH_MODE: "demo" } })),
       ),
     ),
   );
 
 describe("POST /v1/demo/session", () => {
-  it("mints a verifiable session cookie for the correct password", async () => {
-    const response = await call(
-      new Request("https://brief.test/v1/demo/session", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ password: PASSWORD }),
-      }),
-    );
+  it("mints a visitor cookie for a new browser and authenticates end to end", async () => {
+    const response = await call(new Request("https://brief.test/v1/demo/session", { method: "POST" }));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true });
     const setCookie = response.headers.get("set-cookie");
@@ -134,34 +90,51 @@ describe("POST /v1/demo/session", () => {
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Lax");
     const cookieValue = readCookie(setCookie?.split(";")[0] ?? "", DEMO_COOKIE_NAME);
-    const visitorId = verifyDemoSessionCookie(cookieValue, SECRET, PASSWORD);
-    expect(visitorId).not.toBeNull();
+    expect(verifyDemoSessionCookie(cookieValue)).toBe(cookieValue);
 
     // The minted cookie authenticates the request identity end to end.
     const identity = await Effect.runPromise(
       resolveRequestIdentity(
-        new Request("https://brief.test/v1/chat", {
-          headers: { cookie: `${DEMO_COOKIE_NAME}=${cookieValue}` },
-        }),
+        new Request("https://brief.test/v1/chat", { headers: { cookie: `${DEMO_COOKIE_NAME}=${cookieValue}` } }),
         config(),
       ),
     );
     expect(identity).toEqual({
       authenticated: true,
-      identity: expect.objectContaining({ userId: visitorId, mode: "demo" }),
+      identity: expect.objectContaining({ userId: cookieValue, mode: "demo" }),
     });
   });
 
-  it("rejects a wrong password with 401 and no cookie", async () => {
+  it("keeps an existing valid cookie for a returning visitor", async () => {
+    const visitorId = "returning-visitor";
     const response = await call(
       new Request("https://brief.test/v1/demo/session", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ password: "wrong" }),
+        headers: { cookie: `${DEMO_COOKIE_NAME}=${visitorId}` },
       }),
     );
-    expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
+    expect(response.status).toBe(200);
+    // A returning visitor keeps its cookie, so no new one is set.
     expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("answers 404 outside demo mode", async () => {
+    const response = await Effect.runPromise(
+      routeRequest(demoSessionRoutes, new Request("https://brief.test/v1/demo/session", { method: "POST" })).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                NODE_ENV: "test",
+                AUTH_MODE: "clerk",
+                CLERK_SECRET_KEY: "secret",
+                CLERK_PUBLISHABLE_KEY: "publishable",
+              },
+            }),
+          ),
+        ),
+      ),
+    );
+    expect(response.status).toBe(404);
   });
 });

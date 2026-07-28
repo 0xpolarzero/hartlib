@@ -237,8 +237,6 @@ describe("central server configuration", () => {
       webResearchProvider: null,
       aiWebMaxDomainFilters: AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT,
       authMode: "demo",
-      demoPassword: "demo",
-      demoSessionSecret: "insecure-dev-demo-session-secret",
       corsAllowedOrigins: ["http://localhost:5173", "http://127.0.0.1:5173"],
     });
   });

@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import { Effect } from "effect";
 
 import { DemoSessionResponse } from "@brief/shared";
@@ -8,36 +7,29 @@ import {
   DEMO_COOKIE_NAME,
   createDemoSession,
   demoSessionCookieAttributes,
+  readCookie,
+  verifyDemoSessionCookie,
 } from "../demo-session";
 import { json, jsonFromSchema, type Route } from "../http";
 
-const constantTimeEquals = (a: string, b: string): boolean => {
-  const bufferA = Buffer.from(a, "utf8");
-  const bufferB = Buffer.from(b, "utf8");
-  return bufferA.length === bufferB.length && bufferA.length > 0
-    ? timingSafeEqual(bufferA, bufferB)
-    : false;
-};
-
 /**
- * The demo password gate. A correct password mints a per-browser session
- * cookie; a wrong password is rejected. The route exists only in demo mode, so
- * a production deployment answers 404 and the endpoint never overlaps a real
- * auth provider.
+ * Establish a per-browser demo session. A returning visitor with a valid cookie
+ * keeps it; a new visitor gets a fresh visitor id set as an httpOnly cookie.
+ * There is no password — the cookie's entropy is the only credential.
  */
 export const makeDemoSessionRoutes = (): readonly Route[] => [
   {
     method: "POST",
     path: "/v1/demo/session",
-    execute: (request, _url, _pathParameters, input) =>
+    execute: (request) =>
       Effect.gen(function* () {
         const config = yield* loadApiConfig;
         if (config.authMode !== "demo") return json({ error: "not_found" }, { status: 404 });
-        const body = input.body as { readonly password: string };
-        if (!constantTimeEquals(body.password, config.demoPassword)) {
-          return json({ error: "unauthorized" }, { status: 401 });
-        }
-        const session = createDemoSession(config.demoSessionSecret, config.demoPassword);
+        const existing = verifyDemoSessionCookie(
+          readCookie(request.headers.get("cookie"), DEMO_COOKIE_NAME),
+        );
+        if (existing !== null) return jsonFromSchema(DemoSessionResponse, { ok: true });
+        const session = createDemoSession();
         const setCookie = `${DEMO_COOKIE_NAME}=${session.cookieValue}; ${demoSessionCookieAttributes(
           config.nodeEnv === "production",
         )}`;

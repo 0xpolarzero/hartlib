@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { RotateCcw, Send } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiResponseError, createProductApiClient } from "@brief/api-client";
 import {
@@ -102,8 +102,22 @@ import {
 } from "./market-content";
 
 const publicApiBaseUrl = loadDemoBrowserConfig(import.meta.env).apiBaseUrl;
+const demoSessionUrl = `${publicApiBaseUrl}/v1/demo/session`;
+
+// Every demo request carries the per-browser session cookie. The first call
+// from a new browser arrives with no cookie and is rejected (401); this wrapper
+// establishes a session (the API mints a visitor id and sets the cookie) and
+// retries the original request once. Returning visitors keep their cookie and
+// never hit the session call. There is no password and no app-wide gate.
+const demoFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const response = await globalThis.fetch(input, { ...init, credentials: "include" });
+  if (response.status !== 401) return response;
+  await globalThis.fetch(demoSessionUrl, { method: "POST", credentials: "include" });
+  return globalThis.fetch(input, { ...init, credentials: "include" });
+};
+
 const demoApi = createProductApiClient({
-  fetch: (input, init) => globalThis.fetch(input, { ...init, credentials: "include" }),
+  fetch: demoFetch,
   ...(publicApiBaseUrl === "" ? {} : { baseUrl: publicApiBaseUrl }),
 });
 
@@ -1628,95 +1642,6 @@ function LocaleMarketSwitcher() {
   );
 }
 
-/**
- * Password gate for the demo. A request without a valid per-browser session
- * cookie is rejected by the API, so the visitor must enter the shared demo
- * password once. A correct password mints a cookie the browser keeps; the gate
- * then renders the app. Every other state is impossible: the API never answers
- * a data request without a resolved visitor id.
- */
-function DemoAuthGate({ children }: { readonly children: ReactNode }) {
-  const intl = useIntl();
-  const [status, setStatus] = useState<"checking" | "unauthenticated" | "authenticated">(
-    "checking",
-  );
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const probe = useCallback(async () => {
-    try {
-      await demoApi.getChat();
-      setStatus("authenticated");
-    } catch (cause) {
-      setStatus(cause instanceof ApiResponseError && cause.status === 401 ? "unauthenticated" : "authenticated");
-    }
-  }, []);
-
-  useEffect(() => {
-    void probe();
-  }, [probe]);
-
-  const submit = useCallback(
-    async (event: FormEvent) => {
-      event.preventDefault();
-      setSubmitting(true);
-      try {
-        await demoApi.createDemoSession(password);
-        setStatus("authenticated");
-      } catch (cause) {
-        setError(
-          cause instanceof ApiResponseError && cause.status === 401
-            ? intl.formatMessage({ id: "demo.auth.wrongPassword" })
-            : intl.formatMessage({ id: "demo.auth.failed" }),
-        );
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [intl, password],
-  );
-
-  if (status === "checking") {
-    return (
-      <div className="demo-auth-gate demo-auth-gate--checking">
-        <p>{intl.formatMessage({ id: "demo.auth.checking" })}</p>
-      </div>
-    );
-  }
-
-  if (status === "unauthenticated") {
-    return (
-      <div className="demo-auth-gate">
-        <form className="demo-auth-gate__form" onSubmit={submit}>
-          <h1 className="demo-auth-gate__title">{intl.formatMessage({ id: "demo.auth.title" })}</h1>
-          <p className="demo-auth-gate__prompt">
-            {intl.formatMessage({ id: "demo.auth.prompt" })}
-          </p>
-          <label className="demo-auth-gate__label" htmlFor="demo-auth-password">
-            {intl.formatMessage({ id: "demo.auth.passwordLabel" })}
-          </label>
-          <input
-            id="demo-auth-password"
-            className="demo-auth-gate__input"
-            type="password"
-            autoComplete="current-password"
-            placeholder={intl.formatMessage({ id: "demo.auth.passwordPlaceholder" })}
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            autoFocus
-          />
-          {error !== null ? <p className="demo-auth-gate__error">{error}</p> : null}
-          <Button type="submit" disabled={submitting || password.length === 0}>
-            {intl.formatMessage({ id: "demo.auth.submit" })}
-          </Button>
-        </form>
-      </div>
-    );
-  }
-
-  return children;
-}
 
 /**
  * Root shell that owns the (locale, market) pair, wires it into the i18n
@@ -1776,9 +1701,7 @@ function DemoShell() {
 
   return (
     <I18nProvider locale={locale} market={market} onChangeLocaleMarket={handleChangeLocaleMarket}>
-      <DemoAuthGate>
-        <App />
-      </DemoAuthGate>
+      <App />
     </I18nProvider>
   );
 }

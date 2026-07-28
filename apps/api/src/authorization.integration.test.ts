@@ -31,7 +31,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { RequestIdentity } from "./auth";
 import { routeRequest } from "./http";
-import { DEMO_COOKIE_NAME, signDemoSessionCookie } from "./demo-session";
+import { DEMO_COOKIE_NAME } from "./demo-session";
 import { makeProductChatRoutes } from "./domain/product-chats";
 import { makeChatRoutes } from "./domain/chat";
 import { makeClientWorkspaceRoutes } from "./domain/client-workspace";
@@ -84,15 +84,11 @@ const identity = (
   mode: "clerk",
 });
 
-const DEMO_PASSWORD = "demo";
-const DEMO_SECRET = "brief-integration-demo-secret";
 const demoCookie = (userId: string) =>
-  `${DEMO_COOKIE_NAME}=${signDemoSessionCookie(userId, DEMO_SECRET, DEMO_PASSWORD)}`;
+  `${DEMO_COOKIE_NAME}=${userId}`;
 const demoConfigEnv = {
   NODE_ENV: "test",
   AUTH_MODE: "demo",
-  DEMO_PASSWORD,
-  DEMO_SESSION_SECRET: DEMO_SECRET,
 } as const;
 
 const runProductRoute = async (
@@ -555,8 +551,6 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_PASSWORD,
-                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   TINYFISH_API_KEY: "test-key",
                   AI_WEB_MAX_DOMAIN_FILTERS: "2",
                 },
@@ -845,8 +839,6 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_PASSWORD,
-                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   TINYFISH_API_KEY: "tinyfish-test",
                   AI_WEB_MAX_DOMAIN_FILTERS: "2",
                 },
@@ -1235,8 +1227,6 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_PASSWORD,
-                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   TINYFISH_API_KEY: "tinyfish-test",
                   AI_WEB_MAX_DOMAIN_FILTERS: "2",
                 },
@@ -1440,8 +1430,6 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_PASSWORD,
-                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   RAILWAY_BUCKET_ENDPOINT: "https://storage.test",
                   RAILWAY_BUCKET_NAME: "private",
                   RAILWAY_BUCKET_ACCESS_KEY_ID: "access",
@@ -1492,8 +1480,6 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                   env: {
                     NODE_ENV: "test",
                     AUTH_MODE: "demo",
-                    DEMO_PASSWORD,
-                    DEMO_SESSION_SECRET: DEMO_SECRET,
                     RAILWAY_BUCKET_ENDPOINT: "https://storage.test",
                     RAILWAY_BUCKET_NAME: "private",
                     RAILWAY_BUCKET_ACCESS_KEY_ID: "access",
@@ -1631,8 +1617,6 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_PASSWORD,
-                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   RAILWAY_BUCKET_ENDPOINT: "https://storage.test",
                   RAILWAY_BUCKET_NAME: "private",
                   RAILWAY_BUCKET_ACCESS_KEY_ID: "access",
@@ -2038,8 +2022,6 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
                 env: {
                   NODE_ENV: "test",
                   AUTH_MODE: "demo",
-                  DEMO_PASSWORD,
-                  DEMO_SESSION_SECRET: DEMO_SECRET,
                   RAILWAY_BUCKET_ENDPOINT: "https://storage.test",
                   RAILWAY_BUCKET_NAME: "private",
                   RAILWAY_BUCKET_ACCESS_KEY_ID: "access",
@@ -2477,7 +2459,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           Effect.provide(
             ConfigProvider.layer(
               ConfigProvider.fromEnv({
-                env: { NODE_ENV: "test", AUTH_MODE: "demo", DEMO_PASSWORD, DEMO_SESSION_SECRET: DEMO_SECRET },
+                env: { NODE_ENV: "test", AUTH_MODE: "demo" },
               }),
             ),
           ),

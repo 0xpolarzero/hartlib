@@ -8,7 +8,7 @@ import { acceptClerkWebhook } from "@brief/backend-domain/clerk-webhook";
 import { resolveCompanyDeletionRequest } from "@brief/backend-domain/platform-support";
 import { requireClientCompanyAdmin } from "@brief/workspace";
 import { routeRequest } from "../http";
-import { DEMO_COOKIE_NAME, signDemoSessionCookie } from "../demo-session";
+import { DEMO_COOKIE_NAME } from "../demo-session";
 import { makeBillingRoutes, type BillingStripeGateway } from "../domain/billing";
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
@@ -42,10 +42,8 @@ const pgLayer = () =>
     applicationName: "billing-plan-change-route-test",
   });
 
-const DEMO_PASSWORD = "demo";
-const DEMO_SECRET = "brief-integration-demo-secret";
 const demoCookie = (userId: string) =>
-  `${DEMO_COOKIE_NAME}=${signDemoSessionCookie(userId, DEMO_SECRET, DEMO_PASSWORD)}`;
+  `${DEMO_COOKIE_NAME}=${userId}`;
 
 const config = (_userId: string) =>
   ConfigProvider.layer(
@@ -53,8 +51,6 @@ const config = (_userId: string) =>
       env: {
         NODE_ENV: "test",
         AUTH_MODE: "demo",
-        DEMO_PASSWORD,
-        DEMO_SESSION_SECRET: DEMO_SECRET,
         STRIPE_SECRET_KEY: "stripe-test",
         STRIPE_PRICE_LIGHT: "price_light",
         STRIPE_PRICE_TEAM: "price_team",

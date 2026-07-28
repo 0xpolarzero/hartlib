@@ -6,14 +6,6 @@ export const HealthResponse = Schema.Struct({
 });
 export type HealthResponse = Schema.Schema.Type<typeof HealthResponse>;
 
-export const DemoSessionRequest = Schema.Struct({
-  password: Schema.String.pipe(
-    Schema.check(Schema.isNonEmpty()),
-    Schema.check(Schema.isMaxLength(1024)),
-  ),
-});
-export type DemoSessionRequest = Schema.Schema.Type<typeof DemoSessionRequest>;
-
 export const DemoSessionResponse = Schema.Struct({
   ok: Schema.Literal(true),
 });

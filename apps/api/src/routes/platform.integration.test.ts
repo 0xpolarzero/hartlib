@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { routeRequest } from "../http";
-import { DEMO_COOKIE_NAME, signDemoSessionCookie } from "../demo-session";
+import { DEMO_COOKIE_NAME } from "../demo-session";
 import { createExportRequest } from "@brief/backend-domain/exports";
 import { acceptClerkWebhook } from "@brief/backend-domain/clerk-webhook";
 import {
@@ -107,16 +107,12 @@ const migrate = Effect.gen(function* () {
 
 const pgLayer = () =>
   PgClient.layer({ url: Redacted.make(isolatedUrl()), applicationName: "brief-platform-api-test" });
-const DEMO_PASSWORD = "demo";
-const DEMO_SECRET = "brief-integration-demo-secret";
 const demoCookie = (userId: string) =>
-  `${DEMO_COOKIE_NAME}=${signDemoSessionCookie(userId, DEMO_SECRET, DEMO_PASSWORD)}`;
+  `${DEMO_COOKIE_NAME}=${userId}`;
 const configLayer = ConfigProvider.layer(
   ConfigProvider.fromEnv({
     env: {
       AUTH_MODE: "demo",
-      DEMO_PASSWORD,
-      DEMO_SESSION_SECRET: DEMO_SECRET,
       STRIPE_SECRET_KEY: "stripe-secret",
       STRIPE_WEBHOOK_SECRET: "webhook-secret",
     },
@@ -1966,8 +1962,6 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       ConfigProvider.fromEnv({
         env: {
           AUTH_MODE: "demo",
-          DEMO_PASSWORD,
-          DEMO_SESSION_SECRET: DEMO_SECRET,
           EXPORT_BUCKET_ENDPOINT: "https://storage.test",
           EXPORT_BUCKET_NAME: "private-exports",
           EXPORT_BUCKET_ACCESS_KEY_ID: "access",
@@ -2018,8 +2012,6 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       ConfigProvider.fromEnv({
         env: {
           AUTH_MODE: "demo",
-          DEMO_PASSWORD,
-          DEMO_SESSION_SECRET: DEMO_SECRET,
           EXPORT_BUCKET_ENDPOINT: "https://storage.test",
           EXPORT_BUCKET_NAME: "private-exports",
           EXPORT_BUCKET_ACCESS_KEY_ID: "access",
@@ -2076,8 +2068,6 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       ConfigProvider.fromEnv({
         env: {
           AUTH_MODE: "demo",
-          DEMO_PASSWORD,
-          DEMO_SESSION_SECRET: DEMO_SECRET,
           EXPORT_BUCKET_ENDPOINT: "https://storage.test",
           EXPORT_BUCKET_NAME: "private-exports",
           EXPORT_BUCKET_ACCESS_KEY_ID: "access",
@@ -2169,8 +2159,6 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       ConfigProvider.fromEnv({
         env: {
           AUTH_MODE: "demo",
-          DEMO_PASSWORD,
-          DEMO_SESSION_SECRET: DEMO_SECRET,
           EXPORT_BUCKET_ENDPOINT: "https://storage.test",
           EXPORT_BUCKET_NAME: "private-exports",
           EXPORT_BUCKET_ACCESS_KEY_ID: "access",
