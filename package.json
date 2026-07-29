@@ -35,9 +35,5 @@
     "typescript": "6.0.3",
     "vite": "8.1.0",
     "vitest": "4.1.9"
-  },
-  "patchedDependencies": {
-    "@smithers-orchestrator/engine@0.30.0": "patches/@smithers-orchestrator%2Fengine@0.30.0.patch",
-    "smithers-orchestrator@0.30.0": "patches/smithers-orchestrator@0.30.0.patch"
   }
 }
