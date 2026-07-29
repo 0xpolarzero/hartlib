@@ -17,6 +17,11 @@ The browser talks only to the Brief API. It never calls Z.AI, Tinyfish, Pi, Smit
 The worker owns AI execution. Smithers is an embedded durable workflow library inside the worker, not a separate service. Pi is the only model-call boundary and runs inside Smithers compute tasks.
 
 Agents emit typed plans, queries, references, and text. They never emit SQL or receive database credentials. Brief code validates authorization, compiles parameterized SQL, fetches content, normalizes provenance, and performs product writes.
+Internal retrieval plans contain only bounded Boolean atoms and code-owned
+filters. Code expands each accepted query across the closed physical branches,
+records branch coverage and truncation, and gives the provider only run-local
+result IDs and exact previews; source, message, snapshot, hash, and range
+identities remain private.
 
 Prompt membership is rebuilt for every turn. A source used or cited in one turn is not automatically included in a later turn.
 
@@ -143,6 +148,26 @@ the root and at every nested object. Unknown keys, wrong discriminants,
 missing required keys, duplicate IDs, foreign identities, invalid ranges,
 invented sources, malformed terminal tool calls, and non-finite numbers fail
 before any side effect.
+The Phase A contract layer also defines the strict values used by the retrieval
+and context boundaries. `InternalQueryPlan` is either `skip` with a
+reason or `search` with one complete array of `InternalQuery` values.
+`InternalQuery` uses bounded `all`, `anyOf`, and `not` atoms, optional
+documents/chat-message filters, and one code-owned sort order. `QueryReview`
+is exactly `accept`, one complete `replace` array, or `no_evidence`.
+`BranchCoverage` records `applicable` versus `not_applicable`, hit counts, the
+operational cap, truncation, and one closed reason code from
+`scope_documents`, `scope_chat_messages`, or `unsupported_country_filter` when
+the branch does not apply. A negative-only query needs a positive indexed
+filter in every applicable store: an omitted scope covers both documents and
+older chat messages, while a declared scope covers only its store. A
+`not_applicable` branch has no hits and cannot report truncation, and no branch
+may return more hits than its declared cap. Query strings receive NFC
+normalization and outer trim only. Review reasons are closed codes: accept uses
+`sufficient_coverage`, replacement uses `missed_concept`, `narrow_filter`,
+`wrong_language`, or `unsupported_branch`, and `no_evidence` uses
+`no_supporting_evidence`; arbitrary text never crosses the provider boundary.
+Exact calendar dates, query count, total atom count, and serialized UTF-8 bytes
+have hard contract bounds.
 
 One model call means one provider transport request made by direct Pi inside
 the owning Smithers compute task. Pi does not retry. A tool loop may make more
@@ -167,6 +192,23 @@ turn planning, reference selection, lexical queries, selections, context
 keep/range/omit choices, memory proposals, and grounded prose. Models never
 write SQL, grant access, mint source identities, choose runtime coordinates,
 repair schemas, or write product state.
+Phase A makes the local identity boundary explicit. One shared tagged identity
+type covers public documents, publisher documents, chat messages, memories,
+web quotations, and conversation entries. A document key uses its immutable
+source, document, snapshot, and extraction tuple. Its content hash remains
+required proof but does not create a second key for the same tuple. Conflicting
+proof for one key fails closed.
+
+Code may carry canonical identity, immutable hashes, raw candidate values,
+provenance, and UTF-16 ranges in private records. The review-model result
+projection contains only the run-local result ID, kind, label, date, exact
+full-content token count, exact preview, normalized fused score, matched query
+ordinals, branch coverage, and truncation flags. It contains no canonical
+identity, identity key, raw value, source/document/message ID, hash, SQL/table
+detail, offset, or private proof field. Run-local IDs use one letter and a
+positive safe decimal ordinal. Candidate and passage projections use the same
+rule: run-local IDs plus allowed task data only. A provider cannot create or
+alter a source identity by returning a local ID.
 
 ### Migration and removal policy
 
@@ -431,6 +473,71 @@ Evidence kinds are:
 - `chat_message`: an older message in the same accessible chat
 - `memory`: one active saved memory belonging to the user
 - `web`: a verbatim quotation, URL, title, domain, capture time, and optional publication time
+### Phase A pure contract vocabulary
+
+The candidate ledger is an ordered set of immutable entries. IDs must be
+exactly `c1` through `cN` in merge order. Canonical identities must be unique.
+Each entry has one explicit canonical identity and provenance record, the
+sanitized text, authorized base and preview ranges, a bounded exact preview,
+and its measured rendered cost. Base and preview ranges are sorted, normalized,
+non-overlapping, non-adjacent, in bounds, and on Unicode surrogate boundaries.
+The preview must reconstruct byte for byte from its ranges and the fixed range
+separator. The provider view omits all source, message, snapshot, hash, text,
+and range proof fields.
+
+Passage indexes use sanitized text and UTF-16 offsets. At the candidate-ledger
+boundary, code removes historical citation tags only from prior assistant
+messages, then validates and retains one immutable sanitized text; every ledger,
+preview, passage, selection, and final-proof range uses that same coordinate
+space. User and system messages keep their literal text and byte ranges, and an
+unfinished assistant tag removes the rest of that historical text. NFC is the
+canonical form for matching and deduplication, while source ranges stay in the
+sanitized immutable string.
+The index prefers a whole paragraph, then sentence boundaries, then Unicode
+scalar splits. Its final passages are ordered and do not overlap. Every passage
+must fit the supplied exact fast-model token cap and UTF-8 byte cap; byte
+splits use the shared scalar-safe byte helper. Unpaired surrogates fail before
+indexing. The provider sees only `{ passageId, text }`, never offsets.
+Selection maps passage IDs back to exact ranges, sorts them, and merges overlap
+or direct adjacency without joining a gap. Every preview range must also be a
+subset of the candidate's authorized base ranges in that same immutable source
+coordinate space; reconstructed preview text never grants authorization.
+
+RRF accepts exactly one result and branch-coverage row for every query ordinal
+and every physical branch in the closed set (`public_documents`,
+`publisher_documents`, and `chat_messages`), including explicit
+`not_applicable` rows. Query ordinals must start at one and be contiguous;
+missing, extra, unknown, duplicate, or out-of-envelope rows fail closed. It
+also rejects duplicate canonical identities inside one branch, non-sequential
+ranks, and a branch whose identity kind does not match the physical store. The
+fused score and matched query ordinals must reproduce the retained branch
+provenance. Fusion records branch truncation and the global candidate and
+hydration caps, applied counts, and truncation flags. Branch previews and labels
+have bounded UTF-8 sizes, and review projections reject malformed Unicode and
+unsorted matched query ordinals.
+
+The initial context manifest accounts for every discretionary candidate exactly
+once as `keep`, `compact` with one group, or `omit`. Only document and older
+chat candidates may be compacted. Every group has a unique positive budget and
+every group member is named exactly once in its result. A fallback manifest
+accounts for the same ledger exactly once and can retain, tighten, compact a
+previously whole-kept eligible candidate into a new group, or omit. It cannot
+restore an omission, widen a range, move an existing compacted member, or add
+a candidate. Every compact or tighten decision names a declared group. Group
+result envelopes cover every expected group and member exactly once; unknown,
+duplicate, missing, and partial envelopes fail closed. A first-pass group
+omission remains omitted, and a tighten result must select a strict subset of
+the first selected passage IDs. Existing multi-member group membership stays
+fixed for every member not omitted.
+
+`createCompactionGroups` is a pure Phase A contract. It receives the set of
+single candidates whose measured normal-compactor request does not fit. Only
+those candidates may use `source_tool`; a small single document or chat
+candidate stays in normal mode. Invalid eligibility for a non-single or
+non-document/chat candidate fails closed. Phase A does not schedule
+compaction or decide measured eligibility. Group results are canonicalized by
+immutable passage range before merge, and merge revalidates every passage and
+base-range subset rather than trusting a prior envelope check.
 
 One document has one source key per turn. If different selectors or fanout topics choose different ranges from the same document, the global source record contains their normalized union while each serialized consumer use retains the exact subset it received. An exact duplicate web quotation reuses a key; different quotations from the same URL use different keys identified by URL plus normalized-quote hash. When fanout paths fetch the same URL and normalized quotation at different capture times, normalized topic order selects the first path's complete immutable web locator and public provenance as the canonical record; later paths reuse that record and append only their exact consumer use.
 
@@ -2085,6 +2192,12 @@ Unknown citation keys remain text and create a defect observation.
 ## Testing
 
 Pure tests cover:
+- Phase A hostile strict query-plan/review inputs, exact dates, negative-only scope checks, branch coverage, and exact query, atom, hit, and UTF-8 bounds
+- canonical identity conflicts, duplicate physical hits, branch-kind checks, RRF score/provenance proof, stable bytewise ties, and global fusion truncation
+- exact review-model projection and private-field absence
+- sequential candidate IDs, duplicate canonical identities, normalized surrogate-safe ranges, and exact preview reconstruction
+- bounded, ordered, non-overlapping passage indexing, malformed-surrogate rejection, exact token/UTF-8 limits, provider passage views, and range reconstruction
+- complete manifest and group envelopes, fallback omission and strict-subset proof, frozen memberships, complete merge, and measured source-tool eligibility
 
 - plan-turn strict union validation, first-turn invocation, prior-turn selection, and fanout normalization
 - internal query compilation and authorization injection
