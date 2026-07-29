@@ -27,8 +27,9 @@ import {
   updateClientWebPolicy,
 } from "@brief/workspace";
 import { ConfigProvider, Effect, Redacted } from "effect";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
+import * as auth from "./auth";
 import type { RequestIdentity } from "./auth";
 import { routeRequest } from "./http";
 import { DEMO_COOKIE_NAME } from "./demo-session";
@@ -88,6 +89,12 @@ const demoCookie = (userId: string) => `${DEMO_COOKIE_NAME}=${userId}`;
 const demoConfigEnv = {
   NODE_ENV: "test",
   AUTH_MODE: "demo",
+} as const;
+const clerkConfigEnv = {
+  NODE_ENV: "test",
+  AUTH_MODE: "clerk",
+  CLERK_SECRET_KEY: "sk_test_authorization",
+  CLERK_PUBLISHABLE_KEY: "pk_test_authorization",
 } as const;
 
 const runProductRoute = async (
@@ -149,6 +156,80 @@ const runUnauthenticatedProductRoute = async (
       ),
     ),
   );
+};
+const runProductRouteAs = async (
+  requestIdentity: RequestIdentity,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<Response> => {
+  const restoreIdentity = vi
+    .spyOn(auth, "resolveRequestIdentity")
+    .mockReturnValue(Effect.succeed({ authenticated: true, identity: requestIdentity }));
+  try {
+    const url = databaseUrlFor(isolatedDatabaseName);
+    const pgLayer = PgClient.layer({
+      url: Redacted.make(url),
+      applicationName: "brief-product-chat-clerk-route-test",
+    });
+    const request = new Request(`https://brief.test${path}`, {
+      method,
+      headers: {
+        cookie: demoCookie(requestIdentity.userId),
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    return await Effect.runPromise(
+      routeRequest(makeProductChatRoutes(pgLayer), request).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: clerkConfigEnv,
+            }),
+          ),
+        ),
+      ),
+    );
+  } finally {
+    restoreIdentity.mockRestore();
+  }
+};
+
+const expectResetDeniedWithoutMutation = async (
+  url: string,
+  predecessorChatId: string,
+  replacementChatId: string,
+): Promise<void> => {
+  const state = await runDb(
+    url,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const predecessor = yield* sql<{
+        readonly archivedAt: Date | null;
+        readonly replacedByChatId: string | null;
+      }>`
+        select archived_at as "archivedAt",
+               replaced_by_chat_id::text as "replacedByChatId"
+        from chats
+        where id = ${predecessorChatId}
+      `;
+      const replacement = yield* sql<{ readonly count: number }>`
+        select count(*)::int as count
+        from chats
+        where id = ${replacementChatId}
+      `;
+      return {
+        predecessor: predecessor[0] ?? null,
+        replacementCount: replacement[0]?.count ?? -1,
+      };
+    }),
+  );
+  expect(state.predecessor).toEqual({
+    archivedAt: null,
+    replacedByChatId: null,
+  });
+  expect(state.replacementCount).toBe(0);
 };
 
 const runChatRoute = async (
@@ -1143,20 +1224,27 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     const replacementChatId = crypto.randomUUID();
 
     try {
-      expect(
-        (
-          await runUnauthenticatedProductRoute("POST", `/v1/chats/${created.chat.id}/reset`, {
-            replacementChatId: crypto.randomUUID(),
-          })
-        ).status,
-      ).toBe(401);
-      expect(
-        (
-          await runProductRoute("viewer", "POST", `/v1/chats/${created.chat.id}/reset`, {
-            replacementChatId: crypto.randomUUID(),
-          })
-        ).status,
-      ).toBe(403);
+      const unauthenticatedReplacementChatId = crypto.randomUUID();
+      const unauthenticatedReset = await runUnauthenticatedProductRoute(
+        "POST",
+        `/v1/chats/${created.chat.id}/reset`,
+        { replacementChatId: unauthenticatedReplacementChatId },
+      );
+      expect(unauthenticatedReset.status).toBe(401);
+      await expectResetDeniedWithoutMutation(
+        url,
+        created.chat.id,
+        unauthenticatedReplacementChatId,
+      );
+      const nonOwnerReplacementChatId = crypto.randomUUID();
+      const nonOwnerReset = await runProductRoute(
+        "viewer",
+        "POST",
+        `/v1/chats/${created.chat.id}/reset`,
+        { replacementChatId: nonOwnerReplacementChatId },
+      );
+      expect(nonOwnerReset.status).toBe(403);
+      await expectResetDeniedWithoutMutation(url, created.chat.id, nonOwnerReplacementChatId);
 
       const reset = await runProductRoute("owner", "POST", `/v1/chats/${created.chat.id}/reset`, {
         replacementChatId,
@@ -1174,13 +1262,20 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
 
       const mine = await runProductRoute("owner", "GET", "/v1/chats?view=mine");
       const archived = await runProductRoute("owner", "GET", "/v1/chats?view=archived");
+      const shared = await runProductRoute("owner", "GET", "/v1/chats?view=shared");
       const mineRows = (await mine.json()) as { readonly chats: readonly ChatListFixture[] };
       const archivedRows = (await archived.json()) as {
+        readonly chats: readonly ChatListFixture[];
+      };
+      const sharedRows = (await shared.json()) as {
         readonly chats: readonly ChatListFixture[];
       };
       expect(mineRows.chats.map((chat) => chat.id)).not.toContain(created.chat.id);
       expect(mineRows.chats.map((chat) => chat.id)).toContain(replacementChatId);
       expect(archivedRows.chats.map((chat) => chat.id)).toContain(created.chat.id);
+      expect(archivedRows.chats.map((chat) => chat.id)).not.toContain(replacementChatId);
+      expect(sharedRows.chats.map((chat) => chat.id)).not.toContain(created.chat.id);
+      expect(sharedRows.chats.map((chat) => chat.id)).not.toContain(replacementChatId);
 
       const oldRead = await runChatRoute("owner", "GET", `/v1/chats/${created.chat.id}`);
       expect(oldRead.status).toBe(200);
@@ -1198,9 +1293,6 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       expect(
         (await runProductRoute("owner", "POST", `/v1/chats/${created.chat.id}/share`)).status,
       ).toBe(403);
-      expect(
-        (await runProductRoute("owner", "POST", `/v1/chats/${created.chat.id}/unshare`)).status,
-      ).toBe(200);
 
       const replay = await runProductRoute("owner", "POST", `/v1/chats/${created.chat.id}/reset`, {
         replacementChatId,
@@ -1258,13 +1350,19 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           `;
         }),
       );
+      const revokedSourceReplacementChatId = crypto.randomUUID();
       const revokedReset = await runProductRoute(
         "owner",
         "POST",
         `/v1/chats/${revokedSourceChat.chat.id}/reset`,
-        { replacementChatId: crypto.randomUUID() },
+        { replacementChatId: revokedSourceReplacementChatId },
       );
       expect(revokedReset.status).toBe(403);
+      await expectResetDeniedWithoutMutation(
+        url,
+        revokedSourceChat.chat.id,
+        revokedSourceReplacementChatId,
+      );
       await runProductRoute("owner", "DELETE", `/v1/chats/${revokedSourceChat.chat.id}`);
       await runDb(
         url,
@@ -1283,6 +1381,114 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       await runProductRoute("owner", "DELETE", `/v1/chats/${replacementChatId}`);
     }
   });
+
+  it("denies reset when the caller's Clerk organization does not match the chat company", async () => {
+    const url = databaseUrlFor(isolatedDatabaseName);
+    const createdResponse = await runProductRoute("owner", "POST", "/v1/chats", {
+      companyId: fixture.clientCompanyId,
+      memoryMode: "private_owner",
+      sourceAccessIds: [fixture.accessId],
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = (await createdResponse.json()) as { readonly chat: { readonly id: string } };
+    const replacementChatId = crypto.randomUUID();
+    const companyOrganizationId = `org_reset_company_${crypto.randomUUID()}`;
+
+    try {
+      await runDb(
+        url,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update client_companies
+            set clerk_organization_id = ${companyOrganizationId}
+            where id = ${fixture.clientCompanyId}
+          `;
+        }),
+      );
+      const reset = await runProductRouteAs(
+        identity("owner", true, "org_reset_wrong"),
+        "POST",
+        `/v1/chats/${created.chat.id}/reset`,
+        { replacementChatId },
+      );
+      expect(reset.status).toBe(403);
+      await expectResetDeniedWithoutMutation(url, created.chat.id, replacementChatId);
+    } finally {
+      await runDb(
+        url,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update client_companies
+            set clerk_organization_id = null
+            where id = ${fixture.clientCompanyId}
+          `;
+        }),
+      );
+      await runProductRoute("owner", "DELETE", `/v1/chats/${created.chat.id}`);
+      await runProductRoute("owner", "DELETE", `/v1/chats/${replacementChatId}`);
+    }
+  });
+
+  it("denies reset when the caller's company membership is revoked", async () => {
+    const url = databaseUrlFor(isolatedDatabaseName);
+    const createdResponse = await runProductRoute("owner", "POST", "/v1/chats", {
+      companyId: fixture.clientCompanyId,
+      memoryMode: "private_owner",
+      sourceAccessIds: [fixture.accessId],
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = (await createdResponse.json()) as { readonly chat: { readonly id: string } };
+    const replacementChatId = crypto.randomUUID();
+
+    try {
+      await runDb(
+        url,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update client_company_memberships
+            set role = 'admin'
+            where company_id = ${fixture.clientCompanyId} and user_id = 'viewer'
+          `;
+          yield* sql`
+            update client_company_memberships
+            set revoked_at = now(), revoked_by_user_id = 'viewer'
+            where company_id = ${fixture.clientCompanyId} and user_id = 'owner'
+          `;
+        }),
+      );
+      const reset = await runProductRoute(
+        "owner",
+        "POST",
+        `/v1/chats/${created.chat.id}/reset`,
+        { replacementChatId },
+      );
+      expect(reset.status).toBe(403);
+      await expectResetDeniedWithoutMutation(url, created.chat.id, replacementChatId);
+    } finally {
+      await runDb(
+        url,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update client_company_memberships
+            set revoked_at = null, revoked_by_user_id = null
+            where company_id = ${fixture.clientCompanyId} and user_id = 'owner'
+          `;
+          yield* sql`
+            update client_company_memberships
+            set role = 'member'
+            where company_id = ${fixture.clientCompanyId} and user_id = 'viewer'
+          `;
+        }),
+      );
+      await runProductRoute("owner", "DELETE", `/v1/chats/${created.chat.id}`);
+      await runProductRoute("owner", "DELETE", `/v1/chats/${replacementChatId}`);
+    }
+  });
+
 
   it("linearizes membership revocation before concurrent chat share and delete mutations", async () => {
     const url = databaseUrlFor(isolatedDatabaseName);

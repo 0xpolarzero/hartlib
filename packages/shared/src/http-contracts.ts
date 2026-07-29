@@ -144,6 +144,14 @@ const BoundedErrorCode = Schema.String.pipe(
   Schema.check(Schema.isLengthBetween(1, 128)),
   Schema.check(Schema.isPattern(/^[a-z][a-z0-9_]*$/u)),
 );
+// The generic { error: ... } arm below must not shadow the dedicated
+// chat_already_reset arm, which requires archivedChatId. The negative lookahead
+// keeps every other bounded code while rejecting the one that has its own arm,
+// so strict decoding guarantees the lineage id is present.
+const GenericErrorCode = Schema.String.pipe(
+  Schema.check(Schema.isLengthBetween(1, 128)),
+  Schema.check(Schema.isPattern(/^(?!chat_already_reset$)[a-z][a-z0-9_]*$/u)),
+);
 
 export const HttpErrorResponse = Schema.Union([
   Schema.Struct({
@@ -151,7 +159,7 @@ export const HttpErrorResponse = Schema.Union([
     archivedChatId: Schema.String,
   }),
   Schema.Struct({ code: BoundedErrorCode }),
-  Schema.Struct({ error: BoundedErrorCode }),
+  Schema.Struct({ error: GenericErrorCode }),
   Schema.Struct({ code: Schema.Literal("active_ai_run"), runId: Schema.String }),
   ActiveAiRunConflict,
   Schema.Struct({

@@ -917,6 +917,11 @@ test.describe("deterministic canonical runtime", () => {
       resetStarted = true;
       await page.getByRole("button", { name: "Démarrer un nouveau chat" }).click();
       await expect(page.getByTestId("chat-transcript")).toBeVisible();
+      // The optimistic replacement clears the transcript at once, before the
+      // reset response arrives, and the initial loading state never replaces
+      // the surface (the composer stays mounted and enabled throughout).
+      await expect(page.getByTestId(/^chat-message-/)).toHaveCount(0);
+      await expect(page.getByText("Chargement du chat...")).toBeHidden();
       await expect(page.getByTestId("chat-composer-input")).toBeEnabled();
       await expect(page.getByText("Démarrage d’un nouveau chat…")).toBeVisible();
       await page.getByTestId("chat-composer-input").fill("typed while reset is pending");

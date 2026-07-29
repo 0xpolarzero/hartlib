@@ -203,7 +203,15 @@ describe("TanStack DB server synchronization", () => {
 
   it("isolates mine, shared, and archived chat collections and their query keys", async () => {
     const queryClient = client();
-    const fetch = vi.fn(async (view: "mine" | "shared" | "archived") => [chat(`${view}-chat`)]);
+    const fetch = vi.fn(async (view: "mine" | "shared" | "archived") => [
+      view === "archived"
+        ? {
+            ...chat(`${view}-chat`),
+            archivedAt: "2026-07-12T00:00:00.000Z",
+            replacedByChatId: "123e4567-e89b-12d3-a456-426614174003",
+          }
+        : chat(`${view}-chat`),
+    ]);
     const mine = createChatListCollection({ view: "mine", client: queryClient, fetch });
     const shared = createChatListCollection({ view: "shared", client: queryClient, fetch });
     const archived = createChatListCollection({ view: "archived", client: queryClient, fetch });
@@ -216,6 +224,10 @@ describe("TanStack DB server synchronization", () => {
     expect(mineRows.map((row) => row.id)).toEqual(["mine-chat"]);
     expect(sharedRows.map((row) => row.id)).toEqual(["shared-chat"]);
     expect(archivedRows.map((row) => row.id)).toEqual(["archived-chat"]);
+    expect(archivedRows[0]).toMatchObject({
+      archivedAt: "2026-07-12T00:00:00.000Z",
+      replacedByChatId: "123e4567-e89b-12d3-a456-426614174003",
+    });
     expect(fetch.mock.calls.map(([view]) => view).sort()).toEqual(["archived", "mine", "shared"]);
 
     await Promise.all([mine.cleanup(), shared.cleanup(), archived.cleanup()]);
