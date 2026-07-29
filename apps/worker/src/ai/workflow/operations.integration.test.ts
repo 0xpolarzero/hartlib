@@ -1351,6 +1351,32 @@ const createFixture = createFixtureWithCanonicalText(
   "Liquidity conditions improved while inflation expectations remained anchored.",
 );
 
+const phaseBOperationConfig: CanonicalAiConfig = {
+  aiMainModel: "glm-5-turbo",
+  aiFastModel: "glm-5-turbo",
+  aiMainInputMaxTokens: 100_000,
+  aiMainOutputMaxTokens: 4096,
+  aiFastInputMaxTokens: 100_000,
+  aiFastOutputMaxTokens: 4096,
+  aiConversationRecentTurns: 12,
+  aiFanoutMaxTopics: 3,
+  aiRetrievalMaxTurns: 4,
+  aiInternalMaxSearches: 4,
+  aiInternalMaxInspections: 4,
+  aiWebMaxSearches: 2,
+  aiWebMaxFetches: 2,
+  aiWebMaxDomainFilters: 8,
+  aiContextReductionMaxIterations: 2,
+  aiMemoryToolResultMaxItems: 20,
+  webResearchProvider: "",
+  aiRetrievalMaxQueries: 24,
+  aiRetrievalMaxBranchRows: 25,
+  aiRetrievalMaxCandidates: 64,
+  aiRetrievalMaxHydratedBytes: 2_000_000,
+  aiRetrievalMaxConcurrency: 2,
+  aiRetrievalQueryTimeoutMs: 10_000,
+};
+
 interface PublicPreviewFixture extends Fixture {
   readonly publicSourceId: string;
   readonly publicDocumentId: string;
@@ -2586,6 +2612,159 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       databaseUrlFor("postgres"),
     );
   }, 60_000);
+
+  it("resolves accepted names and durably records the real structured review preview", async () => {
+    const fixture = await runDb(
+      createFixtureWithCanonicalText("Liquidity evidence for the macro brief."),
+    );
+    const foreignPublisherCompanyId = crypto.randomUUID();
+    const foreignSubscriptionId = crypto.randomUUID();
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into publisher_companies (id, name)
+          values (${foreignPublisherCompanyId}, 'Foreign Publisher')
+        `;
+        yield* sql`
+          insert into publisher_subscriptions (id, publisher_company_id, name, created_by_user_id)
+          values (${foreignSubscriptionId}, ${foreignPublisherCompanyId}, 'Foreign Source', ${fixture.userId})
+        `;
+      }),
+    );
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      phaseBOperationConfig,
+      new CanonicalAgentClient(testProviderBoundary()),
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into chat_messages (chat_id, author, content, created_at)
+          values (${load.chatId}, 'assistant', 'Older liquidity evidence.', now() - interval '1 day')
+        `;
+      }),
+    );
+    const accepted = await inTask("single-retrieve-internal", () =>
+      operations.resolveAcceptedRetrievalScope(load, ["Macro Source"]),
+    );
+    const foreign = await inTask("single-retrieve-internal", () =>
+      operations.resolveAcceptedRetrievalScope(load, ["Foreign Source"]),
+    );
+    const unknown = await inTask("single-retrieve-internal", () =>
+      operations.resolveAcceptedRetrievalScope(load, ["Unknown Source"]),
+    );
+    expect(accepted.acceptedSourceIds).toEqual([`publisher:${fixture.subscriptionId}`]);
+    expect(foreign.acceptedSourceIds).toEqual([]);
+    expect(unknown.acceptedSourceIds).toEqual([]);
+
+    const namedPlan = (sourceName: string) => ({
+      action: "search" as const,
+      queries: [
+        {
+          purpose: "retrieve the named macro evidence",
+          all: [{ text: "liquidity", mode: "term" as const }],
+          anyOf: [],
+          not: [],
+          filters: { documents: { sourceNames: [sourceName] } },
+          order: "relevance" as const,
+        },
+      ],
+    });
+    const acceptedNamedResult = await inTask("single-retrieve-internal", () =>
+      operations.executeStructuredRetrieval(load, namedPlan("Macro Source")),
+    );
+    const foreignNamedResult = await inTask("single-retrieve-internal", () =>
+      operations.executeStructuredRetrieval(load, namedPlan("Foreign Source")),
+    );
+    const unknownNamedResult = await inTask("single-retrieve-internal", () =>
+      operations.executeStructuredRetrieval(load, namedPlan("Unknown Source")),
+    );
+    expect(
+      acceptedNamedResult.branches.find((branch) => branch.branch === "publisher_documents")?.hits
+        .length,
+    ).toBeGreaterThan(0);
+    const publicShape = (result: typeof foreignNamedResult) => ({
+      branches: result.branches.map(
+        ({ queryOrdinal, branch, status, reason, cap, truncated, hits }) => ({
+          queryOrdinal,
+          branch,
+          status,
+          reason,
+          cap,
+          truncated,
+          hitCount: hits.length,
+        }),
+      ),
+      fused: result.fused.results.map(
+        ({ resultId, score, bestRank, date, matchedQueryOrdinals }) => ({
+          resultId,
+          score,
+          bestRank,
+          date,
+          matchedQueryOrdinals,
+        }),
+      ),
+      review: result.review,
+    });
+    expect(publicShape(foreignNamedResult)).toEqual(publicShape(unknownNamedResult));
+
+    const plan = {
+      action: "search" as const,
+      queries: [
+        {
+          purpose: "retrieve the macro evidence",
+          all: [{ text: "liquidity", mode: "term" as const }],
+          anyOf: [],
+          not: [],
+          filters: {},
+          order: "relevance" as const,
+        },
+      ],
+    };
+    let persistedBeforeProvider = false;
+    const exposedQuestions: string[] = [];
+    const reviewed = await inTask("single-retrieve-internal", () =>
+      operations.reviewStructuredRetrieval(
+        load,
+        "resolved macro retrieval question",
+        plan,
+        async (input) => {
+          expect(input.question).toBe("resolved macro retrieval question");
+          expect(input.question).not.toBe(load.userMessage);
+          expect(input.results.every((result) => !Object.hasOwn(result, "identity"))).toBe(true);
+          const rows = await runDb(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              return yield* sql<{ readonly payload: { readonly records?: unknown } }>`
+                  select payload from ai_observations
+                  where run_id = ${fixture.runId}
+                    and kind = 'structured_retrieval_review_preview'
+                `;
+            }),
+          );
+          persistedBeforeProvider = rows.length === 1 && Array.isArray(rows[0]?.payload.records);
+          return {
+            action: "replace",
+            reason: "missed_concept",
+            queries: plan.queries,
+          };
+        },
+        [],
+        (exposure) => {
+          exposedQuestions.push(exposure.providerInput.question);
+        },
+      ),
+    );
+    expect(reviewed).toMatchObject({ action: "replace", replacementExecuted: true });
+    expect(persistedBeforeProvider).toBe(true);
+    expect(exposedQuestions).toEqual([
+      "resolved macro retrieval question",
+      "resolved macro retrieval question",
+    ]);
+  }, 120_000);
 
   it("loads the saved provider profile after live provider drift", async () => {
     const fixture = await runDb(createFixture);

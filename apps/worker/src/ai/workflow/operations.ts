@@ -32,7 +32,16 @@ import {
   runAiProductState,
 } from "../product-state/repository";
 import type { AiDocumentExposureReconstruction } from "../product-state/observability";
-import { previewFromImmutableText, searchDocuments } from "../retrieval/retrieval";
+import {
+  executeInternalQueryPlan,
+  makeRetrievalExecutionContext,
+  previewFromImmutableText,
+  searchDocuments,
+  type HydrationOptions,
+  type RetrievalPreviewExposure,
+  type RetrievalPlanResult,
+  type RetrievalExecutionContext,
+} from "../retrieval/retrieval";
 import { findNormalizedSubstringRanges, normalizeAndCaseFold } from "../retrieval/exact-text";
 import type { DocumentPreview } from "../retrieval/query-spec";
 import {
@@ -112,8 +121,176 @@ import {
 import { WebBoundaryError } from "../web/errors";
 import { TINYFISH_SEARCH_DOMAIN_FILTER_HARD_MAX } from "../web/tinyfish-search";
 import { decodeRunAcceptanceScope, type LoadedTurn } from "./types";
+import {
+  BranchCoverageSchema,
+  InternalQueryPlanSchema,
+  InternalQuerySchema as StructuredQuerySchema,
+  QueryReviewSchema,
+  type InternalQueryPlan,
+  type InternalQueryPlanValue,
+  type InternalQueryValue,
+  type QueryReviewValue,
+} from "../retrieval/query-spec";
+import {
+  ReviewModelFusedResultSchema,
+  type ReviewModelFusedResult,
+} from "../retrieval/rank-fusion";
+import type {
+  AcceptedRetrievalScope,
+  ResolvedAcceptedScope,
+} from "../retrieval/compile-query-spec";
 
 export type { LoadedTurn } from "./types";
+
+export interface QueryReviewProviderInput {
+  readonly question: string;
+  readonly queries: readonly InternalQueryValue[];
+  readonly results: readonly ReviewModelFusedResult[];
+  readonly coverage: readonly z.infer<typeof BranchCoverageSchema>[];
+  readonly truncation: {
+    readonly branch: boolean;
+    readonly candidates: boolean;
+    readonly hydration: boolean;
+  };
+}
+
+export interface QueryReviewExposure {
+  readonly providerInput: QueryReviewProviderInput;
+  /** Private proof envelope; never passed to the review provider. */
+  readonly privateProof: readonly RetrievalPreviewExposure[];
+}
+
+export const STRUCTURED_RETRIEVAL_REVIEW_PREVIEW_KIND =
+  "structured_retrieval_review_preview" as const;
+
+const structuredRetrievalReviewPreviewPayload = (
+  exposure: QueryReviewExposure,
+  slot: "initial" | "replacement",
+) => ({
+  slot,
+  providerInputSha256Hex: createHash("sha256")
+    .update(stableJson(exposure.providerInput))
+    .digest("hex"),
+  records: exposure.privateProof.map((proof) => ({
+    identity: proof.identity,
+    snapshotId: proof.snapshotId,
+    contentHash: proof.contentHash,
+    ...(proof.publisherExtractionId === undefined
+      ? {}
+      : { publisherExtractionId: proof.publisherExtractionId }),
+    previewRanges: proof.previewRanges,
+    previewByteLength: proof.previewBytes.byteLength,
+    previewSha256Hex: createHash("sha256").update(proof.previewBytes).digest("hex"),
+    fastTokenCount: proof.fastTokenCount,
+    mainTokenCount: proof.mainTokenCount,
+  })),
+});
+
+export const QueryReviewProviderInputSchema = z.strictObject({
+  question: z.string().min(1),
+  queries: z.array(StructuredQuerySchema).min(1),
+  results: z.array(ReviewModelFusedResultSchema),
+  coverage: z.array(BranchCoverageSchema).min(1),
+  truncation: z.strictObject({
+    branch: z.boolean(),
+    candidates: z.boolean(),
+    hydration: z.boolean(),
+  }),
+});
+
+export interface QueryReviewOperationInput<TResult> {
+  readonly initialPlan: InternalQueryPlanValue;
+  readonly initialResult: TResult;
+  readonly reviewInput: QueryReviewProviderInput;
+  readonly initialExposure?: QueryReviewExposure | undefined;
+}
+
+export interface QueryReviewOperationHandlers<TResult> {
+  /** The fast-model call. Its input is the provider-safe review projection. */
+  readonly review: (input: QueryReviewProviderInput) => Promise<unknown> | unknown;
+  /** Executes one complete code-owned plan. */
+  readonly execute: (plan: InternalQueryPlanValue) => Promise<TResult> | TResult;
+  /** Rebuilds the provider-safe projection for a retained replacement result. */
+  readonly projectReview: (result: TResult, plan: InternalQueryPlanValue) => QueryReviewExposure;
+  /** Private-sidecar hook that records exactly what the reviewer saw. */
+  readonly onPreviewExposure: (exposure: QueryReviewExposure) => Promise<void> | void;
+}
+
+export type QueryReviewOperationResult<TResult> =
+  | {
+      readonly action: "accept";
+      readonly review: Extract<QueryReviewValue, { readonly action: "accept" }>;
+      readonly result: TResult;
+      readonly replacementExecuted: false;
+    }
+  | {
+      readonly action: "replace";
+      readonly review: Extract<QueryReviewValue, { readonly action: "replace" }>;
+      readonly result: TResult;
+      readonly replacementExecuted: true;
+    }
+  | {
+      readonly action: "no_evidence";
+      readonly review: Extract<QueryReviewValue, { readonly action: "no_evidence" }>;
+      readonly result: null;
+      readonly replacementExecuted: false;
+    };
+
+/**
+ * Run exactly one result-aware review.  A replacement is a complete new plan,
+ * not a patch, and the initial result is never reused when replacement fails.
+ */
+export const runQueryReviewReplacement = async <TResult>(
+  input: QueryReviewOperationInput<TResult>,
+  handlers: QueryReviewOperationHandlers<TResult>,
+): Promise<QueryReviewOperationResult<TResult>> => {
+  const initialPlan = InternalQueryPlanSchema.parse(input.initialPlan);
+  const initialReviewInput = QueryReviewProviderInputSchema.parse(
+    input.reviewInput,
+  ) as QueryReviewProviderInput;
+  const initialExposure = input.initialExposure ?? {
+    providerInput: initialReviewInput,
+    privateProof: [],
+  };
+  await handlers.onPreviewExposure(initialExposure);
+  const rawReview = await handlers.review(initialReviewInput);
+  const review = QueryReviewSchema.parse(rawReview);
+  if (review.action === "accept") {
+    const ledgerEvidence = state.candidateLedger?.candidates.filter(
+      (candidate) => candidate.kind !== "conversation_entry",
+    );
+    return {
+      action: "accept",
+      review,
+      result: input.initialResult,
+      replacementExecuted: false,
+    };
+  }
+  if (review.action === "no_evidence") {
+    return { action: "no_evidence", review, result: null, replacementExecuted: false };
+  }
+  const replacementPlan = InternalQueryPlanSchema.parse({
+    action: "search",
+    queries: review.queries,
+  }) as InternalQueryPlanValue;
+  if (initialPlan.action === "search" && replacementPlan.action !== "search") {
+    throw new Error("query replacement must contain a complete search array");
+  }
+  const replacementResult = await handlers.execute(replacementPlan);
+  const replacementExposure = handlers.projectReview(replacementResult, replacementPlan);
+  QueryReviewProviderInputSchema.parse(
+    replacementExposure.providerInput,
+  ) as QueryReviewProviderInput;
+  await handlers.onPreviewExposure(replacementExposure);
+  return {
+    action: "replace",
+    review,
+    result: replacementResult,
+    replacementExecuted: true,
+  };
+};
+
+export const reviewOrReplaceQueryPlan = runQueryReviewReplacement;
 
 export type CanonicalAiConfig = Pick<
   WorkerConfig,
@@ -135,6 +312,12 @@ export type CanonicalAiConfig = Pick<
   | "aiMemoryToolResultMaxItems"
   | "webResearchProvider"
 > & {
+  readonly aiRetrievalMaxQueries?: number;
+  readonly aiRetrievalMaxBranchRows?: number;
+  readonly aiRetrievalMaxCandidates?: number;
+  readonly aiRetrievalMaxHydratedBytes?: number;
+  readonly aiRetrievalMaxConcurrency?: number;
+  readonly aiRetrievalQueryTimeoutMs?: number;
   readonly providerServiceId?: AiProviderServiceId;
   readonly providerEndpointIdentity?: AiProviderEndpointIdentity;
 };
@@ -823,9 +1006,6 @@ const canonicalValue = (value: unknown): unknown => {
     Object.entries(value as Readonly<Record<string, unknown>>)
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, nested]) => [key, canonicalValue(nested)]),
-  );
-};
-
 const requestSha256Hex = providerRequestSha256Hex;
 
 interface ConversationReductionCandidate {
@@ -1209,6 +1389,25 @@ export class CanonicalWorkflowOperations {
     ).then(() => undefined);
   }
 
+  private async persistStructuredRetrievalReviewPreview(
+    load: LoadedTurn,
+    exposure: QueryReviewExposure,
+    slot: "initial" | "replacement",
+  ): Promise<void> {
+    const runtime = currentTaskRuntime();
+    if (runtime === undefined) {
+      throw new Error("Smithers task runtime is required for structured retrieval review");
+    }
+    await this.observe(
+      load,
+      runtime.taskId,
+      STRUCTURED_RETRIEVAL_REVIEW_PREVIEW_KIND,
+      structuredRetrievalReviewPreviewPayload(exposure, slot),
+      { loopIteration: runtime.loopIteration, attempt: runtime.attempt },
+      slot,
+    );
+  }
+
   private restrictedContextLedger(
     state: ContextState,
     requestKind: "direct" | "topic" | "synthesis",
@@ -1261,9 +1460,6 @@ export class CanonicalWorkflowOperations {
           packetSha256Hex: createHash("sha256")
             .update(JSON.stringify(canonicalValue(packet)))
             .digest("hex"),
-        })),
-      };
-    }
     if (state.candidates.length !== state.sourceMap.length) {
       throw new Error("restricted context ledger source cardinality mismatch");
     }
@@ -1338,16 +1534,173 @@ export class CanonicalWorkflowOperations {
     ].sort();
   }
 
+  /** Resolve A's source-name filters inside the accepted scope only. */
+  async resolveAcceptedRetrievalScope(
+    load: LoadedTurn,
+    sourceNames: readonly string[] | undefined,
+    excludedMessageIds: readonly string[] = [],
+  ): Promise<ResolvedAcceptedScope> {
+    const scope: AcceptedRetrievalScope = {
+      userId: load.initiatingUserId,
+      chatId: load.chatId,
+      companyId: load.acceptanceScope.companyId,
+      publicSourceIds: load.acceptanceScope.publicSourceIds,
+      subscriptionIds: load.acceptanceScope.subscriptionIds,
+      accessIds: load.acceptanceScope.accessIds,
+      excludedMessageIds,
+      currentMessageId: load.userMessageId,
+    };
+    if (sourceNames === undefined || sourceNames.length === 0) {
+      return {
+        ...scope,
+        acceptedSourceIds: await this.savedScopeSourceIds(load),
+      };
+    }
+    const resolved = await Promise.all(
+      sourceNames.map((name) => this.resolveAuthorizedSourceIds(load, name, "subscription")),
+    );
+    return {
+      ...scope,
+      acceptedSourceIds: [...new Set(resolved.flat())].sort(),
+    };
+  }
+
+  /** Canonical Phase B operation: resolve each query's names, then execute its bounded plan. */
+  async executeStructuredRetrieval(
+    load: LoadedTurn,
+    plan: InternalQueryPlanValue,
+    excludedMessageIds: readonly string[] = [],
+    executionContext?: RetrievalExecutionContext,
+  ): Promise<RetrievalPlanResult> {
+    const queries = plan.action === "search" ? plan.queries : [];
+    const resolvedNames = new Map<string, readonly string[]>();
+    for (const query of queries) {
+      const names = query.filters.documents?.sourceNames;
+      if (names === undefined || names.length === 0) continue;
+      const resolved = await this.resolveAcceptedRetrievalScope(load, names, excludedMessageIds);
+      resolvedNames.set(JSON.stringify(names), resolved.acceptedSourceIds);
+    }
+    const scope: AcceptedRetrievalScope = {
+      userId: load.initiatingUserId,
+      chatId: load.chatId,
+      companyId: load.acceptanceScope.companyId,
+      publicSourceIds: load.acceptanceScope.publicSourceIds,
+      subscriptionIds: load.acceptanceScope.subscriptionIds,
+      accessIds: load.acceptanceScope.accessIds,
+      excludedMessageIds,
+      currentMessageId: load.userMessageId,
+    };
+    const result = await this.db(
+      executeInternalQueryPlan(plan as InternalQueryPlan, {
+        scope,
+        branchCap: this.config.aiRetrievalMaxBranchRows ?? 25,
+        maxQueries: this.config.aiRetrievalMaxQueries ?? 24,
+        maxCandidates: this.config.aiRetrievalMaxCandidates ?? 64,
+        maxHydratedBytes: this.config.aiRetrievalMaxHydratedBytes ?? 2_000_000,
+        maxConcurrency: this.config.aiRetrievalMaxConcurrency ?? 4,
+        statementTimeoutMs: this.config.aiRetrievalQueryTimeoutMs ?? 30_000,
+        executionContext,
+        hydration: {
+          fastModelId: load.acceptanceScope.fastModelId,
+          mainModelId: load.acceptanceScope.mainModelId,
+        } satisfies HydrationOptions,
+        resolveSourceNames: (names) =>
+          names === undefined || names.length === 0
+            ? []
+            : (resolvedNames.get(JSON.stringify(names)) ?? []),
+      }),
+    );
+    return result;
+  }
+
+  /** Execute the initial plan, expose its exact review projection, and allow one replacement. */
+  async reviewStructuredRetrieval(
+    load: LoadedTurn,
+    resolvedQuestion: string,
+    plan: InternalQueryPlanValue,
+    review: (input: QueryReviewProviderInput) => Promise<unknown> | unknown,
+    excludedMessageIds: readonly string[] = [],
+    onPreviewExposure: (exposure: QueryReviewExposure) => Promise<void> | void,
+  ): Promise<QueryReviewOperationResult<RetrievalPlanResult> | RetrievalPlanResult> {
+    const question = z.string().min(1).parse(resolvedQuestion);
+    const executionContext = makeRetrievalExecutionContext(
+      this.config.aiRetrievalQueryTimeoutMs ?? 30_000,
+      this.config.aiRetrievalMaxConcurrency ?? 4,
+    );
+    const initialResult = await this.executeStructuredRetrieval(
+      load,
+      plan,
+      excludedMessageIds,
+      executionContext,
+    );
+    if (plan.action === "skip") return initialResult;
+    let exposureSlot: "initial" | "replacement" = "initial";
+    return runQueryReviewReplacement(
+      {
+        initialPlan: plan,
+        initialResult,
+        reviewInput: {
+          question,
+          queries: plan.queries,
+          results: initialResult.review as unknown as readonly ReviewModelFusedResult[],
+          coverage: initialResult.fused.coverage,
+          truncation: initialResult.fused.truncation,
+        },
+        initialExposure: {
+          providerInput: {
+            question,
+            queries: plan.queries,
+            results: initialResult.review,
+            coverage: initialResult.fused.coverage,
+            truncation: initialResult.fused.truncation,
+          },
+          privateProof: initialResult.previewExposures,
+        },
+      },
+      {
+        review,
+        execute: (replacementPlan) =>
+          this.executeStructuredRetrieval(
+            load,
+            replacementPlan,
+            excludedMessageIds,
+            executionContext,
+          ),
+        projectReview: (replacementResult, replacementPlan) => ({
+          providerInput: {
+            question,
+            queries: replacementPlan.action === "search" ? replacementPlan.queries : [],
+            results: replacementResult.review,
+            coverage: replacementResult.fused.coverage,
+            truncation: replacementResult.fused.truncation,
+          },
+          privateProof: replacementResult.previewExposures,
+        }),
+        onPreviewExposure: async (exposure) => {
+          const slot = exposureSlot;
+          exposureSlot = "replacement";
+          await this.persistStructuredRetrievalReviewPreview(load, exposure, slot);
+          await onPreviewExposure(exposure);
+        },
+      },
+    );
+  }
+
   private async resolveAuthorizedSourceIds(
     load: LoadedTurn,
     namedSource: string | undefined,
+    publisherName: "company" | "subscription" = "company",
   ): Promise<readonly string[]> {
     if (namedSource === undefined) return this.savedScopeSourceIds(load);
-    const normalizedName = namedSource.trim().toLocaleLowerCase();
+    const normalizedName = namedSource.trim().normalize("NFC").toLowerCase();
     if (normalizedName === "") return [];
     const rows = await this.db(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
+        const publisherNamePredicate =
+          publisherName === "subscription"
+            ? sql`lower(btrim(subscriptions.name)) = ${normalizedName}`
+            : sql`lower(btrim(companies.name)) = ${normalizedName}`;
         return yield* sql<{ readonly sourceId: string }>`
           select 'public:' || sources.source_id as "sourceId"
           from public_sources sources
@@ -1358,7 +1711,7 @@ export class CanonicalWorkflowOperations {
           from publisher_subscriptions subscriptions
           join publisher_companies companies on companies.id = subscriptions.publisher_company_id
           where subscriptions.id::text = any(${load.acceptanceScope.subscriptionIds}::text[])
-            and lower(btrim(companies.name)) = ${normalizedName}
+            and ${publisherNamePredicate}
         `;
       }),
     );
@@ -4384,8 +4737,6 @@ export class CanonicalWorkflowOperations {
   private candidateDomain(candidate: AnswerCandidate): SelectorDomain {
     return candidate.kind === "memory" ? "memory" : candidate.kind === "web" ? "web" : "internal";
   }
-
-  private selectConversation(
     entries: readonly ConversationEntry[],
     selectedTurnIds: readonly string[],
   ): readonly ConversationEntry[] {
@@ -5857,6 +6208,9 @@ export class CanonicalWorkflowOperations {
     decisions: readonly ContextDecision[],
   ): ContextState {
     const decisionById = new Map(decisions.map((decision) => [decision.id, decision]));
+      const decision = decisionById.get(ledgerEvidenceIds[index] ?? "");
+      if (decision !== undefined) decisionById.set(candidate.id, decision);
+    }
     const kept: AnswerCandidate[] = [];
     const sourceMap: FinalSourceRecord[] = [];
     const gaps = [...(state.ledgerGaps ?? state.gaps)];

@@ -54,8 +54,9 @@ export const DEFAULT_PEEK_LENGTH_CHARS = 2000;
 export const MAX_PEEK_LENGTH_CHARS = 8000;
 
 /*
- * Phase A contracts. The old QuerySpec above remains the input used by query shaping.
- * These names describe the replacement contract without changing that public surface.
+ * Phase A contracts. The old QuerySpec above remains the input used by the
+ * later compiler phase; these names describe the replacement contract without
+ * changing that compiler's public surface yet.
  */
 
 export type QueryScope = "documents" | "chat_messages";
@@ -530,3 +531,104 @@ export type QueryReviewValue = z.infer<typeof QueryReviewSchema>;
 export const QuerySchema = InternalQuerySchema;
 export const QueryPlanSchema = InternalQueryPlanSchema;
 
+/**
+ * The compiler consumes this normalized, code-owned representation.  It is
+ * deliberately separate from the provider schema: provider values are
+ * parsed once, then all strings and collections are canonicalized before a
+ * physical branch can be built.
+ */
+export type NormalizedInternalQuery = QueryInternalNormalized;
+
+type QueryInternalNormalized = Omit<InternalQueryValue, "filters"> & {
+  readonly filters: {
+    readonly documents?:
+      | {
+          readonly sourceNames?: readonly string[];
+          readonly countries?: readonly string[];
+          readonly languages?: readonly string[];
+          readonly documentTypes?: readonly string[];
+          readonly publishedAt?:
+            | { readonly after?: string | undefined; readonly before?: string | undefined }
+            | undefined;
+        }
+      | undefined;
+    readonly chatMessages?:
+      | {
+          readonly authors?: readonly ("user" | "assistant")[];
+          readonly sentAt?:
+            | { readonly after?: string | undefined; readonly before?: string | undefined }
+            | undefined;
+        }
+      | undefined;
+  };
+};
+
+const normalizeUniqueStrings = (values: readonly string[] | undefined): readonly string[] =>
+  values === undefined
+    ? []
+    : [...new Set(values.map((value) => value.trim().normalize("NFC")))].filter(
+        (value) => value.length > 0,
+      );
+
+const normalizeDateInterval = (
+  value: { readonly after?: string | undefined; readonly before?: string | undefined } | undefined,
+): { readonly after?: string | undefined; readonly before?: string | undefined } | undefined =>
+  value === undefined
+    ? undefined
+    : {
+        ...(value.after === undefined ? {} : { after: value.after.trim() }),
+        ...(value.before === undefined ? {} : { before: value.before.trim() }),
+      };
+
+/** Parse and normalize one provider query without changing its meaning. */
+export const normalizeInternalQuery = (value: unknown): NormalizedInternalQuery => {
+  const parsed = InternalQuerySchema.parse(value);
+  const documents = parsed.filters.documents;
+  const chatMessages = parsed.filters.chatMessages;
+  return {
+    purpose: parsed.purpose,
+    ...(parsed.scope === undefined ? {} : { scope: parsed.scope }),
+    all: parsed.all.map((atom) => ({ text: atom.text, mode: atom.mode })),
+    anyOf: parsed.anyOf.map((group) => group.map((atom) => ({ text: atom.text, mode: atom.mode }))),
+    not: parsed.not.map((atom) => ({ text: atom.text, mode: atom.mode })),
+    filters: {
+      ...(documents === undefined
+        ? {}
+        : {
+            documents: {
+              ...(documents.sourceNames === undefined
+                ? {}
+                : { sourceNames: normalizeUniqueStrings(documents.sourceNames) }),
+              ...(documents.countries === undefined
+                ? {}
+                : { countries: normalizeUniqueStrings(documents.countries) }),
+              ...(documents.languages === undefined
+                ? {}
+                : { languages: normalizeUniqueStrings(documents.languages) }),
+              ...(documents.documentTypes === undefined
+                ? {}
+                : { documentTypes: normalizeUniqueStrings(documents.documentTypes) }),
+              ...(documents.publishedAt === undefined
+                ? {}
+                : { publishedAt: normalizeDateInterval(documents.publishedAt) }),
+            },
+          }),
+      ...(chatMessages === undefined
+        ? {}
+        : {
+            chatMessages: {
+              ...(chatMessages.authors === undefined
+                ? {}
+                : { authors: [...new Set(chatMessages.authors)] }),
+              ...(chatMessages.sentAt === undefined
+                ? {}
+                : { sentAt: normalizeDateInterval(chatMessages.sentAt) }),
+            },
+          }),
+    },
+    order: parsed.order,
+  };
+};
+
+export type QueryPlanValue = InternalQueryPlanValue;
+export type QueryReviewValueStrict = QueryReviewValue;

@@ -17,11 +17,320 @@ import {
   internalSearchQueryIssue,
   normalizeInternalChatSearchTerms,
   normalizeSelectedDocumentRanges,
+  runQueryReviewReplacement,
   searchWithinCandidate,
   searchWithinCandidateWindow,
   type ContextState,
   type LoadedTurn,
 } from "./operations";
+
+describe("Phase B query review", () => {
+  const query = {
+    purpose: "Find evidence",
+    all: [{ text: "storage", mode: "term" as const }],
+    anyOf: [],
+    not: [],
+    filters: { documents: { languages: ["en"] } },
+    order: "relevance" as const,
+  };
+  const plan = { action: "search" as const, queries: [query] };
+  const coverage = [
+    {
+      queryOrdinal: 1,
+      branch: "public_documents" as const,
+      status: "applicable" as const,
+      hitCount: 0,
+      truncated: false,
+      cap: 2,
+    },
+    {
+      queryOrdinal: 1,
+      branch: "publisher_documents" as const,
+      status: "not_applicable" as const,
+      reason: "scope_documents" as const,
+      hitCount: 0,
+      truncated: false,
+      cap: 2,
+    },
+    {
+      queryOrdinal: 1,
+      branch: "chat_messages" as const,
+      status: "not_applicable" as const,
+      reason: "scope_documents" as const,
+      hitCount: 0,
+      truncated: false,
+      cap: 2,
+    },
+  ] as const;
+  const projection = {
+    question: "Which storage evidence matters?",
+    queries: [query],
+    results: [],
+    coverage,
+    truncation: { branch: false, candidates: false, hydration: false },
+  };
+  const exactProjection = {
+    question: "Which storage evidence matters?",
+    queries: [query],
+    results: [
+      {
+        resultId: "r1" as const,
+        kind: "document" as const,
+        label: "Source",
+        date: null,
+        tokenCount: 9,
+        preview: "exact preview bytes",
+        normalizedFusedScore: 1,
+        matchedQueryOrdinals: [1],
+        branchCoverage: [
+          {
+            queryOrdinal: 1,
+            branch: "public_documents" as const,
+            status: "applicable" as const,
+            hitCount: 1,
+            truncated: false,
+            cap: 2,
+          },
+          {
+            queryOrdinal: 1,
+            branch: "publisher_documents" as const,
+            status: "not_applicable" as const,
+            reason: "scope_documents" as const,
+            hitCount: 0,
+            truncated: false,
+            cap: 2,
+          },
+          {
+            queryOrdinal: 1,
+            branch: "chat_messages" as const,
+            status: "not_applicable" as const,
+            reason: "scope_documents" as const,
+            hitCount: 0,
+            truncated: false,
+            cap: 2,
+          },
+        ],
+        truncationFlags: { branch: false, candidates: false, hydration: false },
+      },
+    ],
+    coverage,
+    truncation: { branch: false, candidates: false, hydration: false },
+  };
+
+  it("accepts the complete initial result without a second execution", async () => {
+    let executions = 0;
+    const exposures: unknown[] = [];
+    let providerArgument: unknown;
+    const result = await runQueryReviewReplacement(
+      { initialPlan: plan, initialResult: { source: "private" }, reviewInput: exactProjection },
+      {
+        review: (input) => {
+          providerArgument = input;
+          return { action: "accept", reason: "sufficient_coverage" };
+        },
+        execute: () => {
+          executions += 1;
+          return { source: "replacement" };
+        },
+        projectReview: () => ({ providerInput: exactProjection, privateProof: [] }),
+        onPreviewExposure: (value) => {
+          exposures.push(value);
+        },
+      },
+    );
+    expect(result.action).toBe("accept");
+    expect(result.result).toEqual({ source: "private" });
+    expect(executions).toBe(0);
+    expect(exposures).toEqual([{ providerInput: exactProjection, privateProof: [] }]);
+    expect(providerArgument).toEqual(exactProjection);
+    expect(JSON.stringify(providerArgument)).not.toMatch(/identity|hash|sql|raw|error/u);
+  });
+
+  it("executes one complete replacement and never falls back to initial hits", async () => {
+    let executedPlan: unknown;
+    const exposures: unknown[] = [];
+    let providerArgument: unknown;
+    const result = await runQueryReviewReplacement(
+      { initialPlan: plan, initialResult: { source: "initial" }, reviewInput: projection },
+      {
+        review: (input) => {
+          providerArgument = input;
+          return { action: "replace", reason: "missed_concept", queries: [query] };
+        },
+        execute: (replacement) => {
+          executedPlan = replacement;
+          return { source: "replacement" };
+        },
+        projectReview: () => ({ providerInput: projection, privateProof: [] }),
+        onPreviewExposure: (value) => {
+          exposures.push(value);
+        },
+      },
+    );
+    expect(result.action).toBe("replace");
+    expect(result.result).toEqual({ source: "replacement" });
+    expect(executedPlan).toEqual(plan);
+    expect(exposures).toEqual([
+      { providerInput: projection, privateProof: [] },
+      { providerInput: projection, privateProof: [] },
+    ]);
+    expect(providerArgument).toEqual(projection);
+    expect(projection.coverage).toHaveLength(3);
+    expect(projection.truncation).toEqual({ branch: false, candidates: false, hydration: false });
+  });
+
+  it("returns typed no-evidence without executing and records the seen preview", async () => {
+    let executions = 0;
+    const exposures: unknown[] = [];
+    let providerArgument: unknown;
+    const result = await runQueryReviewReplacement(
+      { initialPlan: plan, initialResult: { source: "private" }, reviewInput: projection },
+      {
+        review: (input) => {
+          providerArgument = input;
+          return { action: "no_evidence", reason: "no_supporting_evidence" };
+        },
+        execute: () => {
+          executions += 1;
+          return {};
+        },
+        projectReview: () => ({ providerInput: projection, privateProof: [] }),
+        onPreviewExposure: (value) => {
+          exposures.push(value);
+        },
+      },
+    );
+    expect(result).toMatchObject({ action: "no_evidence", result: null });
+    expect(executions).toBe(0);
+    expect(exposures).toEqual([{ providerInput: projection, privateProof: [] }]);
+    expect(providerArgument).toEqual(projection);
+    expect((providerArgument as typeof projection).results).toHaveLength(0);
+    expect((providerArgument as typeof projection).coverage).toHaveLength(3);
+    expect((providerArgument as typeof projection).truncation).toEqual({
+      branch: false,
+      candidates: false,
+      hydration: false,
+    });
+  });
+
+  it("fails closed on replacement failure after recording the initial preview", async () => {
+    const exposures: unknown[] = [];
+    await expect(
+      runQueryReviewReplacement(
+        { initialPlan: plan, initialResult: { source: "initial" }, reviewInput: projection },
+        {
+          review: () => ({ action: "replace", reason: "missed_concept", queries: [query] }),
+          execute: () => {
+            throw new Error("replacement failed");
+          },
+          projectReview: () => ({ providerInput: projection, privateProof: [] }),
+          onPreviewExposure: (value) => {
+            exposures.push(value);
+          },
+        },
+      ),
+    ).rejects.toThrow("replacement failed");
+    expect(exposures).toEqual([{ providerInput: projection, privateProof: [] }]);
+  });
+
+  it("rejects private fields in the provider review projection", async () => {
+    await expect(
+      runQueryReviewReplacement(
+        {
+          initialPlan: plan,
+          initialResult: {},
+          reviewInput: { queries: [query], results: [{ identity: "private" }] } as never,
+        },
+        {
+          review: () => ({ action: "accept", reason: "sufficient_coverage" }),
+          execute: () => ({}),
+          projectReview: () => ({ providerInput: projection, privateProof: [] }),
+          onPreviewExposure: () => undefined,
+        },
+      ),
+    ).rejects.toThrow();
+    await expect(
+      runQueryReviewReplacement(
+        {
+          initialPlan: plan,
+          initialResult: {},
+          reviewInput: {
+            ...projection,
+            coverage: [{ ...projection.coverage[0], privateId: "source-id" }],
+          } as never,
+        },
+        {
+          review: () => ({ action: "accept", reason: "sufficient_coverage" }),
+          execute: () => ({}),
+          projectReview: () => ({ providerInput: projection, privateProof: [] }),
+          onPreviewExposure: () => undefined,
+        },
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("records the private proof before provider throws or returns an invalid review", async () => {
+    const privateProof = [
+      {
+        identity: {
+          kind: "chat_message" as const,
+          messageId: "message-1",
+          sanitizedContentHash: "a".repeat(64),
+        },
+        snapshotId: "message-1",
+        contentHash: "a".repeat(64),
+        previewRanges: [{ charStart: 0, charEnd: 7 }],
+        previewBytes: new TextEncoder().encode("preview"),
+        fastTokenCount: 3,
+        mainTokenCount: 4,
+      },
+    ];
+    const exposure = { providerInput: exactProjection, privateProof };
+    const recorded: unknown[] = [];
+    await expect(
+      runQueryReviewReplacement(
+        {
+          initialPlan: plan,
+          initialResult: { source: "initial" },
+          reviewInput: exactProjection,
+          initialExposure: exposure,
+        },
+        {
+          review: () => {
+            expect(recorded).toEqual([exposure]);
+            throw new Error("provider unavailable");
+          },
+          execute: () => ({}),
+          projectReview: () => ({ providerInput: exactProjection, privateProof: [] }),
+          onPreviewExposure: (value) => {
+            recorded.push(value);
+          },
+        },
+      ),
+    ).rejects.toThrow("provider unavailable");
+    expect(recorded).toEqual([exposure]);
+
+    await expect(
+      runQueryReviewReplacement(
+        {
+          initialPlan: plan,
+          initialResult: { source: "initial" },
+          reviewInput: exactProjection,
+          initialExposure: exposure,
+        },
+        {
+          review: () => ({ action: "invalid" }),
+          execute: () => ({}),
+          projectReview: () => ({ providerInput: exactProjection, privateProof: [] }),
+          onPreviewExposure: (value) => {
+            recorded.push(value);
+          },
+        },
+      ),
+    ).rejects.toThrow();
+    expect(recorded.at(-1)).toEqual(exposure);
+  });
+});
 
 describe("bounded web provider views", () => {
   it("keeps exact beginning and ending excerpts within the provider token bound", () => {

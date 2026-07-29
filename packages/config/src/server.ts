@@ -46,6 +46,15 @@ export const WORKER_NUMERIC_SETTING_HARD_MAXIMA = {
   AI_STREAM_POLL_MS: 10_000,
   AI_STREAM_KEEPALIVE_MS: 300_000,
 } as const;
+/** Phase B retrieval work bounds. Kept separate from the legacy cutover keys. */
+export const RETRIEVAL_NUMERIC_SETTING_HARD_MAXIMA = {
+  AI_RETRIEVAL_MAX_QUERIES: 64,
+  AI_RETRIEVAL_MAX_BRANCH_ROWS: 256,
+  AI_RETRIEVAL_MAX_CANDIDATES: 512,
+  AI_RETRIEVAL_MAX_HYDRATED_BYTES: 16_777_216,
+  AI_RETRIEVAL_MAX_CONCURRENCY: 32,
+  AI_RETRIEVAL_QUERY_TIMEOUT_MS: 600_000,
+} as const;
 
 export const NodeEnv = Schema.Literals(["development", "test", "production"]);
 export type NodeEnv = Schema.Schema.Type<typeof NodeEnv>;
@@ -466,6 +475,12 @@ const WorkerEnvironment = Schema.Struct({
   AI_ANSWER_TIMEOUT_MS: NumberWithDefault(120_000),
   AI_STREAM_POLL_MS: NumberWithDefault(300),
   AI_STREAM_KEEPALIVE_MS: NumberWithDefault(15_000),
+  AI_RETRIEVAL_MAX_QUERIES: NumberWithDefault(24),
+  AI_RETRIEVAL_MAX_BRANCH_ROWS: NumberWithDefault(25),
+  AI_RETRIEVAL_MAX_CANDIDATES: NumberWithDefault(64),
+  AI_RETRIEVAL_MAX_HYDRATED_BYTES: NumberWithDefault(2_000_000),
+  AI_RETRIEVAL_MAX_CONCURRENCY: NumberWithDefault(4),
+  AI_RETRIEVAL_QUERY_TIMEOUT_MS: NumberWithDefault(30_000),
   NODE_ENV: nodeEnvField,
 });
 
@@ -519,6 +534,12 @@ export interface WorkerConfig {
   readonly aiAnswerTimeoutMs: number;
   readonly aiStreamPollMs: number;
   readonly aiStreamKeepaliveMs: number;
+  readonly aiRetrievalMaxQueries: number;
+  readonly aiRetrievalMaxBranchRows: number;
+  readonly aiRetrievalMaxCandidates: number;
+  readonly aiRetrievalMaxHydratedBytes: number;
+  readonly aiRetrievalMaxConcurrency: number;
+  readonly aiRetrievalQueryTimeoutMs: number;
   readonly nodeEnv: NodeEnv;
 }
 
@@ -549,9 +570,22 @@ export const loadWorkerConfig: Effect.Effect<WorkerConfig, Config.ConfigError | 
       ["AI_ANSWER_TIMEOUT_MS", raw.AI_ANSWER_TIMEOUT_MS],
       ["AI_STREAM_POLL_MS", raw.AI_STREAM_POLL_MS],
       ["AI_STREAM_KEEPALIVE_MS", raw.AI_STREAM_KEEPALIVE_MS],
+      ["AI_RETRIEVAL_MAX_QUERIES", raw.AI_RETRIEVAL_MAX_QUERIES],
+      ["AI_RETRIEVAL_MAX_BRANCH_ROWS", raw.AI_RETRIEVAL_MAX_BRANCH_ROWS],
+      ["AI_RETRIEVAL_MAX_CANDIDATES", raw.AI_RETRIEVAL_MAX_CANDIDATES],
+      ["AI_RETRIEVAL_MAX_HYDRATED_BYTES", raw.AI_RETRIEVAL_MAX_HYDRATED_BYTES],
+      ["AI_RETRIEVAL_MAX_CONCURRENCY", raw.AI_RETRIEVAL_MAX_CONCURRENCY],
+      ["AI_RETRIEVAL_QUERY_TIMEOUT_MS", raw.AI_RETRIEVAL_QUERY_TIMEOUT_MS],
     ] as const;
     for (const [name, value] of boundedIntegerSettings) {
-      const maximum = WORKER_NUMERIC_SETTING_HARD_MAXIMA[name];
+      const maximum =
+        name in RETRIEVAL_NUMERIC_SETTING_HARD_MAXIMA
+          ? RETRIEVAL_NUMERIC_SETTING_HARD_MAXIMA[
+              name as keyof typeof RETRIEVAL_NUMERIC_SETTING_HARD_MAXIMA
+            ]
+          : WORKER_NUMERIC_SETTING_HARD_MAXIMA[
+              name as keyof typeof WORKER_NUMERIC_SETTING_HARD_MAXIMA
+            ];
       if (!Number.isFinite(value) || !Number.isSafeInteger(value) || value < 1 || value > maximum) {
         return yield* Effect.fail(new Error(`${name} must be an integer between 1 and ${maximum}`));
       }
@@ -662,6 +696,12 @@ export const loadWorkerConfig: Effect.Effect<WorkerConfig, Config.ConfigError | 
       aiAnswerTimeoutMs: raw.AI_ANSWER_TIMEOUT_MS,
       aiStreamPollMs: raw.AI_STREAM_POLL_MS,
       aiStreamKeepaliveMs: raw.AI_STREAM_KEEPALIVE_MS,
+      aiRetrievalMaxQueries: raw.AI_RETRIEVAL_MAX_QUERIES,
+      aiRetrievalMaxBranchRows: raw.AI_RETRIEVAL_MAX_BRANCH_ROWS,
+      aiRetrievalMaxCandidates: raw.AI_RETRIEVAL_MAX_CANDIDATES,
+      aiRetrievalMaxHydratedBytes: raw.AI_RETRIEVAL_MAX_HYDRATED_BYTES,
+      aiRetrievalMaxConcurrency: raw.AI_RETRIEVAL_MAX_CONCURRENCY,
+      aiRetrievalQueryTimeoutMs: raw.AI_RETRIEVAL_QUERY_TIMEOUT_MS,
       nodeEnv: raw.NODE_ENV,
     } satisfies WorkerConfig;
   },

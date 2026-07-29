@@ -52,6 +52,12 @@ describe("worker config", () => {
     ["aiAnswerTimeoutMs", 120_000],
     ["aiStreamPollMs", 300],
     ["aiStreamKeepaliveMs", 15_000],
+    ["aiRetrievalMaxQueries", 24],
+    ["aiRetrievalMaxBranchRows", 25],
+    ["aiRetrievalMaxCandidates", 64],
+    ["aiRetrievalMaxHydratedBytes", 2_000_000],
+    ["aiRetrievalMaxConcurrency", 4],
+    ["aiRetrievalQueryTimeoutMs", 30_000],
   ] as const)("defaults %s to %s", async (key, expected) => {
     const config = await loadConfigFrom({});
     expect(config[key]).toBe(expected);
@@ -70,6 +76,19 @@ describe("worker config", () => {
   it.each(["0", "33", "1.5"])("rejects unsafe web domain fanout %s", async (value) => {
     await expect(loadConfigFrom({ AI_WEB_MAX_DOMAIN_FILTERS: value })).rejects.toThrow(
       "AI_WEB_MAX_DOMAIN_FILTERS must be an integer between 1 and 32",
+    );
+  });
+
+  it.each([
+    ["AI_RETRIEVAL_MAX_QUERIES", 64],
+    ["AI_RETRIEVAL_MAX_BRANCH_ROWS", 256],
+    ["AI_RETRIEVAL_MAX_CANDIDATES", 512],
+    ["AI_RETRIEVAL_MAX_HYDRATED_BYTES", 16_777_216],
+    ["AI_RETRIEVAL_MAX_CONCURRENCY", 32],
+    ["AI_RETRIEVAL_QUERY_TIMEOUT_MS", 600_000],
+  ] as const)("rejects %s above its hard maximum", async (name, maximum) => {
+    await expect(loadConfigFrom({ [name]: String(maximum + 1) })).rejects.toThrow(
+      `${name} must be an integer between 1 and ${maximum}`,
     );
   });
 

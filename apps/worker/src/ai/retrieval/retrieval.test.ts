@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
-import { Effect, Redacted } from "effect";
+import { Deferred, Effect, Fiber, Redacted } from "effect";
+import { TestClock } from "effect/testing";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -10,7 +11,17 @@ import {
   normalizeAndCaseFold,
   normalizeWithOriginalSpans,
 } from "./exact-text";
-import { peekDocument, previewFromImmutableText, searchDocuments } from "./retrieval";
+import {
+  RetrievalHydrationError,
+  executeInternalQueryPlan,
+  hydrateFusedResults,
+  peekDocument,
+  previewFromImmutableText,
+  reviewProjection,
+  searchDocuments,
+  type RetrievalPlanResult,
+} from "./retrieval";
+import { fuseTwoStageRankedResults, type RankedBranchHit } from "./rank-fusion";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
@@ -136,6 +147,574 @@ describe("immutable text normalization", () => {
   });
 });
 
+describe("Phase B hydration and provider projection", () => {
+  const content = "Storage evidence is stable and exact.";
+  const identity = {
+    kind: "public_document" as const,
+    sourceId: "source",
+    documentId: "document",
+    snapshotId: "snapshot",
+    contentHash: sha256(content),
+  };
+  const branches = [
+    {
+      queryOrdinal: 1,
+      branch: "public_documents" as const,
+      status: "applicable" as const,
+      hits: [
+        {
+          queryOrdinal: 1,
+          branch: "public_documents" as const,
+          rank: 1,
+          identity,
+          value: {
+            kind: "document" as const,
+            label: "Document",
+            date: null,
+            textCharCount: content.length,
+          },
+        },
+      ],
+      cap: 2,
+      truncated: false,
+    },
+    {
+      queryOrdinal: 1,
+      branch: "publisher_documents" as const,
+      status: "not_applicable" as const,
+      reason: "scope_documents" as const,
+      hits: [],
+      cap: 2,
+      truncated: false,
+    },
+    {
+      queryOrdinal: 1,
+      branch: "chat_messages" as const,
+      status: "not_applicable" as const,
+      reason: "scope_documents" as const,
+      hits: [],
+      cap: 2,
+      truncated: false,
+    },
+  ] as const;
+
+  it("verifies immutable hashes, counts exact tokens, and strips private fields", () => {
+    const fused = fuseTwoStageRankedResults(branches);
+    const hydrated = hydrateFusedResults(
+      fused,
+      {
+        previewTerms: "stable",
+      },
+      () => ({ text: content, snapshotId: "snapshot", contentHash: sha256(content) }),
+    );
+    expect(hydrated.results[0]?.value.fullTokenCount).toBeGreaterThan(0);
+    expect(hydrated.results[0]?.value.preview).toBe("stable");
+    const view = reviewProjection(hydrated)[0]!;
+    expect(Object.keys(view).sort()).toEqual(
+      [
+        "branchCoverage",
+        "date",
+        "kind",
+        "label",
+        "matchedQueryOrdinals",
+        "normalizedFusedScore",
+        "preview",
+        "resultId",
+        "tokenCount",
+        "truncationFlags",
+      ].sort(),
+    );
+    expect("identity" in view).toBe(false);
+    expect("contentHash" in view).toBe(false);
+  });
+
+  it("fails closed when immutable text changes with the same candidate identity", () => {
+    const fused = fuseTwoStageRankedResults(branches);
+    expect(() =>
+      hydrateFusedResults(fused, {}, () => ({
+        text: "changed",
+        snapshotId: "snapshot",
+        contentHash: sha256(content),
+      })),
+    ).toThrowError(RetrievalHydrationError);
+  });
+
+  it("fails closed for missing rows, missing exact previews, and byte overflow", () => {
+    const fused = fuseTwoStageRankedResults(branches);
+    expect(() => hydrateFusedResults(fused, {}, () => null)).toThrowError(RetrievalHydrationError);
+    expect(() =>
+      hydrateFusedResults(
+        fused,
+        {
+          previewTerms: "not-present",
+        },
+        () => ({ text: content, snapshotId: "snapshot", contentHash: sha256(content) }),
+      ),
+    ).toThrowError(RetrievalHydrationError);
+    expect(() =>
+      hydrateFusedResults(
+        fused,
+        {
+          maxHydratedBytes: new TextEncoder().encode(content).byteLength - 1,
+        },
+        () => ({ text: content, snapshotId: "snapshot", contentHash: sha256(content) }),
+      ),
+    ).toThrowError(RetrievalHydrationError);
+  });
+
+  it("keeps fast and main token budgets separate and verifies chat identity", () => {
+    const chatContent = "The chat cites stable storage evidence.";
+    const chatBranches = [
+      {
+        queryOrdinal: 1,
+        branch: "public_documents" as const,
+        status: "not_applicable" as const,
+        reason: "scope_chat_messages" as const,
+        hits: [],
+        cap: 2,
+        truncated: false,
+      },
+      {
+        queryOrdinal: 1,
+        branch: "publisher_documents" as const,
+        status: "not_applicable" as const,
+        reason: "scope_chat_messages" as const,
+        hits: [],
+        cap: 2,
+        truncated: false,
+      },
+      {
+        queryOrdinal: 1,
+        branch: "chat_messages" as const,
+        status: "applicable" as const,
+        hits: [
+          {
+            queryOrdinal: 1,
+            branch: "chat_messages" as const,
+            rank: 1,
+            identity: {
+              kind: "chat_message" as const,
+              messageId: "message-1",
+              sanitizedContentHash: sha256(chatContent),
+            },
+            value: { kind: "chat_message" as const, label: "user", date: null, textCharCount: 40 },
+          },
+        ],
+        cap: 2,
+        truncated: false,
+      },
+    ] as const;
+    const fused = fuseTwoStageRankedResults(chatBranches);
+    const hydrated = hydrateFusedResults(fused, {}, () => ({
+      kind: "chat_message",
+      messageId: "message-1",
+      text: chatContent,
+      snapshotId: "message-snapshot",
+      contentHash: sha256(chatContent),
+    }));
+    expect(hydrated.results[0]?.value.fastTokenCount).toBeGreaterThan(0);
+    expect(hydrated.results[0]?.value.mainTokenCount).toBeGreaterThan(0);
+    expect(() =>
+      hydrateFusedResults(fused, {}, () => ({
+        kind: "chat_message",
+        messageId: "other-message",
+        text: chatContent,
+        snapshotId: "message-snapshot",
+        contentHash: sha256(chatContent),
+      })),
+    ).toThrowError(RetrievalHydrationError);
+  });
+});
+
+describe("Phase B relevance tie ordering", () => {
+  const identity = (documentId: string) => ({
+    kind: "public_document" as const,
+    sourceId: "tie-source",
+    documentId,
+    snapshotId: `snapshot-${documentId}`,
+    contentHash: sha256(documentId),
+  });
+  const branch = (
+    publicHits: readonly RankedBranchHit[],
+    publisherHits: readonly RankedBranchHit[] = [],
+  ) =>
+    [
+      {
+        queryOrdinal: 1,
+        branch: "public_documents" as const,
+        status: "applicable" as const,
+        hits: publicHits,
+        cap: 4,
+        truncated: false,
+      },
+      {
+        queryOrdinal: 1,
+        branch: "publisher_documents" as const,
+        status: publisherHits.length === 0 ? ("not_applicable" as const) : ("applicable" as const),
+        ...(publisherHits.length === 0 ? { reason: "scope_documents" as const } : {}),
+        hits: publisherHits,
+        cap: 4,
+        truncated: false,
+      },
+      {
+        queryOrdinal: 1,
+        branch: "chat_messages" as const,
+        status: "not_applicable" as const,
+        reason: "scope_documents" as const,
+        hits: [],
+        cap: 4,
+        truncated: false,
+      },
+    ] as const;
+
+  it("uses descending date after score and best-rank ties", () => {
+    const results = fuseTwoStageRankedResults(
+      branch(
+        [
+          {
+            queryOrdinal: 1,
+            branch: "public_documents" as const,
+            rank: 1,
+            identity: identity("older"),
+            value: {},
+            date: "2024-01-01T00:00:00.000Z",
+          },
+        ],
+        [
+          {
+            queryOrdinal: 1,
+            branch: "publisher_documents" as const,
+            rank: 1,
+            identity: {
+              kind: "publisher_document" as const,
+              subscriptionId: "sub",
+              issueId: "issue",
+              documentId: "newer",
+              snapshotId: "snapshot-newer",
+              publisherExtractionId: "extract-newer",
+              contentHash: sha256("newer"),
+            },
+            value: {},
+            date: "2025-01-01T00:00:00.000Z",
+          },
+        ],
+      ),
+    );
+    expect(
+      results.results.map((result) =>
+        result.identity.kind === "public_document" || result.identity.kind === "publisher_document"
+          ? result.identity.documentId
+          : result.identity.messageId,
+      ),
+    ).toEqual(["newer", "older"]);
+  });
+
+  it("uses UTF-8 identity bytes when score, rank, and date tie", () => {
+    const results = fuseTwoStageRankedResults(
+      branch(
+        [
+          {
+            queryOrdinal: 1,
+            branch: "public_documents" as const,
+            rank: 1,
+            identity: identity("é"),
+            value: {},
+            date: "2025-01-01T00:00:00.000Z",
+          },
+        ],
+        [
+          {
+            queryOrdinal: 1,
+            branch: "publisher_documents" as const,
+            rank: 1,
+            identity: {
+              kind: "publisher_document" as const,
+              subscriptionId: "sub",
+              issueId: "issue",
+              documentId: "z",
+              snapshotId: "snapshot-z",
+              publisherExtractionId: "extract-z",
+              contentHash: sha256("z"),
+            },
+            value: {},
+            date: "2025-01-01T00:00:00.000Z",
+          },
+        ],
+      ),
+    );
+    expect(
+      results.results.map((result) =>
+        result.identity.kind === "public_document" || result.identity.kind === "publisher_document"
+          ? result.identity.documentId
+          : result.identity.messageId,
+      ),
+    ).toEqual(["é", "z"]);
+  });
+
+  it("rejects invalid projected dates", () => {
+    expect(() =>
+      fuseTwoStageRankedResults(
+        branch([
+          {
+            queryOrdinal: 1,
+            branch: "public_documents" as const,
+            rank: 1,
+            identity: identity("bad-date"),
+            value: {},
+            date: "not-a-date",
+          },
+        ]),
+      ),
+    ).toThrow("fused result date is invalid");
+  });
+});
+
+describe("Phase B query-plan execution seam", () => {
+  it("executes every physical branch for several logical queries in input order", async () => {
+    const calls: string[] = [];
+    const plan = {
+      action: "search" as const,
+      queries: [
+        {
+          purpose: "first",
+          all: [{ text: "alpha", mode: "term" as const }],
+          anyOf: [],
+          not: [],
+          filters: {},
+          order: "relevance" as const,
+        },
+        {
+          purpose: "second",
+          all: [{ text: "beta", mode: "term" as const }],
+          anyOf: [],
+          not: [],
+          filters: {},
+          order: "relevance" as const,
+        },
+      ],
+    };
+    const result = await Effect.runPromise(
+      executeInternalQueryPlan(plan, {
+        scope: {
+          userId: "user",
+          chatId: "chat",
+          companyId: "company",
+          publicSourceIds: ["source"],
+          subscriptionIds: ["subscription"],
+          accessIds: ["access"],
+        },
+        branchCap: 2,
+        maxConcurrency: 2,
+        statementTimeoutMs: 1_000,
+        executeBranch: (branch, queryOrdinal, statementTimeoutMs) => {
+          calls.push(`${queryOrdinal}:${branch.branch}:${statementTimeoutMs}`);
+          return Effect.succeed({
+            queryOrdinal,
+            branch: branch.branch,
+            status: "not_applicable" as const,
+            reason: "scope_documents" as const,
+            hits: [],
+            cap: branch.cap,
+            truncated: false,
+          });
+        },
+        hydrateResult: (fused) => Effect.succeed({ fused: fused as never, exposures: [] }),
+      }) as unknown as Effect.Effect<unknown, unknown>,
+    );
+    expect(calls.map((call) => call.split(":").slice(0, 2))).toEqual([
+      ["1", "public_documents"],
+      ["1", "publisher_documents"],
+      ["1", "chat_messages"],
+      ["2", "public_documents"],
+      ["2", "publisher_documents"],
+      ["2", "chat_messages"],
+    ]);
+    expect((result as { readonly branches: readonly unknown[] }).branches).toHaveLength(6);
+  });
+
+  it("uses one shared semaphore and total deadline across all branch waves", async () => {
+    const plan = {
+      action: "search" as const,
+      queries: [1, 2, 3].map((ordinal) => ({
+        purpose: `query ${ordinal}`,
+        all: [{ text: `term ${ordinal}`, mode: "term" as const }],
+        anyOf: [],
+        not: [],
+        filters: {},
+        order: "relevance" as const,
+      })),
+    };
+    const result = (await Effect.runPromise(
+      Effect.gen(function* () {
+        const keys = plan.queries.flatMap((_, queryOrdinal) =>
+          ["public_documents", "publisher_documents", "chat_messages"].map(
+            (branch) => `${queryOrdinal + 1}:${branch}`,
+          ),
+        );
+        const gates = new Map<string, Deferred.Deferred<void>>();
+        const startedSignals = new Map<string, Deferred.Deferred<void>>();
+        for (const key of keys) {
+          gates.set(key, yield* Deferred.make<void>());
+          startedSignals.set(key, yield* Deferred.make<void>());
+        }
+        let active = 0;
+        let maximumActive = 0;
+        const statementTimeouts: number[] = [];
+        const starts: string[] = [];
+        const makeEmptyBranch = (
+          branch: "public_documents" | "publisher_documents" | "chat_messages",
+          queryOrdinal: number,
+          cap: number,
+        ) => ({
+          queryOrdinal,
+          branch,
+          status: "applicable" as const,
+          hits: [],
+          cap,
+          truncated: false,
+        });
+        const execution = executeInternalQueryPlan(plan, {
+          scope: {
+            userId: "user",
+            chatId: "chat",
+            companyId: "company",
+            publicSourceIds: ["source"],
+            subscriptionIds: ["subscription"],
+            accessIds: ["access"],
+          },
+          branchCap: 2,
+          maxConcurrency: 2,
+          statementTimeoutMs: 100,
+          executeBranch: (branch, queryOrdinal, statementTimeoutMs) => {
+            const key = `${queryOrdinal}:${branch.branch}`;
+            return Effect.gen(function* () {
+              active += 1;
+              maximumActive = Math.max(maximumActive, active);
+              starts.push(key);
+              statementTimeouts.push(statementTimeoutMs);
+              yield* Deferred.succeed(startedSignals.get(key)!, void 0);
+              return yield* Effect.ensuring(
+                Deferred.await(gates.get(key)!),
+                Effect.sync(() => {
+                  active -= 1;
+                }),
+              ).pipe(Effect.as(makeEmptyBranch(branch.branch, queryOrdinal, branch.cap)));
+            });
+          },
+          hydrateResult: (fused) => Effect.succeed({ fused: fused as never, exposures: [] }),
+        });
+        const fiber = yield* Effect.forkChild(execution);
+        yield* Effect.yieldNow;
+        yield* Effect.all([
+          Deferred.await(startedSignals.get(keys[0]!)!),
+          Deferred.await(startedSignals.get(keys[1]!)!),
+        ]);
+        expect(maximumActive).toBe(2);
+        yield* TestClock.adjust(40);
+        yield* Deferred.succeed(gates.get(keys[1]!)!, void 0);
+        yield* Deferred.succeed(gates.get(keys[0]!)!, void 0);
+        yield* Effect.yieldNow;
+        yield* Effect.all([
+          Deferred.await(startedSignals.get(keys[2]!)!),
+          Deferred.await(startedSignals.get(keys[3]!)!),
+        ]);
+        expect(statementTimeouts.slice(0, 2)).toEqual([100, 100]);
+        expect(statementTimeouts.slice(2, 4).every((value) => value <= 60 && value > 0)).toBe(true);
+        for (const key of keys.slice(2)) yield* Deferred.succeed(gates.get(key)!, void 0);
+        const completed = yield* Fiber.join(fiber);
+        return { completed, starts, maximumActive, active };
+      }).pipe(Effect.provide(TestClock.layer({}))) as unknown as Effect.Effect<unknown, unknown>,
+    )) as {
+      readonly completed: RetrievalPlanResult;
+      readonly starts: readonly string[];
+      readonly maximumActive: number;
+      readonly active: number;
+    };
+    expect(result.maximumActive).toBe(2);
+    expect(result.active).toBe(0);
+    expect(result.starts).toEqual([
+      "1:public_documents",
+      "1:publisher_documents",
+      "1:chat_messages",
+      "2:public_documents",
+      "2:publisher_documents",
+      "2:chat_messages",
+      "3:public_documents",
+      "3:publisher_documents",
+      "3:chat_messages",
+    ]);
+    expect(
+      result.completed.branches.map((branch) => `${branch.queryOrdinal}:${branch.branch}`),
+    ).toEqual(result.starts);
+  });
+
+  it("interrupts active work, removes queued work, and releases permits", async () => {
+    const plan = {
+      action: "search" as const,
+      queries: [1, 2].map((ordinal) => ({
+        purpose: `query ${ordinal}`,
+        all: [{ text: `term ${ordinal}`, mode: "term" as const }],
+        anyOf: [],
+        not: [],
+        filters: {},
+        order: "relevance" as const,
+      })),
+    };
+    const outcome = (await Effect.runPromise(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const hold = yield* Deferred.make<void>();
+        let active = 0;
+        let interrupted = 0;
+        const starts: string[] = [];
+        const fiber = yield* Effect.forkChild(
+          executeInternalQueryPlan(plan, {
+            scope: {
+              userId: "user",
+              chatId: "chat",
+              companyId: "company",
+              publicSourceIds: ["source"],
+              subscriptionIds: ["subscription"],
+              accessIds: ["access"],
+            },
+            branchCap: 2,
+            maxConcurrency: 1,
+            statementTimeoutMs: 10_000,
+            executeBranch: (branch, queryOrdinal) =>
+              Effect.gen(function* () {
+                active += 1;
+                starts.push(`${queryOrdinal}:${branch.branch}`);
+                yield* Deferred.succeed(started, void 0);
+                yield* Effect.onInterrupt(Deferred.await(hold), () =>
+                  Effect.sync(() => {
+                    interrupted += 1;
+                    active -= 1;
+                  }),
+                );
+                return {
+                  queryOrdinal,
+                  branch: branch.branch,
+                  status: "applicable" as const,
+                  hits: [],
+                  cap: branch.cap,
+                  truncated: false,
+                };
+              }),
+            hydrateResult: (fused) => Effect.succeed({ fused: fused as never, exposures: [] }),
+          }),
+        );
+        yield* Deferred.await(started);
+        yield* Fiber.interrupt(fiber);
+        yield* Fiber.await(fiber);
+        yield* TestClock.adjust(10_000);
+        return { interrupted, starts };
+      }).pipe(Effect.provide(TestClock.layer({}))) as unknown as Effect.Effect<unknown, unknown>,
+    )) as { readonly interrupted: number; readonly starts: readonly string[] };
+    expect(outcome.interrupted).toBe(1);
+    expect(outcome.starts).toEqual(["1:public_documents"]);
+  });
+});
+
 function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
   return Effect.runPromise(
     effect.pipe(
@@ -166,7 +745,7 @@ type DocumentFixture = {
   readonly text: string;
   readonly publishedAt: Date;
   readonly documentType: string;
-  readonly contentHash: string;
+  readonly contentHash?: string;
 };
 
 const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
@@ -207,7 +786,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: stagFrText,
     publishedAt: daysAgo(2),
     documentType: "article",
-    contentHash: "ret-h-01",
   },
   {
     documentId: "ret-doc-stag-fr-b",
@@ -217,7 +795,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: "Le rapport décrit un scénario de stagflation durable pour la zone euro avec des salaires réels en baisse continue.",
     publishedAt: daysAgo(10),
     documentType: "report",
-    contentHash: "ret-h-02",
   },
   {
     documentId: "ret-doc-stag-en",
@@ -227,7 +804,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: "Analysts warn that stagflation risks are rising as growth slows while consumer prices keep climbing across major economies.",
     publishedAt: daysAgo(3),
     documentType: "article",
-    contentHash: "ret-h-03",
   },
   {
     documentId: "ret-doc-pv-fr",
@@ -237,7 +813,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: "Les installations photovoltaïques progressent dans les zones rurales grâce aux nouveaux appels d'offres régionaux.",
     publishedAt: daysAgo(4),
     documentType: "article",
-    contentHash: "ret-h-04",
   },
   {
     documentId: "ret-doc-pv-frfr",
@@ -247,7 +822,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: "Le cadastre recense le potentiel photovoltaïque de chaque toiture de la métropole pour orienter les investissements.",
     publishedAt: daysAgo(5),
     documentType: "article",
-    contentHash: "ret-h-05",
   },
   {
     documentId: "ret-doc-pv-frca",
@@ -257,7 +831,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: "Le programme soutient le déploiement photovoltaïque résidentiel dans les municipalités du Québec avec des subventions bonifiées.",
     publishedAt: daysAgo(6),
     documentType: "article",
-    contentHash: "ret-h-06",
   },
   {
     documentId: "ret-doc-pv-en",
@@ -267,7 +840,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: "The joint venture will build photovoltaïque module factories across three states next year to supply utility developers.",
     publishedAt: daysAgo(4),
     documentType: "article",
-    contentHash: "ret-h-07",
   },
   {
     documentId: "ret-doc-geo-old",
@@ -277,7 +849,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: "La géothermie profonde alimente désormais trois réseaux de chaleur urbains en Île-de-France selon le dernier bilan public.",
     publishedAt: daysAgo(60),
     documentType: "article",
-    contentHash: "ret-h-08",
   },
   {
     documentId: "ret-doc-geo-mid",
@@ -287,7 +858,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: "Les nouveaux forages de géothermie alsaciens relancent le débat public sur la sismicité induite dans la vallée du Rhin.",
     publishedAt: daysAgo(30),
     documentType: "article",
-    contentHash: "ret-h-09",
   },
   {
     documentId: "ret-doc-geo-new",
@@ -297,7 +867,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: "La géothermie de surface équipe une dizaine de groupes scolaires pilotes cette rentrée dans plusieurs académies volontaires.",
     publishedAt: daysAgo(5),
     documentType: "article",
-    contentHash: "ret-h-10",
   },
   {
     documentId: "ret-doc-sem-title",
@@ -307,7 +876,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: "La tour de guet du littoral breton rouvre après deux ans de travaux de restauration menés par la commune.",
     publishedAt: daysAgo(40),
     documentType: "article",
-    contentHash: "ret-h-11",
   },
   {
     documentId: "ret-doc-sem-body",
@@ -317,7 +885,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: "Un sémaphore modernisé complète le dispositif de surveillance du littoral atlantique pour la saison estivale.",
     publishedAt: daysAgo(1),
     documentType: "article",
-    contentHash: "ret-h-12",
   },
   {
     documentId: "ret-doc-dir-a",
@@ -327,7 +894,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: dirigeableText,
     publishedAt: daysAgo(3),
     documentType: "article",
-    contentHash: "ret-h-dup",
   },
   {
     documentId: "ret-doc-dir-b",
@@ -337,7 +903,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: dirigeableText,
     publishedAt: daysAgo(1),
     documentType: "article",
-    contentHash: "ret-h-dup",
   },
   {
     documentId: "ret-doc-peek",
@@ -347,7 +912,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: peekText,
     publishedAt: daysAgo(1),
     documentType: "article",
-    contentHash: "ret-h-15",
   },
   {
     documentId: "ret-doc-repeated-headline",
@@ -357,7 +921,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: repeatedHeadlineText,
     publishedAt: daysAgo(1),
     documentType: "article",
-    contentHash: "ret-h-16",
   },
   {
     documentId: "ret-doc-unicode-headline",
@@ -367,7 +930,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: unicodeHeadlineText,
     publishedAt: daysAgo(1),
     documentType: "article",
-    contentHash: "ret-h-17",
   },
   {
     documentId: "ret-doc-unmappable-headline",
@@ -377,7 +939,6 @@ const documentFixtures: ReadonlyArray<DocumentFixture> = [
     text: unmappableHeadlineText,
     publishedAt: daysAgo(1),
     documentType: "article",
-    contentHash: "ret-h-18",
   },
 ].map((fixture) => ({ ...fixture, contentHash: sha256(fixture.text) }));
 
@@ -390,7 +951,20 @@ const orderedDocumentIds = (previews: ReadonlyArray<{ readonly documentId: strin
 const artifactIdForIndex = (index: number) =>
   `eeeeeeee-0000-0000-0000-${String(index).padStart(12, "0")}`;
 
-const artifactBodyHashForIndex = (index: number) => `ret-bh-${String(index).padStart(2, "0")}`;
+const artifactBodyHashForIndex = (_index: number) => sha256("body");
+
+const phaseBFixture = {
+  userId: "00000000-0000-0000-0000-000000000101",
+  companyId: "00000000-0000-0000-0000-000000000102",
+  publisherCompanyId: "00000000-0000-0000-0000-000000000103",
+  subscriptionId: "00000000-0000-0000-0000-000000000104",
+  accessId: "00000000-0000-0000-0000-000000000105",
+  issueId: "00000000-0000-0000-0000-000000000106",
+  documentId: "00000000-0000-0000-0000-000000000107",
+  snapshotId: "00000000-0000-0000-0000-000000000108",
+  extractionId: "00000000-0000-0000-0000-000000000109",
+  chatId: "00000000-0000-0000-0000-00000000010a",
+};
 
 describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
   beforeAll(async () => {
@@ -515,9 +1089,270 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
             )
           `;
         }
+
+        const publisherText =
+          "The publisher brief reviews stagflation risks and liquidity conditions.";
+        const publisherHash = sha256(publisherText);
+        yield* sql`
+          insert into platform_users (id, primary_email, display_name, clerk_user_id)
+          values (${phaseBFixture.userId}, 'retrieval-phase-b@example.test', 'Retrieval Phase B', 'retrieval-phase-b')
+        `;
+        yield* sql`
+          insert into client_companies (id, name)
+          values (${phaseBFixture.companyId}, 'Retrieval Phase B Company')
+        `;
+        yield* sql`
+          insert into client_company_memberships (company_id, user_id, role)
+          values (${phaseBFixture.companyId}, ${phaseBFixture.userId}, 'admin')
+        `;
+        yield* sql`
+          insert into publisher_companies (id, name)
+          values (${phaseBFixture.publisherCompanyId}, 'Retrieval Phase B Publisher')
+        `;
+        yield* sql`
+          insert into publisher_subscriptions (id, publisher_company_id, name, created_by_user_id)
+          values (${phaseBFixture.subscriptionId}, ${phaseBFixture.publisherCompanyId}, 'Phase B Publisher Source', ${phaseBFixture.userId})
+        `;
+        yield* sql`
+          insert into client_subscription_accesses (
+            id, subscription_id, client_company_id, state, first_admin_email,
+            accepted_at, subscribed_at, created_by_user_id
+          ) values (
+            ${phaseBFixture.accessId}, ${phaseBFixture.subscriptionId}, ${phaseBFixture.companyId},
+            'active', 'retrieval-phase-b@example.test', now(), now(), ${phaseBFixture.userId}
+          )
+        `;
+        yield* sql`
+          insert into client_employee_subscription_grants (
+            access_id, client_company_id, user_id, granted_by_user_id
+          ) values (
+            ${phaseBFixture.accessId}, ${phaseBFixture.companyId}, ${phaseBFixture.userId}, ${phaseBFixture.userId}
+          )
+        `;
+        yield* sql`
+          insert into publisher_issues (
+            id, subscription_id, title, status, publication_at, published_at,
+            indexing_status, created_by_user_id
+          ) values (
+            ${phaseBFixture.issueId}, ${phaseBFixture.subscriptionId}, 'Phase B Issue',
+            'draft', now(), null, 'pending', ${phaseBFixture.userId}
+          )
+        `;
+        yield* sql`
+          insert into brief_documents (
+            id, issue_id, title, original_file_name, object_key, media_type, byte_size,
+            sha256_hex, upload_completed_at, created_by_user_id
+          ) values (
+            ${phaseBFixture.documentId}, ${phaseBFixture.issueId}, 'Phase B Publisher Document',
+            'phase-b.pdf', 'retrieval/phase-b.pdf', 'application/pdf', ${publisherText.length},
+            ${publisherHash}, now(), ${phaseBFixture.userId}
+          )
+        `;
+        const jobs = yield* sql<{ readonly id: string }>`
+          insert into jobs (kind, payload)
+          values ('extract_pdf_text', '{}'::jsonb)
+          returning id::text as id
+        `;
+        yield* sql`
+          insert into brief_document_extractions (
+            id, brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+          ) values (
+            ${phaseBFixture.extractionId}, ${phaseBFixture.documentId}, ${publisherHash},
+            ${JSON.stringify([{ pageNumber: 1, text: publisherText }])}::jsonb,
+            ${publisherText.length}, ${jobs[0]!.id}
+          )
+        `;
+        yield* sql`
+          insert into brief_document_versions (
+            id, brief_document_id, publisher_extraction_id, content_hash, language,
+            canonical_text, text_char_count, page_ranges
+          ) values (
+            ${phaseBFixture.snapshotId}, ${phaseBFixture.documentId}, ${phaseBFixture.extractionId},
+            ${publisherHash}, 'english', ${publisherText}, ${publisherText.length},
+            ${JSON.stringify([{ pageNumber: 1, charStart: 0, charEnd: publisherText.length }])}::jsonb
+          )
+        `;
+        yield* sql`
+          update brief_documents set current_version_id = ${phaseBFixture.snapshotId}
+          where id = ${phaseBFixture.documentId}
+        `;
+        yield* sql`
+          update publisher_issues
+          set status = 'published', published_at = now(), indexing_status = 'ready'
+          where id = ${phaseBFixture.issueId}
+        `;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              insert into issue_deliveries (
+                issue_id, subscription_id, access_id, client_company_id, historical
+              ) values (
+                ${phaseBFixture.issueId}, ${phaseBFixture.subscriptionId}, ${phaseBFixture.accessId},
+                ${phaseBFixture.companyId}, false
+              )
+            `;
+            yield* sql`
+              insert into issue_delivery_recipients (
+                issue_id, client_company_id, user_id, delivered_at
+              ) values (
+                ${phaseBFixture.issueId}, ${phaseBFixture.companyId}, ${phaseBFixture.userId}, now()
+              )
+            `;
+          }),
+        );
+        yield* sql`
+          insert into chats (id, company_id, user_id, memory_mode)
+          values (${phaseBFixture.chatId}, ${phaseBFixture.companyId}, ${phaseBFixture.userId}, 'private_owner')
+        `;
+        yield* sql`
+          insert into chat_messages (chat_id, author, content)
+          values (${phaseBFixture.chatId}, 'user', 'The chat also mentions stagflation evidence.')
+        `;
+        yield* sql`
+          insert into chat_messages (chat_id, author, content, created_at)
+          values (
+            ${phaseBFixture.chatId}, 'assistant',
+            'needle needle needle evidence from the older answer [[cite:needle-only-marker]]',
+            now() - interval '1 day'
+          )
+        `;
+        yield* sql`
+          insert into chat_messages (chat_id, author, content, created_at)
+          values (
+            ${phaseBFixture.chatId}, 'assistant',
+            'needle weak match [[cite:needle-only-marker]]',
+            now()
+          )
+        `;
+        yield* sql`
+          insert into chat_messages (chat_id, author, content, created_at)
+          values (
+            ${phaseBFixture.chatId}, 'user',
+            'user literal [[cite:needle-only-marker]]',
+            now()
+          )
+        `;
       }),
     );
   }, 120_000);
+
+  it("executes all three Phase B physical branches against the migrated schema", async () => {
+    const result = await runDb(
+      isolatedDatabaseUrl(),
+      executeInternalQueryPlan(
+        {
+          action: "search",
+          queries: [
+            {
+              purpose: "schema proof",
+              all: [{ text: "stagflation", mode: "term" }],
+              anyOf: [],
+              not: [],
+              filters: {},
+              order: "relevance",
+            },
+          ],
+        },
+        {
+          scope: {
+            userId: phaseBFixture.userId,
+            chatId: phaseBFixture.chatId,
+            companyId: phaseBFixture.companyId,
+            publicSourceIds: ["ret-fr-a", "ret-fr-b", "ret-us"],
+            subscriptionIds: [phaseBFixture.subscriptionId],
+            accessIds: [phaseBFixture.accessId],
+          },
+          branchCap: 2,
+          maxQueries: 24,
+          maxConcurrency: 2,
+          statementTimeoutMs: 10_000,
+        },
+      ),
+    );
+    expect(result.branches).toHaveLength(3);
+    expect(result.branches.map((branch) => branch.branch)).toEqual([
+      "public_documents",
+      "publisher_documents",
+      "chat_messages",
+    ]);
+    expect(result.branches[0]?.hits.length).toBeGreaterThan(0);
+    expect(result.branches[1]?.hits.length).toBeGreaterThan(0);
+    expect(result.branches[2]?.hits.length).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("ranks sanitized chat relevance before recency and keeps user literals exact", async () => {
+    const result = await runDb(
+      isolatedDatabaseUrl(),
+      executeInternalQueryPlan(
+        {
+          action: "search",
+          queries: [
+            {
+              purpose: "chat relevance",
+              scope: "chat_messages",
+              all: [{ text: "needle", mode: "term" }],
+              anyOf: [],
+              not: [],
+              filters: {},
+              order: "relevance",
+            },
+          ],
+        },
+        {
+          scope: {
+            userId: phaseBFixture.userId,
+            chatId: phaseBFixture.chatId,
+            companyId: phaseBFixture.companyId,
+            publicSourceIds: [],
+            subscriptionIds: [],
+            accessIds: [],
+          },
+          branchCap: 10,
+          maxConcurrency: 2,
+          statementTimeoutMs: 10_000,
+        },
+      ),
+    );
+    const chat = result.branches.find((branch) => branch.branch === "chat_messages");
+    expect(chat?.hits).toHaveLength(3);
+    expect(result.review[0]?.preview).toContain("needle needle needle");
+
+    const markerResult = await runDb(
+      isolatedDatabaseUrl(),
+      executeInternalQueryPlan(
+        {
+          action: "search",
+          queries: [
+            {
+              purpose: "literal marker",
+              scope: "chat_messages",
+              all: [{ text: "needle-only-marker", mode: "term" }],
+              anyOf: [],
+              not: [],
+              filters: {},
+              order: "relevance",
+            },
+          ],
+        },
+        {
+          scope: {
+            userId: phaseBFixture.userId,
+            chatId: phaseBFixture.chatId,
+            companyId: phaseBFixture.companyId,
+            publicSourceIds: [],
+            subscriptionIds: [],
+            accessIds: [],
+          },
+          branchCap: 10,
+          maxConcurrency: 2,
+          statementTimeoutMs: 10_000,
+        },
+      ),
+    );
+    const markerChat = markerResult.branches.find((branch) => branch.branch === "chat_messages");
+    expect(markerChat?.hits).toHaveLength(1);
+    expect(markerResult.review[0]?.preview).toContain("user literal [[cite:needle-only-marker]]");
+  }, 30_000);
 
   afterAll(async () => {
     await runDb(
@@ -529,6 +1364,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           from pg_stat_activity
           where datname = ${isolatedDatabaseName}
             and pid <> pg_backend_pid()
+            and usename = current_user
         `;
         yield* sql.unsafe(`drop database if exists ${quoteIdentifier(isolatedDatabaseName)}`);
       }),

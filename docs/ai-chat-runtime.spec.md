@@ -17,6 +17,7 @@ The browser talks only to the Brief API. It never calls Z.AI, Tinyfish, Pi, Smit
 The worker owns AI execution. Smithers is an embedded durable workflow library inside the worker, not a separate service. Pi is the only model-call boundary and runs inside Smithers compute tasks.
 
 Agents emit typed plans, queries, references, and text. They never emit SQL or receive database credentials. Brief code validates authorization, compiles parameterized SQL, fetches content, normalizes provenance, and performs product writes.
+
 Internal retrieval plans contain only bounded Boolean atoms and code-owned
 filters. Code expands each accepted query across the closed physical branches,
 records branch coverage and truncation, and gives the provider only run-local
@@ -137,7 +138,7 @@ identity.
 | `load-turn`                   | Brief code                                      | Stable run and request data only, including `citationNamespace`.                                                                                |
 | `plan-turn`                   | Brief code plus Pi in one Smithers compute task | One strict `clarify`/`single`/`fanout` union. It reads current prior turns, resolves references, selects valid turn IDs, and chooses the route. |
 | `memory-extract`              | Brief code plus Pi in one Smithers compute task | Ordered create/update proposals only; it never writes memory.                                                                                   |
-| `A`, `B`, `W`                 | Brief code plus Pi in one Smithers compute task | Separate internal, memory, and web selections.                                                                                                  |
+| `A`, `B`, `W`                 | Brief code plus Pi in one Smithers compute task | Separate internal, memory, and web selections; A uses one complete query plan, bounded branch retrieval, and one result-aware review.           |
 | `O`                           | Brief code plus Pi in one Smithers compute task | Bounded keep/range/omit decisions over hydrated candidates.                                                                                     |
 | direct/topic/synthesis answer | Brief code plus Pi in one Smithers compute task | Grounded text or a typed no-source result; no retrieval tools.                                                                                  |
 | `answer-select`               | Brief code                                      | Exactly one clarification, single, or fanout result.                                                                                            |
@@ -148,6 +149,7 @@ the root and at every nested object. Unknown keys, wrong discriminants,
 missing required keys, duplicate IDs, foreign identities, invalid ranges,
 invented sources, malformed terminal tool calls, and non-finite numbers fail
 before any side effect.
+
 The Phase A contract layer also defines the strict values used by the retrieval
 and context boundaries. `InternalQueryPlan` is either `skip` with a
 reason or `search` with one complete array of `InternalQuery` values.
@@ -167,7 +169,9 @@ normalization and outer trim only. Review reasons are closed codes: accept uses
 `wrong_language`, or `unsupported_branch`, and `no_evidence` uses
 `no_supporting_evidence`; arbitrary text never crosses the provider boundary.
 Exact calendar dates, query count, total atom count, and serialized UTF-8 bytes
-have hard contract bounds.
+have hard contract bounds. Phase B applies those bounds before physical SQL,
+then returns explicit branch coverage, truncation, fused candidates, and exact
+hydration proof to A's one review operation.
 
 One model call means one provider transport request made by direct Pi inside
 the owning Smithers compute task. Pi does not retry. A tool loop may make more
@@ -192,6 +196,13 @@ turn planning, reference selection, lexical queries, selections, context
 keep/range/omit choices, memory proposals, and grounded prose. Models never
 write SQL, grant access, mint source identities, choose runtime coordinates,
 repair schemas, or write product state.
+
+For Phase B, code resolves source names inside the accepted run scope, injects
+tenant/user/chat predicates, runs the three physical branches in a bounded
+pool, performs identity-preserving RRF, and owns the single review/replacement
+transition. Provider values never carry the private proof needed for those
+operations.
+
 Phase A makes the local identity boundary explicit. One shared tagged identity
 type covers public documents, publisher documents, chat messages, memories,
 web quotations, and conversation entries. A document key uses its immutable
@@ -327,6 +338,12 @@ source, document snapshot, hash, locator, memory revision, quotation,
 usage, and run identities while holding the canonical storage locks. Later
 settings changes do not reject an accepted run; malformed or tampered scope and
 source-integrity data still fail closed.
+
+The Phase B retrieval terminal is also finite: every query/branch envelope is
+closed, every branch has a cap and truncation flag, and the fast model receives
+one review only. `accept` keeps all fused candidates, `replace` executes one
+complete replacement array, and `no_evidence` returns a typed empty result;
+there is no patch, retry review, or initial-result fallback.
 
 The exact public route is `GET /docs` without authentication. Development and
 preview serve the standalone English HTML directly; production emits
@@ -473,6 +490,7 @@ Evidence kinds are:
 - `chat_message`: an older message in the same accessible chat
 - `memory`: one active saved memory belonging to the user
 - `web`: a verbatim quotation, URL, title, domain, capture time, and optional publication time
+
 ### Phase A pure contract vocabulary
 
 The candidate ledger is an ordered set of immutable entries. IDs must be
@@ -688,7 +706,95 @@ retrieval has begun.
 
 ## A: Internal Retrieval
 
-A owns one atomic information domain: relevant internal evidence. It searches authorized documents and older messages from the same chat through a bounded Pi tool loop.
+### Phase B query and retrieval boundary
+
+A now emits one strict, non-recursive `InternalQueryPlan`. A search plan
+contains the complete provider-authored query array; code does not add a query,
+remove an atom, or infer a source. An atom is a `term` or `phrase`; `all`,
+`anyOf`, and `not` compile to parameterized PostgreSQL full-text predicates.
+There is no product-level three-term rule. Code enforces only the query count,
+serialized UTF-8 plan, total atom, provider-output, branch-row, candidate, and
+hydration bounds. A negative-only query must carry a positive indexed filter.
+
+Before compilation, code resolves document `sourceNames` against the immutable
+accepted scope. Public-source IDs, publisher subscription IDs, company/user
+delivery rows, chat ID, and excluded recent message IDs come only from that
+scope. Unknown, foreign, and stale names all produce the same empty authorized
+set; the provider never learns which case occurred. The three physical branches
+are `public_documents`, `publisher_documents`, and `chat_messages`. A declared
+document or chat scope marks the other branches `not_applicable`; a country
+filter marks the publisher branch `not_applicable` with
+`unsupported_country_filter`. Every query/branch pair returns a coverage row,
+an operational cap, and an explicit truncation flag.
+
+Each logical query resolves its own names; code never shares one source-ID list
+across the query array. The physical SQL uses the canonical schema fields:
+`brief_document_versions.language`, `brief_documents.media_type`,
+`publisher_issues.published_at`, and `publisher_subscriptions.name`. Initial
+chat search rows bind through `chats` and current membership/access joins;
+hydration uses the saved accepted tenant/chat/user scope and does not repeat
+mutable membership authorization. The branches never read a company from
+`ai_runs`. Chat first-stage rows contain only message identity,
+sanitized content hash, and a bounded preview. Chat relevance orders the
+complete full-text rank before deterministic tie fields, while `newest` uses
+time first. The shared historical-assistant citation boundary removes closed
+and unterminated citation spans from search, ranking, previews, hydration,
+ranges, bytes, hashes, and token counts; user and system text stays literal.
+
+Code runs all applicable query/branch jobs under one total query-stage deadline
+and one shared semaphore across every pool wave, inside read-only transactions
+with local statement timeouts set to the remaining total time. Every model value
+is a bound SQL parameter and every source, tenant, company, user, and chat
+predicate is code-owned. Raw rank scores are never compared across stores.
+Stage one consumes one ordered list per physical branch and query and contributes
+`1 / (60 + rank)`. Stage 2a deduplicates exact physical identities and fuses
+public and publisher matches into logical document results for that query while
+retaining every physical identity and provenance entry. Stage 2b ranks those
+logical documents together with chat matches for each query, then contributes
+the logical-query rank across all queries to `finalScore`. All branches and
+queries have equal weight. Each query's requested order controls its physical
+list and its within-query logical rank; the logical stage sorts by stage-one
+score, best physical rank, that query's date direction, and identity. With
+mixed query orders, code retains each order within its own query and uses
+relevance/date-desc only for the final cross-query date tie break. Final
+results always sort by `finalScore` descending, best logical rank ascending,
+then the requested date direction (or date descending for relevance and
+mixed-order ties), then the bytewise canonical representative identity. A
+newest or oldest request never lets date outrank score or best rank. The result
+applies a global candidate cap and then hydrates only the retained identities.
+Hydration verifies
+the immutable snapshot and UTF-8 SHA-256 hash (or the sanitized chat hash),
+requires an exact preview for every retained identity, counts exact fast/main
+model tokens separately, and builds a bounded preview whose UTF-16 ranges
+reconstruct the exact immutable text. Missing rows, identity mismatches, and a
+candidate or total byte cap violation fail closed with a typed bounded-data
+error.
+
+The fast model receives the exact review object: the resolved question, the
+complete initial query array, the provider-safe fused overview, the complete
+top-level branch coverage array, and the top-level truncation flags. The fused
+overview contains only run-local result ID, kind, label/date, exact full-content
+token count, exact preview, normalized score, matched query ordinals, coverage,
+and truncation. Coverage and truncation remain present when the result array is
+empty. It may `accept`, `replace` with one complete replacement array,
+or return `no_evidence`. A replacement discards the initial results, executes
+once, and is never reviewed again; a replacement failure never falls back to
+the initial result set. Before the first review provider call, the required
+private exposure record is the restricted `ai_observations` row described
+below. It stores the exact initial projection digest and its code-owned proof
+envelope: canonical identity, immutable hash, snapshot/extraction binding,
+exact UTF-16 preview ranges, preview byte digest/length, and registered
+fast/main token counts. The row remains durable if the provider throws or
+returns an invalid response. For `replace`, the complete replacement uses the
+same accepted scope, deadline, semaphore, hydration, and counters, then records
+its proof before the operation returns. Provider-visible objects contain no
+source identity, snapshot, hash, SQL, range, or private proof fields.
+
+The retained serial tool-loop description below belongs to the later graph
+cutover and remains only for compatibility while Phase B is introduced. The
+Phase B retrieval operation above is the canonical query/search boundary: it
+executes one complete structured plan, reviews the complete fused overview,
+and permits one complete replacement.
 
 A receives the resolved or topic question, the selected prior-turn IDs for that
 path, locale, market, current date, and tool bounds. Brief code resolves named
@@ -706,7 +812,7 @@ A completed `inspect_internal` reference cannot be repeated. Code returns a prot
 
 On an ordinary successful path, every reference in A's terminal manifest must have one exact complete `inspect_internal` result. A may still select an inspected immutable document without explicit ranges as a whole downstream reduction candidate. When multiple references are needed, A issues their distinct inspections together in one provider turn within the inspection bound rather than spending one turn per reference; this preserves the reserved terminal turn and gives evaluation a provider-request-bound proof of every selected content identity. A prior protocol error instead retains the existing fail-closed recovery rule: the manifest may copy immutable references from successful search or inspection results so a malformed call cannot erase already discovered evidence.
 
-A treats document search as lexical retrieval rather than natural-language answering. It starts with at most three sparse discriminative terms and removes terms after a complete empty result instead of issuing increasingly broad repetitions. Compound concepts use separate indexed tokens rather than hyphenated terms. For older chat-message search, temporal scope words such as old, older, earlier, prior, previous, recent, and latest are not required content lexemes; the runtime removes them before PostgreSQL lexical matching so a temporal modifier cannot exclude the subject statement. For a non-English question, its first document query includes sparse English content-term alternatives, using web-search `OR` where needed so the English fallback does not exclude a same-language document; a second refinement, if needed, reduces to one or two English content anchors. This cross-language protocol does not authorize filler words, phrase prose, or source-language assumptions from catalog metadata. Search terms remain A's provider-authored decision; code does not generate a semantic shortlist or substitute evidence. Each ordinary provider turn makes at most one search call and waits for its complete result before refinement or a distinct-subject search. A budgets the configured loop so relevant results can be inspected and the final provider turn can contain only `emit_internal_manifest`. A complete result closes that exact query, while a second distinct query may consume the remaining ordinary-turn budget so a comparison can cover another named subject. Repeating a completed query without its cursor is a protocol error. After the second ordinary search turn, the runtime removes `search_internal` from the advertised tools and preserves inspection/terminal recovery; a stale replay of that name receives a bounded code-owned tool result so the provider can use the remaining advertised inspection or terminal tool without causing an external repeat. If that protocol recovery reaches the final turn and the provider emits an empty manifest, Brief may substitute only the deduplicated immutable references already exposed by successful search/inspection results; ordinary empty searches still do not authorize evidence. On the final turn, when no continuation obligation remains, the runtime exposes only the terminal tool; repeated empty searches cannot consume the terminal slot. An unresolved cursor or narrower-range obligation still fails closed rather than being discarded to force a terminal result.
+The retained serial path previously treated document search as lexical retrieval rather than natural-language answering. It started with at most three sparse discriminative terms, removed terms after a complete empty result, and applied a one-search-per-turn tool loop. Those repair, temporal-word removal, cross-language fallback, inspection, and terminal-manifest rules belong only to that later compatibility path; they do not govern the Phase B structured query boundary above.
 
 For an older-chat question that asks for an attribute whose wording may differ from the prior answer, A first searches the stable subject identity rather than requiring the requested attribute as another lexeme. When one chat search returns both a participant question and the substantive assistant answer to it, the smallest relevant manifest selects the answer message containing the requested evidence; it does not include the participant question merely because that question repeats the subject. User-authored messages remain eligible when their text is itself the evidence requested by the current turn.
 
@@ -936,6 +1042,12 @@ source's JSON-framed marginal cost, not a count of the raw
 
 Every rejected candidate has a typed reason such as `inaccessible`, `missing`, `invalid_range`, `duplicate`, or `overlap_merged`. Rejection is recorded without copying restricted source text.
 
+Phase B's fused internal candidates enter this ledger only after code verifies
+their immutable snapshot and UTF-8 hash and counts the exact registered model
+tokens. A query review may accept the complete set or replace the complete
+query array once; it cannot select individual result IDs or merge a failed
+replacement with the initial set.
+
 After the initial measurement or O loop resolves, each `single/topic-context-select` materializes the exact kept/ranged prompt and the normalized source data carried through the selected answer branch:
 
 ```ts
@@ -1121,6 +1233,10 @@ usableInput(requestClass, model) = min(
 The requested output limit is sent explicitly to the provider.
 
 Every Pi invocation passes an exact gate immediately before the provider call. This includes plan-turn, every A/B/W tool-loop turn, every O planning/tool-loop turn, memory extraction, direct answers, topic answers, and synthesis. Passing an earlier task measurement is never sufficient.
+
+The Phase B query-review request uses the exact fast-model counter and includes
+the complete initial query array plus only the provider-safe fused overview.
+Its source previews are exposures, but its input has no private identity proof.
 
 Immediately before each content-bearing provider request, Brief validates the
 saved acceptance scope and exact integrity identities needed for that request.
@@ -1985,19 +2101,40 @@ explicit exceptional denies.
 
 `chat_messages`: id, chat id, author, content, assistant ai run id when applicable, created at; assistant run ID is unique.
 
+Phase B older-chat retrieval reads only the accepted chat and tenant, excludes
+the current and selected recent message IDs, and joins the accepted user run
+scope. It returns bounded metadata and a truncation sentinel before hydration;
+sanitized assistant text is hashed again when immutable content is loaded.
+
 `ai_runs`: id, chat id, initiating user id, unique user message id, assistant message id, Smithers run id, random per-answer `citationNamespace`, one immutable server-derived `acceptance_scope`, next event sequence, locale, market, error code, retryable flag, created at, started at, finished at, failed at. The scope contains company identity, exact selected source/subscription/public-source IDs, memory mode and revision IDs, requested/effective web state, provider and model IDs, web transport provider, and canonical domain allowlist. Status derives from timestamps. Partial unique indexes on chat ID and initiating user ID where both terminal timestamps are null enforce one active run per chat and per memory owner.
 
 `ai_run_events`: identity id, run id, monotonic seq, deterministic emission key, event JSON, emitting task, created at; unique on run/seq and on run/emission key. Rows are transient restricted content. The run row holds the next-event sequence and is locked so a losing idempotency insert does not consume a public sequence.
+
+Phase B retrieval keeps branch rows and hydrated identity proofs in the worker
+boundary. It does not copy full source bodies into observations or provider
+results; any later exposure record binds the exact preview or range to the
+immutable source proof.
 
 `brief_document_versions`: publisher document id, exact one-to-one `publisher_extraction_id` foreign key to `brief_document_extractions`, immutable canonical text, lowercase content hash, page ranges, and search projection. The foreign key is unique, points to an extraction for the same PDF row, and is required for a publisher version. Ready-state constraints reject extraction replacement, version-pointer movement, PDF/text/hash/range mutation, and ordinary deletion; only the fenced complete-record purge may remove the bound rows.
 
 `ai_source_exposures`: run id, task id, loop iteration, attempt, provider-request index, source kind, logical source identity, publisher issue/document/extraction IDs when applicable, content-item identity, exposure stage, exact visible token count, and created at; unique on all execution coordinates, stage, and content-item identity. Document search previews use `internal_search_preview`; chat-message search previews use `internal_chat_search_preview`, so a later full `internal_inspection` remains a distinct exposure. Every content-bearing document row, including `internal_search_preview`, persists a namespaced source ID, document ID, immutable snapshot ID, lowercase SHA-256 content hash, normalized non-overlapping UTF-16 range array, and, for publisher documents only, the exact `publisher_extraction_id` as one required set. The publisher extraction ID has a foreign key to the version's one-to-one binding; public rows must keep it null. Metadata-only lookup creates no row. Rows contain no copied source body. Exact replay of an exposure and its provider-request attestation is idempotent; any conflict in a bound exposure or attestation field, including extraction identity, fails closed inside the transaction. Run-level exposed-item counts derive by distinct run/content-item identity, publisher issue/document pulls by their separate distinct run/logical IDs, and the full per-attempt rows support the detailed funnel.
 
+Phase B writes a restricted `structured_retrieval_review_preview` observation
+before the review provider call. It stores a digest of the provider-safe
+projection and, for each private result, the immutable identity, hash,
+snapshot/extraction tuple, UTF-16 preview ranges, preview byte digest and
+length, and exact fast/main token counts. It copies no source text. The worker
+reloads the accepted immutable row and reconstructs the preview from those
+ranges after provider failure or invalid output. Provider projections carry
+none of these private fields. Phase E may extend `ai_source_exposures` with
+the final chat range proof; that later table is not the Phase B durability
+boundary.
+
 `assistant_message_sources`: assistant message id, source key, kind, typed immutable locator JSON matching `SourceLocator`, kind-specific indexed identity columns including namespaced `sourceId` plus document/snapshot hash for documents and the exact `publisher_extraction_id` for publisher documents, `snapshot_id`, `message_id`, and `memory_revision_id`, snapshotted nullable display label, snapshotted public provenance JSON, created at; unique on message and source key. The extraction column has a foreign key to the version's required one-to-one extraction binding and is null for public documents. The locator therefore persists document namespace/source/snapshot/hash/range union and publisher extraction identity, message identity, exact memory revision, or web URL/title/domain/quote/quote hash/publication/capture times without later derivation from mutable state. The indexed extraction and memory revisions are protected references used by provenance retention and GC. These rows are the immutable turn-local source map; extraction identity is omitted from every public projection.
 
 `assistant_message_source_uses`: assistant message id, source key, consumer task ID, topic ID when applicable, exact rendered token count, deterministic context order, exact ranges JSON, created at; unique on message, source key, and consumer task. These rows reproduce which slice each direct/topic consumer received and power aggregate `sourcesRead` metadata.
 
-`ai_observations`: id, run id, chat id, emitting task, loop iteration, attempt, deterministic observation key, kind, payload JSON, created at; unique on run and observation key. Payloads hold typed plans, IDs, measurements, reasons, and counts without copying internal source text. An exact replay of an owning task returns the existing logical observation; a conflict in any bound identity, kind, or payload field fails closed inside the transaction.
+`ai_observations`: id, run id, chat id, emitting task, loop iteration, attempt, deterministic observation key, kind, payload JSON, created at; unique on run and observation key. Payloads hold typed plans, IDs, measurements, reasons, and counts without copying internal source text. The restricted Phase B `structured_retrieval_review_preview` payload is the narrow exception: it stores private identity and immutable-proof digests plus ranges and token counts, but no source text. An exact replay of an owning task returns the existing logical observation; a conflict in any bound identity, kind, or payload field fails closed inside the transaction.
 
 `ai_run_usage`: numeric bigint row id, run id, task id, loop iteration, attempt, provider request index, agent role, model id, immutable actual provider service ID (`zai_coding_plan_official`, `deterministic_test`, `openai_compatible_custom`, or migration-only ineligible `pre_attestation_unknown`), input, output, cached, reasoning and total tokens, stop reason, created at; unique on the execution coordinates. Exact replay of a usage row is idempotent, while any conflict in its bound coordinate, role, model, provider identity, accounting, or stop reason fails closed before its usage event can be appended. The trusted evidence boundary represents `created_at` as canonical ISO UTC milliseconds. Durable chronology is that exact serialized timestamp followed by numeric bigint `id`, never raw sub-millisecond database order, lexical ID order, or provider-coordinate sorting; the loaded evidence array is canonically sorted on those represented fields before validation and hashing. This preserves every represented timestamp while making concurrent rows within one serialized millisecond deterministic. Within each task that chronology must agree with increasing loop/attempt/request-index coordinates; a later coordinate backdated ahead of an earlier coordinate invalidates trusted capture. The pinned Pi OpenAI-compatible transport reports uncached prompt tokens as `input`, cache reads and writes separately, and a `total` that includes all three prompt buckets plus output. Brief combines Pi cache reads and writes into `cached`, so every row satisfies `total = input + cached + output`; reasoning is already a subset of output and is not added again. Exact local/provider prompt parity therefore compares the local request count with `input + cached`, never uncached input alone. `zai_coding_plan_official` is assigned only to the exact official Coding Plan origin `https://api.z.ai/api/coding/paas/v4`; another OpenAI-compatible origin is never relabeled as Z.AI. Known usage from failed attempts is retained. The provider service cannot be relabeled after insertion.
 
@@ -2092,6 +2229,13 @@ Logs never contain raw user or assistant text, resolved questions, topic questio
 
 Durable restricted observations, not console logs, are the product debugging record.
 
+Retrieval observations and logs may report query/branch counts, caps,
+truncation, candidate totals, hydrated bytes, review action, and typed failure
+stage. Ordinary retrieval observations never report query text, source names,
+source or message IDs, hashes, SQL, or source text. The restricted Phase B
+review-preview observation carries only the private identity and proof fields
+listed above, and never copies source text.
+
 ## Configuration
 
 Configuration is decoded through the shared config package and worker/API loaders.
@@ -2128,6 +2272,12 @@ The worker loader accepts every non-fixed numeric setting below only as a safe i
 - `AI_ANSWER_TIMEOUT_MS`, default `120000`, code-owned hard maximum `900000`
 - `AI_STREAM_POLL_MS`, default `300`, code-owned hard maximum `10000`
 - `AI_STREAM_KEEPALIVE_MS`, default `15000`, code-owned hard maximum `300000`
+- `AI_RETRIEVAL_MAX_QUERIES`, default `24`, code-owned hard maximum `64`
+- `AI_RETRIEVAL_MAX_BRANCH_ROWS`, default `25`, code-owned hard maximum `256`; each branch reads one sentinel row to report truncation
+- `AI_RETRIEVAL_MAX_CANDIDATES`, default `64`, code-owned hard maximum `512`
+- `AI_RETRIEVAL_MAX_HYDRATED_BYTES`, default `2000000`, code-owned hard maximum `16777216`
+- `AI_RETRIEVAL_MAX_CONCURRENCY`, default `4`, code-owned hard maximum `32`
+- `AI_RETRIEVAL_QUERY_TIMEOUT_MS`, default `30000`, code-owned hard maximum `600000`
 
 Model context metadata, tokenizer identity, chat template, and exact counting implementation are code-owned registry entries, not user-provided environment values.
 
@@ -2148,6 +2298,13 @@ Plan-turn clarification is a successful assistant turn.
 Invalid plan-turn IDs or topics, invented B IDs, invalid manifests, and invalid O accounting are schema or validation failures and receive bounded task retries.
 
 If any fast-agent request or accumulated tool transcript cannot pass its exact gate, the path fails `agent_context_budget_exceeded`. The runtime never drops prior tool messages or silently clips a tool result to retry it.
+
+If a physical retrieval branch times out, is interrupted, or returns an
+integrity or bounded-data error, the retrieval stage fails visibly. A
+`not_applicable` branch is a successful empty coverage row, while an unknown or
+unauthorized named source resolves to the same empty accepted set as any other
+non-match. A failed query replacement never falls back to the initial result
+set, and `no_evidence` returns a typed empty internal result.
 
 If a selected internal, memory, or requested web domain exhausts retries, the path fails. The runtime does not silently pretend the unavailable domain returned no relevant material.
 
@@ -2192,13 +2349,14 @@ Unknown citation keys remain text and create a defect observation.
 ## Testing
 
 Pure tests cover:
+
 - Phase A hostile strict query-plan/review inputs, exact dates, negative-only scope checks, branch coverage, and exact query, atom, hit, and UTF-8 bounds
 - canonical identity conflicts, duplicate physical hits, branch-kind checks, RRF score/provenance proof, stable bytewise ties, and global fusion truncation
 - exact review-model projection and private-field absence
 - sequential candidate IDs, duplicate canonical identities, normalized surrogate-safe ranges, and exact preview reconstruction
 - bounded, ordered, non-overlapping passage indexing, malformed-surrogate rejection, exact token/UTF-8 limits, provider passage views, and range reconstruction
 - complete manifest and group envelopes, fallback omission and strict-subset proof, frozen memberships, complete merge, and measured source-tool eligibility
-
+- Phase B normalized boolean compilation, accepted-scope fail-closed resolution, branch coverage and sentinels, two-stage RRF, exact hydration/hash/preview/token checks, and one review replacement
 - plan-turn strict union validation, first-turn invocation, prior-turn selection, and fanout normalization
 - internal query compilation and authorization injection
 - B ownership and saved memory-revision scope validation
@@ -2228,6 +2386,7 @@ Postgres integration tests cover:
 - archive-and-replace migration constraints, transaction copy rules, same-ID replay, competing IDs, concurrent resets, source revocation, no purge clock on archive, and retained history after physical replacement deletion
 - archived transcript reads, active-list exclusion, message/run rejection after archive, reset-versus-message ordering, and reset-versus-finalization ordering
 - same-chat older-message search and deleted-message exclusion
+- Phase B public, publisher, and older-chat branch access joins, sentinel truncation, accepted-name scoping, snapshot/hash hydration, and one replacement execution
 - source authorization at search and hydration time
 - final-context and finalization integrity handling, including later ordinary authorization changes that must not reject an accepted run
 - idempotent source exposures, observations, usage, finalization, and memory writes

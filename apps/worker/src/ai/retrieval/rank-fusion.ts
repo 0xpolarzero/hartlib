@@ -17,6 +17,7 @@ import {
   type BranchReasonCode,
   type BranchStatus,
   type QueryBranch,
+  type QueryOrder,
 } from "./query-spec";
 
 export {
@@ -32,6 +33,15 @@ export type RetrievalCanonicalIdentity = Extract<
 >;
 
 const utf8 = new TextEncoder();
+
+const parseFusionDate = (value: string | null | undefined): string | null => {
+  if (value === null || value === undefined) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("fused result date is invalid");
+  }
+  return date.toISOString();
+};
 
 export const compareBytewise = (left: string, right: string): number => {
   const leftBytes = utf8.encode(left);
@@ -68,6 +78,7 @@ export interface RankedBranchHit<T = unknown> {
 export interface RankedBranchResult<T = unknown> {
   readonly queryOrdinal: number;
   readonly branch: QueryBranch;
+  readonly order?: QueryOrder | undefined;
   readonly status: BranchStatus;
   readonly reason?: BranchReasonCode | undefined;
   readonly hits: readonly RankedBranchHit<T>[];
@@ -78,7 +89,10 @@ export interface RankedBranchResult<T = unknown> {
 export interface FusedProvenance {
   readonly queryOrdinal: number;
   readonly branch: QueryBranch;
+  /** The rank in the physical branch list. */
   readonly rank: number;
+  /** The rank after stage 2b for this logical query. */
+  readonly logicalRank?: number | undefined;
 }
 
 export interface FusedResult<T = unknown> {
@@ -91,6 +105,8 @@ export interface FusedResult<T = unknown> {
   readonly bestRank: number;
   readonly date: string | null;
   readonly provenance: readonly FusedProvenance[];
+  /** Exact physical identities represented by one logical document result. */
+  readonly physicalIdentities?: readonly RetrievalCanonicalIdentity[] | undefined;
   readonly matchedQueryOrdinals: readonly number[];
 }
 
@@ -116,6 +132,7 @@ export interface RrfFusionOptions<T> {
   readonly hydrationBytes?: ((value: T) => number) | undefined;
   readonly k?: number | undefined;
   readonly order?: "relevance" | "newest" | "oldest" | undefined;
+  readonly queryOrders?: ReadonlyMap<number, QueryOrder> | undefined;
 }
 
 const positiveInt = (value: number, name: string): void => {
@@ -163,6 +180,14 @@ const assertBranch = <T>(branch: RankedBranchResult<T>): void => {
   if (branch.status !== "applicable" && branch.status !== "not_applicable") {
     throw new Error("unknown branch status");
   }
+  if (
+    branch.order !== undefined &&
+    branch.order !== "relevance" &&
+    branch.order !== "newest" &&
+    branch.order !== "oldest"
+  ) {
+    throw new Error("unknown branch order");
+  }
   if (branch.status === "not_applicable") {
     if (branch.reason === undefined || !BranchReasonCodeSchema.safeParse(branch.reason).success) {
       throw new Error("not-applicable branches need a reason");
@@ -202,6 +227,89 @@ const sameIdentityProof = (
   JSON.stringify(CanonicalIdentitySchema.parse(left)) ===
   JSON.stringify(CanonicalIdentitySchema.parse(right));
 
+const physicalIdentityAnchor = (identity: RetrievalCanonicalIdentity): string => {
+  switch (identity.kind) {
+    case "public_document":
+      return JSON.stringify(["public_document", identity.documentId]);
+    case "publisher_document":
+      return JSON.stringify(["publisher_document", identity.documentId]);
+    case "chat_message":
+      return JSON.stringify(["chat_message", identity.messageId]);
+  }
+};
+
+const stableProof = <T>(value: T): string => JSON.stringify(value) ?? "undefined";
+
+const sameHitProof = <T>(left: RankedBranchHit<T>, right: RankedBranchHit<T>): boolean =>
+  sameIdentityProof(left.identity, right.identity) &&
+  parseFusionDate(left.date) === parseFusionDate(right.date) &&
+  stableProof(left.value) === stableProof(right.value);
+
+const logicalDocumentKey = (identity: RetrievalCanonicalIdentity): string => {
+  if (identity.kind === "chat_message") return physicalIdentityAnchor(identity);
+  return JSON.stringify(["logical_document", identity.documentId, identity.snapshotId]);
+};
+
+const queryOrderFor = <T>(
+  queryOrdinal: number,
+  branchOrder: QueryOrder | undefined,
+  options: RrfFusionOptions<T>,
+): QueryOrder =>
+  options.queryOrders?.get(queryOrdinal) ?? branchOrder ?? options.order ?? "relevance";
+
+const compareStageResults = (
+  left: {
+    readonly score: number;
+    readonly bestRank: number;
+    readonly date: string | null;
+    readonly identityKey: string;
+  },
+  right: {
+    readonly score: number;
+    readonly bestRank: number;
+    readonly date: string | null;
+    readonly identityKey: string;
+  },
+  order: QueryOrder,
+): number => {
+  const score = right.score - left.score;
+  if (score !== 0) return score;
+  const rank = left.bestRank - right.bestRank;
+  if (rank !== 0) return rank;
+  const date =
+    order === "oldest"
+      ? compareBytewise(left.date ?? "", right.date ?? "")
+      : compareBytewise(right.date ?? "", left.date ?? "");
+  if (date !== 0) return date;
+  return compareBytewise(left.identityKey, right.identityKey);
+};
+
+const compareFinalResults = (
+  left: {
+    readonly score: number;
+    readonly bestRank: number;
+    readonly date: string | null;
+    readonly identityKey: string;
+  },
+  right: {
+    readonly score: number;
+    readonly bestRank: number;
+    readonly date: string | null;
+    readonly identityKey: string;
+  },
+  order: QueryOrder,
+): number => {
+  const score = right.score - left.score;
+  if (score !== 0) return score;
+  const rank = left.bestRank - right.bestRank;
+  if (rank !== 0) return rank;
+  const date =
+    order === "oldest"
+      ? compareBytewise(left.date ?? "", right.date ?? "")
+      : compareBytewise(right.date ?? "", left.date ?? "");
+  return date || compareBytewise(left.identityKey, right.identityKey);
+};
+
 export const reciprocalRankContribution = (rank: number, k = 60): number => {
   positiveInt(rank, "rank");
   positiveInt(k, "RRF k");
@@ -227,6 +335,7 @@ export const RankedBranchResultSchema = z
   .strictObject({
     queryOrdinal: positiveSafeInt,
     branch: z.enum(PHYSICAL_QUERY_BRANCHES),
+    order: z.enum(["relevance", "newest", "oldest"]).optional(),
     status: z.enum(["applicable", "not_applicable"]),
     reason: BranchReasonCodeSchema.optional(),
     hits: z.array(RankedBranchHitSchema),
@@ -314,6 +423,7 @@ export const fuseRankedResults = <T>(
 
   type Accumulator = Omit<FusedResult<T>, "resultId">;
   const byIdentity = new Map<string, Accumulator>();
+  const proofHits = new Map<string, RankedBranchHit<T>>();
   const orderedHits = branches
     .filter((branch) => branch.status === "applicable")
     .flatMap((branch) => branch.hits)
@@ -324,12 +434,23 @@ export const fuseRankedResults = <T>(
         left.rank - right.rank ||
         compareBytewise(canonicalIdentityKey(left.identity), canonicalIdentityKey(right.identity)),
     );
+
   for (const hit of orderedHits) {
-    const identityKey = canonicalIdentityKey(hit.identity);
+    const hitDate = parseFusionDate(hit.date);
+    const identityKey = physicalIdentityAnchor(hit.identity);
     const contribution = reciprocalRankContribution(hit.rank, k);
     const previous = byIdentity.get(identityKey);
-    if (previous !== undefined && !sameIdentityProof(previous.identity, hit.identity)) {
+    const previousHit = proofHits.get(identityKey);
+    if (previousHit !== undefined && !sameHitProof(previousHit, hit)) {
       throw new Error("canonical identity has conflicting immutable proof fields");
+    }
+    if (
+      previous?.date !== null &&
+      previous?.date !== undefined &&
+      hitDate !== null &&
+      previous.date !== hitDate
+    ) {
+      throw new Error("canonical identity has conflicting date fields");
     }
     const provenance = [
       ...(previous?.provenance ?? []),
@@ -342,36 +463,27 @@ export const fuseRankedResults = <T>(
     );
     byIdentity.set(identityKey, {
       identity: previous?.identity ?? hit.identity,
-      identityKey,
+      identityKey: canonicalIdentityKey(previous?.identity ?? hit.identity),
       value: previous?.value ?? hit.value,
       score: (previous?.score ?? 0) + contribution,
       rrfK: k,
       bestRank: Math.min(previous?.bestRank ?? hit.rank, hit.rank),
-      date: previous?.date ?? hit.date ?? null,
+      date: previous?.date ?? hitDate,
       provenance,
       matchedQueryOrdinals: [...new Set(provenance.map((item) => item.queryOrdinal))].sort(
         (left, right) => left - right,
       ),
     });
+    proofHits.set(identityKey, previousHit ?? hit);
   }
 
   const order = options.order ?? "relevance";
   if (order !== "relevance" && order !== "newest" && order !== "oldest") {
     throw new Error("unknown fusion order");
   }
-  const sorted = [...byIdentity.values()].sort((left, right) => {
-    const score = right.score - left.score;
-    if (score !== 0) return score;
-    const rank = left.bestRank - right.bestRank;
-    if (rank !== 0) return rank;
-    const leftDate = left.date ?? "";
-    const rightDate = right.date ?? "";
-    const date =
-      order === "oldest"
-        ? compareBytewise(leftDate, rightDate)
-        : compareBytewise(rightDate, leftDate);
-    return date || compareBytewise(left.identityKey, right.identityKey);
-  });
+  const sorted = [...byIdentity.values()].sort((left, right) =>
+    compareFinalResults(left, right, order),
+  );
 
   const candidateLimited = sorted.slice(0, candidateCap);
   const hydrated: Accumulator[] = [];
@@ -427,6 +539,275 @@ export const fuseRankedResults = <T>(
   };
 };
 
+/** Execute the plan's physical-to-logical-to-cross-query rank fusion. */
+export const fuseTwoStageRankedResults = <T>(
+  branches: readonly RankedBranchResult<T>[],
+  options: RrfFusionOptions<T> = {},
+): FusedResultSet<T> => {
+  const k = options.k ?? 60;
+  const candidateCap = options.maxCandidates ?? Number.MAX_SAFE_INTEGER;
+  positiveInt(k, "RRF k");
+  positiveInt(candidateCap, "candidate cap");
+  if (options.maxHydratedBytes !== undefined) {
+    positiveInt(options.maxHydratedBytes, "hydration byte cap");
+    if (options.hydrationBytes === undefined) {
+      throw new Error("hydration byte measurement is required with a hydration cap");
+    }
+  }
+  for (const branch of branches) assertBranch(branch);
+  const keys = new Set(branches.map((branch) => `${branch.queryOrdinal}\u0000${branch.branch}`));
+  if (keys.size !== branches.length) throw new Error("query/branch results must be unique");
+  const envelopeError = coverageEnvelopeError(branches);
+  if (envelopeError !== null) throw new Error(envelopeError);
+
+  type PhysicalAccumulator = {
+    readonly value: T;
+    readonly date: string | null;
+  };
+  type LogicalAccumulator = {
+    readonly identity: RetrievalCanonicalIdentity;
+    readonly identityKey: string;
+    readonly value: T;
+    readonly date: string | null;
+    readonly stageOneScore: number;
+    readonly bestPhysicalRank: number;
+    readonly provenance: readonly FusedProvenance[];
+    readonly physicalIdentities: readonly RetrievalCanonicalIdentity[];
+  };
+  type QueryAccumulator = {
+    readonly physical: Map<string, PhysicalAccumulator>;
+    readonly logical: Map<string, LogicalAccumulator>;
+  };
+  const byQuery = new Map<number, QueryAccumulator>();
+  const proofHits = new Map<string, RankedBranchHit<T>>();
+  const documentSnapshotProof = new Map<string, string>();
+  const orderedHits = branches
+    .filter((branch) => branch.status === "applicable")
+    .flatMap((branch) => branch.hits)
+    .sort(
+      (left, right) =>
+        left.queryOrdinal - right.queryOrdinal ||
+        compareBytewise(left.branch, right.branch) ||
+        left.rank - right.rank ||
+        compareBytewise(canonicalIdentityKey(left.identity), canonicalIdentityKey(right.identity)),
+    );
+  for (const hit of orderedHits) {
+    const hitDate = parseFusionDate(hit.date);
+    const identityKey = physicalIdentityAnchor(hit.identity);
+    const logicalKey = logicalDocumentKey(hit.identity);
+    const queryState =
+      byQuery.get(hit.queryOrdinal) ??
+      ({
+        physical: new Map<string, PhysicalAccumulator>(),
+        logical: new Map<string, LogicalAccumulator>(),
+      } satisfies QueryAccumulator);
+    if (hit.identity.kind !== "chat_message") {
+      const documentSnapshotKey = JSON.stringify([
+        "document_snapshot",
+        hit.identity.documentId,
+        hit.identity.snapshotId,
+      ]);
+      const priorHash = documentSnapshotProof.get(documentSnapshotKey);
+      if (priorHash !== undefined && priorHash !== hit.identity.contentHash) {
+        throw new Error("canonical identity has conflicting immutable proof fields");
+      }
+      documentSnapshotProof.set(documentSnapshotKey, hit.identity.contentHash);
+    }
+    const previousPhysical = proofHits.get(identityKey);
+    if (previousPhysical !== undefined && !sameHitProof(previousPhysical, hit)) {
+      throw new Error("canonical identity has conflicting immutable proof fields");
+    }
+    const physical = queryState.physical.get(identityKey);
+    if (physical !== undefined) {
+      if (physical.date !== hitDate || stableProof(physical.value) !== stableProof(hit.value)) {
+        throw new Error("canonical identity has conflicting immutable proof fields");
+      }
+    } else {
+      queryState.physical.set(identityKey, {
+        value: hit.value,
+        date: hitDate,
+      });
+    }
+    const previous = queryState.logical.get(logicalKey);
+    if (previous !== undefined && previous.date !== hitDate) {
+      throw new Error("logical document has conflicting date fields");
+    }
+    const provenance = [
+      ...(previous?.provenance ?? []),
+      { queryOrdinal: hit.queryOrdinal, branch: hit.branch, rank: hit.rank },
+    ].sort(
+      (left, right) =>
+        left.queryOrdinal - right.queryOrdinal ||
+        compareBytewise(left.branch, right.branch) ||
+        left.rank - right.rank,
+    );
+    const physicalIdentities = [...(previous?.physicalIdentities ?? [])];
+    if (!physicalIdentities.some((identity) => physicalIdentityAnchor(identity) === identityKey)) {
+      physicalIdentities.push(hit.identity);
+    }
+    const next = {
+      identity: previous?.identity ?? hit.identity,
+      identityKey: previous?.identityKey ?? canonicalIdentityKey(hit.identity),
+      value: previous?.value ?? hit.value,
+      date: previous?.date ?? hitDate,
+      stageOneScore: (previous?.stageOneScore ?? 0) + reciprocalRankContribution(hit.rank, k),
+      bestPhysicalRank: Math.min(previous?.bestPhysicalRank ?? hit.rank, hit.rank),
+      provenance,
+      physicalIdentities,
+    };
+    queryState.logical.set(logicalKey, next);
+    proofHits.set(identityKey, previousPhysical ?? hit);
+    byQuery.set(hit.queryOrdinal, queryState);
+  }
+
+  const order = options.order ?? "relevance";
+  if (order !== "relevance" && order !== "newest" && order !== "oldest") {
+    throw new Error("unknown fusion order");
+  }
+  const logicalRanks = new Map<
+    string,
+    {
+      readonly identity: RetrievalCanonicalIdentity;
+      readonly identityKey: string;
+      readonly value: T;
+      readonly date: string | null;
+      readonly score: number;
+      readonly bestRank: number;
+      readonly provenance: readonly FusedProvenance[];
+      readonly physicalIdentities: readonly RetrievalCanonicalIdentity[];
+      readonly matchedQueryOrdinals: readonly number[];
+    }
+  >();
+  const queryOrders = new Map<number, QueryOrder>();
+  for (const branch of branches) {
+    const prior = queryOrders.get(branch.queryOrdinal);
+    if (branch.order !== undefined || prior === undefined) {
+      queryOrders.set(
+        branch.queryOrdinal,
+        queryOrderFor(branch.queryOrdinal, branch.order, options),
+      );
+    }
+  }
+  for (const [queryOrdinal, queryState] of [...byQuery.entries()].sort(
+    ([left], [right]) => left - right,
+  )) {
+    const queryOrder = queryOrders.get(queryOrdinal) ?? "relevance";
+    const logical = [...queryState.logical.values()].sort((left, right) =>
+      compareStageResults(
+        {
+          score: left.stageOneScore,
+          bestRank: left.bestPhysicalRank,
+          date: left.date,
+          identityKey: left.identityKey,
+        },
+        {
+          score: right.stageOneScore,
+          bestRank: right.bestPhysicalRank,
+          date: right.date,
+          identityKey: right.identityKey,
+        },
+        queryOrder,
+      ),
+    );
+    for (const [index, item] of logical.entries()) {
+      const logicalRank = index + 1;
+      const key = logicalDocumentKey(item.identity);
+      const prior = logicalRanks.get(key);
+      if (prior !== undefined && prior.date !== item.date) {
+        throw new Error("logical document has conflicting date fields");
+      }
+      const provenance = [
+        ...(prior?.provenance ?? []),
+        ...item.provenance.map((entry) => ({ ...entry, logicalRank })),
+      ].sort(
+        (left, right) =>
+          left.queryOrdinal - right.queryOrdinal ||
+          compareBytewise(left.branch, right.branch) ||
+          left.rank - right.rank,
+      );
+      logicalRanks.set(key, {
+        identity: prior?.identity ?? item.identity,
+        identityKey: prior?.identityKey ?? item.identityKey,
+        value: prior?.value ?? item.value,
+        date: prior?.date ?? item.date,
+        score: (prior?.score ?? 0) + reciprocalRankContribution(logicalRank, k),
+        bestRank: Math.min(prior?.bestRank ?? logicalRank, logicalRank),
+        provenance,
+        physicalIdentities: [
+          ...(prior?.physicalIdentities ?? []),
+          ...item.physicalIdentities.filter(
+            (identity) =>
+              !(prior?.physicalIdentities ?? []).some(
+                (priorIdentity) =>
+                  canonicalIdentityKey(priorIdentity) === canonicalIdentityKey(identity),
+              ),
+          ),
+        ],
+        matchedQueryOrdinals: [...new Set(provenance.map((entry) => entry.queryOrdinal))].sort(
+          (left, right) => left - right,
+        ),
+      });
+    }
+  }
+
+  const distinctOrders = new Set(queryOrders.values());
+  const finalOrder =
+    distinctOrders.size === 1
+      ? ([...distinctOrders][0] ?? options.order ?? "relevance")
+      : "relevance";
+  const sorted = [...logicalRanks.values()].sort((left, right) =>
+    compareFinalResults(left, right, finalOrder),
+  );
+  const candidateLimited = sorted.slice(0, candidateCap);
+  const hydrated: typeof sorted = [];
+  let hydratedBytes = 0;
+  let hydrationTruncated = false;
+  for (const result of candidateLimited) {
+    const bytes = options.hydrationBytes?.(result.value) ?? 0;
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      throw new Error("hydration byte measurement must be a non-negative safe integer");
+    }
+    if (
+      options.maxHydratedBytes !== undefined &&
+      hydratedBytes + bytes > options.maxHydratedBytes
+    ) {
+      if (hydrated.length === 0) throw new Error("one candidate exceeds the hydration byte cap");
+      hydrationTruncated = true;
+      break;
+    }
+    hydrated.push(result);
+    hydratedBytes += bytes;
+  }
+  const orderedBranches = [...branches].sort(
+    (left, right) =>
+      left.queryOrdinal - right.queryOrdinal || compareBytewise(left.branch, right.branch),
+  );
+  return {
+    results: hydrated.map((result, index) => ({
+      ...result,
+      rrfK: k,
+      resultId: `r${index + 1}` as `r${number}`,
+    })),
+    coverage: orderedBranches.map((branch) => ({
+      queryOrdinal: branch.queryOrdinal,
+      branch: branch.branch,
+      status: branch.status,
+      ...(branch.reason === undefined ? {} : { reason: branch.reason }),
+      hitCount: branch.hits.length,
+      truncated: branch.truncated,
+      cap: branch.cap,
+    })),
+    candidateCountBeforeCap: sorted.length,
+    candidateCap,
+    hydratedBytes,
+    hydrationByteCap: options.maxHydratedBytes ?? null,
+    truncation: {
+      branch: branches.some((branch) => branch.truncated),
+      candidates: sorted.length > candidateCap,
+      hydration: hydrationTruncated,
+    },
+  };
+};
 
 export interface ReviewResultValue {
   readonly kind: "document" | "chat_message";
@@ -503,6 +884,7 @@ export const FusedResultSchema = z
     resultId: ResultLocalIdSchema,
     identity: CanonicalIdentitySchema,
     identityKey: z.string().min(1),
+    physicalIdentities: z.array(CanonicalIdentitySchema).min(1).optional(),
     value: z.unknown(),
     score: z.number().finite().positive(),
     rrfK: positiveSafeInt,
@@ -514,6 +896,7 @@ export const FusedResultSchema = z
           queryOrdinal: positiveSafeInt,
           branch: z.enum(PHYSICAL_QUERY_BRANCHES),
           rank: positiveSafeInt,
+          logicalRank: positiveSafeInt.optional(),
         }),
       )
       .min(1),
@@ -537,7 +920,10 @@ export const FusedResultSchema = z
         message: "query ordinals do not match provenance",
       });
     }
-    if (result.bestRank !== Math.min(...result.provenance.map((entry) => entry.rank))) {
+    if (
+      result.bestRank !==
+      Math.min(...result.provenance.map((entry) => entry.logicalRank ?? entry.rank))
+    ) {
       context.addIssue({
         code: "custom",
         path: ["bestRank"],
@@ -555,7 +941,10 @@ export const FusedResultSchema = z
       });
     }
     for (const [index, entry] of result.provenance.entries()) {
-      if (!identityMatchesBranch(entry.branch, result.identity as RetrievalCanonicalIdentity)) {
+      const identities = (result.physicalIdentities ?? [
+        result.identity,
+      ]) as RetrievalCanonicalIdentity[];
+      if (!identities.some((identity) => identityMatchesBranch(entry.branch, identity))) {
         context.addIssue({
           code: "custom",
           path: ["provenance", index, "branch"],
@@ -563,10 +952,14 @@ export const FusedResultSchema = z
         });
       }
     }
-    const expectedScore = result.provenance.reduce(
-      (total, entry) => total + reciprocalRankContribution(entry.rank, result.rrfK),
-      0,
-    );
+    const logicalContributions = new Set<string>();
+    const expectedScore = result.provenance.reduce((total, entry) => {
+      const rank = entry.logicalRank ?? entry.rank;
+      const key = `${entry.queryOrdinal}\u0000${rank}`;
+      if (logicalContributions.has(key)) return total;
+      logicalContributions.add(key);
+      return total + reciprocalRankContribution(rank, result.rrfK);
+    }, 0);
     if (Math.abs(result.score - expectedScore) > Number.EPSILON * Math.max(1, expectedScore) * 8) {
       context.addIssue({
         code: "custom",

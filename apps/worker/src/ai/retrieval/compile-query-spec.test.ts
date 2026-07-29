@@ -4,7 +4,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildSourceAccessClause,
   compileQuerySpec,
+  compileChatMessagesQuery,
+  compilePhysicalQueryBranches,
+  compilePublisherDocumentsQuery,
+  compilePublicDocumentsQuery,
   InvalidQuerySpecError,
+  resolveAcceptedSourceNames,
 } from "./compile-query-spec";
 import type { CompileQuerySpecOptions } from "./compile-query-spec";
 import type { QuerySpec } from "./query-spec";
@@ -260,5 +265,159 @@ describe("compileQuerySpec", () => {
     expect(params).toContain(14);
     expect(text).toContain("::timestamptz - coalesce(d.published_at, d.discovered_at)");
     expect(text).toContain("/ (86400.0 * $");
+  });
+});
+
+describe("Phase B physical compilers", () => {
+  const scope = {
+    userId: "user-1",
+    chatId: "chat-1",
+    companyId: "company-1",
+    publicSourceIds: ["public-source"],
+    subscriptionIds: ["subscription-1"],
+    accessIds: ["access-1"],
+    excludedMessageIds: ["recent-1"],
+  } as const;
+  const structuredQuery = {
+    purpose: "Find storage evidence",
+    all: [{ text: "storage", mode: "term" as const }],
+    anyOf: [[{ text: "battery", mode: "phrase" as const }]],
+    not: [{ text: "residential", mode: "term" as const }],
+    filters: {
+      documents: {
+        sourceNames: ["Saved Source"],
+        languages: ["en-US"],
+        publishedAt: { after: "2026-01-01", before: "2026-02-01" },
+      },
+    },
+    order: "relevance" as const,
+  };
+
+  it("resolves only accepted names without an authorization oracle", () => {
+    expect(
+      resolveAcceptedSourceNames(
+        ["saved source", "foreign source"],
+        { publicSourceIds: ["public-source"], subscriptionIds: ["subscription-1"] },
+        {
+          publicSources: [{ sourceId: "public-source", displayName: "Saved Source" }],
+          publisherSources: [{ subscriptionId: "foreign", displayName: "Foreign Source" }],
+        },
+      ),
+    ).toEqual(["public:public-source"]);
+  });
+
+  it("marks unsupported and out-of-scope branches explicitly", () => {
+    const options = { scope, branchCap: 4, acceptedSourceIds: ["public:public-source"] } as const;
+    expect(
+      compilePublisherDocumentsQuery(
+        { ...structuredQuery, filters: { documents: { countries: ["FR"] } } },
+        options,
+      ),
+    ).toMatchObject({
+      status: "not_applicable",
+      reason: "unsupported_country_filter",
+    });
+    expect(
+      compileChatMessagesQuery({ ...structuredQuery, scope: "documents" }, options),
+    ).toMatchObject({
+      status: "not_applicable",
+      reason: "scope_documents",
+    });
+    expect(compilePhysicalQueryBranches(structuredQuery, options)).toHaveLength(3);
+  });
+
+  it("keeps all model values parameterized and emits term/phrase predicates", () => {
+    const result = compilePublicDocumentsQuery(structuredQuery, {
+      scope,
+      branchCap: 4,
+      acceptedSourceIds: ["public:public-source"],
+    });
+    expect(result.statement).toBeDefined();
+    const [text, params] = compiler.compile(result.statement!, false);
+    expect(text).toContain("plainto_tsquery");
+    expect(text).toContain("phraseto_tsquery");
+    expect(text).toContain("not (");
+    expect(text).toContain("limit $ ".trim());
+    expect(text.toLowerCase()).not.toContain("drop table");
+    expect(params).toContain("storage");
+    expect(params).toContain("battery");
+    expect(params).toContain("residential");
+    expect(params).toContain("public-source");
+    expect(maxPlaceholder(text)).toBe(params.length);
+  });
+
+  it("resolves source names separately for each logical query and ranks every positive atom", () => {
+    const query = {
+      ...structuredQuery,
+      all: [
+        { text: "storage", mode: "term" as const },
+        { text: "grid", mode: "term" as const },
+      ],
+      anyOf: [
+        [
+          { text: "battery", mode: "phrase" as const },
+          { text: "capacity", mode: "term" as const },
+        ],
+      ],
+    };
+    const publicQuery = compilePublicDocumentsQuery(query, {
+      scope,
+      branchCap: 4,
+      resolveSourceNames: (names) =>
+        names?.[0] === "Saved Source" ? ["public:public-source"] : [],
+    });
+    const publisherQuery = compilePublisherDocumentsQuery(query, {
+      scope,
+      branchCap: 4,
+      resolveSourceNames: (names) =>
+        names?.[0] === "Saved Source" ? ["publisher:subscription-1"] : [],
+    });
+    const [publicText, publicParams] = compiler.compile(publicQuery.statement!, false);
+    const [publisherText, publisherParams] = compiler.compile(publisherQuery.statement!, false);
+    expect(publicParams).toContain("public-source");
+    expect(publicParams).not.toContain("subscription-1");
+    expect(publisherParams).toContain("subscription-1");
+    expect(publisherParams).not.toContain("public-source");
+    expect(publicText.match(/ts_rank_cd/g)?.length).toBe(4);
+    expect(publisherText.match(/ts_rank_cd/g)?.length).toBe(4);
+  });
+
+  it("uses canonical publisher fields and bounded chat identity previews", () => {
+    const publisher = compilePublisherDocumentsQuery(structuredQuery, {
+      scope,
+      branchCap: 4,
+      acceptedSourceIds: ["publisher:subscription-1"],
+    });
+    const chat = compileChatMessagesQuery(structuredQuery, {
+      scope,
+      branchCap: 4,
+    });
+    const [publisherText] = compiler.compile(publisher.statement!, false);
+    const [chatText] = compiler.compile(chat.statement!, false);
+    expect(publisherText).toContain("v.language");
+    expect(publisherText).toContain("documents.media_type");
+    expect(publisherText).toContain("issues.published_at");
+    expect(publisherText).toContain("subscriptions.name");
+    expect(chatText).toContain('"contentPreview"');
+    expect(chatText).toContain('"contentHash"');
+    expect(chatText).not.toContain("ai_runs");
+    expect(chatText).not.toContain('m.content as "content"');
+  });
+
+  it("keeps older chat retrieval inside the accepted tenant and chat", () => {
+    const result = compileChatMessagesQuery(structuredQuery, {
+      scope,
+      branchCap: 4,
+      acceptedSourceIds: ["public:public-source"],
+    });
+    const [text, params] = compiler.compile(result.statement!, false);
+    expect(text).toContain("m.chat_id = $");
+    expect(text).toContain("join chats c on c.id = m.chat_id");
+    expect(text).toContain("c.deleted_at is null");
+    expect(text).toContain("c.company_id = $");
+    expect(text).toContain("m.id::text not in");
+    expect(params).toContain(scope.chatId);
+    expect(params).toContain(scope.companyId);
+    expect(params).toContain("recent-1");
   });
 });
