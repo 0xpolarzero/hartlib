@@ -3,6 +3,7 @@ import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { makeRunAcceptanceScope } from "@brief/shared";
+import { canonicalSha256Hex, revalidateEvaluationV3Evidence } from "../ai/evaluation/pipeline";
 
 import { runMigrations } from "./migrate";
 
@@ -464,7 +465,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         `;
       }),
     );
-    expect(result[0]?.count).toBe(0);
+    expect(result[0]?.count).toBe(1);
     expect(result[0]?.helperCount).toBe(0);
   }, 60_000);
 
@@ -12772,7 +12773,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           yield* sql`
             insert into ai_evaluation_sessions (
               id, artifact_version, golden_set_version, fixture_sha256_hex, status
-            ) values (${evaluationSessionId}, 3, 3, ${"a".repeat(64)}, 'preparing')
+            ) values (${evaluationSessionId}, 4, 4, ${"a".repeat(64)}, 'preparing')
           `;
           yield* sql`
             insert into ai_evaluation_case_runs (
@@ -13129,6 +13130,1150 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         evaluationExternalUsage: 1,
         ordinaryEvidence: 0,
       });
+    },
+  );
+  it(
+    "executes the retrieval/compaction migration body twice without drift or temporary helpers",
+    { timeout: 60_000 },
+    async () => {
+      const body = await Bun.file(
+        new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
+      ).text();
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`delete from ai_runs where finished_at is null and failed_at is null`;
+        }),
+      );
+      const twoUseIds = {
+        user: `0072-two-use-${crypto.randomUUID()}`,
+        company: crypto.randomUUID(),
+        chat: crypto.randomUUID(),
+        userMessage: crypto.randomUUID(),
+        sourceMessage: crypto.randomUUID(),
+        answer: crypto.randomUUID(),
+        run: crypto.randomUUID(),
+        v4Session: crypto.randomUUID(),
+        v4Case: "0072-v4-rerun-case",
+      };
+      const twoUseSourceKey = `k_cn_${"E".repeat(22)}_1`;
+      const v4SourceId = `chat_message:${twoUseIds.sourceMessage}`;
+      const v4Ranges = [{ charStart: 0, charEnd: 9 }];
+      const v4ExecutionOutput = {
+        selectedSources: [{ sourceId: v4SourceId, ranges: v4Ranges }],
+      };
+      const v4ExecutionOutputDigest = sha256Hex(stableJson(v4ExecutionOutput));
+      const twoUseRangesA = [{ charStart: 0, charEnd: 3 }];
+      const twoUseRangesB = [{ charStart: 4, charEnd: 7 }];
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`insert into platform_users (id, primary_email, display_name, clerk_user_id) values (${twoUseIds.user}, ${`${twoUseIds.user}@example.test`}, '0072 two-use user', ${`clerk_${twoUseIds.user}`})`;
+          yield* sql`insert into client_companies (id, name) values (${twoUseIds.company}, '0072 two-use company')`;
+          yield* sql`insert into client_company_memberships (company_id, user_id, role) values (${twoUseIds.company}, ${twoUseIds.user}, 'member')`;
+          yield* sql`insert into chats (id, user_id, company_id, memory_mode) values (${twoUseIds.chat}, ${twoUseIds.user}, ${twoUseIds.company}, 'disabled')`;
+          yield* sql`insert into chat_messages (id, chat_id, author, content) values (${twoUseIds.userMessage}, ${twoUseIds.chat}, 'user', 'two-use question')`;
+          yield* sql`insert into chat_messages (id, chat_id, author, content) values (${twoUseIds.sourceMessage}, ${twoUseIds.chat}, 'user', 'abcdefghi')`;
+          yield* sql`
+            insert into ai_runs (
+              id, chat_id, user_message_id, initiating_user_id, locale, market,
+              acceptance_scope, citation_namespace, started_at, finished_at
+            ) values (
+              ${twoUseIds.run}, ${twoUseIds.chat}, ${twoUseIds.userMessage}, ${twoUseIds.user},
+              'en-US', 'US',
+              ${sql.json(
+                makeRunAcceptanceScope({
+                  userId: twoUseIds.user,
+                  chatId: twoUseIds.chat,
+                  companyId: twoUseIds.company,
+                  memoryMode: "disabled",
+                }),
+              )},
+              ${twoUseSourceKey.slice(2, -2)}, now(), now()
+            )
+          `;
+          yield* sql`insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id) values (${twoUseIds.answer}, ${twoUseIds.chat}, 'assistant', 'answer', ${twoUseIds.run})`;
+          yield* sql`update ai_runs set assistant_message_id = ${twoUseIds.answer} where id = ${twoUseIds.run}`;
+          const locator = { kind: "chat_message", messageId: twoUseIds.sourceMessage };
+          const sourceDigest = yield* sql<{ readonly digest: string }>`
+            select assistant_message_source_identity_digest(
+              ${twoUseIds.answer}, ${twoUseSourceKey}, 'chat_message', ${sql.json(locator)},
+              null, null, ${twoUseIds.sourceMessage}, null, null, ${sql.json({})}
+            ) as digest
+          `;
+          yield* sql`
+            insert into assistant_message_sources (
+              assistant_message_id, source_key, kind, locator, message_id,
+              public_provenance, source_identity_digest
+            ) values (
+              ${twoUseIds.answer}, ${twoUseSourceKey}, 'chat_message', ${sql.json(locator)},
+              ${twoUseIds.sourceMessage}, ${sql.json({})}, ${sourceDigest[0]!.digest}
+            )
+          `;
+          for (const [consumerTaskId, ranges, contextOrder] of [
+            ["consumer-a", twoUseRangesA, 0],
+            ["consumer-b", twoUseRangesB, 1],
+          ] as const) {
+            const useDigest = yield* sql<{ readonly digest: string }>`
+              select assistant_message_source_use_identity_digest(
+                ${twoUseIds.answer}, ${twoUseSourceKey}, ${consumerTaskId}, null, 1, ${contextOrder},
+                ${JSON.stringify(ranges)}::jsonb
+              ) as digest
+            `;
+            yield* sql`
+              insert into assistant_message_source_uses (
+                assistant_message_id, source_key, consumer_task_id, rendered_token_count,
+                context_order, ranges, source_use_identity_digest
+              ) values (
+                ${twoUseIds.answer}, ${twoUseSourceKey}, ${consumerTaskId}, 1, ${contextOrder},
+                ${JSON.stringify(ranges)}::jsonb, ${useDigest[0]!.digest}
+              )
+            `;
+          }
+          yield* sql`
+            insert into ai_observations (
+              run_id, chat_id, emitting_task, loop_iteration, attempt,
+              observation_key, kind, payload
+            ) values (
+              ${twoUseIds.run}, ${twoUseIds.chat}, 'two-use-task', 0, 0,
+              'two-use-evidence', 'context_measurement',
+              ${sql.json({
+                references: [
+                  {
+                    sourceId: twoUseSourceKey,
+                    consumerTaskId: "consumer-a",
+                    ranges: twoUseRangesA,
+                  },
+                  {
+                    sourceId: twoUseSourceKey,
+                    consumerTaskId: "consumer-b",
+                    ranges: twoUseRangesB,
+                  },
+                ],
+              })}
+            )
+          `;
+        }),
+      );
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(body).raw;
+        }),
+      );
+      await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            insert into ai_evaluation_sessions (
+              id, artifact_version, golden_set_version, fixture_sha256_hex,
+              execution_config_sha256_hex, provider_endpoint_identity, status, completed_at
+            ) values (
+              ${twoUseIds.v4Session}, 4, 4, ${"4".repeat(64)}, ${"5".repeat(64)},
+              'zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4', 'complete', now()
+            )
+          `;
+          yield* sql`
+            insert into ai_evaluation_case_runs (
+              session_id, case_id, topology, ai_run_id, seed_manifest,
+              execution_output, execution_output_sha256_hex, run_evidence_sha256_hex,
+              status, started_at, finished_at
+            ) values (
+              ${twoUseIds.v4Session}, ${twoUseIds.v4Case}, 'general_planner', ${twoUseIds.run},
+              ${sql.json({
+                artifactVersion: 4,
+                goldenSetVersion: 4,
+                sessionId: twoUseIds.v4Session,
+                caseId: twoUseIds.v4Case,
+                topology: "general_planner",
+                userId: twoUseIds.user,
+                companyId: twoUseIds.company,
+                chatId: twoUseIds.chat,
+                userMessageId: twoUseIds.userMessage,
+                aiRunId: twoUseIds.run,
+                turnBindings: [],
+                sourceBindings: [
+                  {
+                    kind: "chat_message",
+                    messageId: twoUseIds.sourceMessage,
+                    sourceId: v4SourceId,
+                  },
+                ],
+              })},
+              ${sql.json(v4ExecutionOutput)}, ${v4ExecutionOutputDigest}, ${"6".repeat(64)},
+              'succeeded', now(), now()
+            )
+          `;
+          yield* sql`
+            insert into ai_evaluation_annotations (
+              session_id, case_id, topology, ai_run_id, run_evidence_sha256_hex,
+              assistant_output_sha256_hex, annotations, annotations_sha256_hex
+            ) values (
+              ${twoUseIds.v4Session}, ${twoUseIds.v4Case}, 'general_planner', ${twoUseIds.run},
+              ${"6".repeat(64)}, ${sha256Hex("answer")},
+              ${sql.json({ claims: [], reportedGapIds: [] })}, ${"7".repeat(64)}
+            )
+          `;
+          yield* sql`
+            insert into ai_source_exposures (
+              run_id, task_id, loop_iteration, attempt, provider_request_index,
+              source_kind, logical_source_identity, content_item_identity,
+              exposure_stage, visible_token_count, chat_content_hash, chat_ranges
+            ) values (
+              ${twoUseIds.run}, 'v4-rerun', 0, 0, 0, 'chat_message',
+              ${v4SourceId}, ${twoUseIds.sourceMessage}, 'provider_input', 1,
+              ${sha256Hex("abcdefghi")}, ${JSON.stringify(v4Ranges)}::jsonb
+            )
+          `;
+        }),
+      );
+      const v4Before = await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{
+            readonly runEvidence: string;
+            readonly annotationEvidence: string;
+            readonly annotationDigest: string;
+            readonly chatHash: string;
+            readonly chatRanges: unknown;
+          }>`
+            select cases.run_evidence_sha256_hex as "runEvidence",
+                   annotations.run_evidence_sha256_hex as "annotationEvidence",
+                   annotations.annotations_sha256_hex as "annotationDigest",
+                   exposures.chat_content_hash as "chatHash",
+                   exposures.chat_ranges as "chatRanges"
+            from ai_evaluation_case_runs cases
+            join ai_evaluation_annotations annotations
+              on annotations.session_id = cases.session_id
+             and annotations.case_id = cases.case_id
+             and annotations.topology = cases.topology
+            join ai_source_exposures exposures
+              on exposures.run_id = cases.ai_run_id
+             and exposures.task_id = 'v4-rerun'
+            where cases.session_id = ${twoUseIds.v4Session}
+              and cases.case_id = ${twoUseIds.v4Case}
+              and cases.topology = 'general_planner'
+          `;
+        }),
+      );
+      const result = await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(body).raw;
+          return yield* sql<{
+            readonly columns: number;
+            readonly indexes: string[];
+            readonly helpers: number;
+            readonly sanitizer: string[];
+            readonly constraintValidated: boolean;
+            readonly constraintDefinition: string;
+            readonly twoUseRanges: unknown;
+            readonly twoUseEvidence: unknown;
+          }>`
+            select
+              (
+                select count(*)::int
+                from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'ai_source_exposures'
+                  and column_name in ('chat_content_hash', 'chat_ranges')
+              ) as columns,
+              (
+                select coalesce(array_agg(indexname order by indexname), array[]::text[])
+                from pg_indexes
+                where schemaname = 'public'
+                  and tablename = 'chat_messages'
+                  and indexname in ('chat_messages_search_vector_idx', 'chat_messages_chat_created_id_idx')
+              ) as indexes,
+              (
+                select count(*)::int
+                from pg_proc
+                where pronamespace = 'public'::regnamespace
+                  and proname like 'brief_ai_0072_%'
+              ) as helpers,
+              (
+                select array[
+                  brief_ai_strip_historical_citation_tags('A [[cite:x]] B'),
+                  brief_ai_strip_historical_citation_tags('A [[cite:x'),
+                  brief_ai_strip_historical_citation_tags('A [[cite:x]y]] B'),
+                  brief_ai_strip_historical_citation_tags(E'A\n[[cite:x]]\nB'),
+                  brief_ai_strip_historical_citation_tags('😀 [[cite:x]] z')
+                ]
+              ) as sanitizer,
+              (
+                select convalidated
+                from pg_constraint
+                where conrelid = 'ai_evaluation_sessions'::regclass
+                  and conname = 'ai_evaluation_sessions_versions'
+              ) as "constraintValidated",
+              (
+                select pg_get_constraintdef(oid)
+                from pg_constraint
+                where conrelid = 'ai_evaluation_sessions'::regclass
+                  and conname = 'ai_evaluation_sessions_versions'
+              ) as "constraintDefinition",
+              (
+                select jsonb_agg(uses.ranges order by uses.consumer_task_id)
+                from assistant_message_source_uses uses
+                where uses.assistant_message_id = ${twoUseIds.answer}
+                  and uses.source_key = ${twoUseSourceKey}
+              ) as "twoUseRanges",
+              (
+                select payload->'references'
+                from ai_observations
+                where run_id = ${twoUseIds.run}
+                  and observation_key = 'two-use-evidence'
+              ) as "twoUseEvidence"
+          `;
+        }),
+      );
+      const v4After = await runDb(
+        isolatedDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{
+            readonly runEvidence: string;
+            readonly annotationEvidence: string;
+            readonly annotationDigest: string;
+            readonly chatHash: string;
+            readonly chatRanges: unknown;
+          }>`
+            select cases.run_evidence_sha256_hex as "runEvidence",
+                   annotations.run_evidence_sha256_hex as "annotationEvidence",
+                   annotations.annotations_sha256_hex as "annotationDigest",
+                   exposures.chat_content_hash as "chatHash",
+                   exposures.chat_ranges as "chatRanges"
+            from ai_evaluation_case_runs cases
+            join ai_evaluation_annotations annotations
+              on annotations.session_id = cases.session_id
+             and annotations.case_id = cases.case_id
+             and annotations.topology = cases.topology
+            join ai_source_exposures exposures
+              on exposures.run_id = cases.ai_run_id
+             and exposures.task_id = 'v4-rerun'
+            where cases.session_id = ${twoUseIds.v4Session}
+              and cases.case_id = ${twoUseIds.v4Case}
+              and cases.topology = 'general_planner'
+          `;
+        }),
+      );
+      expect(v4After).toEqual(v4Before);
+      expect(v4After[0]?.chatHash).toBe(sha256Hex("abcdefghi"));
+      expect(v4After[0]?.chatRanges).toEqual(v4Ranges);
+      expect(result).toEqual([
+        {
+          columns: 2,
+          indexes: "{chat_messages_chat_created_id_idx,chat_messages_search_vector_idx}",
+          helpers: 0,
+          constraintValidated: false,
+          constraintDefinition: expect.stringContaining("artifact_version = 4"),
+          sanitizer: ["A  B", "A ", "A  B", "A\n\nB", "😀  z"],
+          twoUseRanges: [twoUseRangesA, twoUseRangesB],
+          twoUseEvidence: [
+            { sourceId: twoUseSourceKey, consumerTaskId: "consumer-a", ranges: twoUseRangesA },
+            { sourceId: twoUseSourceKey, consumerTaskId: "consumer-b", ranges: twoUseRangesB },
+          ],
+        },
+      ]);
+    },
+  );
+
+  it(
+    "independently blocks active product runs, retained Smithers rows, and old output rows",
+    { timeout: 60_000 },
+    async () => {
+      const body = await Bun.file(
+        new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
+      ).text();
+      const testUrl = isolatedDatabaseUrl();
+      await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`delete from ai_runs where finished_at is null and failed_at is null`;
+        }),
+      );
+
+      const activeIds = {
+        user: `0072-active-${crypto.randomUUID()}`,
+        chat: crypto.randomUUID(),
+        company: crypto.randomUUID(),
+        message: crypto.randomUUID(),
+        run: crypto.randomUUID(),
+      };
+      await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`insert into platform_users (id, primary_email, display_name, clerk_user_id) values (${activeIds.user}, ${`${activeIds.user}@example.test`}, '0072 active user', ${`clerk_${activeIds.user}`})`;
+          yield* sql`insert into client_companies (id, name) values (${activeIds.company}, '0072 active company')`;
+          yield* sql`insert into client_company_memberships (company_id, user_id, role) values (${activeIds.company}, ${activeIds.user}, 'member')`;
+          yield* sql`insert into chats (id, user_id, company_id, memory_mode) values (${activeIds.chat}, ${activeIds.user}, ${activeIds.company}, 'disabled')`;
+          yield* sql`insert into chat_messages (id, chat_id, author, content) values (${activeIds.message}, ${activeIds.chat}, 'user', 'active migration run')`;
+          yield* sql`
+            insert into ai_runs (
+              id, chat_id, user_message_id, initiating_user_id, locale, market,
+              acceptance_scope, citation_namespace, started_at
+            ) values (
+              ${activeIds.run}, ${activeIds.chat}, ${activeIds.message}, ${activeIds.user},
+              'en-US', 'US', ${sql.json(
+                makeRunAcceptanceScope({
+                  userId: activeIds.user,
+                  chatId: activeIds.chat,
+                  companyId: activeIds.company,
+                  memoryMode: "disabled",
+                }),
+              )},
+              ${`cn_${"A".repeat(22)}`}, now()
+            )
+          `;
+        }),
+      );
+      const activeFailure = await runDb(
+        testUrl,
+        Effect.exit(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(body).raw;
+          }),
+        ),
+      );
+      expect(activeFailure._tag).toBe("Failure");
+      expect(errorText(activeFailure)).toContain("terminal product AI runs");
+      await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`delete from ai_runs where id = ${activeIds.run}`;
+          yield* sql`delete from chat_messages where id = ${activeIds.message}`;
+          yield* sql`delete from chats where id = ${activeIds.chat}`;
+          yield* sql`update client_company_memberships set revoked_at = now(), revoked_by_user_id = ${activeIds.user} where company_id = ${activeIds.company} and user_id = ${activeIds.user}`;
+          yield* sql.unsafe("set brief.allow_account_purge = 'on'");
+          yield* sql`delete from client_companies where id = ${activeIds.company}`;
+          yield* sql`delete from platform_users where id = ${activeIds.user}`;
+        }),
+      );
+
+      await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe("create table if not exists _smithers_runs (run_id text primary key)");
+          yield* sql`insert into _smithers_runs (run_id) values ('ai-chat:0072-retained')`;
+        }),
+      );
+      const smithersFailure = await runDb(
+        testUrl,
+        Effect.exit(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(body).raw;
+          }),
+        ),
+      );
+      expect(smithersFailure._tag).toBe("Failure");
+      expect(errorText(smithersFailure)).toContain("drained Smithers runs");
+      await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe("drop table _smithers_runs");
+        }),
+      );
+
+      await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe("create table if not exists ai_chat_context (run_id text primary key)");
+          yield* sql`insert into ai_chat_context (run_id) values ('ai-chat:0072-old-output')`;
+        }),
+      );
+      const outputFailure = await runDb(
+        testUrl,
+        Effect.exit(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(body).raw;
+          }),
+        ),
+      );
+      expect(outputFailure._tag).toBe("Failure");
+      expect(errorText(outputFailure)).toContain("drained Smithers output table ai_chat_context");
+      await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe("drop table ai_chat_context");
+        }),
+      );
+    },
+  );
+
+  it(
+    "blocks malformed, foreign, and missing chat source uses before writes",
+    { timeout: 60_000 },
+    async () => {
+      const body = await Bun.file(
+        new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
+      ).text();
+      const testUrl = isolatedDatabaseUrl();
+      await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`delete from ai_runs where finished_at is null and failed_at is null`;
+        }),
+      );
+      const cases = ["malformed", "foreign", "missing"] as const;
+
+      for (const kind of cases) {
+        const ids = {
+          user: `0072-${kind}-${crypto.randomUUID()}`,
+          chat: crypto.randomUUID(),
+          foreignChat: crypto.randomUUID(),
+          company: crypto.randomUUID(),
+          userMessage: crypto.randomUUID(),
+          assistantMessage: crypto.randomUUID(),
+          sourceMessage: crypto.randomUUID(),
+          foreignMessage: crypto.randomUUID(),
+          run: crypto.randomUUID(),
+        };
+        const citationSuffix = kind === "malformed" ? "M" : kind === "foreign" ? "F" : "X";
+        const citationNamespace = `cn_${"B".repeat(21)}${citationSuffix}`;
+        const sourceKey = `k_${citationNamespace}_1`;
+        const content = "Answer 😀 [[cite:old]] tail";
+        const scope = makeRunAcceptanceScope({
+          userId: ids.user,
+          chatId: ids.chat,
+          companyId: ids.company,
+          memoryMode: "disabled",
+        });
+        const sourceMessageId = kind === "foreign" ? ids.foreignMessage : ids.sourceMessage;
+        const ranges = kind === "malformed" ? [{ charStart: 0, charEnd: 10_000 }] : [];
+        const insertedRanges = kind === "malformed" ? [] : ranges;
+
+        await runDb(
+          testUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`insert into platform_users (id, primary_email, display_name, clerk_user_id) values (${ids.user}, ${`${ids.user}@example.test`}, ${`0072 ${kind} user`}, ${`clerk_${ids.user}`})`;
+            yield* sql`insert into client_companies (id, name) values (${ids.company}, ${`0072 ${kind} company`})`;
+            yield* sql`insert into client_company_memberships (company_id, user_id, role) values (${ids.company}, ${ids.user}, 'member')`;
+            yield* sql`insert into chats (id, user_id, company_id, memory_mode) values (${ids.chat}, ${ids.user}, ${ids.company}, 'disabled')`;
+            yield* sql`insert into chats (id, user_id, company_id, memory_mode) values (${ids.foreignChat}, ${ids.user}, ${ids.company}, 'disabled')`;
+            yield* sql`insert into chat_messages (id, chat_id, author, content) values (${ids.userMessage}, ${ids.chat}, 'user', 'question')`;
+            yield* sql`insert into chat_messages (id, chat_id, author, content) values (${ids.sourceMessage}, ${ids.chat}, 'user', 'source')`;
+            yield* sql`insert into chat_messages (id, chat_id, author, content) values (${ids.foreignMessage}, ${ids.foreignChat}, 'user', 'foreign source')`;
+            yield* sql`
+              insert into ai_runs (
+                id, chat_id, user_message_id, initiating_user_id,
+                locale, market, acceptance_scope, citation_namespace, started_at, finished_at
+              ) values (
+                ${ids.run}, ${ids.chat}, ${ids.userMessage}, ${ids.user},
+                'en-US', 'US', ${sql.json(scope)}, ${citationNamespace}, now(), now()
+              )
+            `;
+            yield* sql`insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id) values (${ids.assistantMessage}, ${ids.chat}, 'assistant', ${content}, ${ids.run})`;
+            yield* sql`update ai_runs set assistant_message_id = ${ids.assistantMessage} where id = ${ids.run}`;
+            yield* sql.unsafe(
+              "drop trigger assistant_message_sources_validate_locator on assistant_message_sources",
+            );
+            if (kind !== "missing") {
+              const locator = {
+                kind: "chat_message",
+                messageId: sourceMessageId,
+              };
+              const sourceIdentityDigest = yield* sql<{ readonly digest: string }>`
+                select assistant_message_source_identity_digest(
+                  ${ids.assistantMessage}, ${sourceKey}, 'chat_message', ${sql.json(locator)},
+                  null, null, ${sourceMessageId}, null, null, ${sql.json({})}
+                ) as digest
+              `;
+              yield* sql`
+                insert into assistant_message_sources (
+                  assistant_message_id, source_key, kind, locator, message_id,
+                  public_provenance, source_identity_digest
+                ) values (
+                  ${ids.assistantMessage}, ${sourceKey}, 'chat_message', ${sql.json(locator)},
+                  ${sourceMessageId}, ${sql.json({})}, ${sourceIdentityDigest[0]!.digest}
+                )
+              `;
+            } else {
+              const locator = { kind: "chat_message", messageId: crypto.randomUUID() };
+              const sourceIdentityDigest = yield* sql<{ readonly digest: string }>`
+                select assistant_message_source_identity_digest(
+                  ${ids.assistantMessage}, ${sourceKey}, 'chat_message', ${sql.json(locator)},
+                  null, null, ${ids.sourceMessage}, null, null, ${sql.json({})}
+                ) as digest
+              `;
+              yield* sql`
+                insert into assistant_message_sources (
+                  assistant_message_id, source_key, kind, locator, message_id,
+                  public_provenance, source_identity_digest
+                ) values (
+                  ${ids.assistantMessage}, ${sourceKey}, 'chat_message', ${sql.json(locator)},
+                  ${ids.sourceMessage}, ${sql.json({})}, ${sourceIdentityDigest[0]!.digest}
+                )
+              `;
+            }
+            yield* sql.unsafe(`
+              create trigger assistant_message_sources_validate_locator
+              before insert or update on assistant_message_sources
+              for each row execute function validate_assistant_message_source_locator()
+            `);
+            yield* sql.unsafe(
+              "drop trigger assistant_message_source_uses_validate_ranges on assistant_message_source_uses",
+            );
+            const sourceUseDigest = yield* sql<{ readonly digest: string }>`
+              select assistant_message_source_use_identity_digest(
+                ${ids.assistantMessage}, ${sourceKey}, 'single-answer', null, 1, 0, ${JSON.stringify(insertedRanges)}::jsonb
+              ) as digest
+            `;
+            yield* sql`
+              insert into assistant_message_source_uses (
+                assistant_message_id, source_key, consumer_task_id, rendered_token_count,
+                context_order, ranges, source_use_identity_digest
+              ) values (
+                ${ids.assistantMessage}, ${sourceKey}, 'single-answer', 1, 0,
+                ${JSON.stringify(insertedRanges)}::jsonb, ${sourceUseDigest[0]!.digest}
+              )
+            `;
+            if (kind === "malformed") {
+              yield* sql.unsafe(
+                "drop trigger assistant_message_source_uses_identity_immutable on assistant_message_source_uses",
+              );
+              yield* sql.unsafe(
+                "drop trigger if exists assistant_message_source_uses_validate_ranges on assistant_message_source_uses",
+              );
+              yield* sql`
+                update assistant_message_source_uses
+                set ranges = ${JSON.stringify(ranges)}::jsonb,
+                    source_use_identity_digest = ${sourceUseDigest[0]!.digest}
+                where assistant_message_id = ${ids.assistantMessage}
+                  and source_key = ${sourceKey}
+              `;
+              yield* sql.unsafe(`
+                create trigger assistant_message_source_uses_identity_immutable
+                before insert or update or delete on assistant_message_source_uses
+                for each row execute function enforce_assistant_message_source_use_identity_immutable()
+              `);
+            }
+            yield* sql.unsafe(`
+              create trigger assistant_message_source_uses_validate_ranges
+              before insert or update of ranges on assistant_message_source_uses
+              for each row execute function validate_assistant_message_source_use_ranges()
+            `);
+          }),
+        );
+
+        const blocked = await runDb(
+          testUrl,
+          Effect.exit(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              yield* sql.unsafe(body).raw;
+            }),
+          ),
+        );
+        expect(blocked._tag).toBe("Failure");
+        expect(errorText(blocked)).toMatch(
+          /chat source|source has no exact owner|source-use identity digest is invalid|locator and message_id disagree/u,
+        );
+
+        const unchanged = await runDb(
+          testUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly ranges: unknown }>`
+              select ranges from assistant_message_source_uses
+              where assistant_message_id = ${ids.assistantMessage}
+            `;
+          }),
+        );
+        expect(unchanged[0]?.ranges).toEqual(ranges);
+      }
+    },
+  );
+
+  it(
+    "keeps terminal v3 evaluation rows, rejects new v3, and enforces exact v4 chat exposure proof",
+    { timeout: 60_000 },
+    async () => {
+      const body = await Bun.file(
+        new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
+      ).text();
+      const databaseName = `brief_0072_v3_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+      const targetUrl = databaseUrlForName(databaseName);
+      const sessionId = crypto.randomUUID();
+      const userId = `0072-v3-${crypto.randomUUID()}`;
+      const companyId = crypto.randomUUID();
+      const chatId = crypto.randomUUID();
+      const messageId = crypto.randomUUID();
+      const runId = crypto.randomUUID();
+      const conversionUserId = `0072-convert-${crypto.randomUUID()}`;
+      const conversionCompanyId = crypto.randomUUID();
+      const conversionChatId = crypto.randomUUID();
+      const conversionUserMessageId = crypto.randomUUID();
+      const sourceMessageId = crypto.randomUUID();
+      const conversionAnswerId = crypto.randomUUID();
+      const conversionRunId = crypto.randomUUID();
+      const conversionCitationNamespace = `cn_${"D".repeat(22)}`;
+      const conversionSourceKey = `k_${conversionCitationNamespace}_1`;
+      const v3CaseId = "v3-chat-case";
+      const v3SourceId = `chat_message:${sourceMessageId}`;
+      const scope = makeRunAcceptanceScope({ userId, chatId, companyId, memoryMode: "disabled" });
+
+      await runDb(
+        adminDatabaseUrl(),
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`);
+        }),
+      );
+      try {
+        await runDb(targetUrl, applyMigrationsThrough("0071_chat_archive_and_replace.sql"));
+        await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_evaluation_sessions (
+                id, artifact_version, golden_set_version, fixture_sha256_hex,
+                execution_config_sha256_hex, provider_endpoint_identity,
+                status, completed_at
+              ) values (
+                ${sessionId}, 3, 3, ${"a".repeat(64)}, ${"b".repeat(64)},
+                'zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4',
+                'complete', now()
+              )
+            `;
+          }),
+        );
+        await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            const conversionScope = makeRunAcceptanceScope({
+              userId: conversionUserId,
+              chatId: conversionChatId,
+              companyId: conversionCompanyId,
+              memoryMode: "disabled",
+            });
+            yield* sql`insert into platform_users (id, primary_email, display_name, clerk_user_id) values (${conversionUserId}, ${`${conversionUserId}@example.test`}, '0072 conversion user', ${`clerk_${conversionUserId}`})`;
+            yield* sql`insert into client_companies (id, name) values (${conversionCompanyId}, '0072 conversion company')`;
+            yield* sql`insert into client_company_memberships (company_id, user_id, role) values (${conversionCompanyId}, ${conversionUserId}, 'member')`;
+            yield* sql`insert into chats (id, user_id, company_id, memory_mode) values (${conversionChatId}, ${conversionUserId}, ${conversionCompanyId}, 'disabled')`;
+            yield* sql`insert into chat_messages (id, chat_id, author, content) values (${conversionUserMessageId}, ${conversionChatId}, 'user', 'conversion question')`;
+            yield* sql`insert into chat_messages (id, chat_id, author, content) values (${sourceMessageId}, ${conversionChatId}, 'assistant', 'src😀 [[cite:k_old]] tail')`;
+            yield* sql`
+              insert into ai_runs (
+                id, chat_id, user_message_id, initiating_user_id, smithers_run_id,
+                locale, market, acceptance_scope, citation_namespace, started_at, finished_at
+              ) values (
+                ${conversionRunId}, ${conversionChatId}, ${conversionUserMessageId}, ${conversionUserId},
+                ${`ai-evaluation-general-planner:${sessionId}:${v3CaseId}`},
+                'en-US', 'US', ${sql.json(conversionScope)}, ${conversionCitationNamespace}, now(), now()
+              )
+            `;
+            yield* sql`insert into chat_messages (id, chat_id, author, content, assistant_ai_run_id) values (${conversionAnswerId}, ${conversionChatId}, 'assistant', 'answer', ${conversionRunId})`;
+            yield* sql`update ai_runs set assistant_message_id = ${conversionAnswerId} where id = ${conversionRunId}`;
+            const locator = { kind: "chat_message", messageId: sourceMessageId };
+            const sourceDigest = yield* sql<{ readonly digest: string }>`
+              select assistant_message_source_identity_digest(
+                ${conversionAnswerId}, ${conversionSourceKey}, 'chat_message', ${sql.json(locator)},
+                null, null, ${sourceMessageId}, null, null, ${sql.json({})}
+              ) as digest
+            `;
+            yield* sql`
+              insert into assistant_message_sources (
+                assistant_message_id, source_key, kind, locator, message_id,
+                public_provenance, source_identity_digest
+              ) values (
+                ${conversionAnswerId}, ${conversionSourceKey}, 'chat_message', ${sql.json(locator)},
+                ${sourceMessageId}, ${sql.json({})}, ${sourceDigest[0]!.digest}
+              )
+            `;
+            const useDigest = yield* sql<{ readonly digest: string }>`
+              select assistant_message_source_use_identity_digest(
+                ${conversionAnswerId}, ${conversionSourceKey}, 'single-answer', null, 1, 0, '[]'::jsonb
+              ) as digest
+            `;
+            yield* sql`
+              insert into assistant_message_source_uses (
+                assistant_message_id, source_key, consumer_task_id, rendered_token_count,
+                context_order, ranges, source_use_identity_digest
+              ) values (
+                ${conversionAnswerId}, ${conversionSourceKey}, 'single-answer', 1, 0,
+                '[]'::jsonb, ${useDigest[0]!.digest}
+              )
+            `;
+            yield* sql.unsafe("alter table ai_evaluation_case_runs disable trigger user");
+            yield* sql`
+              insert into ai_evaluation_case_runs (
+                session_id, case_id, topology, ai_run_id, seed_manifest,
+                execution_output, execution_output_sha256_hex, run_evidence_sha256_hex,
+                status, started_at, finished_at
+              ) values (
+                ${sessionId}, ${v3CaseId}, 'general_planner', ${conversionRunId},
+                ${sql.json({
+                  artifactVersion: 3,
+                  goldenSetVersion: 3,
+                  sessionId,
+                  caseId: v3CaseId,
+                  topology: "general_planner",
+                  userId: conversionUserId,
+                  companyId: conversionCompanyId,
+                  chatId: conversionChatId,
+                  userMessageId: conversionUserMessageId,
+                  aiRunId: conversionRunId,
+                  turnBindings: [],
+                  sourceBindings: [
+                    {
+                      kind: "chat_message",
+                      messageId: sourceMessageId,
+                      sourceId: v3SourceId,
+                    },
+                  ],
+                })},
+                ${sql.json({ selectedSources: [{ sourceId: v3SourceId, ranges: [] }] })},
+                ${"e".repeat(64)}, ${"f".repeat(64)}, 'succeeded', now(), now()
+              )
+            `;
+            yield* sql.unsafe("alter table ai_evaluation_case_runs enable trigger user");
+            yield* sql.unsafe("alter table ai_evaluation_annotations disable trigger user");
+            yield* sql`
+              insert into ai_evaluation_annotations (
+                session_id, case_id, topology, ai_run_id, run_evidence_sha256_hex,
+                assistant_output_sha256_hex, annotations, annotations_sha256_hex
+              ) values (
+                ${sessionId}, ${v3CaseId}, 'general_planner', ${conversionRunId},
+                ${"f".repeat(64)}, ${"a".repeat(64)},
+                ${sql.json({ claims: [], reportedGapIds: [] })}, ${"b".repeat(64)}
+              )
+            `;
+            yield* sql.unsafe("alter table ai_evaluation_annotations enable trigger user");
+            yield* sql`
+              insert into ai_observations (
+                run_id, chat_id, emitting_task, loop_iteration, attempt,
+                observation_key, kind, payload
+              ) values (
+                ${conversionRunId}, ${conversionChatId}, 'context-measurement', 0, 0,
+                'v3-context-measurement', 'context_measurement',
+                ${sql.json({ references: [{ sourceId: v3SourceId, ranges: [] }] })}
+              ), (
+                ${conversionRunId}, ${conversionChatId}, 'retrieval-manifest', 0, 0,
+                'v3-retrieval-manifest', 'retrieval_manifest',
+                ${sql.json({ restrictedContextLedger: { sources: [{ sourceKey: conversionSourceKey, ranges: [] }] } })}
+              )
+            `;
+          }),
+        );
+        const migrationResult = await runDb(
+          targetUrl,
+          Effect.exit(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              yield* sql.unsafe(body).raw;
+            }),
+          ),
+        );
+        expect(migrationResult._tag).toBe("Success");
+
+        const versions = await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{
+              readonly artifactVersion: number;
+              readonly goldenSetVersion: number;
+              readonly status: string;
+            }>`
+              select artifact_version as "artifactVersion",
+                     golden_set_version as "goldenSetVersion", status
+              from ai_evaluation_sessions where id = ${sessionId}
+            `;
+          }),
+        );
+        expect(versions).toEqual([{ artifactVersion: 3, goldenSetVersion: 3, status: "complete" }]);
+        const convertedCase = await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{
+              readonly selectedRanges: unknown;
+              readonly runEvidence: string;
+              readonly annotationEvidence: string;
+              readonly contextRanges: unknown;
+              readonly ledgerRanges: unknown;
+            }>`
+              select
+                case_runs.execution_output #> '{selectedSources,0,ranges}' as "selectedRanges",
+                case_runs.run_evidence_sha256_hex as "runEvidence",
+                annotations.run_evidence_sha256_hex as "annotationEvidence",
+                context.payload #> '{references,0,ranges}' as "contextRanges",
+                ledger.payload #> '{restrictedContextLedger,sources,0,ranges}' as "ledgerRanges"
+              from ai_evaluation_case_runs case_runs
+              join ai_evaluation_annotations annotations
+                on annotations.session_id = case_runs.session_id
+               and annotations.case_id = case_runs.case_id
+               and annotations.topology = case_runs.topology
+              join ai_observations context
+                on context.run_id = case_runs.ai_run_id
+               and context.observation_key = 'v3-context-measurement'
+              join ai_observations ledger
+                on ledger.run_id = case_runs.ai_run_id
+               and ledger.observation_key = 'v3-retrieval-manifest'
+              where case_runs.session_id = ${sessionId}
+                and case_runs.case_id = ${v3CaseId}
+                and case_runs.topology = 'general_planner'
+            `;
+          }),
+        );
+        expect(convertedCase).toHaveLength(1);
+        expect(convertedCase[0]?.selectedRanges).toEqual([{ charStart: 0, charEnd: 11 }]);
+        expect(convertedCase[0]?.contextRanges).toEqual([{ charStart: 0, charEnd: 11 }]);
+        expect(convertedCase[0]?.ledgerRanges).toEqual([{ charStart: 0, charEnd: 11 }]);
+        expect(convertedCase[0]?.runEvidence).toMatch(/^[0-9a-f]{64}$/u);
+        expect(convertedCase[0]?.runEvidence).not.toBe("f".repeat(64));
+        expect(convertedCase[0]?.annotationEvidence).toBe(convertedCase[0]?.runEvidence);
+        const converted = await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly ranges: unknown; readonly digest: string }>`
+              select ranges, source_use_identity_digest as digest
+              from assistant_message_source_uses
+              where assistant_message_id = ${conversionAnswerId}
+                and source_key = ${conversionSourceKey}
+            `;
+          }),
+        );
+        const expectedConvertedDigest = await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{ readonly digest: string }>`
+              select assistant_message_source_use_identity_digest(
+                ${conversionAnswerId}, ${conversionSourceKey}, 'single-answer', null, 1, 0,
+                '[{"charStart":0,"charEnd":11}]'::jsonb
+              ) as digest
+            `;
+          }),
+        );
+        expect(converted).toEqual([
+          { ranges: [{ charStart: 0, charEnd: 11 }], digest: expectedConvertedDigest[0]!.digest },
+        ]);
+        const revalidatedV3 = await revalidateEvaluationV3Evidence(
+          targetUrl,
+          sessionId,
+          v3CaseId,
+          "general_planner",
+        );
+        expect(revalidatedV3.caseDigestMatches).toBe(true);
+        expect(revalidatedV3.annotationDigestMatches).toBe(true);
+        expect(revalidatedV3.annotationRunEvidenceMatches).toBe(true);
+        expect(revalidatedV3.aiRunId).toBe(conversionRunId);
+        expect(revalidatedV3.sourceUseRanges).toEqual([
+          {
+            sourceKey: conversionSourceKey,
+            consumerTaskId: "single-answer",
+            ranges: [{ charStart: 0, charEnd: 11 }],
+          },
+        ]);
+        expect(revalidatedV3.sourceUseDigest).toBe(
+          canonicalSha256Hex([
+            {
+              sourceKey: conversionSourceKey,
+              consumerTaskId: "single-answer",
+              ranges: [{ charStart: 0, charEnd: 11 }],
+            },
+          ]),
+        );
+        const rangeCases = [
+          [
+            { charStart: 0, charEnd: 1 },
+            { charStart: 2, charEnd: 3 },
+          ],
+          [],
+          [{ charStart: 0, charEnd: 12 }],
+          [
+            { charStart: 0, charEnd: 1 },
+            { charStart: 1, charEnd: 2 },
+          ],
+        ];
+        for (const [caseIndex, ranges] of rangeCases.entries()) {
+          const sourceKey = `${conversionSourceKey.slice(0, -1)}${caseIndex + 2}`;
+          const insertResult = await runDb(
+            targetUrl,
+            Effect.exit(
+              Effect.gen(function* () {
+                const sql = yield* PgClient.PgClient;
+                const locator = { kind: "chat_message", messageId: sourceMessageId };
+                const sourceDigest = yield* sql<{ readonly digest: string }>`
+                select assistant_message_source_identity_digest(
+                  ${conversionAnswerId}, ${sourceKey}, 'chat_message', ${sql.json(locator)},
+                  null, null, ${sourceMessageId}, null, null, ${sql.json({})}
+                ) as digest
+              `;
+                yield* sql`
+                insert into assistant_message_sources (
+                  assistant_message_id, source_key, kind, locator, message_id,
+                  public_provenance, source_identity_digest
+                ) values (
+                  ${conversionAnswerId}, ${sourceKey}, 'chat_message', ${sql.json(locator)},
+                  ${sourceMessageId}, ${sql.json({})}, ${sourceDigest[0]!.digest}
+                )
+              `;
+                const useDigest = yield* sql<{ readonly digest: string }>`
+                select assistant_message_source_use_identity_digest(
+                  ${conversionAnswerId}, ${sourceKey}, 'single-answer', null, 1, ${caseIndex},
+                  ${JSON.stringify(ranges)}::jsonb
+                ) as digest
+              `;
+                yield* sql`
+                insert into assistant_message_source_uses (
+                  assistant_message_id, source_key, consumer_task_id, rendered_token_count,
+                  context_order, ranges, source_use_identity_digest
+                ) values (
+                  ${conversionAnswerId}, ${sourceKey}, 'single-answer', 1, ${caseIndex},
+                  ${JSON.stringify(ranges)}::jsonb, ${useDigest[0]!.digest}
+                )
+              `;
+              }),
+            ),
+          );
+          if (caseIndex === 0) {
+            expect(insertResult._tag).toBe("Success");
+          } else {
+            expect(insertResult._tag).toBe("Failure");
+          }
+        }
+
+        const newV3 = await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* Effect.exit(sql`
+              insert into ai_evaluation_sessions (artifact_version, golden_set_version, fixture_sha256_hex)
+              values (3, 3, ${"c".repeat(64)})
+            `);
+          }),
+        );
+        expect(newV3._tag).toBe("Failure");
+        const newV4 = await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_evaluation_sessions (artifact_version, golden_set_version, fixture_sha256_hex)
+              values (4, 4, ${"d".repeat(64)})
+            `;
+            return true;
+          }),
+        );
+        expect(newV4).toBe(true);
+
+        await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`insert into platform_users (id, primary_email, display_name, clerk_user_id) values (${userId}, ${`${userId}@example.test`}, '0072 v3 user', ${`clerk_${userId}`})`;
+            yield* sql`insert into client_companies (id, name) values (${companyId}, '0072 v3 company')`;
+            yield* sql`insert into client_company_memberships (company_id, user_id, role) values (${companyId}, ${userId}, 'member')`;
+            yield* sql`insert into chats (id, user_id, company_id, memory_mode) values (${chatId}, ${userId}, ${companyId}, 'disabled')`;
+            yield* sql`insert into chat_messages (id, chat_id, author, content) values (${messageId}, ${chatId}, 'user', 'exact chat proof')`;
+            yield* sql`
+              insert into ai_runs (
+                id, chat_id, user_message_id, initiating_user_id, locale, market,
+                acceptance_scope, citation_namespace, started_at, finished_at
+              ) values (
+                ${runId}, ${chatId}, ${messageId}, ${userId}, 'en-US', 'US',
+                ${sql.json(scope)}, ${`cn_${"C".repeat(22)}`}, now(), now()
+              )
+            `;
+          }),
+        );
+        const missingProof = await runDb(
+          targetUrl,
+          Effect.exit(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              yield* sql`
+              insert into ai_source_exposures (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                source_kind, logical_source_identity, content_item_identity,
+                exposure_stage, visible_token_count
+              ) values (
+                ${runId}, 'proof', 0, 0, 0, 'chat_message',
+                ${`chat_message:${messageId}`}, ${messageId}, 'provider_input', 1
+              )
+            `;
+            }),
+          ),
+        );
+        expect(missingProof._tag).toBe("Failure");
+        const exactProof = await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              insert into ai_source_exposures (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                source_kind, logical_source_identity, content_item_identity,
+                exposure_stage, visible_token_count, chat_content_hash, chat_ranges
+              ) values (
+                ${runId}, 'proof', 0, 0, 1, 'chat_message',
+                ${`chat_message:${messageId}`}, ${messageId}, 'provider_input', 1,
+                ${sha256Hex("exact chat proof")}, ${JSON.stringify([{ charStart: 0, charEnd: 16 }])}::jsonb
+              )
+            `;
+            return true;
+          }),
+        );
+        expect(exactProof).toBe(true);
+        const nonChatProof = await runDb(
+          targetUrl,
+          Effect.exit(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              yield* sql`
+              insert into ai_source_exposures (
+                run_id, task_id, loop_iteration, attempt, provider_request_index,
+                source_kind, logical_source_identity, content_item_identity,
+                exposure_stage, visible_token_count, chat_content_hash, chat_ranges
+              ) values (
+                ${runId}, 'proof', 0, 0, 2, 'web', 'https://example.test', 'quote',
+                'web_search_preview', 1, ${sha256Hex("exact chat proof")},
+                ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
+              )
+            `;
+            }),
+          ),
+        );
+        expect(nonChatProof._tag).toBe("Failure");
+      } finally {
+        await runDb(
+          adminDatabaseUrl(),
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              select pg_terminate_backend(pid)
+              from pg_stat_activity
+              where datname = ${databaseName}
+                and usename = current_user
+                and pid <> pg_backend_pid()
+            `;
+            yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`);
+          }),
+        );
+      }
     },
   );
 });
