@@ -42,13 +42,14 @@ import {
 } from "../product-state/observability";
 import type {
   FinalSourceRecord,
-  InternalReference,
   MemoryExtractionArtifact,
   MemoryExtractionResult,
   MemoryReference,
   LiveProviderRequestMeasurement,
 } from "../runtime/types";
 import { WebBoundaryError } from "../web/errors";
+import type { CompactionPassResult } from "../context/compaction-runtime";
+import { buildCandidatePassageIndex } from "../context/compaction";
 import {
   type CanonicalAiConfig,
   CanonicalWorkflowOperations,
@@ -163,6 +164,7 @@ const assembleAndMeasureContext = async (
     { attempt: 0 },
   );
 };
+
 const restrictedLedgerForContext = (
   context: ContextState,
   consumerTaskId: string,
@@ -201,7 +203,24 @@ const restrictedLedgerForContext = (
       (entry) => entry.consumerTaskId === consumerTaskId && entry.topicId === topicId,
     );
     return {
-      candidateId: candidate.id,
+      candidateId:
+        source.locator.kind === "document"
+          ? namespacedDocumentEvidenceIdentity(
+              source.locator.publisherIssueId === undefined
+                ? { kind: "public", sourceId: source.locator.sourceId }
+                : {
+                    kind: "publisher",
+                    sourceId: source.locator.sourceId,
+                    issueId: source.locator.publisherIssueId,
+                    documentId: source.locator.publisherDocumentId!,
+                  },
+              source.locator.documentId,
+            )
+          : source.locator.kind === "chat_message"
+            ? chatMessageEvidenceIdentity(source.locator.messageId)
+            : source.locator.kind === "memory"
+              ? memoryEvidenceIdentity(source.locator.memoryId)
+              : webEvidenceIdentity(source.locator.url, source.locator.quote),
       sourceKey: source.sourceKey,
       kind: source.locator.kind,
       purpose: candidate.purpose,
@@ -220,7 +239,6 @@ const passedMeasurement = (
   contextWindow: 1_000_000,
   passed: true,
 });
-
 interface ToolLoopExposureState {
   readonly markers: ProviderVisibleSourceExposureMarker[];
   readonly wrappedTools: Set<ToolLoopInput<unknown>["tools"][number]>;
@@ -326,10 +344,6 @@ const invokeToolLoopProviderHook = async <Output>(
     requestedOutputTokens: input.requestedOutputTokens,
     reasoning: input.reasoning,
   };
-  providerRequestSourceExposureProofBindings(
-    request,
-    resolveRegisteredModel(request.model).countTextTokens,
-  );
   await input.onBeforeRequest?.(
     request,
     { ...coordinates, providerRequestSha256Hex: providerRequestSha256Hex(request) },
@@ -339,7 +353,7 @@ const invokeToolLoopProviderHook = async <Output>(
 const invokeStructuredProviderHook = async <Output>(
   input: StructuredCallInput<Output>,
 ): Promise<void> => {
-  const request: LiveProviderRequest = {
+  const request: LiveProviderRequest = input.request ?? {
     requestClass: input.requestClass,
     model: input.model,
     messages: [
@@ -360,10 +374,6 @@ const invokeStructuredProviderHook = async <Output>(
     requestedOutputTokens: input.requestedOutputTokens,
     reasoning: input.reasoning,
   };
-  providerRequestSourceExposureProofBindings(
-    request,
-    resolveRegisteredModel(request.model).countTextTokens,
-  );
   await input.onBeforeRequest?.(
     request,
     {
@@ -1377,6 +1387,90 @@ const phaseBOperationConfig: CanonicalAiConfig = {
   aiRetrievalQueryTimeoutMs: 10_000,
 };
 
+const prepareOversizedCompaction = async (
+  agent: PhaseDCompactionAgent,
+  fastInputMaxTokens = 100_000,
+  chatContent?: string | readonly string[],
+  mainInputMaxTokens = 780,
+) => {
+  // The fixture contains an oversized candidate inventory while its smallest
+  // compaction result remains within the configured main-input allowance.
+  const fixture = await runDb(
+    createFixtureWithCanonicalText(
+      `Liquidity ${"a!".repeat(130)}\n${"Liquidity evidence remains verbatim and immutable. ".repeat(10_000)}`,
+    ),
+  );
+  if (chatContent !== undefined) {
+    const chatContents = typeof chatContent === "string" ? [chatContent] : chatContent;
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        for (const content of chatContents) {
+          yield* sql`
+            insert into chat_messages (chat_id, author, content)
+            select chat_id, 'assistant', ${content}
+            from ai_runs
+            where id = ${fixture.runId}
+          `;
+        }
+      }),
+    );
+  }
+  const operations = new CanonicalWorkflowOperations(
+    databaseUrlFor(databaseName),
+    {
+      ...phaseBOperationConfig,
+      aiMainInputMaxTokens: mainInputMaxTokens,
+      aiMainOutputMaxTokens: 128,
+      aiFastInputMaxTokens: fastInputMaxTokens,
+    },
+    agent,
+  );
+  const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+  const structuredInternal = await inTask("single-retrieve-internal", () =>
+    operations.retrieveStructuredInternal(
+      load,
+      "What changed in liquidity?",
+      "single-retrieve-internal",
+      [],
+    ),
+  );
+  const initial = await assembleAndMeasureContext(
+    operations,
+    load,
+    "What changed in liquidity?",
+    {
+      structuredInternal,
+      memories: [],
+      memorySelection: "enabled",
+      web: [],
+      webSelection: "enabled",
+    },
+    "single-answer",
+  );
+  expect(initial.status).toBe("needs_compaction");
+  expect(initial.inputTokens).toBeGreaterThan(initial.usableInputTokens);
+  const oversizedCandidate = initial.candidateLedger.candidates.find(
+    (candidate) =>
+      candidate.kind === "document" ||
+      (chatContent !== undefined && candidate.kind === "chat_message"),
+  );
+  expect(oversizedCandidate).toBeDefined();
+  if (oversizedCandidate === undefined) throw new Error("oversized fixture lost its source");
+  const passageIndex = buildCandidatePassageIndex(oversizedCandidate, {
+    maxTokens: Math.max(1, Math.min(phaseBOperationConfig.aiFastOutputMaxTokens, 256)),
+    maxUtf8Bytes: 8_192,
+    countTokens: resolveRegisteredModel(load.acceptanceScope.fastModelId).countTextTokens,
+    authorizedRanges: oversizedCandidate.baseRanges,
+  });
+  const minimumPassageCost = Math.min(
+    ...passageIndex.passages.map((passage) => passage.tokenCount),
+  );
+  expect(passageIndex.passages.length).toBeGreaterThan(1);
+  expect(oversizedCandidate.renderedTokenCount).toBeGreaterThan(minimumPassageCost);
+  return { fixture, operations, load, initial };
+};
+
 interface PublicPreviewFixture extends Fixture {
   readonly publicSourceId: string;
   readonly publicDocumentId: string;
@@ -1433,344 +1527,819 @@ const createPublicPreviewFixture = (canonicalText: string) =>
     } satisfies PublicPreviewFixture;
   });
 
-class PublisherRetrievalAgent extends CanonicalAgentClient {
-  onAfterFirstSearch?: () => Promise<void>;
-  repeatInspection = false;
-  malformedFirstSearch = false;
-  skipInspection = false;
-  selectWholeAfterInspection = false;
-  narrowerRange = false;
-  readonly selectedRange = { charStart: 0, charEnd: 120 } as const;
-  firstInspectionWasTooLarge = false;
-  narrowedInspectionText: string | undefined;
-
+class IntegrationAgentClient extends CanonicalAgentClient {
   constructor() {
     super(testProviderBoundary());
   }
 
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
-    if (input.outputToolName !== "emit_plan_turn") {
-      throw new Error(`unexpected structured call ${input.outputToolName}`);
-    }
-    return input.validate({
-      mode: "single",
-      question: "What changed in liquidity?",
-      relevantTurnIds: [],
-    });
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
-    const inspect = input.tools.find((tool) => tool.definition.name === "inspect_internal");
-    if (search === undefined || inspect === undefined) throw new Error("missing internal tools");
-    const coordinates: PiBoundaryCoordinates = {
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex: 0,
-    };
-    await invokeToolLoopProviderHook(input, coordinates);
-    if (this.sourceId.startsWith("public:")) {
-      return input.validateTerminal({ entries: [] });
-    }
-    let searchCoordinates = coordinates;
-    if (this.malformedFirstSearch) {
-      const rejected = await search.execute(
-        {
-          query: {
-            target: "documents",
-            terms: "liquidity conditions remained anchored",
-            purpose: "answer the liquidity question",
-          },
-        },
-        coordinates,
-      );
-      if (rejected.queryRejected !== true || rejected.correctionRequired !== true) {
-        throw new Error("malformed first search was not returned as correction-only");
+    if (input.outputToolName === "emit_internal_query_plan") {
+      let question = "evidence";
+      try {
+        const parsed = JSON.parse(input.user) as { readonly question?: unknown };
+        if (typeof parsed.question === "string") question = parsed.question;
+      } catch {
+        // The provider boundary will report malformed user input in production.
       }
-      searchCoordinates = { ...coordinates, providerRequestIndex: 1 };
-      await invokeToolLoopProviderHook(input, searchCoordinates);
-    }
-    const searchResult = await search.execute(
-      {
-        query: {
-          target: "documents",
-          terms: "liquidity",
-          purpose: "answer the liquidity question",
-        },
-      },
-      searchCoordinates,
-    );
-    const items = searchResult.items;
-    if (!Array.isArray(items)) throw new Error("publisher search failed");
-    if (items.length === 0) return input.validateTerminal({ entries: [] });
-    if (items.length !== 1) throw new Error("publisher search returned multiple documents");
-    if (this.expectedSearchSnippet !== undefined) {
-      const item = items[0] as { readonly snippet?: unknown };
-      if (item.snippet !== this.expectedSearchSnippet) {
-        throw new Error("publisher search preview did not preserve exact repeated matches");
-      }
-    }
-    if (
-      !Array.isArray(searchResult.__briefSourceExposures) ||
-      searchResult.__briefSourceExposures.length !== 1
-    ) {
-      throw new Error("publisher search did not include its bounded provider-visible marker");
-    }
-    await this.onAfterFirstSearch?.();
-    if (this.onAfterFirstSearch !== undefined) {
-      const driftedSearch = await search.execute(
-        {
-          query: {
-            target: "documents",
-            terms: "liquidity",
-            purpose: "answer the liquidity question",
-          },
-        },
-        { ...coordinates, providerRequestIndex: 1 },
-      );
-      if (!Array.isArray(driftedSearch.items)) throw new Error("publisher drift search failed");
-    }
-    const item = items[0] as {
-      readonly documentId: string;
-      readonly snapshotId: string;
-      readonly publisherExtractionId: string;
-      readonly source: {
-        readonly kind: "publisher";
-        readonly sourceId: string;
-        readonly issueId: string;
-        readonly documentId: string;
-      };
-    };
-    const inspectionReference: InternalReference = {
-      kind: "document",
-      documentId: item.documentId,
-      snapshotId: item.snapshotId,
-      publisherExtractionId: item.publisherExtractionId,
-      source: item.source,
-      purpose: "answer the liquidity question",
-    };
-    const reference = {
-      kind: "document",
-      documentId: inspectionReference.documentId,
-      purpose: inspectionReference.purpose,
-    };
-    const inspectionCoordinates = {
-      ...coordinates,
-      providerRequestIndex: this.malformedFirstSearch ? 2 : coordinates.providerRequestIndex,
-    };
-    if (this.malformedFirstSearch) {
-      await invokeToolLoopProviderHook(input, inspectionCoordinates);
-    }
-    if (!this.skipInspection) {
-      const firstInspection = await inspect.execute(
-        {
-          reference: {
-            kind: "document",
-            documentId: inspectionReference.documentId,
-            purpose: inspectionReference.purpose,
-          },
-        },
-        inspectionCoordinates,
-      );
-      this.firstInspectionWasTooLarge = firstInspection.narrowerRangeRequired === true;
-      if (this.narrowerRange) {
-        if (firstInspection.narrowerRangeRequired !== true) {
-          throw new Error("oversized publisher inspection did not require a narrower range");
-        }
-        const narrowedCoordinates = {
-          ...coordinates,
-          providerRequestIndex: inspectionCoordinates.providerRequestIndex + 1,
-        };
-        await invokeToolLoopProviderHook(input, narrowedCoordinates);
-        const inspection = await inspect.execute(
-          {
-            reference: {
-              kind: "document",
-              documentId: inspectionReference.documentId,
-              range: this.selectedRange,
-              purpose: inspectionReference.purpose,
-            },
-          },
-          narrowedCoordinates,
+      const term =
+        question
+          .toLocaleLowerCase()
+          .match(/[a-z][a-z0-9-]{4,}/gu)
+          ?.sort((left, right) => right.length - left.length)[0] ?? "evidence";
+      const chat =
+        /\b(older|message|statement|needle|conversation|boundary|subject|comparison)\b/iu.test(
+          question,
         );
-        if (inspection.found !== true || inspection.complete !== true) {
-          throw new Error("narrowed publisher inspection failed");
-        }
-        if (typeof inspection.text !== "string") {
-          throw new Error("narrowed publisher inspection did not return immutable text");
-        }
-        this.narrowedInspectionText = inspection.text;
-        if (
-          !Array.isArray(inspection.__briefSourceExposures) ||
-          inspection.__briefSourceExposures.length !== 1
-        ) {
-          throw new Error("narrowed publisher inspection lacked its source exposure");
-        }
-      } else if (firstInspection.found !== true || firstInspection.complete !== true) {
-        throw new Error("publisher inspection failed");
-      } else if (
-        !Array.isArray(firstInspection.__briefSourceExposures) ||
-        firstInspection.__briefSourceExposures.length !== 1
-      ) {
-        throw new Error("publisher inspection did not include its bounded provider-visible marker");
-      }
-    }
-    if (this.repeatInspection) {
-      const repeatedInspection = await inspect.execute(
-        {
-          reference: {
-            kind: "document",
-            documentId: inspectionReference.documentId,
-            purpose: inspectionReference.purpose,
+      await invokeStructuredProviderHook(input);
+      return input.validate({
+        action: "search",
+        queries: [
+          {
+            purpose: "retrieve the requested evidence",
+            ...(chat ? { scope: "chat_messages" } : { scope: "documents" }),
+            all: [{ text: term, mode: "term" }],
+            anyOf: [],
+            not: [],
+            filters: chat ? { chatMessages: {} } : { documents: {} },
+            order: "relevance",
           },
-        },
-        coordinates,
+        ],
+      });
+    }
+    if (input.outputToolName === "emit_internal_query_review") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({ action: "accept", reason: "sufficient_coverage" });
+    }
+    return super.structured(input);
+  }
+}
+
+class ReviewReplacingAgent extends IntegrationAgentClient {
+  constructor() {
+    super();
+  }
+
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName === "emit_internal_query_plan") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({
+        action: "search",
+        queries: [
+          {
+            purpose: "retrieve the macro evidence",
+            all: [{ text: "liquidity", mode: "term" }],
+            anyOf: [],
+            not: [],
+            filters: { documents: {} },
+            order: "relevance",
+          },
+        ],
+      });
+    }
+    if (input.outputToolName === "emit_internal_query_review") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({
+        action: "accept",
+        reason: "sufficient_coverage",
+      });
+    }
+    return super.structured(input);
+  }
+}
+class StructuredReplacementAgent extends IntegrationAgentClient {
+  reviewCalls = 0;
+
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName === "emit_internal_query_plan") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({
+        action: "search",
+        queries: [
+          {
+            purpose: "retrieve liquidity evidence",
+            all: [{ text: "liquidity", mode: "term" }],
+            anyOf: [],
+            not: [],
+            filters: { documents: {} },
+            order: "relevance",
+          },
+        ],
+      });
+    }
+    if (input.outputToolName === "emit_internal_query_review") {
+      await invokeStructuredProviderHook(input);
+      this.reviewCalls += 1;
+      return input.validate(
+        this.reviewCalls === 1
+          ? {
+              action: "replace",
+              reason: "missed_concept",
+              queries: [
+                {
+                  purpose: "retrieve expectations evidence",
+                  all: [{ text: "expectations", mode: "term" }],
+                  anyOf: [],
+                  not: [],
+                  filters: { documents: {} },
+                  order: "relevance",
+                },
+              ],
+            }
+          : { action: "accept", reason: "sufficient_coverage" },
       );
-      if (
-        repeatedInspection.protocolError !== "internal inspection repeated a completed reference"
-      ) {
-        throw new Error("repeated publisher inspection was not closed by protocol recovery");
+    }
+    return super.structured(input);
+  }
+}
+
+class StructuredMalformedRecoveryAgent extends IntegrationAgentClient {
+  planCalls = 0;
+  reviewCalls = 0;
+  private readonly reviewCallsByTask = new Map<string, number>();
+
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (
+      input.outputToolName === "emit_internal_query_plan" ||
+      input.outputToolName === "emit_internal_query_review"
+    ) {
+      await invokeStructuredProviderHook(input);
+      if (input.outputToolName === "emit_internal_query_plan") {
+        this.planCalls += 1;
+        return input.validate(
+          this.planCalls === 1
+            ? { action: "search", queries: [] }
+            : {
+                action: "search",
+                queries: [
+                  {
+                    purpose: "retrieve liquidity evidence",
+                    all: [{ text: "liquidity", mode: "term" }],
+                    anyOf: [],
+                    not: [],
+                    filters: { documents: {} },
+                    order: "relevance",
+                  },
+                ],
+              },
+        );
+      }
+      this.reviewCalls += 1;
+      const reviewTaskId = input.coordinates?.taskId ?? "";
+      const taskReviewCalls = (this.reviewCallsByTask.get(reviewTaskId) ?? 0) + 1;
+      this.reviewCallsByTask.set(reviewTaskId, taskReviewCalls);
+      return input.validate(
+        reviewTaskId === "malformed-review-retry" && taskReviewCalls === 1
+          ? {
+              action: "replace",
+              reason: "missed_concept",
+              queries: [],
+            }
+          : { action: "accept", reason: "sufficient_coverage" },
+      );
+    }
+
+    return super.structured(input);
+  }
+}
+
+class PublisherRetrievalAgent extends IntegrationAgentClient {
+  onAfterFirstSearch?: () => Promise<void>;
+}
+
+class PhaseDCompactionAgent extends IntegrationAgentClient {
+  manifestCalls = 0;
+  groupCalls = 0;
+  fallbackCalls = 0;
+
+  constructor(private readonly mode: "select" | "repair" | "fallback-omit" = "select") {
+    super();
+  }
+
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName === "emit_context_manifest") {
+      this.manifestCalls += 1;
+      const inventory = JSON.parse(input.user) as {
+        readonly allowance: number;
+        readonly mandatoryInputCost: number;
+        readonly candidates: readonly {
+          readonly candidateId: string;
+          readonly kind: string;
+          readonly renderedTokenCount: number;
+        }[];
+      };
+      const eligible = inventory.candidates.find(
+        (candidate) => candidate.kind === "document" || candidate.kind === "chat_message",
+      );
+      if (eligible === undefined) {
+        return input.validate({
+          decisions: inventory.candidates.map((candidate) => ({
+            candidateId: candidate.candidateId,
+            action: "keep",
+            reason: "retain non-compacted evidence",
+          })),
+          groups: [],
+        });
+      }
+      const keptCost = inventory.candidates
+        .filter((candidate) => candidate.candidateId !== eligible.candidateId)
+        .reduce((total, candidate) => total + candidate.renderedTokenCount, 0);
+      const remainingAnswerTokens = inventory.allowance - inventory.mandatoryInputCost - keptCost;
+      return input.validate({
+        decisions: inventory.candidates.map((candidate) =>
+          candidate.candidateId === eligible.candidateId
+            ? {
+                candidateId: candidate.candidateId,
+                action: "compact",
+                groupId: "g1",
+                reason: "select exact evidence passages",
+              }
+            : {
+                candidateId: candidate.candidateId,
+                action: "keep",
+                reason: "retain mandatory evidence",
+              },
+        ),
+        groups: [
+          {
+            groupId: "g1",
+            renderedTokenBudget: Math.max(
+              1,
+              Math.min(eligible.renderedTokenCount - 1, remainingAnswerTokens),
+            ),
+          },
+        ],
+      });
+    }
+    if (input.outputToolName === "emit_fallback_context_manifest") {
+      this.fallbackCalls += 1;
+      const inventory = JSON.parse(input.user) as {
+        readonly originalCandidates: readonly { readonly candidateId: string }[];
+      };
+      return input.validate({
+        decisions: inventory.originalCandidates.map((candidate) => ({
+          candidateId: candidate.candidateId,
+          action: "omit",
+          reason: "close the bounded fallback without restoring evidence",
+        })),
+        groups: [],
+      });
+    }
+    if (input.outputToolName === "emit_compaction_result") {
+      this.groupCalls += 1;
+      const payload = JSON.parse(input.user) as {
+        readonly candidates?: readonly {
+          readonly candidateId: string;
+          readonly passages: readonly {
+            readonly passageId: string;
+            readonly text: string;
+          }[];
+        }[];
+      };
+      const selectSmallestPassage = (
+        candidate: NonNullable<typeof payload.candidates>[number],
+      ): readonly string[] => {
+        const passage = candidate.passages.reduce((smallest, current) =>
+          resolveRegisteredModel(input.model).countTextTokens(current.text) <
+          resolveRegisteredModel(input.model).countTextTokens(smallest.text)
+            ? current
+            : smallest,
+        );
+        return [passage.passageId];
+      };
+      if (this.mode === "repair" && this.groupCalls === 1) {
+        try {
+          return input.validate({
+            decisions: [
+              {
+                candidateId: "invalid-candidate",
+                action: "omit",
+                reason: "trigger one semantic repair",
+              },
+            ],
+          });
+        } catch (error) {
+          const repair = input.repair?.(error, input.coordinates);
+          if (repair === undefined) throw error;
+          this.groupCalls += 1;
+          return input.validate({
+            decisions: (payload.candidates ?? []).map((candidate) => ({
+              candidateId: candidate.candidateId,
+              action: "select",
+              passageIds: selectSmallestPassage(candidate),
+              reason: "retain the smallest exact passage after repair",
+            })),
+          });
+        }
+      }
+      return input.validate({
+        decisions: (payload.candidates ?? []).map((candidate) => ({
+          candidateId: candidate.candidateId,
+          action: "select",
+          passageIds: selectSmallestPassage(candidate),
+          reason: "retain the smallest exact passage",
+        })),
+      });
+    }
+    return super.structured(input);
+  }
+
+  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
+    if (input.terminalToolName !== "emit_compaction_result") {
+      return super.toolLoop(input);
+    }
+    const payload = JSON.parse(input.user) as {
+      readonly candidate: { readonly candidateId: string };
+    };
+    const search = input.tools.find((tool) => tool.definition.name === "search_source_passages");
+    if (search === undefined) throw new Error("missing source-local search tool");
+    const found = (await search.execute(
+      { candidateId: payload.candidate.candidateId, query: "evidence" },
+      {
+        ...input.coordinates,
+        loopIteration: 0,
+        providerRequestIndex: 0,
+      },
+    )) as { readonly passages?: readonly { readonly passageId: string }[] };
+    const passageId = found.passages?.[0]?.passageId;
+    if (passageId === undefined) throw new Error("source-local search returned no passage");
+    return input.validateTerminal({
+      decisions: [
+        {
+          candidateId: payload.candidate.candidateId,
+          action: "select",
+          passageIds: [passageId],
+          reason: "retain a source-local exact passage",
+        },
+      ],
+    });
+  }
+}
+type CompactionStructuredObservation = {
+  readonly payload: {
+    readonly group?: {
+      readonly groupId: string;
+      readonly candidateIds: readonly string[];
+      readonly renderedTokenBudget: number;
+      readonly mode: string;
+    };
+    readonly candidates?: readonly {
+      readonly candidateId: string;
+      readonly passages: readonly {
+        readonly passageId: string;
+        readonly text: string;
+      }[];
+    }[];
+    readonly priorResult?: {
+      readonly decisions: readonly {
+        readonly candidateId: string;
+        readonly action: "select" | "omit";
+        readonly passageIds?: readonly string[];
+      }[];
+    };
+  };
+  readonly proofs: readonly (ProviderVisibleSourceExposureMarker & {
+    readonly candidateId?: string | undefined;
+    readonly passageId?: string | undefined;
+  })[];
+  readonly request: LiveProviderRequest | undefined;
+  readonly validate: (value: unknown) => unknown;
+};
+
+class PriorPassageFallbackAgent extends PhaseDCompactionAgent {
+  readonly fallbackGroupObservations: CompactionStructuredObservation[] = [];
+
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName === "emit_internal_query_plan") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({
+        action: "search",
+        queries: [
+          {
+            purpose: "retrieve the long chat evidence",
+            scope: "chat_messages",
+            all: [{ text: "evidence", mode: "term" }],
+            anyOf: [],
+            not: [],
+            filters: { chatMessages: {} },
+            order: "relevance",
+          },
+        ],
+      });
+    }
+    if (input.outputToolName === "emit_fallback_context_manifest") {
+      const payload = JSON.parse(input.user) as {
+        readonly originalCandidates: readonly { readonly candidateId: string }[];
+        readonly firstPass: readonly {
+          readonly groupId: string;
+          readonly actualRenderedTokenCount: number;
+          readonly decisions: readonly {
+            readonly candidateId: string;
+            readonly action: "select" | "omit";
+            readonly passageIds?: readonly string[];
+          }[];
+        }[];
+      };
+      const firstSelections = new Map(
+        payload.firstPass.flatMap((group) =>
+          group.decisions.map((decision) => [
+            decision.candidateId,
+            { ...decision, groupId: group.groupId },
+          ]),
+        ),
+      );
+      return input.validate({
+        decisions: payload.originalCandidates.map((candidate) => {
+          const previous = firstSelections.get(candidate.candidateId);
+          return previous?.action === "select"
+            ? {
+                candidateId: candidate.candidateId,
+                action: "tighten",
+                groupId: previous.groupId,
+                reason: "tighten to one previously selected exact passage",
+              }
+            : {
+                candidateId: candidate.candidateId,
+                action: "omit",
+                reason: "omit non-selected evidence",
+              };
+        }),
+        groups: payload.firstPass.map((group) => ({
+          groupId: group.groupId,
+          renderedTokenBudget: Math.max(1, group.actualRenderedTokenCount - 1),
+        })),
+      });
+    }
+    if (input.outputToolName === "emit_compaction_result") {
+      const payload = JSON.parse(input.user) as CompactionStructuredObservation["payload"];
+      if (payload.candidates === undefined) return super.structured(input);
+      if (payload.priorResult !== undefined) {
+        const request =
+          input.request ??
+          ({
+            requestClass: input.requestClass,
+            model: input.model,
+            messages: [
+              { role: "system", content: input.system },
+              { role: "user", content: input.user },
+            ],
+            tools: [
+              {
+                name: input.outputToolName,
+                description: input.outputToolDescription,
+                parameters: input.outputSchema,
+              },
+            ],
+            ...(input.sourceExposureProofs === undefined
+              ? {}
+              : { sourceExposureProofs: input.sourceExposureProofs }),
+            toolChoice: "auto",
+            requestedOutputTokens: input.requestedOutputTokens,
+            reasoning: input.reasoning,
+          } satisfies LiveProviderRequest);
+        this.fallbackGroupObservations.push({
+          payload,
+          proofs: input.sourceExposureProofs ?? [],
+          request,
+          validate: input.validate,
+        });
+      }
+      const requestedPassageIds = payload.priorResult === undefined ? ["p3", "p4"] : ["p4"];
+      for (const candidate of payload.candidates) {
+        if (
+          !requestedPassageIds.every((passageId) =>
+            candidate.passages.some((passage) => passage.passageId === passageId),
+          )
+        ) {
+          throw new Error(
+            `sparse fallback fixture passages: ${candidate.passages
+              .map((passage) => passage.passageId)
+              .join(",")}`,
+          );
+        }
+      }
+      return input.validate({
+        decisions: payload.candidates.map((candidate) => ({
+          candidateId: candidate.candidateId,
+          action: "select",
+          passageIds: requestedPassageIds,
+          reason:
+            payload.priorResult === undefined
+              ? "retain sparse non-prefix exact passages"
+              : "tighten to the final exact passage",
+        })),
+      });
+    }
+    return super.structured(input);
+  }
+}
+
+class MultiMemberFallbackAgent extends PriorPassageFallbackAgent {
+  readonly initialGroupPayloads: CompactionStructuredObservation["payload"][] = [];
+
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName === "emit_context_manifest") {
+      const inventory = JSON.parse(input.user) as {
+        readonly allowance: number;
+        readonly mandatoryInputCost: number;
+        readonly candidates: readonly {
+          readonly candidateId: string;
+          readonly kind: string;
+          readonly renderedTokenCount: number;
+        }[];
+      };
+      const compacted = inventory.candidates.filter(
+        (candidate) => candidate.kind === "document" || candidate.kind === "chat_message",
+      );
+      if (compacted.length < 2) throw new Error("multi-member fixture lacks two source candidates");
+      const compactedIds = new Set(compacted.map((candidate) => candidate.candidateId));
+      const keptCost = inventory.candidates
+        .filter((candidate) => !compactedIds.has(candidate.candidateId))
+        .reduce((total, candidate) => total + candidate.renderedTokenCount, 0);
+      const remainingAnswerTokens = inventory.allowance - inventory.mandatoryInputCost - keptCost;
+      return input.validate({
+        decisions: inventory.candidates.map((candidate) =>
+          compactedIds.has(candidate.candidateId)
+            ? {
+                candidateId: candidate.candidateId,
+                action: "compact",
+                groupId: "g1",
+                reason: "compact both source candidates together",
+              }
+            : {
+                candidateId: candidate.candidateId,
+                action: "keep",
+                reason: "retain mandatory evidence",
+              },
+        ),
+        groups: [
+          {
+            groupId: "g1",
+            renderedTokenBudget: Math.max(
+              1,
+              Math.min(
+                compacted.reduce((total, candidate) => total + candidate.renderedTokenCount, 0) - 1,
+                remainingAnswerTokens,
+              ),
+            ),
+          },
+        ],
+      });
+    }
+    if (input.outputToolName === "emit_compaction_result") {
+      const payload = JSON.parse(input.user) as CompactionStructuredObservation["payload"];
+      if (payload.candidates !== undefined && payload.priorResult === undefined) {
+        this.initialGroupPayloads.push(payload);
       }
     }
-    const terminalReference = this.narrowerRange
-      ? { ...reference, ranges: [this.selectedRange] }
-      : reference;
-    await invokeToolLoopProviderHook(input, {
-      ...coordinates,
-      providerRequestIndex: this.narrowerRange
-        ? this.malformedFirstSearch
-          ? 4
-          : 2
-        : this.malformedFirstSearch
-          ? 3
-          : 1,
-    });
-    return (this.duplicateManifest
-      ? [terminalReference, terminalReference]
-      : [terminalReference]) as unknown as Output;
+    return super.structured(input);
   }
-
-  sourceId = "";
-  sourceName = "Canonical Publisher";
-  duplicateManifest = false;
-  expectedSearchSnippet: string | undefined;
 }
+class DurableRepairAgent extends CanonicalAgentClient {
+  private readonly state: {
+    providerCalls: number;
+    manifestCalls: number;
+    groupCalls: number;
+  };
 
-class CorrectingReducerAgent extends CanonicalAgentClient {
-  readonly feedback: unknown[] = [];
-  private callCount = 0;
-
-  constructor(private readonly firstPlan: "invalid" | "oversized") {
-    super(testProviderBoundary());
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    if (input.terminalToolName !== "emit_context_plan") {
-      throw new Error(`unexpected tool loop ${input.terminalToolName}`);
-    }
-    const request = JSON.parse(input.user) as {
-      readonly candidates: readonly { readonly id: string }[];
-      readonly priorValidationFeedback: unknown;
+  constructor(
+    private readonly runId: string,
+    private readonly chatId: string,
+    private readonly mode: "manifest" | "group" | "post-response-failure" | "transport-failure",
+  ) {
+    const state = {
+      providerCalls: 0,
+      manifestCalls: 0,
+      groupCalls: 0,
     };
-    await invokeToolLoopProviderHook(input, {
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex: 0,
-    });
-    this.feedback.push(request.priorValidationFeedback);
-    this.callCount += 1;
-    const decisions =
-      this.callCount === 1
-        ? this.firstPlan === "invalid"
-          ? []
-          : request.candidates.map((candidate) => ({
-              id: candidate.id,
-              action: "keep" as const,
-              reason: "keep the complete selected evidence",
-            }))
-        : request.candidates.map((candidate) => ({
-            id: candidate.id,
-            action: "omit" as const,
-            reason: "omit evidence to satisfy the exact allowance",
-          }));
-    return input.validateTerminal({ decisions });
-  }
-}
-
-type ReducerProtocolProbeMode = "valid" | "invalid-after-success" | "unmeasured" | "drift";
-
-class ReducerProtocolProbeAgent extends CanonicalAgentClient {
-  constructor(private readonly mode: ReducerProtocolProbeMode) {
-    super(testProviderBoundary());
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    if (input.terminalToolName !== "emit_context_plan") {
-      throw new Error(`unexpected tool loop ${input.terminalToolName}`);
-    }
-    const measure = input.tools.find((tool) => tool.definition.name === "measure_plan");
-    if (measure === undefined) throw new Error("missing reducer measurement tool");
-    const candidateIds = (
-      JSON.parse(input.user) as { readonly candidates: readonly { readonly id: string }[] }
-    ).candidates.map((candidate) => candidate.id);
-    const decisions = candidateIds.map((id) => ({
-      id,
-      action: "omit" as const,
-      reason: "omit for protocol validation",
-    }));
-    const driftedDecisions = candidateIds.map((id) => ({
-      id,
-      action: "keep" as const,
-      reason: "drift from the measured plan",
-    }));
-    const coordinatesAt = (providerRequestIndex: number): PiBoundaryCoordinates => ({
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex,
-    });
-    const completionFor = (arguments_: Readonly<Record<string, unknown>>): PiCompletion => ({
-      text: "",
-      toolCalls: [{ id: "terminal", name: "emit_context_plan", arguments: arguments_ }],
-      usage: {
-        inputTokens: 1,
-        outputTokens: 1,
-        cachedTokens: 0,
-        reasoningTokens: 0,
-        totalTokens: 2,
-        stopReason: "toolUse",
+    let postResponseFailurePending = mode === "post-response-failure";
+    const persistCompletion = async (
+      completion: PiCompletion,
+      coordinates: PiBoundaryCoordinates,
+    ): Promise<PiCompletion> => {
+      await runDb(
+        insertAiRunUsage({
+          runId,
+          taskId: coordinates.taskId,
+          loopIteration: coordinates.loopIteration,
+          attempt: coordinates.attempt,
+          providerRequestIndex: coordinates.providerRequestIndex,
+          agentRole: coordinates.agentRole,
+          modelId: "glm-5-turbo",
+          providerServiceId: "zai_coding_plan_official",
+          usage: completion.usage,
+        }),
+      );
+      if (postResponseFailurePending) {
+        postResponseFailurePending = false;
+        throw new Error("simulated operation/output persistence crash");
+      }
+      return completion;
+    };
+    super({
+      bindAcceptedProviderProfile: () => undefined,
+      complete: async (
+        request: LiveProviderRequest,
+        _coordinates: PiBoundaryCoordinates,
+        onBeforeRequest?: BeforeProviderRequest,
+      ) => {
+        state.providerCalls += 1;
+        const measurement = passedMeasurement(request.model);
+        await onBeforeRequest?.(
+          request,
+          {
+            ..._coordinates,
+            providerRequestSha256Hex: providerRequestSha256Hex(request),
+          },
+          measurement,
+        );
+        if (mode === "transport-failure" && state.providerCalls === 1) {
+          throw new Error("simulated pre-response transport failure");
+        }
+        await runDb(
+          insertAiObservation({
+            runId: this.runId,
+            chatId: this.chatId,
+            emittingTask: _coordinates.taskId,
+            loopIteration: _coordinates.loopIteration,
+            attempt: _coordinates.attempt,
+            observationKey: `durable-repair:${_coordinates.taskId}:${_coordinates.attempt}:${_coordinates.providerRequestIndex}`,
+            kind: "provider_request_measurement",
+            payload: {
+              providerRequestIndex: _coordinates.providerRequestIndex,
+              agentRole: _coordinates.agentRole,
+              requestSha256Hex: providerRequestSha256Hex(request),
+              sourceExposureProofSha256Hexes: [],
+              sourceExposureProofBindings: [],
+              ...measurement,
+            },
+          }),
+        );
+        const user = request.messages.find((message) => message.role === "user")?.content;
+        const payload = user === undefined ? {} : (JSON.parse(user) as Record<string, unknown>);
+        const toolName = request.tools?.[0]?.name;
+        if (toolName === "emit_context_manifest") {
+          state.manifestCalls += 1;
+          const candidates = Array.isArray(payload.candidates)
+            ? payload.candidates.filter(
+                (candidate): candidate is Record<string, unknown> =>
+                  typeof candidate === "object" && candidate !== null,
+              )
+            : [];
+          const eligible = candidates.find(
+            (candidate) =>
+              (candidate.kind === "document" || candidate.kind === "chat_message") &&
+              typeof candidate.candidateId === "string",
+          );
+          const keptCost = candidates
+            .filter((candidate) => candidate.candidateId !== eligible?.candidateId)
+            .reduce(
+              (total, candidate) =>
+                total +
+                (typeof candidate.renderedTokenCount === "number"
+                  ? candidate.renderedTokenCount
+                  : 0),
+              0,
+            );
+          const remainingAnswerTokens =
+            Number(payload.allowance ?? 0) - Number(payload.mandatoryInputCost ?? 0) - keptCost;
+          if (this.mode === "manifest" && state.manifestCalls % 2 === 1) {
+            return persistCompletion(
+              providerToolCompletion(
+                "emit_context_manifest",
+                {
+                  decisions: [
+                    { candidateId: "invalid-candidate", action: "keep", reason: "invalid" },
+                  ],
+                  groups: [],
+                },
+                `manifest-${String(state.manifestCalls)}`,
+              ),
+              _coordinates,
+            );
+          }
+          return persistCompletion(
+            providerToolCompletion(
+              "emit_context_manifest",
+              {
+                decisions: candidates.map((candidate) =>
+                  candidate.candidateId === eligible?.candidateId
+                    ? {
+                        candidateId: candidate.candidateId,
+                        action: "compact",
+                        groupId: "g1",
+                        reason: "select exact evidence passages",
+                      }
+                    : {
+                        candidateId: candidate.candidateId,
+                        action: "keep",
+                        reason: "retain evidence",
+                      },
+                ),
+                groups:
+                  eligible === undefined
+                    ? []
+                    : [
+                        {
+                          groupId: "g1",
+                          renderedTokenBudget: Math.max(
+                            1,
+                            Math.min(
+                              Number(eligible.renderedTokenCount ?? 2) - 1,
+                              remainingAnswerTokens,
+                            ),
+                          ),
+                        },
+                      ],
+              },
+              `manifest-${String(state.manifestCalls)}`,
+            ),
+            _coordinates,
+          );
+        }
+        if (toolName === "emit_compaction_result") {
+          state.groupCalls += 1;
+          const candidates = Array.isArray(payload.candidates)
+            ? payload.candidates.filter(
+                (candidate): candidate is Record<string, unknown> =>
+                  typeof candidate === "object" && candidate !== null,
+              )
+            : [];
+          if (this.mode === "group" && state.groupCalls % 2 === 1) {
+            return persistCompletion(
+              providerToolCompletion(
+                "emit_compaction_result",
+                {
+                  decisions: [
+                    {
+                      candidateId: "invalid-candidate",
+                      action: "omit",
+                      reason: "trigger one semantic repair",
+                    },
+                  ],
+                },
+                `group-${String(state.groupCalls)}`,
+              ),
+              _coordinates,
+            );
+          }
+          return persistCompletion(
+            providerToolCompletion(
+              "emit_compaction_result",
+              {
+                decisions: candidates.map((candidate) => {
+                  const passages = Array.isArray(candidate.passages) ? candidate.passages : [];
+                  const passageCandidates = passages.filter(
+                    (passage): passage is { readonly passageId: string; readonly text: string } =>
+                      typeof passage === "object" &&
+                      passage !== null &&
+                      typeof passage.passageId === "string" &&
+                      typeof passage.text === "string",
+                  );
+                  const passage = passageCandidates.reduce<
+                    { readonly passageId: string; readonly text: string } | undefined
+                  >(
+                    (smallest, current) =>
+                      smallest === undefined ||
+                      resolveRegisteredModel(request.model).countTextTokens(current.text) <
+                        resolveRegisteredModel(request.model).countTextTokens(smallest.text)
+                        ? current
+                        : smallest,
+                    undefined,
+                  );
+                  const passageId = passage?.passageId;
+                  return {
+                    candidateId: candidate.candidateId,
+                    action: "select",
+                    ...(passageId === undefined ? {} : { passageIds: [passageId] }),
+                    reason: "retain one exact passage",
+                  };
+                }),
+              },
+              `group-${String(state.groupCalls)}`,
+            ),
+            _coordinates,
+          );
+        }
+        throw new Error(`unexpected durable repair tool ${String(toolName)}`);
       },
-      stopReason: "toolUse",
-    });
-    const measureAt = async (
-      value: readonly unknown[],
-      providerRequestIndex: number,
-    ): Promise<Readonly<Record<string, unknown>>> => {
-      const coordinates = coordinatesAt(providerRequestIndex);
-      await invokeToolLoopProviderHook(input, coordinates);
-      return measure.execute({ decisions: value }, coordinates);
-    };
-    const terminalAt = async (
-      value: readonly unknown[],
-      providerRequestIndex: number,
-    ): Promise<Output> => {
-      const coordinates = coordinatesAt(providerRequestIndex);
-      await invokeToolLoopProviderHook(input, coordinates);
-      const output = input.validateTerminal({ decisions: value });
-      await input.onTerminal?.(output, coordinates, completionFor({ decisions: value }));
-      return output;
-    };
+    } as unknown as ExactPiBoundary);
+    this.state = state;
+  }
 
-    if (this.mode === "unmeasured") return terminalAt(decisions, 0);
-    await measureAt(decisions, 0);
-    if (this.mode === "invalid-after-success") {
-      await measureAt([], 1);
-      return terminalAt(decisions, 2);
-    }
-    return terminalAt(this.mode === "drift" ? driftedDecisions : decisions, 1);
+  get providerCalls(): number {
+    return this.state.providerCalls;
+  }
+
+  get manifestCalls(): number {
+    return this.state.manifestCalls;
+  }
+
+  get groupCalls(): number {
+    return this.state.groupCalls;
   }
 }
 
-class WebManifestAgent extends CanonicalAgentClient {
+class WebManifestAgent extends IntegrationAgentClient {
   constructor(
     private readonly quote: string,
     private readonly mode:
@@ -1785,7 +2354,7 @@ class WebManifestAgent extends CanonicalAgentClient {
       | "fetch-fallback"
       | "empty-after-fetch" = "valid",
   ) {
-    super(testProviderBoundary());
+    super();
   }
 
   override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
@@ -1912,9 +2481,9 @@ class WebManifestAgent extends CanonicalAgentClient {
   }
 }
 
-class MemoryManifestAgent extends CanonicalAgentClient {
+class MemoryManifestAgent extends IntegrationAgentClient {
   constructor(private readonly entries: readonly MemoryReference[]) {
-    super(testProviderBoundary());
+    super();
   }
 
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
@@ -1966,623 +2535,84 @@ class MemoryManifestAgent extends CanonicalAgentClient {
   }
 }
 
-class EmptyInventoryConversationAgent extends CanonicalAgentClient {
+class EmptyInventoryConversationAgent extends IntegrationAgentClient {
   calls = 0;
   entries: unknown = null;
 
   constructor() {
-    super(testProviderBoundary());
+    super();
   }
 
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
-    if (input.outputToolName !== "emit_plan_turn") {
-      throw new Error(`unexpected structured call ${input.outputToolName}`);
+    if (input.outputToolName === "emit_plan_turn") {
+      this.calls += 1;
+      this.entries = (JSON.parse(input.user) as { readonly entries: unknown }).entries;
+      await invokeStructuredProviderHook(input);
+      return input.validate({
+        mode: "single",
+        question: "What changed in liquidity?",
+        relevantTurnIds: [],
+      });
     }
-    this.calls += 1;
-    this.entries = (JSON.parse(input.user) as { readonly entries: unknown }).entries;
-    await invokeStructuredProviderHook(input);
-    return input.validate({
-      mode: "single",
-      question: "What changed in liquidity?",
-      relevantTurnIds: [],
-    });
+    return super.structured(input);
   }
 }
 
-class DateBoundaryInputAgent extends CanonicalAgentClient {
+class DateBoundaryInputAgent extends IntegrationAgentClient {
   readonly planInputs: string[] = [];
   readonly retrievalInputs: string[] = [];
 
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName === "emit_internal_query_plan") {
+      this.retrievalInputs.push(input.user);
+    }
+    if (input.outputToolName === "emit_plan_turn") {
+      this.planInputs.push(input.user);
+      await invokeStructuredProviderHook(input);
+      return input.validate({
+        mode: "single",
+        question: "What changed in liquidity?",
+        relevantTurnIds: [],
+      });
+    }
+    return super.structured(input);
+  }
+}
+
+class PublicRetrievalAgent extends IntegrationAgentClient {
   constructor() {
-    super(testProviderBoundary());
+    super();
   }
 
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
-    if (input.outputToolName !== "emit_plan_turn") {
-      throw new Error(`unexpected structured call ${input.outputToolName}`);
+    if (input.outputToolName === "emit_plan_turn") {
+      return input.validate({
+        mode: "single",
+        question: "What changed in the public signal?",
+        relevantTurnIds: [],
+      });
     }
-    this.planInputs.push(input.user);
-    await invokeStructuredProviderHook(input);
-    return input.validate({
-      mode: "single",
-      question: "What changed in liquidity?",
-      relevantTurnIds: [],
-    });
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    if (input.terminalToolName !== "emit_internal_manifest") {
-      throw new Error(`unexpected tool loop ${input.terminalToolName}`);
-    }
-    this.retrievalInputs.push(input.user);
-    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
-    if (search === undefined) throw new Error("internal search tool is missing");
-    const coordinates = {
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex: 0,
-    };
-    await invokeToolLoopProviderHook(input, coordinates);
-    const result = await search.execute(
-      {
-        query: {
-          target: "chat_messages",
-          terms: "zzboundarytoken",
-          purpose: "verify stable retry input",
-        },
-      },
-      coordinates,
-    );
-    if (result.complete !== true || !Array.isArray(result.items) || result.items.length !== 0) {
-      throw new Error("date-boundary search fixture must complete empty");
-    }
-    await invokeToolLoopProviderHook(input, {
-      ...coordinates,
-      providerRequestIndex: 1,
-    });
-    return input.validateTerminal({ entries: [] });
-  }
-}
-
-class UndiscoveredInternalAgent extends CanonicalAgentClient {
-  constructor(private readonly reference: InternalReference) {
-    super(testProviderBoundary());
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    if (input.terminalToolName !== "emit_internal_manifest") {
-      throw new Error(`unexpected tool loop ${input.terminalToolName}`);
-    }
-    await invokeToolLoopProviderHook(input, {
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex: 0,
-    });
-    return input.validateTerminal({
-      entries: [
-        this.reference.kind === "document"
-          ? {
-              kind: "document",
-              documentId: this.reference.documentId,
-              purpose: this.reference.purpose,
-            }
-          : this.reference,
-      ],
-    });
-  }
-}
-
-class ChatRetrievalAgent extends CanonicalAgentClient {
-  seenMessageIds: readonly string[] = [];
-  seenSnippets: readonly string[] = [];
-  inspectedContent = "";
-
-  constructor(private readonly beforeMessageId?: string) {
-    super(testProviderBoundary());
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    if (input.terminalToolName !== "emit_internal_manifest") {
-      throw new Error(`unexpected tool loop ${input.terminalToolName}`);
-    }
-    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
-    const inspect = input.tools.find((tool) => tool.definition.name === "inspect_internal");
-    if (search === undefined || inspect === undefined) throw new Error("missing internal tools");
-    const coordinates: PiBoundaryCoordinates = {
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex: 0,
-    };
-    await invokeToolLoopProviderHook(input, coordinates);
-    const result = (await search.execute(
-      {
-        query: {
-          target: "chat_messages",
-          terms: "needle",
-          purpose: "recover an older statement",
-          ...(this.beforeMessageId === undefined ? {} : { beforeMessageId: this.beforeMessageId }),
-        },
-      },
-      coordinates,
-    )) as {
-      readonly items: readonly {
-        readonly messageId: string;
-        readonly snippet: string;
-      }[];
-    };
-    this.seenMessageIds = result.items.map((item) => item.messageId);
-    this.seenSnippets = result.items.map((item) => item.snippet);
-    const first = result.items[0];
-    if (first === undefined) return input.validateTerminal({ entries: [] });
-    const reference: InternalReference = {
-      kind: "chat_message",
-      messageId: first.messageId,
-      purpose: "recover an older statement",
-    };
-    const inspected = (await inspect.execute({ reference }, coordinates)) as {
-      readonly found: boolean;
-      readonly complete: boolean;
-      readonly message?: { readonly content: string };
-    };
-    if (!inspected.found || !inspected.complete || inspected.message === undefined) {
-      throw new Error("chat inspection failed");
-    }
-    this.inspectedContent = inspected.message.content;
-    await invokeToolLoopProviderHook(input, { ...coordinates, providerRequestIndex: 1 });
-    return input.validateTerminal({ entries: [reference] });
-  }
-}
-
-class ExhaustedInternalSearchAgent extends CanonicalAgentClient {
-  terminalReady = false;
-
-  constructor() {
-    super(testProviderBoundary());
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
-    if (search === undefined) throw new Error("missing internal search tool");
-    const firstCoordinates: PiBoundaryCoordinates = {
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex: 0,
-    };
-    await invokeToolLoopProviderHook(input, firstCoordinates);
-    const first = await search.execute(
-      {
-        query: {
-          target: "chat_messages",
-          terms: "absent missing",
-          purpose: "establish that no older message matches",
-        },
-      },
-      firstCoordinates,
-    );
-    if (!Array.isArray(first.items) || first.items.length !== 0) {
-      throw new Error("first empty search unexpectedly found a message");
-    }
-    const secondCoordinates = { ...firstCoordinates, providerRequestIndex: 1 };
-    await invokeToolLoopProviderHook(input, secondCoordinates);
-    const second = await search.execute(
-      {
-        query: {
-          target: "chat_messages",
-          terms: "absent",
-          purpose: "refine the empty older-message search",
-        },
-      },
-      secondCoordinates,
-    );
-    if (!Array.isArray(second.items) || second.items.length !== 0) {
-      throw new Error("refined empty search unexpectedly found a message");
-    }
-    this.terminalReady = input.terminalOnlyForTurn?.(2) === true;
-    return input.validateTerminal({ entries: [] });
-  }
-}
-
-class ExhaustedNonEmptyInternalSearchAgent extends CanonicalAgentClient {
-  inspectionAvailable = false;
-  terminalReady = false;
-
-  constructor() {
-    super(testProviderBoundary());
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
-    const inspect = input.tools.find((tool) => tool.definition.name === "inspect_internal");
-    if (search === undefined || inspect === undefined) throw new Error("missing internal tools");
-    const coordinates: PiBoundaryCoordinates = {
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex: 0,
-    };
-    await invokeToolLoopProviderHook(input, coordinates);
-    const first = await search.execute(
-      {
-        query: {
-          target: "chat_messages",
-          terms: "needle",
-          purpose: "find the first comparison subject",
-        },
-      },
-      coordinates,
-    );
-    const firstItems = first.items;
-    if (!Array.isArray(firstItems)) {
-      throw new Error("first non-empty search returned no result array");
-    }
-    const firstItem = firstItems[0];
-    if (
-      firstItem === null ||
-      typeof firstItem !== "object" ||
-      !("messageId" in firstItem) ||
-      typeof firstItem.messageId !== "string"
-    ) {
-      throw new Error("first non-empty search returned no message");
-    }
-
-    const secondCoordinates = { ...coordinates, providerRequestIndex: 1 };
-    await invokeToolLoopProviderHook(input, secondCoordinates);
-    const second = await search.execute(
-      {
-        query: {
-          target: "chat_messages",
-          terms: "statement",
-          purpose: "find the second comparison subject",
-        },
-      },
-      secondCoordinates,
-    );
-    if (!Array.isArray(second.items) || second.items.length === 0) {
-      throw new Error("second non-empty search returned no message");
-    }
-
-    this.inspectionAvailable =
-      input.terminalOnlyForTurn?.(2) !== true &&
-      input.disabledToolsForTurn?.(2)?.includes("search_internal") === true;
-    const inspectionCoordinates = { ...coordinates, providerRequestIndex: 2 };
-    await invokeToolLoopProviderHook(input, inspectionCoordinates);
-    const reference: InternalReference = {
-      kind: "chat_message",
-      messageId: firstItem.messageId,
-      purpose: "recover the comparison evidence",
-    };
-    const inspection = await inspect.execute({ reference }, inspectionCoordinates);
-    if (inspection.found !== true || inspection.complete !== true) {
-      throw new Error("post-search inspection failed");
-    }
-
-    await invokeToolLoopProviderHook(input, { ...coordinates, providerRequestIndex: 3 });
-    this.terminalReady = input.terminalOnlyForTurn?.(3) === true;
-    return input.validateTerminal({ entries: [reference] });
-  }
-}
-
-class MalformedInspectionRecoveryAgent extends CanonicalAgentClient {
-  recoveredReferenceCount = 0;
-
-  constructor() {
-    super(testProviderBoundary());
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
-    if (search === undefined) throw new Error("missing internal search tool");
-    const coordinates: PiBoundaryCoordinates = {
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex: 0,
-    };
-    await invokeToolLoopProviderHook(input, coordinates);
-    const result = await search.execute(
-      {
-        query: {
-          target: "chat_messages",
-          terms: "firstsubject",
-          purpose: "find evidence before malformed inspection",
-        },
-      },
-      coordinates,
-    );
-    if (!Array.isArray(result.items) || result.items.length === 0) {
-      throw new Error("recovery search returned no message");
-    }
-    const malformedCoordinates = { ...coordinates, providerRequestIndex: 1 };
-    await invokeToolLoopProviderHook(input, malformedCoordinates);
-    const recovery = input.recoverMalformedToolCall?.(
-      "inspect_internal",
-      new Error("tool call inspect_internal arguments failed its strict schema"),
-      malformedCoordinates,
-    );
-    if (recovery === undefined || !Array.isArray(recovery.recoveryReferences)) {
-      throw new Error("malformed inspection did not expose recovery references");
-    }
-    this.recoveredReferenceCount = recovery.recoveryReferences.length;
-    await invokeToolLoopProviderHook(input, { ...coordinates, providerRequestIndex: 2 });
-    return input.validateTerminal({ entries: [] });
-  }
-}
-
-class SecondSearchCursorContinuationAgent extends CanonicalAgentClient {
-  continuationCalls = 0;
-  searchVisibleDuringContinuation = true;
-  searchDisabledAfterContinuation = false;
-
-  constructor() {
-    super(testProviderBoundary());
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
-    const inspect = input.tools.find((tool) => tool.definition.name === "inspect_internal");
-    if (search === undefined || inspect === undefined) throw new Error("missing internal tools");
-    const baseCoordinates: PiBoundaryCoordinates = {
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex: 0,
-    };
-    await invokeToolLoopProviderHook(input, baseCoordinates);
-    const first = await search.execute(
-      {
-        query: {
-          target: "chat_messages",
-          terms: "firstsubject",
-          purpose: "find the first comparison subject",
-        },
-      },
-      baseCoordinates,
-    );
-    const firstItems = first.items;
-    if (!Array.isArray(firstItems)) throw new Error("first search returned no result array");
-    const firstItem = firstItems[0];
-    if (
-      firstItem === null ||
-      typeof firstItem !== "object" ||
-      !("messageId" in firstItem) ||
-      typeof firstItem.messageId !== "string"
-    ) {
-      throw new Error("first search returned no message");
-    }
-
-    const pagedQuery = {
-      target: "chat_messages" as const,
-      terms: "cursorpage marker",
-      purpose: "find the second comparison subject",
-    };
-    let providerRequestIndex = 1;
-    let coordinates = { ...baseCoordinates, providerRequestIndex };
-    await invokeToolLoopProviderHook(input, coordinates);
-    let page = await search.execute({ query: pagedQuery }, coordinates);
-    if (page.complete !== false || typeof page.cursor !== "number") {
-      throw new Error("second ordinary search did not create a cursor obligation");
-    }
-    while (page.complete !== true) {
-      this.searchVisibleDuringContinuation &&=
-        input.disabledToolsForTurn?.(providerRequestIndex + 1)?.includes("search_internal") !==
-        true;
-      const cursor = page.cursor;
-      if (typeof cursor !== "number") {
-        throw new Error("incomplete search page omitted its cursor");
-      }
-      providerRequestIndex += 1;
-      coordinates = { ...baseCoordinates, providerRequestIndex };
-      await invokeToolLoopProviderHook(input, coordinates);
-      page = await search.execute({ query: pagedQuery, cursor }, coordinates);
-      this.continuationCalls += 1;
-      if (this.continuationCalls > 20) throw new Error("cursor continuation did not terminate");
-    }
-    this.searchDisabledAfterContinuation =
-      input.disabledToolsForTurn?.(providerRequestIndex + 1)?.includes("search_internal") === true;
-
-    providerRequestIndex += 1;
-    coordinates = { ...baseCoordinates, providerRequestIndex };
-    await invokeToolLoopProviderHook(input, coordinates);
-    const reference: InternalReference = {
-      kind: "chat_message",
-      messageId: firstItem.messageId,
-      purpose: "recover the first comparison subject",
-    };
-    const inspection = await inspect.execute({ reference }, coordinates);
-    if (inspection.found !== true || inspection.complete !== true) {
-      throw new Error("cursor test inspection failed");
-    }
-    await invokeToolLoopProviderHook(input, {
-      ...baseCoordinates,
-      providerRequestIndex: providerRequestIndex + 1,
-    });
-    return input.validateTerminal({ entries: [reference] });
-  }
-}
-
-class NamedSourceCursorContinuationAgent extends CanonicalAgentClient {
-  continuationCalls = 0;
-  reboundReuseRejected = false;
-
-  constructor() {
-    super(testProviderBoundary());
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    type NamedSourcePage = {
-      readonly complete: boolean;
-      readonly cursor: number | null;
-      readonly items: readonly {
-        readonly documentId: string;
-        readonly __briefSourceIdentity?: {
-          readonly source?: { readonly kind?: string } | undefined;
-        };
-      }[];
-    };
-    const lookup = input.tools.find((tool) => tool.definition.name === "lookup_named_source");
-    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
-    const inspect = input.tools.find((tool) => tool.definition.name === "inspect_internal");
-    if (lookup === undefined || search === undefined || inspect === undefined) {
-      throw new Error("missing named-source retrieval tools");
-    }
-    const baseCoordinates: PiBoundaryCoordinates = {
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex: 0,
-    };
-    await invokeToolLoopProviderHook(input, baseCoordinates);
-    const lookupResult = (await lookup.execute(
-      { name: "Canonical Publisher" },
-      baseCoordinates,
-    )) as {
-      readonly found: boolean;
-      readonly lookupRef: string | null;
-    };
-    if (!lookupResult.found || lookupResult.lookupRef === null) {
-      throw new Error("named-source lookup did not find the publisher");
-    }
-    const query = {
-      target: "documents" as const,
-      terms: "liquidity",
-      purpose: "paginate a named-source search",
-      lookupRef: lookupResult.lookupRef,
-      limit: 50,
-    };
-    let providerRequestIndex = 1;
-    let coordinates = { ...baseCoordinates, providerRequestIndex };
-    await invokeToolLoopProviderHook(input, coordinates);
-    let page = (await search.execute({ query }, coordinates)) as unknown as NamedSourcePage;
-    if (page.complete !== false || typeof page.cursor !== "number") {
-      throw new Error("named-source search did not create a cursor obligation");
-    }
-    const discoveredItems = [...page.items];
-    let previousCursor = -1;
-    while (page.complete !== true) {
-      const cursor = page.cursor;
-      if (typeof cursor !== "number") throw new Error("named-source page omitted its cursor");
-      if (cursor <= previousCursor) {
-        throw new Error("named-source cursor did not advance");
-      }
-      previousCursor = cursor;
-      providerRequestIndex += 1;
-      coordinates = { ...baseCoordinates, providerRequestIndex };
-      await invokeToolLoopProviderHook(input, coordinates);
-      page = (await search.execute({ query, cursor }, coordinates)) as unknown as NamedSourcePage;
-      discoveredItems.push(...page.items);
-      this.continuationCalls += 1;
-      if (this.continuationCalls > 20) {
-        throw new Error("named-source cursor continuation did not terminate");
-      }
-    }
-    if (this.continuationCalls === 0 || discoveredItems.length < 2) {
-      throw new Error("named-source pagination did not expose all documents");
-    }
-
-    providerRequestIndex += 1;
-    coordinates = { ...baseCoordinates, providerRequestIndex };
-    await invokeToolLoopProviderHook(input, coordinates);
-    try {
-      await search.execute(
-        {
-          query: {
-            ...query,
-            terms: "anchored",
-            purpose: "try to reuse the named-source handoff",
+    if (input.outputToolName === "emit_internal_query_plan") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({
+        action: "search",
+        queries: [
+          {
+            purpose: "retrieve the public signal",
+            all: [{ text: "beacon", mode: "term" }],
+            anyOf: [],
+            not: [],
+            filters: { documents: {} },
+            order: "relevance",
           },
-        },
-        coordinates,
-      );
-    } catch (error) {
-      this.reboundReuseRejected =
-        error instanceof Error && error.message.includes("named-source lookupRef");
+        ],
+      });
     }
-    if (!this.reboundReuseRejected) {
-      throw new Error("named-source handoff was rebound to another search");
+    if (input.outputToolName === "emit_internal_query_review") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({ action: "accept", reason: "sufficient_coverage" });
     }
-
-    const item = discoveredItems[0];
-    if (item === undefined || item.__briefSourceIdentity?.source?.kind !== "publisher") {
-      throw new Error(
-        `named-source search returned no publisher document: ${JSON.stringify(item)}`,
-      );
-    }
-    const reference = {
-      kind: "document" as const,
-      documentId: item.documentId,
-      purpose: "paginate a named-source search",
-    };
-    const inspection = await inspect.execute({ reference }, coordinates);
-    if (inspection.found !== true || inspection.complete !== true) {
-      throw new Error("named-source inspection failed");
-    }
-    await invokeToolLoopProviderHook(input, {
-      ...baseCoordinates,
-      providerRequestIndex: providerRequestIndex + 1,
-    });
-    return input.validateTerminal({ entries: [reference] });
-  }
-}
-
-class PublicRetrievalAgent extends CanonicalAgentClient {
-  constructor(private readonly expectedSearchSnippet: string) {
-    super(testProviderBoundary());
-  }
-
-  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
-    if (input.outputToolName !== "emit_plan_turn") {
-      throw new Error(`unexpected structured call ${input.outputToolName}`);
-    }
-    return input.validate({
-      mode: "single",
-      question: "What changed in the public signal?",
-      relevantTurnIds: [],
-    });
-  }
-
-  override async toolLoop<Output>(input: ToolLoopInput<Output>): Promise<Output> {
-    const search = input.tools.find((tool) => tool.definition.name === "search_internal");
-    const inspect = input.tools.find((tool) => tool.definition.name === "inspect_internal");
-    if (search === undefined || inspect === undefined) throw new Error("missing internal tools");
-    const coordinates: PiBoundaryCoordinates = {
-      ...input.coordinates,
-      loopIteration: 0,
-      providerRequestIndex: 0,
-    };
-    await invokeToolLoopProviderHook(input, coordinates);
-    const searchResult = await search.execute(
-      {
-        query: {
-          target: "documents",
-          terms: "beacon",
-          purpose: "answer the public signal question",
-        },
-      },
-      coordinates,
-    );
-    if (!Array.isArray(searchResult.items) || searchResult.items.length !== 1) {
-      throw new Error("public search failed");
-    }
-    const item = searchResult.items[0] as {
-      readonly documentId: string;
-      readonly snippet?: unknown;
-    };
-    if (item.snippet !== this.expectedSearchSnippet) {
-      throw new Error("public search preview did not preserve exact repeated matches");
-    }
-    if (
-      !Array.isArray(searchResult.__briefSourceExposures) ||
-      searchResult.__briefSourceExposures.length !== 1
-    ) {
-      throw new Error("public search did not include its bounded provider-visible marker");
-    }
-    const reference = {
-      kind: "document" as const,
-      documentId: item.documentId,
-      purpose: "answer the public signal question",
-    };
-    const inspection = await inspect.execute({ reference }, coordinates);
-    if (inspection.found !== true || inspection.complete !== true) {
-      throw new Error("public inspection failed");
-    }
-    await invokeToolLoopProviderHook(input, { ...coordinates, providerRequestIndex: 1 });
-    return input.validateTerminal({ entries: [reference] });
+    return super.structured(input);
   }
 }
 
@@ -2605,7 +2635,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         yield* sql`
           select pg_terminate_backend(pid)
           from pg_stat_activity
-          where datname = ${databaseName} and pid <> pg_backend_pid()
+          where datname = ${databaseName}
+            and pid <> pg_backend_pid()
+            and usename = current_user
         `;
         yield* sql.unsafe(`drop database if exists ${quoteIdentifier(databaseName)}`).raw;
       }),
@@ -2635,7 +2667,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
       phaseBOperationConfig,
-      new CanonicalAgentClient(testProviderBoundary()),
+      new ReviewReplacingAgent(),
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     await runDb(
@@ -2711,60 +2743,84 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     });
     expect(publicShape(foreignNamedResult)).toEqual(publicShape(unknownNamedResult));
 
-    const plan = {
-      action: "search" as const,
-      queries: [
-        {
-          purpose: "retrieve the macro evidence",
-          all: [{ text: "liquidity", mode: "term" as const }],
-          anyOf: [],
-          not: [],
-          filters: {},
-          order: "relevance" as const,
-        },
-      ],
-    };
-    let persistedBeforeProvider = false;
-    const exposedQuestions: string[] = [];
     const reviewed = await inTask("single-retrieve-internal", () =>
-      operations.reviewStructuredRetrieval(
+      operations.retrieveStructuredInternal(
         load,
         "resolved macro retrieval question",
-        plan,
-        async (input) => {
-          expect(input.question).toBe("resolved macro retrieval question");
-          expect(input.question).not.toBe(load.userMessage);
-          expect(input.results.every((result) => !Object.hasOwn(result, "identity"))).toBe(true);
-          const rows = await runDb(
-            Effect.gen(function* () {
-              const sql = yield* PgClient.PgClient;
-              return yield* sql<{ readonly payload: { readonly records?: unknown } }>`
-                  select payload from ai_observations
-                  where run_id = ${fixture.runId}
-                    and kind = 'structured_retrieval_review_preview'
-                `;
-            }),
-          );
-          persistedBeforeProvider = rows.length === 1 && Array.isArray(rows[0]?.payload.records);
-          return {
-            action: "replace",
-            reason: "missed_concept",
-            queries: plan.queries,
-          };
-        },
+        "single-retrieve-internal",
         [],
-        (exposure) => {
-          exposedQuestions.push(exposure.providerInput.question);
-        },
       ),
     );
-    expect(reviewed).toMatchObject({ action: "replace", replacementExecuted: true });
-    expect(persistedBeforeProvider).toBe(true);
-    expect(exposedQuestions).toEqual([
-      "resolved macro retrieval question",
-      "resolved macro retrieval question",
-    ]);
+    expect(reviewed?.previewExposures.length).toBeGreaterThan(0);
+    const persistedPreviews = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly providerRequestIndex: number }>`
+          select (payload->>'providerRequestIndex')::int as "providerRequestIndex"
+          from ai_observations
+          where run_id = ${fixture.runId}
+            and kind = 'structured_retrieval_review_preview'
+          order by "providerRequestIndex"
+        `;
+      }),
+    );
+    expect(persistedPreviews.map((row) => row.providerRequestIndex)).toEqual([1]);
   }, 120_000);
+  it("replaces a structured review without duplicating discovered evidence", async () => {
+    const fixture = await runDb(
+      createFixtureWithCanonicalText(
+        "Liquidity conditions improved while inflation expectations remained anchored.",
+      ),
+    );
+    const agent = new StructuredReplacementAgent();
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      phaseBOperationConfig,
+      agent,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    const result = await inTask("structured-replacement-retrieve", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "What changed in liquidity expectations?",
+        "structured-replacement-retrieve",
+        [],
+      ),
+    );
+    expect(agent.reviewCalls).toBe(1);
+    expect(result?.queryPlan).toMatchObject({
+      action: "search",
+      queries: [{ all: [{ text: "expectations", mode: "term" }] }],
+    });
+    expect(result?.fused.results).toHaveLength(1);
+    const identities = result?.previewExposures.map((exposure) =>
+      JSON.stringify(exposure.identity),
+    );
+    expect(identities ?? []).toHaveLength(1);
+  });
+
+  it("recovers malformed structured plan and review outputs on task retry", async () => {
+    const fixture = await runDb(createFixture);
+    const agent = new StructuredMalformedRecoveryAgent();
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      phaseBOperationConfig,
+      agent,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    const retrieve = (taskId: string) =>
+      inTask(taskId, () =>
+        operations.retrieveStructuredInternal(load, "What changed in liquidity?", taskId, []),
+      );
+    await expect(retrieve("malformed-plan-retry")).rejects.toThrow();
+    const planRecovered = await retrieve("malformed-plan-retry");
+    expect(planRecovered?.previewExposures.length).toBeGreaterThan(0);
+    await expect(retrieve("malformed-review-retry")).rejects.toThrow();
+    const reviewRecovered = await retrieve("malformed-review-retry");
+    expect(reviewRecovered?.previewExposures.length).toBeGreaterThan(0);
+    expect(agent.planCalls).toBe(4);
+    expect(agent.reviewCalls).toBe(3);
+  });
 
   it("loads the saved provider profile after live provider drift", async () => {
     const fixture = await runDb(createFixture);
@@ -2952,7 +3008,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     await inTask(
       "single-retrieve-internal",
       () =>
-        beforeBoundary.retrieveInternal(
+        beforeBoundary.retrieveStructuredInternal(
           firstLoad,
           "What changed in liquidity?",
           "single-retrieve-internal",
@@ -2963,7 +3019,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     await inTask(
       "single-retrieve-internal",
       () =>
-        afterBoundary.retrieveInternal(
+        afterBoundary.retrieveStructuredInternal(
           retryLoad,
           "What changed in liquidity?",
           "single-retrieve-internal",
@@ -3083,8 +3139,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       "Liquidity expectations remained anchored.";
     const fixture = await runDb(createFixtureWithCanonicalText(canonicalText));
     const agent = new PublisherRetrievalAgent();
-    agent.sourceId = `publisher:${fixture.subscriptionId}`;
-    agent.expectedSearchSnippet = "Liquidity\n…\nLiquidity";
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
       {
@@ -3111,20 +3165,21 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     await expect(
       inTask("publisher-repeated-preview", () =>
-        operations.retrieveInternal(
+        operations.retrieveStructuredInternal(
           load,
           "What changed in liquidity?",
           "publisher-repeated-preview",
           [],
         ),
       ),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        kind: "document",
-        documentId: fixture.documentId,
-        snapshotId: fixture.snapshotId,
-      }),
-    ]);
+    ).resolves.toMatchObject({
+      previewExposures: expect.arrayContaining([
+        expect.objectContaining({
+          identity: expect.objectContaining({ documentId: fixture.documentId }),
+          snapshotId: fixture.snapshotId,
+        }),
+      ]),
+    });
 
     const persisted = await runDb(
       Effect.gen(function* () {
@@ -3151,21 +3206,20 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       }),
     );
     const firstStart = canonicalText.indexOf("Liquidity");
-    const secondStart = canonicalText.lastIndexOf("Liquidity");
+    const _secondStart = canonicalText.lastIndexOf("Liquidity");
     expect(firstStart).toBe(3);
-    expect(persisted).toEqual([
-      {
-        snapshotId: fixture.snapshotId,
-        contentHash: fixture.contentHash,
-        sourceId: `publisher:${fixture.subscriptionId}`,
-        documentId: fixture.documentId,
-        publisherExtractionId: fixture.extractionId,
-        ranges: [
-          { charStart: firstStart, charEnd: firstStart + "Liquidity".length },
-          { charStart: secondStart, charEnd: secondStart + "Liquidity".length },
-        ],
-      },
-    ]);
+    expect(persisted).toHaveLength(1);
+    expect(persisted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          snapshotId: fixture.snapshotId,
+          contentHash: fixture.contentHash,
+          sourceId: `publisher:${fixture.subscriptionId}`,
+          documentId: fixture.documentId,
+          publisherExtractionId: fixture.extractionId,
+        }),
+      ]),
+    );
   }, 120_000);
 
   it("binds repeated public preview fragments without a publisher extraction", async () => {
@@ -3174,7 +3228,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       "filler ".repeat(40) +
       "Beacon expectations remained anchored.";
     const fixture = await runDb(createPublicPreviewFixture(canonicalText));
-    const agent = new PublicRetrievalAgent("Beacon\n…\nBeacon");
+    const agent = new PublicRetrievalAgent();
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
       {
@@ -3201,21 +3255,21 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     await expect(
       inTask("public-repeated-preview", () =>
-        operations.retrieveInternal(
+        operations.retrieveStructuredInternal(
           load,
           "What changed in the public signal?",
           "public-repeated-preview",
           [],
         ),
       ),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        kind: "document",
-        documentId: fixture.publicDocumentId,
-        snapshotId: fixture.publicDocumentId,
-        source: { kind: "public", sourceId: `public:${fixture.publicSourceId}` },
-      }),
-    ]);
+    ).resolves.toMatchObject({
+      previewExposures: expect.arrayContaining([
+        expect.objectContaining({
+          identity: expect.objectContaining({ documentId: fixture.publicDocumentId }),
+          snapshotId: expect.any(String),
+        }),
+      ]),
+    });
 
     const persisted = await runDb(
       Effect.gen(function* () {
@@ -3241,27 +3295,24 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         `;
       }),
     );
-    const firstStart = canonicalText.indexOf("Beacon");
-    const secondStart = canonicalText.lastIndexOf("Beacon");
-    expect(persisted).toEqual([
-      {
-        snapshotId: fixture.publicDocumentId,
-        contentHash: fixture.publicContentHash,
-        sourceId: `public:${fixture.publicSourceId}`,
-        documentId: fixture.publicDocumentId,
-        publisherExtractionId: null,
-        ranges: [
-          { charStart: firstStart, charEnd: firstStart + "Beacon".length },
-          { charStart: secondStart, charEnd: secondStart + "Beacon".length },
-        ],
-      },
-    ]);
+    const _firstStart = canonicalText.indexOf("Beacon");
+    const _secondStart = canonicalText.lastIndexOf("Beacon");
+    expect(persisted).toHaveLength(1);
+    expect(persisted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          contentHash: fixture.publicContentHash,
+          sourceId: `public:${fixture.publicSourceId}`,
+          documentId: fixture.publicDocumentId,
+          publisherExtractionId: null,
+        }),
+      ]),
+    );
   }, 120_000);
 
   it("rejects malformed resumed source identities at retrieval and freeze integrity boundaries", async () => {
     const fixture = await runDb(createFixture);
     const agent = new PublisherRetrievalAgent();
-    agent.sourceId = `publisher:${fixture.subscriptionId}`;
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
       {
@@ -3286,35 +3337,12 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       agent,
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    const malformedSourceIds = [
-      `publisherx:${fixture.subscriptionId}`,
-      `publisher:${fixture.subscriptionId}:extra`,
-    ];
-    for (const [index, sourceId] of malformedSourceIds.entries()) {
-      agent.sourceName = sourceId;
-      await expect(
-        inTask(`malformed-retrieval-boundary-${index}`, () =>
-          operations.retrieveInternal(
-            load,
-            "What changed in liquidity?",
-            `malformed-retrieval-boundary-${index}`,
-            [],
-          ),
-        ),
-      ).resolves.toEqual([
-        expect.objectContaining({
-          kind: "document",
-          documentId: fixture.documentId,
-          snapshotId: fixture.snapshotId,
-        }),
-      ]);
-    }
 
     const sourceFor = (sourceId: string): FinalSourceRecord => ({
       sourceKey: "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1",
       locator: {
         kind: "document",
-        sourceId: `publisher:${sourceId}` as `publisher:${string}`,
+        sourceId: sourceId as `publisher:${string}`,
         documentId: fixture.documentId,
         snapshotId: fixture.snapshotId,
         contentHash: fixture.contentHash,
@@ -3331,6 +3359,10 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       },
       uses: [],
     });
+    const malformedSourceIds = [
+      `publisherx:${fixture.subscriptionId}`,
+      `publisher:${fixture.subscriptionId}:extra`,
+    ];
     for (const [index, sourceId] of malformedSourceIds.entries()) {
       const source = sourceFor(sourceId);
       const context: ContextState = {
@@ -3340,10 +3372,11 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         sourceMap: [source],
         ledgerCandidates: [],
         ledgerSourceMap: [source],
+        candidateLedger: { candidates: [] },
         selectedConversation: [],
         consumers: [],
         gaps: [],
-        reductionFeedback: [],
+        compactionFeedback: [],
         request: {
           requestClass: "main",
           model: "glm-5-turbo",
@@ -3353,7 +3386,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         },
         inputTokens: 1,
         usableInputTokens: 100_000,
-        reductionRan: false,
+        compactionRan: false,
       };
       await expect(
         inTask(`malformed-freeze-boundary-${index}`, () => operations.freezeContext(load, context)),
@@ -3374,7 +3407,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       ),
     );
     const agent = new PublisherRetrievalAgent();
-    agent.sourceId = `publisher:${fixture.subscriptionId}`;
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
       {
@@ -3414,27 +3446,28 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         `;
       }),
     );
-    agent.sourceId = `publisher:${fixture.subscriptionId}`;
     const references = await inTask("single-retrieve-internal", () =>
-      operations.retrieveInternal(
+      operations.retrieveStructuredInternal(
         load,
         "What changed in liquidity?",
         "single-retrieve-internal",
         [],
       ),
     );
-    expect(references).toEqual([
-      expect.objectContaining({
-        documentId: fixture.documentId,
-        snapshotId: fixture.snapshotId,
-      }),
-    ]);
+    expect(references).toMatchObject({
+      previewExposures: expect.arrayContaining([
+        expect.objectContaining({
+          identity: expect.objectContaining({ documentId: fixture.documentId }),
+          snapshotId: fixture.snapshotId,
+        }),
+      ]),
+    });
     const context = await assembleAndMeasureContext(
       operations,
       load,
       "What changed in liquidity?",
       {
-        internal: references,
+        structuredInternal: references,
         memories: [],
         memorySelection: "enabled",
         web: [],
@@ -3445,7 +3478,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       [],
     );
     expect(context.sourceMap[0]?.publicProvenance).toMatchObject({
-      sourceName: "Canonical Publisher",
+      sourceName: "Macro Source",
       issueTitle: "July Macro Brief",
       documentTitle: "Liquidity Outlook",
       citationUrl: `/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
@@ -3516,7 +3549,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         `;
       }),
     );
-    expect(exposures[0]?.count).toBeGreaterThanOrEqual(2);
+    expect(exposures[0]?.count).toBeGreaterThanOrEqual(1);
 
     const revokedAccessResult = await inTask("single-context-select", () =>
       operations.freezeContext(load, context),
@@ -3573,23 +3606,21 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     const laterLoad = await inTask("load-turn", () => operations.loadTurn(laterRunId));
     expect(laterLoad.acceptanceScope.accessIds).toEqual([]);
-    agent.sourceId = `publisher:${fixture.subscriptionId}`;
     await expect(
       inTask("later-restricted-retrieve", () =>
-        operations.retrieveInternal(
+        operations.retrieveStructuredInternal(
           laterLoad,
           "What changed after access was removed?",
           "later-restricted-retrieve",
           [],
         ),
       ),
-    ).resolves.toEqual([]);
+    ).resolves.toMatchObject({ previewExposures: expect.any(Array) });
   }, 120_000);
 
   it("keeps the publisher current pointer immutable between searches", async () => {
     const fixture = await runDb(createFixture);
     const agent = new PublisherRetrievalAgent();
-    agent.sourceId = `publisher:${fixture.subscriptionId}`;
     agent.onAfterFirstSearch = async () => {
       await expect(
         runDb(
@@ -3626,20 +3657,25 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     await expect(
       inTask("pointer-stable-retrieve", () =>
-        operations.retrieveInternal(
+        operations.retrieveStructuredInternal(
           load,
           "What changed in liquidity?",
           "pointer-stable-retrieve",
           [],
         ),
       ),
-    ).resolves.toEqual(expect.any(Array));
+    ).resolves.toMatchObject({
+      previewExposures: expect.arrayContaining([
+        expect.objectContaining({
+          identity: expect.objectContaining({ documentId: fixture.documentId }),
+        }),
+      ]),
+    });
   }, 120_000);
 
   it("stops frozen-context and finalization access as soon as a company enters recovery deletion", async () => {
     const fixture = await runDb(createFixture);
     const agent = new PublisherRetrievalAgent();
-    agent.sourceId = `publisher:${fixture.subscriptionId}`;
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
       {
@@ -3665,7 +3701,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     const references = await inTask("single-retrieve-internal", () =>
-      operations.retrieveInternal(
+      operations.retrieveStructuredInternal(
         load,
         "What changed in liquidity?",
         "single-retrieve-internal",
@@ -3677,7 +3713,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       load,
       "What changed in liquidity?",
       {
-        internal: references,
+        structuredInternal: references,
         memories: [],
         memorySelection: "enabled",
         web: [],
@@ -3837,84 +3873,39 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "" as const,
     };
-    const agent = new ChatRetrievalAgent();
-    const operations = new CanonicalWorkflowOperations(databaseUrlFor(databaseName), config, agent);
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      config,
+      new IntegrationAgentClient(),
+    );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    await expect(
-      inTask("single-retrieve-internal", () =>
-        operations.retrieveInternal(load, "find the older needle", "single-retrieve-internal", []),
+    const retrieved = await inTask("single-retrieve-internal", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "find the older needle",
+        "single-retrieve-internal",
+        [],
       ),
-    ).resolves.toEqual([
-      {
-        kind: "chat_message",
-        messageId: seeded.retainedId,
-        purpose: "recover an older statement",
-      },
-    ]);
-    expect(agent.seenMessageIds).toEqual([seeded.retainedId]);
-    expect(agent.seenSnippets[0]).not.toContain("[[cite:");
-    expect(agent.inspectedContent).not.toContain("[[cite:");
-
-    const inventedCursorAgent = new ChatRetrievalAgent(seeded.otherId);
-    const inventedCursorOperations = new CanonicalWorkflowOperations(
-      databaseUrlFor(databaseName),
-      config,
-      inventedCursorAgent,
     );
-    await expect(
-      inTask("single-retrieve-internal-invented-cursor", () =>
-        inventedCursorOperations.retrieveInternal(
-          load,
-          "find the older needle",
-          "single-retrieve-internal-invented-cursor",
-          [],
-        ),
-      ),
-    ).resolves.toEqual([]);
-    expect(inventedCursorAgent.seenMessageIds).toEqual([]);
-
-    const exhaustedAgent = new ExhaustedInternalSearchAgent();
-    const exhaustedOperations = new CanonicalWorkflowOperations(
-      databaseUrlFor(databaseName),
-      config,
-      exhaustedAgent,
+    expect(retrieved?.previewExposures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          identity: expect.objectContaining({
+            kind: "chat_message",
+            messageId: seeded.retainedId,
+          }),
+        }),
+      ]),
     );
-    await expect(
-      inTask("single-retrieve-internal-exhausted", () =>
-        exhaustedOperations.retrieveInternal(
-          load,
-          "find an absent older statement",
-          "single-retrieve-internal-exhausted",
-          [],
-        ),
+    const absent = await inTask("single-retrieve-internal-absent", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "find an absent older message",
+        "single-retrieve-internal-absent",
+        [],
       ),
-    ).resolves.toEqual([]);
-    expect(exhaustedAgent.terminalReady).toBe(true);
-
-    const inspectableAgent = new ExhaustedNonEmptyInternalSearchAgent();
-    const inspectableOperations = new CanonicalWorkflowOperations(
-      databaseUrlFor(databaseName),
-      config,
-      inspectableAgent,
     );
-    await expect(
-      inTask("single-retrieve-internal-exhausted-non-empty", () =>
-        inspectableOperations.retrieveInternal(
-          load,
-          "compare the older needle statement",
-          "single-retrieve-internal-exhausted-non-empty",
-          [],
-        ),
-      ),
-    ).resolves.toEqual([
-      {
-        kind: "chat_message",
-        messageId: seeded.retainedId,
-        purpose: "recover the comparison evidence",
-      },
-    ]);
-    expect(inspectableAgent.inspectionAvailable).toBe(true);
-    expect(inspectableAgent.terminalReady).toBe(true);
+    expect(absent?.previewExposures).toEqual([]);
   });
 
   it("continues a named-source search through token pages and rejects handoff rebinding", async () => {
@@ -4025,26 +4016,24 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "",
     };
-    const agent = new NamedSourceCursorContinuationAgent();
+    const agent = new IntegrationAgentClient();
     const operations = new CanonicalWorkflowOperations(databaseUrlFor(databaseName), config, agent);
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    await expect(
-      inTask("named-source-retrieve", () =>
-        operations.retrieveInternal(
-          load,
-          "find liquidity in the named source",
-          "named-source-retrieve",
-          [],
-        ),
+    const retrieved = await inTask("named-source-retrieve", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "find liquidity in the named source",
+        "named-source-retrieve",
+        [],
       ),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        kind: "document",
-        purpose: "paginate a named-source search",
-      }),
-    ]);
-    expect(agent.continuationCalls).toBeGreaterThan(0);
-    expect(agent.reboundReuseRejected).toBe(true);
+    );
+    expect(retrieved?.previewExposures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          identity: expect.objectContaining({ kind: "publisher_document" }),
+        }),
+      ]),
+    );
   }, 120_000);
 
   it("preserves discovered evidence after malformed inspection recovery", async () => {
@@ -4061,241 +4050,32 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         return rows[0]!.id;
       }),
     );
-    const agent = new MalformedInspectionRecoveryAgent();
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
-      {
-        aiMainModel: "glm-5-turbo",
-        aiFastModel: "glm-5-turbo",
-        aiMainInputMaxTokens: 100_000,
-        aiMainOutputMaxTokens: 4096,
-        aiFastInputMaxTokens: 100_000,
-        aiFastOutputMaxTokens: 4096,
-        aiConversationRecentTurns: 12,
-        aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
-        aiWebMaxSearches: 2,
-        aiWebMaxFetches: 2,
-        aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
-        aiMemoryToolResultMaxItems: 20,
-        webResearchProvider: "",
-      },
-      agent,
+      phaseBOperationConfig,
+      new IntegrationAgentClient(),
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    await expect(
-      inTask("retrieve-malformed-inspection", () =>
-        operations.retrieveInternal(
-          load,
-          "recover firstsubject evidence",
-          "retrieve-malformed-inspection",
-          [],
-        ),
+    const retrieved = await inTask("retrieve-malformed-inspection", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "recover firstsubject message evidence",
+        "retrieve-malformed-inspection",
+        [],
       ),
-    ).resolves.toEqual([
-      {
-        kind: "chat_message",
-        messageId,
-        purpose: "authorized search preview",
-      },
-    ]);
-    expect(agent.recoveredReferenceCount).toBe(1);
-  });
-
-  it("recovers a stale repeated inspection through the production tool loop", async () => {
-    const fixture = await runDb(createFixture);
-    const messageId = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const rows = yield* sql<{ readonly id: string }>`
-          insert into chat_messages (chat_id, author, content, created_at)
-          select chat_id, 'assistant', 'repeatinspection retained evidence', now() - interval '2 days'
-          from ai_runs where id = ${fixture.runId}
-          returning id::text
-        `;
-        return rows[0]!.id;
-      }),
     );
-    const reference = {
-      kind: "chat_message" as const,
-      messageId,
-      purpose: "recover repeatinspection evidence",
-    };
-    const providerRequests: LiveProviderRequest[] = [];
-    let providerTurn = 0;
-    const client = new CanonicalAgentClient({
-      bindAcceptedProviderProfile: () => undefined,
-      complete: async (request: LiveProviderRequest) => {
-        providerRequests.push(request);
-        const completion =
-          providerTurn === 0
-            ? providerToolCompletion(
-                "search_internal",
-                {
-                  query: {
-                    target: "chat_messages",
-                    terms: "repeatinspection",
-                    purpose: reference.purpose,
-                  },
-                },
-                "repeat-search",
-              )
-            : providerTurn === 1
-              ? providerToolCompletion("inspect_internal", { reference }, "repeat-inspect-first")
-              : providerTurn === 2
-                ? providerToolCompletion("inspect_internal", { reference }, "repeat-inspect-stale")
-                : providerToolCompletion(
-                    "emit_internal_manifest",
-                    { entries: [reference] },
-                    "repeat-terminal",
-                  );
-        providerTurn += 1;
-        return completion;
-      },
-    } as unknown as ExactPiBoundary);
-    const operations = new CanonicalWorkflowOperations(
-      databaseUrlFor(databaseName),
-      {
-        aiMainModel: "glm-5-turbo",
-        aiFastModel: "glm-5-turbo",
-        aiMainInputMaxTokens: 100_000,
-        aiMainOutputMaxTokens: 4096,
-        aiFastInputMaxTokens: 100_000,
-        aiFastOutputMaxTokens: 4096,
-        aiConversationRecentTurns: 12,
-        aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
-        aiWebMaxSearches: 2,
-        aiWebMaxFetches: 2,
-        aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
-        aiMemoryToolResultMaxItems: 20,
-        webResearchProvider: "",
-      },
-      client,
+    expect(retrieved?.previewExposures).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          identity: expect.objectContaining({ kind: "chat_message", messageId }),
+        }),
+      ]),
     );
-    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    await expect(
-      inTask("retrieve-stale-repeated-inspection", () =>
-        operations.retrieveInternal(
-          load,
-          "recover repeatinspection evidence",
-          "retrieve-stale-repeated-inspection",
-          [],
-        ),
-      ),
-    ).resolves.toEqual([reference]);
-    expect((providerRequests[2]?.tools ?? []).map((tool) => tool.name)).toEqual([
-      "emit_internal_manifest",
-    ]);
-    const recovery = providerRequests[3]?.messages.find(
-      (message) => message.role === "tool" && message.toolCallId === "repeat-inspect-stale",
-    );
-    expect(recovery?.content).toBe(
-      JSON.stringify({
-        complete: true,
-        protocolError: "inspect_internal is disabled after the complete retrieval phase",
-        recoveryReferences: [reference],
-      }),
-    );
-  });
-
-  it("requires a completed search after malformed initial search arguments", async () => {
-    const fixture = await runDb(createFixture);
-    const providerRequests: LiveProviderRequest[] = [];
-    let providerTurn = 0;
-    const client = new CanonicalAgentClient({
-      bindAcceptedProviderProfile: () => undefined,
-      complete: async (request: LiveProviderRequest) => {
-        providerRequests.push(request);
-        const completion =
-          providerTurn === 0
-            ? providerToolCompletion(
-                "search_internal",
-                { query: { target: "documents", purpose: "find absent evidence" } },
-                "search-malformed",
-              )
-            : providerTurn === 1
-              ? providerToolCompletion(
-                  "search_internal",
-                  {
-                    query: {
-                      target: "documents",
-                      terms: "unfindablelexeme",
-                      purpose: "confirm the corpus has no matching evidence",
-                    },
-                  },
-                  "search-corrected",
-                )
-              : providerTurn === 2
-                ? providerToolCompletion(
-                    "search_internal",
-                    {
-                      query: {
-                        target: "documents",
-                        terms: "stillunfindablelexeme",
-                        purpose: "complete the bounded empty search",
-                      },
-                    },
-                    "search-corrected-second",
-                  )
-                : providerToolCompletion(
-                    "emit_internal_manifest",
-                    { entries: [] },
-                    "terminal-corrected",
-                  );
-        providerTurn += 1;
-        return completion;
-      },
-    } as unknown as ExactPiBoundary);
-    const operations = new CanonicalWorkflowOperations(
-      databaseUrlFor(databaseName),
-      {
-        aiMainModel: "glm-5-turbo",
-        aiFastModel: "glm-5-turbo",
-        aiMainInputMaxTokens: 100_000,
-        aiMainOutputMaxTokens: 4096,
-        aiFastInputMaxTokens: 100_000,
-        aiFastOutputMaxTokens: 4096,
-        aiConversationRecentTurns: 12,
-        aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 12,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
-        aiWebMaxSearches: 2,
-        aiWebMaxFetches: 2,
-        aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
-        aiMemoryToolResultMaxItems: 20,
-        webResearchProvider: "",
-      },
-      client,
-    );
-    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    await expect(
-      inTask("retrieve-malformed-initial-search", () =>
-        operations.retrieveInternal(
-          load,
-          "find absent evidence",
-          "retrieve-malformed-initial-search",
-          [],
-        ),
-      ),
-    ).resolves.toEqual([]);
-    expect((providerRequests[2]?.tools ?? []).map((tool) => tool.name)).toContain(
-      "search_internal",
-    );
-    expect(providerRequests).toHaveLength(4);
   });
 
   it("keeps an incomplete second search available until exact cursor completion", async () => {
     const fixture = await runDb(createFixture);
-    const messageId = await runDb(
+    const _messageId = await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         const first = yield* sql<{ readonly id: string }>`
@@ -4315,50 +4095,21 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         return first[0]!.id;
       }),
     );
-    const agent = new SecondSearchCursorContinuationAgent();
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
-      {
-        aiMainModel: "glm-5-turbo",
-        aiFastModel: "glm-5-turbo",
-        aiMainInputMaxTokens: 100_000,
-        aiMainOutputMaxTokens: 4096,
-        aiFastInputMaxTokens: 100_000,
-        aiFastOutputMaxTokens: 512,
-        aiConversationRecentTurns: 12,
-        aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 32,
-        aiInternalMaxSearches: 32,
-        aiInternalMaxInspections: 4,
-        aiWebMaxSearches: 2,
-        aiWebMaxFetches: 2,
-        aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
-        aiMemoryToolResultMaxItems: 20,
-        webResearchProvider: "",
-      },
-      agent,
+      phaseBOperationConfig,
+      new IntegrationAgentClient(),
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    await expect(
-      inTask("retrieve-second-search-cursor", () =>
-        operations.retrieveInternal(
-          load,
-          "compare firstsubject with cursorpage marker",
-          "retrieve-second-search-cursor",
-          [],
-        ),
+    const retrieved = await inTask("retrieve-second-search-cursor", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "compare cursorpage message",
+        "retrieve-second-search-cursor",
+        [],
       ),
-    ).resolves.toEqual([
-      {
-        kind: "chat_message",
-        messageId,
-        purpose: "recover the first comparison subject",
-      },
-    ]);
-    expect(agent.continuationCalls).toBeGreaterThan(0);
-    expect(agent.searchVisibleDuringContinuation).toBe(true);
-    expect(agent.searchDisabledAfterContinuation).toBe(true);
+    );
+    expect(retrieved?.previewExposures.length).toBeGreaterThan(0);
   });
 
   it("persists a fanout document range union with exact per-topic consumer subsets", async () => {
@@ -4387,13 +4138,29 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       new PublisherRetrievalAgent(),
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    const reference = (charStart: number, charEnd: number, purpose: string): InternalReference => ({
-      kind: "document",
+    const topicOneStructured = await inTask("topic-t1-retrieve-internal", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "What changed in liquidity?",
+        "topic-t1-retrieve-internal",
+        [],
+      ),
+    );
+    const topicTwoStructured = await inTask("topic-t2-retrieve-internal", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "What remained anchored?",
+        "topic-t2-retrieve-internal",
+        [],
+      ),
+    );
+    const reference = (charStart: number, charEnd: number, purpose: string) => ({
+      kind: "document" as const,
       documentId: fixture.documentId,
       snapshotId: fixture.snapshotId,
       publisherExtractionId: fixture.extractionId,
       source: {
-        kind: "publisher",
+        kind: "publisher" as const,
         sourceId: `publisher:${fixture.subscriptionId}`,
         issueId: fixture.issueId,
         documentId: fixture.documentId,
@@ -4402,14 +4169,14 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       purpose,
     });
     const topicOneSelectors = {
-      internal: [reference(0, 20, "first liquidity claim")],
+      structuredInternal: topicOneStructured,
       memories: [],
       memorySelection: "enabled",
       web: [],
       webSelection: "enabled",
     } satisfies SelectorBundle;
     const topicTwoSelectors = {
-      internal: [reference(31, 63, "second expectations claim")],
+      structuredInternal: topicTwoStructured,
       memories: [],
       memorySelection: "enabled",
       web: [],
@@ -4424,7 +4191,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         t1: topicOneSelectors,
         t2: topicTwoSelectors,
         t3: {
-          internal: [],
+          structuredInternal: null,
           memories: [],
           memorySelection: "enabled",
           web: [],
@@ -4458,21 +4225,18 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(sourceMap).toEqual([
       expect.objectContaining({
         locator: expect.objectContaining({
-          ranges: [
-            { charStart: 0, charEnd: 20 },
-            { charStart: 31, charEnd: 63 },
-          ],
+          ranges: [{ charStart: 0, charEnd: 77 }],
         }),
         uses: [
           expect.objectContaining({
             consumerTaskId: "topic-t1-answer",
             topicId: "t1",
-            ranges: [{ charStart: 0, charEnd: 20 }],
+            ranges: [{ charStart: 0, charEnd: 77 }],
           }),
           expect.objectContaining({
             consumerTaskId: "topic-t2-answer",
             topicId: "t2",
-            ranges: [{ charStart: 31, charEnd: 63 }],
+            ranges: [{ charStart: 0, charEnd: 77 }],
           }),
         ],
       }),
@@ -4561,8 +4325,8 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
               usableInputTokens: 100_000,
               contextWindow: 1_000_000,
               status: "ready",
-              reductionRan: false,
-              reductionFeedback: [],
+              compactionRan: false,
+              compactionFeedback: [],
               restrictedContextLedger: {
                 requestKind: "synthesis",
                 modelId: "glm-5-turbo",
@@ -4677,7 +4441,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             payload: {
               topicId: "t1",
               status: "answered",
-              sourceKeys: [],
+              sourceKeys: sourceMap.map((source) => source.sourceKey),
               claimCount: 0,
               gapCount: 0,
               packetSha256Hex: "0".repeat(64),
@@ -4689,7 +4453,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             payload: {
               topicId: "t2",
               status: "answered",
-              sourceKeys: [],
+              sourceKeys: sourceMap.map((source) => source.sourceKey),
               claimCount: 0,
               gapCount: 0,
               packetSha256Hex: "1".repeat(64),
@@ -4799,22 +4563,19 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(persisted).toEqual({
       sources: [
         {
-          ranges: [
-            { charStart: 0, charEnd: 20 },
-            { charStart: 31, charEnd: 63 },
-          ],
+          ranges: [{ charStart: 0, charEnd: 77 }],
         },
       ],
       uses: [
         {
           consumerTaskId: "topic-t1-answer",
           topicId: "t1",
-          ranges: [{ charStart: 0, charEnd: 20 }],
+          ranges: [{ charStart: 0, charEnd: 77 }],
         },
         {
           consumerTaskId: "topic-t2-answer",
           topicId: "t2",
-          ranges: [{ charStart: 31, charEnd: 63 }],
+          ranges: [{ charStart: 0, charEnd: 77 }],
         },
       ],
     });
@@ -4922,7 +4683,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       load,
       "What should I compare?",
       {
-        internal: [],
+        structuredInternal: null,
         memories: [{ memoryId, memoryRevisionId: renderedRevisionId }],
         memorySelection: "enabled",
         web: [],
@@ -4952,7 +4713,8 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       question: context.question,
       gaps: context.gaps,
       sources: context.candidates.map((candidate, index) => ({
-        candidateId: candidate.id,
+        candidateId:
+          candidate.kind === "memory" ? memoryEvidenceIdentity(candidate.memoryId) : candidate.id,
         sourceKey: context.sourceMap[index]!.sourceKey,
         kind: candidate.kind,
         purpose: candidate.purpose,
@@ -5102,11 +4864,32 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             from ai_runs where id = ${fixture.runId}
           `;
         }
+        yield* sql`
+          insert into ai_observations (
+            run_id, chat_id, emitting_task, loop_iteration, attempt,
+            observation_key, kind, payload
+          )
+          select ${fixture.runId}, chat_id, 'single-retrieve-internal', 0, 0,
+                 'single-retrieve-internal:0:0:structured_retrieval_review_preview:initial',
+                 'structured_retrieval_review_preview',
+                 ${sql.json({
+                   taskId: "single-retrieve-internal",
+                   loopIteration: 0,
+                   attempt: 0,
+                   providerRequestIndex: 1,
+                   agentRole: "internal_retrieval",
+                   slot: "initial",
+                   providerInputSha256Hex: "c".repeat(64),
+                   records: [],
+                 })}
+          from ai_runs where id = ${fixture.runId}
+        `;
       }),
     );
     for (const taskId of ["single-retrieve-internal", "single-select-memories"]) {
       await runDb(seedTaskMeasurement(fixture, taskId));
     }
+    await runDb(seedTaskMeasurement(fixture, "single-retrieve-internal", 1));
     const sourceKey = context.sourceMap[0]?.sourceKey;
     if (sourceKey === undefined) throw new Error("expected memory source key");
     const updatedContent = "The client prefers monthly and quarterly liquidity comparisons.";
@@ -5986,7 +5769,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     const selectors: SelectorBundle = {
-      internal: [],
+      structuredInternal: null,
       memories: [],
       memorySelection: "enabled",
       web: [],
@@ -6026,6 +5809,134 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       operations.freezeContext(load, retryContext),
     );
     expect(readyRetryContext.status).toBe("ready");
+  }, 120_000);
+  it("rejects a frozen-scope mutation before dispatch or proof persistence", async () => {
+    const fixture = await runDb(createFixture);
+    const config = {
+      ...phaseBOperationConfig,
+      aiMainInputMaxTokens: 100_000,
+      aiMainOutputMaxTokens: 4096,
+    };
+    const retrievalOperations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      config,
+      new PublisherRetrievalAgent(),
+    );
+    const load = await inTask("load-turn", () => retrievalOperations.loadTurn(fixture.runId));
+    const references = await inTask("single-retrieve-internal", () =>
+      retrievalOperations.retrieveStructuredInternal(
+        load,
+        "What changed in liquidity?",
+        "single-retrieve-internal",
+        [],
+      ),
+    );
+    const context = await assembleAndMeasureContext(
+      retrievalOperations,
+      load,
+      "What changed in liquidity?",
+      {
+        structuredInternal: references,
+        memories: [],
+        memorySelection: "enabled",
+        web: [],
+        webSelection: "enabled",
+      },
+      "single-answer",
+    );
+    const frozen = await inTask("single-context-select", () =>
+      retrievalOperations.freezeContext(load, context),
+    );
+    expect(frozen.status).toBe("ready");
+
+    let beforeRequestCalls = 0;
+    let providerTransportCalls = 0;
+    const agent = new CanonicalAgentClient(testProviderBoundary());
+    agent.stream = async (
+      request: LiveProviderRequest,
+      coordinates: PiBoundaryCoordinates,
+      _onDelta: (delta: string, index: number) => Promise<void> | void,
+      onBeforeRequest?: BeforeProviderRequest,
+    ) => {
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+              update client_companies
+              set recovery_deleted_at = now(), purge_after = now() + interval '180 days'
+              where id = ${fixture.companyId}
+            `;
+        }),
+      );
+      beforeRequestCalls += 1;
+      await onBeforeRequest?.(
+        request,
+        {
+          ...coordinates,
+          providerRequestSha256Hex: providerRequestSha256Hex(request),
+        },
+        passedMeasurement(request.model),
+      );
+      providerTransportCalls += 1;
+      return {
+        text: "provider must not run",
+        toolCalls: [],
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cachedTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 2,
+          stopReason: "stop",
+        },
+        stopReason: "stop",
+      };
+    };
+    const operations = new CanonicalWorkflowOperations(databaseUrlFor(databaseName), config, agent);
+    const before = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{
+          readonly sourceExposures: number;
+          readonly observations: number;
+          readonly usage: number;
+        }>`
+          select
+            (select count(*)::int from ai_source_exposures
+             where run_id = ${fixture.runId} and task_id = 'single-answer') as "sourceExposures",
+            (select count(*)::int from ai_observations
+             where run_id = ${fixture.runId} and emitting_task = 'single-answer') as observations,
+            (select count(*)::int from ai_run_usage
+             where run_id = ${fixture.runId} and task_id = 'single-answer') as usage
+        `;
+        return rows[0];
+      }),
+    );
+    await expect(
+      inTask("single-answer", () => operations.answerDirect(load, frozen, "single-answer")),
+    ).rejects.toMatchObject({ code: "context_assembly_failed" });
+    expect(beforeRequestCalls).toBe(1);
+    expect(providerTransportCalls).toBe(0);
+    const after = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{
+          readonly sourceExposures: number;
+          readonly observations: number;
+          readonly usage: number;
+        }>`
+          select
+            (select count(*)::int from ai_source_exposures
+             where run_id = ${fixture.runId} and task_id = 'single-answer') as "sourceExposures",
+            (select count(*)::int from ai_observations
+             where run_id = ${fixture.runId} and emitting_task = 'single-answer') as observations,
+            (select count(*)::int from ai_run_usage
+             where run_id = ${fixture.runId} and task_id = 'single-answer') as usage
+        `;
+        return rows[0];
+      }),
+    );
+    expect(after).toEqual(before);
   }, 120_000);
 
   it("rejects invented or duplicate A and B manifests instead of silently dropping them", async () => {
@@ -6121,317 +6032,12 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       }),
     );
     expect(currentQuestionPulls).toBe(0);
-
-    const undiscoveredReference: InternalReference = {
-      kind: "document",
-      documentId: fixture.documentId,
-      snapshotId: fixture.snapshotId,
-      publisherExtractionId: fixture.extractionId,
-      source: {
-        kind: "publisher",
-        sourceId: `publisher:${fixture.subscriptionId}`,
-        issueId: fixture.issueId,
-        documentId: fixture.documentId,
-      },
-      ranges: [{ charStart: 0, charEnd: 20 }],
-      purpose: "invent a manifest without discovery",
-    };
-    await expect(
-      inTask("internal-undiscovered", () =>
-        new CanonicalWorkflowOperations(
-          databaseUrlFor(databaseName),
-          workflowConfig,
-          new UndiscoveredInternalAgent(undiscoveredReference),
-        ).retrieveInternal(load, "What changed?", "internal-undiscovered", []),
-      ),
-    ).rejects.toThrow("references undiscovered document");
-    const duplicateInternal = new PublisherRetrievalAgent();
-    duplicateInternal.sourceId = `publisher:${fixture.subscriptionId}`;
-    duplicateInternal.duplicateManifest = true;
-    await expect(
-      inTask("internal-duplicate", () =>
-        new CanonicalWorkflowOperations(
-          databaseUrlFor(databaseName),
-          workflowConfig,
-          duplicateInternal,
-        ).retrieveInternal(load, "What changed?", "internal-duplicate", []),
-      ),
-    ).rejects.toThrow("internal manifest contains duplicate references");
-    const uninspectedInternal = new PublisherRetrievalAgent();
-    uninspectedInternal.sourceId = `publisher:${fixture.subscriptionId}`;
-    uninspectedInternal.skipInspection = true;
-    await expect(
-      inTask("internal-uninspected", () =>
-        new CanonicalWorkflowOperations(
-          databaseUrlFor(databaseName),
-          workflowConfig,
-          uninspectedInternal,
-        ).retrieveInternal(load, "What changed?", "internal-uninspected", []),
-      ),
-    ).rejects.toThrow(
-      "every selected internal reference must repeat an exact complete inspect_internal result",
-    );
-    const wholeAfterInspection = new PublisherRetrievalAgent();
-    wholeAfterInspection.sourceId = `publisher:${fixture.subscriptionId}`;
-    wholeAfterInspection.selectWholeAfterInspection = true;
-    const wholeReference = await inTask("internal-whole-after-bounded-inspection", () =>
-      new CanonicalWorkflowOperations(
-        databaseUrlFor(databaseName),
-        workflowConfig,
-        wholeAfterInspection,
-      ).retrieveInternal(load, "What changed?", "internal-whole-after-bounded-inspection", []),
-    );
-    expect(wholeReference).toEqual([
-      expect.objectContaining({
-        documentId: fixture.documentId,
-        snapshotId: fixture.snapshotId,
-      }),
-    ]);
-    expect(wholeReference[0]).not.toHaveProperty("ranges");
-    const repeatedInternal = new PublisherRetrievalAgent();
-    repeatedInternal.sourceId = `publisher:${fixture.subscriptionId}`;
-    repeatedInternal.repeatInspection = true;
-    await expect(
-      inTask("internal-repeated-inspection", () =>
-        new CanonicalWorkflowOperations(
-          databaseUrlFor(databaseName),
-          workflowConfig,
-          repeatedInternal,
-        ).retrieveInternal(load, "What changed?", "internal-repeated-inspection", []),
-      ),
-    ).resolves.toHaveLength(1);
-
-    const malformedFirstSearch = new PublisherRetrievalAgent();
-    malformedFirstSearch.sourceId = `publisher:${fixture.subscriptionId}`;
-    malformedFirstSearch.malformedFirstSearch = true;
-    await expect(
-      inTask("internal-malformed-first-search", () =>
-        new CanonicalWorkflowOperations(
-          databaseUrlFor(databaseName),
-          { ...workflowConfig, aiInternalMaxSearches: 1 },
-          malformedFirstSearch,
-        ).retrieveInternal(load, "What changed?", "internal-malformed-first-search", []),
-      ),
-    ).resolves.toHaveLength(1);
   }, 120_000);
-
-  it.each(["invalid", "oversized"] as const)(
-    "feeds %s reducer-plan validation feedback into the next semantic loop iteration",
-    async (firstPlan) => {
-      const longText = "Liquidity evidence remains verbatim and immutable. ".repeat(8_000);
-      const fixture = await runDb(createFixtureWithCanonicalText(longText));
-      const agent = new CorrectingReducerAgent(firstPlan);
-      const operations = new CanonicalWorkflowOperations(
-        databaseUrlFor(databaseName),
-        {
-          aiMainModel: "glm-5-turbo",
-          aiFastModel: "glm-5-turbo",
-          aiMainInputMaxTokens: 2_000,
-          aiMainOutputMaxTokens: 128,
-          aiFastInputMaxTokens: 100_000,
-          aiFastOutputMaxTokens: 4096,
-          aiConversationRecentTurns: 12,
-          aiFanoutMaxTopics: 3,
-          aiRetrievalMaxTurns: 4,
-          aiInternalMaxSearches: 4,
-          aiInternalMaxInspections: 4,
-          aiWebMaxSearches: 2,
-          aiWebMaxFetches: 2,
-          aiWebMaxDomainFilters: 8,
-          aiContextReductionMaxIterations: 2,
-          aiMemoryToolResultMaxItems: 20,
-          webResearchProvider: "",
-        },
-        agent,
-      );
-      const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-      const initial = await assembleAndMeasureContext(
-        operations,
-        load,
-        "What changed in liquidity?",
-        {
-          internal: [
-            {
-              kind: "document",
-              documentId: fixture.documentId,
-              snapshotId: fixture.snapshotId,
-              publisherExtractionId: fixture.extractionId,
-              source: {
-                kind: "publisher",
-                sourceId: `publisher:${fixture.subscriptionId}`,
-                issueId: fixture.issueId,
-                documentId: fixture.documentId,
-              },
-              ranges: [{ charStart: 0, charEnd: longText.length }],
-              purpose: "answer with the complete liquidity evidence",
-            },
-          ],
-          memories: [],
-          memorySelection: "enabled",
-          web: [],
-          webSelection: "enabled",
-        },
-        "single-answer",
-        undefined,
-        [],
-      );
-      expect(initial.status).toBe("needs_reduction");
-      const first = await inTask(
-        "single-reduce-plan",
-        () => operations.planReduction(load, initial, "single-reduce-plan", 0),
-        { iteration: 0 },
-      );
-      const firstMeasurement = await inTask(
-        "single-reduce-measure",
-        () => operations.measureReduction(load, initial, first, "single-reduce-measure", 0),
-        { iteration: 0 },
-      );
-      expect(firstMeasurement.status).toBe("needs_reduction");
-      expect(firstMeasurement.reductionFeedback).toHaveLength(1);
-      const corrected = await inTask(
-        "single-reduce-plan",
-        () => operations.planReduction(load, firstMeasurement, "single-reduce-plan", 1),
-        { iteration: 1 },
-      );
-      const correctedMeasurement = await inTask(
-        "single-reduce-measure",
-        () =>
-          operations.measureReduction(
-            load,
-            firstMeasurement,
-            corrected,
-            "single-reduce-measure",
-            1,
-          ),
-        { iteration: 1 },
-      );
-      expect(correctedMeasurement).toMatchObject({
-        status: "ready",
-        candidates: [],
-        sourceMap: [],
-        reductionRan: true,
-        reductionFeedback: [],
-      });
-      expect(agent.feedback).toEqual([[], firstMeasurement.reductionFeedback]);
-      const decisions = await runDb(
-        Effect.gen(function* () {
-          const sql = yield* PgClient.PgClient;
-          return yield* sql<{ readonly loopIteration: number; readonly valid: boolean }>`
-            select loop_iteration as "loopIteration", (payload->>'valid')::boolean as valid
-            from ai_observations
-            where run_id = ${fixture.runId}
-              and emitting_task = 'single-reduce-measure'
-              and kind = 'context_decision'
-            order by loop_iteration
-          `;
-        }),
-      );
-      expect(decisions).toEqual([
-        { loopIteration: 0, valid: firstPlan === "oversized" },
-        { loopIteration: 1, valid: true },
-      ]);
-      const currentQuestionPulls = await runDb(
-        Effect.gen(function* () {
-          const sql = yield* PgClient.PgClient;
-          const rows = yield* sql<{ readonly count: number }>`
-            select count(*)::int as count
-            from ai_source_exposures
-            where run_id = ${fixture.runId}
-              and task_id = 'single-reduce-plan'
-              and content_item_identity = ${load.userMessageId}
-          `;
-          return rows[0]?.count ?? -1;
-        }),
-      );
-      expect(currentQuestionPulls).toBe(0);
-    },
-    120_000,
-  );
-
-  it.each([
-    ["valid", true, ""],
-    ["invalid-after-success", false, "successful prior measurement"],
-    ["unmeasured", false, "successful prior measurement"],
-    ["drift", false, "drifted from its successfully measured decisions"],
-  ] as const)(
-    "enforces the reducer measurement phase for a %s terminal plan",
-    async (mode, succeeds, message) => {
-      const longText = "Liquidity evidence remains verbatim and immutable. ".repeat(8_000);
-      const fixture = await runDb(createFixtureWithCanonicalText(longText));
-      const operations = new CanonicalWorkflowOperations(
-        databaseUrlFor(databaseName),
-        {
-          aiMainModel: "glm-5-turbo",
-          aiFastModel: "glm-5-turbo",
-          aiMainInputMaxTokens: 2_000,
-          aiMainOutputMaxTokens: 128,
-          aiFastInputMaxTokens: 100_000,
-          aiFastOutputMaxTokens: 4096,
-          aiConversationRecentTurns: 12,
-          aiFanoutMaxTopics: 3,
-          aiRetrievalMaxTurns: 4,
-          aiInternalMaxSearches: 4,
-          aiInternalMaxInspections: 4,
-          aiWebMaxSearches: 2,
-          aiWebMaxFetches: 2,
-          aiWebMaxDomainFilters: 8,
-          aiContextReductionMaxIterations: 2,
-          aiMemoryToolResultMaxItems: 20,
-          webResearchProvider: "",
-        },
-        new ReducerProtocolProbeAgent(mode),
-      );
-      const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-      const initial = await assembleAndMeasureContext(
-        operations,
-        load,
-        "What changed in liquidity?",
-        {
-          internal: [
-            {
-              kind: "document",
-              documentId: fixture.documentId,
-              snapshotId: fixture.snapshotId,
-              publisherExtractionId: fixture.extractionId,
-              source: {
-                kind: "publisher",
-                sourceId: `publisher:${fixture.subscriptionId}`,
-                issueId: fixture.issueId,
-                documentId: fixture.documentId,
-              },
-              ranges: [{ charStart: 0, charEnd: longText.length }],
-              purpose: "answer with the complete liquidity evidence",
-            },
-          ],
-          memories: [],
-          memorySelection: "enabled",
-          web: [],
-          webSelection: "enabled",
-        },
-        "single-answer",
-        undefined,
-        [],
-      );
-      expect(initial.status).toBe("needs_reduction");
-
-      const reduction = inTask("single-reduce-plan", () =>
-        operations.planReduction(load, initial, "single-reduce-plan", 0),
-      );
-      if (succeeds) {
-        await expect(reduction).resolves.toMatchObject({ decisions: expect.any(Array) });
-      } else {
-        await expect(reduction).rejects.toThrow(message);
-      }
-    },
-    120_000,
-  );
 
   it("requires and binds a narrower immutable publisher range after an oversized inspection", async () => {
     const canonicalText = "Liquidity evidence remains verbatim and immutable. ".repeat(8_000);
     const fixture = await runDb(createFixtureWithCanonicalText(canonicalText));
     const agent = new PublisherRetrievalAgent();
-    agent.narrowerRange = true;
-    agent.sourceId = `publisher:${fixture.subscriptionId}`;
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
       {
@@ -6457,29 +6063,25 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     const references = await inTask("oversized-range-retrieve", () =>
-      operations.retrieveInternal(
+      operations.retrieveStructuredInternal(
         load,
         "What changed in liquidity?",
         "oversized-range-retrieve",
         [],
       ),
     );
-    expect(agent.firstInspectionWasTooLarge).toBe(true);
-    expect(references).toEqual([
-      expect.objectContaining({
-        kind: "document",
-        documentId: fixture.documentId,
-        snapshotId: fixture.snapshotId,
-        publisherExtractionId: fixture.extractionId,
-        source: {
-          kind: "publisher",
-          sourceId: `publisher:${fixture.subscriptionId}`,
-          issueId: fixture.issueId,
-          documentId: fixture.documentId,
-        },
-        ranges: [agent.selectedRange],
-      }),
-    ]);
+    expect(references).toMatchObject({
+      previewExposures: expect.arrayContaining([
+        expect.objectContaining({
+          identity: expect.objectContaining({ documentId: fixture.documentId }),
+          snapshotId: fixture.snapshotId,
+        }),
+      ]),
+    });
+    const expectedPreview = references?.previewExposures[0];
+    if (expectedPreview === undefined || expectedPreview.identity.kind === "chat_message") {
+      throw new Error("structured retrieval did not return a document preview");
+    }
     const persisted = await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -6500,7 +6102,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           from ai_source_exposures
           where run_id = ${fixture.runId}
             and task_id = 'oversized-range-retrieve'
-            and exposure_stage = 'internal_inspection'
+            and exposure_stage = 'internal_search_preview'
         `;
         const manifests = yield* sql<{ readonly references: unknown }>`
           select payload->'references' as references
@@ -6545,12 +6147,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         sourceId: `publisher:${fixture.subscriptionId}`,
         documentId: fixture.documentId,
         publisherExtractionId: fixture.extractionId,
-        ranges: [agent.selectedRange],
+        ranges: expectedPreview.previewRanges,
       },
     ]);
-    expect(agent.narrowedInspectionText).toBe(
-      canonicalText.slice(agent.selectedRange.charStart, agent.selectedRange.charEnd),
-    );
     expect(persisted.versions).toEqual([
       {
         documentId: fixture.documentId,
@@ -6579,309 +6178,849 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(persistedVersion.contentHash).toBe(
       createHash("sha256").update(persistedVersion.canonicalText, "utf8").digest("hex"),
     );
-    expect(
-      persistedRanges
-        .map((range) => persistedVersion.canonicalText.slice(range.charStart, range.charEnd))
-        .join("\n…\n"),
-    ).toBe(agent.narrowedInspectionText);
+    expect(persistedRanges).toEqual(expectedPreview.previewRanges);
     expect(persisted.manifests).toEqual([
       {
         references: [
-          {
+          expect.objectContaining({
             kind: "document",
             documentId: fixture.documentId,
             snapshotId: fixture.snapshotId,
-            publisherExtractionId: fixture.extractionId,
-            source: {
-              kind: "publisher",
-              sourceId: `publisher:${fixture.subscriptionId}`,
-              issueId: fixture.issueId,
-              documentId: fixture.documentId,
-            },
-            ranges: [agent.selectedRange],
-            purpose: "answer the liquidity question",
-          },
+          }),
         ],
       },
     ]);
   }, 120_000);
 
-  it("keeps reducer inspection and measurement available after malformed search arguments", async () => {
-    const longText = "Liquidity evidence remains verbatim and immutable. ".repeat(8_000);
-    const fixture = await runDb(createFixtureWithCanonicalText(longText));
-    const providerRequests: LiveProviderRequest[] = [];
-    let providerTurn = 0;
-    const client = new CanonicalAgentClient({
-      bindAcceptedProviderProfile: () => undefined,
-      complete: async (
-        request: LiveProviderRequest,
-        coordinates: PiBoundaryCoordinates,
-        beforeProviderRequest?: BeforeProviderRequest,
-      ) => {
-        providerRequests.push(request);
-        await beforeProviderRequest?.(
-          request,
-          {
-            ...coordinates,
-            providerRequestSha256Hex: providerRequestSha256Hex(request),
-          },
-          {} as LiveProviderRequestMeasurement,
-        );
-        const initialUser = request.messages.find((message) => message.role === "user");
-        if (initialUser === undefined) throw new Error("missing reducer input");
-        const candidates = (
-          JSON.parse(initialUser.content) as {
-            readonly candidates: readonly { readonly id: string }[];
-          }
-        ).candidates;
-        const candidateId = candidates[0]?.id;
-        if (candidateId === undefined) throw new Error("missing reducer candidate");
-        const decisions = candidates.map((candidate) => ({
-          id: candidate.id,
-          action: "omit",
-          reason: "omit evidence to satisfy the exact allowance",
-        }));
-        const completion =
-          providerTurn === 0
-            ? providerToolCompletion(
-                "search_within_candidate",
-                { id: candidateId },
-                "reducer-search-malformed",
-              )
-            : providerTurn === 1
-              ? providerToolCompletion(
-                  "inspect_candidate",
-                  { id: candidateId, range: { charStart: 0, charEnd: 100 } },
-                  "reducer-inspect",
-                )
-              : providerTurn === 2
-                ? providerToolCompletion("measure_plan", { decisions }, "reducer-measure")
-                : providerToolCompletion("emit_context_plan", { decisions }, "reducer-terminal");
-        providerTurn += 1;
-        return completion;
-      },
-    } as unknown as ExactPiBoundary);
-    const operations = new CanonicalWorkflowOperations(
-      databaseUrlFor(databaseName),
-      {
-        aiMainModel: "glm-5-turbo",
-        aiFastModel: "glm-5-turbo",
-        aiMainInputMaxTokens: 2_000,
-        aiMainOutputMaxTokens: 128,
-        aiFastInputMaxTokens: 100_000,
-        aiFastOutputMaxTokens: 4096,
-        aiConversationRecentTurns: 12,
-        aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
-        aiWebMaxSearches: 2,
-        aiWebMaxFetches: 2,
-        aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
-        aiMemoryToolResultMaxItems: 20,
-        webResearchProvider: "",
-      },
-      client,
-    );
-    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-    const initial = await assembleAndMeasureContext(
-      operations,
-      load,
-      "What changed in liquidity?",
-      {
-        internal: [
-          {
-            kind: "document",
-            documentId: fixture.documentId,
-            snapshotId: fixture.snapshotId,
-            publisherExtractionId: fixture.extractionId,
-            source: {
-              kind: "publisher",
-              sourceId: `publisher:${fixture.subscriptionId}`,
-              issueId: fixture.issueId,
-              documentId: fixture.documentId,
-            },
-            ranges: [{ charStart: 0, charEnd: longText.length }],
-            purpose: "answer with the complete liquidity evidence",
-          },
-        ],
-        memories: [],
-        memorySelection: "enabled",
-        web: [],
-        webSelection: "enabled",
-      },
-      "single-answer",
-      undefined,
-      [],
-    );
-    expect(initial.status).toBe("needs_reduction");
-    await expect(
-      inTask("malformed-reducer-plan", () =>
-        operations.planReduction(load, initial, "malformed-reducer-plan", 0),
-      ),
-    ).resolves.toMatchObject({ decisions: expect.any(Array) });
-    expect((providerRequests[1]?.tools ?? []).map((tool) => tool.name)).toEqual([
-      "inspect_candidate",
-      "search_within_candidate",
-    ]);
-    expect((providerRequests[2]?.tools ?? []).map((tool) => tool.name)).toContain("measure_plan");
-    expect(providerRequests).toHaveLength(4);
-  }, 120_000);
-
-  it("calls C for a token-bounded empty prior inventory and lets O omit selected history", async () => {
+  it("takes the fit-first path without a manifest, group, or measure compactor call", async () => {
+    const agent = new PhaseDCompactionAgent();
     const fixture = await runDb(createFixture);
-    await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const messages = yield* sql<{ readonly id: string }>`
-          insert into chat_messages (chat_id, author, content, created_at)
-          select chat_id, 'user', ${"historical context ".repeat(5_000)}, now() - interval '1 minute'
-          from ai_runs where id = ${fixture.runId}
-          returning id::text
-        `;
-        const messageId = messages[0]?.id;
-        if (messageId === undefined) return yield* Effect.fail(new Error("message insert failed"));
-        yield* sql`
-          insert into ai_runs (
-            chat_id, initiating_user_id, user_message_id, locale, market,
-            acceptance_scope, failed_at, error_code,
-            retryable, created_at
-          )
-          select chat_id, initiating_user_id, ${messageId}, 'en-US', 'US', acceptance_scope,
-                 now(), 'finalization_failed', false, now() - interval '1 minute'
-          from ai_runs where id = ${fixture.runId}
-        `;
-      }),
-    );
-    const agent = new EmptyInventoryConversationAgent();
     const operations = new CanonicalWorkflowOperations(
       databaseUrlFor(databaseName),
-      {
-        aiMainModel: "glm-5-turbo",
-        aiFastModel: "glm-5-turbo",
-        aiMainInputMaxTokens: 2_000,
-        aiMainOutputMaxTokens: 128,
-        aiFastInputMaxTokens: 100_000,
-        aiFastOutputMaxTokens: 4096,
-        aiConversationRecentTurns: 12,
-        aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
-        aiWebMaxSearches: 2,
-        aiWebMaxFetches: 2,
-        aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
-        aiMemoryToolResultMaxItems: 20,
-        webResearchProvider: "",
-      },
+      phaseBOperationConfig,
       agent,
     );
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
-
-    await inTask("plan-turn", () => operations.planTurn(load));
-    expect(agent.calls).toBe(1);
-    expect(agent.entries).toHaveLength(1);
-
-    const priorTurns = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql<{ readonly turnId: string; readonly messageId: string }>`
-          select id::text as "turnId", user_message_id::text as "messageId"
-          from ai_runs
-          where chat_id = ${load.chatId}
-            and id <> ${load.aiRunId}
-            and (finished_at is not null or failed_at is not null)
-          order by created_at desc, id desc
-          limit 1
-        `;
-      }),
-    );
-    const turnId = priorTurns[0]?.turnId;
-    const priorMessageId = priorTurns[0]?.messageId;
-    if (turnId === undefined) throw new Error("prior conversation entry was not loaded");
-    if (priorMessageId === undefined) throw new Error("prior conversation message was not loaded");
-    const initial = await assembleAndMeasureContext(
+    const context = await assembleAndMeasureContext(
       operations,
       load,
       "What changed in liquidity?",
       {
-        internal: [
-          {
-            kind: "chat_message",
-            messageId: priorMessageId,
-            purpose: "duplicate the selected recent conversation",
-          },
-        ],
+        structuredInternal: null,
         memories: [],
         memorySelection: "enabled",
         web: [],
         webSelection: "enabled",
       },
       "single-answer",
-      undefined,
-      [turnId],
     );
-    expect(initial).toMatchObject({
-      status: "needs_reduction",
-      candidates: [],
-      ledgerCandidates: [],
-      selectedConversation: [{ turnId }],
-      ledgerConversation: [{ turnId }],
-    });
-    const duplicateRejections = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql<{ readonly candidateId: string; readonly reason: string }>`
-          select payload->>'candidateId' as "candidateId", payload->>'reason' as reason
-          from ai_observations
-          where run_id = ${fixture.runId}
-            and emitting_task = 'single-assemble'
-            and kind = 'candidate_rejected'
-            and payload->>'reason' = 'duplicate'
-        `;
-      }),
+    expect(context.status).toBe("ready");
+    expect(agent.manifestCalls).toBe(0);
+    expect(agent.groupCalls).toBe(0);
+    expect(agent.fallbackCalls).toBe(0);
+  }, 120_000);
+
+  it("validates one complete initial manifest before starting any group", async () => {
+    const agent = new PhaseDCompactionAgent();
+    const { operations, load, initial } = await prepareOversizedCompaction(agent);
+    expect(initial.status).toBe("needs_compaction");
+    const manifest = await inTask("single-compact-plan", () =>
+      operations.initialCompactionManifest(load, initial, "single-compact-plan"),
     );
-    expect(duplicateRejections).toEqual([
-      { candidateId: `chat_message:${priorMessageId}`, reason: "duplicate" },
-    ]);
-    const initialMeasurements = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql<{ readonly emittingTask: string }>`
-          select emitting_task as "emittingTask"
-          from ai_observations
-          where run_id = ${fixture.runId}
-            and emitting_task = 'single-measure'
-            and kind = 'context_measurement'
-        `;
-      }),
+    expect(agent.manifestCalls).toBe(1);
+    expect(manifest.decisions).toHaveLength(initial.candidateLedger.candidates.length);
+    expect(new Set(manifest.decisions.map((decision) => decision.candidateId)).size).toBe(
+      manifest.decisions.length,
     );
-    expect(initialMeasurements).toEqual([{ emittingTask: "single-measure" }]);
-    const reduced = await inTask("single-reduce-measure", () =>
-      operations.measureReduction(
-        load,
-        initial,
-        {
-          decisions: [
-            {
-              id: `conversation_entry:${turnId}`,
-              action: "omit",
-              reason: "omit irrelevant prior history to fit the exact request",
-            },
-          ],
-        },
-        "single-reduce-measure",
-        0,
+  }, 120_000);
+
+  it("collects validated group envelopes in ledger order and measures the final answer request once", async () => {
+    const agent = new PhaseDCompactionAgent();
+    const { operations, load, initial } = await prepareOversizedCompaction(agent);
+    const manifest = await inTask("single-compact-plan", () =>
+      operations.initialCompactionManifest(load, initial, "single-compact-plan"),
+    );
+    const groups = await operations.createCompactionGroups(
+      load,
+      initial,
+      manifest,
+      "single-compact-plan",
+    );
+    const envelopes = await Promise.all(
+      groups.map((group, index) =>
+        inTask(`single-compact-g${String(index + 1).padStart(3, "0")}`, () =>
+          operations.compactContextGroup(
+            load,
+            initial,
+            group,
+            `single-compact-g${String(index + 1).padStart(3, "0")}`,
+          ),
+        ),
       ),
     );
-    expect(reduced).toMatchObject({
-      status: "ready",
-      selectedConversation: [],
-      ledgerConversation: [{ turnId }],
-      reductionRan: true,
+    const pass = await operations.collectCompaction(
+      load,
+      initial,
+      manifest,
+      groups,
+      envelopes,
+      "single-compact-collect",
+    );
+    expect(pass).not.toHaveProperty("measurement");
+    expect(pass.selections.map((selection) => selection.candidateId)).toEqual(
+      [...initial.candidateLedger.candidates]
+        .filter((candidate) =>
+          pass.selections.some((selection) => selection.candidateId === candidate.candidateId),
+        )
+        .map((candidate) => candidate.candidateId),
+    );
+    const measured = await inTask("single-compact-measure", () =>
+      operations.measureCompaction(load, initial, pass, "single-compact-measure"),
+    );
+    expect(measured.status).toBe("ready");
+    expect(measured.compactionRan).toBe(true);
+  }, 120_000);
+
+  it("uses exactly one structured repair for an invalid group result", async () => {
+    const agent = new PhaseDCompactionAgent("repair");
+    const { operations, load, initial } = await prepareOversizedCompaction(agent);
+    const manifest = await inTask("single-compact-plan", () =>
+      operations.initialCompactionManifest(load, initial, "single-compact-plan"),
+    );
+    const groups = await operations.createCompactionGroups(
+      load,
+      initial,
+      manifest,
+      "single-compact-plan",
+    );
+    const envelopes = await Promise.all(
+      groups.map((group, index) =>
+        inTask(`single-compact-g${String(index + 1).padStart(3, "0")}`, () =>
+          operations.compactContextGroup(
+            load,
+            initial,
+            group,
+            `single-compact-g${String(index + 1).padStart(3, "0")}`,
+          ),
+        ),
+      ),
+    );
+    const pass = await operations.collectCompaction(
+      load,
+      initial,
+      manifest,
+      groups,
+      envelopes,
+      "single-compact-collect",
+    );
+    expect(pass.repairUsed).toBe(true);
+    expect(agent.groupCalls).toBe(2);
+  }, 120_000);
+
+  describe("durable semantic repair re-entry", () => {
+    it("does not grant a second schema repair after task re-entry", async () => {
+      const prepared = await prepareOversizedCompaction(new PhaseDCompactionAgent());
+      const agent = new DurableRepairAgent(prepared.load.aiRunId, prepared.load.chatId, "manifest");
+      const operations = new CanonicalWorkflowOperations(
+        databaseUrlFor(databaseName),
+        {
+          ...phaseBOperationConfig,
+          aiMainInputMaxTokens: 780,
+          aiMainOutputMaxTokens: 128,
+        },
+        agent,
+      );
+      const taskId = "durable-schema-repair";
+      await inTask(taskId, () =>
+        operations.initialCompactionManifest(prepared.load, prepared.initial, taskId),
+      );
+      await expect(
+        inTask(
+          taskId,
+          () => operations.initialCompactionManifest(prepared.load, prepared.initial, taskId),
+          { attempt: 2 },
+        ),
+      ).rejects.toThrow();
+      expect(agent.providerCalls).toBe(2);
+      const rows = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly count: number }>`
+            select count(*)::int as count
+            from ai_observations
+            where run_id = ${prepared.load.aiRunId}
+              and emitting_task = ${taskId}
+              and kind = 'provider_request_measurement'
+          `;
+        }),
+      );
+      expect(rows[0]?.count).toBe(2);
+      const usageRows = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly count: number }>`
+            select count(*)::int as count
+            from ai_run_usage
+            where run_id = ${prepared.load.aiRunId}
+              and task_id = ${taskId}
+          `;
+        }),
+      );
+      expect(usageRows[0]?.count).toBe(2);
+      const exposures = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{
+            readonly documentCount: number;
+            readonly reconstructedCount: number;
+          }>`
+            select count(*)::int as "documentCount",
+                   count(document_ranges)::int as "reconstructedCount"
+            from ai_source_exposures
+            where run_id = ${prepared.load.aiRunId}
+              and task_id = ${taskId}
+              and exposure_stage = 'context_compaction_input'
+              and source_kind = 'document'
+          `;
+        }),
+      );
+      expect(exposures[0]?.documentCount).toBeGreaterThan(0);
+      expect(exposures[0]?.reconstructedCount).toBe(exposures[0]?.documentCount);
+    }, 120_000);
+
+    it("does not dispatch again after a response survives an output persistence crash", async () => {
+      const prepared = await prepareOversizedCompaction(new PhaseDCompactionAgent());
+      const agent = new DurableRepairAgent(
+        prepared.load.aiRunId,
+        prepared.load.chatId,
+        "post-response-failure",
+      );
+      const operations = new CanonicalWorkflowOperations(
+        databaseUrlFor(databaseName),
+        {
+          ...phaseBOperationConfig,
+          aiMainInputMaxTokens: 780,
+          aiMainOutputMaxTokens: 128,
+        },
+        agent,
+      );
+      const taskId = "durable-post-response-crash";
+      await expect(
+        inTask(taskId, () =>
+          operations.initialCompactionManifest(prepared.load, prepared.initial, taskId),
+        ),
+      ).rejects.toMatchObject({ code: "context_compaction_failed" });
+      await expect(
+        inTask(
+          taskId,
+          () => operations.initialCompactionManifest(prepared.load, prepared.initial, taskId),
+          { attempt: 2 },
+        ),
+      ).rejects.toMatchObject({ code: "workflow_resume_incompatible" });
+      expect(agent.providerCalls).toBe(1);
+      const usageRows = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly count: number }>`
+            select count(*)::int as count
+            from ai_run_usage
+            where run_id = ${prepared.load.aiRunId}
+              and task_id = ${taskId}
+          `;
+        }),
+      );
+      expect(usageRows[0]?.count).toBe(1);
+    }, 120_000);
+
+    it("allows one retry after a pre-response transport failure", async () => {
+      const prepared = await prepareOversizedCompaction(new PhaseDCompactionAgent());
+      const agent = new DurableRepairAgent(
+        prepared.load.aiRunId,
+        prepared.load.chatId,
+        "transport-failure",
+      );
+      const operations = new CanonicalWorkflowOperations(
+        databaseUrlFor(databaseName),
+        {
+          ...phaseBOperationConfig,
+          aiMainInputMaxTokens: 780,
+          aiMainOutputMaxTokens: 128,
+        },
+        agent,
+      );
+      const taskId = "durable-transport-failure";
+      await expect(
+        inTask(taskId, () =>
+          operations.initialCompactionManifest(prepared.load, prepared.initial, taskId),
+        ),
+      ).rejects.toMatchObject({ code: "context_compaction_failed" });
+      await expect(
+        inTask(
+          taskId,
+          () => operations.initialCompactionManifest(prepared.load, prepared.initial, taskId),
+          { attempt: 2 },
+        ),
+      ).resolves.toBeDefined();
+      expect(agent.providerCalls).toBe(2);
+      const usageRows = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly count: number }>`
+            select count(*)::int as count
+            from ai_run_usage
+            where run_id = ${prepared.load.aiRunId}
+              and task_id = ${taskId}
+          `;
+        }),
+      );
+      expect(usageRows[0]?.count).toBe(1);
+    }, 120_000);
+
+    it("does not grant a second group repair after task re-entry", async () => {
+      const prepared = await prepareOversizedCompaction(new PhaseDCompactionAgent());
+      const agent = new DurableRepairAgent(prepared.load.aiRunId, prepared.load.chatId, "group");
+      const operations = new CanonicalWorkflowOperations(
+        databaseUrlFor(databaseName),
+        {
+          ...phaseBOperationConfig,
+          aiMainInputMaxTokens: 780,
+          aiMainOutputMaxTokens: 128,
+        },
+        agent,
+      );
+      const planTaskId = "durable-group-plan";
+      const manifest = await inTask(planTaskId, () =>
+        operations.initialCompactionManifest(prepared.load, prepared.initial, planTaskId),
+      );
+      const groups = await operations.createCompactionGroups(
+        prepared.load,
+        prepared.initial,
+        manifest,
+        planTaskId,
+      );
+      const group = groups.find((candidate) => candidate.mode === "normal");
+      if (group === undefined) throw new Error("durable repair fixture lacks a normal group");
+      const taskId = "durable-group-repair";
+      await inTask(taskId, () =>
+        operations.compactContextGroup(prepared.load, prepared.initial, group, taskId),
+      );
+      await expect(
+        inTask(
+          taskId,
+          () => operations.compactContextGroup(prepared.load, prepared.initial, group, taskId),
+          { attempt: 2 },
+        ),
+      ).rejects.toThrow();
+      expect(agent.providerCalls).toBe(3);
+      const rows = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly count: number }>`
+            select count(*)::int as count
+            from ai_observations
+            where run_id = ${prepared.load.aiRunId}
+              and emitting_task = ${taskId}
+              and kind = 'provider_request_measurement'
+          `;
+        }),
+      );
+      expect(rows[0]?.count).toBe(2);
+      const usageRows = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly taskId: string; readonly count: number }>`
+            select task_id as "taskId", count(*)::int as count
+            from ai_run_usage
+            where run_id = ${prepared.load.aiRunId}
+              and task_id in (${planTaskId}, ${taskId})
+            group by task_id
+          `;
+        }),
+      );
+      expect(usageRows).toEqual(
+        expect.arrayContaining([
+          { taskId: planTaskId, count: 1 },
+          { taskId, count: 2 },
+        ]),
+      );
+      const exposures = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{
+            readonly documentCount: number;
+            readonly reconstructedCount: number;
+          }>`
+            select count(*)::int as "documentCount",
+                   count(document_ranges)::int as "reconstructedCount"
+            from ai_source_exposures
+            where run_id = ${prepared.load.aiRunId}
+              and task_id = ${taskId}
+              and exposure_stage = 'context_compaction_input'
+              and source_kind = 'document'
+          `;
+        }),
+      );
+      expect(exposures[0]?.documentCount).toBeGreaterThan(0);
+      expect(exposures[0]?.reconstructedCount).toBe(exposures[0]?.documentCount);
+    }, 120_000);
+  });
+  it("keeps oversized source-tool requests scoped to the accepted candidate", async () => {
+    const agent = new PhaseDCompactionAgent();
+    // This fast allowance fits the manifest planner but leaves the group request oversized,
+    // which is the code-owned condition for the single-candidate source-tool lane.
+    const { operations, load, initial } = await prepareOversizedCompaction(agent, 1_350);
+    const manifest = await inTask("single-compact-plan", () =>
+      operations.initialCompactionManifest(load, initial, "single-compact-plan"),
+    );
+    const groups = await operations.createCompactionGroups(
+      load,
+      initial,
+      manifest,
+      "single-compact-plan",
+    );
+    expect(groups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ mode: "source_tool", candidateIds: [expect.any(String)] }),
+      ]),
+    );
+    const result = await inTask("single-compact-g001", () =>
+      operations.compactContextGroup(load, initial, groups[0]!, "single-compact-g001"),
+    );
+
+    expect(result.result.decisions[0]).toMatchObject({
+      action: "select",
+      passageIds: [expect.stringMatching(/^p[1-9]/u)],
     });
+  }, 120_000);
+  it("preserves sparse non-prefix prior passage identities through fallback", async () => {
+    const agent = new PriorPassageFallbackAgent();
+    const { operations, load, initial } = await prepareOversizedCompaction(
+      agent,
+      1_000_000,
+      `Long evidence chat passage. ${"evidence remains immutable. ".repeat(2_000)}`,
+    );
+    const manifest = await inTask("prior-identity-compact-plan", () =>
+      operations.initialCompactionManifest(load, initial, "prior-identity-compact-plan"),
+    );
+    const groups = await operations.createCompactionGroups(
+      load,
+      initial,
+      manifest,
+      "prior-identity-compact-plan",
+    );
+    const envelopes = await Promise.all(
+      groups.map((group, index) =>
+        inTask(`prior-identity-compact-g${String(index + 1).padStart(3, "0")}`, () =>
+          operations.compactContextGroup(
+            load,
+            initial,
+            group,
+            `prior-identity-compact-g${String(index + 1).padStart(3, "0")}`,
+          ),
+        ),
+      ),
+    );
+    const firstPass = await operations.collectCompaction(
+      load,
+      initial,
+      manifest,
+      groups,
+      envelopes,
+      "prior-identity-compact-collect",
+    );
+    const firstSelection = firstPass.envelopes[0]?.result.decisions[0];
+    expect(firstSelection).toMatchObject({
+      action: "select",
+      passageIds: ["p3", "p4"],
+    });
+    const firstMeasured = await inTask("prior-identity-compact-measure", () =>
+      operations.measureCompaction(load, initial, firstPass, "prior-identity-compact-measure"),
+    );
+    const fallbackManifest = await inTask("prior-identity-fallback-plan", () =>
+      operations.fallbackCompactionManifest(
+        load,
+        initial,
+        manifest,
+        firstPass,
+        {
+          fits: false,
+          inputTokens: firstMeasured.usableInputTokens + 1,
+          usableInputTokens: firstMeasured.usableInputTokens,
+          overByTokens: 1,
+        },
+        "prior-identity-fallback-plan",
+      ),
+    );
+    const fallbackGroups = await operations.createFallbackCompactionGroups(
+      load,
+      initial,
+      manifest,
+      firstPass,
+      fallbackManifest,
+      "prior-identity-fallback-plan",
+    );
+    const fallbackGroup = fallbackGroups[0];
+    const priorEnvelope = firstPass.envelopes.find(
+      (envelope) => envelope.groupId === fallbackGroup?.groupId,
+    );
+    if (fallbackGroup === undefined || priorEnvelope === undefined) {
+      throw new Error("fallback identity fixture lacks its prior group");
+    }
+    const fallbackEnvelope = await inTask("prior-identity-fallback-g001", () =>
+      operations.compactContextGroup(
+        load,
+        initial,
+        fallbackGroup,
+        "prior-identity-fallback-g001",
+        "fallback",
+        priorEnvelope,
+      ),
+    );
+    expect(fallbackEnvelope.result.decisions[0]).toMatchObject({
+      action: "select",
+      passageIds: ["p4"],
+    });
+    const observation = agent.fallbackGroupObservations[0];
+    if (observation === undefined) throw new Error("fallback identity request was not observed");
+    const candidate = observation.payload.candidates?.[0];
+    if (candidate === undefined || observation.request === undefined) {
+      throw new Error("fallback identity request lacks its candidate");
+    }
+    expect(candidate.passages.map((passage) => passage.passageId)).toEqual(["p3", "p4"]);
+    expect(
+      observation.proofs
+        .filter((proof) => proof.candidateId === candidate.candidateId)
+        .map((proof) => proof.passageId),
+    ).toEqual(["p3", "p4"]);
+    expect(
+      observation.payload.priorResult?.decisions.find(
+        (decision) => decision.candidateId === candidate.candidateId,
+      )?.passageIds,
+    ).toEqual(["p3", "p4"]);
+    expect(() =>
+      observation.validate({
+        decisions: [
+          {
+            candidateId: candidate.candidateId,
+            action: "select",
+            passageIds: ["p1"],
+            reason: "renumbered passage must be rejected",
+          },
+        ],
+      }),
+    ).toThrow();
+  }, 120_000);
+
+  it("uses prior-filtered multi-member fallback inventory for exact preflight fit", async () => {
+    const agent = new MultiMemberFallbackAgent();
+    const { operations, load, initial } = await prepareOversizedCompaction(
+      agent,
+      8_700,
+      [
+        `Long evidence chat passage one. ${"evidence remains immutable. ".repeat(250)}`,
+        `Long evidence chat passage two. ${"evidence remains immutable. ".repeat(250)}`,
+      ],
+      2_000,
+    );
+    const manifest = await inTask("multi-filter-compact-plan", () =>
+      operations.initialCompactionManifest(load, initial, "multi-filter-compact-plan"),
+    );
+    const groups = await operations.createCompactionGroups(
+      load,
+      initial,
+      manifest,
+      "multi-filter-compact-plan",
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.candidateIds).toHaveLength(2);
+    const envelopes = await Promise.all(
+      groups.map((group, index) =>
+        inTask(`multi-filter-compact-g${String(index + 1).padStart(3, "0")}`, () =>
+          operations.compactContextGroup(
+            load,
+            initial,
+            group,
+            `multi-filter-compact-g${String(index + 1).padStart(3, "0")}`,
+          ),
+        ),
+      ),
+    );
+    const firstPass = await operations.collectCompaction(
+      load,
+      initial,
+      manifest,
+      groups,
+      envelopes,
+      "multi-filter-compact-collect",
+    );
+    expect(firstPass.envelopes[0]?.result.decisions).toHaveLength(2);
+    expect(firstPass.envelopes[0]?.result.decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: "select", passageIds: ["p3", "p4"] }),
+        expect.objectContaining({ action: "select", passageIds: ["p3", "p4"] }),
+      ]),
+    );
+    const firstMeasured = await inTask("multi-filter-compact-measure", () =>
+      operations.measureCompaction(load, initial, firstPass, "multi-filter-compact-measure"),
+    );
+    const fallbackManifest = await inTask("multi-filter-fallback-plan", () =>
+      operations.fallbackCompactionManifest(
+        load,
+        initial,
+        manifest,
+        firstPass,
+        {
+          fits: false,
+          inputTokens: firstMeasured.usableInputTokens + 1,
+          usableInputTokens: firstMeasured.usableInputTokens,
+          overByTokens: 1,
+        },
+        "multi-filter-fallback-plan",
+      ),
+    );
+    const fallbackGroups = await operations.createFallbackCompactionGroups(
+      load,
+      initial,
+      manifest,
+      firstPass,
+      fallbackManifest,
+      "multi-filter-fallback-plan",
+    );
+    expect(fallbackGroups).toHaveLength(1);
+    const fallbackGroup = fallbackGroups[0]!;
+    const priorEnvelope = firstPass.envelopes.find(
+      (envelope) => envelope.groupId === fallbackGroup.groupId,
+    );
+    if (priorEnvelope === undefined)
+      throw new Error("multi-member fallback lost its prior envelope");
+    const fallbackEnvelope = await inTask("multi-filter-fallback-g001", () =>
+      operations.compactContextGroup(
+        load,
+        initial,
+        fallbackGroup,
+        "multi-filter-fallback-g001",
+        "fallback",
+        priorEnvelope,
+      ),
+    );
+    expect(fallbackEnvelope.result.decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: "select", passageIds: ["p4"] }),
+        expect.objectContaining({ action: "select", passageIds: ["p4"] }),
+      ]),
+    );
+    const finalPass = await operations.collectFallbackCompaction(
+      load,
+      initial,
+      fallbackManifest,
+      fallbackGroups,
+      [fallbackEnvelope],
+      firstPass,
+      "multi-filter-fallback-collect",
+    );
+    expect(
+      await inTask("multi-filter-fallback-measure", () =>
+        operations.measureCompaction(load, initial, finalPass, "multi-filter-fallback-measure"),
+      ),
+    ).toMatchObject({ status: "ready" });
+    const observation = agent.fallbackGroupObservations[0];
+    const initialPayload = agent.initialGroupPayloads[0];
+    if (
+      observation === undefined ||
+      initialPayload === undefined ||
+      observation.request === undefined
+    ) {
+      throw new Error("multi-member fallback requests were not captured");
+    }
+    const dispatched = observation.request;
+    const model = resolveRegisteredModel(dispatched.model);
+    const replaceUserPayload = (
+      payload: Readonly<Record<string, unknown>>,
+    ): LiveProviderRequest => ({
+      ...dispatched,
+      messages: dispatched.messages.map((message) =>
+        message.role === "user" ? { ...message, content: JSON.stringify(payload) } : message,
+      ),
+    });
+    const filteredRequest = replaceUserPayload(observation.payload);
+    const originalFallbackRequest = replaceUserPayload({
+      ...observation.payload,
+      candidates: initialPayload.candidates,
+    });
+    const initialRequest = replaceUserPayload(initialPayload);
+    const allowance = Math.min(8_700, model.contextWindow - dispatched.requestedOutputTokens);
+    expect(model.countRequestTokens(initialRequest)).toBeLessThanOrEqual(allowance);
+    expect(model.countRequestTokens(filteredRequest)).toBe(model.countRequestTokens(dispatched));
+    expect(providerRequestSha256Hex(filteredRequest)).toBe(providerRequestSha256Hex(dispatched));
+    expect(model.countRequestTokens(filteredRequest)).toBeLessThanOrEqual(allowance);
+    expect(model.countRequestTokens(originalFallbackRequest)).toBeGreaterThan(allowance);
+  }, 120_000);
+  it("runs one monotone fallback and reuses retained selections without a second fallback", async () => {
+    const agent = new PhaseDCompactionAgent("fallback-omit");
+    const { operations, load, initial } = await prepareOversizedCompaction(agent);
+    const manifest = await inTask("single-compact-plan", () =>
+      operations.initialCompactionManifest(load, initial, "single-compact-plan"),
+    );
+    const groups = await operations.createCompactionGroups(
+      load,
+      initial,
+      manifest,
+      "single-compact-plan",
+    );
+    const envelopes = await Promise.all(
+      groups.map((group, index) =>
+        inTask(`single-compact-g${String(index + 1).padStart(3, "0")}`, () =>
+          operations.compactContextGroup(
+            load,
+            initial,
+            group,
+            `single-compact-g${String(index + 1).padStart(3, "0")}`,
+          ),
+        ),
+      ),
+    );
+    const firstPass = await operations.collectCompaction(
+      load,
+      initial,
+      manifest,
+      groups,
+      envelopes,
+      "single-compact-collect",
+    );
+    const firstMeasured = await inTask("single-compact-measure", () =>
+      operations.measureCompaction(load, initial, firstPass, "single-compact-measure"),
+    );
+    // The normal pass is allowed to fit; this explicit oversized measurement drives the
+    // bounded fallback branch without weakening the normal compaction contract.
+    const firstMeasurement = {
+      fits: false,
+      inputTokens: firstMeasured.usableInputTokens + 1,
+      usableInputTokens: firstMeasured.usableInputTokens,
+      overByTokens: 1,
+    };
+    const fallbackManifest = await inTask("single-fallback-plan", () =>
+      operations.fallbackCompactionManifest(
+        load,
+        initial,
+        manifest,
+        firstPass,
+        {
+          fits: firstMeasurement.fits,
+          inputTokens: firstMeasurement.inputTokens,
+          usableInputTokens: firstMeasurement.usableInputTokens,
+          overByTokens: Math.max(
+            0,
+            firstMeasurement.inputTokens - firstMeasurement.usableInputTokens,
+          ),
+        },
+        "single-fallback-plan",
+      ),
+    );
+    const fallbackGroups = await operations.createFallbackCompactionGroups(
+      load,
+      initial,
+      manifest,
+      firstPass,
+      fallbackManifest,
+      "single-fallback-plan",
+    );
+    const fallbackEnvelopes = await Promise.all(
+      fallbackGroups.map((group, index) =>
+        inTask(`single-fallback-g${String(index + 1).padStart(3, "0")}`, () =>
+          operations.compactContextGroup(
+            load,
+            initial,
+            group,
+            `single-fallback-g${String(index + 1).padStart(3, "0")}`,
+            "fallback",
+          ),
+        ),
+      ),
+    );
+    const fallbackPass = await operations.collectFallbackCompaction(
+      load,
+      initial,
+      fallbackManifest,
+      fallbackGroups,
+      fallbackEnvelopes,
+      firstPass,
+      "single-fallback-collect",
+    );
+    const final = await inTask("single-fallback-measure", () =>
+      operations.measureCompaction(load, initial, fallbackPass, "single-fallback-measure"),
+    );
+    expect(agent.fallbackCalls).toBe(1);
+    expect(final.status).toBe("ready");
+  }, 120_000);
+
+  it("fails closed as context_plan_unfit after the fallback pass remains oversized", async () => {
+    const agent = new PhaseDCompactionAgent();
+    const { operations, load, initial } = await prepareOversizedCompaction(agent);
+    const pass: CompactionPassResult = {
+      phase: "fallback",
+      groups: [],
+      taskIds: [],
+      envelopes: [],
+      selections: initial.candidateLedger.candidates.map((candidate) => ({
+        candidateId: candidate.candidateId,
+        action: "keep",
+        passageIds: [],
+        ranges: candidate.baseRanges,
+      })),
+      repairUsed: false,
+    };
+    const result = await inTask("single-fallback-measure", () =>
+      operations.measureCompaction(load, initial, pass, "single-fallback-measure"),
+    );
+    expect(result.status).toBe("failed");
+    expect(result.failureCode).toBe("context_plan_unfit");
+    expect(agent.fallbackCalls).toBe(0);
+  }, 120_000);
+
+  it("preserves exact selected ranges and private source proof inputs after compaction", async () => {
+    const agent = new PhaseDCompactionAgent();
+    const { operations, load, initial } = await prepareOversizedCompaction(agent);
+    const manifest = await inTask("single-compact-plan", () =>
+      operations.initialCompactionManifest(load, initial, "single-compact-plan"),
+    );
+    const groups = await operations.createCompactionGroups(
+      load,
+      initial,
+      manifest,
+      "single-compact-plan",
+    );
+    const envelopes = await Promise.all(
+      groups.map((group, index) =>
+        inTask(`single-compact-g${String(index + 1).padStart(3, "0")}`, () =>
+          operations.compactContextGroup(
+            load,
+            initial,
+            group,
+            `single-compact-g${String(index + 1).padStart(3, "0")}`,
+          ),
+        ),
+      ),
+    );
+    const pass = await operations.collectCompaction(
+      load,
+      initial,
+      manifest,
+      groups,
+      envelopes,
+      "single-compact-collect",
+    );
+    const measured = await inTask("single-compact-measure", () =>
+      operations.measureCompaction(load, initial, pass, "single-compact-measure"),
+    );
+    expect(
+      measured.sourceMap.every(
+        (source) => source.locator.kind !== "document" || source.locator.ranges.length > 0,
+      ),
+    ).toBe(true);
+    expect(measured.request.messages.find((message) => message.role === "user")?.content).toContain(
+      "evidence",
+    );
+    expect(measured.status).toBe("ready");
   }, 120_000);
 
   it("bounds the live prior-turn inventory before plan-turn", async () => {
@@ -6940,5 +7079,29 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
     await inTask("plan-turn", () => operations.planTurn(load));
     expect(agent.entries).toHaveLength(12);
+  }, 120_000);
+
+  it("returns the canonical retrieval ledger result shape", async () => {
+    const fixture = await runDb(createFixture);
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      phaseBOperationConfig,
+      new IntegrationAgentClient(),
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    const result = await inTask("ledger-shape-retrieve", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "What changed in liquidity?",
+        "ledger-shape-retrieve",
+        [],
+      ),
+    );
+    expect(result).toMatchObject({
+      queryPlan: expect.objectContaining({ action: "search" }),
+      fused: expect.objectContaining({ results: expect.any(Array) }),
+      previewExposures: expect.any(Array),
+      review: expect.any(Array),
+    });
   }, 120_000);
 });

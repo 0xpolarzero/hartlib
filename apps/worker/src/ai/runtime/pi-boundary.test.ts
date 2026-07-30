@@ -39,7 +39,6 @@ const assistant = (text: string): AssistantMessage => ({
   stopReason: "stop",
   timestamp: 0,
 });
-
 const request: LiveProviderRequest = {
   requestClass: "fast",
   model: "glm-5-turbo",
@@ -384,6 +383,34 @@ describe("exact Pi boundary", () => {
     );
   });
 
+  it("retains repair metadata for measurement hooks without changing provider transport", async () => {
+    const transportContexts: unknown[] = [];
+    const complete = vi.fn(async (_model, context) => {
+      transportContexts.push(context);
+      return assistant("done");
+    });
+    const onMeasurement = vi.fn();
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      complete: complete as never,
+      hooks: { onMeasurement },
+    });
+    await inTask(new AbortController(), coordinates.attempt, () =>
+      boundary.complete(request, coordinates),
+    );
+    await inTask(new AbortController(), coordinates.attempt, () =>
+      boundary.complete({ ...request, repairConsumed: true }, coordinates),
+    );
+    const baseCall = onMeasurement.mock.calls[0]!;
+    const repairedCall = onMeasurement.mock.calls[1]!;
+    const baseRequest = baseCall[2] as LiveProviderRequest;
+    const repairedRequest = repairedCall[2] as LiveProviderRequest;
+    expect(repairedRequest.repairConsumed).toBe(true);
+    expect(providerRequestSha256Hex(repairedRequest)).toBe(providerRequestSha256Hex(baseRequest));
+    expect(repairedCall[1]?.inputTokens).toBe(baseCall[1]?.inputTokens);
+    expect(transportContexts[1]).toEqual(transportContexts[0]);
+  });
+
   it("passes Pi's empty-assistant omission through the measured boundary", async () => {
     const emptyAssistantRequest: LiveProviderRequest = {
       ...request,
@@ -479,42 +506,21 @@ describe("exact Pi boundary", () => {
   it("passes only independently recounted source-exposure proofs to durable measurement", async () => {
     const visibleText = "exact visible document preview";
     const logicalSourceIdentity = chatMessageEvidenceIdentity("message-1");
-    const marker: ProviderVisibleSourceExposureMarker = {
+    const marker = {
       sourceKind: "chat_message",
       logicalSourceIdentity,
       contentItemIdentity: "message-1",
-      exposureStage: "internal_chat_search_preview",
+      exposureStage: "provider_input",
       visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
-    };
+      visibleText,
+    } as const;
     const sourceRequest: LiveProviderRequest = {
       ...request,
       messages: [
         { role: "system", content: "System" },
-        { role: "user", content: "Question" },
         {
-          role: "assistant",
-          content: "",
-          toolCalls: [
-            {
-              id: "source-call",
-              name: "search_internal",
-              arguments: { query: { target: "documents" } },
-            },
-          ],
-        },
-        {
-          role: "tool",
-          toolCallId: "source-call",
-          name: "search_internal",
-          content: JSON.stringify({
-            items: [
-              {
-                kind: "chat_message",
-                messageId: "message-1",
-                snippet: visibleText,
-              },
-            ],
-          }),
+          role: "user",
+          content: JSON.stringify({ currentMessage: visibleText, currentMessageId: "message-1" }),
         },
       ],
       sourceExposureProofs: [marker],
@@ -571,7 +577,7 @@ describe("exact Pi boundary", () => {
           toolCalls: [
             {
               id: "source-call",
-              name: "search_internal",
+              name: "search_within_candidate",
               arguments: { query: { target: "documents" } },
             },
           ],
@@ -579,7 +585,7 @@ describe("exact Pi boundary", () => {
         {
           role: "tool",
           toolCallId: "source-call",
-          name: "search_internal",
+          name: "search_within_candidate",
           content: JSON.stringify({
             items: [
               {

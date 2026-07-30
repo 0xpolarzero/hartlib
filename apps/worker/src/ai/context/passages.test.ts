@@ -43,6 +43,36 @@ describe("deterministic passage and range helpers", () => {
     ).toEqual(["One.", "Two."]);
   });
 
+  it("builds views only from authorized base ranges", () => {
+    const text = "Allowed 😀. Secret.";
+    const authorizedEnd = "Allowed 😀.".length;
+    const index = buildPassageIndex(text, {
+      ...options,
+      maxTokens: 32,
+      authorizedRanges: [{ charStart: 0, charEnd: authorizedEnd }],
+    });
+    expect(index.passages.map((passage) => passage.text)).toEqual(["Allowed 😀."]);
+    expect(index.passages.every((passage) => passage.range.charEnd <= authorizedEnd)).toBe(true);
+    expect(
+      index.passages.map((passage) => text.slice(passage.range.charStart, passage.range.charEnd)),
+    ).toEqual(["Allowed 😀."]);
+  });
+
+  it("treats an empty authorized range set as no exposed text", () => {
+    expect(
+      buildPassageIndex("Unauthorized text.", {
+        ...options,
+        authorizedRanges: [],
+      }).passages,
+    ).toEqual([]);
+    expect(
+      buildPassageIndex("", {
+        ...options,
+        authorizedRanges: [],
+      }).passages,
+    ).toEqual([]);
+  });
+
   it("exposes only opaque passage IDs and exact text to providers", () => {
     const passage = buildPassageIndex("Exact text.", {
       ...options,
@@ -72,6 +102,29 @@ describe("deterministic passage and range helpers", () => {
     });
     expect(tokenBound.passages.map((passage) => passage.text)).toEqual(["ab", "cd"]);
     expect(tokenBound.passages.map((passage) => passage.tokenCount)).toEqual([2, 2]);
+  });
+
+  it("bounds token-counter calls for a large Unicode sentence", () => {
+    const text = "😀".repeat(1_048_576);
+    let tokenCalls = 0;
+    const index = buildPassageIndex(text, {
+      maxTokens: 1_000_000,
+      maxUtf8Bytes: 4_194_304,
+      countTokens: (value) => {
+        tokenCalls += 1;
+        return value.length / 2;
+      },
+    });
+    expect(tokenCalls).toBeLessThan(100);
+    expect(index.passages.map((passage) => passage.tokenCount)).toEqual([1_000_000, 48_576]);
+    expect(index.passages[0]!.range).toEqual({ charStart: 0, charEnd: 2_000_000 });
+    expect(index.passages[1]!.range).toEqual({ charStart: 2_000_000, charEnd: text.length });
+    expect(index.passages[0]!.range.charEnd).toBe(index.passages[1]!.range.charStart);
+    expect(
+      index.passages.every(
+        (passage) => passage.text === text.slice(passage.range.charStart, passage.range.charEnd),
+      ),
+    ).toBe(true);
   });
 
   it("rejects malformed surrogate text and surrogate-splitting ranges", () => {

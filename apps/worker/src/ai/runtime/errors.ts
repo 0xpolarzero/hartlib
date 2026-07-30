@@ -8,6 +8,7 @@ export const AI_RUN_ERROR_CODES = [
   "memory_selector_failed",
   "web_research_failed",
   "context_reducer_failed",
+  "context_compaction_failed",
   "answer_failed",
   "topic_answer_failed",
   "synthesis_failed",
@@ -32,6 +33,11 @@ export type AiAgentRole =
   | "memory_selector"
   | "web_research"
   | "context_reducer"
+  | "context_manifest"
+  | "context_compact_group"
+  | "context_fallback_manifest"
+  | "context_fallback_group"
+  | "context_source_tool"
   | "direct_answer"
   | "topic_answer"
   | "synthesis"
@@ -43,6 +49,7 @@ const retryability = {
   memory_selector_failed: true,
   web_research_failed: true,
   context_reducer_failed: true,
+  context_compaction_failed: true,
   answer_failed: true,
   topic_answer_failed: true,
   synthesis_failed: true,
@@ -76,6 +83,12 @@ export const aiRunErrorCodeForRole = (role: string): AiRunErrorCode => {
       return "web_research_failed";
     case "context_reducer":
       return "context_reducer_failed";
+    case "context_manifest":
+    case "context_compact_group":
+    case "context_fallback_manifest":
+    case "context_fallback_group":
+    case "context_source_tool":
+      return "context_compaction_failed";
     case "direct_answer":
       return "answer_failed";
     case "topic_answer":

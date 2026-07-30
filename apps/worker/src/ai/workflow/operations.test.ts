@@ -1,28 +1,37 @@
+import * as SmithersTaskRuntimeModule from "@smithers-orchestrator/driver/task-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { makeRunAcceptanceScope } from "@brief/shared";
 
-import type { CanonicalAgentClient } from "../runtime/agent-client";
+import { CanonicalAgentClient } from "../runtime/agent-client";
 import { resolveRegisteredModel } from "../runtime/model-registry";
-import type { AnswerCandidate, FinalSourceRecord, PlanTurnResult } from "../runtime/types";
+import { serializeExactAnswerRequest } from "../runtime/provider-request";
+import { ReadSourcePassagesArgumentsSchema, SearchSourcePassagesArgumentsSchema } from "../prompts";
+import {
+  buildPassageIndex,
+  mapPassageIdsToRanges,
+  selectedTextFromRanges,
+} from "../context/passages";
+import type { CompactionGroup, GroupResultEnvelope } from "../context/compaction";
+import type { FinalSourceRecord, PlanTurnResult } from "../runtime/types";
 import {
   type CanonicalAiConfig,
   CanonicalWorkflowOperations,
-  documentReferenceIdentity,
   answerDeltaEmissionKey,
   answerStartedEmissionKey,
   canonicalProviderValueSchemas,
-  InternalRetrievalSearchProtocol,
   boundedWebProviderText,
-  internalSearchQueryIssue,
-  normalizeInternalChatSearchTerms,
-  normalizeSelectedDocumentRanges,
   runQueryReviewReplacement,
-  searchWithinCandidate,
-  searchWithinCandidateWindow,
   type ContextState,
   type LoadedTurn,
+  type SelectorBundle,
 } from "./operations";
+import { aiChatSchemas } from "./ai-chat";
+import {
+  InternalQueryPlanProviderSchema,
+  InternalQueryPlanSchema,
+  QueryReviewProviderSchema,
+} from "../retrieval/query-spec";
 
 describe("Phase B query review", () => {
   const query = {
@@ -345,11 +354,30 @@ describe("bounded web provider views", () => {
   });
 });
 
-describe("older chat search terms", () => {
-  it("removes temporal scope modifiers without losing the requested subject", () => {
-    expect(normalizeInternalChatSearchTerms("old storage pilot")).toBe("storage pilot");
-    expect(normalizeInternalChatSearchTerms("earlier prior storage")).toBe("storage");
-    expect(normalizeInternalChatSearchTerms("old")).toBe("old");
+describe("structured retrieval query plans", () => {
+  it("converts the exact provider plan and review schemas", () => {
+    expect(z.toJSONSchema(InternalQueryPlanProviderSchema)).toHaveProperty("oneOf");
+    expect(z.toJSONSchema(QueryReviewProviderSchema)).toHaveProperty("oneOf");
+  });
+
+  it("keeps temporal wording in the provider-owned query text", () => {
+    const plan = InternalQueryPlanSchema.parse({
+      action: "search",
+      queries: [
+        {
+          purpose: "find older storage",
+          all: [{ text: "old storage pilot", mode: "term" }],
+          anyOf: [],
+          not: [],
+          filters: { chatMessages: {} },
+          order: "relevance",
+        },
+      ],
+    });
+    expect(plan.action).toBe("search");
+    expect(plan.action === "search" ? plan.queries[0]?.all[0]?.text : undefined).toBe(
+      "old storage pilot",
+    );
   });
 });
 
@@ -430,623 +458,74 @@ describe("canonical answer event emission keys", () => {
   });
 });
 
-describe("document selection range semantics", () => {
-  it("treats absent and explicitly empty ranges as the complete immutable document", () => {
-    expect(normalizeSelectedDocumentRanges(undefined, 12)).toEqual([{ charStart: 0, charEnd: 12 }]);
-    expect(normalizeSelectedDocumentRanges([], 12)).toEqual([{ charStart: 0, charEnd: 12 }]);
-    expect(normalizeSelectedDocumentRanges([{ charStart: 2, charEnd: 7 }], 12)).toEqual([
-      { charStart: 2, charEnd: 7 },
-    ]);
-  });
-
-  it("reports literal matches in original-document coordinates across noncontiguous ranges", () => {
-    const candidate: AnswerCandidate = {
-      id: "document:one",
-      kind: "document",
-      rank: 0,
-      purpose: "test ranges",
-      sourceId: "source-one",
-      documentId: "document-one",
-      snapshotId: "version-one",
-      contentHash: "a".repeat(64),
-      text: "alpha hidden alpha gap alpha",
-      ranges: [
-        { charStart: 0, charEnd: 5 },
-        { charStart: 19, charEnd: 28 },
-      ],
-      label: "Document",
-      publicProvenance: {
-        documentTitle: "Document",
-        citationUrl: "https://example.test/document",
+describe("structured retrieval search contract", () => {
+  const validPlan = {
+    action: "search" as const,
+    queries: [
+      {
+        purpose: "answer the question",
+        all: [{ text: "solar", mode: "term" as const }],
+        anyOf: [],
+        not: [],
+        filters: {},
+        order: "relevance" as const,
       },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "alpha")).toEqual([
-      { charStart: 0, charEnd: 5 },
-      { charStart: 23, charEnd: 28 },
-    ]);
-  });
-
-  it("keeps offsets in the original text when Unicode case folding expands a prefix", () => {
-    const candidate: AnswerCandidate = {
-      id: "document:unicode",
-      kind: "document",
-      rank: 0,
-      purpose: "test Unicode offsets",
-      sourceId: "source-unicode",
-      documentId: "document-unicode",
-      snapshotId: "version-unicode",
-      contentHash: "c".repeat(64),
-      text: "İ alpha 😀 ALPHA",
-      ranges: [{ charStart: 0, charEnd: "İ alpha 😀 ALPHA".length }],
-      label: "Unicode",
-      publicProvenance: {
-        documentTitle: "Unicode",
-        citationUrl: "https://example.test/unicode",
-      },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "alpha")).toEqual([
-      { charStart: 2, charEnd: 7 },
-      { charStart: 11, charEnd: 16 },
-    ]);
-  });
-
-  it("maps composed, decomposed, combining, and supplementary matches to UTF-16 spans", () => {
-    const text = "Cafe\u0301 CAFÉ x😀y";
-    const candidate: AnswerCandidate = {
-      id: "document:unicode-spans",
-      kind: "document",
-      rank: 0,
-      purpose: "test normalized UTF-16 spans",
-      sourceId: "source-unicode-spans",
-      documentId: "document-unicode-spans",
-      snapshotId: "version-unicode-spans",
-      contentHash: "d".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Unicode spans",
-      publicProvenance: {
-        documentTitle: "Unicode spans",
-        citationUrl: "https://example.test/unicode-spans",
-      },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "café")).toEqual([
-      { charStart: 0, charEnd: 5 },
-      { charStart: 6, charEnd: 10 },
-    ]);
-    expect(searchWithinCandidate(candidate, "e\u0301")).toEqual([
-      { charStart: 3, charEnd: 5 },
-      { charStart: 9, charEnd: 10 },
-    ]);
-    expect(searchWithinCandidate(candidate, "😀")).toEqual([{ charStart: 12, charEnd: 14 }]);
-  });
-
-  it("rejects surrogate fragments and malformed suffixes while preserving supplementary offsets", () => {
-    const text = "x😀y needle";
-    const candidate: AnswerCandidate = {
-      id: "document:surrogate-boundaries",
-      kind: "document",
-      rank: 0,
-      purpose: "test surrogate boundaries",
-      sourceId: "source-surrogate-boundaries",
-      documentId: "document-surrogate-boundaries",
-      snapshotId: "version-surrogate-boundaries",
-      contentHash: "s".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Surrogate boundaries",
-      publicProvenance: {
-        documentTitle: "Surrogate boundaries",
-        citationUrl: "https://example.test/surrogate-boundaries",
-      },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "\ud83d")).toEqual([]);
-    expect(searchWithinCandidate(candidate, "\ude00")).toEqual([]);
-    expect(searchWithinCandidate(candidate, "needle\ud800")).toEqual([]);
-    expect(searchWithinCandidate(candidate, "😀")).toEqual([{ charStart: 1, charEnd: 3 }]);
-    expect(searchWithinCandidate(candidate, "needle")).toEqual([{ charStart: 5, charEnd: 11 }]);
-  });
-
-  it("keeps a combining-mark match narrower than its base code point", () => {
-    const text = "x\u0301";
-    const candidate: AnswerCandidate = {
-      id: "document:combining-only",
-      kind: "document",
-      rank: 0,
-      purpose: "test combining-only spans",
-      sourceId: "source-combining-only",
-      documentId: "document-combining-only",
-      snapshotId: "version-combining-only",
-      contentHash: "1".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Combining only",
-      publicProvenance: {
-        documentTitle: "Combining only",
-        citationUrl: "https://example.test/combining-only",
-      },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "x")).toEqual([{ charStart: 0, charEnd: 1 }]);
-    expect(searchWithinCandidate(candidate, "\u0301")).toEqual([{ charStart: 1, charEnd: 2 }]);
-  });
-
-  it("maps canonically reordered marks to their original code-point spans", () => {
-    const text = "x\u0315\u0300";
-    const candidate: AnswerCandidate = {
-      id: "document:reordered-marks",
-      kind: "document",
-      rank: 0,
-      purpose: "test reordered combining marks",
-      sourceId: "source-reordered-marks",
-      documentId: "document-reordered-marks",
-      snapshotId: "version-reordered-marks",
-      contentHash: "2".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Reordered marks",
-      publicProvenance: {
-        documentTitle: "Reordered marks",
-        citationUrl: "https://example.test/reordered-marks",
-      },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "\u0300")).toEqual([{ charStart: 2, charEnd: 3 }]);
-    expect(searchWithinCandidate(candidate, "\u0315")).toEqual([{ charStart: 1, charEnd: 2 }]);
-  });
-
-  it("maps a composed code point to only the source contributors it needs", () => {
-    const text = "a\u0301\u0323";
-    const candidate: AnswerCandidate = {
-      id: "document:composed-reordered-mark",
-      kind: "document",
-      rank: 0,
-      purpose: "test composed reordered contributors",
-      sourceId: "source-composed-reordered-mark",
-      documentId: "document-composed-reordered-mark",
-      snapshotId: "version-composed-reordered-mark",
-      contentHash: "4".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Composed reordered mark",
-      publicProvenance: {
-        documentTitle: "Composed reordered mark",
-        citationUrl: "https://example.test/composed-reordered-mark",
-      },
-      renderedTokenCount: 0,
-    };
-
-    // NFKC reorders the marks before composing a + dot-below into ạ. The
-    // range is the smallest UTF-16 interval containing those contributors.
-    expect(searchWithinCandidate(candidate, "ạ")).toEqual([{ charStart: 0, charEnd: 3 }]);
-    expect(searchWithinCandidate(candidate, "\u0301")).toEqual([{ charStart: 1, charEnd: 2 }]);
-  });
-
-  it("composes across a lower-class combining mark without losing contributors", () => {
-    const text = "a\u0334\u0301";
-    const candidate: AnswerCandidate = {
-      id: "document:blocked-composition",
-      kind: "document",
-      rank: 0,
-      purpose: "test composition across a lower-class mark",
-      sourceId: "source-blocked-composition",
-      documentId: "document-blocked-composition",
-      snapshotId: "version-blocked-composition",
-      contentHash: "5".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Blocked composition",
-      publicProvenance: {
-        documentTitle: "Blocked composition",
-        citationUrl: "https://example.test/blocked-composition",
-      },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "á")).toEqual([{ charStart: 0, charEnd: 3 }]);
-    expect(searchWithinCandidate(candidate, "\u0334")).toEqual([{ charStart: 1, charEnd: 2 }]);
-  });
-
-  it("keeps supplementary and following combining contributors distinct", () => {
-    const text = "😀\u0301";
-    const candidate: AnswerCandidate = {
-      id: "document:supplementary-combining",
-      kind: "document",
-      rank: 0,
-      purpose: "test supplementary combining spans",
-      sourceId: "source-supplementary-combining",
-      documentId: "document-supplementary-combining",
-      snapshotId: "version-supplementary-combining",
-      contentHash: "3".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Supplementary combining",
-      publicProvenance: {
-        documentTitle: "Supplementary combining",
-        citationUrl: "https://example.test/supplementary-combining",
-      },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "😀")).toEqual([{ charStart: 0, charEnd: 2 }]);
-    expect(searchWithinCandidate(candidate, "\u0301")).toEqual([{ charStart: 2, charEnd: 3 }]);
-    expect(searchWithinCandidate(candidate, "😀\u0301")).toEqual([{ charStart: 0, charEnd: 3 }]);
-  });
-
-  it("maps length-changing full folds, including an expanded prefix, without shifting later spans", () => {
-    const text = "pre Straße and ẞ and ﬃ before \u0130 alpha";
-    const candidate: AnswerCandidate = {
-      id: "document:fold-expansions",
-      kind: "document",
-      rank: 0,
-      purpose: "test full fold expansions",
-      sourceId: "source-fold-expansions",
-      documentId: "document-fold-expansions",
-      snapshotId: "version-fold-expansions",
-      contentHash: "e".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Fold expansions",
-      publicProvenance: {
-        documentTitle: "Fold expansions",
-        citationUrl: "https://example.test/fold-expansions",
-      },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "strasse")).toEqual([{ charStart: 4, charEnd: 10 }]);
-    expect(searchWithinCandidate(candidate, "ss")).toEqual([
-      { charStart: 8, charEnd: 9 },
-      { charStart: 15, charEnd: 16 },
-    ]);
-    expect(searchWithinCandidate(candidate, "ffi")).toEqual([{ charStart: 21, charEnd: 22 }]);
-    expect(searchWithinCandidate(candidate, "i\u0307")).toEqual([{ charStart: 30, charEnd: 31 }]);
-    expect(searchWithinCandidate(candidate, "alpha")).toEqual([{ charStart: 32, charEnd: 37 }]);
-  });
-
-  it("keeps default case-folded Greek combining sequences in canonical search order", () => {
-    const text = "ΐ ΐ";
-    const candidate: AnswerCandidate = {
-      id: "document:greek-case-fold",
-      kind: "document",
-      rank: 0,
-      purpose: "test default Unicode case folding",
-      sourceId: "source-greek-case-fold",
-      documentId: "document-greek-case-fold",
-      snapshotId: "version-greek-case-fold",
-      contentHash: "f".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Greek case fold",
-      publicProvenance: {
-        documentTitle: "Greek case fold",
-        citationUrl: "https://example.test/greek-case-fold",
-      },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "ΐ")).toEqual([
-      { charStart: 0, charEnd: 1 },
-      { charStart: 2, charEnd: 5 },
-    ]);
-  });
-
-  it("matches Hangul syllables through decomposed Jamo with exact UTF-16 spans", () => {
-    const text = "가 가";
-    const candidate: AnswerCandidate = {
-      id: "document:hangul-normalization",
-      kind: "document",
-      rank: 0,
-      purpose: "test Hangul normalization spans",
-      sourceId: "source-hangul-normalization",
-      documentId: "document-hangul-normalization",
-      snapshotId: "version-hangul-normalization",
-      contentHash: "0".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Hangul normalization",
-      publicProvenance: {
-        documentTitle: "Hangul normalization",
-        citationUrl: "https://example.test/hangul-normalization",
-      },
-      renderedTokenCount: 0,
-    };
-
-    const expected = [
-      { charStart: 0, charEnd: 1 },
-      { charStart: 2, charEnd: 4 },
-    ];
-    expect(searchWithinCandidate(candidate, "가")).toEqual(expected);
-    expect(searchWithinCandidate(candidate, "가")).toEqual(expected);
-  });
-
-  it("fails closed across a blocked Hangul trailing-jamo boundary", () => {
-    const text = "가\u0327\u11a8";
-    const candidate: AnswerCandidate = {
-      id: "document:blocked-hangul-boundary",
-      kind: "document",
-      rank: 0,
-      purpose: "test blocked Hangul composition",
-      sourceId: "source-blocked-hangul-boundary",
-      documentId: "document-blocked-hangul-boundary",
-      snapshotId: "version-blocked-hangul-boundary",
-      contentHash: "h".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Blocked Hangul boundary",
-      publicProvenance: {
-        documentTitle: "Blocked Hangul boundary",
-        citationUrl: "https://example.test/blocked-hangul-boundary",
-      },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "각")).toEqual([]);
-    expect(searchWithinCandidate(candidate, "가")).toEqual([{ charStart: 0, charEnd: 1 }]);
-  });
-
-  it("does not compose a match across an intervening combining mark", () => {
-    const text = "a\u0323\u0301";
-    const candidate: AnswerCandidate = {
-      id: "document:combining-boundary",
-      kind: "document",
-      rank: 0,
-      purpose: "test combining boundary",
-      sourceId: "source-combining-boundary",
-      documentId: "document-combining-boundary",
-      snapshotId: "version-combining-boundary",
-      contentHash: "i".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Combining boundary",
-      publicProvenance: {
-        documentTitle: "Combining boundary",
-        citationUrl: "https://example.test/combining-boundary",
-      },
-      renderedTokenCount: 0,
-    };
-
-    expect(searchWithinCandidate(candidate, "á")).toEqual([]);
-    expect(searchWithinCandidate(candidate, "ạ")).toEqual([{ charStart: 0, charEnd: 2 }]);
-  });
-
-  it("surfaces structurally distinct verbatim match previews with exact document ranges", () => {
-    const text =
-      "Region 1 signed row 1: curtailment baseline. " +
-      "Region 1 signed row 2: curtailment baseline. " +
-      "Region 1 binding conclusion: curtailment reduced by 12 percent.";
-    const candidate: AnswerCandidate = {
-      id: "document:preview",
-      kind: "document",
-      rank: 0,
-      purpose: "test previews",
-      sourceId: "source-preview",
-      documentId: "document-preview",
-      snapshotId: "version-preview",
-      contentHash: "b".repeat(64),
-      text,
-      ranges: [{ charStart: 0, charEnd: text.length }],
-      label: "Preview",
-      publicProvenance: {
-        documentTitle: "Preview",
-        citationUrl: "https://example.test/preview",
-      },
-      renderedTokenCount: 0,
-    };
-
-    const result = searchWithinCandidateWindow(candidate, "curtailment", 0, 50);
-    expect(result.matchPreviews).toHaveLength(2);
-    expect(result.matchPreviews[1]?.text).toBe(
-      "Region 1 binding conclusion: curtailment reduced by 12 percent.",
-    );
-    for (const preview of result.matchPreviews) {
-      expect(text.slice(preview.range.charStart, preview.range.charEnd)).toBe(preview.text);
-    }
-  });
-
-  it("reports a truthful cursor and searched scope when literal matches hit the hard page bound", () => {
-    const text = Array.from({ length: 52 }, () => "alpha").join(" ");
-    const candidate: AnswerCandidate = {
-      id: "chat_message:many-matches",
-      kind: "chat_message",
-      rank: 0,
-      purpose: "test pagination",
-      messageId: "many-matches",
-      text,
-      label: null,
-      renderedTokenCount: 0,
-    };
-
-    const first = searchWithinCandidateWindow(candidate, "alpha");
-    expect(first).toMatchObject({
-      complete: false,
-      truncated: true,
-      cursor: 50,
-      scope: {
-        kind: "complete_candidate",
-        matchOffset: 0,
-        maximumMatches: 50,
-      },
-    });
-    expect(first.matches).toHaveLength(50);
-    expect(searchWithinCandidateWindow(candidate, "alpha", first.cursor ?? 0)).toMatchObject({
-      complete: true,
-      truncated: false,
-      cursor: null,
-      matches: [
-        { charStart: text.lastIndexOf("alpha", text.lastIndexOf("alpha") - 1) },
-        { charStart: text.lastIndexOf("alpha") },
-      ],
-    });
-  });
-
-  it("paginates normalized matches by ordinal without skipping folded expansions", () => {
-    const text = Array.from({ length: 5 }, () => "ß").join(" ");
-    const candidate: AnswerCandidate = {
-      id: "chat_message:folded-pages",
-      kind: "chat_message",
-      rank: 0,
-      purpose: "test normalized pagination",
-      messageId: "folded-pages",
-      text,
-      label: null,
-      renderedTokenCount: 0,
-    };
-
-    const first = searchWithinCandidateWindow(candidate, "SS", 0, 2);
-    expect(first).toMatchObject({
-      complete: false,
-      truncated: true,
-      cursor: 2,
-      matches: [
-        { charStart: 0, charEnd: 1 },
-        { charStart: 2, charEnd: 3 },
-      ],
-    });
-    expect(searchWithinCandidateWindow(candidate, "SS", first.cursor ?? 0, 3)).toMatchObject({
-      complete: true,
-      truncated: false,
-      cursor: null,
-      matches: [
-        { charStart: 4, charEnd: 5 },
-        { charStart: 6, charEnd: 7 },
-        { charStart: 8, charEnd: 9 },
-      ],
-    });
-  });
-});
-
-describe("internal retrieval search protocol", () => {
-  const documentQuery = {
-    target: "documents" as const,
-    terms: "solar",
-    purpose: "answer the question",
-  };
-  const chatQuery = {
-    target: "chat_messages" as const,
-    terms: "solar",
-    purpose: "answer the question",
+    ],
   };
 
-  it("rejects non-sparse lexical terms before consuming a search turn", () => {
-    expect(internalSearchQueryIssue("curtailment storage dispatch")).toBeUndefined();
-    expect(internalSearchQueryIssue("(storage OR stockage) dispatch")).toBeUndefined();
-    expect(internalSearchQueryIssue("audit rule curtailment storage dispatch regional trial")).toBe(
-      "internal search terms must contain at most three required terms",
-    );
-    expect(internalSearchQueryIssue('"storage dispatch"')).toBe(
-      "internal search terms must not contain quoted phrases",
-    );
-    expect(internalSearchQueryIssue("storage-dispatch")).toBe(
-      "internal search terms must separate words joined by hyphens",
-    );
+  it("accepts a complete bounded query plan", () => {
+    expect(InternalQueryPlanSchema.parse(validPlan)).toEqual(validPlan);
   });
-
-  it("does not allow an empty manifest until a rejected query is corrected", () => {
-    const protocol = new InternalRetrievalSearchProtocol();
-
-    protocol.recordRejectedQuery();
-    expect(() => protocol.assertEmptyManifestAllowed()).toThrow(
-      "internal manifest cannot be empty until a rejected query is corrected",
-    );
-
-    protocol.beforeSearch(documentQuery, undefined, 0);
-    protocol.afterSearch(documentQuery, true, 0, null, 0);
-    protocol.recordCompletedSearch();
-    expect(() => protocol.assertEmptyManifestAllowed()).not.toThrow();
+  it("rejects an unknown query field", () => {
+    expect(() => InternalQueryPlanSchema.parse({ ...validPlan, extra: true })).toThrow();
   });
-
-  it("allows one empty-result refinement and rejects a third ordinary search turn", () => {
-    const protocol = new InternalRetrievalSearchProtocol();
-
-    protocol.beforeSearch(documentQuery, undefined, 0);
-    protocol.afterSearch(documentQuery, true, 0, null, 0);
-    protocol.beforeSearch(documentQuery, undefined, 1);
-    protocol.afterSearch(documentQuery, true, 0, null, 1);
-
-    expect(() => protocol.beforeSearch(documentQuery, undefined, 2)).toThrow(
-      "internal search/refinement turn limit exceeded",
-    );
+  it("rejects an unknown atom field", () => {
+    expect(() =>
+      InternalQueryPlanSchema.parse({
+        ...validPlan,
+        queries: [{ ...validPlan.queries[0], all: [{ text: "solar", mode: "term", extra: true }] }],
+      }),
+    ).toThrow();
   });
-
-  it("allows only one search call in a provider turn", () => {
-    const protocol = new InternalRetrievalSearchProtocol();
-
-    protocol.beforeSearch(documentQuery, undefined, 0);
-    protocol.afterSearch(documentQuery, true, 1, null, 0);
-    expect(() => protocol.beforeSearch(chatQuery, undefined, 0)).toThrow(
-      "internal search permits at most one call per provider turn",
-    );
+  it("supports an explicit skip result", () => {
+    expect(InternalQueryPlanSchema.parse({ action: "skip", reason: "no_evidence" })).toEqual({
+      action: "skip",
+      reason: "no_evidence",
+    });
   });
-
-  it("allows a distinct subject search after a non-empty result", () => {
-    const protocol = new InternalRetrievalSearchProtocol();
-
-    protocol.beforeSearch(documentQuery, undefined, 0);
-    protocol.afterSearch(documentQuery, true, 1, null, 0);
-    protocol.beforeSearch(chatQuery, undefined, 1);
-    protocol.afterSearch(chatQuery, true, 1, null, 1);
-    expect(protocol.ordinarySearchTurnsExhausted()).toBe(true);
-    expect(() => protocol.beforeSearch(documentQuery, undefined, 2)).toThrow(
-      "internal search cannot repeat a completed query without its returned cursor",
-    );
+  it("requires a non-empty query purpose", () => {
+    expect(() =>
+      InternalQueryPlanSchema.parse({
+        ...validPlan,
+        queries: [{ ...validPlan.queries[0], purpose: "" }],
+      }),
+    ).toThrow();
   });
-
-  it("rejects distinct same-target searches in one provider turn", () => {
-    const protocol = new InternalRetrievalSearchProtocol();
-    const refinedDocumentQuery = { ...documentQuery, terms: "storage" };
-
-    protocol.beforeSearch(documentQuery, undefined, 0);
-    protocol.afterSearch(documentQuery, true, 1, null, 0);
-    expect(() => protocol.beforeSearch(refinedDocumentQuery, undefined, 0)).toThrow(
-      "internal search permits at most one call per provider turn",
-    );
+  it("keeps query order closed", () => {
+    expect(() =>
+      InternalQueryPlanSchema.parse({
+        ...validPlan,
+        queries: [{ ...validPlan.queries[0], order: "random" }],
+      }),
+    ).toThrow();
   });
-
-  it("requires a cursor continuation to be the only search in its turn", () => {
-    const protocol = new InternalRetrievalSearchProtocol();
-
-    protocol.beforeSearch(documentQuery, undefined, 0);
-    protocol.afterSearch(documentQuery, false, 1, 7, 0);
-    expect(() => protocol.beforeSearch(chatQuery, undefined, 1)).toThrow(
-      "internal search has an unresolved cursor continuation",
-    );
-    protocol.beforeSearch(documentQuery, 7, 1);
-    expect(() => protocol.beforeSearch(documentQuery, 7, 1)).toThrow(
-      "internal search permits at most one call per provider turn",
-    );
+  it("keeps Boolean atoms closed", () => {
+    expect(() =>
+      InternalQueryPlanSchema.parse({
+        ...validPlan,
+        queries: [{ ...validPlan.queries[0], anyOf: [[{ text: "x", mode: "invalid" }]] }],
+      }),
+    ).toThrow();
   });
-
-  it("requires cursor continuation and rejects repeating a completed query", () => {
-    const protocol = new InternalRetrievalSearchProtocol();
-
-    protocol.beforeSearch(documentQuery, undefined, 0);
-    protocol.afterSearch(documentQuery, false, 1, 7, 0);
-    expect(() => protocol.beforeSearch(chatQuery, undefined, 1)).toThrow(
-      "internal search has an unresolved cursor continuation",
-    );
-    expect(() => protocol.beforeSearch(documentQuery, 6, 1)).toThrow(
-      "internal search continuation did not use the exact returned cursor",
-    );
-    protocol.beforeSearch(documentQuery, 7, 1);
-    protocol.afterSearch(documentQuery, true, 1, null, 1);
-    expect(() => protocol.beforeSearch(chatQuery, undefined, 1)).toThrow(
-      "internal search cursor continuation must be followed by termination",
-    );
-
-    expect(() => protocol.beforeSearch(documentQuery, undefined, 2)).toThrow(
-      "internal search cannot repeat a completed query without its returned cursor",
-    );
-    protocol.beforeSearch(chatQuery, undefined, 2);
+  it("preserves normalized query text", () => {
+    const parsed = InternalQueryPlanSchema.parse({
+      ...validPlan,
+      queries: [{ ...validPlan.queries[0], all: [{ text: "  solar  ", mode: "term" }] }],
+    });
+    expect(parsed.action === "search" ? parsed.queries[0]?.all[0]?.text : undefined).toBe("solar");
+  });
+  it("rejects an empty query list", () => {
+    expect(() => InternalQueryPlanSchema.parse({ action: "search", queries: [] })).toThrow();
   });
 });
 
@@ -1060,8 +539,6 @@ const config = (mainInputTokens: number): CanonicalAiConfig => ({
   aiConversationRecentTurns: 12,
   aiFanoutMaxTopics: 3,
   aiRetrievalMaxTurns: 4,
-  aiInternalMaxSearches: 4,
-  aiInternalMaxInspections: 4,
   aiWebMaxSearches: 2,
   aiWebMaxFetches: 2,
   aiWebMaxDomainFilters: 8,
@@ -1105,6 +582,36 @@ const plan = (
   ],
 });
 
+const structuredForIdentities = (
+  identities: readonly Readonly<Record<string, unknown>>[],
+): NonNullable<SelectorBundle["structuredInternal"]> =>
+  ({
+    queryPlan: { action: "skip", reason: "no_evidence" },
+    branches: [],
+    fused: {
+      results: identities.map((identity, index) => ({
+        resultId: `r${index + 1}`,
+        identity,
+        identityKey: JSON.stringify(identity),
+        value: {},
+        score: 1,
+        rrfK: 60,
+        bestRank: index + 1,
+        date: null,
+        provenance: [],
+        matchedQueryOrdinals: [],
+      })),
+      coverage: [],
+      candidateCountBeforeCap: identities.length,
+      candidateCap: identities.length || 1,
+      hydratedBytes: 0,
+      hydrationByteCap: null,
+      truncation: { branch: false, candidates: false, hydration: false },
+    },
+    review: [],
+    previewExposures: [],
+  }) as unknown as NonNullable<SelectorBundle["structuredInternal"]>;
+
 const stubPriorTurns = (operations: CanonicalWorkflowOperations, historyText = ""): void => {
   (operations as any).currentPriorTurns = async () =>
     historyText === ""
@@ -1130,7 +637,7 @@ describe("fanout source-key merge", () => {
     stubPriorTurns(operations);
     const turn = load("");
     const topics = plan([]).topics;
-    const sharedDocument = {
+    const _sharedDocument = {
       kind: "document" as const,
       documentId: "shared-document",
       snapshotId: "shared-version",
@@ -1140,24 +647,42 @@ describe("fanout source-key merge", () => {
     };
     const selectors = {
       t1: {
-        internal: [sharedDocument],
+        structuredInternal: structuredForIdentities([
+          {
+            kind: "public_document",
+            sourceId: "shared-source",
+            documentId: "shared-document",
+            snapshotId: "shared-version",
+            contentHash: "a".repeat(64),
+          },
+        ]),
         memories: [],
         memorySelection: "enabled" as const,
         web: [],
         webSelection: "enabled" as const,
       },
       t2: {
-        internal: [
-          sharedDocument,
-          { kind: "chat_message" as const, messageId: "older-message", purpose: "older evidence" },
-        ],
+        structuredInternal: structuredForIdentities([
+          {
+            kind: "public_document",
+            sourceId: "shared-source",
+            documentId: "shared-document",
+            snapshotId: "shared-version",
+            contentHash: "a".repeat(64),
+          },
+          {
+            kind: "chat_message",
+            messageId: "older-message",
+            sanitizedContentHash: "b".repeat(64),
+          },
+        ]),
         memories: [],
         memorySelection: "enabled" as const,
         web: [],
         webSelection: "enabled" as const,
       },
       t3: {
-        internal: [],
+        structuredInternal: null,
         memories: [],
         memorySelection: "enabled" as const,
         web: [],
@@ -1169,10 +694,7 @@ describe("fanout source-key merge", () => {
     const reversed = await operations.mergeFanoutSources(turn, [...topics].reverse(), selectors);
 
     expect(first).toEqual(reversed);
-    expect(first.sources.map(({ candidateId }) => candidateId)).toEqual([
-      documentReferenceIdentity(sharedDocument),
-      "chat_message:older-message",
-    ]);
+    expect(first.sources.map(({ identityKey }) => identityKey)).toHaveLength(2);
     expect(new Set(first.sources.map(({ sourceKey }) => sourceKey)).size).toBe(
       first.sources.length,
     );
@@ -1185,14 +707,14 @@ describe("fanout source-key merge", () => {
       {} as CanonicalAgentClient,
     );
     stubPriorTurns(operations);
-    const publicReference = {
+    const _publicReference = {
       kind: "document" as const,
       documentId: "same-document",
       snapshotId: "same-version",
       source: { kind: "public" as const, sourceId: "public:same-source" },
       purpose: "public",
     };
-    const publisherReference = {
+    const _publisherReference = {
       kind: "document" as const,
       documentId: "same-document",
       snapshotId: "same-version",
@@ -1207,21 +729,38 @@ describe("fanout source-key merge", () => {
     const topics = plan([]).topics;
     const first = await operations.mergeFanoutSources(load(""), topics, {
       t1: {
-        internal: [publicReference, publisherReference],
+        structuredInternal: structuredForIdentities([
+          {
+            kind: "public_document",
+            sourceId: "same-source",
+            documentId: "same-document",
+            snapshotId: "same-version",
+            contentHash: "a".repeat(64),
+          },
+          {
+            kind: "publisher_document",
+            subscriptionId: "same-source",
+            issueId: "same-issue",
+            documentId: "same-document",
+            snapshotId: "same-version",
+            publisherExtractionId: "same-extraction",
+            contentHash: "b".repeat(64),
+          },
+        ]),
         memories: [],
         memorySelection: "enabled" as const,
         web: [],
         webSelection: "enabled" as const,
       },
       t2: {
-        internal: [],
+        structuredInternal: null,
         memories: [],
         memorySelection: "enabled" as const,
         web: [],
         webSelection: "enabled" as const,
       },
       t3: {
-        internal: [],
+        structuredInternal: null,
         memories: [],
         memorySelection: "enabled" as const,
         web: [],
@@ -1230,21 +769,38 @@ describe("fanout source-key merge", () => {
     });
     const second = await operations.mergeFanoutSources(load(""), topics, {
       t1: {
-        internal: [publisherReference, publicReference],
+        structuredInternal: structuredForIdentities([
+          {
+            kind: "publisher_document",
+            subscriptionId: "same-source",
+            issueId: "same-issue",
+            documentId: "same-document",
+            snapshotId: "same-version",
+            publisherExtractionId: "same-extraction",
+            contentHash: "b".repeat(64),
+          },
+          {
+            kind: "public_document",
+            sourceId: "same-source",
+            documentId: "same-document",
+            snapshotId: "same-version",
+            contentHash: "a".repeat(64),
+          },
+        ]),
         memories: [],
         memorySelection: "enabled" as const,
         web: [],
         webSelection: "enabled" as const,
       },
       t2: {
-        internal: [],
+        structuredInternal: null,
         memories: [],
         memorySelection: "enabled" as const,
         web: [],
         webSelection: "enabled" as const,
       },
       t3: {
-        internal: [],
+        structuredInternal: null,
         memories: [],
         memorySelection: "enabled" as const,
         web: [],
@@ -1253,10 +809,121 @@ describe("fanout source-key merge", () => {
     });
     expect(first.sources).toHaveLength(2);
     expect(second.sources).toHaveLength(2);
-    expect(new Set(first.sources.map(({ candidateId }) => candidateId)).size).toBe(2);
-    expect(new Set(second.sources.map(({ candidateId }) => candidateId)).size).toBe(2);
-    expect(first.sources.map(({ candidateId }) => candidateId).sort()).toEqual(
-      second.sources.map(({ candidateId }) => candidateId).sort(),
+    expect(new Set(first.sources.map(({ identityKey }) => identityKey)).size).toBe(2);
+    expect(new Set(second.sources.map(({ identityKey }) => identityKey)).size).toBe(2);
+    expect(first.sources.map(({ identityKey }) => identityKey).sort()).toEqual(
+      second.sources.map(({ identityKey }) => identityKey).sort(),
+    );
+  });
+});
+
+describe("complete candidate ledger", () => {
+  it("places one selected turn before evidence and keeps sanitized role text", async () => {
+    const operations = new CanonicalWorkflowOperations(
+      "postgres://unused",
+      config(100_000),
+      {} as CanonicalAgentClient,
+    );
+    stubPriorTurns(operations, "prior question");
+    const assembly = await operations.assembleContext(
+      load(""),
+      "question",
+      {
+        structuredInternal: null,
+        memories: [],
+        memorySelection: "disabled",
+        web: [],
+        webSelection: "disabled",
+      },
+      "single-assemble",
+      "single-answer",
+      undefined,
+      ["turn-1"],
+    );
+    expect(assembly.candidateLedger.candidates).toHaveLength(1);
+    expect(assembly.candidateLedger.candidates[0]).toMatchObject({
+      kind: "conversation_entry",
+      text: expect.stringContaining("prior question"),
+      renderedTokenCount: expect.any(Number),
+    });
+    expect(Object.isFrozen(assembly.candidateLedger)).toBe(true);
+  });
+
+  it("accepts bounded source search arguments for one candidate", () => {
+    expect(
+      SearchSourcePassagesArgumentsSchema.parse({ candidateId: "c1", query: "alpha", cursor: "0" }),
+    ).toEqual({
+      candidateId: "c1",
+      query: "alpha",
+      cursor: "0",
+    });
+  });
+
+  it("rejects source search arguments with hidden fields", () => {
+    expect(() =>
+      SearchSourcePassagesArgumentsSchema.parse({
+        candidateId: "c1",
+        query: "alpha",
+        ignored: true,
+      }),
+    ).toThrow();
+  });
+
+  it("requires a source read selection or adjacent passage", () => {
+    expect(() => ReadSourcePassagesArgumentsSchema.parse({ candidateId: "c1" })).toThrow();
+    expect(
+      ReadSourcePassagesArgumentsSchema.parse({ candidateId: "c1", passageIds: ["p1"] }),
+    ).toMatchObject({
+      candidateId: "c1",
+      passageIds: ["p1"],
+    });
+  });
+
+  it("rejects source read selections outside the run-local passage ID shape", () => {
+    expect(() =>
+      ReadSourcePassagesArgumentsSchema.parse({ candidateId: "c1", passageIds: ["passage-1"] }),
+    ).toThrow();
+  });
+
+  it("builds bounded run-local passages from immutable text", () => {
+    const index = buildPassageIndex("alpha. beta.", {
+      maxTokens: 8,
+      maxUtf8Bytes: 128,
+      countTokens: (text) => text.length,
+    });
+    expect(index.passages.map((passage) => passage.passageId)).toEqual(["p1", "p2"]);
+    expect(index.passages.map((passage) => passage.text)).toEqual(["alpha.", "beta."]);
+  });
+
+  it("restricts source passages to authorized ranges", () => {
+    const index = buildPassageIndex("zero. one. two.", {
+      maxTokens: 8,
+      maxUtf8Bytes: 128,
+      countTokens: (text) => text.length,
+      authorizedRanges: [{ charStart: 6, charEnd: 10 }],
+    });
+    expect(index.passages.map((passage) => passage.text)).toEqual(["one."]);
+  });
+
+  it("maps only selected passage IDs to exact source ranges", () => {
+    const text = "alpha. beta.";
+    const index = buildPassageIndex(text, {
+      maxTokens: 8,
+      maxUtf8Bytes: 128,
+      countTokens: (value) => value.length,
+    });
+    expect(mapPassageIdsToRanges(index, ["p2"])).toEqual([{ charStart: 7, charEnd: 12 }]);
+  });
+
+  it("reconstructs selected source text in passage order", () => {
+    const text = "alpha. beta.";
+    const index = buildPassageIndex(text, {
+      maxTokens: 8,
+      maxUtf8Bytes: 128,
+      countTokens: (value) => value.length,
+    });
+    expect(selectedTextFromRanges(text, mapPassageIdsToRanges(index, ["p2", "p1"]))).toBe(
+      "alpha.\n…\nbeta.",
     );
   });
 });
@@ -1267,13 +934,14 @@ describe("fanout synthesis allocation", () => {
     question: `Question ${topicId}`,
     topicId,
     candidates: [],
+    candidateLedger: { candidates: [] },
     sourceMap: [],
     ledgerCandidates: [],
     ledgerSourceMap: [],
     selectedConversation: [],
     consumers: [],
     gaps: [],
-    reductionFeedback: [],
+    compactionFeedback: [],
     request: {
       requestClass: "main",
       model: "glm-5-turbo",
@@ -1283,7 +951,7 @@ describe("fanout synthesis allocation", () => {
     },
     inputTokens: 10,
     usableInputTokens: 100_000,
-    reductionRan: false,
+    compactionRan: false,
   });
 
   it("reserves the exact selected conversation and packet framing before topic calls", async () => {
@@ -1390,6 +1058,64 @@ describe("fanout synthesis allocation", () => {
     ).resolves.toMatchObject({ status: "failed", failureCode: "synthesis_budget_mismatch" });
   });
 
+  it("emits a non-empty synthesis context that satisfies the immutable ContextSchema", async () => {
+    const operations = new CanonicalWorkflowOperations(
+      "postgres://unused",
+      config(100_000),
+      {} as CanonicalAgentClient,
+    );
+    stubPriorTurns(operations);
+    const turn = load("");
+    const allocation = await operations.allocateFanout(turn, plan([]));
+    const contexts = [
+      topicContext("t1", allocation.packetOutputTokens),
+      topicContext("t2", allocation.packetOutputTokens),
+    ];
+    const packets = [
+      { topicId: "t1" as const, status: "partial" as const, claims: [], gaps: ["none"] },
+      { topicId: "t2" as const, status: "partial" as const, claims: [], gaps: ["none"] },
+    ];
+    const value = await operations.synthesisContext(turn, packets, [], contexts, allocation);
+    aiChatSchemas.aiChatContext.parse({ value });
+    expect(value.status).toBe("ready");
+    expect(value.candidates).toHaveLength(2);
+    expect(value.candidateLedger.candidates).toHaveLength(2);
+    expect(value.sourceMap).toEqual([]);
+    expect(value.citationSourceMap).toEqual([]);
+    expect(Object.isFrozen(value.candidateLedger)).toBe(true);
+  });
+
+  it("retains the strict synthesis ledger when exact packet input needs compaction", async () => {
+    const operations = new CanonicalWorkflowOperations(
+      "postgres://unused",
+      config(800),
+      {} as CanonicalAgentClient,
+    );
+    stubPriorTurns(operations);
+    const turn = load("");
+    const allocation = await operations.allocateFanout(turn, plan([]));
+    const contexts = [
+      topicContext("t1", allocation.packetOutputTokens),
+      topicContext("t2", allocation.packetOutputTokens),
+    ];
+    const packets = [
+      {
+        topicId: "t1" as const,
+        status: "partial" as const,
+        claims: [],
+        gaps: ["oversized packet framing ".repeat(100)],
+      },
+      { topicId: "t2" as const, status: "partial" as const, claims: [], gaps: ["none"] },
+    ];
+    const value = await operations.synthesisContext(turn, packets, [], contexts, allocation);
+    aiChatSchemas.aiChatContext.parse({ value });
+    expect(value.status).toBe("needs_compaction");
+    expect(value.candidateLedger.candidates).toHaveLength(2);
+    expect(
+      value.request.messages.some((message) => message.content.includes("oversized packet")),
+    ).toBe(true);
+  });
+
   it("rejects packets whose real serialization exceeds their combined output allowance", async () => {
     const operations = new CanonicalWorkflowOperations(
       "postgres://unused",
@@ -1437,7 +1163,7 @@ describe("typed controlled operation failures", () => {
       },
       "question",
       {
-        internal: [],
+        structuredInternal: null,
         memories: [],
         memorySelection: "enabled",
         web: [],
@@ -1461,13 +1187,14 @@ describe("typed controlled operation failures", () => {
       question: "question",
       topicId: "t1",
       candidates: [],
+      candidateLedger: { candidates: [] },
       sourceMap: [],
       ledgerCandidates: [],
       ledgerSourceMap: [],
       selectedConversation: [],
       consumers: [],
       gaps: [],
-      reductionFeedback: [],
+      compactionFeedback: [],
       request: {
         requestClass: "main",
         model: "glm-5-turbo",
@@ -1477,11 +1204,82 @@ describe("typed controlled operation failures", () => {
       },
       inputTokens: 1,
       usableInputTokens: 1,
-      reductionRan: false,
+      compactionRan: false,
     };
     await expect(
       operations.answerTopic(load(""), failed, "topic-t1-answer", 100),
     ).rejects.toMatchObject({ code: "context_plan_unfit", retryable: false });
+  });
+});
+
+describe("topic answer request transport", () => {
+  it("hands the measured serialized request to the production topic operation", async () => {
+    const measuredRequest = serializeExactAnswerRequest({
+      model: "glm-5-turbo",
+      system: "topic answer system",
+      user: JSON.stringify({
+        locale: "en-US",
+        originalMessage: "Compare both topics.",
+        question: "Topic one",
+        topicId: "t1",
+        selectedConversation: [],
+        evidence: "",
+        gaps: [],
+      }),
+      outputTool: {
+        name: "emit_topic_packet",
+        description: "Emit a grounded topic packet.",
+        parameters: { type: "object", properties: {} },
+      },
+      requestedOutputTokens: 32,
+      reasoning: "medium",
+    });
+    let transportedRequest: unknown;
+    const agents = {
+      structured: async (input: { readonly request?: unknown }) => {
+        transportedRequest = input.request;
+        return { topicId: "t1", status: "partial", claims: [], gaps: ["no evidence"] };
+      },
+    } as unknown as CanonicalAgentClient;
+    const operations = new CanonicalWorkflowOperations(
+      "postgres://unused",
+      config(100_000),
+      agents,
+    );
+    (operations as any).taskExecutionCoordinates = async () => ({ loopIteration: 0, attempt: 1 });
+    (operations as any).contextExposureProofMarkers = () => [];
+    (operations as any).recordContextExposures = async () => undefined;
+    (operations as any).validateFrozenScope = async () => undefined;
+    (operations as any).observe = async () => undefined;
+    const context: ContextState = {
+      status: "ready",
+      question: "Topic one",
+      topicId: "t1",
+      candidates: [],
+      candidateLedger: { candidates: [] },
+      sourceMap: [],
+      ledgerCandidates: [],
+      ledgerSourceMap: [],
+      selectedConversation: [],
+      consumers: [],
+      gaps: [],
+      compactionFeedback: [],
+      request: measuredRequest,
+      inputTokens: 1,
+      usableInputTokens: 100_000,
+      compactionRan: false,
+    };
+    await expect(
+      operations.answerTopic(load(""), context, "topic-t1-answer", 32),
+    ).resolves.toMatchObject({
+      topicId: "t1",
+      status: "partial",
+    });
+    const withoutProofs = (request: any) => {
+      const { sourceExposureProofs: _proofs, ...rest } = request;
+      return rest;
+    };
+    expect(withoutProofs(transportedRequest)).toEqual(measuredRequest);
   });
 });
 
@@ -1521,13 +1319,14 @@ describe("fanout immutable source-map merge", () => {
     question: topicId,
     topicId,
     candidates: [],
+    candidateLedger: { candidates: [] },
     sourceMap: [record],
     ledgerCandidates: [],
     ledgerSourceMap: [record],
     selectedConversation: [],
     consumers: [],
     gaps: [],
-    reductionFeedback: [],
+    compactionFeedback: [],
     request: {
       requestClass: "main",
       model: "glm-5-turbo",
@@ -1537,7 +1336,7 @@ describe("fanout immutable source-map merge", () => {
     },
     inputTokens: 10,
     usableInputTokens: 100,
-    reductionRan: false,
+    compactionRan: false,
   });
 
   it("unions locator ranges while retaining exact per-topic consumer subsets", () => {
@@ -1660,7 +1459,7 @@ describe("provider-authored canonical schemas", () => {
       expect(providerJson).not.toMatch(/\\p\{/u);
     }
 
-    const publicReference = {
+    const _publicReference = {
       kind: "document" as const,
       documentId: "document",
       snapshotId: "version",
@@ -1669,11 +1468,12 @@ describe("provider-authored canonical schemas", () => {
     };
     for (const whitespace of ["\u00a0", "\u2028", "\ufeff"]) {
       expect(() =>
-        canonicalProviderValueSchemas.internalReference.parse({
-          ...publicReference,
-          source: { kind: "public", sourceId: `public:source${whitespace}tail` },
+        canonicalProviderValueSchemas.planTurn.parse({
+          mode: "single",
+          question: `question${whitespace}`,
+          relevantTurnIds: [],
         }),
-      ).toThrow();
+      ).not.toThrow();
     }
   });
 
@@ -1683,16 +1483,8 @@ describe("provider-authored canonical schemas", () => {
       documentId: "document",
       purpose: "ground answer",
     };
-    expect(canonicalProviderValueSchemas.internalReference.parse(publicReference)).toEqual(
-      publicReference,
-    );
-    expect(() =>
-      canonicalProviderValueSchemas.internalReference.parse({
-        ...publicReference,
-        snapshotId: "version",
-        source: { kind: "public", sourceId: "public:source" },
-      }),
-    ).toThrow();
+    expect("internalManifestOutput" in canonicalProviderValueSchemas).toBe(false);
+    expect(publicReference).toMatchObject({ kind: "document", documentId: "document" });
   });
 
   it("rejects unknown fields at every model-output root and nested object boundary", () => {
@@ -1715,23 +1507,10 @@ describe("provider-authored canonical schemas", () => {
       }),
     ).toThrow();
     expect(() =>
-      canonicalProviderValueSchemas.internalManifestOutput.parse({
-        entries: [
-          {
-            kind: "document",
-            documentId: "document",
-            snapshotId: "version",
-            ranges: [{ charStart: 0, charEnd: 1, ignored: true }],
-            purpose: "ground answer",
-          },
-        ],
-      }),
-    ).toThrow();
-    expect(() =>
-      canonicalProviderValueSchemas.internalQuery.parse({
-        target: "chat_messages",
-        terms: "term",
-        purpose: "retrieve",
+      canonicalProviderValueSchemas.planTurnProvider.parse({
+        mode: "single",
+        question: "question",
+        relevantTurnIds: [],
         ignored: true,
       }),
     ).toThrow();
@@ -1761,11 +1540,6 @@ describe("provider-authored canonical schemas", () => {
       }),
     ).toThrow();
     expect(() =>
-      canonicalProviderValueSchemas.contextPlanOutput.parse({
-        decisions: [{ id: "candidate", action: "keep", reason: "relevant", ignored: true }],
-      }),
-    ).toThrow();
-    expect(() =>
       canonicalProviderValueSchemas.topicPacket.parse({
         topicId: "t1",
         status: "answered",
@@ -1773,5 +1547,187 @@ describe("provider-authored canonical schemas", () => {
         gaps: [],
       }),
     ).toThrow();
+  });
+});
+
+describe("compaction run concurrency permit", () => {
+  type CompactGroup = CompactionGroup;
+  type TaskRuntime = {
+    readonly runId: string;
+    readonly stepId: string;
+    readonly attempt: number;
+    readonly iteration: number;
+    readonly signal: AbortSignal;
+    readonly db: Readonly<Record<string, unknown>>;
+    readonly heartbeat: (data?: unknown) => void;
+    readonly lastHeartbeat: unknown | null;
+  };
+  interface Deferred {
+    readonly promise: Promise<void>;
+    readonly resolve: () => void;
+  }
+  const withTaskRuntime = (
+    SmithersTaskRuntimeModule as unknown as {
+      readonly withTaskRuntime: <Value>(runtime: TaskRuntime, execute: () => Value) => Value;
+    }
+  ).withTaskRuntime;
+
+  const deferred = (): Deferred => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  };
+
+  const group = (groupId: string, mode: CompactGroup["mode"]): CompactGroup => ({
+    groupId,
+    candidateIds: ["candidate"],
+    renderedTokenBudget: 100,
+    mode,
+  });
+
+  const envelope = (groupId: string): GroupResultEnvelope => ({
+    groupId,
+    result: { decisions: [] },
+    renderedTokenCount: 0,
+  });
+
+  it("caps each run, preserves FIFO progress, releases failures, and drops queued aborts", async () => {
+    const operations = new CanonicalWorkflowOperations(
+      "postgres://unused",
+      config(100_000),
+      {} as CanonicalAgentClient,
+    );
+    const internal = operations as unknown as {
+      normalCompactionGroup: (...args: readonly unknown[]) => Promise<GroupResultEnvelope>;
+      sourceToolCompactionGroup: (...args: readonly unknown[]) => Promise<GroupResultEnvelope>;
+      compactionRunSemaphores: Map<string, unknown>;
+    };
+    const providerCalls: string[] = [];
+    const enteredByRun = new Map<string, string[]>();
+    const activeByRun = new Map<string, number>();
+    const peakByRun = new Map<string, number>();
+    const gates = new Map<string, Deferred>();
+    const taskKey = (runId: string, taskId: string): string => `${runId}:${taskId}`;
+    const sharedRun = "run-shared";
+    const otherRun = "run-other";
+    const sharedTasks = [
+      { taskId: "topic-a1", mode: "normal" as const },
+      { taskId: "topic-a2", mode: "normal" as const },
+      { taskId: "synthesis-a1", mode: "source_tool" as const },
+      { taskId: "topic-a3", mode: "normal" as const },
+      { taskId: "synthesis-a2", mode: "source_tool" as const },
+      { taskId: "topic-fail", mode: "normal" as const },
+      { taskId: "topic-abort", mode: "normal" as const },
+      { taskId: "topic-after", mode: "normal" as const },
+    ];
+    const otherTasks = [
+      { taskId: "topic-b1", mode: "normal" as const },
+      { taskId: "synthesis-b1", mode: "source_tool" as const },
+      { taskId: "topic-b2", mode: "normal" as const },
+    ];
+    for (const { taskId } of [...sharedTasks, ...otherTasks]) {
+      if (taskId !== "topic-fail") {
+        gates.set(taskKey(sharedRun, taskId), deferred());
+      }
+    }
+    for (const { taskId } of otherTasks) {
+      gates.set(taskKey(otherRun, taskId), deferred());
+    }
+    const fakeProviderCall = async (...args: readonly unknown[]): Promise<GroupResultEnvelope> => {
+      const runId = (args[0] as { readonly aiRunId: string }).aiRunId;
+      const taskId = String(args[3]);
+      providerCalls.push(taskKey(runId, taskId));
+      const entered = enteredByRun.get(runId) ?? [];
+      entered.push(taskId);
+      enteredByRun.set(runId, entered);
+      const active = (activeByRun.get(runId) ?? 0) + 1;
+      activeByRun.set(runId, active);
+      peakByRun.set(runId, Math.max(peakByRun.get(runId) ?? 0, active));
+      try {
+        if (taskId === "topic-fail") throw new Error("provider failure");
+        const gate = gates.get(taskKey(runId, taskId));
+        if (gate === undefined) throw new Error(`missing gate for ${taskKey(runId, taskId)}`);
+        await gate.promise;
+        return envelope((args[2] as { readonly groupId: string }).groupId);
+      } finally {
+        activeByRun.set(runId, (activeByRun.get(runId) ?? 1) - 1);
+      }
+    };
+    internal.normalCompactionGroup = fakeProviderCall;
+    internal.sourceToolCompactionGroup = fakeProviderCall;
+
+    const controllers = new Map<string, AbortController>();
+    const invoke = (
+      runId: string,
+      taskId: string,
+      mode: CompactGroup["mode"],
+    ): Promise<unknown> => {
+      const controller = new AbortController();
+      controllers.set(taskKey(runId, taskId), controller);
+      return withTaskRuntime(
+        {
+          runId: `ai-chat:${runId}`,
+          stepId: taskId,
+          attempt: 1,
+          iteration: 0,
+          signal: controller.signal,
+          db: {},
+          heartbeat: () => undefined,
+          lastHeartbeat: null,
+        },
+        () =>
+          operations.compactContextGroup(
+            { aiRunId: runId } as LoadedTurn,
+            {} as ContextState,
+            group(taskId, mode),
+            taskId,
+          ),
+      );
+    };
+    const waitFor = async (condition: () => boolean): Promise<void> => {
+      for (let index = 0; index < 100 && !condition(); index += 1) {
+        await Promise.resolve();
+      }
+      expect(condition()).toBe(true);
+    };
+    const sharedPromises = sharedTasks.map(({ taskId, mode }) => invoke(sharedRun, taskId, mode));
+    await waitFor(() => (enteredByRun.get(sharedRun)?.length ?? 0) === 3);
+    const otherPromises = otherTasks.map(({ taskId, mode }) => invoke(otherRun, taskId, mode));
+    await waitFor(() => (enteredByRun.get(otherRun)?.length ?? 0) === 3);
+
+    controllers.get(taskKey(sharedRun, "topic-abort"))!.abort();
+    gates.get(taskKey(sharedRun, "topic-a1"))!.resolve();
+    await waitFor(() => (enteredByRun.get(sharedRun) ?? []).includes("topic-a3"));
+    gates.get(taskKey(sharedRun, "topic-a3"))!.resolve();
+    gates.get(taskKey(sharedRun, "topic-a2"))!.resolve();
+    await waitFor(() => (enteredByRun.get(sharedRun) ?? []).includes("synthesis-a2"));
+    gates.get(taskKey(sharedRun, "synthesis-a2"))!.resolve();
+    gates.get(taskKey(sharedRun, "synthesis-a1"))!.resolve();
+    await waitFor(() => (enteredByRun.get(sharedRun) ?? []).includes("topic-after"));
+    gates.get(taskKey(sharedRun, "topic-after"))!.resolve();
+    for (const { taskId } of otherTasks) gates.get(taskKey(otherRun, taskId))!.resolve();
+
+    const [sharedSettled, otherSettled] = await Promise.all([
+      Promise.allSettled(sharedPromises),
+      Promise.allSettled(otherPromises),
+    ]);
+    expect(sharedSettled[5]?.status).toBe("rejected");
+    expect(sharedSettled[6]?.status).toBe("rejected");
+    expect(enteredByRun.get(sharedRun)).toEqual([
+      "topic-a1",
+      "topic-a2",
+      "synthesis-a1",
+      "topic-a3",
+      "synthesis-a2",
+      "topic-fail",
+      "topic-after",
+    ]);
+    expect(providerCalls).not.toContain(taskKey(sharedRun, "topic-abort"));
+    expect(peakByRun.get(sharedRun)).toBe(3);
+    expect(peakByRun.get(otherRun)).toBe(3);
+    expect(otherSettled.every(({ status }) => status === "fulfilled")).toBe(true);
+    expect(internal.compactionRunSemaphores.size).toBe(0);
   });
 });

@@ -100,6 +100,13 @@ describe("AI provider service identity", () => {
     expect(endpointB).toBe("openai_compatible_custom:https://compatible-b.example/v1");
     expect(endpointA).not.toBe(endpointB);
   });
+
+  it("persists the semantic repair flag only in the durable measurement payload", async () => {
+    const { providerMeasurementRepairConsumed } = await import("./handlers");
+    expect(providerMeasurementRepairConsumed({ repairConsumed: true })).toBe(true);
+    expect(providerMeasurementRepairConsumed({})).toBe(false);
+    expect(providerMeasurementRepairConsumed({ repairConsumed: undefined })).toBe(false);
+  });
 });
 
 describe("AI chat Smithers identity", () => {
@@ -316,7 +323,7 @@ describe("terminal AI failure projection", () => {
 
   it("does not infer a code from unstructured error text", async () => {
     const { terminalAiFailure } = await import("./handlers");
-    expect(terminalAiFailure({ message: "[retryable:false] context_reducer_failed" })).toEqual({
+    expect(terminalAiFailure({ message: "[retryable:false] context_compaction_failed" })).toEqual({
       code: "finalization_failed",
       retryable: true,
     });

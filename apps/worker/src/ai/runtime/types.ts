@@ -154,12 +154,25 @@ export interface WebCandidate extends WebEvidence {
   readonly label: string | null;
   readonly renderedTokenCount: number;
 }
+export interface TopicPacketCandidate {
+  readonly id: string;
+  readonly kind: "topic_packet";
+  readonly rank: number;
+  readonly purpose: string;
+  readonly topicId: TopicId;
+  /** Canonical JSON text of the immutable provider-authored topic packet. */
+  readonly text: string;
+  readonly packetSha256Hex: string;
+  readonly label: string | null;
+  readonly renderedTokenCount: number;
+}
 
 export type AnswerCandidate =
   | DocumentCandidate
   | ChatMessageCandidate
   | MemoryCandidate
-  | WebCandidate;
+  | WebCandidate
+  | TopicPacketCandidate;
 
 export type CandidateRejectionReason =
   | "inaccessible"

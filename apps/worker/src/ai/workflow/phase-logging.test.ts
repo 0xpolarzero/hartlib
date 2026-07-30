@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { MemoryConflictError } from "../product-state/memory";
+import { AiRuntimeError } from "../runtime/errors";
 import type { CanonicalWorkflowOperations } from "./operations";
 import {
   publicActivityFromPhase,
@@ -17,14 +18,26 @@ describe("AI phase structured logging", () => {
     const entries: AiPhaseLogEntry[] = [];
     const load = { aiRunId: "run-1" };
     const operations = {
-      retrieveInternal: async () => [
-        {
-          kind: "document",
-          documentId: "doc-1",
-          snapshotId: "doc-1",
-          purpose: secretSource,
+      retrieveStructuredInternal: async () => ({
+        queryPlan: { action: "skip", reason: "no_evidence" },
+        branches: [],
+        fused: {
+          results: [
+            {
+              identity: { kind: "chat_message", messageId: "message-1" },
+              value: { preview: secretSource },
+            },
+          ],
+          coverage: [],
+          candidateCountBeforeCap: 1,
+          candidateCap: 1,
+          hydratedBytes: secretSource.length,
+          hydrationByteCap: null,
+          truncation: { branch: false, candidates: false, hydration: false },
         },
-      ],
+        review: [],
+        previewExposures: [],
+      }),
       answerDirect: async () => ({
         status: "ok",
         mode: "single",
@@ -42,7 +55,11 @@ describe("AI phase structured logging", () => {
       now: () => (now += 5),
     });
 
-    await wrapped.retrieveInternal(load as never, secretQuestion, "topic-t2-retrieve-internal");
+    await wrapped.retrieveStructuredInternal(
+      load as never,
+      secretQuestion,
+      "topic-t2-retrieve-internal",
+    );
     await wrapped.answerDirect(load as never, { status: "ready" } as never, "single-answer");
 
     expect(entries).toEqual(
@@ -94,7 +111,7 @@ describe("AI phase structured logging", () => {
 
     const entries: AiPhaseLogEntry[] = [];
     const operations = {
-      retrieveWeb: async () => {
+      retrieveStructuredInternal: async () => {
         throw new Error(secret);
       },
     } as unknown as CanonicalWorkflowOperations;
@@ -106,18 +123,18 @@ describe("AI phase structured logging", () => {
       mainModel: "glm-5-turbo",
     });
     const failure = await wrapped
-      .retrieveWeb({ aiRunId: "run-2" } as never, secret, "single-retrieve-web")
+      .retrieveStructuredInternal({ aiRunId: "run-2" } as never, secret, "single-retrieve-internal")
       .catch((error: unknown) => error);
     expect(failure).toMatchObject({
       name: "AiRuntimeError",
-      code: "web_research_failed",
+      code: "internal_retrieval_failed",
       retryable: true,
     });
     expect(String(failure)).not.toContain(secret);
     expect(entries.at(-1)).toMatchObject({
-      phase: "web_retrieval",
+      phase: "internal_retrieval",
       status: "failed",
-      errorCode: "web_research_failed",
+      errorCode: "internal_retrieval_failed",
     });
     expect(JSON.stringify(entries)).not.toContain(secret);
   });
@@ -125,7 +142,7 @@ describe("AI phase structured logging", () => {
   it("propagates cancellation without durable reclassification", async () => {
     const cancellation = new DOMException("task cancelled", "AbortError");
     const operations = {
-      retrieveWeb: async () => {
+      retrieveStructuredInternal: async () => {
         throw cancellation;
       },
     } as unknown as CanonicalWorkflowOperations;
@@ -136,7 +153,11 @@ describe("AI phase structured logging", () => {
     });
 
     await expect(
-      wrapped.retrieveWeb({ aiRunId: "run-3" } as never, "question", "single-retrieve-web"),
+      wrapped.retrieveStructuredInternal(
+        { aiRunId: "run-3" } as never,
+        "question",
+        "single-retrieve-internal",
+      ),
     ).rejects.toBe(cancellation);
   });
 
@@ -246,6 +267,409 @@ describe("AI phase structured logging", () => {
 
     expect(activities.filter(({ code }) => code === "saved_context")).toHaveLength(2);
     expect(activities.filter(({ code }) => code === "web_research")).toHaveLength(2);
+  });
+
+  it("traces every production compaction step with safe lifecycle metadata", async () => {
+    const secret = "SECRET compaction query and source";
+    const entries: AiPhaseLogEntry[] = [];
+    const activities: Array<{ readonly code: string; readonly status: string }> = [];
+    const load = { aiRunId: "run-compaction" };
+    const definitions = [
+      {
+        name: "createCompactionGroups",
+        phase: "context_compaction_group_plan",
+        args: [load, {}, {}, "single-compact-plan"],
+        result: [{ groupId: "g1", candidateIds: ["c1"], renderedTokenBudget: 10, mode: "normal" }],
+      },
+      {
+        name: "createFallbackCompactionGroups",
+        phase: "context_compaction_fallback_group_plan",
+        args: [load, {}, {}, {}, {}, "single-fallback-plan"],
+        result: [{ groupId: "g1", candidateIds: ["c1"], renderedTokenBudget: 8, mode: "normal" }],
+      },
+      {
+        name: "initialCompactionManifest",
+        phase: "context_compaction_plan",
+        args: [load, {}, "single-compact-plan"],
+        result: {
+          decisions: [
+            { candidateId: "c1", action: "keep", reason: "retain" },
+            { candidateId: "c2", action: "compact", groupId: "g1", reason: "compact" },
+            { candidateId: "c3", action: "omit", reason: "omit" },
+          ],
+          groups: [{ groupId: "g1", renderedTokenBudget: 10 }],
+          question: secret,
+        },
+      },
+      {
+        name: "compactContextGroup",
+        phase: "context_compaction_group",
+        args: [load, {}, { groupId: "g1" }, "single-compact-g001"],
+        result: {
+          groupId: "g1",
+          result: {
+            decisions: [
+              { candidateId: "c2", action: "select", passageIds: ["p1", "p2"], reason: "retain" },
+              { candidateId: "c3", action: "omit", reason: "omit" },
+            ],
+          },
+          renderedTokenCount: 2,
+          sourceText: secret,
+        },
+      },
+      {
+        name: "collectCompaction",
+        phase: "context_compaction_collect",
+        args: [load, {}, {}, [], [], "single-compact-collect"],
+        result: {
+          context: { status: "ready", inputTokens: 80, usableInputTokens: 100 },
+          measurement: { fits: true, inputTokens: 80, usableInputTokens: 100, overByTokens: 0 },
+          selections: [],
+          pass: { phase: "compact", groups: [], taskIds: [], envelopes: [], selections: [] },
+        },
+      },
+      {
+        name: "collectFallbackCompaction",
+        phase: "context_compaction_fallback_collect",
+        args: [load, {}, {}, "single-fallback-collect"],
+        result: {
+          context: { status: "ready", inputTokens: 70, usableInputTokens: 100 },
+          measurement: { fits: true, inputTokens: 70, usableInputTokens: 100, overByTokens: 0 },
+          selections: [],
+          pass: { phase: "fallback", groups: [], taskIds: [], envelopes: [], selections: [] },
+        },
+      },
+      {
+        name: "measureCompaction",
+        phase: "context_compaction_measure",
+        args: [load, {}, { phase: "compact", selections: [] }, "single-compact-measure"],
+        result: {
+          status: "ready",
+          inputTokens: 80,
+          usableInputTokens: 100,
+          compactionFeedback: [secret],
+        },
+      },
+      {
+        name: "fallbackCompactionManifest",
+        phase: "context_compaction_fallback_plan",
+        args: [load, {}, {}, "single-fallback-plan"],
+        result: {
+          decisions: [
+            { candidateId: "c1", action: "retain", reason: "retain" },
+            { candidateId: "c2", action: "tighten", reason: "tighten" },
+          ],
+          groups: [{ groupId: "g1", renderedTokenBudget: 8 }],
+          sourceText: secret,
+        },
+      },
+      {
+        name: "selectCompactionContext",
+        phase: "context_compaction_select",
+        args: [load, {}, "single-context-select"],
+        result: {
+          status: "context_plan_unfit",
+          failureStage: "context_plan_unfit",
+          sql: secret,
+        },
+      },
+    ] as const;
+    const successOperations = Object.fromEntries(
+      definitions.map(({ name, result }) => [name, () => result]),
+    ) as unknown as CanonicalWorkflowOperations;
+    const wrapped = withAiPhaseLogging(successOperations, {
+      logger: (entry) => {
+        entries.push(safeAiPhaseLogFields(entry));
+      },
+      activityLogger: (event) => {
+        activities.push({ code: event.code, status: event.status });
+      },
+      fastModel: "glm-5-turbo",
+      mainModel: "glm-5-turbo",
+    });
+
+    const invoke = async (
+      target: CanonicalWorkflowOperations,
+      name: string,
+      args: readonly unknown[],
+    ): Promise<unknown> => {
+      const operation = Reflect.get(target, name);
+      if (typeof operation !== "function") throw new Error(`missing operation ${name}`);
+      return Reflect.apply(operation, target, args);
+    };
+
+    for (const definition of definitions) {
+      await invoke(wrapped, definition.name, definition.args);
+      const rows = entries.filter((entry) => entry.phase === definition.phase);
+      expect(rows.map((entry) => entry.status)).toEqual(["started", "succeeded"]);
+      expect(rows.every((entry) => entry.runId === "run-compaction")).toBe(true);
+    }
+    await invoke(wrapped, "compactContextGroup", [
+      load,
+      { phase: "fallback" },
+      { groupId: "g1" },
+      "single-fallback-g001",
+      "fallback",
+    ]);
+    await invoke(wrapped, "measureCompaction", [
+      load,
+      {},
+      {},
+      "single-fallback-measure",
+      "fallback",
+    ]);
+    expect(
+      entries
+        .filter((entry) => entry.phase === "context_compaction_fallback_measure")
+        .map((entry) => entry.status),
+    ).toEqual(["started", "succeeded"]);
+    expect(
+      entries
+        .filter((entry) => entry.phase === "context_compaction_fallback_group")
+        .map((entry) => entry.status),
+    ).toEqual(["started", "succeeded"]);
+    expect(
+      entries
+        .filter((entry) => entry.phase === "context_compaction_fallback_collect")
+        .map((entry) => entry.status),
+    ).toEqual(["started", "succeeded"]);
+    expect(activities.filter(({ code }) => code === "context_preparation")).toHaveLength(
+      definitions.length * 2 + 4,
+    );
+
+    const failedEntries: AiPhaseLogEntry[] = [];
+    const failingOperations = Object.fromEntries(
+      definitions.map(({ name }) => [
+        name,
+        () => {
+          throw new Error(secret);
+        },
+      ]),
+    ) as unknown as CanonicalWorkflowOperations;
+    const failedWrapped = withAiPhaseLogging(failingOperations, {
+      logger: (entry) => {
+        failedEntries.push(safeAiPhaseLogFields(entry));
+      },
+      fastModel: "glm-5-turbo",
+      mainModel: "glm-5-turbo",
+    });
+    for (const definition of definitions) {
+      await expect(invoke(failedWrapped, definition.name, definition.args)).rejects.toBeInstanceOf(
+        Error,
+      );
+      const rows = failedEntries.filter((entry) => entry.phase === definition.phase);
+      expect(rows.map((entry) => entry.status)).toEqual(["started", "failed"]);
+    }
+    await expect(
+      invoke(failedWrapped, "compactContextGroup", [
+        load,
+        { phase: "fallback" },
+        { groupId: "g1" },
+        "single-fallback-g001",
+        "fallback",
+      ]),
+    ).rejects.toBeInstanceOf(Error);
+    await expect(
+      invoke(failedWrapped, "measureCompaction", [
+        load,
+        {},
+        {},
+        "single-fallback-measure",
+        "fallback",
+      ]),
+    ).rejects.toBeInstanceOf(Error);
+    expect(
+      failedEntries
+        .filter((entry) => entry.phase === "context_compaction_fallback_group")
+        .map((entry) => entry.status),
+    ).toEqual(["started", "failed"]);
+    expect(
+      failedEntries
+        .filter((entry) => entry.phase === "context_compaction_fallback_collect")
+        .map((entry) => entry.status),
+    ).toEqual(["started", "failed"]);
+    expect(
+      failedEntries
+        .filter((entry) => entry.phase === "context_compaction_fallback_measure")
+        .map((entry) => entry.status),
+    ).toEqual(["started", "failed"]);
+
+    const serialized = JSON.stringify([...entries, ...failedEntries]);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toMatch(/query|sourceText|candidateId|candidateIds|sql|prompt|reason/iu);
+    expect(
+      entries.find(
+        (entry) => entry.phase === "context_compaction_plan" && entry.status === "succeeded",
+      ),
+    ).toMatchObject({
+      candidateCount: 3,
+      groupCount: 1,
+      keepCount: 1,
+      compactCount: 1,
+      omitCount: 1,
+    });
+    expect(
+      entries.find(
+        (entry) => entry.phase === "context_compaction_collect" && entry.status === "succeeded",
+      ),
+    ).toMatchObject({
+      inputTokens: 80,
+      usableInputTokens: 100,
+      overByTokens: 0,
+      outcome: "ready",
+    });
+    expect(
+      entries.find(
+        (entry) =>
+          entry.phase === "context_compaction_fallback_collect" && entry.status === "succeeded",
+      ),
+    ).toMatchObject({
+      inputTokens: 70,
+      fallbackRan: true,
+      outcome: "ready",
+    });
+  });
+
+  it("emits terminal failures for resolved context states", async () => {
+    const entries: AiPhaseLogEntry[] = [];
+    const operations = {
+      measureCompaction: async () => ({
+        status: "failed",
+        failureCode: "context_mandatory_too_large",
+        failureStage: "context_mandatory_too_large",
+      }),
+      selectCompactionContext: async (_load: unknown, _state: unknown, taskId: unknown) => ({
+        status: "failed",
+        failureCode:
+          taskId === "synthesis-context-select"
+            ? "synthesis_budget_mismatch"
+            : "context_plan_unfit",
+        failureStage:
+          taskId === "synthesis-context-select"
+            ? "synthesis_budget_mismatch"
+            : "context_plan_unfit",
+      }),
+    } as unknown as CanonicalWorkflowOperations;
+    const wrapped = withAiPhaseLogging(operations, {
+      logger: (entry) => {
+        entries.push(entry);
+      },
+      fastModel: "glm-5-turbo",
+      mainModel: "glm-5-turbo",
+    });
+    const load = { aiRunId: "run-failure" };
+    await (wrapped.measureCompaction as (...args: readonly unknown[]) => Promise<unknown>)(
+      load,
+      {},
+      { phase: "compact", selections: [] },
+      "compact-measure",
+    );
+    await (wrapped.selectCompactionContext as (...args: readonly unknown[]) => Promise<unknown>)(
+      load,
+      {},
+      "context-select",
+    );
+    await (wrapped.selectCompactionContext as (...args: readonly unknown[]) => Promise<unknown>)(
+      load,
+      {},
+      "synthesis-context-select",
+    );
+    expect(
+      entries
+        .filter((entry) => entry.phase === "context_compaction_measure")
+        .map((entry) => entry.status),
+    ).toEqual(["started", "failed"]);
+    expect(
+      entries
+        .filter((entry) => entry.phase === "context_compaction_select")
+        .map((entry) => entry.status),
+    ).toEqual(["started", "failed", "started", "failed"]);
+    expect(entries.filter((entry) => entry.status === "failed")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          errorCode: "context_mandatory_too_large",
+          failureStage: "context_mandatory_too_large",
+        }),
+        expect.objectContaining({
+          errorCode: "context_plan_unfit",
+          failureStage: "context_plan_unfit",
+        }),
+        expect.objectContaining({
+          errorCode: "synthesis_budget_mismatch",
+          failureStage: "synthesis_budget_mismatch",
+        }),
+      ]),
+    );
+  });
+
+  it("honors explicit retryability for caught and resolved failures", async () => {
+    const entries: AiPhaseLogEntry[] = [];
+    const activities: Array<{ readonly code: string; readonly status: string }> = [];
+    const operations = {
+      measureCompaction: async () => {
+        throw new AiRuntimeError("context_compaction_failed", "compaction failed", {
+          retryable: false,
+        });
+      },
+      selectCompactionContext: async () => ({
+        status: "failed",
+        failureCode: "context_plan_unfit",
+        failureStage: "context_plan_unfit",
+        retryable: true,
+      }),
+    } as unknown as CanonicalWorkflowOperations;
+    const wrapped = withAiPhaseLogging(operations, {
+      logger: (entry) => {
+        entries.push(entry);
+      },
+      activityLogger: (event) => {
+        activities.push({ code: event.code, status: event.status });
+      },
+      fastModel: "glm-5-turbo",
+      mainModel: "glm-5-turbo",
+    });
+    const load = { aiRunId: "run-retryability" };
+    await expect(
+      (wrapped.measureCompaction as (...args: readonly unknown[]) => Promise<unknown>)(
+        load,
+        {},
+        { phase: "compact", selections: [] },
+        "retryability-measure",
+      ),
+    ).rejects.toBeInstanceOf(AiRuntimeError);
+    await (wrapped.selectCompactionContext as (...args: readonly unknown[]) => Promise<unknown>)(
+      load,
+      {},
+      "retryability-select",
+    );
+    expect(
+      entries
+        .filter((entry) => entry.status === "failed")
+        .map((entry) => ({ errorCode: entry.errorCode, retryable: entry.retryable })),
+    ).toEqual([
+      { errorCode: "context_compaction_failed", retryable: false },
+      { errorCode: "context_plan_unfit", retryable: true },
+    ]);
+    expect(
+      entries
+        .filter((entry) => entry.phase === "context_compaction_select")
+        .map((entry) => entry.status),
+    ).toEqual(["started", "failed"]);
+    expect(
+      activities.filter(({ code }) => code === "context_preparation").map(({ status }) => status),
+    ).toEqual(["running", "failed", "running", "retrying"]);
+    expect(
+      entries.find(
+        (entry) => entry.phase === "context_compaction_select" && entry.status === "failed",
+      ),
+    ).toMatchObject({
+      errorCode: "context_plan_unfit",
+      retryable: true,
+      failureStage: "context_plan_unfit",
+    });
+    expect(JSON.stringify(safeAiPhaseLogFields(entries.at(-1)!))).not.toContain(
+      "compaction failed",
+    );
   });
 
   it("does not publish complete for resolved answer failures or finalization", async () => {

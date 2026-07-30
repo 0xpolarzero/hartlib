@@ -27,6 +27,7 @@ describe("AI run error classification", () => {
     expect(isRetryableAiRunError("context_budget_mismatch")).toBe(false);
     expect(isRetryableAiRunError("synthesis_budget_mismatch")).toBe(false);
     expect(isRetryableAiRunError("context_assembly_failed")).toBe(true);
+    expect(isRetryableAiRunError("context_compaction_failed")).toBe(true);
   });
 
   it("keeps the canonical code at the durable serialized error boundary", () => {
@@ -210,6 +211,11 @@ describe("AI run error classification", () => {
     ["memory_selector", "memory_selector_failed"],
     ["web_research", "web_research_failed"],
     ["context_reducer", "context_reducer_failed"],
+    ["context_manifest", "context_compaction_failed"],
+    ["context_compact_group", "context_compaction_failed"],
+    ["context_fallback_manifest", "context_compaction_failed"],
+    ["context_fallback_group", "context_compaction_failed"],
+    ["context_source_tool", "context_compaction_failed"],
     ["direct_answer", "answer_failed"],
     ["topic_answer", "topic_answer_failed"],
     ["synthesis", "synthesis_failed"],

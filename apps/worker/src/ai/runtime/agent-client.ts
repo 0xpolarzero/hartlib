@@ -13,7 +13,6 @@ import type {
   ProviderRequest,
   ProviderToolDefinition,
   SourceExposureProof,
-  CodeOwnedSourceExposureProof,
   ProviderVisibleSourceExposureMarker,
 } from "./provider-request";
 import {
@@ -30,6 +29,8 @@ export interface StructuredCallInput<Output> {
   readonly model: LiveProviderRequest["model"];
   readonly system: string;
   readonly user: string;
+  /** An already serialized request measured by the owning operation. */
+  readonly request?: LiveProviderRequest | undefined;
   readonly outputToolName: string;
   readonly outputToolDescription: string;
   readonly outputSchema: Readonly<Record<string, unknown>>;
@@ -39,6 +40,18 @@ export interface StructuredCallInput<Output> {
   readonly coordinates: PiBoundaryCoordinates;
   readonly onBeforeRequest?: BeforeProviderRequest | undefined;
   /** Code-owned exposure proofs stay outside provider-visible messages. */
+  readonly sourceExposureProofs?: readonly SourceExposureProof[] | undefined;
+  /**
+   * Optional code-owned correction for a parsed or semantically invalid
+   * structured result. The callback is never invoked for boundary failures.
+   */
+  readonly repair?:
+    | ((error: unknown, coordinates: PiBoundaryCoordinates) => StructuredRepair | undefined)
+    | undefined;
+}
+export interface StructuredRepair {
+  readonly user: string;
+  readonly system?: string | undefined;
   readonly sourceExposureProofs?: readonly SourceExposureProof[] | undefined;
 }
 
@@ -148,6 +161,10 @@ export interface ToolLoopInput<Output> {
       ) => Readonly<Record<string, unknown>> | undefined)
     | undefined;
   readonly maximumTurns: number;
+  /** Optional cumulative bounds for source-tool passage results. */
+  readonly maximumResults?: number | undefined;
+  readonly maximumBytes?: number | undefined;
+  readonly maximumResultTokens?: number | undefined;
   /**
    * When no incomplete-result continuation remains, expose only the terminal
    * tool on the last bounded provider turn. The provider still authors and
@@ -212,46 +229,13 @@ const exposureMarkersFromResult = (
   });
 };
 
-const exposureProofIdentityKey = (marker: ProviderVisibleSourceExposureMarker): string =>
-  JSON.stringify([
-    marker.sourceKind,
-    marker.logicalSourceIdentity,
-    marker.contentItemIdentity,
-    marker.exposureStage,
-  ]);
-
-const codeOwnedExposureContent = (proof: SourceExposureProof): string | undefined => {
-  if (!("visibleText" in proof) || typeof proof.visibleText !== "string") return undefined;
-  const codeOwnedProof = proof as CodeOwnedSourceExposureProof;
-  return JSON.stringify([
-    codeOwnedProof.visibleText,
-    codeOwnedProof.visibleTokenCount,
-    codeOwnedProof.immutableContentHash,
-    codeOwnedProof.immutableSourceIdentityCommitment,
-  ]);
-};
-
-const exposureProofContentChanged = (
-  existing: SourceExposureProof,
-  next: CodeOwnedSourceExposureProof,
-): boolean => {
-  if (existing.visibleTokenCount !== next.visibleTokenCount) return true;
-  const existingContent = codeOwnedExposureContent(existing);
-  const nextContent = codeOwnedExposureContent(next);
-  return (
-    existingContent !== undefined && nextContent !== undefined && existingContent !== nextContent
-  );
-};
-
 // Exposure proofs are a code-owned side channel. They must never enter a
 // provider tool message, even though retrieval keeps them on its private
 // result object for the durable exposure ledger.
-const toolResultJson = (value: Readonly<Record<string, unknown>>): string =>
+export const toolResultJson = (value: Readonly<Record<string, unknown>>): string =>
   JSON.stringify(redactProviderToolResult(value));
-const emptyToolResultShape = (toolName: string): Readonly<Record<string, unknown>> => ({
-  ...(toolName === "search_internal" ? { items: [] } : {}),
-  ...(toolName === "search_within_candidate" ? { matches: [], matchPreviews: [] } : {}),
-});
+const emptyToolResultShape = (toolName: string): Readonly<Record<string, unknown>> =>
+  toolName === "search_within_candidate" ? { matches: [], matchPreviews: [] } : {};
 
 const malformedToolResult = (toolName: string): Readonly<Record<string, unknown>> => ({
   ...emptyToolResultShape(toolName),
@@ -516,36 +500,61 @@ export class CanonicalAgentClient {
   }
 
   async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
-    const request = {
-      requestClass: input.requestClass,
-      model: input.model,
-      messages: [
-        { role: "system", content: input.system },
-        { role: "user", content: input.user },
-      ],
-      tools: [
-        {
-          name: input.outputToolName,
-          description: input.outputToolDescription,
-          parameters: input.outputSchema,
-        },
-      ],
-      toolChoice: "auto",
-      requestedOutputTokens: input.requestedOutputTokens,
-      reasoning: input.reasoning,
-      ...(input.sourceExposureProofs === undefined
-        ? {}
-        : { sourceExposureProofs: input.sourceExposureProofs }),
-    } as const satisfies LiveProviderRequest;
+    const initialProofs = input.sourceExposureProofs ?? input.request?.sourceExposureProofs;
+    const buildRequest = (
+      system: string,
+      user: string,
+      sourceExposureProofs: readonly SourceExposureProof[] | undefined,
+      repairConsumed = false,
+    ): LiveProviderRequest => {
+      if (input.request === undefined) {
+        return {
+          requestClass: input.requestClass,
+          model: input.model,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          tools: [
+            {
+              name: input.outputToolName,
+              description: input.outputToolDescription,
+              parameters: input.outputSchema,
+            },
+          ],
+          toolChoice: "auto",
+          requestedOutputTokens: input.requestedOutputTokens,
+          reasoning: input.reasoning,
+          ...(sourceExposureProofs === undefined ? {} : { sourceExposureProofs }),
+          ...(repairConsumed ? { repairConsumed: true as const } : {}),
+        };
+      }
+      return {
+        ...input.request,
+        messages: input.request.messages.map((message) =>
+          message.role === "system"
+            ? { ...message, content: system }
+            : message.role === "user"
+              ? { ...message, content: user }
+              : message,
+        ),
+        ...(sourceExposureProofs === undefined ? {} : { sourceExposureProofs }),
+        ...(repairConsumed ? { repairConsumed: true as const } : {}),
+      };
+    };
+    const firstRequest = buildRequest(input.system, input.user, initialProofs);
+    // Yield once before proof verification so concurrent durable setup can make progress.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const firstCoordinates = exactTaskCoordinates(input.coordinates);
     providerRequestSourceExposureProofBindings(
-      request,
-      resolveRuntimeModel(request.model).countTextTokens,
+      firstRequest,
+      resolveRuntimeModel(firstRequest.model).countTextTokens,
     );
     let completion: PiCompletion;
     try {
       completion = await this.boundary.complete(
-        request,
-        exactTaskCoordinates(input.coordinates),
+        firstRequest,
+        firstCoordinates,
         input.onBeforeRequest,
       );
     } catch (error) {
@@ -554,7 +563,47 @@ export class CanonicalAgentClient {
     try {
       return parseExactlyOneTerminal(completion, input.outputToolName, input.validate);
     } catch (error) {
-      throw providerOutputError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
+      let repair: StructuredRepair | undefined;
+      try {
+        repair = input.repair?.(error, firstCoordinates);
+      } catch (repairError) {
+        throw providerOutputError(repairError, aiRunErrorCodeForRole(input.coordinates.agentRole));
+      }
+      if (repair === undefined) {
+        throw providerOutputError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
+      }
+      const repairCoordinates = {
+        ...firstCoordinates,
+        providerRequestIndex: firstCoordinates.providerRequestIndex + 1,
+      } satisfies PiBoundaryCoordinates;
+      const repairRequest = buildRequest(
+        repair.system ?? input.system,
+        repair.user,
+        repair.sourceExposureProofs ?? initialProofs,
+        true,
+      );
+      providerRequestSourceExposureProofBindings(
+        repairRequest,
+        resolveRuntimeModel(repairRequest.model).countTextTokens,
+      );
+      let repairedCompletion: PiCompletion;
+      try {
+        repairedCompletion = await this.boundary.complete(
+          repairRequest,
+          repairCoordinates,
+          input.onBeforeRequest,
+        );
+      } catch (repairBoundaryError) {
+        throw toAiRuntimeError(
+          repairBoundaryError,
+          aiRunErrorCodeForRole(input.coordinates.agentRole),
+        );
+      }
+      try {
+        return parseExactlyOneTerminal(repairedCompletion, input.outputToolName, input.validate);
+      } catch (repairError) {
+        throw providerOutputError(repairError, aiRunErrorCodeForRole(input.coordinates.agentRole));
+      }
     }
   }
 
@@ -563,9 +612,24 @@ export class CanonicalAgentClient {
       { role: "system", content: input.system },
       { role: "user", content: input.user },
     ];
+    const exposedSourcePassages = new Map<string, string>();
+    let exposedSourceResultCount = 0;
+    let exposedSourceResultBytes = 0;
+    let exposedSourceResultTokens = 0;
     const sourceExposureProofs: SourceExposureProof[] = [...(input.sourceExposureProofs ?? [])];
-    const tools = new Map(input.tools.map((tool) => [tool.definition.name, tool]));
+    let repairConsumedForNextRequest = false;
+    if (
+      (input.maximumResults !== undefined &&
+        (!Number.isSafeInteger(input.maximumResults) || input.maximumResults <= 0)) ||
+      (input.maximumBytes !== undefined &&
+        (!Number.isSafeInteger(input.maximumBytes) || input.maximumBytes <= 0)) ||
+      (input.maximumResultTokens !== undefined &&
+        (!Number.isSafeInteger(input.maximumResultTokens) || input.maximumResultTokens <= 0))
+    ) {
+      throw new Error("source-tool cumulative bounds must be positive safe integers");
+    }
     const continuationObligations = new Map<string, ToolContinuationObligation>();
+    const tools = new Map(input.tools.map((tool) => [tool.definition.name, tool] as const));
 
     for (let turn = 0; turn < input.maximumTurns; turn += 1) {
       const coordinates = {
@@ -591,6 +655,8 @@ export class CanonicalAgentClient {
       const visibleToolsByName = new Map(visibleTools.map((tool) => [tool.definition.name, tool]));
       let completion: PiCompletion;
       try {
+        const repairConsumed = repairConsumedForNextRequest;
+        repairConsumedForNextRequest = false;
         const request = {
           requestClass: input.requestClass,
           model: input.model,
@@ -605,6 +671,7 @@ export class CanonicalAgentClient {
           toolChoice: "auto" as const,
           requestedOutputTokens: input.requestedOutputTokens,
           reasoning: input.reasoning,
+          ...(repairConsumed ? { repairConsumed: true as const } : {}),
         } satisfies LiveProviderRequest;
         providerRequestSourceExposureProofBindings(
           request,
@@ -814,6 +881,7 @@ export class CanonicalAgentClient {
           const error = new Error("terminal tool called before its reserved terminal turn");
           const recovery = input.recoverTerminal?.(call.arguments, error, coordinates);
           if (recovery !== undefined) {
+            if (recovery.repair === true) repairConsumedForNextRequest = true;
             messages.push({
               role: "tool",
               toolCallId: call.id,
@@ -843,6 +911,7 @@ export class CanonicalAgentClient {
           } catch (error) {
             const recovery = input.recoverTerminal?.(call.arguments, error, coordinates);
             if (recovery !== undefined) {
+              if (recovery.repair === true) repairConsumedForNextRequest = true;
               messages.push({
                 role: "tool",
                 toolCallId: call.id,
@@ -859,6 +928,7 @@ export class CanonicalAgentClient {
           } catch (error) {
             const recovery = input.recoverTerminal?.(output, error, coordinates);
             if (recovery !== undefined) {
+              if (recovery.repair === true) repairConsumedForNextRequest = true;
               messages.push({
                 role: "tool",
                 toolCallId: call.id,
@@ -934,6 +1004,62 @@ export class CanonicalAgentClient {
           }
           result = { ...emptyToolResultShape(call.name), ...recovery };
         }
+        if (
+          (call.name === "search_source_passages" || call.name === "read_source_passages") &&
+          Array.isArray(result.passages)
+        ) {
+          const candidateId = call.arguments.candidateId;
+          if (typeof candidateId !== "string") {
+            throw toAiRuntimeError(
+              new Error("source-tool result lacks its candidate ID"),
+              aiRunErrorCodeForRole(input.coordinates.agentRole),
+            );
+          }
+          const pending = new Map<string, string>();
+          for (const value of result.passages) {
+            if (
+              !isJsonRecord(value) ||
+              typeof value.passageId !== "string" ||
+              typeof value.text !== "string"
+            ) {
+              throw toAiRuntimeError(
+                new Error("source-tool result contains an invalid passage"),
+                aiRunErrorCodeForRole(input.coordinates.agentRole),
+              );
+            }
+            const key = `${candidateId}:${value.passageId}`;
+            const prior = exposedSourcePassages.get(key) ?? pending.get(key);
+            if (prior !== undefined && prior !== value.text) {
+              throw toAiRuntimeError(
+                new Error("source-tool passage identity changed across results"),
+                aiRunErrorCodeForRole(input.coordinates.agentRole),
+              );
+            }
+            pending.set(key, value.text);
+          }
+          const serializedResult = toolResultJson(result);
+          const resultBytes = new TextEncoder().encode(serializedResult).byteLength;
+          const resultTokens = resolveRuntimeModel(input.model).countTextTokens(serializedResult);
+          const nextCount = exposedSourceResultCount + result.passages.length;
+          const nextBytes = exposedSourceResultBytes + resultBytes;
+          const nextTokens = exposedSourceResultTokens + resultTokens;
+          if (
+            (input.maximumResults !== undefined && nextCount > input.maximumResults) ||
+            (input.maximumBytes !== undefined && nextBytes > input.maximumBytes) ||
+            (input.maximumResultTokens !== undefined && nextTokens > input.maximumResultTokens)
+          ) {
+            throw toAiRuntimeError(
+              new Error("source-tool result exceeds its cumulative bound"),
+              aiRunErrorCodeForRole(input.coordinates.agentRole),
+            );
+          }
+          exposedSourceResultCount = nextCount;
+          exposedSourceResultBytes = nextBytes;
+          exposedSourceResultTokens = nextTokens;
+          for (const [key, text] of pending) {
+            exposedSourcePassages.set(key, text);
+          }
+        }
         if (resultIsIncomplete(result)) {
           const expectedCursor = result.cursor;
           const narrowerRangeRequired = result.narrowerRangeRequired === true;
@@ -972,17 +1098,9 @@ export class CanonicalAgentClient {
                 resolveRuntimeModel(input.model).countTextTokens,
               );
         for (const marker of mintedProofs) {
-          const markerKey = exposureProofIdentityKey(marker);
-          const existingMarkers = sourceExposureProofs.filter(
-            (existing) => exposureProofIdentityKey(existing) === markerKey,
-          );
-          if (
-            existingMarkers.some((existingMarker) =>
-              exposureProofContentChanged(existingMarker, marker),
-            )
-          ) {
-            throw new Error("source exposure proof identity was rebound to new content");
-          }
+          // Keep every minted proof. The same source text at two tool-result
+          // coordinates needs two bindings; coordinate validation belongs to
+          // the provider request gate.
           sourceExposureProofs.push(marker);
         }
         messages.push({

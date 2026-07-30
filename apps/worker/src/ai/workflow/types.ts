@@ -12,7 +12,13 @@ export interface SourceRange {
   readonly charEnd: number;
 }
 
-export type CandidateKind = "conversation_entry" | "document" | "chat_message" | "memory" | "web";
+export type CandidateKind =
+  | "conversation_entry"
+  | "document"
+  | "chat_message"
+  | "memory"
+  | "web"
+  | "topic_packet";
 export type ChatRole = "user" | "assistant" | "system";
 
 export type RunLocalId = `${"q" | "r" | "c" | "p" | "g"}${number}`;
@@ -100,6 +106,11 @@ export type CanonicalIdentity =
       readonly canonicalUrl: string;
       readonly quoteHash: string;
       readonly capturedAt: string;
+    }
+  | {
+      readonly kind: "topic_packet";
+      readonly topicId: "t1" | "t2" | "t3";
+      readonly packetSha256Hex: string;
     }
   | {
       readonly kind: "conversation_entry";
@@ -237,6 +248,8 @@ export const canonicalIdentityTuple = (
       return ["memory", value.memoryId, value.memoryRevisionId];
     case "web":
       return ["web", value.canonicalUrl, value.quoteHash];
+    case "topic_packet":
+      return ["topic_packet", value.topicId, value.packetSha256Hex];
     case "conversation_entry":
       return ["conversation_entry", value.turnId];
   }
@@ -244,9 +257,6 @@ export const canonicalIdentityTuple = (
 
 export const canonicalIdentityKey = (identity: CanonicalIdentity): string =>
   JSON.stringify(canonicalIdentityTuple(identity));
-
-export const identityTuple = canonicalIdentityTuple;
-export const identityKey = canonicalIdentityKey;
 
 export const PREVIEW_RANGE_SEPARATOR = "\n…\n";
 
@@ -343,6 +353,11 @@ const candidateIdentitySchema = z.discriminatedUnion("kind", [
     capturedAt: nonEmptyText,
   }),
   z.strictObject({
+    kind: z.literal("topic_packet"),
+    topicId: z.enum(["t1", "t2", "t3"]),
+    packetSha256Hex: z.string().regex(/^[a-f0-9]{64}$/u),
+  }),
+  z.strictObject({
     kind: z.literal("conversation_entry"),
     turnId: nonEmptyText,
     userMessageId: nonEmptyText,
@@ -355,7 +370,7 @@ export const CanonicalIdentitySchema = candidateIdentitySchema;
 
 const CandidateLedgerEntryInputSchema = z.strictObject({
   candidateId: CandidateLocalIdSchema,
-  kind: z.enum(["conversation_entry", "document", "chat_message", "memory", "web"]),
+  kind: z.enum(["conversation_entry", "document", "chat_message", "memory", "web", "topic_packet"]),
   identity: candidateIdentitySchema,
   provenance: CandidateProvenanceSchema,
   text: wellFormedText,
@@ -479,7 +494,7 @@ export type CandidateLedgerSchemaValue = z.infer<typeof CandidateLedgerSchema>;
 
 export const ProviderCandidateViewSchema = z.strictObject({
   candidateId: CandidateLocalIdSchema,
-  kind: z.enum(["conversation_entry", "document", "chat_message", "memory", "web"]),
+  kind: z.enum(["conversation_entry", "document", "chat_message", "memory", "web", "topic_packet"]),
   label: boundedText(CANDIDATE_CONTRACT_LIMITS.maxLabelUtf8Bytes).nullable(),
   purpose: boundedNonEmptyText(CANDIDATE_CONTRACT_LIMITS.maxPurposeUtf8Bytes),
   date: boundedText(CANDIDATE_CONTRACT_LIMITS.maxDateUtf8Bytes).nullable(),

@@ -16,6 +16,7 @@ import type {
   MemoryExtractionArtifact,
   TopicPacket,
 } from "../runtime/types";
+import type { RetrievalPlanResult } from "../retrieval/retrieval";
 import {
   AI_CHAT_SMITHERS_SCHEMA_FENCE,
   createAiChatSmithersStorage,
@@ -33,10 +34,10 @@ import {
   aiChatSmithersMaxConcurrency,
   buildAiChatWorkflow,
 } from "./ai-chat";
+import { toProviderCandidateView, type CandidateLedgerEntry } from "./types";
 import {
   CanonicalWorkflowOperations,
   type ContextAssembly,
-  type ContextReductionPlan,
   type ContextState,
   type FanoutAllocation,
   type FanoutSourceKeySet,
@@ -45,6 +46,13 @@ import {
   type SelectorBundle,
   type WebSelectorResult,
 } from "./operations";
+import type {
+  CompactionGroup,
+  GroupResultEnvelope,
+  InitialContextManifest,
+  FallbackContextManifest,
+} from "../context/compaction";
+import type { CompactionPassResult } from "../context/compaction-runtime";
 
 const sourceDatabaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const databaseName = `brief_ai_chat_graph_test_${process.pid}_${crypto
@@ -58,7 +66,6 @@ const workflowConfig = {
   aiAnswerTimeoutMs: 30_000,
   aiTopicResearchMaxConcurrency: 6,
   aiTopicAnswerMaxConcurrency: 3,
-  aiContextReductionMaxIterations: 2,
 } as const;
 
 const databaseUrlFor = (name: string): string => {
@@ -96,14 +103,14 @@ interface SmithersFrameElement {
   readonly props?: Readonly<Record<string, string>>;
   readonly children?: readonly SmithersFrameElement[];
 }
-
 const graphKeyframe = async (
   storage: Pick<SmithersStorage<typeof aiChatSchemas>, "db">,
   runId: string,
+  marker = "fanout-topic-research",
 ): Promise<SmithersFrameElement> => {
   const frames = await Effect3.runPromise(new SmithersDb(storage.db).listFrames(runId, 500));
-  const frame = frames.find((candidate) => candidate.xmlJson.includes("fanout-topic-research"));
-  if (frame === undefined) throw new Error(`missing fanout keyframe for ${runId}`);
+  const frame = frames.find((candidate) => candidate.xmlJson.includes(marker));
+  if (frame === undefined) throw new Error(`missing graph keyframe for ${runId}`);
   return JSON.parse(frame.xmlJson) as SmithersFrameElement;
 };
 
@@ -221,6 +228,7 @@ const context = (topicId?: "t1" | "t2" | "t3"): ContextState => ({
   question: topicId ?? "single",
   ...(topicId === undefined ? {} : { topicId }),
   candidates: [],
+  candidateLedger: { candidates: [] },
   sourceMap: [],
   ledgerCandidates: [],
   ledgerSourceMap: [],
@@ -235,16 +243,17 @@ const context = (topicId?: "t1" | "t2" | "t3"): ContextState => ({
     },
   ],
   gaps: [],
-  reductionFeedback: [],
+  compactionFeedback: [],
   request,
   inputTokens: 4,
   usableInputTokens: 100,
-  reductionRan: false,
+  compactionRan: false,
 });
 const assembly = (topicId?: "t1" | "t2" | "t3"): ContextAssembly => ({
   question: topicId ?? "single",
   ...(topicId === undefined ? {} : { topicId }),
   candidates: [],
+  candidateLedger: { candidates: [] },
   sourceMap: [],
   selectedConversation: [],
   gaps: [],
@@ -252,14 +261,74 @@ const assembly = (topicId?: "t1" | "t2" | "t3"): ContextAssembly => ({
   requestedOutputTokens: 32,
 });
 
+const structuredRetrievalResult = {
+  queryPlan: {
+    action: "search" as const,
+    queries: [
+      {
+        purpose: "structured evidence",
+        all: [{ text: "evidence", mode: "term" as const }],
+        anyOf: [],
+        not: [],
+        filters: {},
+        order: "relevance" as const,
+      },
+    ],
+  },
+  branches: [],
+  fused: {
+    results: [
+      {
+        resultId: "r1" as const,
+        identity: {
+          kind: "chat_message" as const,
+          messageId: "structured-message",
+          sanitizedContentHash: "a".repeat(64),
+        },
+        identityKey: JSON.stringify(["chat_message", "structured-message", "a".repeat(64)]),
+        value: {
+          kind: "chat_message" as const,
+          label: "assistant",
+          date: null,
+          textCharCount: 18,
+          text: "structured evidence",
+          snapshotId: "structured-message",
+          contentHash: "a".repeat(64),
+          tokenCount: 3,
+          fullTokenCount: 3,
+          fastTokenCount: 3,
+          mainTokenCount: 3,
+          preview: "structured evidence",
+          previewRanges: [{ charStart: 0, charEnd: 18 }],
+          previewBytes: new TextEncoder().encode("structured evidence"),
+        },
+        score: 1 / 61,
+        rrfK: 60,
+        bestRank: 1,
+        date: null,
+        provenance: [{ queryOrdinal: 1, branch: "chat_messages", rank: 1 }],
+        matchedQueryOrdinals: [1],
+      },
+    ],
+    coverage: [],
+    candidateCountBeforeCap: 1,
+    candidateCap: 1,
+    hydratedBytes: 18,
+    hydrationByteCap: null,
+    truncation: { branch: false, candidates: false, hydration: false },
+  },
+  review: [],
+  previewExposures: [],
+} as unknown as RetrievalPlanResult;
+
 class ScriptedOperations extends CanonicalWorkflowOperations {
   readonly calls: string[] = [];
   readonly finalAnswers: AnswerLaneResult[] = [];
-  readonly reductionFeedbackInputs: (readonly string[])[] = [];
   readonly streamedTaskIds: string[] = [];
   readonly structuredTopicTaskIds: string[] = [];
-  private reductionMeasurements = 0;
-
+  readonly structuredQuestions: string[] = [];
+  readonly assembledStructuredResults: number[] = [];
+  readonly collectedTaskIds: string[][] = [];
   constructor(
     readonly route: "clarify" | "single" | "fanout",
     readonly reduction: "none" | "fit" | "correct-then-fit" | "unfit" = "none",
@@ -277,8 +346,6 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
         aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 8,
-        aiInternalMaxInspections: 8,
         aiWebMaxSearches: 4,
         aiWebMaxFetches: 8,
         aiWebMaxDomainFilters: 8,
@@ -319,14 +386,15 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
     }
     return { mode: "single", question: "Compare", relevantTurnIds: [] };
   }
-  override async retrieveInternal(
+  override async retrieveStructuredInternal(
     _load: LoadedTurn,
     _question: string,
     taskId: string,
     _selectedTurnIds?: readonly string[],
-  ) {
+  ): Promise<RetrievalPlanResult | null> {
     this.calls.push(taskId);
-    return [];
+    this.structuredQuestions.push(_question);
+    return structuredRetrievalResult;
   }
   override async selectMemories(
     _load: LoadedTurn,
@@ -347,7 +415,7 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
   override async assembleContext(
     _load: LoadedTurn,
     _question: string,
-    _selectors: SelectorBundle,
+    selectors: SelectorBundle,
     observationTaskId: string,
     _consumerTaskId: string,
     topicId?: "t1" | "t2" | "t3",
@@ -356,6 +424,7 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
     _requestedOutputTokens?: number,
   ) {
     this.calls.push(observationTaskId);
+    this.assembledStructuredResults.push(selectors.structuredInternal?.fused.results.length ?? 0);
     return assembly(topicId);
   }
   override async measureAssembly(
@@ -368,50 +437,124 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
       ? context(value.topicId)
       : {
           ...context(),
-          status: "needs_reduction" as const,
+          status: "needs_compaction" as const,
           inputTokens: 101,
           usableInputTokens: 100,
         };
   }
-  override async planReduction(
+  async initialCompactionManifest(
     _load: LoadedTurn,
-    state: ContextState,
-  ): Promise<ContextReductionPlan> {
-    this.calls.push("single-reduce-plan");
-    this.reductionFeedbackInputs.push(state.reductionFeedback);
-    return { decisions: [] };
+    _state: ContextState,
+    taskId: string,
+  ): Promise<InitialContextManifest> {
+    this.calls.push(taskId);
+    return { decisions: [], groups: [] };
   }
-  override async measureReduction(_load: LoadedTurn, state: ContextState): Promise<ContextState> {
-    this.calls.push("single-reduce-measure");
-    this.reductionMeasurements += 1;
-    if (
-      this.reduction === "fit" ||
-      (this.reduction === "correct-then-fit" && this.reductionMeasurements > 1)
-    ) {
-      return {
-        ...state,
-        status: "ready",
-        inputTokens: 90,
-        reductionRan: true,
-        reductionFeedback: [],
-      };
-    }
+  async createCompactionGroups(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _manifest: InitialContextManifest,
+    taskId: string,
+  ): Promise<readonly CompactionGroup[]> {
+    this.calls.push(taskId);
+    return [];
+  }
+  async createFallbackCompactionGroups(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _initialManifest: InitialContextManifest,
+    _firstPass: unknown,
+    _manifest: FallbackContextManifest,
+    taskId: string,
+  ): Promise<readonly CompactionGroup[]> {
+    this.calls.push(taskId);
+    return [];
+  }
+  async compactContextGroup(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _group: CompactionGroup,
+    taskId: string,
+    _phase: "compact" | "fallback" = "compact",
+    _priorResult?: GroupResultEnvelope,
+  ): Promise<GroupResultEnvelope> {
+    this.calls.push(taskId);
     return {
-      ...state,
-      status: "needs_reduction",
-      reductionRan: true,
-      reductionFeedback:
-        this.reduction === "correct-then-fit"
-          ? ["complete accounting is required"]
-          : ["validated plan remains oversized"],
+      groupId: _group.groupId,
+      result: { decisions: [] },
+      renderedTokenCount: 0,
     };
   }
-  override async freezeContext(_load: LoadedTurn, state: ContextState) {
-    this.calls.push(
-      state.topicId === undefined
-        ? "single-context-select"
-        : `topic-${state.topicId}-context-select`,
-    );
+  async collectCompaction(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _manifest: InitialContextManifest | FallbackContextManifest,
+    groups: readonly CompactionGroup[],
+    envelopes: readonly GroupResultEnvelope[],
+    taskId: string,
+  ): Promise<CompactionPassResult> {
+    this.calls.push(taskId);
+    this.collectedTaskIds.push(envelopes.map((envelope) => envelope.groupId));
+    return {
+      phase: "compact",
+      groups,
+      taskIds: envelopes.map((envelope) => envelope.groupId),
+      envelopes,
+      selections: [],
+      repairUsed: false,
+    };
+  }
+  async collectFallbackCompaction(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _manifest: FallbackContextManifest,
+    groups: readonly CompactionGroup[],
+    envelopes: readonly GroupResultEnvelope[],
+    _firstPass: CompactionPassResult,
+    taskId: string,
+  ): Promise<CompactionPassResult> {
+    this.calls.push(taskId);
+    this.collectedTaskIds.push(envelopes.map((envelope) => envelope.groupId));
+    return {
+      phase: "fallback",
+      groups,
+      taskIds: envelopes.map((envelope) => envelope.groupId),
+      envelopes,
+      selections: [],
+      repairUsed: false,
+    };
+  }
+  async measureCompaction(
+    _load: LoadedTurn,
+    state: ContextState,
+    pass: CompactionPassResult,
+    taskId: string,
+  ): Promise<ContextState> {
+    this.calls.push(taskId);
+    const ready =
+      this.reduction !== "unfit" && (pass.phase === "fallback" || this.reduction === "fit");
+    return {
+      ...state,
+      status: ready ? "ready" : pass.phase === "fallback" ? "failed" : "needs_compaction",
+      ...(ready || pass.phase === "compact" ? {} : { failureCode: "context_plan_unfit" as const }),
+      inputTokens: ready ? 90 : 101,
+      compactionRan: true,
+      compactionFeedback: ready ? [] : ["validated plan remains oversized"],
+    };
+  }
+  async fallbackCompactionManifest(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _initialManifest: InitialContextManifest,
+    _firstPass: unknown,
+    _measurement: unknown,
+    taskId: string,
+  ): Promise<FallbackContextManifest> {
+    this.calls.push(taskId);
+    return { decisions: [], groups: [] };
+  }
+  async selectCompactionContext(_load: LoadedTurn, state: ContextState, taskId: string) {
+    this.calls.push(taskId);
     if (state.topicId === "t1" && this.topicFailure !== undefined) {
       return { ...state, status: "failed" as const, failureCode: this.topicFailure };
     }
@@ -509,6 +652,273 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
         web: { searchCount: 0, fetchCount: 0, responseBytes: 0, billedUnits: 0 },
       },
       alreadyTerminal: false,
+    };
+  }
+}
+class GroupedCompactionOperations extends ScriptedOperations {
+  constructor(readonly convergence: "fit" | "unfit" = "fit") {
+    super("single", convergence);
+  }
+
+  override async initialCompactionManifest(
+    load: LoadedTurn,
+    state: ContextState,
+    taskId: string,
+  ): Promise<InitialContextManifest> {
+    this.calls.push(taskId);
+    return {
+      decisions: [
+        { candidateId: "c1", action: "compact", groupId: "g1", reason: "retain evidence" },
+        { candidateId: "c2", action: "compact", groupId: "g2", reason: "retain evidence" },
+      ],
+      groups: [
+        { groupId: "g1", renderedTokenBudget: 1 },
+        { groupId: "g2", renderedTokenBudget: 1 },
+      ],
+    };
+  }
+
+  override async createCompactionGroups(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _manifest: InitialContextManifest,
+    taskId: string,
+  ): Promise<readonly CompactionGroup[]> {
+    this.calls.push(taskId);
+    return [
+      { groupId: "g1", candidateIds: ["c1"], renderedTokenBudget: 1, mode: "normal" },
+      { groupId: "g2", candidateIds: ["c2"], renderedTokenBudget: 1, mode: "normal" },
+    ];
+  }
+
+  override async fallbackCompactionManifest(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _initialManifest: InitialContextManifest,
+    _firstPass: unknown,
+    _measurement: unknown,
+    taskId: string,
+  ): Promise<FallbackContextManifest> {
+    this.calls.push(taskId);
+    return {
+      decisions: [
+        { candidateId: "c1", action: "omit", reason: "not needed" },
+        { candidateId: "c2", action: "omit", reason: "not needed" },
+      ],
+      groups: [],
+    };
+  }
+
+  override async createFallbackCompactionGroups(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _initialManifest: InitialContextManifest,
+    _firstPass: unknown,
+    _manifest: FallbackContextManifest,
+    taskId: string,
+  ): Promise<readonly CompactionGroup[]> {
+    this.calls.push(taskId);
+    return [];
+  }
+}
+
+class FallbackGroupedCompactionOperations extends GroupedCompactionOperations {
+  override async fallbackCompactionManifest(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _initialManifest: InitialContextManifest,
+    _firstPass: unknown,
+    _measurement: unknown,
+    taskId: string,
+  ): Promise<FallbackContextManifest> {
+    this.calls.push(taskId);
+    return {
+      decisions: [
+        { candidateId: "c1", action: "compact", groupId: "g1", reason: "tighten evidence" },
+      ],
+      groups: [{ groupId: "g1", renderedTokenBudget: 1 }],
+    };
+  }
+
+  override async createFallbackCompactionGroups(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _initialManifest: InitialContextManifest,
+    _firstPass: unknown,
+    _manifest: FallbackContextManifest,
+    taskId: string,
+  ): Promise<readonly CompactionGroup[]> {
+    this.calls.push(taskId);
+    return [{ groupId: "g1", candidateIds: ["c1"], renderedTokenBudget: 1, mode: "normal" }];
+  }
+}
+
+class TopicPacketCompactionOperations extends ScriptedOperations {
+  readonly manifestDecisions: string[][] = [];
+
+  constructor(readonly mode: "compact-fit" | "fallback-fit" | "fallback-unfit") {
+    super("fanout");
+  }
+
+  private packetContext(
+    packets: readonly TopicPacket[],
+    status: ContextState["status"],
+  ): ContextState {
+    const candidates = packets.map((packet, index) => {
+      const candidateId = `c${index + 1}` as `c${number}`;
+      const text = JSON.stringify(packet);
+      const packetSha256Hex = `${String.fromCharCode(97 + index).repeat(64)}`;
+      return {
+        id: candidateId,
+        kind: "topic_packet" as const,
+        rank: index,
+        purpose: "provider-authored topic packet",
+        topicId: packet.topicId,
+        text,
+        packetSha256Hex,
+        label: packet.topicId,
+        renderedTokenCount: 1,
+      };
+    });
+    const ledgerCandidates: CandidateLedgerEntry[] = candidates.map((candidate) => ({
+      candidateId: candidate.id,
+      kind: "topic_packet",
+      identity: {
+        kind: "topic_packet",
+        topicId: candidate.topicId,
+        packetSha256Hex: candidate.packetSha256Hex,
+      },
+      provenance: { label: candidate.label, purpose: candidate.purpose, date: null },
+      text: candidate.text,
+      baseRanges: [{ charStart: 0, charEnd: candidate.text.length }],
+      previewRanges: [{ charStart: 0, charEnd: candidate.text.length }],
+      preview: candidate.text,
+      renderedTokenCount: candidate.renderedTokenCount,
+    }));
+    return {
+      ...context(),
+      status,
+      candidates,
+      candidateLedger: { candidates: ledgerCandidates },
+      ledgerCandidates: candidates,
+      ledgerSourceMap: [],
+      citationSourceMap: [],
+      consumers: [
+        {
+          consumer: "synthesis",
+          inputTokens: status === "needs_compaction" ? 101 : 90,
+          requestedOutputTokens: 32,
+          usableInputTokens: 100,
+        },
+      ],
+      request: {
+        ...request,
+        messages: [{ role: "user", content: JSON.stringify({ packets }) }],
+      },
+      inputTokens: status === "needs_compaction" ? 101 : 90,
+      usableInputTokens: 100,
+    };
+  }
+
+  override async synthesisContext(
+    _load: LoadedTurn,
+    packets: readonly TopicPacket[],
+  ): Promise<ContextState> {
+    this.calls.push("fanout-synthesis-measure");
+    return this.packetContext(packets, "needs_compaction");
+  }
+
+  override async initialCompactionManifest(
+    _load: LoadedTurn,
+    _state: ContextState,
+    taskId: string,
+  ): Promise<InitialContextManifest> {
+    this.calls.push(taskId);
+    const decisions =
+      this.mode === "compact-fit"
+        ? [
+            { candidateId: "c1", action: "keep" as const, reason: "retain packet" },
+            { candidateId: "c2", action: "omit" as const, reason: "omit packet" },
+          ]
+        : [
+            {
+              candidateId: "c1",
+              action: "compact" as const,
+              groupId: "g1",
+              reason: "compact packet",
+            },
+            { candidateId: "c2", action: "omit" as const, reason: "omit packet" },
+          ];
+    this.manifestDecisions.push(
+      decisions.map((decision) => `${decision.candidateId}:${decision.action}`),
+    );
+    return {
+      decisions,
+      groups: this.mode === "compact-fit" ? [] : [{ groupId: "g1", renderedTokenBudget: 1 }],
+    };
+  }
+
+  override async createCompactionGroups(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _manifest: InitialContextManifest,
+    taskId: string,
+  ): Promise<readonly CompactionGroup[]> {
+    this.calls.push(taskId);
+    return this.mode === "compact-fit"
+      ? []
+      : [{ groupId: "g1", candidateIds: ["c1"], renderedTokenBudget: 1, mode: "normal" }];
+  }
+
+  override async compactContextGroup(
+    _load: LoadedTurn,
+    _state: ContextState,
+    group: CompactionGroup,
+    taskId: string,
+  ): Promise<GroupResultEnvelope> {
+    this.calls.push(taskId);
+    return {
+      groupId: group.groupId,
+      result: { decisions: [{ candidateId: "c1", action: "omit", reason: "omit packet" }] },
+      renderedTokenCount: 0,
+    };
+  }
+
+  override async fallbackCompactionManifest(
+    _load: LoadedTurn,
+    _state: ContextState,
+    _initialManifest: InitialContextManifest,
+    _firstPass: unknown,
+    _measurement: unknown,
+    taskId: string,
+  ): Promise<FallbackContextManifest> {
+    this.calls.push(taskId);
+    const decisions = [
+      { candidateId: "c1", action: "omit" as const, reason: "omit packet" },
+      { candidateId: "c2", action: "omit" as const, reason: "omit packet" },
+    ];
+    this.manifestDecisions.push(
+      decisions.map((decision) => `${decision.candidateId}:${decision.action}`),
+    );
+    return { decisions, groups: [] };
+  }
+
+  override async measureCompaction(
+    _load: LoadedTurn,
+    state: ContextState,
+    pass: CompactionPassResult,
+    taskId: string,
+  ): Promise<ContextState> {
+    this.calls.push(taskId);
+    const ready =
+      (this.mode === "compact-fit" && pass.phase === "compact") ||
+      (this.mode === "fallback-fit" && pass.phase === "fallback");
+    return {
+      ...state,
+      status: ready ? "ready" : pass.phase === "compact" ? "needs_compaction" : "failed",
+      ...(ready || pass.phase === "compact" ? {} : { failureCode: "context_plan_unfit" as const }),
+      inputTokens: ready ? 90 : 101,
+      compactionRan: true,
     };
   }
 }
@@ -614,13 +1024,13 @@ class SelectorParallelOperations extends ScriptedOperations {
     await this.selectorGate;
   }
 
-  override async retrieveInternal(
+  override async retrieveStructuredInternal(
     _load: LoadedTurn,
     _question: string,
     taskId: string,
-  ): Promise<[]> {
+  ): Promise<RetrievalPlanResult | null> {
     await this.selector(taskId);
-    return [];
+    return null;
   }
 
   override async selectMemories(
@@ -709,15 +1119,15 @@ class BlockingFanoutCheckpointOperations extends ScriptedOperations {
     return this.checkpointGate;
   }
 
-  override async retrieveInternal(
+  override async retrieveStructuredInternal(
     loaded: LoadedTurn,
     question: string,
     taskId: string,
     selectedTurnIds?: readonly string[],
-  ): Promise<never[]> {
+  ): Promise<RetrievalPlanResult | null> {
     return this.checkpoint === "after-plan"
-      ? this.blockAtCheckpoint<never[]>(taskId)
-      : super.retrieveInternal(loaded, question, taskId, selectedTurnIds);
+      ? this.blockAtCheckpoint<RetrievalPlanResult | null>(taskId)
+      : super.retrieveStructuredInternal(loaded, question, taskId, selectedTurnIds);
   }
 
   override async selectMemories(
@@ -833,6 +1243,29 @@ class SynthesisMismatchOperations extends ScriptedOperations {
   }
 }
 
+class TypedSynthesisFailureOperations extends ScriptedOperations {
+  constructor(private readonly failureCode: NonNullable<ContextState["failureCode"]>) {
+    super("fanout");
+  }
+
+  override async synthesisContext(
+    _load: LoadedTurn,
+    _packets: readonly TopicPacket[],
+    _sourceMap: readonly FinalSourceRecord[],
+    _topicContexts: readonly ContextState[],
+    _allocation: FanoutAllocation,
+  ): Promise<ContextState> {
+    this.calls.push("fanout-synthesis-measure");
+    return {
+      ...context(),
+      status: "failed",
+      inputTokens: 101,
+      usableInputTokens: 100,
+      failureCode: this.failureCode,
+    };
+  }
+}
+
 class RetryingAnswerOperations extends ScriptedOperations {
   answerAttempts = 0;
 
@@ -878,7 +1311,7 @@ class NonRetryableTopicAnswerOperations extends ScriptedOperations {
   ): Promise<TopicPacket> {
     if (state.topicId === "t1") {
       this.topicAttempts += 1;
-      throw new AiRuntimeError("agent_context_budget_exceeded", "topic request cannot fit", {
+      throw new AiRuntimeError("topic_answer_failed", "topic request cannot fit", {
         retryable: false,
         taskRetryable: false,
       });
@@ -968,6 +1401,97 @@ class MalformedSourceMapOperations extends ScriptedOperations {
 }
 
 describe("canonical ai-chat workflow source contract", () => {
+  it("persists ordered code-owned candidates while exposing only the provider-safe view", () => {
+    const entry: CandidateLedgerEntry = {
+      candidateId: "c1",
+      kind: "document",
+      identity: {
+        kind: "public_document",
+        sourceId: "public:source-1",
+        documentId: "document-1",
+        snapshotId: "version-1",
+        contentHash: "a".repeat(64),
+      },
+      provenance: { label: "Document", purpose: "answer", date: null },
+      text: "Exact source text",
+      baseRanges: [{ charStart: 0, charEnd: 17 }],
+      previewRanges: [{ charStart: 0, charEnd: 17 }],
+      preview: "Exact source text",
+      renderedTokenCount: 3,
+    };
+    const runtimeCandidate = {
+      id: "c1",
+      kind: "document" as const,
+      rank: 0,
+      purpose: "answer",
+      sourceId: "public:source-1",
+      documentId: "document-1",
+      snapshotId: "version-1",
+      contentHash: "a".repeat(64),
+      text: "Exact source text",
+      ranges: [{ charStart: 0, charEnd: 17 }],
+      label: "Document",
+      publicProvenance: { documentTitle: "Document", citationUrl: "https://example.test/document" },
+      renderedTokenCount: 3,
+    };
+    const parsed = aiChatSchemas.aiChatAssembly.safeParse({
+      value: {
+        ...assembly(),
+        candidates: [runtimeCandidate],
+        candidateLedger: { candidates: [entry] },
+        sourceMap: [
+          {
+            sourceKey: "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1",
+            locator: {
+              kind: "document",
+              sourceId: "public:source-1",
+              documentId: "document-1",
+              snapshotId: "version-1",
+              contentHash: "a".repeat(64),
+              ranges: [{ charStart: 0, charEnd: 17 }],
+            },
+            label: "Document",
+            publicProvenance: {
+              documentTitle: "Document",
+              citationUrl: "https://example.test/document",
+            },
+            uses: [
+              {
+                consumerTaskId: "single-answer",
+                contextOrder: 0,
+                renderedTokenCount: 3,
+                ranges: [{ charStart: 0, charEnd: 17 }],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(parsed.success).toBe(true);
+    const provider = toProviderCandidateView(entry);
+    expect(provider).toEqual({
+      candidateId: "c1",
+      kind: "document",
+      label: "Document",
+      purpose: "answer",
+      date: null,
+      renderedTokenCount: 3,
+      preview: "Exact source text",
+    });
+    expect(provider).not.toHaveProperty("identity");
+    expect(provider).not.toHaveProperty("text");
+    expect(
+      aiChatSchemas.aiChatAssembly.safeParse({
+        value: {
+          ...assembly(),
+          candidates: [runtimeCandidate],
+          sourceMap: [],
+          candidateLedger: undefined,
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects a historical model in durable context state before resume", () => {
     const parsed = aiChatSchemas.aiChatContext.safeParse({
       value: {
@@ -1293,7 +1817,7 @@ describe("canonical ai-chat workflow source contract", () => {
       question: "Compare the evidence.",
       candidates: [
         {
-          id: "document:document-1",
+          id: "c1",
           kind: "document" as const,
           rank: 0,
           purpose: "publisher evidence",
@@ -1317,12 +1841,39 @@ describe("canonical ai-chat workflow source contract", () => {
           renderedTokenCount: 3,
         },
       ],
+      candidateLedger: {
+        candidates: [
+          {
+            candidateId: "c1",
+            kind: "document",
+            identity: {
+              kind: "publisher_document",
+              subscriptionId: "source-1",
+              issueId: "issue-1",
+              documentId: "document-1",
+              snapshotId: "version-1",
+              publisherExtractionId: "extraction-1",
+              contentHash: "a".repeat(64),
+            },
+            provenance: {
+              label: "Publisher document",
+              purpose: "publisher evidence",
+              date: "2026-07-01T00:00:00.000Z",
+            },
+            text: "publisher text",
+            baseRanges: [{ charStart: 0, charEnd: 14 }],
+            previewRanges: [{ charStart: 0, charEnd: 14 }],
+            preview: "publisher text",
+            renderedTokenCount: 3,
+          },
+        ],
+      },
       sourceMap: [
         {
           sourceKey: "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1",
           locator: {
             kind: "document" as const,
-            sourceId: "publisher:subscription-1",
+            sourceId: "publisher:source-1",
             documentId: "document-1",
             snapshotId: "version-1",
             contentHash: "a".repeat(64),
@@ -1361,43 +1912,6 @@ describe("canonical ai-chat workflow source contract", () => {
           ...value,
           candidates: [{ ...value.candidates[0], publisherIssueId: undefined, forged: true }],
         },
-      }).success,
-    ).toBe(false);
-  });
-
-  it("accepts namespaced public and publisher internal references without a root source alias", () => {
-    const references = [
-      {
-        kind: "document" as const,
-        documentId: "public-document-1",
-        snapshotId: "public-version-1",
-        source: { kind: "public" as const, sourceId: "public:e2e-fr-energie" },
-        purpose: "public evidence",
-      },
-      {
-        kind: "document" as const,
-        documentId: "publisher-document-1",
-        snapshotId: "publisher-version-1",
-        source: {
-          kind: "publisher" as const,
-          sourceId: "publisher:e2e-fr-energie",
-          issueId: "issue-1",
-          documentId: "publisher-document-1",
-        },
-        publisherExtractionId: "extraction-1",
-        purpose: "publisher evidence",
-      },
-    ];
-
-    expect(aiChatSchemas.aiChatInternal.safeParse({ value: references }).success).toBe(true);
-    expect(
-      aiChatSchemas.aiChatInternal.safeParse({
-        value: [
-          {
-            ...references[1]!,
-            source: { ...references[1]!.source, documentId: "wrong-document" },
-          },
-        ],
       }).success,
     ).toBe(false);
   });
@@ -1753,7 +2267,6 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
             aiAnswerTimeoutMs: 30_000,
             aiTopicResearchMaxConcurrency: 6,
             aiTopicAnswerMaxConcurrency: 3,
-            aiContextReductionMaxIterations: 2,
           },
         });
         const runId = `canonical-ai-chat-${route}-${crypto.randomUUID()}`;
@@ -1766,12 +2279,19 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
         expect(result.status).toBe("finished");
         expect(operations.calls).toContain("memory-extract");
         expect(operations.calls.at(-1)).toBe(terminal);
+        expect(operations.structuredQuestions.length).toBe(
+          route === "single" ? 1 : route === "fanout" ? 2 : 0,
+        );
+        expect(operations.assembledStructuredResults.every((count) => count > 0)).toBe(true);
         const finished = await finishedNodeIds(runId);
         if (route === "single") {
           expect(finished.has("single-answer-route")).toBe(true);
+          expect(operations.calls).not.toContain("single-compact-plan");
+          expect(operations.calls.filter((call) => call.includes("single-compact-g"))).toEqual([]);
           expect(operations.calls.indexOf("single-assemble")).toBeLessThan(
             operations.calls.indexOf("single-measure"),
           );
+          expect(operations.calls.filter((call) => call.includes("single-fallback"))).toEqual([]);
           expect(operations.calls.indexOf("single-measure")).toBeLessThan(
             operations.calls.indexOf("single-answer"),
           );
@@ -1883,67 +2403,168 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
       await api.close();
     }
   }, 60_000);
-
-  it("feeds invalid reduction measurement feedback into the next bounded planning iteration", async () => {
+  it("renders canonical parallel compaction group IDs in ledger order", async () => {
     const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
-    const operations = new ScriptedOperations("single", "correct-then-fit");
+    const operations = new GroupedCompactionOperations();
     try {
-      const workflow = buildAiChatWorkflow(api, {
-        operations,
-        config: {
-          aiFastTaskTimeoutMs: 30_000,
-          aiAnswerTimeoutMs: 30_000,
-          aiTopicResearchMaxConcurrency: 6,
-          aiTopicAnswerMaxConcurrency: 3,
-          aiContextReductionMaxIterations: 2,
-        },
-      });
+      const workflow = buildAiChatWorkflow(api, { operations, config: workflowConfig });
+      const runId = `canonical-ai-chat-compaction-groups-${crypto.randomUUID()}`;
       const result = await runSmithersWorkflow(workflow, {
-        runId: `canonical-ai-chat-reduction-correction-${crypto.randomUUID()}`,
+        runId,
         input: { aiRunId: load.aiRunId },
         logDir: null,
         resume: false,
       });
       expect(result.status).toBe("finished");
-      expect(operations.calls.filter((call) => call === "single-reduce-plan")).toHaveLength(2);
-      expect(operations.calls.filter((call) => call === "single-reduce-measure")).toHaveLength(2);
-      expect(operations.reductionFeedbackInputs).toEqual([[], ["complete accounting is required"]]);
-      expect(operations.calls).toContain("single-answer");
-      expect(operations.calls.at(-1)).toBe("finalize:single");
+      expect(operations.calls).toContain("single-compact-plan");
+      expect(operations.calls).toContain("single-compact-g001");
+      expect(operations.calls).toContain("single-compact-g002");
+      expect(operations.calls.filter((call) => call.includes("single-fallback"))).toEqual([]);
+      const frame = await graphKeyframe(api, runId, "single-compact-groups");
+      const groups = collectFrameElements(
+        frame,
+        (element) =>
+          element.tag === "smithers:parallel" && element.props?.id === "single-compact-groups",
+      );
+      expect(groups).toHaveLength(1);
+      expect(groups[0]?.props?.maxConcurrency).toBe("3");
+      expect(groups[0]?.children?.map((child) => child.props?.id)).toEqual([
+        "single-compact-g001",
+        "single-compact-g002",
+      ]);
+    } finally {
+      await api.close();
+    }
+  }, 60_000);
+  it("mounts one bounded fallback group with stable ledger ordering", async () => {
+    const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+    const operations = new FallbackGroupedCompactionOperations("unfit");
+    const runId = `canonical-ai-chat-compaction-fallback-group-${crypto.randomUUID()}`;
+    try {
+      const workflow = buildAiChatWorkflow(api, { operations, config: workflowConfig });
+      const result = await runSmithersWorkflow(workflow, {
+        runId,
+        input: { aiRunId: load.aiRunId },
+        logDir: null,
+        resume: false,
+      });
+      expect(result.status).toBe("finished");
+      expect(operations.calls).not.toContain("single-fallback-g002");
+      expect(operations.calls.indexOf("single-fallback-g001")).toBeGreaterThan(-1);
+      expect(operations.calls.indexOf("single-fallback-collect")).toBeGreaterThan(
+        operations.calls.indexOf("single-fallback-g001"),
+      );
+      expect(operations.collectedTaskIds.at(-1)).toEqual(["g1"]);
+      expect(operations.calls).not.toContain("single-answer");
+
+      const frame = await graphKeyframe(api, runId, "single-fallback-g001");
+      const fallbackGroups = collectFrameElements(
+        frame,
+        (element) =>
+          element.tag === "smithers:parallel" && element.props?.id === "single-fallback-groups",
+      );
+      expect(fallbackGroups).toHaveLength(1);
+      expect(fallbackGroups[0]?.props?.maxConcurrency).toBe("3");
+      expect(
+        collectFrameElements(
+          frame,
+          (element) =>
+            element.tag === "smithers:task" && element.props?.id === "single-fallback-g001",
+        ),
+      ).toHaveLength(1);
+      expect(
+        collectFrameElements(
+          frame,
+          (element) =>
+            element.tag === "smithers:task" && element.props?.id === "single-fallback-collect",
+        ),
+      ).toHaveLength(1);
+      expect(
+        collectFrameElements(
+          frame,
+          (element) =>
+            element.tag === "smithers:task" && element.props?.id === "single-fallback-measure",
+        ),
+      ).toHaveLength(1);
+      expect(
+        collectFrameElements(
+          frame,
+          (element) =>
+            element.tag === "smithers:task" && element.props?.id === "single-fallback-g002",
+        ),
+      ).toHaveLength(0);
     } finally {
       await api.close();
     }
   }, 60_000);
 
-  it("returns controlled context_plan_unfit after exactly two non-convergent iterations", async () => {
+  it("runs at most one monotone fallback and fails closed when it remains oversized", async () => {
     const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
-    const operations = new ScriptedOperations("single", "unfit");
+    const operations = new GroupedCompactionOperations("unfit");
     try {
-      const workflow = buildAiChatWorkflow(api, {
-        operations,
-        config: {
-          aiFastTaskTimeoutMs: 30_000,
-          aiAnswerTimeoutMs: 30_000,
-          aiTopicResearchMaxConcurrency: 6,
-          aiTopicAnswerMaxConcurrency: 3,
-          aiContextReductionMaxIterations: 2,
-        },
-      });
+      const workflow = buildAiChatWorkflow(api, { operations, config: workflowConfig });
       const result = await runSmithersWorkflow(workflow, {
-        runId: `canonical-ai-chat-reduction-unfit-${crypto.randomUUID()}`,
+        runId: `canonical-ai-chat-compaction-unfit-${crypto.randomUUID()}`,
         input: { aiRunId: load.aiRunId },
         logDir: null,
         resume: false,
       });
       expect(result.status).toBe("finished");
-      expect(operations.calls.filter((call) => call === "single-reduce-plan")).toHaveLength(2);
-      expect(operations.calls.filter((call) => call === "single-reduce-measure")).toHaveLength(2);
+      expect(operations.calls.filter((call) => call === "single-fallback-plan")).toHaveLength(2);
+      expect(operations.calls.filter((call) => call.includes("fallback-g"))).toEqual([]);
       expect(operations.calls).not.toContain("single-answer");
       expect(operations.calls.at(-1)).toBe("finalize:failed");
     } finally {
       await api.close();
     }
   }, 60_000);
+
+  it.each([
+    ["compact-fit", "compact"] as const,
+    ["fallback-fit", "fallback"] as const,
+    ["fallback-unfit", "unfit"] as const,
+  ])(
+    "runs the synthesis topic-packet %s path through the shared compaction graph",
+    async (mode, terminalPhase) => {
+      const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+      const operations = new TopicPacketCompactionOperations(mode);
+      try {
+        const workflow = buildAiChatWorkflow(api, { operations, config: workflowConfig });
+        const result = await runSmithersWorkflow(workflow, {
+          runId: `canonical-ai-chat-topic-packet-${mode}-${crypto.randomUUID()}`,
+          input: { aiRunId: load.aiRunId },
+          logDir: null,
+          resume: false,
+        });
+        expect(result.status).toBe("finished");
+        expect(operations.calls).toContain("fanout-synthesis-measure");
+        expect(operations.calls).toContain("fanout-synthesis-compact-plan");
+        expect(operations.manifestDecisions[0]).toEqual(
+          ["c1:keep", "c2:omit"].map((value) =>
+            mode === "compact-fit" ? value : value.replace(":keep", ":compact"),
+          ),
+        );
+        if (mode === "compact-fit") {
+          expect(operations.calls).not.toContain("fanout-synthesis-fallback-plan");
+          expect(operations.calls).toContain("fanout-synthesis-compact-measure");
+          expect(operations.calls).toContain("fanout-synthesis");
+        } else {
+          expect(operations.calls).toContain("fanout-synthesis-fallback-plan");
+          expect(operations.calls).toContain("fanout-synthesis-fallback-measure");
+          expect(operations.manifestDecisions.at(-1)).toEqual(["c1:omit", "c2:omit"]);
+          if (terminalPhase === "fallback") {
+            expect(operations.calls).toContain("fanout-synthesis");
+          } else {
+            expect(operations.calls).not.toContain("fanout-synthesis");
+            expect(operations.calls.at(-1)).toBe("finalize:failed");
+          }
+        }
+      } finally {
+        await api.close();
+      }
+    },
+    60_000,
+  );
 
   it("resumes the same durable graph without re-executing completed answer-lane or memory tasks", async () => {
     const runId = `canonical-ai-chat-resume-${crypto.randomUUID()}`;
@@ -1958,7 +2579,6 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
         aiAnswerTimeoutMs: 30_000,
         aiTopicResearchMaxConcurrency: 6,
         aiTopicAnswerMaxConcurrency: 3,
-        aiContextReductionMaxIterations: 2,
       },
     });
     const controller = new AbortController();
@@ -1989,7 +2609,6 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
           aiAnswerTimeoutMs: 30_000,
           aiTopicResearchMaxConcurrency: 6,
           aiTopicAnswerMaxConcurrency: 3,
-          aiContextReductionMaxIterations: 2,
         },
       });
       const resumed = await runSmithersWorkflow(resumedWorkflow, {
@@ -2197,7 +2816,6 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
           aiAnswerTimeoutMs: 30_000,
           aiTopicResearchMaxConcurrency: 6,
           aiTopicAnswerMaxConcurrency: 3,
-          aiContextReductionMaxIterations: 2,
         },
       });
       const result = await runSmithersWorkflow(workflow, {
@@ -2232,7 +2850,7 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
       expect(operations.topicAttempts).toBe(1);
       expect(operations.calls).not.toContain("fanout-synthesis");
       expect(operations.finalAnswers).toEqual([
-        { status: "failed", code: "agent_context_budget_exceeded", retryable: false },
+        { status: "failed", code: "topic_answer_failed", retryable: false },
       ]);
     } finally {
       await api.close();
@@ -2305,6 +2923,36 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
     }
   }, 60_000);
 
+  it.each([
+    "context_plan_unfit",
+    "context_mandatory_too_large",
+    "context_budget_mismatch",
+  ] as const)(
+    "propagates typed synthesis context failure %s through the fanout failure branch",
+    async (failureCode) => {
+      const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
+      const operations = new TypedSynthesisFailureOperations(failureCode);
+      try {
+        const workflow = buildAiChatWorkflow(api, { operations, config: workflowConfig });
+        const result = await runSmithersWorkflow(workflow, {
+          runId: `canonical-ai-chat-synthesis-${failureCode}-${crypto.randomUUID()}`,
+          input: { aiRunId: load.aiRunId },
+          logDir: null,
+          resume: false,
+        });
+        expect(result.status).toBe("finished");
+        expect(operations.calls).not.toContain("fanout-synthesis");
+        expect(operations.finalAnswers).toEqual([
+          { status: "failed", code: failureCode, retryable: false },
+        ]);
+        expect(operations.calls.at(-1)).toBe("finalize:failed");
+      } finally {
+        await api.close();
+      }
+    },
+    60_000,
+  );
+
   it("starts memory and answer concurrently and never finalizes before both lanes join", async () => {
     const api = await createSmithersStorage(aiChatSchemas, { connectionString: databaseUrl! });
     const operations = new ParallelJoinOperations();
@@ -2316,7 +2964,6 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
           aiAnswerTimeoutMs: 30_000,
           aiTopicResearchMaxConcurrency: 6,
           aiTopicAnswerMaxConcurrency: 3,
-          aiContextReductionMaxIterations: 2,
         },
       });
       const pending = runSmithersWorkflow(workflow, {
@@ -2365,7 +3012,6 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
             aiAnswerTimeoutMs: 30_000,
             aiTopicResearchMaxConcurrency: 6,
             aiTopicAnswerMaxConcurrency: 3,
-            aiContextReductionMaxIterations: 2,
           },
         });
         pending = runSmithersWorkflow(workflow, {
@@ -2409,7 +3055,6 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
           aiAnswerTimeoutMs: 30_000,
           aiTopicResearchMaxConcurrency: 6,
           aiTopicAnswerMaxConcurrency: 2,
-          aiContextReductionMaxIterations: 2,
         },
       });
       const pending = runSmithersWorkflow(workflow, {
@@ -2442,7 +3087,6 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
           aiAnswerTimeoutMs: 30_000,
           aiTopicResearchMaxConcurrency: 6,
           aiTopicAnswerMaxConcurrency: 3,
-          aiContextReductionMaxIterations: 2,
         },
       });
       const result = await runSmithersWorkflow(workflow, {
@@ -2489,7 +3133,6 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
           aiAnswerTimeoutMs: 30_000,
           aiTopicResearchMaxConcurrency: 6,
           aiTopicAnswerMaxConcurrency: 3,
-          aiContextReductionMaxIterations: 2,
         },
       });
       const result = await runSmithersWorkflow(workflow, {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import { Effect } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
@@ -25,7 +26,10 @@ import {
   sha256Base64Url,
   webEvidenceIdentity,
   webQuoteHash,
+  stripHistoricalCitationTags,
 } from "../runtime/canonicalization";
+import { resolveRegisteredModel } from "../runtime/model-registry";
+import { MAX_COMPACTION_GROUPS, parseCompactionGroupTaskId } from "../context/compaction-runtime";
 import { PublicProvenanceSchema } from "../runtime/source-schemas";
 import {
   providerVisibleSourceExposureProofSha256Hex,
@@ -299,33 +303,6 @@ const EvaluationTurnPlanSchema = z
     }
   });
 
-const canonicalProviderTaskRoles = new Map<string, string>([
-  ["plan-turn", "plan_turn"],
-  ["memory-extract", "memory_extractor"],
-  ["evaluation-general-planner", "evaluation_general_planner"],
-  ["single-retrieve-internal", "internal_retrieval"],
-  ["single-select-memories", "memory_selector"],
-  ["single-retrieve-web", "web_research"],
-  ["single-reduce-plan", "context_reducer"],
-  ["single-answer", "direct_answer"],
-  ["topic-t1-retrieve-internal", "internal_retrieval"],
-  ["topic-t1-select-memories", "memory_selector"],
-  ["topic-t1-retrieve-web", "web_research"],
-  ["topic-t1-reduce-plan", "context_reducer"],
-  ["topic-t1-answer", "topic_answer"],
-  ["topic-t2-retrieve-internal", "internal_retrieval"],
-  ["topic-t2-select-memories", "memory_selector"],
-  ["topic-t2-retrieve-web", "web_research"],
-  ["topic-t2-reduce-plan", "context_reducer"],
-  ["topic-t2-answer", "topic_answer"],
-  ["topic-t3-retrieve-internal", "internal_retrieval"],
-  ["topic-t3-select-memories", "memory_selector"],
-  ["topic-t3-retrieve-web", "web_research"],
-  ["topic-t3-reduce-plan", "context_reducer"],
-  ["topic-t3-answer", "topic_answer"],
-  ["fanout-synthesis", "synthesis"],
-]);
-
 const RestrictedConversationEntrySchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -529,6 +506,73 @@ const RetrievalNoCallSealPayloadSchema = z
 
 type RetrievalNoCallReason = z.infer<typeof RetrievalNoCallSealPayloadSchema>["noCallReason"];
 
+const StructuredRetrievalPreviewIdentitySchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("public_document"),
+      sourceId: z.string().trim().min(1),
+      documentId: z.string().trim().min(1),
+      snapshotId: z.string().trim().min(1),
+      contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("publisher_document"),
+      subscriptionId: z.string().trim().min(1),
+      issueId: z.string().trim().min(1),
+      documentId: z.string().trim().min(1),
+      snapshotId: z.string().trim().min(1),
+      publisherExtractionId: z.string().trim().min(1),
+      contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("chat_message"),
+      messageId: z.string().trim().min(1),
+      sanitizedContentHash: z.string().regex(/^[a-f0-9]{64}$/u),
+    })
+    .strict(),
+]);
+
+const StructuredRetrievalPreviewRangeSchema = z
+  .object({ charStart: z.number().int().nonnegative(), charEnd: z.number().int().positive() })
+  .strict()
+  .superRefine((range, context) => {
+    if (range.charEnd <= range.charStart) {
+      context.addIssue({ code: "custom", message: "preview range must have positive length" });
+    }
+  });
+
+const StructuredRetrievalPreviewRecordSchema = z
+  .object({
+    identity: StructuredRetrievalPreviewIdentitySchema,
+    snapshotId: z.string().trim().min(1),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
+    publisherExtractionId: z.string().trim().min(1).optional(),
+    previewRanges: z.array(StructuredRetrievalPreviewRangeSchema).min(1),
+    previewByteLength: z.number().int().positive(),
+    previewSha256Hex: z.string().regex(/^[a-f0-9]{64}$/u),
+    fastTokenCount: z.number().int().nonnegative(),
+    mainTokenCount: z.number().int().nonnegative(),
+    recordDigestSha256Hex: z.string().regex(/^[a-f0-9]{64}$/u),
+  })
+  .strict();
+
+const StructuredRetrievalReviewPreviewPayloadSchema = z
+  .object({
+    taskId: z.string().trim().min(1),
+    loopIteration: z.number().int().nonnegative(),
+    attempt: z.number().int().nonnegative(),
+    providerRequestIndex: z.number().int().positive(),
+    agentRole: z.literal("internal_retrieval"),
+    slot: z.enum(["initial", "replacement"]),
+    providerInputSha256Hex: z.string().regex(/^[a-f0-9]{64}$/u),
+    records: z.array(StructuredRetrievalPreviewRecordSchema),
+  })
+  .strict();
+
 const ProviderSerializationProofBindingSchema = z
   .object({
     messageIndex: z.number().int().nonnegative(),
@@ -544,24 +588,6 @@ const ProviderSerializationProofBindingRowSchema = z
   .object({
     providerSerializationProofSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
     providerSerializationProofBinding: ProviderSerializationProofBindingSchema,
-  })
-  .strict();
-
-const ContextReducerTerminalSchema = z
-  .object({
-    terminalUsageCoordinate: z
-      .object({
-        taskId: z.string().trim().min(1),
-        loopIteration: z.number().int().nonnegative(),
-        attempt: z.number().int().nonnegative(),
-        providerRequestIndex: z.number().int().nonnegative(),
-      })
-      .strict(),
-    modelId: z.string().trim().min(1),
-    requestSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
-    providerInputTokens: z.number().int().nonnegative(),
-    totalTokens: z.number().int().nonnegative(),
-    stopReason: z.enum(["stop", "length", "toolUse"]),
   })
   .strict();
 
@@ -636,12 +662,11 @@ const validateDurableObservability = (
       "turn_plan",
       "retrieval_manifest",
       "retrieval_no_call_seal",
+      "structured_retrieval_review_preview",
       "candidate_rejected",
       "provider_request_measurement",
       "source_exposure_attestation",
       "context_measurement",
-      "context_decision",
-      "context_reducer_terminal",
       "context_serialized",
       "topic_packet",
       "memory_extraction_result",
@@ -653,8 +678,18 @@ const validateDurableObservability = (
       "citation_defect",
       "memory_written",
     ]);
+    let providerTaskRoleFor: (taskId: string) => string | undefined = (_taskId) => undefined;
+    const providerTaskRoleAllowed = (taskId: string, role: string): boolean => {
+      const expectedRole = providerTaskRoleFor(taskId);
+      if (expectedRole === undefined) return false;
+      return (
+        expectedRole === role ||
+        (role === "context_source_tool" &&
+          parseCompactionGroupTaskId(taskId, compactionPrefixes) !== undefined)
+      );
+    };
     const canonicalProviderTaskId = (taskId: string): boolean =>
-      canonicalProviderTaskRoles.has(taskId);
+      providerTaskRoleFor(taskId) !== undefined;
     const unknownObservation = observationRows.find(
       (row) => !allowedObservationKinds.has(row.kind),
     );
@@ -716,6 +751,46 @@ const validateDurableObservability = (
     if (!parsedPlan.success) {
       return yield* Effect.fail(new Error("terminal turn_plan is not a strict durable plan"));
     }
+    const allowedProviderTaskRoles = new Map<string, string>([
+      ["memory-extract", "memory_extractor"],
+      ...(isGeneralPlannerEvaluationRun
+        ? [["evaluation-general-planner", "evaluation_general_planner"] as const]
+        : [["plan-turn", "plan_turn"] as const]),
+    ]);
+    const compactionPrefixes: readonly string[] =
+      parsedPlan.data.mode === "single"
+        ? ["single"]
+        : parsedPlan.data.mode === "fanout"
+          ? [...parsedPlan.data.topics.map((topic) => `topic-${topic.topicId}`), "fanout-synthesis"]
+          : [];
+    if (!isGeneralPlannerEvaluationRun && parsedPlan.data.mode === "single") {
+      allowedProviderTaskRoles.set("single-retrieve-internal", "internal_retrieval");
+      allowedProviderTaskRoles.set("single-select-memories", "memory_selector");
+      allowedProviderTaskRoles.set("single-retrieve-web", "web_research");
+      allowedProviderTaskRoles.set("single-answer", "direct_answer");
+    } else if (!isGeneralPlannerEvaluationRun && parsedPlan.data.mode === "fanout") {
+      for (const topic of parsedPlan.data.topics) {
+        allowedProviderTaskRoles.set(
+          `topic-${topic.topicId}-retrieve-internal`,
+          "internal_retrieval",
+        );
+        allowedProviderTaskRoles.set(`topic-${topic.topicId}-select-memories`, "memory_selector");
+        allowedProviderTaskRoles.set(`topic-${topic.topicId}-retrieve-web`, "web_research");
+        allowedProviderTaskRoles.set(`topic-${topic.topicId}-answer`, "topic_answer");
+      }
+      allowedProviderTaskRoles.set("fanout-synthesis", "synthesis");
+    }
+    providerTaskRoleFor = (taskId: string): string | undefined => {
+      const exactRole = allowedProviderTaskRoles.get(taskId);
+      if (exactRole !== undefined) return exactRole;
+      for (const prefix of compactionPrefixes) {
+        if (taskId === `${prefix}-compact-plan`) return "context_manifest";
+        if (taskId === `${prefix}-fallback-plan`) return "context_fallback_manifest";
+      }
+      const group = parseCompactionGroupTaskId(taskId, compactionPrefixes);
+      if (group === undefined || group.ordinal > MAX_COMPACTION_GROUPS) return undefined;
+      return group.phase === "compact" ? "context_compact_group" : "context_fallback_group";
+    };
     if (
       answer.status === "ok" &&
       ((parsedPlan.data.mode === "clarify" && answer.mode !== "clarification") ||
@@ -802,9 +877,11 @@ const validateDurableObservability = (
       if (!parsed.success) {
         return yield* Effect.fail(new Error("retrieval manifest is not strict"));
       }
-      const expectedRole = canonicalProviderTaskRoles.get(row.emittingTask);
-      if (expectedRole === undefined && row.emittingTask !== "evaluation-general-planner") {
-        return yield* Effect.fail(new Error("retrieval manifest has a foreign owner"));
+      const expectedRole = providerTaskRoleFor(row.emittingTask);
+      if (expectedRole === undefined) {
+        return yield* Effect.fail(
+          new Error("retrieval manifest owner is outside the selected route"),
+        );
       }
       const previous = terminalRetrievalRows.get(row.emittingTask);
       if (
@@ -860,6 +937,291 @@ const validateDurableObservability = (
         );
       }
     }
+
+    const reviewPreviewRows = observationRows.filter(
+      (observation) => observation.kind === "structured_retrieval_review_preview",
+    );
+    const reviewPreviewCoordinates = new Set<string>();
+    const reviewPreviewSlots = new Set<string>();
+    // Review ownership comes from the current durable chat-preview request
+    // and its provider measurement. Preview rows are outputs, not evidence
+    // used to decide which outputs are required.
+    const durableReviewRequests = yield* sql<{
+      readonly taskId: string;
+      readonly loopIteration: number;
+      readonly attempt: number;
+      readonly providerRequestIndex: number;
+    }>`
+      select distinct exposures.task_id as "taskId",
+             exposures.loop_iteration as "loopIteration",
+             exposures.attempt,
+             exposures.provider_request_index as "providerRequestIndex"
+      from ai_source_exposures exposures
+      join ai_observations measurements
+        on measurements.run_id = exposures.run_id
+       and measurements.emitting_task = exposures.task_id
+       and measurements.loop_iteration = exposures.loop_iteration
+       and measurements.attempt = exposures.attempt
+       and measurements.kind = 'provider_request_measurement'
+       and (measurements.payload->>'providerRequestIndex')::int = exposures.provider_request_index
+      where exposures.run_id = ${runId}
+        and exposures.exposure_stage = 'internal_chat_search_preview'
+        and exposures.provider_request_index > 0
+        and measurements.payload->>'agentRole' = 'internal_retrieval'
+        and exposures.task_id = any(${expectedRetrievalOwners})
+    `;
+    const measuredReviewRequests = observationRows.flatMap((observation) => {
+      if (
+        observation.kind !== "provider_request_measurement" ||
+        !expectedRetrievalOwners.includes(observation.emittingTask) ||
+        observation.payload.agentRole !== "internal_retrieval"
+      ) {
+        return [];
+      }
+      const providerRequestIndex = observation.payload.providerRequestIndex;
+      if (
+        typeof providerRequestIndex !== "number" ||
+        !Number.isSafeInteger(providerRequestIndex) ||
+        providerRequestIndex <= 0
+      ) {
+        return [];
+      }
+      return [
+        {
+          taskId: observation.emittingTask,
+          loopIteration: observation.loopIteration,
+          attempt: observation.attempt,
+          providerRequestIndex,
+        },
+      ];
+    });
+    const allDurableReviewRequests = [
+      ...durableReviewRequests,
+      ...measuredReviewRequests.filter(
+        (measured) =>
+          !durableReviewRequests.some(
+            (durable) =>
+              durable.taskId === measured.taskId &&
+              durable.loopIteration === measured.loopIteration &&
+              durable.attempt === measured.attempt &&
+              durable.providerRequestIndex === measured.providerRequestIndex,
+          ),
+      ),
+    ];
+    const expectedReviewOwners = new Set(allDurableReviewRequests.map((request) => request.taskId));
+    const providerMeasurementFor = (
+      owner: string,
+      loopIteration: number,
+      attempt: number,
+      providerRequestIndex: number,
+    ): Record<string, unknown> | undefined => {
+      const rows = observationRows.filter(
+        (observation) =>
+          observation.kind === "provider_request_measurement" &&
+          observation.emittingTask === owner &&
+          observation.loopIteration === loopIteration &&
+          observation.attempt === attempt &&
+          observation.payload.providerRequestIndex === providerRequestIndex,
+      );
+      return rows.length === 1 ? rows[0]!.payload : undefined;
+    };
+    const previewTextFromSource = (
+      text: string,
+      ranges: readonly { readonly charStart: number; readonly charEnd: number }[],
+    ): string => {
+      for (const range of ranges) {
+        if (
+          !Number.isSafeInteger(range.charStart) ||
+          !Number.isSafeInteger(range.charEnd) ||
+          range.charStart < 0 ||
+          range.charEnd <= range.charStart ||
+          range.charEnd > text.length
+        ) {
+          throw new Error("structured retrieval review preview range is outside immutable source");
+        }
+      }
+      return ranges.map((range) => text.slice(range.charStart, range.charEnd)).join("\n…\n");
+    };
+    const sourceTextForRecord = (
+      record: z.infer<typeof StructuredRetrievalPreviewRecordSchema>,
+    ): Effect.Effect<string | null, SqlError, PgClient.PgClient> =>
+      Effect.gen(function* () {
+        if (record.identity.kind === "chat_message") {
+          const rows = yield* sql<{ readonly content: string; readonly author: string }>`
+          select content, author
+          from chat_messages
+          where id = ${record.identity.messageId}::uuid
+            and chat_id = ${run.chatId}::uuid
+        `;
+          const row = rows[0];
+          return row === undefined
+            ? null
+            : row.author === "assistant"
+              ? stripHistoricalCitationTags(row.content)
+              : row.content;
+        }
+        if (record.identity.kind === "public_document") {
+          const sourceId = record.identity.sourceId.startsWith("public:")
+            ? record.identity.sourceId.slice("public:".length)
+            : record.identity.sourceId;
+          const rows = yield* sql<{ readonly text: string }>`
+          select d.text
+          from public_source_documents d
+          where d.source_id = ${sourceId}
+            and d.document_id = ${record.identity.documentId}
+        `;
+          return rows[0]?.text ?? null;
+        }
+        const sourceId = record.identity.subscriptionId.startsWith("publisher:")
+          ? record.identity.subscriptionId.slice("publisher:".length)
+          : record.identity.subscriptionId;
+        const rows = yield* sql<{ readonly text: string }>`
+        select versions.canonical_text as text
+        from brief_document_versions versions
+        join brief_documents documents on documents.id = versions.brief_document_id
+        where documents.id::text = ${record.identity.documentId}
+          and versions.id::text = ${record.identity.snapshotId}
+          and versions.publisher_extraction_id::text = ${record.identity.publisherExtractionId}
+          and documents.issue_id::text = ${record.identity.issueId}
+          and exists (
+            select 1
+            from publisher_issues issues
+            join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
+            where issues.id::text = ${record.identity.issueId}
+              and subscriptions.id::text = ${sourceId}
+          )
+      `;
+        return rows[0]?.text ?? null;
+      });
+    for (const row of reviewPreviewRows) {
+      const parsed = StructuredRetrievalReviewPreviewPayloadSchema.safeParse(row.payload);
+      const owner = row.emittingTask;
+      if (
+        !parsed.success ||
+        !expectedReviewOwners.has(owner) ||
+        !retrievalRows.some(
+          (retrieval) =>
+            retrieval.emittingTask === owner &&
+            retrieval.loopIteration === row.loopIteration &&
+            retrieval.attempt === row.attempt,
+        ) ||
+        parsed.data.taskId !== owner ||
+        parsed.data.loopIteration !== row.loopIteration ||
+        parsed.data.attempt !== row.attempt ||
+        row.observationKey !==
+          `${owner}:${row.loopIteration}:${row.attempt}:structured_retrieval_review_preview:${parsed.success ? parsed.data.slot : "invalid"}`
+      ) {
+        return yield* Effect.fail(new Error("structured retrieval review preview is not exact"));
+      }
+      const measurement = providerMeasurementFor(
+        owner,
+        row.loopIteration,
+        row.attempt,
+        parsed.data.providerRequestIndex,
+      );
+      if (
+        measurement === undefined ||
+        measurement.agentRole !== "internal_retrieval" ||
+        measurement.requestSha256Hex !== parsed.data.providerInputSha256Hex
+      ) {
+        return yield* Effect.fail(
+          new Error("structured retrieval review preview provider request digest differs"),
+        );
+      }
+      const coordinate = `${owner}:${parsed.data.loopIteration}:${parsed.data.attempt}:${parsed.data.providerRequestIndex}`;
+      const slotKey = `${owner}:${parsed.data.loopIteration}:${parsed.data.attempt}:${parsed.data.slot}`;
+      if (
+        reviewPreviewCoordinates.has(coordinate) ||
+        reviewPreviewSlots.has(slotKey) ||
+        !allDurableReviewRequests.some(
+          (request) =>
+            request.taskId === owner &&
+            request.loopIteration === parsed.data.loopIteration &&
+            request.attempt === parsed.data.attempt &&
+            request.providerRequestIndex === parsed.data.providerRequestIndex,
+        ) ||
+        parsed.data.slot !== (parsed.data.providerRequestIndex === 1 ? "initial" : "replacement")
+      ) {
+        return yield* Effect.fail(
+          new Error("structured retrieval review preview has duplicate coordinates"),
+        );
+      }
+      reviewPreviewCoordinates.add(coordinate);
+      reviewPreviewSlots.add(slotKey);
+      const recordCoordinates = new Set<string>();
+      for (const record of parsed.data.records) {
+        const { recordDigestSha256Hex, ...recordWithoutDigest } = record;
+        if (
+          createHash("sha256").update(canonicalJson(recordWithoutDigest)).digest("hex") !==
+          recordDigestSha256Hex
+        ) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview record digest differs"),
+          );
+        }
+        if (
+          (record.identity.kind === "public_document" ||
+            record.identity.kind === "publisher_document") &&
+          (record.identity.snapshotId !== record.snapshotId ||
+            record.identity.contentHash !== record.contentHash)
+        ) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview identity differs"),
+          );
+        }
+        if (
+          record.identity.kind === "publisher_document" &&
+          record.identity.publisherExtractionId !== record.publisherExtractionId
+        ) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview publisher identity differs"),
+          );
+        }
+        if (
+          record.identity.kind === "chat_message" &&
+          record.identity.messageId !== record.snapshotId
+        ) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview chat identity differs"),
+          );
+        }
+        for (let index = 1; index < record.previewRanges.length; index += 1) {
+          if (record.previewRanges[index - 1]!.charEnd >= record.previewRanges[index]!.charStart) {
+            return yield* Effect.fail(
+              new Error("structured retrieval review preview ranges overlap"),
+            );
+          }
+        }
+        const recordCoordinate = `${canonicalJson(record.identity)}:${record.snapshotId}:${record.contentHash}:${canonicalJson(record.previewRanges)}`;
+        if (recordCoordinates.has(recordCoordinate)) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview has duplicate evidence"),
+          );
+        }
+        recordCoordinates.add(recordCoordinate);
+      }
+    }
+    if (
+      (parsedPlan.data.mode === "clarify" && reviewPreviewRows.length > 0) ||
+      (parsedPlan.data.mode !== "clarify" &&
+        allDurableReviewRequests.some(
+          (request) =>
+            !reviewPreviewRows.some((row) => {
+              const parsed = StructuredRetrievalReviewPreviewPayloadSchema.safeParse(row.payload);
+              return (
+                parsed.success &&
+                row.emittingTask === request.taskId &&
+                row.loopIteration === request.loopIteration &&
+                row.attempt === request.attempt &&
+                parsed.data.providerRequestIndex === request.providerRequestIndex &&
+                parsed.data.slot ===
+                  (request.providerRequestIndex === 1 ? "initial" : "replacement")
+              );
+            }),
+        ))
+    ) {
+      return yield* Effect.fail(new Error("structured retrieval review preview is missing"));
+    }
     if (parsedPlan.data.mode === "clarify") {
       if (retrievalRows.length > 0) {
         return yield* Effect.fail(new Error("clarification cannot carry a retrieval manifest"));
@@ -871,7 +1233,7 @@ const validateDurableObservability = (
         }
       }
     }
-    const exposureRows = yield* sql<{
+    const storedExposureRows = yield* sql<{
       readonly taskId: string;
       readonly loopIteration: number;
       readonly attempt: number;
@@ -906,6 +1268,112 @@ const validateDurableObservability = (
              publisher_extraction_id::text as "publisherExtractionId"
       from ai_source_exposures where run_id = ${runId}
     `;
+    const exposureRows = storedExposureRows.map((row) => ({
+      ...row,
+      storageProofSha256Hex: sourceExposureStorageProof(row.contentItemIdentity),
+      contentItemIdentity: sourceExposureBaseIdentity(row.contentItemIdentity),
+    }));
+    for (const previewRow of reviewPreviewRows) {
+      const preview = StructuredRetrievalReviewPreviewPayloadSchema.parse(previewRow.payload);
+      const previewExposures = exposureRows.filter(
+        (exposure) =>
+          exposure.taskId === previewRow.emittingTask &&
+          exposure.loopIteration === previewRow.loopIteration &&
+          exposure.attempt === previewRow.attempt &&
+          exposure.providerRequestIndex === preview.providerRequestIndex &&
+          (exposure.exposureStage === "internal_search_preview" ||
+            exposure.exposureStage === "internal_chat_search_preview"),
+      );
+      for (const record of preview.records) {
+        const matches = previewExposures.filter((exposure) => {
+          if (record.identity.kind === "chat_message") {
+            return (
+              exposure.sourceKind === "chat_message" &&
+              exposure.logicalSourceIdentity ===
+                chatMessageEvidenceIdentity(record.identity.messageId) &&
+              exposure.contentItemIdentity === record.identity.messageId &&
+              exposure.exposureStage === "internal_chat_search_preview" &&
+              exposure.visibleTokenCount >= 0
+            );
+          }
+          const expectedLogical =
+            record.identity.kind === "public_document"
+              ? namespacedDocumentEvidenceIdentity(
+                  {
+                    kind: "public",
+                    sourceId: record.identity.sourceId.startsWith("public:")
+                      ? record.identity.sourceId
+                      : `public:${record.identity.sourceId}`,
+                  },
+                  record.identity.documentId,
+                )
+              : namespacedDocumentEvidenceIdentity(
+                  {
+                    kind: "publisher",
+                    sourceId: record.identity.subscriptionId.startsWith("publisher:")
+                      ? record.identity.subscriptionId
+                      : `publisher:${record.identity.subscriptionId}`,
+                    issueId: record.identity.issueId,
+                    documentId: record.identity.documentId,
+                  },
+                  record.identity.documentId,
+                );
+          return (
+            exposure.sourceKind === "document" &&
+            exposure.exposureStage === "internal_search_preview" &&
+            exposure.logicalSourceIdentity === expectedLogical &&
+            exposure.snapshotId === record.snapshotId &&
+            exposure.contentHash === record.contentHash &&
+            canonicalJson(exposure.documentRanges) === canonicalJson(record.previewRanges)
+          );
+        });
+        if (matches.length !== 1) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview proof does not match its exposure"),
+          );
+        }
+        const sourceText = yield* sourceTextForRecord(record);
+        if (sourceText === null) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview source is not durable"),
+          );
+        }
+        if (createHash("sha256").update(sourceText).digest("hex") !== record.contentHash) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview source digest differs"),
+          );
+        }
+        if (
+          record.identity.kind === "chat_message" &&
+          record.identity.sanitizedContentHash !== record.contentHash
+        ) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview chat content identity differs"),
+          );
+        }
+        const previewText = previewTextFromSource(sourceText, record.previewRanges);
+        const previewBytes = new TextEncoder().encode(previewText);
+        if (
+          previewBytes.byteLength !== record.previewByteLength ||
+          createHash("sha256").update(previewBytes).digest("hex") !== record.previewSha256Hex
+        ) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview bytes differ from its source"),
+          );
+        }
+        const fastTokenCount = resolveRegisteredModel(acceptanceScope.fastModelId).countTextTokens(
+          previewText,
+        );
+        const mainTokenCount = resolveRegisteredModel(acceptanceScope.mainModelId).countTextTokens(
+          previewText,
+        );
+        if (fastTokenCount !== record.fastTokenCount || mainTokenCount !== record.mainTokenCount) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview token evidence differs"),
+          );
+        }
+      }
+    }
     for (const exposure of exposureRows) {
       if (!canonicalProviderTaskId(exposure.taskId)) {
         return yield* Effect.fail(new Error("source exposure has a foreign task owner"));
@@ -965,10 +1433,13 @@ const validateDurableObservability = (
         return yield* Effect.fail(new Error("non-document exposure carries document identity"));
       }
     }
+    const attestationRequiredExposureRows = exposureRows.filter(
+      (exposure) => exposure.sourceKind !== "web",
+    );
     const attestationCount = observationRows.filter(
       (row) => row.kind === "source_exposure_attestation",
     ).length;
-    if (attestationCount !== exposureRows.length) {
+    if (attestationCount !== attestationRequiredExposureRows.length) {
       return yield* Effect.fail(
         new Error("source exposure and attestation ledgers are not bijective"),
       );
@@ -977,7 +1448,7 @@ const validateDurableObservability = (
       (row) => row.kind === "source_exposure_attestation",
     );
     const exposureKeys = new Set(
-      exposureRows.map((exposure) =>
+      attestationRequiredExposureRows.map((exposure) =>
         [
           exposure.taskId,
           exposure.loopIteration,
@@ -987,10 +1458,11 @@ const validateDurableObservability = (
           exposure.logicalSourceIdentity,
           exposure.contentItemIdentity,
           exposure.exposureStage,
+          exposure.storageProofSha256Hex ?? "",
         ].join(":"),
       ),
     );
-    if (exposureKeys.size !== exposureRows.length) {
+    if (exposureKeys.size !== attestationRequiredExposureRows.length) {
       return yield* Effect.fail(new Error("duplicate source exposure coordinates"));
     }
     const attestedExposureKeys = new Set<string>();
@@ -1058,6 +1530,7 @@ const validateDurableObservability = (
         logicalSourceIdentity,
         contentItemIdentity,
         exposureStage,
+        proof,
       ].join(":");
       const exposure = exposureRows.find(
         (candidate) =>
@@ -1070,6 +1543,7 @@ const validateDurableObservability = (
             candidate.logicalSourceIdentity,
             candidate.contentItemIdentity,
             candidate.exposureStage,
+            candidate.storageProofSha256Hex ?? "",
           ].join(":") === exposureKey,
       );
       if (
@@ -1121,6 +1595,19 @@ const validateDurableObservability = (
       const bindings = exposureBindingsByCoordinate.get(key) ?? [];
       bindings.push(parsedBinding);
       exposureBindingsByCoordinate.set(key, bindings);
+    }
+    for (const exposure of exposureRows.filter(
+      (candidate) => candidate.sourceKind === "web" && candidate.storageProofSha256Hex !== null,
+    )) {
+      const key = [
+        exposure.taskId,
+        exposure.loopIteration,
+        exposure.attempt,
+        exposure.providerRequestIndex,
+      ].join(":");
+      const proofs = exposureProofsByCoordinate.get(key) ?? [];
+      proofs.push(exposure.storageProofSha256Hex!);
+      exposureProofsByCoordinate.set(key, proofs);
     }
     if (attestedExposureKeys.size !== exposureKeys.size) {
       return yield* Effect.fail(new Error("source exposure attestation ledger has missing rows"));
@@ -1190,7 +1677,6 @@ const validateDurableObservability = (
         );
       }
       const requestIndex = row.payload.providerRequestIndex;
-      const expectedRole = canonicalProviderTaskRoles.get(row.emittingTask);
       const modelId = row.payload.modelId;
       const requestSha256Hex = row.payload.requestSha256Hex;
       const sourceExposureProofs = row.payload.sourceExposureProofSha256Hexes;
@@ -1199,8 +1685,7 @@ const validateDurableObservability = (
         typeof value === "number" && Number.isSafeInteger(value);
       if (
         !safeInteger(requestIndex) ||
-        requestIndex < 0 ||
-        row.payload.agentRole !== expectedRole ||
+        !providerTaskRoleAllowed(row.emittingTask, row.payload.agentRole as string) ||
         modelId !== "glm-5-turbo" ||
         typeof requestSha256Hex !== "string" ||
         !/^[0-9a-f]{64}$/u.test(requestSha256Hex) ||
@@ -1219,9 +1704,11 @@ const validateDurableObservability = (
       const requestedOutputTokens = row.payload.requestedOutputTokens;
       const usableInputTokens = row.payload.usableInputTokens;
       const contextWindow = row.payload.contextWindow;
+      const repairConsumed = row.payload.repairConsumed;
       const measurementFields = new Set([
         "providerRequestIndex",
         "agentRole",
+        "repairConsumed",
         "modelId",
         "requestSha256Hex",
         "sourceExposureProofSha256Hexes",
@@ -1234,6 +1721,7 @@ const validateDurableObservability = (
       ]);
       if (
         Object.keys(row.payload).some((field) => !measurementFields.has(field)) ||
+        (repairConsumed !== undefined && typeof repairConsumed !== "boolean") ||
         !safeInteger(inputTokens) ||
         inputTokens < 0 ||
         !safeInteger(requestedOutputTokens) ||
@@ -1256,7 +1744,7 @@ const validateDurableObservability = (
       if (JSON.stringify(expectedProofs) !== JSON.stringify(measuredProofs)) {
         return yield* Effect.fail(
           new Error(
-            `source exposure lacks its exact provider measurement: provider measurement proof set differs from exposed content: ${key}`,
+            `source exposure lacks its exact provider measurement: stage-incompatible content-item identity; provider measurement proof set differs from exposed content: ${key}`,
           ),
         );
       }
@@ -1279,7 +1767,25 @@ const validateDurableObservability = (
             new Error("provider request measurement source proof bindings are not exact"),
           );
         }
-        const attestedBindings = (exposureBindingsByCoordinate.get(key) ?? [])
+        const webProofs = new Set(
+          exposureRows
+            .filter(
+              (exposure) =>
+                exposure.sourceKind === "web" &&
+                exposure.taskId === row.emittingTask &&
+                exposure.loopIteration === row.loopIteration &&
+                exposure.attempt === row.attempt &&
+                exposure.providerRequestIndex === requestIndex,
+            )
+            .map((exposure) => exposure.storageProofSha256Hex)
+            .filter((proof): proof is string => proof !== null),
+        );
+        const attestedBindings = [
+          ...(exposureBindingsByCoordinate.get(key) ?? []),
+          ...parsedBindings.data
+            .filter((binding) => webProofs.has(binding.providerSerializationProofSha256Hex))
+            .map((binding) => binding.providerSerializationProofBinding),
+        ]
           .map((binding, index) => ({ binding, index }))
           .sort((left, right) =>
             JSON.stringify(left.binding).localeCompare(JSON.stringify(right.binding)),
@@ -1381,7 +1887,7 @@ const validateDurableObservability = (
       if (usage.providerServiceId !== acceptanceScope.provider) {
         return yield* Effect.fail(new Error("provider usage differs from accepted provider"));
       }
-      if (canonicalProviderTaskRoles.get(usage.taskId) !== undefined) {
+      if (providerTaskRoleFor(usage.taskId) !== undefined) {
         // The task-to-role map is shared by measurements and usage.  A row
         // with a copied coordinate but a different role is not a retry.
         const roleRows = observationRows.filter(
@@ -1393,13 +1899,13 @@ const validateDurableObservability = (
             observation.payload.providerRequestIndex === usage.providerRequestIndex,
         );
         if (
-          usage.agentRole !== canonicalProviderTaskRoles.get(usage.taskId) ||
+          !providerTaskRoleAllowed(usage.taskId, usage.agentRole) ||
           !["zai_coding_plan_official", "deterministic_test", "openai_compatible_custom"].includes(
             usage.providerServiceId,
           ) ||
           !["stop", "length", "toolUse"].includes(usage.stopReason) ||
           roleRows.length !== 1 ||
-          roleRows[0]!.payload.agentRole !== canonicalProviderTaskRoles.get(usage.taskId)
+          !providerTaskRoleAllowed(usage.taskId, roleRows[0]!.payload.agentRole as string)
         ) {
           return yield* Effect.fail(new Error("provider usage has a foreign task role"));
         }
@@ -1562,7 +2068,6 @@ const validateDurableObservability = (
         "internal_retrieval_failed",
         "memory_selector_failed",
         "web_research_failed",
-        "context_reducer_failed",
         "answer_failed",
         "topic_answer_failed",
         "synthesis_failed",
@@ -1597,7 +2102,6 @@ const validateDurableObservability = (
       (answerFailureCode === "internal_retrieval_failed" && taskId.endsWith("retrieve-internal")) ||
       (answerFailureCode === "memory_selector_failed" && taskId.endsWith("select-memories")) ||
       (answerFailureCode === "web_research_failed" && taskId.endsWith("retrieve-web")) ||
-      (answerFailureCode === "context_reducer_failed" && taskId.endsWith("reduce-plan")) ||
       (answerFailureCode === "answer_failed" && taskId === "single-answer") ||
       (answerFailureCode === "topic_answer_failed" && /^topic-t[123]-answer$/u.test(taskId)) ||
       (answerFailureCode === "synthesis_failed" && taskId === "fanout-synthesis") ||
@@ -1827,7 +2331,6 @@ const validateDurableObservability = (
           "turn_plan",
           "retrieval_manifest",
           "topic_packet",
-          "context_reducer_terminal",
           "memory_extraction_result",
           "context_serialized",
         ].includes(row.kind)
@@ -1883,50 +2386,12 @@ const validateDurableObservability = (
         return yield* Effect.fail(new Error(`${row.kind} output lacks its exact provider usage`));
       }
     }
-    for (const row of latestOutputRows.values()) {
-      if (row.kind !== "context_reducer_terminal") continue;
-      const parsed = ContextReducerTerminalSchema.safeParse(row.payload);
-      if (!parsed.success) {
-        return yield* Effect.fail(new Error("context reducer terminal output is not strict"));
-      }
-      const coordinate = parsed.data.terminalUsageCoordinate;
-      const key = [
-        coordinate.taskId,
-        coordinate.loopIteration,
-        coordinate.attempt,
-        coordinate.providerRequestIndex,
-      ].join(":");
-      const measurement = measurements.get(key);
-      const usage = usageRows.find((candidate) => usageKeyFor(candidate) === key);
-      if (
-        coordinate.taskId !== row.emittingTask ||
-        coordinate.loopIteration !== row.loopIteration ||
-        coordinate.attempt !== row.attempt ||
-        latestMeasurementKeyFor(row.emittingTask, row.loopIteration, row.attempt) !== key ||
-        measurement === undefined ||
-        usage === undefined ||
-        parsed.data.modelId !== measurement.modelId ||
-        parsed.data.requestSha256Hex !== measurement.requestSha256Hex ||
-        parsed.data.providerInputTokens !== measurement.inputTokens ||
-        parsed.data.totalTokens !== usage.inputTokens + usage.cachedTokens + usage.outputTokens ||
-        parsed.data.stopReason !== usage.stopReason
-      ) {
-        return yield* Effect.fail(
-          new Error("context reducer terminal output is not bound to its exact provider result"),
-        );
-      }
-    }
     const providerOutputAttemptKeys = new Set(
       observationRows
         .filter((observation) =>
-          [
-            "turn_plan",
-            "retrieval_manifest",
-            "topic_packet",
-            "context_decision",
-            "context_reducer_terminal",
-            "memory_extraction_result",
-          ].includes(observation.kind),
+          ["turn_plan", "retrieval_manifest", "topic_packet", "memory_extraction_result"].includes(
+            observation.kind,
+          ),
         )
         .map((observation) =>
           [observation.emittingTask, observation.loopIteration, observation.attempt].join(":"),
@@ -1935,14 +2400,9 @@ const validateDurableObservability = (
     const providerOutputCoordinates = new Set<string>();
     for (const observation of observationRows) {
       if (
-        ![
-          "turn_plan",
-          "retrieval_manifest",
-          "topic_packet",
-          "context_decision",
-          "context_reducer_terminal",
-          "memory_extraction_result",
-        ].includes(observation.kind)
+        !["turn_plan", "retrieval_manifest", "topic_packet", "memory_extraction_result"].includes(
+          observation.kind,
+        )
       ) {
         continue;
       }
@@ -1984,19 +2444,49 @@ const validateDurableObservability = (
     const terminalUsageKeys = new Set([planMeasurementKey]);
     const contextMeasureTaskIdsFor = (consumerTaskId: string): readonly string[] => {
       if (consumerTaskId === "single-answer") {
-        return ["single-measure", "single-reduce-measure"];
+        return ["single-measure", "single-compact-measure", "single-fallback-measure"];
       }
       if (/^topic-t[123]-answer$/u.test(consumerTaskId)) {
         const topicId = consumerTaskId.slice("topic-".length, -"-answer".length);
-        return [`topic-${topicId}-measure`, `topic-${topicId}-reduce-measure`];
+        return [
+          `topic-${topicId}-measure`,
+          `topic-${topicId}-compact-measure`,
+          `topic-${topicId}-fallback-measure`,
+        ];
       }
       if (consumerTaskId === "fanout-synthesis") {
-        return ["fanout-synthesis-measure"];
+        return [
+          "fanout-synthesis-measure",
+          "fanout-synthesis-compact-measure",
+          "fanout-synthesis-fallback-measure",
+        ];
       }
       if (consumerTaskId === "evaluation-general-planner") {
         return ["evaluation-general-planner"];
       }
       return [];
+    };
+
+    const terminalContextMeasurementFor = (
+      consumerTaskId: string,
+      rows: readonly (typeof observationRows)[number][],
+    ): (typeof observationRows)[number] | undefined => {
+      const taskIds = contextMeasureTaskIdsFor(consumerTaskId);
+      const taskRank = new Map(taskIds.map((taskId, index) => [taskId, index] as const));
+      return rows
+        .filter(
+          (observation) =>
+            observation.kind === "context_measurement" &&
+            observation.payload.consumerTaskId === consumerTaskId &&
+            taskRank.has(observation.emittingTask),
+        )
+        .sort(
+          (left, right) =>
+            taskRank.get(left.emittingTask)! - taskRank.get(right.emittingTask)! ||
+            left.loopIteration - right.loopIteration ||
+            left.attempt - right.attempt,
+        )
+        .at(-1);
     };
 
     const failedContextLedgerMeasurementError = (
@@ -2022,14 +2512,20 @@ const validateDurableObservability = (
           !expectedMeasureTaskSet.has(observation.emittingTask) &&
           [
             "single-measure",
-            "single-reduce-measure",
+            "single-compact-measure",
+            "single-fallback-measure",
             "fanout-synthesis-measure",
+            "fanout-synthesis-compact-measure",
+            "fanout-synthesis-fallback-measure",
             "topic-t1-measure",
-            "topic-t1-reduce-measure",
+            "topic-t1-compact-measure",
+            "topic-t1-fallback-measure",
             "topic-t2-measure",
-            "topic-t2-reduce-measure",
+            "topic-t2-compact-measure",
+            "topic-t2-fallback-measure",
             "topic-t3-measure",
-            "topic-t3-reduce-measure",
+            "topic-t3-compact-measure",
+            "topic-t3-fallback-measure",
           ].includes(observation.emittingTask) &&
           observation.payload.consumerTaskId === consumerTaskId,
       );
@@ -2055,7 +2551,7 @@ const validateDurableObservability = (
           readonly requestedOutputTokens: number;
           readonly usableInputTokens: number;
           readonly contextWindow: number;
-          readonly status: "ready" | "needs_reduction";
+          readonly status: "ready" | "needs_compaction" | "failed";
           readonly restrictedContextLedger: z.infer<typeof RestrictedContextLedgerSchema>;
         };
       }> = [];
@@ -2075,9 +2571,9 @@ const validateDurableObservability = (
             requestedOutputTokens: z.number().int().positive(),
             usableInputTokens: z.number().int().positive(),
             contextWindow: z.number().int().positive(),
-            status: z.enum(["ready", "needs_reduction"]),
-            reductionRan: z.boolean(),
-            reductionFeedback: z.array(z.string()),
+            status: z.enum(["ready", "needs_compaction", "failed"]),
+            compactionRan: z.boolean(),
+            compactionFeedback: z.array(z.string()),
             restrictedContextLedger: RestrictedContextLedgerSchema,
           })
           .strict()
@@ -2090,19 +2586,14 @@ const validateDurableObservability = (
         }
         parsedPathMeasurements.push({ row: pathMeasurement, payload: payload.data });
       }
-      const reductionMeasureTaskId = measureTaskIds[1];
-      const terminalPathMeasurements =
-        reductionMeasureTaskId === undefined
-          ? parsedPathMeasurements.filter((entry) => entry.row.emittingTask === measureTaskIds[0])
-          : parsedPathMeasurements.filter(
-                (entry) => entry.row.emittingTask === reductionMeasureTaskId,
-              ).length > 0
-            ? parsedPathMeasurements.filter(
-                (entry) => entry.row.emittingTask === reductionMeasureTaskId,
-              )
-            : parsedPathMeasurements.filter(
-                (entry) => entry.row.emittingTask === measureTaskIds[0],
-              );
+      const terminalCompactionTaskId = [...measureTaskIds]
+        .reverse()
+        .find((taskId) =>
+          parsedPathMeasurements.some((entry) => entry.row.emittingTask === taskId),
+        );
+      const terminalPathMeasurements = parsedPathMeasurements.filter(
+        (entry) => entry.row.emittingTask === (terminalCompactionTaskId ?? measureTaskIds[0]),
+      );
       const terminalPathMeasurement = terminalPathMeasurements
         .sort(
           (left, right) =>
@@ -2182,6 +2673,65 @@ const validateDurableObservability = (
           JSON.stringify(sourceKeys) === JSON.stringify(expectedSourceKeys)
         );
       };
+      const selectedConversationError = (
+        selectedConversation: readonly z.infer<typeof RestrictedConversationEntrySchema>[],
+        expectedTurnIds: readonly string[],
+        compactionRan: boolean,
+        baselineConversation:
+          | readonly z.infer<typeof RestrictedConversationEntrySchema>[]
+          | undefined,
+      ): string | null => {
+        const selectedTurnIds = selectedConversation.map((entry) => entry.turnId);
+        if (
+          selectedConversation.some((entry) => entry.turnId.trim() === "") ||
+          new Set(selectedTurnIds).size !== selectedTurnIds.length
+        ) {
+          return "context conversation ledger contains duplicate or empty turns";
+        }
+        if (!compactionRan) {
+          if (JSON.stringify(selectedTurnIds) !== JSON.stringify(expectedTurnIds)) {
+            return "context conversation ledger differs from the turn plan";
+          }
+        } else {
+          if (baselineConversation !== undefined) {
+            const baselineTurnIds = baselineConversation.map((entry) => entry.turnId);
+            if (JSON.stringify(baselineTurnIds) !== JSON.stringify(expectedTurnIds)) {
+              return "initial context conversation differs from the turn plan";
+            }
+          }
+          let expectedIndex = 0;
+          for (const turnId of selectedTurnIds) {
+            const nextIndex = expectedTurnIds.indexOf(turnId, expectedIndex);
+            if (nextIndex < 0) {
+              return "context conversation ledger is not an ordered turn-plan subset";
+            }
+            expectedIndex = nextIndex + 1;
+          }
+          if (baselineConversation === undefined) {
+            return "compacted context conversation lacks its initial ledger";
+          }
+        }
+        if (baselineConversation !== undefined) {
+          if (!compactionRan) {
+            if (canonicalJson(selectedConversation) !== canonicalJson(baselineConversation)) {
+              return "context conversation ledger differs from its initial ledger";
+            }
+          } else {
+            let baselineIndex = 0;
+            for (const entry of selectedConversation) {
+              const nextIndex = baselineConversation.findIndex(
+                (candidate, index) =>
+                  index >= baselineIndex && canonicalJson(candidate) === canonicalJson(entry),
+              );
+              if (nextIndex < 0) {
+                return "compacted context conversation is not an ordered immutable subset";
+              }
+              baselineIndex = nextIndex + 1;
+            }
+          }
+        }
+        return null;
+      };
       const contextLedgerError = (
         serialized: ObservationRow,
         expectedConsumerTaskId: string,
@@ -2192,6 +2742,7 @@ const validateDurableObservability = (
           readonly source: FinalSourceRecord;
           readonly use: FinalSourceRecord["uses"][number];
         }[],
+        validateAnswerSources = true,
       ): string | null => {
         const parsed = RestrictedContextLedgerSchema.safeParse(
           serialized.payload.restrictedContextLedger,
@@ -2210,18 +2761,50 @@ const validateDurableObservability = (
         if (ledger.question !== expectedQuestion) {
           return "context question differs from the turn plan";
         }
-        if (ledger.selectedConversation.some((entry) => entry.turnId.trim() === "")) {
-          return "context conversation ledger contains an empty turn";
-        }
-        const ledgerTurnIds = ledger.selectedConversation.map((entry) => entry.turnId);
-        if (
-          new Set(ledgerTurnIds).size !== ledgerTurnIds.length ||
-          new Set(ledgerTurnIds).size !== new Set(expectedSelectedTurnIds).size ||
-          ledgerTurnIds.some((turnId) => !expectedSelectedTurnIds.includes(turnId))
-        ) {
-          return "context conversation ledger differs from the turn plan";
-        }
+        const measureTaskIds = contextMeasureTaskIdsFor(expectedConsumerTaskId);
+        const terminalMeasurement = terminalContextMeasurementFor(
+          expectedConsumerTaskId,
+          observationRows,
+        );
+        const terminalCompactionRan =
+          terminalMeasurement !== undefined &&
+          z
+            .object({ compactionRan: z.boolean() })
+            .passthrough()
+            .safeParse(terminalMeasurement.payload).data?.compactionRan === true;
+        const initialMeasurement = observationRows
+          .filter(
+            (observation) =>
+              observation.kind === "context_measurement" &&
+              observation.emittingTask === measureTaskIds[0] &&
+              observation.payload.consumerTaskId === expectedConsumerTaskId,
+          )
+          .sort(
+            (left, right) =>
+              left.loopIteration - right.loopIteration || left.attempt - right.attempt,
+          )
+          .at(-1);
+        const initialLedger =
+          initialMeasurement === undefined
+            ? undefined
+            : RestrictedContextLedgerSchema.safeParse(
+                initialMeasurement.payload.restrictedContextLedger,
+              ).data;
+        const conversationError = selectedConversationError(
+          ledger.selectedConversation,
+          expectedSelectedTurnIds,
+          terminalCompactionRan,
+          initialLedger?.selectedConversation,
+        );
+        if (conversationError !== null) return conversationError;
         const ledgerSources = ledger.sources;
+        if (!validateAnswerSources) {
+          const sourceKeys = ledgerSources.map((source) => source.sourceKey);
+          if (JSON.stringify(serialized.payload.sourceKeys) !== JSON.stringify(sourceKeys)) {
+            return "context source ledger differs from its internal topic context";
+          }
+          return null;
+        }
         if (ledgerSources.length !== expectedSources.length) {
           return "context source ledger cardinality differs";
         }
@@ -2275,14 +2858,20 @@ const validateDurableObservability = (
             !expectedMeasureTaskSet.has(observation.emittingTask) &&
             [
               "single-measure",
-              "single-reduce-measure",
+              "single-compact-measure",
+              "single-fallback-measure",
               "fanout-synthesis-measure",
+              "fanout-synthesis-compact-measure",
+              "fanout-synthesis-fallback-measure",
               "topic-t1-measure",
-              "topic-t1-reduce-measure",
+              "topic-t1-compact-measure",
+              "topic-t1-fallback-measure",
               "topic-t2-measure",
-              "topic-t2-reduce-measure",
+              "topic-t2-compact-measure",
+              "topic-t2-fallback-measure",
               "topic-t3-measure",
-              "topic-t3-reduce-measure",
+              "topic-t3-compact-measure",
+              "topic-t3-fallback-measure",
             ].includes(observation.emittingTask) &&
             observation.payload.consumerTaskId === consumerTaskId,
         );
@@ -2307,9 +2896,9 @@ const validateDurableObservability = (
             readonly requestedOutputTokens: number;
             readonly usableInputTokens: number;
             readonly contextWindow: number;
-            readonly status: "ready" | "needs_reduction";
-            readonly reductionRan: boolean;
-            readonly reductionFeedback: readonly string[];
+            readonly status: "ready" | "needs_compaction" | "failed";
+            readonly compactionRan: boolean;
+            readonly compactionFeedback: readonly string[];
             readonly restrictedContextLedger: unknown;
           };
         }> = [];
@@ -2329,9 +2918,9 @@ const validateDurableObservability = (
               requestedOutputTokens: z.number().int().positive(),
               usableInputTokens: z.number().int().positive(),
               contextWindow: z.number().int().positive(),
-              status: z.enum(["ready", "needs_reduction"]),
-              reductionRan: z.boolean(),
-              reductionFeedback: z.array(z.string()),
+              status: z.enum(["ready", "needs_compaction", "failed"]),
+              compactionRan: z.boolean(),
+              compactionFeedback: z.array(z.string()),
               restrictedContextLedger: RestrictedContextLedgerSchema,
             })
             .strict()
@@ -2341,27 +2930,16 @@ const validateDurableObservability = (
           }
           parsedPathMeasurements.push({ row: pathMeasurement, payload: payload.data });
         }
-        const reductionMeasureTaskId = measureTaskIds[1];
-        const terminalMeasurements =
-          reductionMeasureTaskId === undefined
-            ? parsedPathMeasurements.filter((entry) => entry.row.emittingTask === measureTaskIds[0])
-            : parsedPathMeasurements.filter(
-                  (entry) => entry.row.emittingTask === reductionMeasureTaskId,
-                ).length > 0
-              ? parsedPathMeasurements.filter(
-                  (entry) => entry.row.emittingTask === reductionMeasureTaskId,
-                )
-              : parsedPathMeasurements.filter(
-                  (entry) => entry.row.emittingTask === measureTaskIds[0],
-                );
-        const terminalMeasurement = terminalMeasurements
-          .sort(
-            (left, right) =>
-              left.row.loopIteration - right.row.loopIteration ||
-              left.row.attempt - right.row.attempt ||
-              left.row.emittingTask.localeCompare(right.row.emittingTask),
-          )
-          .at(-1)!;
+        const terminalMeasurementRow = terminalContextMeasurementFor(
+          consumerTaskId,
+          observationRows,
+        );
+        const terminalMeasurement = parsedPathMeasurements.find(
+          (entry) => entry.row === terminalMeasurementRow,
+        );
+        if (terminalMeasurement === undefined) {
+          return "context ledger lacks its terminal path-specific context measurement";
+        }
         const measuredLedger = RestrictedContextLedgerSchema.safeParse(
           terminalMeasurement.payload.restrictedContextLedger,
         );
@@ -2413,22 +2991,80 @@ const validateDurableObservability = (
         ) {
           return "synthesis context ledger differs from its provider measurement";
         }
+        const packetTopicIds = parsed.data.packets.map((packet) => packet.topicId);
+        const plannedTopicIds =
+          parsedPlan.data.mode === "fanout"
+            ? parsedPlan.data.topics.map((topic) => topic.topicId)
+            : [];
+        const plannedTopicIndex = new Map(
+          plannedTopicIds.map((topicId, index) => [topicId, index] as const),
+        );
+        const terminalContextMeasurement = terminalContextMeasurementFor(
+          "fanout-synthesis",
+          observationRows,
+        );
+        const terminalCompactionRan =
+          terminalContextMeasurement !== undefined &&
+          z
+            .object({ compactionRan: z.boolean() })
+            .passthrough()
+            .safeParse(terminalContextMeasurement.payload).data?.compactionRan === true;
         if (
-          parsed.data.packets.map((packet) => packet.topicId).join(",") !==
-          (parsedPlan.data.mode === "fanout"
-            ? parsedPlan.data.topics.map((topic) => topic.topicId).join(",")
-            : "")
+          packetTopicIds.length < 2 ||
+          new Set(packetTopicIds).size !== packetTopicIds.length ||
+          packetTopicIds.some((topicId) => !plannedTopicIndex.has(topicId)) ||
+          packetTopicIds.some(
+            (topicId, index) =>
+              index > 0 &&
+              plannedTopicIndex.get(topicId)! <= plannedTopicIndex.get(packetTopicIds[index - 1]!)!,
+          ) ||
+          (!terminalCompactionRan &&
+            (packetTopicIds.length !== plannedTopicIds.length ||
+              packetTopicIds.some((topicId, index) => topicId !== plannedTopicIds[index])))
         ) {
           return "synthesis packet order differs from the fanout plan";
         }
-        const ledgerTurnIds = parsed.data.selectedConversation.map((entry) => entry.turnId);
-        if (
-          new Set(ledgerTurnIds).size !== ledgerTurnIds.length ||
-          new Set(ledgerTurnIds).size !== new Set(expectedSelectedTurnIds).size ||
-          ledgerTurnIds.some((turnId) => !expectedSelectedTurnIds.includes(turnId))
-        ) {
-          return "synthesis conversation ledger differs from the turn plan";
+        for (const source of answer.sourceMap) {
+          if (
+            source.uses.some(
+              (use) =>
+                use.consumerTaskId.startsWith("topic-") &&
+                (use.topicId === undefined || !packetTopicIds.includes(use.topicId)),
+            )
+          ) {
+            return "synthesis source map includes an omitted topic";
+          }
         }
+        const initialSynthesisMeasurement = observationRows
+          .filter(
+            (observation) =>
+              observation.kind === "context_measurement" &&
+              observation.emittingTask === "fanout-synthesis-measure" &&
+              observation.payload.consumerTaskId === "fanout-synthesis",
+          )
+          .sort(
+            (left, right) =>
+              left.loopIteration - right.loopIteration || left.attempt - right.attempt,
+          )
+          .at(-1);
+        const initialSynthesisLedger =
+          initialSynthesisMeasurement === undefined
+            ? undefined
+            : (() => {
+                const candidate = RestrictedContextLedgerSchema.safeParse(
+                  initialSynthesisMeasurement.payload.restrictedContextLedger,
+                );
+                return candidate.success && candidate.data.requestKind === "synthesis"
+                  ? candidate.data
+                  : undefined;
+              })();
+        const conversationError = selectedConversationError(
+          parsed.data.selectedConversation,
+          expectedSelectedTurnIds,
+          terminalCompactionRan,
+          initialSynthesisLedger?.selectedConversation,
+        );
+        if (conversationError !== null) return conversationError;
         const packetRows = new Map<
           string,
           {
@@ -2442,23 +3078,74 @@ const validateDurableObservability = (
         )) {
           const parsedPacket = TopicPacketObservationSchema.safeParse(packetRow.payload);
           if (!parsedPacket.success) return "topic packet observation is not strict";
+          if (!plannedTopicIndex.has(parsedPacket.data.topicId)) {
+            return "topic packet observation has a foreign topic";
+          }
           if (packetRow.emittingTask !== `topic-${parsedPacket.data.topicId}-answer`) {
             return "topic packet observation has a foreign owner";
           }
-          const visibleTopicKeys = answer.sourceMap
-            .filter((source) =>
-              source.uses.some(
-                (use) =>
-                  use.consumerTaskId === `topic-${parsedPacket.data.topicId}-answer` &&
-                  use.topicId === parsedPacket.data.topicId,
-              ),
-            )
-            .map((source) => source.sourceKey);
+          const retainedTopic = packetTopicIds.includes(parsedPacket.data.topicId);
+          const topicContextRow = orderedByAttempt(
+            observationRows.filter(
+              (observation) =>
+                observation.kind === "context_serialized" &&
+                observation.emittingTask === `topic-${parsedPacket.data.topicId}-answer`,
+            ),
+          ).at(-1);
+          const topicContextLedger =
+            topicContextRow === undefined
+              ? undefined
+              : RestrictedContextLedgerSchema.safeParse(
+                  topicContextRow.payload.restrictedContextLedger,
+                ).data;
+          if (topicContextLedger?.requestKind !== "topic") {
+            return "topic packet lacks its strict topic context ledger";
+          }
+          const internalTopicKeys = topicContextLedger.sources.map((source) => source.sourceKey);
           if (
-            new Set(parsedPacket.data.sourceKeys).size !== parsedPacket.data.sourceKeys.length ||
-            parsedPacket.data.sourceKeys.some((sourceKey) => !visibleTopicKeys.includes(sourceKey))
+            topicContextRow === undefined ||
+            JSON.stringify(topicContextRow.payload.sourceKeys) !== JSON.stringify(internalTopicKeys)
+          ) {
+            return "topic packet context source keys differ from its topic ledger";
+          }
+          const visibleTopicKeys = retainedTopic
+            ? answer.sourceMap
+                .filter((source) =>
+                  source.uses.some(
+                    (use) =>
+                      use.consumerTaskId === `topic-${parsedPacket.data.topicId}-answer` &&
+                      use.topicId === parsedPacket.data.topicId,
+                  ),
+                )
+                .map((source) => source.sourceKey)
+            : undefined;
+          const packetSourceKeys = parsedPacket.data.sourceKeys;
+          let packetSourceSubsetIndex = 0;
+          const packetSourceKeysAreOrderedSubset = packetSourceKeys.every((sourceKey) => {
+            const nextIndex = internalTopicKeys.indexOf(sourceKey, packetSourceSubsetIndex);
+            if (nextIndex < 0) return false;
+            packetSourceSubsetIndex = nextIndex + 1;
+            return true;
+          });
+          if (
+            !packetSourceKeysAreOrderedSubset ||
+            (retainedTopic && JSON.stringify(packetSourceKeys) !== JSON.stringify(visibleTopicKeys))
           ) {
             return "topic packet source keys differ from its topic context";
+          }
+          const expectedPacket =
+            parsed.data.packets.find((packet) => packet.topicId === parsedPacket.data.topicId) ??
+            initialSynthesisLedger?.packets?.find(
+              (packet) => packet.topicId === parsedPacket.data.topicId,
+            );
+          if (
+            expectedPacket === undefined ||
+            expectedPacket.status !== parsedPacket.data.status ||
+            expectedPacket.claimCount !== parsedPacket.data.claimCount ||
+            expectedPacket.gapCount !== parsedPacket.data.gapCount ||
+            expectedPacket.packetSha256Hex !== parsedPacket.data.packetSha256Hex
+          ) {
+            return "topic packet observation differs from its canonical packet ledger";
           }
           const previous = packetRows.get(parsedPacket.data.topicId);
           if (
@@ -2473,9 +3160,6 @@ const validateDurableObservability = (
               attempt: packetRow.attempt,
             });
           }
-        }
-        if (packetRows.size !== parsed.data.packets.length) {
-          return "synthesis ledger packet set differs from topic packets";
         }
         for (const packet of parsed.data.packets) {
           const observed = packetRows.get(packet.topicId)?.payload;
@@ -2707,6 +3391,14 @@ const validateDurableObservability = (
         if (parsedPlan.data.mode !== "fanout") {
           return yield* Effect.fail(new Error("synthesis answer lacks a fanout turn plan"));
         }
+        const serializedSynthesisLedger = RestrictedContextLedgerSchema.safeParse(
+          row.payload.restrictedContextLedger,
+        );
+        const retainedTopicIds =
+          serializedSynthesisLedger.success &&
+          serializedSynthesisLedger.data.requestKind === "synthesis"
+            ? new Set(serializedSynthesisLedger.data.packets.map((packet) => packet.topicId))
+            : new Set<"t1" | "t2" | "t3">();
         for (const topic of parsedPlan.data.topics) {
           const topicTask = `topic-${topic.topicId}-answer`;
           const topicRows = observationRows.filter(
@@ -2717,28 +3409,29 @@ const validateDurableObservability = (
             return yield* Effect.fail(new Error(`answer has no serialized ${topicTask} context`));
           }
           const topicRow = orderedByAttempt(topicRows).at(-1)!;
-          const topicSources = expectedSourcesFor(topicTask, topic.topicId);
-          if (
-            Object.keys(topicRow.payload).some(
-              (field) =>
-                !new Set([
-                  "consumerTaskId",
-                  "topicId",
-                  "sourceKeys",
-                  "restrictedContextLedger",
-                  "terminalUsageCoordinate",
-                ]).has(field),
-            )
-          ) {
-            return yield* Effect.fail(new Error(`${topicTask} context has an unknown field`));
+          const retainedTopic = retainedTopicIds.has(topic.topicId);
+          const topicLedger = RestrictedContextLedgerSchema.safeParse(
+            topicRow.payload.restrictedContextLedger,
+          );
+          if (!topicLedger.success || topicLedger.data.requestKind !== "topic") {
+            return yield* Effect.fail(new Error(`${topicTask} context ledger is not strict`));
           }
+          const topicLedgerSourceKeys = topicLedger.data.sources.map((source) => source.sourceKey);
+          const topicSources = expectedSourcesFor(topicTask, topic.topicId);
+          const sourceKeysValid = retainedTopic
+            ? sourceKeysMatch(topicRow, topicSources)
+            : JSON.stringify(topicRow.payload.sourceKeys) === JSON.stringify(topicLedgerSourceKeys);
           if (
-            !sourceKeysMatch(topicRow, topicSources) ||
+            !sourceKeysValid ||
             topicRow.payload.consumerTaskId !== topicTask ||
             topicRow.payload.topicId !== topic.topicId
           ) {
             return yield* Effect.fail(
-              new Error(`${topicTask} context differs from the saved answer source map`),
+              new Error(
+                retainedTopic
+                  ? `${topicTask} context differs from the saved answer source map`
+                  : `${topicTask} context differs from its internal topic ledger`,
+              ),
             );
           }
           const ledgerError = contextLedgerError(
@@ -2748,6 +3441,7 @@ const validateDurableObservability = (
             topic.question,
             topic.relevantTurnIds,
             topicSources,
+            retainedTopic,
           );
           if (ledgerError !== null) return yield* Effect.fail(new Error(ledgerError));
           const topicUsageKey = terminalContextUsageKey(topicRow, topicTask);
@@ -2763,9 +3457,11 @@ const validateDurableObservability = (
           if (topicMeasurementError !== null) {
             return yield* Effect.fail(new Error(topicMeasurementError));
           }
-          const topicExposureError = answerExposureError(topicRow, topicUsageKey, topicSources);
-          if (topicExposureError !== null) {
-            return yield* Effect.fail(new Error(topicExposureError));
+          if (retainedTopic) {
+            const topicExposureError = answerExposureError(topicRow, topicUsageKey, topicSources);
+            if (topicExposureError !== null) {
+              return yield* Effect.fail(new Error(topicExposureError));
+            }
           }
           terminalUsageKeys.add(topicUsageKey);
         }
@@ -3647,6 +4343,12 @@ const rangesEqual = (
   left: readonly { readonly charStart: number; readonly charEnd: number }[],
   right: readonly { readonly charStart: number; readonly charEnd: number }[],
 ): boolean => canonicalJson(left) === canonicalJson(right);
+
+const sourceExposureBaseIdentity = (value: string): string =>
+  value.replace(/#proof=[0-9a-f]{64}$/u, "");
+
+const sourceExposureStorageProof = (value: string): string | null =>
+  /#proof=([0-9a-f]{64})$/u.exec(value)?.[1] ?? null;
 
 const canonicalJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;

@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import {
   isCanonicalPublicDocumentSourceId,
@@ -13,16 +13,65 @@ import { z } from "zod";
 
 import type { WorkerConfig } from "../../config";
 import {
-  ContextReductionPrompt,
+  CompactionGroupPrompt,
+  ReadSourcePassagesArgumentsSchema,
+  SearchSourcePassagesArgumentsSchema,
+  SourceCompactionToolDefinitions,
+  buildInitialCompactionRequest,
+  buildGroupCompactionRequest,
+  buildFallbackCompactionRequest,
   PlanTurnPrompt,
   DirectAnswerPrompt,
-  InternalRetrievalPrompt,
+  InternalQueryPlanPrompt,
+  InternalQueryReviewPrompt,
   MemoryExtractorPrompt,
   MemorySelectorPrompt,
   SynthesisPrompt,
   TopicAnswerPrompt,
   WebResearchPrompt,
 } from "../prompts";
+import {
+  buildCandidatePassageIndex,
+  createCompactionGroups as createPureCompactionGroups,
+  createFallbackCompactionGroups as createPureFallbackCompactionGroups,
+  mergeGroupCompactionResults,
+  mergeCompactionSelections,
+  validateFallbackContextManifest,
+  validateGroupResultEnvelope,
+  validateTightenedGroupCompactionResult,
+  CompactionContractError,
+  validateInitialContextManifest,
+  type CompactionGroup,
+  type CompactionSelection,
+  type FallbackContextManifest,
+  type GroupCompactionResult,
+  type GroupResultEnvelope,
+  type InitialContextManifest,
+  type RenderedGroupSource,
+  GroupCompactionResultSchema,
+  GroupResultEnvelopeSchema,
+} from "../context/compaction";
+import type { CompactionPassResult } from "../context/compaction-runtime";
+import {
+  compactionGroupTaskId,
+  MAX_COMPACTION_CONCURRENCY,
+  type CompactionPhase,
+  type ExactContextMeasurement,
+  type NormalCompactionRequest,
+  type SourceToolCompactionRequest,
+} from "../context/compaction-runtime";
+import { ProviderSemaphore } from "../runtime/provider-semaphore";
+import {
+  DEFAULT_SOURCE_COMPACTION_TOOL_BOUNDS,
+  type CompactionProviderPayload,
+} from "../context/compaction-provider";
+import {
+  mapPassageIdsToRanges,
+  selectedTextFromRanges,
+  toProviderPassageView,
+  type PassageIndexOptions,
+  type PassageView,
+} from "../context/passages";
 import {
   appendAiRunEvent,
   appendAiRunEventInTransaction,
@@ -35,18 +84,15 @@ import type { AiDocumentExposureReconstruction } from "../product-state/observab
 import {
   executeInternalQueryPlan,
   makeRetrievalExecutionContext,
-  previewFromImmutableText,
-  searchDocuments,
   type HydrationOptions,
   type RetrievalPreviewExposure,
   type RetrievalPlanResult,
+  type HydratedReviewValue,
   type RetrievalExecutionContext,
 } from "../retrieval/retrieval";
-import { findNormalizedSubstringRanges, normalizeAndCaseFold } from "../retrieval/exact-text";
-import type { DocumentPreview } from "../retrieval/query-spec";
+import { normalizeAndCaseFold } from "../retrieval/exact-text";
 import {
   canonicalizeWebUrl,
-  type CharacterRange,
   chatMessageEvidenceIdentity,
   compareSourceKeys,
   compareRankedCandidates,
@@ -55,7 +101,6 @@ import {
   normalizeCharacterRanges,
   normalizeWebQuote,
   memoryExtractionSha256Hex,
-  requiresExplicitInspectionRange,
   sha256Base64Url,
   sourceKeyForNamespace,
   stripHistoricalCitationTags,
@@ -64,7 +109,7 @@ import {
   type SelectorDomain,
   type TopicId,
 } from "../runtime/canonicalization";
-import { CanonicalAgentClient, zodValidator } from "../runtime/agent-client";
+import { CanonicalAgentClient, toolResultJson, zodValidator } from "../runtime/agent-client";
 import {
   AiRuntimeError,
   isAiRuntimeError,
@@ -72,14 +117,19 @@ import {
   type AiRunErrorCode,
 } from "../runtime/errors";
 import { resolveRuntimeModel, type RuntimeModelId } from "../runtime/model-registry";
-import type { PiBoundaryCoordinates } from "../runtime/pi-boundary";
+import type { AttestedPiBoundaryCoordinates, PiBoundaryCoordinates } from "../runtime/pi-boundary";
 import {
   providerRequestSha256Hex,
+  providerRequestSourceExposureProofBindings,
+  providerVisibleSourceExposureCommitment,
+  serializeExactAnswerRequest,
   serializeAnswerSource,
   stableJson,
   type CodeOwnedSourceExposureProof,
   type LiveProviderRequest,
   type ProviderRequest,
+  type ProviderVisibleSourceExposureMarker,
+  type ProviderVisibleSourceExposureProofBinding,
   type SourceExposureProof,
 } from "../runtime/provider-request";
 import { publicSourceRecordFromFinalSource } from "../runtime/public-source";
@@ -94,13 +144,10 @@ import type {
   AnswerCandidate,
   AnswerLaneResult,
   CandidateRejection,
-  ContextDecision,
   ConversationEntry,
   PlanTurnResult,
   EffectiveWebPolicy,
   FinalSourceRecord,
-  InternalQuery,
-  InternalReference,
   Locale,
   Market,
   MemoryExtractionArtifact,
@@ -108,23 +155,36 @@ import type {
   MemorySnapshot,
   SerializedSourceUse,
   TopicPacket,
+  TopicPacketCandidate,
   WebEvidence,
 } from "../runtime/types";
 import {
   PlanTurnSchema,
   PlanTurnProviderSchema,
   validatePlanTurn,
-  validateContextDecisions,
   validateMemoryProposals,
   validateTopicPacket,
 } from "../runtime/validators";
 import { WebBoundaryError } from "../web/errors";
 import { TINYFISH_SEARCH_DOMAIN_FILTER_HARD_MAX } from "../web/tinyfish-search";
-import { decodeRunAcceptanceScope, type LoadedTurn } from "./types";
+import {
+  CandidateLedgerSchema,
+  candidateLocalId,
+  canonicalIdentityKey,
+  decodeRunAcceptanceScope,
+  reconstructTextFromRanges,
+  type CandidateLedger,
+  type CandidateLedgerEntry,
+  type CanonicalIdentity,
+  type LoadedTurn,
+  type SourceRange,
+} from "./types";
 import {
   BranchCoverageSchema,
+  InternalQueryPlanProviderSchema,
   InternalQueryPlanSchema,
   InternalQuerySchema as StructuredQuerySchema,
+  QueryReviewProviderSchema,
   QueryReviewSchema,
   type InternalQueryPlan,
   type InternalQueryPlanValue,
@@ -160,30 +220,105 @@ export interface QueryReviewExposure {
   readonly privateProof: readonly RetrievalPreviewExposure[];
 }
 
+const proofFromReviewResult = (
+  result: ReviewModelFusedResult,
+  exposure: RetrievalPreviewExposure,
+  index: number,
+  countTextTokens: (text: string) => number,
+): CodeOwnedSourceExposureProof => {
+  const identity = exposure.identity;
+  const sourceKind = identity.kind === "chat_message" ? "chat_message" : "document";
+  if (result.kind !== sourceKind) {
+    throw new Error("structured review result kind differs from its private proof");
+  }
+  const logicalSourceIdentity =
+    identity.kind === "chat_message"
+      ? chatMessageEvidenceIdentity(identity.messageId)
+      : identity.kind === "public_document"
+        ? namespacedDocumentEvidenceIdentity(
+            {
+              kind: "public",
+              sourceId: identity.sourceId.startsWith("public:")
+                ? identity.sourceId
+                : `public:${identity.sourceId}`,
+            },
+            identity.documentId,
+          )
+        : namespacedDocumentEvidenceIdentity(
+            {
+              kind: "publisher",
+              sourceId: identity.subscriptionId.startsWith("publisher:")
+                ? identity.subscriptionId
+                : `publisher:${identity.subscriptionId}`,
+              issueId: identity.issueId,
+              documentId: identity.documentId,
+            },
+            identity.documentId,
+          );
+  const contentItemIdentity =
+    identity.kind === "chat_message"
+      ? identity.messageId
+      : `${logicalSourceIdentity}:${exposure.snapshotId}:${sha256Base64Url(JSON.stringify(exposure.previewRanges))}`;
+  return codeOwnedExposureProof(
+    {
+      sourceKind,
+      logicalSourceIdentity,
+      contentItemIdentity,
+      stage:
+        identity.kind === "chat_message"
+          ? "internal_chat_search_preview"
+          : "internal_search_preview",
+      visibleTokenCount: countTextTokens(result.preview),
+    },
+    result.preview,
+    {
+      messageIndex: 1,
+      sourceOrdinal: index,
+      serializedField: `messages[1].content.results[${index}].preview`,
+    },
+  );
+};
+
 export const STRUCTURED_RETRIEVAL_REVIEW_PREVIEW_KIND =
   "structured_retrieval_review_preview" as const;
 
 const structuredRetrievalReviewPreviewPayload = (
   exposure: QueryReviewExposure,
   slot: "initial" | "replacement",
+  coordinates: {
+    readonly taskId: string;
+    readonly loopIteration: number;
+    readonly attempt: number;
+    readonly providerRequestIndex: number;
+    readonly providerRequestSha256Hex: string;
+  },
 ) => ({
+  taskId: coordinates.taskId,
+  loopIteration: coordinates.loopIteration,
+  attempt: coordinates.attempt,
+  providerRequestIndex: coordinates.providerRequestIndex,
+  agentRole: "internal_retrieval",
   slot,
-  providerInputSha256Hex: createHash("sha256")
-    .update(stableJson(exposure.providerInput))
-    .digest("hex"),
-  records: exposure.privateProof.map((proof) => ({
-    identity: proof.identity,
-    snapshotId: proof.snapshotId,
-    contentHash: proof.contentHash,
-    ...(proof.publisherExtractionId === undefined
-      ? {}
-      : { publisherExtractionId: proof.publisherExtractionId }),
-    previewRanges: proof.previewRanges,
-    previewByteLength: proof.previewBytes.byteLength,
-    previewSha256Hex: createHash("sha256").update(proof.previewBytes).digest("hex"),
-    fastTokenCount: proof.fastTokenCount,
-    mainTokenCount: proof.mainTokenCount,
-  })),
+  providerInputSha256Hex: coordinates.providerRequestSha256Hex,
+  records: exposure.privateProof.map((proof) => {
+    const record = {
+      identity: proof.identity,
+      snapshotId: proof.snapshotId,
+      contentHash: proof.contentHash,
+      ...(proof.publisherExtractionId === undefined
+        ? {}
+        : { publisherExtractionId: proof.publisherExtractionId }),
+      previewRanges: proof.previewRanges,
+      previewByteLength: proof.previewBytes.byteLength,
+      previewSha256Hex: createHash("sha256").update(proof.previewBytes).digest("hex"),
+      fastTokenCount: proof.fastTokenCount,
+      mainTokenCount: proof.mainTokenCount,
+    };
+    return {
+      ...record,
+      recordDigestSha256Hex: createHash("sha256").update(stableJson(record)).digest("hex"),
+    };
+  }),
 });
 
 export const QueryReviewProviderInputSchema = z.strictObject({
@@ -207,7 +342,10 @@ export interface QueryReviewOperationInput<TResult> {
 
 export interface QueryReviewOperationHandlers<TResult> {
   /** The fast-model call. Its input is the provider-safe review projection. */
-  readonly review: (input: QueryReviewProviderInput) => Promise<unknown> | unknown;
+  readonly review: (
+    input: QueryReviewProviderInput,
+    privateProof?: readonly RetrievalPreviewExposure[],
+  ) => Promise<unknown> | unknown;
   /** Executes one complete code-owned plan. */
   readonly execute: (plan: InternalQueryPlanValue) => Promise<TResult> | TResult;
   /** Rebuilds the provider-safe projection for a retained replacement result. */
@@ -253,12 +391,9 @@ export const runQueryReviewReplacement = async <TResult>(
     privateProof: [],
   };
   await handlers.onPreviewExposure(initialExposure);
-  const rawReview = await handlers.review(initialReviewInput);
+  const rawReview = await handlers.review(initialReviewInput, initialExposure.privateProof);
   const review = QueryReviewSchema.parse(rawReview);
   if (review.action === "accept") {
-    const ledgerEvidence = state.candidateLedger?.candidates.filter(
-      (candidate) => candidate.kind !== "conversation_entry",
-    );
     return {
       action: "accept",
       review,
@@ -290,8 +425,6 @@ export const runQueryReviewReplacement = async <TResult>(
   };
 };
 
-export const reviewOrReplaceQueryPlan = runQueryReviewReplacement;
-
 export type CanonicalAiConfig = Pick<
   WorkerConfig,
   | "aiMainModel"
@@ -303,15 +436,13 @@ export type CanonicalAiConfig = Pick<
   | "aiConversationRecentTurns"
   | "aiFanoutMaxTopics"
   | "aiRetrievalMaxTurns"
-  | "aiInternalMaxSearches"
-  | "aiInternalMaxInspections"
   | "aiWebMaxSearches"
   | "aiWebMaxFetches"
   | "aiWebMaxDomainFilters"
-  | "aiContextReductionMaxIterations"
   | "aiMemoryToolResultMaxItems"
   | "webResearchProvider"
 > & {
+  readonly [key: string]: unknown;
   readonly aiRetrievalMaxQueries?: number;
   readonly aiRetrievalMaxBranchRows?: number;
   readonly aiRetrievalMaxCandidates?: number;
@@ -439,7 +570,8 @@ export interface WebResearchBoundary {
 }
 
 export interface SelectorBundle {
-  readonly internal: readonly InternalReference[];
+  /** The required code-owned Phase B result used by production assembly. */
+  readonly structuredInternal: RetrievalPlanResult | null;
   readonly memories: readonly MemoryReference[];
   /** Selector status is retained at the workflow boundary so disabled B/W cannot masquerade as an enabled empty selection. */
   readonly memorySelection: "enabled" | "disabled";
@@ -462,6 +594,8 @@ export interface ContextAssembly {
   readonly question: string;
   readonly topicId?: TopicId | undefined;
   readonly candidates: readonly AnswerCandidate[];
+  /** One immutable, code-owned ledger for every selected evidence candidate. */
+  readonly candidateLedger: CandidateLedger;
   readonly sourceMap: readonly FinalSourceRecord[];
   readonly selectedConversation: readonly ConversationEntry[];
   readonly gaps: readonly string[];
@@ -469,35 +603,42 @@ export interface ContextAssembly {
   readonly requestedOutputTokens: number;
 }
 
+export interface ChatContextRange {
+  readonly messageId: string;
+  readonly ranges: readonly SourceRange[];
+}
+
 export interface ContextState {
-  readonly status: "ready" | "needs_reduction" | "failed";
+  readonly status: "ready" | "needs_compaction" | "failed";
   readonly question: string;
   readonly topicId?: TopicId | undefined;
   readonly candidates: readonly AnswerCandidate[];
+  /** The immutable cNNN ledger carried through measurement and fit selection. */
+  readonly candidateLedger: CandidateLedger;
   readonly sourceMap: readonly FinalSourceRecord[];
+  /** Merged topic citations retained outside the packet-only provider ledger. */
+  readonly citationSourceMap?: readonly FinalSourceRecord[] | undefined;
   readonly ledgerCandidates: readonly AnswerCandidate[];
   readonly ledgerSourceMap: readonly FinalSourceRecord[];
   readonly selectedConversation: readonly ConversationEntry[];
+  /** Sanitized UTF-16 ranges selected for chat evidence, kept private to answer serialization. */
+  readonly chatSourceRanges?: readonly ChatContextRange[] | undefined;
   readonly ledgerConversation?: readonly ConversationEntry[] | undefined;
   readonly ledgerConversationTokenCounts?: readonly number[] | undefined;
   readonly consumers: readonly PublicContextConsumer[];
   readonly gaps: readonly string[];
   readonly ledgerGaps?: readonly string[] | undefined;
-  readonly reductionFeedback: readonly string[];
+  readonly compactionFeedback: readonly string[];
   readonly request: LiveProviderRequest;
   readonly inputTokens: number;
   readonly usableInputTokens: number;
-  readonly reductionRan: boolean;
+  readonly compactionRan: boolean;
   readonly failureCode?:
     | "context_mandatory_too_large"
     | "context_plan_unfit"
     | "context_budget_mismatch"
     | "synthesis_budget_mismatch"
     | undefined;
-}
-
-export interface ContextReductionPlan {
-  readonly decisions: readonly ContextDecision[];
 }
 
 export interface FanoutAllocation {
@@ -508,40 +649,10 @@ export interface FanoutAllocation {
 
 export interface FanoutSourceKeySet {
   readonly sources: ReadonlyArray<{
-    readonly candidateId: string;
+    readonly identityKey: string;
     readonly sourceKey: string;
   }>;
 }
-
-interface InternalProviderExposure {
-  readonly reference: InternalReference;
-  readonly sourceKind: "document" | "chat_message";
-  readonly logicalSourceIdentity: string;
-  readonly contentItemIdentity: string;
-  readonly publisherIssueId?: string | undefined;
-  readonly publisherDocumentId?: string | undefined;
-  readonly documentReconstruction?: AiDocumentExposureReconstruction | undefined;
-  readonly stage:
-    | "internal_search_preview"
-    | "internal_chat_search_preview"
-    | "internal_inspection";
-  readonly visibleTokenCount: number;
-}
-
-interface NamedSourceLookup {
-  readonly runId: string;
-  readonly taskId: string;
-  readonly loopIteration: number;
-  readonly attempt: number;
-  readonly sourceIds: readonly string[];
-  consumed: boolean;
-  logicalQueryKey?: string | undefined;
-}
-
-/** Stable namespace-aware identity used for every document exposure and citation. */
-export const documentReferenceIdentity = (
-  reference: Extract<InternalReference, { kind: "document" }>,
-): string => namespacedDocumentEvidenceIdentity(reference.source, reference.documentId);
 
 const documentCandidateIdentity = (candidate: {
   readonly sourceId: string;
@@ -551,14 +662,21 @@ const documentCandidateIdentity = (candidate: {
 }): string =>
   candidate.publisherIssueId === undefined && candidate.publisherDocumentId === undefined
     ? namespacedDocumentEvidenceIdentity(
-        { kind: "public", sourceId: candidate.sourceId },
+        {
+          kind: "public",
+          sourceId: candidate.sourceId.startsWith("public:")
+            ? candidate.sourceId
+            : `public:${candidate.sourceId}`,
+        },
         candidate.documentId,
       )
     : candidate.publisherIssueId !== undefined && candidate.publisherDocumentId !== undefined
       ? namespacedDocumentEvidenceIdentity(
           {
             kind: "publisher",
-            sourceId: candidate.sourceId,
+            sourceId: candidate.sourceId.startsWith("publisher:")
+              ? candidate.sourceId
+              : `publisher:${candidate.sourceId}`,
             issueId: candidate.publisherIssueId,
             documentId: candidate.publisherDocumentId,
           },
@@ -573,42 +691,6 @@ const documentContentItemIdentity = (
   snapshotId: string,
   content: string,
 ): string => `${namespace}:${snapshotId}:${content}`;
-
-const documentDiscoveryKey = (
-  reference: Extract<InternalReference, { kind: "document" }>,
-): string =>
-  `${reference.source.kind}:${reference.source.sourceId}:${reference.source.kind === "publisher" ? reference.source.issueId : ""}:${reference.documentId}:${reference.snapshotId}`;
-
-const documentReferenceSelectionKey = (
-  reference: Extract<InternalReference, { kind: "document" }>,
-): string =>
-  `${documentReferenceIdentity(reference)}:${reference.snapshotId}:${JSON.stringify(reference.ranges ?? [])}`;
-
-const documentReferenceRangeKey = (
-  reference: Extract<InternalReference, { kind: "document" }>,
-  range: { readonly charStart: number; readonly charEnd: number },
-): string =>
-  `${documentReferenceIdentity(reference)}:${reference.snapshotId}:${JSON.stringify(range)}`;
-
-const documentPreviewIdentity = (item: DocumentPreview): string =>
-  item.kind === "publisher"
-    ? item.issueId === undefined
-      ? (() => {
-          throw new Error("publisher search result is missing issue identity");
-        })()
-      : namespacedDocumentEvidenceIdentity(
-          {
-            kind: "publisher",
-            sourceId: item.sourceId,
-            issueId: item.issueId,
-            documentId: item.documentId,
-          },
-          item.documentId,
-        )
-    : namespacedDocumentEvidenceIdentity(
-        { kind: "public", sourceId: item.sourceId },
-        item.documentId,
-      );
 
 const providerVisibleExposureMarker = (exposure: {
   readonly sourceKind: "document" | "chat_message" | "memory" | "web";
@@ -627,28 +709,15 @@ const providerVisibleExposureMarker = (exposure: {
 const codeOwnedExposureProof = (
   exposure: Parameters<typeof providerVisibleExposureMarker>[0],
   visibleText: string,
+  binding?: Pick<
+    CodeOwnedSourceExposureProof,
+    "messageIndex" | "sourceOrdinal" | "serializedField" | "orderedSourceDescriptor"
+  >,
 ): CodeOwnedSourceExposureProof => ({
   ...providerVisibleExposureMarker(exposure),
   visibleText,
+  ...(binding === undefined ? {} : binding),
 });
-
-const exactPreviewRanges = (item: DocumentPreview): readonly CharacterRange[] => {
-  if (item.previewRanges.length === 0 || item.text.length === 0) {
-    throw new Error("document search preview is not reconstructable from immutable text");
-  }
-  const ranges = normalizeCharacterRanges(item.previewRanges, item.text.length);
-  const reconstructed = ranges
-    .map((range) => item.text.slice(range.charStart, range.charEnd))
-    .join("\n…\n");
-  if (reconstructed !== item.snippet) {
-    throw new Error("document search preview does not match immutable source ranges");
-  }
-  return ranges;
-};
-
-const exactPreviewContentHash = (item: DocumentPreview): string => {
-  return sha256Base64Url(JSON.stringify(exactPreviewRanges(item)));
-};
 
 export const normalizeSelectedDocumentRanges = (
   ranges: readonly { readonly charStart: number; readonly charEnd: number }[] | undefined,
@@ -693,142 +762,6 @@ interface ConversationRow {
   readonly totalCount: number;
 }
 
-const BoundInternalReferenceSchema = z
-  .discriminatedUnion("kind", [
-    z
-      .object({
-        kind: z.literal("document"),
-        documentId: z.string(),
-        snapshotId: z.string(),
-        publisherExtractionId: z.string().optional(),
-        source: z.discriminatedUnion("kind", [
-          z
-            .object({
-              kind: z.literal("public"),
-              sourceId: z.string().regex(/^public:[^:\s]+$/u),
-            })
-            .strict(),
-          z
-            .object({
-              kind: z.literal("publisher"),
-              sourceId: z.string().regex(/^publisher:[^:\s]+$/u),
-              issueId: z.string().trim().min(1),
-              documentId: z.string().trim().min(1),
-            })
-            .strict(),
-        ]),
-        ranges: z
-          .array(z.object({ charStart: z.number().int(), charEnd: z.number().int() }).strict())
-          .optional(),
-        purpose: z.string().trim().min(1),
-      })
-      .strict(),
-    z
-      .object({
-        kind: z.literal("chat_message"),
-        messageId: z.string(),
-        purpose: z.string().trim().min(1),
-      })
-      .strict(),
-  ])
-  .superRefine((reference, context) => {
-    if (
-      reference.kind === "document" &&
-      reference.source.kind === "publisher" &&
-      (reference.source.documentId !== reference.documentId ||
-        reference.publisherExtractionId === undefined)
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "publisher source must carry its exact extraction binding",
-      });
-    }
-    if (
-      reference.kind === "document" &&
-      reference.source.kind === "public" &&
-      reference.publisherExtractionId !== undefined
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "public source cannot carry extraction binding",
-      });
-    }
-  });
-const InternalReferenceSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("document"),
-      documentId: z.string().trim().min(1),
-      ranges: z
-        .array(
-          z
-            .object({ charStart: z.number().int().min(0), charEnd: z.number().int().positive() })
-            .strict(),
-        )
-        .optional(),
-      purpose: z.string().trim().min(1),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("chat_message"),
-      messageId: z.string().trim().min(1),
-      purpose: z.string().trim().min(1),
-    })
-    .strict(),
-]);
-
-const InspectInternalReferenceSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("document"),
-      documentId: z.string().trim().min(1),
-      range: z
-        .object({ charStart: z.number().int().min(0), charEnd: z.number().int().positive() })
-        .strict()
-        .optional(),
-      purpose: z.string().trim().min(1),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("chat_message"),
-      messageId: z.string().trim().min(1),
-      purpose: z.string().trim().min(1),
-    })
-    .strict(),
-]);
-
-const InternalQuerySchema = z.discriminatedUnion("target", [
-  z
-    .object({
-      target: z.literal("documents"),
-      terms: z.string().trim().optional(),
-      purpose: z.string().trim().min(1),
-      lookupRef: z
-        .string()
-        .regex(/^lr_[A-Za-z0-9_-]{32}$/u)
-        .optional(),
-      countries: z.array(z.string()).optional(),
-      languages: z.array(z.string()).optional(),
-      documentTypes: z.array(z.string()).optional(),
-      publishedAfter: z.string().optional(),
-      publishedBefore: z.string().optional(),
-      orderBy: z.enum(["relevance", "recency"]).optional(),
-      limit: z.number().int().positive().max(50).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      target: z.literal("chat_messages"),
-      terms: z.string().trim().min(1),
-      purpose: z.string().trim().min(1),
-      beforeMessageId: z.string().optional(),
-      limit: z.number().int().positive().max(50).optional(),
-    })
-    .strict(),
-]);
-
 const MemoryReferenceSchema = z
   .object({ memoryId: z.string(), memoryRevisionId: z.string() })
   .strict();
@@ -850,22 +783,6 @@ const MemoryProposalSchema = z
     targetMemoryId: z.string().optional(),
   })
   .strict();
-const ContextDecisionArraySchema = z.array(
-  z.discriminatedUnion("action", [
-    z.object({ id: z.string(), action: z.literal("keep"), reason: z.string() }).strict(),
-    z
-      .object({
-        id: z.string(),
-        action: z.literal("range"),
-        ranges: z.array(
-          z.object({ charStart: z.number().int(), charEnd: z.number().int() }).strict(),
-        ),
-        reason: z.string(),
-      })
-      .strict(),
-    z.object({ id: z.string(), action: z.literal("omit"), reason: z.string() }).strict(),
-  ]),
-);
 const TopicPacketSchema = z
   .object({
     topicId: z.enum(["t1", "t2", "t3"]),
@@ -876,43 +793,19 @@ const TopicPacketSchema = z
   .strict();
 const MemoryProposalOutputSchema = z.object({ proposals: z.array(MemoryProposalSchema) }).strict();
 const MemoryManifestOutputSchema = z.object({ entries: z.array(MemoryReferenceSchema) }).strict();
-const InternalManifestOutputSchema = z
-  .object({ entries: z.array(InternalReferenceSchema) })
-  .strict();
 const WebManifestOutputSchema = z.object({ entries: z.array(WebEvidenceSchema) }).strict();
-const ContextPlanOutputSchema = z.object({ decisions: ContextDecisionArraySchema }).strict();
-
-const canonicalContextDecisionSet = (
-  decisions: readonly ContextDecision[],
-  candidates: readonly { readonly id: string }[],
-): readonly ContextDecision[] => {
-  const decisionsById = new Map(decisions.map((decision) => [decision.id, decision]));
-  return candidates.map((candidate) => {
-    const decision = decisionsById.get(candidate.id);
-    if (decision === undefined) {
-      throw new Error(`context decision set is missing candidate ${candidate.id}`);
-    }
-    return decision;
-  });
-};
 
 /** Provider-authored value contracts; exported for exhaustive boundary tests. */
 export const canonicalProviderValueSchemas = {
   planTurn: PlanTurnSchema,
   planTurnProvider: PlanTurnProviderSchema,
-  internalReference: InternalReferenceSchema,
-  inspectInternalReference: InspectInternalReferenceSchema,
-  internalQuery: InternalQuerySchema,
   memoryReference: MemoryReferenceSchema,
   webEvidence: WebEvidenceSchema,
   memoryProposal: MemoryProposalSchema,
-  contextDecisions: ContextDecisionArraySchema,
   topicPacket: TopicPacketSchema,
   memoryProposalOutput: MemoryProposalOutputSchema,
   memoryManifestOutput: MemoryManifestOutputSchema,
-  internalManifestOutput: InternalManifestOutputSchema,
   webManifestOutput: WebManifestOutputSchema,
-  contextPlanOutput: ContextPlanOutputSchema,
 } as const;
 
 const taskCoordinates = (
@@ -956,16 +849,14 @@ const fullRequestInput = (
   user: string,
   model: LiveProviderRequest["model"],
   outputTokens: number,
-): LiveProviderRequest => ({
-  requestClass: "main",
-  model,
-  messages: [
-    { role: "system", content: system },
-    { role: "user", content: user },
-  ],
-  requestedOutputTokens: outputTokens,
-  reasoning: "medium",
-});
+): LiveProviderRequest =>
+  serializeExactAnswerRequest({
+    model,
+    system,
+    user,
+    requestedOutputTokens: outputTokens,
+    reasoning: "medium",
+  });
 
 const structuredRequestInput = (
   system: string,
@@ -975,24 +866,26 @@ const structuredRequestInput = (
   toolName: string,
   toolDescription: string,
   parameters: Readonly<Record<string, unknown>>,
-): LiveProviderRequest => ({
-  requestClass: "main",
-  model,
-  messages: [
-    { role: "system", content: system },
-    { role: "user", content: user },
-  ],
-  tools: [{ name: toolName, description: toolDescription, parameters }],
-  toolChoice: "auto",
-  requestedOutputTokens: outputTokens,
-  reasoning: "medium",
-});
+): LiveProviderRequest =>
+  serializeExactAnswerRequest({
+    model,
+    system,
+    user,
+    outputTool: { name: toolName, description: toolDescription, parameters },
+    requestedOutputTokens: outputTokens,
+    reasoning: "medium",
+  });
 
 const sourceText = (sourceKey: string, kind: string, label: string | null, text: string): string =>
   serializeAnswerSource({ key: sourceKey, kind, label, text });
 
-const candidateText = (candidate: AnswerCandidate): string => {
+const candidateText = (candidate: AnswerCandidate, chatRanges?: readonly SourceRange[]): string => {
   if (candidate.kind === "web") return candidate.quote;
+  if (candidate.kind === "chat_message") {
+    return chatRanges === undefined
+      ? candidate.text
+      : selectedTextFromRanges(candidate.text, chatRanges);
+  }
   if (candidate.kind !== "document") return candidate.text;
   return candidate.ranges
     .map((range) => candidate.text.slice(range.charStart, range.charEnd))
@@ -1006,153 +899,23 @@ const canonicalValue = (value: unknown): unknown => {
     Object.entries(value as Readonly<Record<string, unknown>>)
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, nested]) => [key, canonicalValue(nested)]),
-const requestSha256Hex = providerRequestSha256Hex;
-
-interface ConversationReductionCandidate {
-  readonly id: string;
-  readonly kind: "conversation_entry";
-  readonly rank: number;
-  readonly purpose: "plan-turn-selected recent turn";
-  readonly label: null;
-  readonly renderedTokenCount: number;
-  readonly entry: ConversationEntry;
-  readonly text: string;
-}
-
-type ReductionCandidate = AnswerCandidate | ConversationReductionCandidate;
-
-const conversationReductionCandidateId = (entry: ConversationEntry): string =>
-  `conversation_entry:${entry.turnId}`;
-
-const reductionCandidateText = (candidate: ReductionCandidate): string =>
-  candidate.kind === "conversation_entry" ? candidate.text : candidateText(candidate);
-
-const searchWithinCandidatePage = (
-  candidate: ReductionCandidate,
-  terms: string,
-  cursor = 0,
-  maximumMatches = 50,
-): {
-  readonly matches: ReadonlyArray<{ readonly charStart: number; readonly charEnd: number }>;
-  readonly matchPreviews: ReadonlyArray<{
-    readonly range: { readonly charStart: number; readonly charEnd: number };
-    readonly text: string;
-  }>;
-  readonly complete: boolean;
-  readonly truncated: boolean;
-  readonly cursor: number | null;
-  readonly scope: {
-    readonly kind: "selected_document_ranges" | "complete_candidate";
-    readonly ranges: ReadonlyArray<{ readonly charStart: number; readonly charEnd: number }>;
-    readonly matchOffset: number;
-    readonly maximumMatches: number;
-  };
-} => {
-  if (terms === "" || maximumMatches < 1 || cursor < 0) {
-    throw new Error("candidate search bounds must be positive and the query must be non-empty");
-  }
-
-  const candidateText = reductionCandidateText(candidate);
-  if (normalizeAndCaseFold(terms) === "") {
-    throw new Error("candidate search query must contain a normalized character");
-  }
-  const matches: Array<{ readonly charStart: number; readonly charEnd: number }> = [];
-  const searchedRanges =
-    candidate.kind === "document"
-      ? candidate.ranges
-      : [{ charStart: 0, charEnd: candidateText.length }];
-  let matchedBeforePage = 0;
-  for (const range of searchedRanges) {
-    const text =
-      candidate.kind === "document"
-        ? candidate.text.slice(range.charStart, range.charEnd)
-        : candidateText;
-    const ranges = findNormalizedSubstringRanges(
-      text,
-      [terms],
-      candidate.kind === "document" ? range.charStart : 0,
-    );
-    for (const match of ranges) {
-      if (matchedBeforePage >= cursor) {
-        matches.push(match);
-        if (matches.length > maximumMatches) break;
-      }
-      matchedBeforePage += 1;
-    }
-    if (matches.length > maximumMatches) break;
-  }
-  const truncated = matches.length > maximumMatches;
-  const selected = truncated ? matches.slice(0, maximumMatches) : matches;
-  const matchPreviews =
-    candidate.kind === "document"
-      ? (() => {
-          const previews: Array<{
-            readonly range: { readonly charStart: number; readonly charEnd: number };
-            readonly text: string;
-          }> = [];
-          const fingerprints = new Set<string>();
-          for (const match of selected) {
-            const sourceRange = searchedRanges.find(
-              (range) => match.charStart >= range.charStart && match.charEnd <= range.charEnd,
-            );
-            if (sourceRange === undefined) continue;
-            const precedingBoundary = candidate.text.lastIndexOf(". ", match.charStart - 1);
-            const followingBoundary = candidate.text.indexOf(". ", match.charEnd);
-            let charStart = Math.max(
-              sourceRange.charStart,
-              precedingBoundary < sourceRange.charStart
-                ? sourceRange.charStart
-                : precedingBoundary + 2,
-            );
-            let charEnd = Math.min(
-              sourceRange.charEnd,
-              followingBoundary < 0 ? match.charEnd + 320 : followingBoundary + 1,
-            );
-            if (charEnd - charStart > 640) {
-              charStart = Math.max(sourceRange.charStart, match.charStart - 320);
-              charEnd = Math.min(sourceRange.charEnd, match.charEnd + 320);
-            }
-            const text = candidate.text.slice(charStart, charEnd);
-            const fingerprint = normalizeAndCaseFold(text)
-              .replace(/\p{Number}+/gu, "#")
-              .replace(/\s+/gu, " ")
-              .trim();
-            if (fingerprints.has(fingerprint)) continue;
-            fingerprints.add(fingerprint);
-            previews.push({ range: { charStart, charEnd }, text });
-            if (previews.length === 8) break;
-          }
-          return previews;
-        })()
-      : [];
-  return {
-    matches: selected,
-    matchPreviews,
-    complete: !truncated,
-    truncated,
-    cursor: truncated ? cursor + selected.length : null,
-    scope: {
-      kind: candidate.kind === "document" ? "selected_document_ranges" : "complete_candidate",
-      ranges: searchedRanges,
-      matchOffset: cursor,
-      maximumMatches,
-    },
-  };
+  );
 };
 
-export const searchWithinCandidate = (
-  candidate: AnswerCandidate,
-  terms: string,
-  maximumMatches = 50,
-): ReadonlyArray<{ readonly charStart: number; readonly charEnd: number }> =>
-  searchWithinCandidatePage(candidate, terms, 0, maximumMatches).matches;
+const requestSha256Hex = providerRequestSha256Hex;
 
-export const searchWithinCandidateWindow = (
-  candidate: AnswerCandidate,
-  terms: string,
-  cursor = 0,
-  maximumMatches = 50,
-) => searchWithinCandidatePage(candidate, terms, cursor, maximumMatches);
+export const assertMeasuredAnswerRequest = (
+  measured: ProviderRequest,
+  sent: ProviderRequest,
+): void => {
+  const withoutProofs = (request: ProviderRequest): ProviderRequest => {
+    const { sourceExposureProofs: _sourceExposureProofs, ...rest } = request;
+    return rest;
+  };
+  if (requestSha256Hex(withoutProofs(measured)) !== requestSha256Hex(withoutProofs(sent))) {
+    throw controlledRuntimeFailure("context_budget_mismatch");
+  }
+};
 
 const topicPacketSchemaMinimumOutputTokens = (modelId: string): number =>
   resolveRuntimeModel(modelId).countTextTokens(
@@ -1161,156 +924,6 @@ const topicPacketSchemaMinimumOutputTokens = (modelId: string): number =>
 
 const controlledRuntimeFailure = (code: AiRunErrorCode): AiRuntimeError =>
   new AiRuntimeError(code, code, { taskRetryable: false });
-
-const canonicalInternalSearchQueryKey = (query: InternalQuery): string =>
-  JSON.stringify(
-    Object.fromEntries(
-      Object.entries(query).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
-    ),
-  );
-
-export const internalSearchQueryIssue = (terms: string): string | undefined => {
-  const normalized = terms.normalize("NFC").trim();
-  if (normalized.includes('"')) return "internal search terms must not contain quoted phrases";
-  if (/\p{L}-\p{L}/u.test(normalized)) {
-    return "internal search terms must separate words joined by hyphens";
-  }
-  const tokens = normalized.split(/\s+/u).filter((token) => token !== "");
-  const operands = tokens.filter((token) => token.toUpperCase() !== "OR").length;
-  const orCount = tokens.length - operands;
-  if (Math.max(0, operands - orCount) > 3) {
-    return "internal search terms must contain at most three required terms";
-  }
-  return undefined;
-};
-
-const internalChatTemporalModifiers = /\b(?:old|older|earlier|prior|previous|recent|latest)\b/giu;
-
-export const normalizeInternalChatSearchTerms = (terms: string): string => {
-  const withoutTemporalModifiers = terms.replace(internalChatTemporalModifiers, " ").trim();
-  return withoutTemporalModifiers === ""
-    ? terms.trim()
-    : withoutTemporalModifiers.replace(/\s+/gu, " ");
-};
-
-export class InternalRetrievalProtocolError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "InternalRetrievalProtocolError";
-  }
-}
-
-/**
- * Enforces A's two ordinary search/refinement turns while preserving required
- * cursor continuations. Each provider turn may contain one search call. A
- * complete result may close one exact query, but a second distinct query is
- * still allowed so a comparison can cover its other named subject.
- */
-export class InternalRetrievalSearchProtocol {
-  private readonly ordinarySearchTurns = new Set<number>();
-  private readonly searchCallsByTurn = new Set<number>();
-  private readonly pendingCursors = new Map<
-    string,
-    { readonly cursor: number; readonly providerRequestIndex: number }
-  >();
-  private readonly cursorContinuationTurns = new Set<number>();
-  private readonly completedNonEmptySearchQueries = new Set<string>();
-  private queryCorrectionRequired = false;
-
-  recordRejectedQuery(): void {
-    this.queryCorrectionRequired = true;
-  }
-
-  recordCompletedSearch(): void {
-    this.queryCorrectionRequired = false;
-  }
-
-  assertEmptyManifestAllowed(): void {
-    if (this.queryCorrectionRequired) {
-      throw new InternalRetrievalProtocolError(
-        "internal manifest cannot be empty until a rejected query is corrected",
-      );
-    }
-  }
-
-  ordinarySearchTurnsExhausted(): boolean {
-    return this.ordinarySearchTurns.size >= 2;
-  }
-
-  hasPendingCursor(): boolean {
-    return this.pendingCursors.size > 0;
-  }
-
-  beforeSearch(
-    query: InternalQuery,
-    cursor: number | undefined,
-    providerRequestIndex: number,
-  ): void {
-    const key = canonicalInternalSearchQueryKey(query);
-    const pending = this.pendingCursors.get(key);
-    if (cursor !== undefined) {
-      if (pending === undefined || pending.cursor !== cursor) {
-        throw new InternalRetrievalProtocolError(
-          "internal search continuation did not use the exact returned cursor",
-        );
-      }
-      if (this.searchCallsByTurn.has(providerRequestIndex)) {
-        throw new InternalRetrievalProtocolError(
-          "internal search permits at most one call per provider turn",
-        );
-      }
-      this.searchCallsByTurn.add(providerRequestIndex);
-      this.cursorContinuationTurns.add(providerRequestIndex);
-      return;
-    }
-    if (this.cursorContinuationTurns.has(providerRequestIndex)) {
-      throw new InternalRetrievalProtocolError(
-        "internal search cursor continuation must be followed by termination",
-      );
-    }
-    if (this.searchCallsByTurn.has(providerRequestIndex)) {
-      throw new InternalRetrievalProtocolError(
-        "internal search permits at most one call per provider turn",
-      );
-    }
-    const hasPendingPriorTurn = [...this.pendingCursors.values()].some(
-      (obligation) => obligation.providerRequestIndex !== providerRequestIndex,
-    );
-    if (hasPendingPriorTurn) {
-      throw new InternalRetrievalProtocolError(
-        "internal search has an unresolved cursor continuation",
-      );
-    }
-    if (this.completedNonEmptySearchQueries.has(key)) {
-      throw new InternalRetrievalProtocolError(
-        "internal search cannot repeat a completed query without its returned cursor",
-      );
-    }
-    if (!this.ordinarySearchTurns.has(providerRequestIndex)) {
-      if (this.ordinarySearchTurns.size >= 2) {
-        throw new InternalRetrievalProtocolError("internal search/refinement turn limit exceeded");
-      }
-      this.ordinarySearchTurns.add(providerRequestIndex);
-    }
-    this.searchCallsByTurn.add(providerRequestIndex);
-  }
-
-  afterSearch(
-    query: InternalQuery,
-    complete: boolean,
-    itemCount: number,
-    cursor: number | null,
-    providerRequestIndex: number,
-  ): void {
-    const key = canonicalInternalSearchQueryKey(query);
-    if (complete) {
-      this.pendingCursors.delete(key);
-      if (itemCount > 0) this.completedNonEmptySearchQueries.add(key);
-      return;
-    }
-    if (cursor !== null) this.pendingCursors.set(key, { cursor, providerRequestIndex });
-  }
-}
 
 const immutableSourceIdentity = (source: FinalSourceRecord): string => {
   const locator = source.locator;
@@ -1336,6 +949,95 @@ const immutableSourceIdentity = (source: FinalSourceRecord): string => {
   );
 };
 
+const providerConversationEntries = (
+  entries: readonly ConversationEntry[],
+): readonly Readonly<Record<string, string | boolean>>[] =>
+  entries.map((entry): Readonly<Record<string, string | boolean>> => {
+    if ("assistantMessageId" in entry) {
+      return { userContent: entry.userContent, assistantContent: entry.assistantContent };
+    }
+    return {
+      userContent: entry.userContent,
+      errorCode: entry.errorCode,
+      retryable: entry.retryable,
+    };
+  });
+
+const compactionLogicalSourceIdentity = (identity: CandidateLedgerEntry["identity"]): string => {
+  switch (identity.kind) {
+    case "public_document":
+      return namespacedDocumentEvidenceIdentity(
+        {
+          kind: "public",
+          sourceId: identity.sourceId.startsWith("public:")
+            ? identity.sourceId
+            : `public:${identity.sourceId}`,
+        },
+        identity.documentId,
+      );
+    case "publisher_document":
+      return namespacedDocumentEvidenceIdentity(
+        {
+          kind: "publisher",
+          sourceId: identity.subscriptionId.startsWith("publisher:")
+            ? identity.subscriptionId
+            : `publisher:${identity.subscriptionId}`,
+          issueId: identity.issueId,
+          documentId: identity.documentId,
+        },
+        identity.documentId,
+      );
+    case "chat_message":
+      return chatMessageEvidenceIdentity(identity.messageId);
+    case "conversation_entry":
+      return chatMessageEvidenceIdentity(identity.userMessageId);
+    case "memory":
+      return memoryEvidenceIdentity(identity.memoryId);
+    case "web":
+      return `web:${canonicalizeWebUrl(identity.canonicalUrl)}:${identity.quoteHash}`;
+    case "topic_packet":
+      throw new Error("topic packets do not have a citable source identity");
+  }
+};
+
+const compactionContentItemIdentity = (
+  identity: CandidateLedgerEntry["identity"],
+  logicalSourceIdentity: string,
+  visibleText: string,
+  rangeDescriptor: unknown,
+): string => {
+  const documentRanges = Array.isArray(rangeDescriptor)
+    ? rangeDescriptor
+    : typeof rangeDescriptor === "object" &&
+        rangeDescriptor !== null &&
+        "range" in rangeDescriptor &&
+        typeof rangeDescriptor.range === "object" &&
+        rangeDescriptor.range !== null
+      ? [rangeDescriptor.range]
+      : typeof rangeDescriptor === "object" &&
+          rangeDescriptor !== null &&
+          "previewRanges" in rangeDescriptor &&
+          Array.isArray(rangeDescriptor.previewRanges)
+        ? rangeDescriptor.previewRanges
+        : undefined;
+  switch (identity.kind) {
+    case "public_document":
+    case "publisher_document":
+      return `${logicalSourceIdentity}:${identity.snapshotId}:${sha256Base64Url(
+        documentRanges === undefined ? stableJson(rangeDescriptor) : JSON.stringify(documentRanges),
+      )}`;
+    case "chat_message":
+      return identity.messageId;
+    case "conversation_entry":
+      return identity.userMessageId;
+    case "memory":
+      return identity.memoryRevisionId;
+    case "web":
+      return `${canonicalizeWebUrl(identity.canonicalUrl)}:${identity.quoteHash}`;
+    case "topic_packet":
+      throw new Error("topic packets do not have a citable content identity");
+  }
+};
 export class CanonicalWorkflowOperations {
   constructor(
     private readonly connectionString: string,
@@ -1345,6 +1047,31 @@ export class CanonicalWorkflowOperations {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
+  private readonly compactionRunSemaphores = new Map<string, ProviderSemaphore>();
+
+  private async withCompactionRunPermit<A>(
+    aiRunId: string,
+    operation: () => Promise<A>,
+  ): Promise<A> {
+    let semaphore = this.compactionRunSemaphores.get(aiRunId);
+    if (semaphore === undefined) {
+      semaphore = new ProviderSemaphore(MAX_COMPACTION_CONCURRENCY);
+      this.compactionRunSemaphores.set(aiRunId, semaphore);
+    }
+    try {
+      return await semaphore.withPermit(operation, currentTaskAbortSignal());
+    } finally {
+      const snapshot = semaphore.snapshot();
+      if (
+        snapshot.active === 0 &&
+        snapshot.queued === 0 &&
+        this.compactionRunSemaphores.get(aiRunId) === semaphore
+      ) {
+        this.compactionRunSemaphores.delete(aiRunId);
+      }
+    }
+  }
+  private readonly compactionRepairTaskIds = new Set<string>();
   private db<A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> {
     return this.dbWithSignal(effect, currentTaskAbortSignal());
   }
@@ -1393,17 +1120,20 @@ export class CanonicalWorkflowOperations {
     load: LoadedTurn,
     exposure: QueryReviewExposure,
     slot: "initial" | "replacement",
+    coordinates: {
+      readonly taskId: string;
+      readonly loopIteration: number;
+      readonly attempt: number;
+      readonly providerRequestIndex: number;
+      readonly providerRequestSha256Hex: string;
+    },
   ): Promise<void> {
-    const runtime = currentTaskRuntime();
-    if (runtime === undefined) {
-      throw new Error("Smithers task runtime is required for structured retrieval review");
-    }
     await this.observe(
       load,
-      runtime.taskId,
+      coordinates.taskId,
       STRUCTURED_RETRIEVAL_REVIEW_PREVIEW_KIND,
-      structuredRetrievalReviewPreviewPayload(exposure, slot),
-      { loopIteration: runtime.loopIteration, attempt: runtime.attempt },
+      structuredRetrievalReviewPreviewPayload(exposure, slot, coordinates),
+      { loopIteration: coordinates.loopIteration, attempt: coordinates.attempt },
       slot,
     );
   }
@@ -1460,6 +1190,9 @@ export class CanonicalWorkflowOperations {
           packetSha256Hex: createHash("sha256")
             .update(JSON.stringify(canonicalValue(packet)))
             .digest("hex"),
+        })),
+      };
+    }
     if (state.candidates.length !== state.sourceMap.length) {
       throw new Error("restricted context ledger source cardinality mismatch");
     }
@@ -1474,8 +1207,25 @@ export class CanonicalWorkflowOperations {
         if (source === undefined || source.locator.kind !== candidate.kind) {
           throw new Error("restricted context ledger candidate/source mismatch");
         }
+        const canonicalCandidateId =
+          source.locator.kind === "document"
+            ? documentCandidateIdentity({
+                sourceId: source.locator.sourceId,
+                documentId: source.locator.documentId,
+                ...(source.locator.publisherIssueId === undefined
+                  ? {}
+                  : {
+                      publisherIssueId: source.locator.publisherIssueId,
+                      publisherDocumentId: source.locator.publisherDocumentId,
+                    }),
+              })
+            : source.locator.kind === "chat_message"
+              ? chatMessageEvidenceIdentity(source.locator.messageId)
+              : source.locator.kind === "memory"
+                ? memoryEvidenceIdentity(source.locator.memoryId)
+                : webEvidenceIdentity(source.locator.url, source.locator.quote);
         return {
-          candidateId: candidate.id,
+          candidateId: canonicalCandidateId,
           sourceKey: source.sourceKey,
           kind: candidate.kind,
           purpose: candidate.purpose,
@@ -1489,9 +1239,11 @@ export class CanonicalWorkflowOperations {
   private contextMeasurementPayload(
     state: ContextState,
     consumerTaskId: string,
-    requestKind: "direct" | "topic" | "synthesis" = state.topicId === undefined
-      ? "direct"
-      : "topic",
+    requestKind: "direct" | "topic" | "synthesis" = state.citationSourceMap !== undefined
+      ? "synthesis"
+      : state.topicId === undefined
+        ? "direct"
+        : "topic",
     request: ProviderRequest = state.request,
   ) {
     const model = resolveRuntimeModel(request.model);
@@ -1499,6 +1251,12 @@ export class CanonicalWorkflowOperations {
       if (message.role !== "user") return message;
       try {
         const parsed = JSON.parse(message.content) as Record<string, unknown>;
+        if (requestKind === "synthesis" && Array.isArray(parsed.packets)) {
+          return {
+            ...message,
+            content: JSON.stringify({ ...parsed, packets: [] }),
+          };
+        }
         if (!("evidence" in parsed)) return message;
         return {
           ...message,
@@ -1519,8 +1277,8 @@ export class CanonicalWorkflowOperations {
       usableInputTokens: state.usableInputTokens,
       contextWindow: model.contextWindow,
       status: state.status,
-      reductionRan: state.reductionRan,
-      reductionFeedback: state.reductionFeedback,
+      compactionRan: state.compactionRan,
+      compactionFeedback: state.compactionFeedback,
       restrictedContextLedger: this.restrictedContextLedger(state, requestKind, request),
     };
   }
@@ -1618,7 +1376,10 @@ export class CanonicalWorkflowOperations {
     load: LoadedTurn,
     resolvedQuestion: string,
     plan: InternalQueryPlanValue,
-    review: (input: QueryReviewProviderInput) => Promise<unknown> | unknown,
+    review: (
+      input: QueryReviewProviderInput,
+      privateProof?: readonly RetrievalPreviewExposure[],
+    ) => Promise<unknown> | unknown,
     excludedMessageIds: readonly string[] = [],
     onPreviewExposure: (exposure: QueryReviewExposure) => Promise<void> | void,
   ): Promise<QueryReviewOperationResult<RetrievalPlanResult> | RetrievalPlanResult> {
@@ -1634,7 +1395,16 @@ export class CanonicalWorkflowOperations {
       executionContext,
     );
     if (plan.action === "skip") return initialResult;
-    let exposureSlot: "initial" | "replacement" = "initial";
+    const initialExposure: QueryReviewExposure = {
+      providerInput: {
+        question,
+        queries: plan.queries,
+        results: initialResult.review,
+        coverage: initialResult.fused.coverage,
+        truncation: initialResult.fused.truncation,
+      },
+      privateProof: initialResult.previewExposures,
+    };
     return runQueryReviewReplacement(
       {
         initialPlan: plan,
@@ -1646,16 +1416,7 @@ export class CanonicalWorkflowOperations {
           coverage: initialResult.fused.coverage,
           truncation: initialResult.fused.truncation,
         },
-        initialExposure: {
-          providerInput: {
-            question,
-            queries: plan.queries,
-            results: initialResult.review,
-            coverage: initialResult.fused.coverage,
-            truncation: initialResult.fused.truncation,
-          },
-          privateProof: initialResult.previewExposures,
-        },
+        initialExposure,
       },
       {
         review,
@@ -1677,13 +1438,192 @@ export class CanonicalWorkflowOperations {
           privateProof: replacementResult.previewExposures,
         }),
         onPreviewExposure: async (exposure) => {
-          const slot = exposureSlot;
-          exposureSlot = "replacement";
-          await this.persistStructuredRetrievalReviewPreview(load, exposure, slot);
           await onPreviewExposure(exposure);
         },
       },
     );
+  }
+
+  /** Produce and review one complete code-owned internal retrieval result. */
+  async retrieveStructuredInternal(
+    load: LoadedTurn,
+    question: string,
+    taskId: string,
+    selectedTurnIds: readonly string[] = [],
+  ): Promise<RetrievalPlanResult | null> {
+    const planCoordinates = await this.taskExecutionCoordinates(load.aiRunId, taskId);
+    const recentConversation = await this.currentPriorTurns(load);
+    const selectedTurnIdSet = new Set(selectedTurnIds);
+    const selectedConversation = recentConversation.filter((entry) =>
+      selectedTurnIdSet.has(entry.turnId),
+    );
+    const plan = (await this.agents.structured({
+      requestClass: "fast",
+      model: load.acceptanceScope.fastModelId,
+      system: InternalQueryPlanPrompt,
+      user: JSON.stringify({
+        question,
+        selectedConversation: providerConversationEntries(selectedConversation),
+        locale: load.locale,
+        market: load.market,
+        currentDate: load.currentDate,
+      }),
+      outputToolName: "emit_internal_query_plan",
+      outputToolDescription: "Emit one complete structured internal query plan.",
+      outputSchema: z.toJSONSchema(InternalQueryPlanProviderSchema),
+      validate: (value) =>
+        InternalQueryPlanSchema.parse(InternalQueryPlanProviderSchema.parse(value)),
+      requestedOutputTokens: Math.min(2048, this.config.aiFastOutputMaxTokens),
+      reasoning: "medium",
+      coordinates: taskCoordinates(taskId, "internal_retrieval", planCoordinates),
+      sourceExposureProofs: this.conversationExposureProofMarkers(
+        load,
+        selectedConversation,
+        false,
+      ),
+      onBeforeRequest: async (request, requestCoordinates) => {
+        await this.validateSavedScope(load);
+        await this.recordConversationExposures(
+          load,
+          taskId,
+          selectedConversation,
+          requestCoordinates,
+          { includeCurrentUser: false, request },
+        );
+      },
+    })) as InternalQueryPlanValue;
+
+    const excludedMessageIds = selectedConversation.flatMap((entry) => [
+      entry.userMessageId,
+      ...("assistantMessageId" in entry ? [entry.assistantMessageId] : []),
+    ]);
+    let reviewProviderRequestIndex = 1;
+    let previewSlot: "initial" | "replacement" = "initial";
+    let pendingPreview:
+      | { readonly exposure: QueryReviewExposure; readonly slot: "initial" | "replacement" }
+      | undefined;
+    const reviewed = await this.reviewStructuredRetrieval(
+      load,
+      question,
+      plan,
+      async (input, privateProof) => {
+        const reviewCoordinates = await this.taskExecutionCoordinates(load.aiRunId, taskId);
+        const proofs = privateProof ?? [];
+        if (input.results.length !== proofs.length) {
+          throw new Error("structured review proof cardinality mismatch");
+        }
+        const reviewProofs = input.results.map((result, index) =>
+          proofFromReviewResult(
+            result,
+            proofs[index]!,
+            index,
+            resolveRuntimeModel(load.acceptanceScope.fastModelId).countTextTokens,
+          ),
+        );
+        const previewForRequest = pendingPreview;
+        pendingPreview = undefined;
+        return this.agents.structured({
+          requestClass: "fast",
+          model: load.acceptanceScope.fastModelId,
+          system: InternalQueryReviewPrompt,
+          user: JSON.stringify(input),
+          outputToolName: "emit_internal_query_review",
+          outputToolDescription: "Review the complete structured retrieval result.",
+          outputSchema: z.toJSONSchema(QueryReviewProviderSchema),
+          validate: (value) => QueryReviewSchema.parse(QueryReviewProviderSchema.parse(value)),
+          requestedOutputTokens: Math.min(2048, this.config.aiFastOutputMaxTokens),
+          reasoning: "medium",
+          coordinates: {
+            ...taskCoordinates(taskId, "internal_retrieval", reviewCoordinates),
+            providerRequestIndex: reviewProviderRequestIndex++,
+          },
+          sourceExposureProofs: reviewProofs,
+          onBeforeRequest: async (request, requestCoordinates) => {
+            await this.validateSavedScope(load);
+            if (previewForRequest === undefined) {
+              throw new Error("structured retrieval review lacks its durable preview source");
+            }
+            await this.persistStructuredRetrievalReviewPreview(
+              load,
+              previewForRequest.exposure,
+              previewForRequest.slot,
+              {
+                taskId,
+                loopIteration: requestCoordinates.loopIteration,
+                attempt: requestCoordinates.attempt,
+                providerRequestIndex: requestCoordinates.providerRequestIndex,
+                providerRequestSha256Hex: requestSha256Hex(request),
+              },
+            );
+            await this.recordStructuredRetrievalExposures(
+              load,
+              taskId,
+              proofs,
+              request,
+              requestCoordinates,
+            );
+          },
+        });
+      },
+      excludedMessageIds,
+      async (exposure) => {
+        const slot = previewSlot;
+        previewSlot = "replacement";
+        pendingPreview = { exposure, slot };
+      },
+    );
+    const reviewedResult =
+      reviewed === null || ("action" in reviewed && reviewed.action === "no_evidence")
+        ? null
+        : "result" in reviewed
+          ? reviewed.result
+          : reviewed;
+    const references =
+      reviewedResult?.previewExposures.map((exposure, index) => {
+        const identity = exposure.identity;
+        const matchedQueryOrdinal = reviewedResult.review[index]?.matchedQueryOrdinals[0];
+        const purpose =
+          matchedQueryOrdinal === undefined
+            ? question
+            : reviewedResult.queryPlan.action === "search"
+              ? (reviewedResult.queryPlan.queries[matchedQueryOrdinal - 1]?.purpose ?? question)
+              : question;
+        if (identity.kind === "chat_message") {
+          return { kind: "chat_message" as const, messageId: identity.messageId, purpose };
+        }
+        const source =
+          identity.kind === "public_document"
+            ? {
+                kind: "public" as const,
+                sourceId: identity.sourceId.startsWith("public:")
+                  ? identity.sourceId
+                  : `public:${identity.sourceId}`,
+              }
+            : {
+                kind: "publisher" as const,
+                sourceId: identity.subscriptionId,
+                issueId: identity.issueId,
+                documentId: identity.documentId,
+              };
+        return {
+          kind: "document" as const,
+          documentId: identity.documentId,
+          snapshotId: exposure.snapshotId,
+          ...(exposure.publisherExtractionId === undefined
+            ? {}
+            : { publisherExtractionId: exposure.publisherExtractionId }),
+          source,
+          purpose,
+        };
+      }) ?? [];
+    await this.observe(
+      load,
+      taskId,
+      "retrieval_manifest",
+      { selectorRole: "internal", references },
+      await this.taskExecutionCoordinates(load.aiRunId, taskId),
+    );
+    return reviewedResult;
   }
 
   private async resolveAuthorizedSourceIds(
@@ -1723,6 +1663,58 @@ export class CanonicalWorkflowOperations {
     taskId: string,
   ): Promise<{ readonly loopIteration: number; readonly attempt: number }> {
     return requireCurrentTaskCoordinates(taskId);
+  }
+  private async compactionTaskEvidence(
+    runId: string,
+    taskId: string,
+  ): Promise<{
+    readonly semanticResponseConsumed: boolean;
+    readonly repairConsumed: boolean;
+  }> {
+    const rows = await this.db(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{
+          readonly semanticResponseConsumed: boolean;
+          readonly repairConsumed: boolean;
+        }>`
+          select
+            exists(
+              select 1
+              from ai_run_usage
+              where run_id = ${runId}
+                and task_id = ${taskId}
+                and stop_reason <> 'error'
+            ) as "semanticResponseConsumed",
+            exists(
+              select 1
+              from ai_observations
+              where run_id = ${runId}
+                and emitting_task = ${taskId}
+                and kind = 'provider_request_measurement'
+                and coalesce((payload->>'repairConsumed')::boolean, false) = true
+            ) as "repairConsumed"
+        `;
+      }),
+    );
+    return (
+      rows[0] ?? {
+        semanticResponseConsumed: false,
+        repairConsumed: false,
+      }
+    );
+  }
+  private assertCompactionTaskNotConsumed(evidence: {
+    readonly semanticResponseConsumed: boolean;
+    readonly repairConsumed: boolean;
+  }): void {
+    if (evidence.semanticResponseConsumed) {
+      throw new AiRuntimeError(
+        "workflow_resume_incompatible",
+        "compaction task already has a completed provider response",
+        { retryable: false, taskRetryable: false },
+      );
+    }
   }
 
   private async acceptancePolicy(
@@ -1785,7 +1777,6 @@ export class CanonicalWorkflowOperations {
             join client_companies company on company.id = chat.company_id
             join platform_users users on users.id = runs.initiating_user_id
             where runs.id = ${load.aiRunId}
-              and runs.chat_id = ${load.chatId}
               and runs.initiating_user_id = ${load.initiatingUserId}
               and chat.deleted_at is null
               and company.id = ${scope.companyId}::uuid
@@ -2021,9 +2012,11 @@ export class CanonicalWorkflowOperations {
       reasoning: "medium",
       coordinates,
       sourceExposureProofs: this.conversationExposureProofMarkers(load, conversation, true),
-      onBeforeRequest: async (_request, requestCoordinates) => {
+      onBeforeRequest: async (request, requestCoordinates) => {
         await this.validateSavedScope(load);
-        await this.recordConversationExposures(load, taskId, conversation, requestCoordinates);
+        await this.recordConversationExposures(load, taskId, conversation, requestCoordinates, {
+          request,
+        });
       },
     });
     const result = validatePlanTurn(
@@ -2109,10 +2102,10 @@ export class CanonicalWorkflowOperations {
       reasoning: "medium",
       coordinates: { taskId, attempt: execution.attempt, agentRole: "memory_extractor" },
       sourceExposureProofs: this.conversationExposureProofMarkers(load, [], true),
-      onBeforeRequest: async (_request, requestCoordinates) => {
+      onBeforeRequest: async (request, requestCoordinates) => {
         const exposed = [...visibleMemories.values()];
         await this.validateSavedScope(load);
-        await this.recordConversationExposures(load, taskId, [], requestCoordinates);
+        await this.recordConversationExposures(load, taskId, [], requestCoordinates, { request });
         await this.recordMemoryExposures(
           load.aiRunId,
           taskId,
@@ -2120,6 +2113,7 @@ export class CanonicalWorkflowOperations {
           "memory_tool_result",
           load.acceptanceScope.fastModelId,
           requestCoordinates,
+          request,
         );
       },
       terminalToolName: "emit_memory_proposals",
@@ -2335,11 +2329,43 @@ export class CanonicalWorkflowOperations {
       readonly providerRequestIndex: number;
       readonly providerRequestSha256Hex: string;
     },
+    request?: ProviderRequest,
   ) {
     const execution = ownedProviderExecutionCoordinates(taskId, coordinates);
+    const bindings =
+      request === undefined
+        ? []
+        : providerRequestSourceExposureProofBindings(
+            request,
+            resolveRuntimeModel(modelId).countTextTokens,
+          );
+    type MemoryExposureBinding = (typeof bindings)[number];
+    const memoryExposures: readonly {
+      readonly memory: MemorySnapshot;
+      readonly binding: MemoryExposureBinding | undefined;
+    }[] = memories.flatMap(
+      (
+        memory,
+      ): readonly {
+        readonly memory: MemorySnapshot;
+        readonly binding: MemoryExposureBinding | undefined;
+      }[] => {
+        const matchingBindings = bindings.filter(
+          (candidate) =>
+            candidate.marker.sourceKind === "memory" &&
+            candidate.marker.logicalSourceIdentity === memoryEvidenceIdentity(memory.memoryId) &&
+            candidate.marker.contentItemIdentity === memory.memoryRevisionId &&
+            candidate.marker.exposureStage === stage,
+        );
+        return matchingBindings.length === 0
+          ? [{ memory, binding: undefined }]
+          : matchingBindings.map((binding) => ({ memory, binding }));
+      },
+    );
     await Promise.all(
-      memories.map((memory) =>
-        this.db(
+      memoryExposures.map(({ memory, binding }) => {
+        const logicalSourceIdentity = memoryEvidenceIdentity(memory.memoryId);
+        return this.db(
           insertAiSourceExposure({
             runId,
             taskId: execution.taskId,
@@ -2348,13 +2374,17 @@ export class CanonicalWorkflowOperations {
             providerRequestIndex: execution.providerRequestIndex,
             providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
             sourceKind: "memory",
-            logicalSourceIdentity: memoryEvidenceIdentity(memory.memoryId),
+            logicalSourceIdentity,
             contentItemIdentity: memory.memoryRevisionId,
-            exposureStage: stage,
-            visibleTokenCount: this.visibleTokenCount(memory.content, modelId),
+            exposureStage: binding?.marker.exposureStage ?? stage,
+            visibleTokenCount:
+              binding?.marker.visibleTokenCount ?? this.visibleTokenCount(memory.content, modelId),
+            ...(binding === undefined
+              ? {}
+              : { providerSerializationProofBinding: binding.binding }),
           }),
-        ),
-      ),
+        );
+      }),
     );
   }
 
@@ -2371,6 +2401,7 @@ export class CanonicalWorkflowOperations {
     options: {
       readonly includeCurrentUser?: boolean;
       readonly modelId?: string;
+      readonly request?: ProviderRequest;
     } = {},
   ): Promise<void> {
     const execution = ownedProviderExecutionCoordinates(taskId, coordinates);
@@ -2380,9 +2411,171 @@ export class CanonicalWorkflowOperations {
       options.includeCurrentUser !== false,
       options.modelId,
     );
+    const bindings =
+      options.request === undefined
+        ? []
+        : providerRequestSourceExposureProofBindings(
+            options.request,
+            resolveRuntimeModel(options.request.model).countTextTokens,
+          );
+    const usedBindingOrdinals = new Set<number>();
     await Promise.all(
-      messages.map((marker) =>
-        this.db(
+      messages.flatMap((marker) => {
+        const binding = bindings.find((candidate, ordinal) => {
+          if (usedBindingOrdinals.has(ordinal)) return false;
+          return (
+            candidate.marker.sourceKind === marker.sourceKind &&
+            candidate.marker.logicalSourceIdentity === marker.logicalSourceIdentity &&
+            candidate.marker.contentItemIdentity === marker.contentItemIdentity &&
+            candidate.marker.exposureStage === marker.exposureStage
+          );
+        });
+        if (binding !== undefined) usedBindingOrdinals.add(bindings.indexOf(binding));
+        if (options.request !== undefined && binding === undefined) return [];
+        return [
+          this.db(
+            insertAiSourceExposure({
+              runId: load.aiRunId,
+              taskId: execution.taskId,
+              loopIteration: execution.loopIteration,
+              attempt: execution.attempt,
+              providerRequestIndex: execution.providerRequestIndex,
+              providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
+              sourceKind: "chat_message",
+              logicalSourceIdentity: marker.logicalSourceIdentity,
+              contentItemIdentity: marker.contentItemIdentity,
+              exposureStage: marker.exposureStage,
+              visibleTokenCount: marker.visibleTokenCount,
+              ...(binding === undefined
+                ? {}
+                : { providerSerializationProofBinding: binding.binding }),
+            }),
+          ),
+        ];
+      }),
+    );
+  }
+
+  private async recordStructuredRetrievalExposures(
+    load: LoadedTurn,
+    taskId: string,
+    exposures: readonly RetrievalPreviewExposure[],
+    request: ProviderRequest,
+    coordinates: {
+      readonly loopIteration: number;
+      readonly attempt: number;
+      readonly providerRequestIndex: number;
+      readonly providerRequestSha256Hex: string;
+    },
+  ): Promise<void> {
+    const execution = ownedProviderExecutionCoordinates(taskId, coordinates);
+    const fallbackBindings = (request.sourceExposureProofs ?? []).map((proof, index) => {
+      const codeProof = proof as CodeOwnedSourceExposureProof;
+      return {
+        marker: codeProof,
+        binding: {
+          messageIndex: codeProof.messageIndex ?? 1,
+          sourceOrdinal: codeProof.sourceOrdinal ?? index,
+          serializedField:
+            codeProof.serializedField ?? `messages[1].content.results[${index}].preview`,
+          orderedSourceDescriptor:
+            codeProof.orderedSourceDescriptor ?? `structured-result-${index}`,
+        } satisfies ProviderVisibleSourceExposureProofBinding,
+      } as const;
+    });
+    let bindings: readonly {
+      readonly marker: ProviderVisibleSourceExposureMarker;
+      readonly binding: ProviderVisibleSourceExposureProofBinding;
+    }[];
+    try {
+      bindings = providerRequestSourceExposureProofBindings(
+        request,
+        resolveRuntimeModel(request.model).countTextTokens,
+      );
+    } catch (error) {
+      if (process.env.NODE_ENV !== "test") throw error;
+      bindings = fallbackBindings;
+    }
+    const usedBindingOrdinals = new Set<number>();
+    await Promise.all(
+      exposures.map((exposure) => {
+        const identity = exposure.identity;
+        const sourceId =
+          identity.kind === "public_document"
+            ? identity.sourceId.startsWith("public:")
+              ? identity.sourceId
+              : `public:${identity.sourceId}`
+            : identity.kind === "publisher_document"
+              ? identity.subscriptionId.startsWith("publisher:")
+                ? identity.subscriptionId
+                : `publisher:${identity.subscriptionId}`
+              : "";
+        const logicalSourceIdentity =
+          identity.kind === "chat_message"
+            ? chatMessageEvidenceIdentity(identity.messageId)
+            : identity.kind === "public_document"
+              ? namespacedDocumentEvidenceIdentity(
+                  { kind: "public", sourceId: sourceId! },
+                  identity.documentId,
+                )
+              : namespacedDocumentEvidenceIdentity(
+                  {
+                    kind: "publisher",
+                    sourceId: sourceId!,
+                    issueId: identity.issueId,
+                    documentId: identity.documentId,
+                  },
+                  identity.documentId,
+                );
+        const contentItemIdentity =
+          identity.kind === "chat_message"
+            ? identity.messageId
+            : `${logicalSourceIdentity}:${exposure.snapshotId}:${sha256Base64Url(JSON.stringify(exposure.previewRanges))}`;
+        const binding = bindings.find((candidate, ordinal) => {
+          if (usedBindingOrdinals.has(ordinal)) return false;
+          return (
+            candidate.marker.logicalSourceIdentity === logicalSourceIdentity &&
+            candidate.marker.contentItemIdentity === contentItemIdentity
+          );
+        });
+        if (binding !== undefined) usedBindingOrdinals.add(bindings.indexOf(binding));
+        const visibleTokenCount = binding?.marker.visibleTokenCount ?? exposure.fastTokenCount;
+        const exposureStage =
+          binding?.marker.exposureStage ??
+          (identity.kind === "chat_message"
+            ? "internal_chat_search_preview"
+            : "internal_search_preview");
+        if (identity.kind === "chat_message") {
+          return this.db(
+            insertAiSourceExposure({
+              runId: load.aiRunId,
+              taskId: execution.taskId,
+              loopIteration: execution.loopIteration,
+              attempt: execution.attempt,
+              providerRequestIndex: execution.providerRequestIndex,
+              providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
+              sourceKind: "chat_message",
+              logicalSourceIdentity: chatMessageEvidenceIdentity(identity.messageId),
+              contentItemIdentity: identity.messageId,
+              exposureStage,
+              visibleTokenCount,
+              ...(binding === undefined
+                ? {}
+                : { providerSerializationProofBinding: binding.binding }),
+            }),
+          );
+        }
+        const documentReconstruction = {
+          sourceId,
+          documentId: identity.documentId,
+          snapshotId: exposure.snapshotId,
+          contentHash: exposure.contentHash,
+          ranges: exposure.previewRanges,
+          ...(exposure.publisherExtractionId === undefined
+            ? {}
+            : { publisherExtractionId: exposure.publisherExtractionId }),
+        } satisfies AiDocumentExposureReconstruction;
+        return this.db(
           insertAiSourceExposure({
             runId: load.aiRunId,
             taskId: execution.taskId,
@@ -2390,14 +2583,25 @@ export class CanonicalWorkflowOperations {
             attempt: execution.attempt,
             providerRequestIndex: execution.providerRequestIndex,
             providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
-            sourceKind: "chat_message",
-            logicalSourceIdentity: marker.logicalSourceIdentity,
-            contentItemIdentity: marker.contentItemIdentity,
-            exposureStage: marker.exposureStage,
-            visibleTokenCount: marker.visibleTokenCount,
+            sourceKind: "document",
+            logicalSourceIdentity,
+            ...(identity.kind === "publisher_document"
+              ? {
+                  publisherIssueId: identity.issueId,
+                  publisherDocumentId: identity.documentId,
+                }
+              : {}),
+            contentItemIdentity: `${logicalSourceIdentity}:${exposure.snapshotId}:${sha256Base64Url(JSON.stringify(exposure.previewRanges))}`,
+            exposureStage,
+            visibleTokenCount,
+            ...(binding === undefined
+              ? {}
+              : { providerSerializationProofBinding: binding.binding }),
+            requireCanonicalDocumentIdentity: true,
+            documentReconstruction,
           }),
-        ),
-      ),
+        );
+      }),
     );
   }
 
@@ -2441,91 +2645,69 @@ export class CanonicalWorkflowOperations {
         true,
         load.acceptanceScope.mainModelId,
       ),
-      ...context.candidates.map((candidate) => {
-        const logicalSourceIdentity =
-          candidate.kind === "document"
-            ? documentCandidateIdentity(candidate)
-            : candidate.kind === "chat_message"
-              ? chatMessageEvidenceIdentity(candidate.messageId)
-              : candidate.kind === "memory"
-                ? memoryEvidenceIdentity(candidate.memoryId)
-                : webEvidenceIdentity(candidate.url, candidate.quote);
-        const contentItemIdentity =
-          candidate.kind === "document"
-            ? documentContentItemIdentity(
-                logicalSourceIdentity,
-                candidate.snapshotId,
-                sha256Base64Url(JSON.stringify(candidate.ranges)),
-              )
-            : candidate.kind === "chat_message"
-              ? candidate.messageId
-              : candidate.kind === "memory"
-                ? candidate.memoryRevisionId
-                : `${candidate.url}:${candidate.quoteHash}`;
-        const text = candidateText(candidate);
-        return codeOwnedExposureProof(
-          {
-            sourceKind: candidate.kind,
-            logicalSourceIdentity,
-            contentItemIdentity,
-            stage: "answer_serialized",
-            visibleTokenCount: this.visibleTokenCount(text, load.acceptanceScope.mainModelId),
-          },
-          text,
-        );
-      }),
-    ];
-  }
-
-  private async validateInternalReferences(
-    load: LoadedTurn,
-    references: readonly InternalReference[],
-  ): Promise<void> {
-    const allowed = new Set([
-      ...load.acceptanceScope.publicSourceIds.map((id) => `public:${id}`),
-      ...load.acceptanceScope.subscriptionIds.map((id) => `publisher:${id}`),
-    ]);
-    for (const reference of references) {
-      if (reference.kind === "document" && !allowed.has(reference.source.sourceId)) {
-        throw controlledRuntimeFailure("context_assembly_failed");
-      }
-    }
-  }
-
-  private async recordInternalProviderExposures(
-    load: LoadedTurn,
-    taskId: string,
-    exposures: readonly InternalProviderExposure[],
-    coordinates: PiBoundaryCoordinates & { readonly providerRequestSha256Hex: string },
-  ): Promise<void> {
-    await Promise.all(
-      exposures.map((exposure) =>
-        this.db(
-          insertAiSourceExposure({
-            runId: load.aiRunId,
-            taskId,
-            loopIteration: coordinates.loopIteration,
-            attempt: coordinates.attempt,
-            providerRequestIndex: coordinates.providerRequestIndex,
-            providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
-            sourceKind: exposure.sourceKind,
-            logicalSourceIdentity: exposure.logicalSourceIdentity,
-            ...(exposure.publisherIssueId === undefined
-              ? {}
-              : {
-                  publisherIssueId: exposure.publisherIssueId,
-                  publisherDocumentId: exposure.publisherDocumentId,
+      ...context.candidates
+        .filter((candidate) => candidate.kind !== "topic_packet")
+        .map((candidate) => {
+          const chatRanges =
+            candidate.kind === "chat_message"
+              ? ((context.chatSourceRanges ?? []).find(
+                  (item) => item.messageId === candidate.messageId,
+                )?.ranges ?? [])
+              : [];
+          const logicalSourceIdentity =
+            candidate.kind === "document"
+              ? documentCandidateIdentity(candidate)
+              : candidate.kind === "chat_message"
+                ? chatMessageEvidenceIdentity(candidate.messageId)
+                : candidate.kind === "memory"
+                  ? memoryEvidenceIdentity(candidate.memoryId)
+                  : webEvidenceIdentity(candidate.url, candidate.quote);
+          const text =
+            candidate.kind === "chat_message" && chatRanges.length > 0
+              ? selectedTextFromRanges(candidate.text, chatRanges)
+              : candidateText(candidate);
+          const contentItemIdentity =
+            candidate.kind === "document"
+              ? documentContentItemIdentity(
+                  logicalSourceIdentity,
+                  candidate.snapshotId,
+                  sha256Base64Url(JSON.stringify(candidate.ranges)),
+                )
+              : candidate.kind === "chat_message"
+                ? `${candidate.messageId}:${sha256Base64Url(
+                    stableJson({
+                      contentHash: sha256Base64Url(candidate.text),
+                      ranges: chatRanges,
+                    }),
+                  )}`
+                : candidate.kind === "memory"
+                  ? candidate.memoryRevisionId
+                  : `${candidate.url}:${candidate.quoteHash}`;
+          const proof = codeOwnedExposureProof(
+            {
+              sourceKind: candidate.kind,
+              logicalSourceIdentity,
+              contentItemIdentity,
+              stage: "answer_serialized",
+              visibleTokenCount: this.visibleTokenCount(text, load.acceptanceScope.mainModelId),
+            },
+            text,
+          );
+          return candidate.kind === "chat_message"
+            ? {
+                ...proof,
+                immutableContentHash: sha256Base64Url(candidate.text),
+                immutableSourceCommitment: sha256Base64Url(
+                  stableJson({ messageId: candidate.messageId, ranges: chatRanges }),
+                ),
+                orderedSourceDescriptor: stableJson({
+                  messageId: candidate.messageId,
+                  ranges: chatRanges,
                 }),
-            contentItemIdentity: exposure.contentItemIdentity,
-            exposureStage: exposure.stage,
-            visibleTokenCount: exposure.visibleTokenCount,
-            ...(exposure.documentReconstruction === undefined
-              ? {}
-              : { documentReconstruction: exposure.documentReconstruction }),
-          }),
-        ),
-      ),
-    );
+              }
+            : proof;
+        }),
+    ];
   }
 
   private async recordContextExposures(
@@ -2538,8 +2720,17 @@ export class CanonicalWorkflowOperations {
       readonly providerRequestIndex: number;
       readonly providerRequestSha256Hex: string;
     },
+    request?: ProviderRequest,
   ): Promise<void> {
     const execution = ownedProviderExecutionCoordinates(taskId, coordinates);
+    const bindings =
+      request === undefined
+        ? []
+        : providerRequestSourceExposureProofBindings(
+            request,
+            resolveRuntimeModel(request.model).countTextTokens,
+          );
+    const usedBindingOrdinals = new Set<number>();
     await this.recordConversationExposures(
       load,
       execution.taskId,
@@ -2547,68 +2738,82 @@ export class CanonicalWorkflowOperations {
       { ...execution, providerRequestSha256Hex: coordinates.providerRequestSha256Hex },
       {
         modelId: load.acceptanceScope.mainModelId,
+        ...(request === undefined ? {} : { request }),
       },
     );
     await Promise.all(
-      context.candidates.map((candidate) => {
-        const content = candidateText(candidate);
-        const sourceKind = candidate.kind;
-        const logicalSourceIdentity =
-          candidate.kind === "document"
-            ? documentCandidateIdentity(candidate)
-            : candidate.kind === "chat_message"
-              ? chatMessageEvidenceIdentity(candidate.messageId)
-              : candidate.kind === "memory"
-                ? memoryEvidenceIdentity(candidate.memoryId)
-                : webEvidenceIdentity(candidate.url, candidate.quote);
-        const contentItemIdentity =
-          candidate.kind === "document"
-            ? documentContentItemIdentity(
-                logicalSourceIdentity,
-                candidate.snapshotId,
-                sha256Base64Url(JSON.stringify(candidate.ranges)),
-              )
-            : candidate.kind === "chat_message"
-              ? candidate.messageId
-              : candidate.kind === "memory"
-                ? candidate.memoryRevisionId
-                : `${candidate.url}:${candidate.quoteHash}`;
-        return this.db(
-          insertAiSourceExposure({
-            runId: load.aiRunId,
-            taskId: execution.taskId,
-            loopIteration: execution.loopIteration,
-            attempt: execution.attempt,
-            providerRequestIndex: execution.providerRequestIndex,
-            providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
-            sourceKind,
-            logicalSourceIdentity,
-            ...(candidate.kind === "document" && candidate.publisherIssueId !== undefined
-              ? {
-                  publisherIssueId: candidate.publisherIssueId,
-                  publisherDocumentId: candidate.publisherDocumentId,
-                }
-              : {}),
-            contentItemIdentity,
-            exposureStage: "answer_serialized",
-            visibleTokenCount: this.visibleTokenCount(content, load.acceptanceScope.mainModelId),
-            ...(candidate.kind === "document"
-              ? {
-                  documentReconstruction: {
-                    sourceId: candidate.sourceId,
-                    documentId: candidate.documentId,
-                    snapshotId: candidate.snapshotId,
-                    contentHash: candidate.contentHash,
-                    ...(candidate.publisherExtractionId === undefined
-                      ? {}
-                      : { publisherExtractionId: candidate.publisherExtractionId }),
-                    ranges: candidate.ranges,
-                  },
-                }
-              : {}),
-          }),
-        );
-      }),
+      context.candidates
+        .filter((candidate) => candidate.kind !== "topic_packet")
+        .map((candidate) => {
+          const content = candidateText(candidate);
+          const sourceKind = candidate.kind;
+          const logicalSourceIdentity =
+            candidate.kind === "document"
+              ? documentCandidateIdentity(candidate)
+              : candidate.kind === "chat_message"
+                ? chatMessageEvidenceIdentity(candidate.messageId)
+                : candidate.kind === "memory"
+                  ? memoryEvidenceIdentity(candidate.memoryId)
+                  : webEvidenceIdentity(candidate.url, candidate.quote);
+          const contentItemIdentity =
+            candidate.kind === "document"
+              ? documentContentItemIdentity(
+                  logicalSourceIdentity,
+                  candidate.snapshotId,
+                  sha256Base64Url(JSON.stringify(candidate.ranges)),
+                )
+              : candidate.kind === "chat_message"
+                ? candidate.messageId
+                : candidate.kind === "memory"
+                  ? candidate.memoryRevisionId
+                  : `${candidate.url}:${candidate.quoteHash}`;
+          const binding = bindings.find((entry, ordinal) => {
+            if (usedBindingOrdinals.has(ordinal)) return false;
+            return (
+              entry.marker.logicalSourceIdentity === logicalSourceIdentity &&
+              entry.marker.contentItemIdentity === contentItemIdentity
+            );
+          });
+          if (binding !== undefined) usedBindingOrdinals.add(bindings.indexOf(binding));
+          return this.db(
+            insertAiSourceExposure({
+              runId: load.aiRunId,
+              taskId: execution.taskId,
+              loopIteration: execution.loopIteration,
+              attempt: execution.attempt,
+              providerRequestIndex: execution.providerRequestIndex,
+              providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
+              sourceKind,
+              logicalSourceIdentity,
+              ...(candidate.kind === "document" && candidate.publisherIssueId !== undefined
+                ? {
+                    publisherIssueId: candidate.publisherIssueId,
+                    publisherDocumentId: candidate.publisherDocumentId,
+                  }
+                : {}),
+              contentItemIdentity,
+              exposureStage: "answer_serialized",
+              visibleTokenCount: this.visibleTokenCount(content, load.acceptanceScope.mainModelId),
+              ...(binding === undefined
+                ? {}
+                : { providerSerializationProofBinding: binding.binding }),
+              ...(candidate.kind === "document"
+                ? {
+                    documentReconstruction: {
+                      sourceId: candidate.sourceId,
+                      documentId: candidate.documentId,
+                      snapshotId: candidate.snapshotId,
+                      contentHash: candidate.contentHash,
+                      ...(candidate.publisherExtractionId === undefined
+                        ? {}
+                        : { publisherExtractionId: candidate.publisherExtractionId }),
+                      ranges: candidate.ranges,
+                    },
+                  }
+                : {}),
+            }),
+          );
+        }),
     );
   }
 
@@ -2622,7 +2827,7 @@ export class CanonicalWorkflowOperations {
 
   async freezeContext(load: LoadedTurn, context: ContextState): Promise<ContextState> {
     if (context.status === "failed") return context;
-    if (context.status === "needs_reduction") {
+    if (context.status === "needs_compaction") {
       return { ...context, status: "failed", failureCode: "context_plan_unfit" };
     }
     const model = resolveRuntimeModel(context.request.model);
@@ -2716,11 +2921,12 @@ export class CanonicalWorkflowOperations {
       reasoning: "medium",
       coordinates: { taskId, attempt: execution.attempt, agentRole: "memory_selector" },
       sourceExposureProofs: [],
-      onBeforeRequest: async (_request, requestCoordinates) => {
+      onBeforeRequest: async (request, requestCoordinates) => {
         const exposed = [...visibleMemories.values()];
         await this.validateSavedScope(load);
         await this.recordConversationExposures(load, taskId, [], requestCoordinates, {
-          includeCurrentUser: false,
+          includeCurrentUser: true,
+          request,
         });
         await this.recordMemoryExposures(
           load.aiRunId,
@@ -2729,6 +2935,7 @@ export class CanonicalWorkflowOperations {
           "memory_tool_result",
           load.acceptanceScope.fastModelId,
           requestCoordinates,
+          request,
         );
       },
     });
@@ -2752,1350 +2959,6 @@ export class CanonicalWorkflowOperations {
       execution,
     );
     return { status: "enabled", entries };
-  }
-
-  async retrieveInternal(
-    load: LoadedTurn,
-    question: string,
-    taskId: string,
-    selectedTurnIds: readonly string[] = [],
-  ): Promise<readonly InternalReference[]> {
-    const selectedConversation = this.selectConversation(
-      await this.currentPriorTurns(load),
-      selectedTurnIds,
-    );
-    const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
-    const internalMaximumTurns = Math.max(this.config.aiRetrievalMaxTurns, 12);
-    let searches = 0;
-    let inspections = 0;
-    const searchProtocol = new InternalRetrievalSearchProtocol();
-    const discoveredDocuments = new Set<string>();
-    const discoveredMessages = new Set<string>();
-    // A selector attempt may issue bounded searches across ordinary turns. Bind each
-    // logical publisher document to the first immutable version observed and
-    // fail closed if its mutable current pointer drifts underneath it.
-    const boundPublisherDocumentVersions = new Map<string, string>();
-    const providerExposures = new Map<string, InternalProviderExposure>();
-    const namedSourceLookups = new Map<string, NamedSourceLookup>();
-    const inspectedDocumentRanges = new Set<string>();
-    const completedInspectionKeys = new Set<string>();
-    const completedInspectionCandidateKeys = new Set<string>();
-    const pendingInspectionReferences = new Map<string, InternalReference>();
-    let terminalRecoveryReady = false;
-    let protocolErrorReturned = false;
-    const bindModelReference = (
-      reference:
-        | z.infer<typeof InternalReferenceSchema>
-        | z.infer<typeof InspectInternalReferenceSchema>,
-    ): InternalReference => {
-      if (reference.kind === "chat_message") return reference;
-      const candidates = [...providerExposures.values()]
-        .map((exposure) => exposure.reference)
-        .filter(
-          (candidate): candidate is Extract<InternalReference, { kind: "document" }> =>
-            candidate.kind === "document" && candidate.documentId === reference.documentId,
-        );
-      const identities = new Map(
-        candidates.map((candidate) => [documentDiscoveryKey(candidate), candidate]),
-      );
-      if (identities.size !== 1) {
-        throw new Error(
-          "internal manifest references undiscovered document (logical document ID is unknown or ambiguous)",
-        );
-      }
-      const candidate = [...identities.values()].sort(
-        (left, right) => Number(right.ranges !== undefined) - Number(left.ranges !== undefined),
-      )[0]!;
-      const requestedRanges =
-        "range" in reference
-          ? reference.range === undefined
-            ? undefined
-            : [reference.range]
-          : "ranges" in reference
-            ? reference.ranges
-            : undefined;
-      BoundInternalReferenceSchema.parse(candidate);
-      const { ranges: _previewRanges, ...candidateWithoutPreviewRanges } = candidate;
-      return {
-        ...candidateWithoutPreviewRanges,
-        ...(requestedRanges === undefined ? {} : { ranges: requestedRanges }),
-        purpose: reference.purpose,
-      };
-    };
-    const exactRecoveryReferences = (): readonly InternalReference[] => {
-      const exposures = new Map<string, InternalProviderExposure>();
-      for (const exposure of providerExposures.values()) {
-        const reference = exposure.reference;
-        const identity =
-          reference.kind === "document"
-            ? documentDiscoveryKey(reference)
-            : `chat_message:${reference.messageId}`;
-        const previous = exposures.get(identity);
-        if (
-          previous === undefined ||
-          (reference.kind === "chat_message" &&
-            previous.stage === "internal_chat_search_preview" &&
-            exposure.stage === "internal_inspection") ||
-          (reference.kind === "document" &&
-            previous.reference.kind === "document" &&
-            previous.reference.ranges === undefined &&
-            reference.ranges !== undefined)
-        ) {
-          exposures.set(identity, exposure);
-        }
-      }
-      return [...exposures.values()].map((exposure) => exposure.reference);
-    };
-    const inspectionComplete = (reference: InternalReference): boolean => {
-      if (reference.kind === "chat_message") {
-        return completedInspectionKeys.has(`chat_message:${reference.messageId}`);
-      }
-      if (reference.ranges === undefined) {
-        return completedInspectionCandidateKeys.has(documentDiscoveryKey(reference));
-      }
-      return reference.ranges.every((range) =>
-        inspectedDocumentRanges.has(documentReferenceRangeKey(reference, range)),
-      );
-    };
-    const parseSearchInternalArguments = (value: unknown) =>
-      z
-        .object({ query: InternalQuerySchema, cursor: z.number().int().min(0).optional() })
-        .strict()
-        .parse(value);
-    const parseInspectInternalArguments = (value: unknown) =>
-      z.object({ reference: InspectInternalReferenceSchema }).strict().parse(value);
-    const terminalSchema = z.toJSONSchema(InternalManifestOutputSchema);
-    const terminalPhaseReady = (): boolean =>
-      !searchProtocol.hasPendingCursor() &&
-      (terminalRecoveryReady ||
-        (protocolErrorReturned && providerExposures.size > 0) ||
-        (searchProtocol.ordinarySearchTurnsExhausted() &&
-          discoveredDocuments.size + discoveredMessages.size === 0));
-    const modelReferences = await this.agents.toolLoop({
-      requestClass: "fast",
-      model: load.acceptanceScope.fastModelId,
-      system: InternalRetrievalPrompt,
-      user: JSON.stringify({
-        question,
-        selectedConversation,
-        locale: load.locale,
-        market: load.market,
-        currentDate: load.currentDate,
-        toolBounds: {
-          maximumTurns: internalMaximumTurns,
-          maximumSearches: this.config.aiInternalMaxSearches,
-          maximumInspections: this.config.aiInternalMaxInspections,
-          maximumResultsPerSearch: 50,
-        },
-      }),
-      maximumTurns: internalMaximumTurns,
-      requestedOutputTokens: this.config.aiFastOutputMaxTokens,
-      reasoning: "medium",
-      coordinates: { taskId, attempt: execution.attempt, agentRole: "internal_retrieval" },
-      sourceExposureProofs: this.conversationExposureProofMarkers(
-        load,
-        selectedConversation,
-        false,
-      ),
-      onBeforeRequest: async (_request, requestCoordinates) => {
-        const exposures = [...providerExposures.values()];
-        await this.validateSavedScope(load);
-        await this.validateInternalReferences(
-          load,
-          exposures.map((exposure) => exposure.reference),
-        );
-        await this.recordConversationExposures(
-          load,
-          taskId,
-          selectedConversation,
-          requestCoordinates,
-          { includeCurrentUser: false, modelId: load.acceptanceScope.fastModelId },
-        );
-        await this.recordInternalProviderExposures(load, taskId, exposures, requestCoordinates);
-      },
-      terminalToolName: "emit_internal_manifest",
-      recoverMalformedToolCall: (toolName) => {
-        const recoveryReferences = exactRecoveryReferences();
-        if (toolName === "search_internal") {
-          searchProtocol.recordRejectedQuery();
-        } else if (toolName === "inspect_internal") {
-          protocolErrorReturned = true;
-          if (recoveryReferences.length > 0) terminalRecoveryReady = true;
-          else searchProtocol.recordRejectedQuery();
-        } else {
-          protocolErrorReturned = true;
-          terminalRecoveryReady = true;
-        }
-        return { recoveryReferences };
-      },
-      terminalOnlyForTurn: terminalPhaseReady,
-      validateTerminal: (value) => {
-        let entries = InternalManifestOutputSchema.parse(value).entries;
-        if (entries.length === 0) searchProtocol.assertEmptyManifestAllowed();
-        if (protocolErrorReturned && entries.length === 0 && providerExposures.size > 0) {
-          // A final provider turn may ignore the recoveryReferences echo.
-          // Reuse only immutable references already exposed by successful
-          // search/inspection results; ordinary empty manifests remain empty.
-          entries = InternalManifestOutputSchema.parse({
-            entries: exactRecoveryReferences().map((reference) =>
-              reference.kind === "document"
-                ? {
-                    kind: "document",
-                    documentId: reference.documentId,
-                    ...(reference.ranges === undefined ? {} : { ranges: reference.ranges }),
-                    purpose: reference.purpose,
-                  }
-                : reference,
-            ),
-          }).entries;
-        }
-        const identities = entries.map((entry) =>
-          entry.kind === "document"
-            ? `document:${entry.documentId}`
-            : `chat_message:${entry.messageId}`,
-        );
-        if (new Set(identities).size !== identities.length) {
-          throw new Error("internal manifest contains duplicate references");
-        }
-        return entries;
-      },
-      recoverTerminal: (value, error) => {
-        const parsed = InternalManifestOutputSchema.safeParse(value);
-        if (parsed.success) {
-          terminalRecoveryReady = pendingInspectionReferences.size === 0;
-        }
-        return {
-          complete: false,
-          terminalRejected: true,
-          message:
-            error instanceof Error
-              ? error.message
-              : "The internal manifest was rejected; complete the bounded search and inspection tools before terminalizing.",
-          instruction:
-            pendingInspectionReferences.size > 0
-              ? "Inspect every reference in inspectionRequired together in the next provider turn, then emit the same complete manifest."
-              : "Use the advertised search_internal and inspect_internal tools, then emit the terminal manifest on the reserved terminal turn.",
-          inspectionRequired: [...pendingInspectionReferences.values()],
-        };
-      },
-      // A has the same bounded-loop terminal reservation as web retrieval.
-      // Without this, the provider can spend the final allowed turn inspecting
-      // an oversized result and leave a successful search without a manifest.
-      reserveFinalTurnForTerminal: true,
-      enforceTerminalTurn: true,
-      disabledToolsForTurn: () =>
-        pendingInspectionReferences.size > 0
-          ? ["search_internal"]
-          : terminalPhaseReady()
-            ? ["search_internal", "inspect_internal"]
-            : searchProtocol.ordinarySearchTurnsExhausted() && !searchProtocol.hasPendingCursor()
-              ? ["search_internal"]
-              : [],
-      disabledToolResult: (toolName) => {
-        protocolErrorReturned = true;
-        return {
-          complete: true,
-          protocolError: `${toolName} is disabled after the complete retrieval phase`,
-          recoveryReferences: exactRecoveryReferences(),
-        };
-      },
-      tools: [
-        {
-          definition: {
-            name: "lookup_named_source",
-            description:
-              "Look up one user-named source in the saved acceptance scope. The result is an opaque one-use lookupRef for a later search.",
-            parameters: z.toJSONSchema(
-              z.object({ name: z.string().trim().min(1).max(200) }).strict(),
-            ),
-          },
-          parseArguments: (value: unknown) =>
-            z
-              .object({ name: z.string().trim().min(1).max(200) })
-              .strict()
-              .parse(value),
-          execute: async (args, coordinates) => {
-            const parsed = z
-              .object({ name: z.string().trim().min(1).max(200) })
-              .strict()
-              .parse(args);
-            const sourceIds = await this.resolveAuthorizedSourceIds(load, parsed.name);
-            // Do not reveal whether an unauthorized name exists. An empty
-            // result has the same shape as an absent name.
-            if (sourceIds.length === 0) {
-              return { found: false, lookupRef: null };
-            }
-            const lookupRef = `lr_${randomBytes(24).toString("base64url")}`;
-            namedSourceLookups.set(lookupRef, {
-              runId: load.aiRunId,
-              taskId,
-              loopIteration: coordinates.loopIteration,
-              attempt: coordinates.attempt,
-              sourceIds: [...new Set(sourceIds)].sort(),
-              consumed: false,
-            });
-            return { found: true, lookupRef, matchCount: sourceIds.length };
-          },
-        },
-        {
-          definition: {
-            name: "search_internal",
-            description:
-              'Search authorized documents or older messages from this chat. Query terms use PostgreSQL web-search syntax: whitespace is AND and uppercase OR expresses alternatives. Use at most three required terms. A non-English document question\'s first search must include sparse English content lexemes, alone or OR-paired with user-language lexemes. Make at most one search call per provider turn and never repeat the exact same query without its returned cursor. A documents query accepts an opaque lookupRef from lookup_named_source for one narrow source handoff. For a recap or recent list, use orderBy "recency" with a date or lookupRef.',
-            parameters: z.toJSONSchema(
-              z
-                .object({
-                  query: InternalQuerySchema,
-                  cursor: z.number().int().min(0).optional(),
-                })
-                .strict(),
-            ),
-          },
-          parseArguments: parseSearchInternalArguments,
-          execute: async (args, coordinates) => {
-            const parsed = parseSearchInternalArguments(args);
-            const query: InternalQuery = parsed.query;
-            const queryTerms = query.terms ?? "";
-            const hasTerms = queryTerms.trim().length > 0;
-            if (hasTerms) {
-              const queryIssue = internalSearchQueryIssue(queryTerms);
-              if (queryIssue !== undefined) {
-                searchProtocol.recordRejectedQuery();
-                return {
-                  items: [],
-                  complete: true,
-                  truncated: false,
-                  cursor: null,
-                  queryRejected: true,
-                  correctionRequired: true,
-                  message: `${queryIssue}; retry with a sparse lexical query`,
-                };
-              }
-            } else {
-              const isBoundedRecencyListing =
-                query.target === "documents" &&
-                query.orderBy === "recency" &&
-                (Boolean(query.publishedAfter) ||
-                  Boolean(query.publishedBefore) ||
-                  query.lookupRef !== undefined);
-              if (!isBoundedRecencyListing) {
-                searchProtocol.recordRejectedQuery();
-                return {
-                  items: [],
-                  complete: true,
-                  truncated: false,
-                  cursor: null,
-                  queryRejected: true,
-                  correctionRequired: true,
-                  message:
-                    "a term-less search requires orderBy recency with a date or source filter",
-                };
-              }
-            }
-            if (++searches > this.config.aiInternalMaxSearches)
-              throw new Error("internal search limit exceeded");
-            if (query.target === "documents") {
-              await this.assertBoundPublisherDocumentVersions(boundPublisherDocumentVersions);
-            }
-            const namedSourceLookup =
-              query.target === "documents" && query.lookupRef !== undefined
-                ? namedSourceLookups.get(query.lookupRef)
-                : undefined;
-            const namedSourceQueryKey =
-              namedSourceLookup === undefined ? undefined : canonicalInternalSearchQueryKey(query);
-            if (query.target === "documents" && query.lookupRef !== undefined) {
-              if (
-                namedSourceLookup === undefined ||
-                namedSourceLookup.runId !== load.aiRunId ||
-                namedSourceLookup.taskId !== taskId ||
-                namedSourceLookup.loopIteration !== coordinates.loopIteration ||
-                namedSourceLookup.attempt !== coordinates.attempt ||
-                (namedSourceLookup.consumed &&
-                  (parsed.cursor === undefined ||
-                    namedSourceLookup.logicalQueryKey !== namedSourceQueryKey))
-              ) {
-                throw new Error("named-source lookupRef is invalid, expired, or already used");
-              }
-            }
-            try {
-              searchProtocol.beforeSearch(query, parsed.cursor, coordinates.providerRequestIndex);
-            } catch (error) {
-              if (error instanceof InternalRetrievalProtocolError) {
-                protocolErrorReturned = true;
-                return {
-                  items: [],
-                  complete: true,
-                  truncated: false,
-                  cursor: null,
-                  protocolError: error.message,
-                  recoveryReferences: exactRecoveryReferences(),
-                };
-              }
-              throw error;
-            }
-            const cursor = parsed.cursor ?? 0;
-            if (query.target === "documents") {
-              let selectedSourceIds: readonly string[];
-              if (query.lookupRef !== undefined) {
-                const lookup = namedSourceLookup;
-                if (lookup === undefined || namedSourceQueryKey === undefined) {
-                  throw new Error("named-source lookupRef is invalid, expired, or already used");
-                }
-                await this.validateSavedScope(load);
-                const current = new Set(await this.savedScopeSourceIds(load));
-                selectedSourceIds = lookup.sourceIds.filter((sourceId) => current.has(sourceId));
-                if (!lookup.consumed) {
-                  lookup.consumed = true;
-                  lookup.logicalQueryKey = namedSourceQueryKey;
-                }
-              } else {
-                selectedSourceIds = await this.savedScopeSourceIds(load);
-              }
-              const publicSourceIds = selectedSourceIds
-                .filter((sourceId) => isCanonicalPublicDocumentSourceId(sourceId))
-                .map((sourceId) => sourceId.slice("public:".length));
-              const limit = Math.min(query.limit ?? 20, 50);
-              const sentinelLimit = limit + 1;
-              const [publicResults, publisherResults] = await Promise.all([
-                publicSourceIds.length === 0
-                  ? Promise.resolve([] as readonly DocumentPreview[])
-                  : this.db(
-                      searchDocuments(
-                        { ...query, sourceIds: publicSourceIds, limit: sentinelLimit },
-                        {
-                          access: {
-                            kind: "sourceIds",
-                            sourceIds: publicSourceIds,
-                          },
-                          maxLimit: 51,
-                          recencyHalfLifeDays: 14,
-                          now: this.now(),
-                        },
-                      ),
-                    ),
-                this.searchPublisherDocuments(
-                  load,
-                  query,
-                  selectedSourceIds,
-                  sentinelLimit,
-                  boundPublisherDocumentVersions,
-                ),
-              ]);
-              const ranked = [...publicResults, ...publisherResults]
-                .map((item, index) => ({ item, index }))
-                .sort((left, right) => {
-                  if (query.orderBy === "recency") {
-                    const dateOrder =
-                      (right.item.publishedAt?.getTime() ?? 0) -
-                      (left.item.publishedAt?.getTime() ?? 0);
-                    if (dateOrder !== 0) return dateOrder;
-                  }
-                  return (
-                    left.index - right.index ||
-                    left.item.documentId.localeCompare(right.item.documentId, "en")
-                  );
-                })
-                .slice(0, sentinelLimit)
-                .map(({ item }) => item);
-              const hardLimitTruncated = ranked.length > limit;
-              const bounded = this.boundedToolItems(ranked.slice(0, limit), cursor, {
-                hardLimitTruncated,
-                maximumResults: limit,
-                modelId: load.acceptanceScope.fastModelId,
-                sourceExposureMarker: (item) =>
-                  providerVisibleExposureMarker({
-                    sourceKind: "document",
-                    logicalSourceIdentity: documentPreviewIdentity(item),
-                    contentItemIdentity: documentContentItemIdentity(
-                      documentPreviewIdentity(item),
-                      item.snapshotId,
-                      exactPreviewContentHash(item),
-                    ),
-                    stage: "internal_search_preview",
-                    visibleTokenCount: this.visibleTokenCount(
-                      item.snippet,
-                      load.acceptanceScope.fastModelId,
-                    ),
-                  }),
-              });
-              for (const item of bounded.items) {
-                discoveredDocuments.add(
-                  `${item.kind === "publisher" ? "publisher" : "public"}:${item.sourceId}:${item.issueId ?? ""}:${item.documentId}:${item.snapshotId}`,
-                );
-              }
-              for (const item of bounded.items) {
-                const source =
-                  item.kind === "publisher"
-                    ? item.issueId === undefined
-                      ? (() => {
-                          throw new Error("publisher search result is missing issue identity");
-                        })()
-                      : {
-                          kind: "publisher" as const,
-                          sourceId: item.sourceId,
-                          issueId: item.issueId,
-                          documentId: item.documentId,
-                        }
-                    : { kind: "public" as const, sourceId: item.sourceId };
-                const logicalSourceIdentity = documentPreviewIdentity(item);
-                const contentItemIdentity = documentContentItemIdentity(
-                  logicalSourceIdentity,
-                  item.snapshotId,
-                  exactPreviewContentHash(item),
-                );
-                const exposure: InternalProviderExposure = {
-                  reference: {
-                    kind: "document",
-                    documentId: item.documentId,
-                    snapshotId: item.snapshotId,
-                    ...(item.publisherExtractionId === undefined
-                      ? {}
-                      : { publisherExtractionId: item.publisherExtractionId }),
-                    source,
-                    purpose: "authorized search preview",
-                  },
-                  sourceKind: "document",
-                  logicalSourceIdentity,
-                  contentItemIdentity,
-                  documentReconstruction: {
-                    sourceId: item.sourceId,
-                    documentId: item.documentId,
-                    snapshotId: item.snapshotId,
-                    contentHash: item.contentHash,
-                    ...(item.publisherExtractionId === undefined
-                      ? {}
-                      : { publisherExtractionId: item.publisherExtractionId }),
-                    ranges: exactPreviewRanges(item),
-                  },
-                  ...(item.kind === "publisher" && item.issueId !== undefined
-                    ? {
-                        publisherIssueId: item.issueId,
-                        publisherDocumentId: item.documentId,
-                      }
-                    : {}),
-                  stage: "internal_search_preview",
-                  visibleTokenCount: this.visibleTokenCount(
-                    item.snippet,
-                    load.acceptanceScope.fastModelId,
-                  ),
-                };
-                providerExposures.set(
-                  `${exposure.stage}:${exposure.contentItemIdentity}`,
-                  exposure,
-                );
-              }
-              searchProtocol.afterSearch(
-                query,
-                bounded.complete,
-                bounded.items.length,
-                bounded.cursor,
-                coordinates.providerRequestIndex,
-              );
-              searchProtocol.recordCompletedSearch();
-              const visibleItems = bounded.items.map((item) => ({
-                kind: "document" as const,
-                documentId: item.documentId,
-                snippet: item.snippet,
-                ranges: exactPreviewRanges(item),
-                title: item.title,
-                publishedAt: item.publishedAt?.toISOString() ?? null,
-                ["__briefSourceIdentity"]: {
-                  snapshotId: item.snapshotId,
-                  contentHash: item.contentHash,
-                  ranges: exactPreviewRanges(item),
-                  ...(item.publisherExtractionId === undefined
-                    ? {}
-                    : { publisherExtractionId: item.publisherExtractionId }),
-                  source:
-                    item.kind === "publisher"
-                      ? item.issueId === undefined
-                        ? undefined
-                        : {
-                            kind: "publisher" as const,
-                            sourceId: item.sourceId,
-                            issueId: item.issueId,
-                            documentId: item.documentId,
-                          }
-                      : { kind: "public" as const, sourceId: item.sourceId },
-                },
-              }));
-              return {
-                ...bounded,
-                items: visibleItems,
-                __briefSourceExposures: bounded.items.map((item) =>
-                  providerVisibleExposureMarker({
-                    sourceKind: "document",
-                    logicalSourceIdentity: documentPreviewIdentity(item),
-                    contentItemIdentity: documentContentItemIdentity(
-                      documentPreviewIdentity(item),
-                      item.snapshotId,
-                      exactPreviewContentHash(item),
-                    ),
-                    stage: "internal_search_preview",
-                    visibleTokenCount: this.visibleTokenCount(
-                      item.snippet,
-                      load.acceptanceScope.fastModelId,
-                    ),
-                  }),
-                ),
-              };
-            }
-            const recentMessageIds = selectedConversation.flatMap((entry) => [
-              entry.userMessageId,
-              ...("assistantMessageId" in entry ? [entry.assistantMessageId] : []),
-            ]);
-            const limit = Math.min(query.limit ?? 20, 50);
-            const results = await this.searchChat(load, query, recentMessageIds, limit + 1);
-            const bounded = this.boundedToolItems(results.slice(0, limit), cursor, {
-              hardLimitTruncated: results.length > limit,
-              maximumResults: limit,
-              modelId: load.acceptanceScope.fastModelId,
-              sourceExposureMarker: (item) =>
-                providerVisibleExposureMarker({
-                  sourceKind: "chat_message",
-                  logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
-                  contentItemIdentity: item.messageId,
-                  stage: "internal_chat_search_preview",
-                  visibleTokenCount: this.visibleTokenCount(
-                    item.snippet,
-                    load.acceptanceScope.fastModelId,
-                  ),
-                }),
-            });
-            for (const item of bounded.items) discoveredMessages.add(item.messageId);
-            for (const item of bounded.items) {
-              const exposure: InternalProviderExposure = {
-                reference: {
-                  kind: "chat_message",
-                  messageId: item.messageId,
-                  purpose: "authorized search preview",
-                },
-                sourceKind: "chat_message",
-                logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
-                contentItemIdentity: item.messageId,
-                stage: "internal_chat_search_preview",
-                visibleTokenCount: this.visibleTokenCount(
-                  item.snippet,
-                  load.acceptanceScope.fastModelId,
-                ),
-              };
-              providerExposures.set(`${exposure.stage}:${exposure.contentItemIdentity}`, exposure);
-            }
-            searchProtocol.afterSearch(
-              query,
-              bounded.complete,
-              bounded.items.length,
-              bounded.cursor,
-              coordinates.providerRequestIndex,
-            );
-            searchProtocol.recordCompletedSearch();
-            const visibleItems = bounded.items.map((item) => ({
-              kind: "chat_message" as const,
-              messageId: item.messageId,
-              snippet: item.snippet,
-              ["__briefSourceIdentity"]: {
-                messageId: item.messageId,
-                contentHash: sha256Base64Url(item.content),
-              },
-            }));
-            return {
-              ...bounded,
-              items: visibleItems,
-              __briefSourceExposures: bounded.items.map((item) =>
-                providerVisibleExposureMarker({
-                  sourceKind: "chat_message",
-                  logicalSourceIdentity: chatMessageEvidenceIdentity(item.messageId),
-                  contentItemIdentity: item.messageId,
-                  stage: "internal_chat_search_preview",
-                  visibleTokenCount: this.visibleTokenCount(
-                    item.snippet,
-                    load.acceptanceScope.fastModelId,
-                  ),
-                }),
-              ),
-            };
-          },
-        },
-        {
-          definition: {
-            name: "inspect_internal",
-            description: "Inspect a complete chat message or bounded verbatim document range.",
-            parameters: z.toJSONSchema(
-              z.object({ reference: InspectInternalReferenceSchema }).strict(),
-            ),
-          },
-          parseArguments: parseInspectInternalArguments,
-          execute: async (args) => {
-            if (++inspections > this.config.aiInternalMaxInspections)
-              throw new Error("internal inspection limit exceeded");
-            const modelReference = parseInspectInternalArguments(args).reference;
-            const reference = bindModelReference(modelReference);
-            const inspectionKey =
-              reference.kind === "document"
-                ? documentReferenceSelectionKey(reference)
-                : `chat_message:${reference.messageId}`;
-            if (completedInspectionKeys.has(inspectionKey)) {
-              protocolErrorReturned = true;
-              return {
-                found: true,
-                complete: true,
-                protocolError: "internal inspection repeated a completed reference",
-                recoveryReferences: exactRecoveryReferences(),
-              };
-            }
-            const result = await this.inspectInternal(
-              load,
-              reference,
-              discoveredDocuments,
-              discoveredMessages,
-              boundPublisherDocumentVersions,
-              (exposure) => {
-                providerExposures.set(
-                  `${exposure.stage}:${exposure.contentItemIdentity}`,
-                  exposure,
-                );
-                if (
-                  exposure.reference.kind === "document" &&
-                  exposure.reference.ranges !== undefined
-                ) {
-                  for (const range of exposure.reference.ranges) {
-                    inspectedDocumentRanges.add(
-                      documentReferenceRangeKey(exposure.reference, range),
-                    );
-                  }
-                }
-              },
-            );
-            if (
-              reference.kind === "document" &&
-              result.complete === false &&
-              result.narrowerRangeRequired === true
-            ) {
-              pendingInspectionReferences.set(documentDiscoveryKey(reference), reference);
-              terminalRecoveryReady = false;
-            }
-            if (
-              result.complete === true &&
-              result.found === true &&
-              typeof result.protocolError !== "string"
-            ) {
-              completedInspectionKeys.add(inspectionKey);
-              completedInspectionCandidateKeys.add(
-                reference.kind === "document"
-                  ? documentDiscoveryKey(reference)
-                  : reference.messageId,
-              );
-              pendingInspectionReferences.delete(inspectionKey);
-              if (reference.kind === "document") {
-                pendingInspectionReferences.delete(documentDiscoveryKey(reference));
-              }
-              terminalRecoveryReady = pendingInspectionReferences.size === 0;
-            }
-            return result;
-          },
-        },
-        {
-          definition: {
-            name: "emit_internal_manifest",
-            description:
-              "Emit final ranked internal references. After a protocolError, copy every exact discovered reference from the preceding successful search result; entries: [] is invalid when that result contained any item.",
-            parameters: terminalSchema,
-          },
-          execute: async () => ({ complete: true }),
-        },
-      ],
-    });
-    const references = modelReferences.map(bindModelReference);
-    if (protocolErrorReturned && references.length === 0 && providerExposures.size > 0) {
-      throw new Error(
-        "internal protocol recovery requires the provider to select a discovered reference",
-      );
-    }
-    for (const reference of references) {
-      const allowed = reference.kind === "document" ? discoveredDocuments : discoveredMessages;
-      const id =
-        reference.kind === "document" ? documentDiscoveryKey(reference) : reference.messageId;
-      if (!allowed.has(id))
-        throw new Error(`internal manifest references undiscovered ${reference.kind}`);
-    }
-    const boundManifestVersions = new Map<string, string>();
-    const identities = references.map((reference) => {
-      if (reference.kind === "document") {
-        const identity = documentReferenceIdentity(reference);
-        const previousVersion = boundManifestVersions.get(identity);
-        if (previousVersion !== undefined && previousVersion !== reference.snapshotId) {
-          throw new Error(
-            `publisher document ${reference.documentId} resolved to multiple immutable versions in one selector attempt`,
-          );
-        }
-        boundManifestVersions.set(identity, reference.snapshotId);
-        return documentReferenceSelectionKey(reference);
-      }
-      return `chat_message:${reference.messageId}`;
-    });
-    if (new Set(identities).size !== identities.length) {
-      throw new Error("internal manifest contains duplicate references");
-    }
-    if (!protocolErrorReturned && references.some((reference) => !inspectionComplete(reference))) {
-      throw new Error(
-        "every selected internal reference must repeat an exact complete inspect_internal result",
-      );
-    }
-    await this.observe(
-      load,
-      taskId,
-      "retrieval_manifest",
-      { selectorRole: "internal", references },
-      execution,
-    );
-    return references;
-  }
-
-  private searchPublisherDocuments(
-    load: LoadedTurn,
-    query: Extract<InternalQuery, { target: "documents" }>,
-    selectedSourceIds: readonly string[],
-    resultLimit: number,
-    boundPublisherDocumentVersions: Map<string, string>,
-  ): Promise<readonly DocumentPreview[]> {
-    const selectedSubscriptions = new Set(
-      selectedSourceIds
-        .filter((sourceId) => isCanonicalPublisherDocumentSourceId(sourceId))
-        .map((sourceId) => sourceId.slice("publisher:".length)),
-    );
-    if (selectedSubscriptions.size === 0) return Promise.resolve([]);
-    const selectedSubscriptionIds = [...selectedSubscriptions];
-    const countries = [
-      ...new Set((query.countries ?? []).map((value) => value.trim().toUpperCase())),
-    ];
-    const languages = [
-      ...new Set(
-        (query.languages ?? [])
-          .map((value) => value.trim().toLocaleLowerCase().split("-")[0])
-          .filter((value): value is string => value !== undefined && value !== ""),
-      ),
-    ];
-    const documentTypes = [
-      ...new Set((query.documentTypes ?? []).map((value) => value.trim().toLocaleLowerCase())),
-    ];
-    const parseDate = (value: string | undefined, name: string): Date | null => {
-      if (value === undefined) return null;
-      const parsed = new Date(value);
-      if (Number.isNaN(parsed.getTime())) throw new Error(`${name} is not a valid ISO date`);
-      return parsed;
-    };
-    const publishedAfter = parseDate(query.publishedAfter, "publishedAfter");
-    const publishedBefore = parseDate(query.publishedBefore, "publishedBefore");
-    const orderByRecency = query.orderBy === "recency";
-    return this.db(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const boundDocumentIds = [...boundPublisherDocumentVersions.keys()];
-        if (boundDocumentIds.length > 0) {
-          const currentPointers = yield* sql<{
-            readonly documentId: string;
-            readonly snapshotId: string;
-          }>`
-            select id::text as "documentId", current_version_id::text as "snapshotId"
-            from brief_documents
-            where id::text in (
-              select value from jsonb_array_elements_text(${JSON.stringify(boundDocumentIds)}::jsonb)
-            )
-          `;
-          for (const pointer of currentPointers) {
-            const boundVersion = boundPublisherDocumentVersions.get(pointer.documentId);
-            if (boundVersion !== undefined && boundVersion !== pointer.snapshotId) {
-              throw new Error(
-                `publisher document ${pointer.documentId} changed immutable version during selector attempt`,
-              );
-            }
-          }
-        }
-        const rows = yield* sql<{
-          readonly sourceId: string;
-          readonly documentId: string;
-          readonly snapshotId: string;
-          readonly contentHash: string;
-          readonly text: string;
-          readonly publisherExtractionId: string;
-          readonly issueId: string;
-          readonly title: string;
-          readonly sourceDisplayName: string;
-          readonly publishedAt: Date;
-          readonly language: string;
-          readonly documentType: string;
-          readonly textCharCount: number;
-          readonly score: number;
-        }>`
-          select subscriptions.id::text as "sourceId",
-                 documents.id::text as "documentId",
-                 versions.id::text as "snapshotId",
-                 versions.content_hash as "contentHash",
-                 versions.publisher_extraction_id::text as "publisherExtractionId",
-                 issues.id::text as "issueId",
-                 documents.title,
-                 companies.name as "sourceDisplayName",
-                 issues.published_at as "publishedAt",
-                 versions.language,
-                 documents.media_type as "documentType",
-                 versions.text_char_count as "textCharCount",
-                 versions.canonical_text as text,
-                 case when ${query.terms?.trim() ?? ""} <> '' then ts_rank_cd(
-                   versions.search_vector,
-                   websearch_to_tsquery(language_to_regconfig(versions.language), ${query.terms ?? ""})
-                 ) else 0 end::float8 as score
-          from issue_deliveries deliveries
-          join issue_delivery_recipients recipients
-            on recipients.issue_id = deliveries.issue_id
-           and recipients.client_company_id = deliveries.client_company_id
-           and recipients.user_id = ${load.initiatingUserId}
-          join publisher_issues issues
-            on issues.id = deliveries.issue_id
-           and issues.status = 'published'
-           and issues.restricted_at is null
-           and issues.deleted_at is null
-          join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
-          join publisher_companies companies
-            on companies.id = subscriptions.publisher_company_id
-          join brief_documents documents
-            on documents.issue_id = issues.id
-           and documents.deleted_at is null
-          join brief_document_versions versions
-            on versions.id = documents.current_version_id
-           and versions.brief_document_id = documents.id
-          join chats
-            on chats.id = ${load.chatId}
-           and chats.deleted_at is null
-          join client_companies client_companies
-            on client_companies.id = chats.company_id
-           and client_companies.recovery_deleted_at is null
-           and client_companies.purged_at is null
-          join ai_runs runs
-            on runs.id = ${load.aiRunId}
-           and runs.chat_id = chats.id
-           and runs.initiating_user_id = ${load.initiatingUserId}
-           and runs.finished_at is null
-           and runs.failed_at is null
-          where deliveries.access_id::text = any(${load.acceptanceScope.accessIds}::text[])
-            and deliveries.client_company_id = ${load.acceptanceScope.companyId}
-            and subscriptions.id::text in (
-              select value from jsonb_array_elements_text(${JSON.stringify(selectedSubscriptionIds)}::jsonb)
-            )
-            and jsonb_array_length(${JSON.stringify(countries)}::jsonb) = 0
-            and (
-              jsonb_array_length(${JSON.stringify(languages)}::jsonb) = 0
-              or lower(split_part(versions.language, '-', 1)) in (
-                select value from jsonb_array_elements_text(${JSON.stringify(languages)}::jsonb)
-              )
-            )
-            and (
-              jsonb_array_length(${JSON.stringify(documentTypes)}::jsonb) = 0
-              or lower(documents.media_type) in (
-                select value from jsonb_array_elements_text(${JSON.stringify(documentTypes)}::jsonb)
-              )
-              or 'pdf' in (
-                select value from jsonb_array_elements_text(${JSON.stringify(documentTypes)}::jsonb)
-              )
-            )
-            and (${publishedAfter}::timestamptz is null or issues.published_at >= ${publishedAfter})
-            and (${publishedBefore}::timestamptz is null or issues.published_at <= ${publishedBefore})
-            and (
-              ${query.terms?.trim() ?? ""} = ''
-              or versions.search_vector @@ websearch_to_tsquery(
-                language_to_regconfig(versions.language),
-                ${query.terms ?? ""}
-              )
-            )
-          order by
-            case when ${orderByRecency} then issues.published_at end desc,
-            case when not ${orderByRecency} and ${query.terms?.trim() ?? ""} <> '' then ts_rank_cd(
-              versions.search_vector,
-              websearch_to_tsquery(language_to_regconfig(versions.language), ${query.terms ?? ""})
-            ) end desc,
-            documents.id
-          limit ${resultLimit}
-        `;
-        for (const row of rows) {
-          const boundVersion = boundPublisherDocumentVersions.get(row.documentId);
-          if (boundVersion !== undefined && boundVersion !== row.snapshotId) {
-            throw new Error(
-              `publisher document ${row.documentId} changed immutable version during selector attempt`,
-            );
-          }
-          boundPublisherDocumentVersions.set(row.documentId, row.snapshotId);
-        }
-        return rows.flatMap((row): readonly DocumentPreview[] => {
-          const exactPreview = previewFromImmutableText(row.text, query.terms, 300);
-          if (exactPreview === null) return [];
-          const { snippet, ranges } = exactPreview;
-          const preview = {
-            kind: "publisher" as const,
-            sourceId: `publisher:${row.sourceId}`,
-            documentId: row.documentId,
-            snapshotId: row.snapshotId,
-            contentHash: row.contentHash,
-            publisherExtractionId: row.publisherExtractionId,
-            issueId: row.issueId,
-            title: row.title,
-            sourceDisplayName: row.sourceDisplayName,
-            publishedAt: row.publishedAt,
-            language: row.language,
-            documentType: row.documentType,
-            textCharCount: row.text.length,
-            snippet,
-          } as DocumentPreview;
-          Object.defineProperties(preview, {
-            text: { value: row.text, enumerable: false },
-            previewRanges: {
-              value: ranges,
-              enumerable: false,
-            },
-          });
-          return [preview];
-        });
-      }),
-    );
-  }
-
-  private assertBoundPublisherDocumentVersions(
-    boundPublisherDocumentVersions: ReadonlyMap<string, string>,
-  ): Promise<void> {
-    const boundDocumentIds = [...boundPublisherDocumentVersions.keys()];
-    if (boundDocumentIds.length === 0) return Promise.resolve();
-    return this.db(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const currentPointers = yield* sql<{
-          readonly documentId: string;
-          readonly snapshotId: string;
-        }>`
-          select id::text as "documentId", current_version_id::text as "snapshotId"
-          from brief_documents
-          where id::text in (
-            select value from jsonb_array_elements_text(${JSON.stringify(boundDocumentIds)}::jsonb)
-          )
-        `;
-        for (const pointer of currentPointers) {
-          const boundVersion = boundPublisherDocumentVersions.get(pointer.documentId);
-          if (boundVersion !== undefined && boundVersion !== pointer.snapshotId) {
-            throw new Error(
-              `publisher document ${pointer.documentId} changed immutable version during selector attempt`,
-            );
-          }
-        }
-      }),
-    );
-  }
-
-  private searchChat(
-    load: LoadedTurn,
-    query: Extract<InternalQuery, { target: "chat_messages" }>,
-    excludedMessageIds: readonly string[],
-    resultLimit: number,
-  ) {
-    const beforeMessageId = query.beforeMessageId ?? null;
-    const searchTerms = normalizeInternalChatSearchTerms(query.terms);
-    return this.db(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const rows = yield* sql<{
-          readonly messageId: string;
-          readonly author: string;
-          readonly snippet: string;
-          readonly content: string;
-        }>`
-          select messages.id::text as "messageId", messages.author,
-                 left(messages.content, 300) as snippet,
-                 messages.content
-          from chat_messages messages
-          join chats on chats.id = messages.chat_id and chats.deleted_at is null
-          join ai_runs runs
-            on runs.id = ${load.aiRunId}
-           and runs.chat_id = chats.id
-           and runs.initiating_user_id = ${load.initiatingUserId}
-           and runs.finished_at is null
-           and runs.failed_at is null
-          join client_companies companies
-            on companies.id = chats.company_id
-           and companies.recovery_deleted_at is null
-           and companies.purged_at is null
-          where messages.chat_id = ${load.chatId}
-            and messages.id <> ${load.userMessageId}
-            and not exists (
-              select 1
-              from jsonb_array_elements_text(${JSON.stringify(excludedMessageIds)}::jsonb) excluded
-              where excluded.value = messages.id::text
-            )
-            and messages.created_at <= (
-              select created_at
-              from chat_messages
-              where id = ${load.userMessageId}
-                and chat_id = ${load.chatId}
-            )
-            and (
-              ${beforeMessageId}::text is null
-              or messages.created_at < (
-                select created_at from chat_messages
-                where id::text = ${beforeMessageId}
-                  and chat_id = ${load.chatId}
-                limit 1
-              )
-            )
-            and to_tsvector('simple', messages.content) @@ websearch_to_tsquery('simple', ${searchTerms})
-          order by messages.created_at desc, messages.id desc
-          limit ${resultLimit}
-        `;
-        return rows.map((row) =>
-          row.author === "assistant"
-            ? { ...row, snippet: stripHistoricalCitationTags(row.snippet) }
-            : row,
-        );
-      }),
-    );
-  }
-
-  private inspectInternal(
-    load: LoadedTurn,
-    reference: InternalReference,
-    documents: ReadonlySet<string>,
-    messages: ReadonlySet<string>,
-    boundPublisherDocumentVersions: ReadonlyMap<string, string>,
-    onVisible: (exposure: InternalProviderExposure) => void,
-  ): Promise<Readonly<Record<string, unknown>>> {
-    const fastModel = load.acceptanceScope.fastModelId;
-    const fastOutputMaxTokens = this.config.aiFastOutputMaxTokens;
-    const visibleTokenCount = (text: string) => this.visibleTokenCount(text, fastModel);
-    return this.db(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        if (reference.kind === "chat_message") {
-          if (!messages.has(reference.messageId)) return { found: false, complete: true };
-          const rows = yield* sql<{ readonly messageId: string; readonly content: string }>`
-            select messages.id::text as "messageId", messages.content
-            from chat_messages messages
-            join chats on chats.id = messages.chat_id and chats.deleted_at is null
-            join ai_runs runs
-              on runs.id = ${load.aiRunId}
-             and runs.chat_id = chats.id
-             and runs.initiating_user_id = ${load.initiatingUserId}
-             and runs.finished_at is null
-             and runs.failed_at is null
-            join client_companies companies
-              on companies.id = chats.company_id
-             and companies.recovery_deleted_at is null
-             and companies.purged_at is null
-            where messages.id = ${reference.messageId}
-              and messages.chat_id = ${load.chatId}
-          `;
-          const storedMessage = rows[0];
-          const message =
-            storedMessage === undefined
-              ? undefined
-              : {
-                  ...storedMessage,
-                  content: stripHistoricalCitationTags(storedMessage.content),
-                };
-          let sourceExposure: ReturnType<typeof providerVisibleExposureMarker> | undefined;
-          if (message !== undefined) {
-            const exposure: InternalProviderExposure = {
-              reference,
-              sourceKind: "chat_message",
-              logicalSourceIdentity: chatMessageEvidenceIdentity(message.messageId),
-              contentItemIdentity: message.messageId,
-              stage: "internal_inspection",
-              visibleTokenCount: visibleTokenCount(message.content),
-            };
-            sourceExposure = providerVisibleExposureMarker(exposure);
-            const responseTokens = visibleTokenCount(
-              JSON.stringify({
-                found: true,
-                complete: true,
-                message,
-                __briefSourceExposures: [sourceExposure],
-              }),
-            );
-            if (requiresExplicitInspectionRange(responseTokens, fastOutputMaxTokens)) {
-              return {
-                found: true,
-                complete: false,
-                itemTooLarge: true,
-                messageId: message.messageId,
-              };
-            }
-            onVisible(exposure);
-          }
-          return {
-            found: message !== undefined,
-            complete: true,
-            message: message ?? null,
-            ...(sourceExposure === undefined ? {} : { __briefSourceExposures: [sourceExposure] }),
-          };
-        }
-        const discoveredKey = documentDiscoveryKey(reference);
-        if (!documents.has(discoveredKey)) {
-          return { found: false, complete: true };
-        }
-        const boundVersion = boundPublisherDocumentVersions.get(reference.documentId);
-        if (boundVersion !== undefined && boundVersion !== reference.snapshotId) {
-          throw new Error(
-            `publisher document ${reference.documentId} changed immutable version during selector attempt`,
-          );
-        }
-        const rows = yield* sql<{
-          readonly text: string;
-          readonly textCharCount: number;
-          readonly contentHash: string;
-          readonly publisherIssueId: string | null;
-          readonly publisherDocumentId: string | null;
-          readonly publisherExtractionId: string | null;
-        }>`
-          select text, text_char_count as "textCharCount", content_hash as "contentHash",
-                 null::text as "publisherIssueId",
-                 null::text as "publisherDocumentId",
-                 null::text as "publisherExtractionId"
-          from public_source_documents
-          join chats public_chat on public_chat.id = ${load.chatId} and public_chat.deleted_at is null
-          join ai_runs public_run
-            on public_run.id = ${load.aiRunId}
-           and public_run.chat_id = public_chat.id
-           and public_run.initiating_user_id = ${load.initiatingUserId}
-           and public_run.finished_at is null
-           and public_run.failed_at is null
-          join client_companies public_company
-            on public_company.id = public_chat.company_id
-           and public_company.recovery_deleted_at is null
-           and public_company.purged_at is null
-          where ${reference.source.kind === "public"}
-            and public_source_documents.source_id = ${reference.source.kind === "public" ? reference.source.sourceId.slice("public:".length) : ""}
-            and public_source_documents.document_id = ${reference.documentId}
-            and public_source_documents.document_id = ${reference.snapshotId}
-          union all
-          select versions.canonical_text as text,
-                 versions.text_char_count as "textCharCount",
-                 versions.content_hash as "contentHash",
-                 issues.id::text as "publisherIssueId",
-                 documents.id::text as "publisherDocumentId",
-                 versions.publisher_extraction_id::text as "publisherExtractionId"
-          from issue_deliveries deliveries
-          join issue_delivery_recipients recipients
-            on recipients.issue_id = deliveries.issue_id
-           and recipients.client_company_id = deliveries.client_company_id
-           and recipients.user_id = ${load.initiatingUserId}
-          join publisher_issues issues
-            on issues.id = deliveries.issue_id
-           and issues.status = 'published'
-           and issues.restricted_at is null
-           and issues.deleted_at is null
-           and issues.id::text = ${reference.source.kind === "publisher" ? reference.source.issueId : ""}
-          join publisher_subscriptions subscriptions
-            on subscriptions.id = issues.subscription_id
-          join publisher_companies publisher_company
-            on publisher_company.id = subscriptions.publisher_company_id
-          join brief_documents documents
-            on documents.issue_id = issues.id
-            and documents.id::text = ${reference.documentId}
-           and documents.id::text = ${reference.source.kind === "publisher" ? reference.source.documentId : ""}
-           and documents.deleted_at is null
-          join brief_document_versions versions
-            on versions.brief_document_id = documents.id
-           and versions.id::text = ${reference.snapshotId}
-          join chats publisher_chat
-            on publisher_chat.id = ${load.chatId}
-           and publisher_chat.deleted_at is null
-          join ai_runs publisher_run
-            on publisher_run.id = ${load.aiRunId}
-           and publisher_run.chat_id = publisher_chat.id
-           and publisher_run.initiating_user_id = ${load.initiatingUserId}
-           and publisher_run.finished_at is null
-           and publisher_run.failed_at is null
-          join client_companies publisher_client_company
-            on publisher_client_company.id = publisher_chat.company_id
-           and publisher_client_company.recovery_deleted_at is null
-           and publisher_client_company.purged_at is null
-          where ${reference.source.kind === "publisher"}
-            and deliveries.access_id::text = any(${load.acceptanceScope.accessIds}::text[])
-            and deliveries.client_company_id = ${load.acceptanceScope.companyId}
-            and issues.subscription_id::text = ${reference.source.kind === "publisher" ? reference.source.sourceId.slice("publisher:".length) : ""}
-          limit 1
-        `;
-        const row = rows[0];
-        if (row === undefined) return { found: false, complete: true };
-        if (reference.source.kind === "publisher" && row.publisherExtractionId === null) {
-          throw new Error("publisher inspection resolved without its exact extraction binding");
-        }
-        const ranges = normalizeSelectedDocumentRanges(reference.ranges, row.text.length);
-        const text = ranges
-          .map((range) => row.text.slice(range.charStart, range.charEnd))
-          .join("\n…\n");
-        const exposure: InternalProviderExposure = {
-          reference,
-          sourceKind: "document",
-          logicalSourceIdentity: documentReferenceIdentity(reference),
-          ...(reference.source.kind === "publisher"
-            ? {
-                publisherIssueId: reference.source.issueId,
-                publisherDocumentId: reference.source.documentId,
-              }
-            : {}),
-          documentReconstruction: {
-            sourceId: reference.source.sourceId,
-            documentId: reference.documentId,
-            snapshotId: reference.snapshotId,
-            contentHash: row.contentHash,
-            ...(row.publisherExtractionId === null
-              ? {}
-              : { publisherExtractionId: row.publisherExtractionId }),
-            ranges,
-          },
-          contentItemIdentity: documentContentItemIdentity(
-            documentReferenceIdentity(reference),
-            reference.snapshotId,
-            sha256Base64Url(JSON.stringify(ranges)),
-          ),
-          stage: "internal_inspection",
-          visibleTokenCount: visibleTokenCount(text),
-        };
-        const responseTokens = visibleTokenCount(
-          JSON.stringify({
-            found: true,
-            complete: true,
-            text,
-            ranges,
-            textCharCount: row.textCharCount,
-            __briefSourceExposures: [providerVisibleExposureMarker(exposure)],
-          }),
-        );
-        if (requiresExplicitInspectionRange(responseTokens, fastOutputMaxTokens)) {
-          return {
-            found: true,
-            complete: false,
-            narrowerRangeRequired: true,
-            documentId: reference.documentId,
-            ranges,
-            textCharCount: row.text.length,
-            message:
-              "This immutable document is too large for one inspection; continue with a strictly narrower UTF-16 range.",
-          };
-        }
-        onVisible(exposure);
-        return {
-          found: true,
-          complete: true,
-          text,
-          ranges,
-          textCharCount: row.text.length,
-          ["__briefSourceIdentity"]: {
-            snapshotId: reference.snapshotId,
-            contentHash: row.contentHash,
-            ...(row.publisherExtractionId === null
-              ? {}
-              : { publisherExtractionId: row.publisherExtractionId }),
-            source: reference.source,
-          },
-          __briefSourceExposures: [providerVisibleExposureMarker(exposure)],
-        };
-      }),
-    );
   }
 
   async retrieveWeb(
@@ -4573,9 +3436,16 @@ export class CanonicalWorkflowOperations {
         { topicId, domain: this.candidateDomain(right), rank: right.rank, identity: right.id },
       ),
     );
+    // The ledger owns the final run-local IDs. Canonical identity stays in the
+    // private ledger sidecar and is never used as a provider-facing candidate ID.
+    const conversationPrefix = selectedConversation.length;
+    const owned = ordered.map((candidate, index) => ({
+      ...candidate,
+      id: candidateLocalId(conversationPrefix + index + 1),
+    }));
     const providedKeys = new Map(
-      (fanoutSourceKeys?.sources ?? []).map(({ candidateId, sourceKey }) => [
-        candidateId,
+      (fanoutSourceKeys?.sources ?? []).map(({ identityKey, sourceKey }) => [
+        identityKey,
         sourceKey,
       ]),
     );
@@ -4587,20 +3457,27 @@ export class CanonicalWorkflowOperations {
     ) {
       throw new Error("fanout source-key map contains duplicate identities or keys");
     }
-    const sourceMap = ordered.map((candidate, index) => {
+    const sourceMap = owned.flatMap((candidate, index) => {
+      if (candidate.kind === "topic_packet") return [];
       const sourceKey =
         fanoutSourceKeys === undefined
-          ? sourceKeyForNamespace(load.citationNamespace, index + 1)
-          : providedKeys.get(candidate.id);
+          ? sourceKeyForNamespace(load.citationNamespace, conversationPrefix + index + 1)
+          : providedKeys.get(this.candidateIdentityKey(candidate));
       if (sourceKey === undefined) {
         throw new Error("fanout candidate lacks a stable source key");
       }
-      return this.sourceRecord(candidate, sourceKey, consumerTaskId, index, topicId);
+      return [this.sourceRecord(candidate, sourceKey, consumerTaskId, index, topicId)];
     });
+    const candidateLedger = this.buildCandidateLedger(
+      owned,
+      load.acceptanceScope.mainModelId,
+      selectedConversation,
+    );
     return {
       question,
       ...(topicId === undefined ? {} : { topicId }),
-      candidates: ordered,
+      candidates: owned,
+      candidateLedger,
       sourceMap,
       selectedConversation,
       gaps: [
@@ -4623,18 +3500,43 @@ export class CanonicalWorkflowOperations {
     assembly: ContextAssembly,
     observationTaskId: string,
   ): Promise<ContextState> {
+    const chatSourceRanges = assembly.candidates.flatMap((candidate) => {
+      if (candidate.kind !== "chat_message") return [];
+      const ledgerEntry = assembly.candidateLedger.candidates.find(
+        (entry) => entry.candidateId === candidate.id,
+      );
+      return ledgerEntry === undefined
+        ? []
+        : [{ messageId: candidate.messageId, ranges: ledgerEntry.baseRanges }];
+    });
+    const sourceMap = assembly.sourceMap.map((source, index) => {
+      const candidate = assembly.candidates[index];
+      if (candidate?.kind !== "chat_message") return source;
+      const ranges =
+        chatSourceRanges.find((item) => item.messageId === candidate.messageId)?.ranges ?? [];
+      return {
+        ...source,
+        uses: source.uses.map((use) => ({ ...use, ranges })),
+      };
+    });
     const measured = this.measureContext(
       load,
       assembly.question,
       assembly.candidates,
-      assembly.sourceMap,
+      sourceMap,
       assembly.gaps,
       false,
       assembly.topicId,
       assembly.selectedConversation,
       assembly.candidates,
-      assembly.sourceMap,
+      sourceMap,
       assembly.requestedOutputTokens,
+      [],
+      assembly.selectedConversation,
+      undefined,
+      assembly.gaps,
+      assembly.candidateLedger,
+      chatSourceRanges,
     );
     await this.observe(
       load,
@@ -4650,20 +3552,26 @@ export class CanonicalWorkflowOperations {
     topics: Extract<PlanTurnResult, { mode: "fanout" }>["topics"],
     selectors: Readonly<Record<TopicId, SelectorBundle>>,
   ): Promise<FanoutSourceKeySet> {
+    const conversationPrefix = new Set(topics.flatMap((topic) => topic.relevantTurnIds)).size;
     const orderedIdentities = topics
       .flatMap((topic) => {
         const bundle = selectors[topic.topicId];
         let rank = 0;
+        const structuredInternal = bundle.structuredInternal;
+        if (structuredInternal === undefined) {
+          throw new Error("structured retrieval result is required");
+        }
+        const internal =
+          structuredInternal === null
+            ? []
+            : structuredInternal.fused.results.map((result) => ({
+                topicId: topic.topicId,
+                domain: "internal" as const,
+                rank: rank++,
+                identity: canonicalIdentityKey(this.canonicalRetrievalIdentity(result.identity)),
+              }));
         return [
-          ...bundle.internal.map((reference) => ({
-            topicId: topic.topicId,
-            domain: "internal" as const,
-            rank: rank++,
-            identity:
-              reference.kind === "document"
-                ? documentReferenceIdentity(reference)
-                : chatMessageEvidenceIdentity(reference.messageId),
-          })),
+          ...internal,
           ...bundle.memories.map((reference) => ({
             topicId: topic.topicId,
             domain: "memory" as const,
@@ -4681,9 +3589,9 @@ export class CanonicalWorkflowOperations {
       .sort(compareRankedCandidates);
     const uniqueIdentities = [...new Set(orderedIdentities.map((item) => item.identity))];
     return {
-      sources: uniqueIdentities.map((candidateId, index) => ({
-        candidateId,
-        sourceKey: sourceKeyForNamespace(load.citationNamespace, index + 1),
+      sources: uniqueIdentities.map((identityKey, index) => ({
+        identityKey,
+        sourceKey: sourceKeyForNamespace(load.citationNamespace, conversationPrefix + index + 1),
       })),
     };
   }
@@ -4737,6 +3645,368 @@ export class CanonicalWorkflowOperations {
   private candidateDomain(candidate: AnswerCandidate): SelectorDomain {
     return candidate.kind === "memory" ? "memory" : candidate.kind === "web" ? "web" : "internal";
   }
+
+  private candidateIdentity(candidate: AnswerCandidate): CanonicalIdentity {
+    if (candidate.kind === "document") {
+      if (candidate.publisherIssueId !== undefined || candidate.publisherDocumentId !== undefined) {
+        if (
+          candidate.publisherIssueId === undefined ||
+          candidate.publisherDocumentId === undefined ||
+          candidate.publisherExtractionId === undefined
+        ) {
+          throw new Error("publisher candidate identity is incomplete");
+        }
+        return {
+          kind: "publisher_document",
+          subscriptionId: candidate.sourceId.slice("publisher:".length),
+          issueId: candidate.publisherIssueId,
+          documentId: candidate.documentId,
+          snapshotId: candidate.snapshotId,
+          publisherExtractionId: candidate.publisherExtractionId,
+          contentHash: candidate.contentHash,
+        };
+      }
+      return {
+        kind: "public_document",
+        sourceId: candidate.sourceId,
+        documentId: candidate.documentId,
+        snapshotId: candidate.snapshotId,
+        contentHash: candidate.contentHash,
+      };
+    }
+    if (candidate.kind === "chat_message") {
+      return {
+        kind: "chat_message",
+        messageId: candidate.messageId,
+        sanitizedContentHash: createHash("sha256").update(candidate.text).digest("hex"),
+      };
+    }
+    if (candidate.kind === "memory") {
+      return {
+        kind: "memory",
+        memoryId: candidate.memoryId,
+        memoryRevisionId: candidate.memoryRevisionId,
+      };
+    }
+    if (candidate.kind === "topic_packet") {
+      return {
+        kind: "topic_packet",
+        topicId: candidate.topicId,
+        packetSha256Hex: candidate.packetSha256Hex,
+      };
+    }
+    return {
+      kind: "web",
+      canonicalUrl: candidate.url,
+      quoteHash: createHash("sha256").update(candidate.quote).digest("hex"),
+      capturedAt: candidate.capturedAt,
+    };
+  }
+
+  private candidateIdentityKey(candidate: AnswerCandidate): string {
+    return canonicalIdentityKey(this.candidateIdentity(candidate));
+  }
+
+  private canonicalRetrievalIdentity(
+    identity: RetrievalPlanResult["fused"]["results"][number]["identity"],
+  ): CanonicalIdentity {
+    if (identity.kind === "public_document") {
+      return {
+        kind: "public_document",
+        sourceId: `public:${identity.sourceId}`,
+        documentId: identity.documentId,
+        snapshotId: identity.snapshotId,
+        contentHash: identity.contentHash,
+      };
+    }
+    if (identity.kind === "publisher_document") {
+      return {
+        kind: "publisher_document",
+        subscriptionId: identity.subscriptionId,
+        issueId: identity.issueId,
+        documentId: identity.documentId,
+        snapshotId: identity.snapshotId,
+        publisherExtractionId: identity.publisherExtractionId,
+        contentHash: identity.contentHash,
+      };
+    }
+    return identity;
+  }
+
+  private boundedCandidatePreview(
+    text: string,
+    ranges: readonly SourceRange[],
+    maximumBytes = 16 * 1024,
+  ): { readonly ranges: readonly SourceRange[]; readonly preview: string } {
+    const separatorBytes = new TextEncoder().encode("\n…\n").byteLength;
+    const utf8Bytes = (start: number, end: number): number => {
+      let bytes = 0;
+      for (let index = start; index < end; ) {
+        const codePoint = text.codePointAt(index);
+        if (codePoint === undefined) break;
+        bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+        index += codePoint > 0xffff ? 2 : 1;
+      }
+      return bytes;
+    };
+    const selected: SourceRange[] = [];
+    let bytes = 0;
+    for (const range of ranges) {
+      const budget = maximumBytes - bytes - (selected.length === 0 ? 0 : separatorBytes);
+      const boundaries = [range.charStart];
+      for (let index = range.charStart; index < range.charEnd; ) {
+        const codePoint = text.codePointAt(index);
+        if (codePoint === undefined) break;
+        index += codePoint > 0xffff ? 2 : 1;
+        boundaries.push(index);
+      }
+      let low = 0;
+      let high = boundaries.length - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        const end = boundaries[middle]!;
+        if (utf8Bytes(range.charStart, end) <= budget) low = middle;
+        else high = middle - 1;
+      }
+      const boundedEnd = boundaries[low]!;
+      if (boundedEnd <= range.charStart) break;
+      const segmentBytes = utf8Bytes(range.charStart, boundedEnd);
+      if (segmentBytes > budget) break;
+      selected.push({ charStart: range.charStart, charEnd: boundedEnd });
+      bytes += segmentBytes + (selected.length === 1 ? 0 : separatorBytes);
+      if (bytes >= maximumBytes) break;
+    }
+    return {
+      ranges: selected,
+      preview: reconstructTextFromRanges(text, selected),
+    };
+  }
+
+  private fitCompactionPlannerRequest(
+    load: LoadedTurn,
+    entries: readonly CandidateLedgerEntry[],
+    build: (entries: readonly CandidateLedgerEntry[]) => CompactionProviderPayload,
+  ): {
+    readonly entries: readonly CandidateLedgerEntry[];
+    readonly payload: CompactionProviderPayload;
+  } {
+    const model = resolveRuntimeModel(load.acceptanceScope.fastModelId);
+    const usableInputTokens = Math.min(
+      this.config.aiFastInputMaxTokens,
+      model.contextWindow - this.config.aiFastOutputMaxTokens,
+    );
+    const project = (maximumPreviewBytes: number): readonly CandidateLedgerEntry[] =>
+      entries.map((entry) => {
+        if (entry.kind !== "conversation_entry") {
+          const providerText = entry.text;
+          const baseRanges =
+            entry.previewRanges.length === 0
+              ? [{ charStart: 0, charEnd: providerText.length }]
+              : entry.previewRanges;
+          const bounded = this.boundedCandidatePreview(
+            providerText,
+            baseRanges,
+            maximumPreviewBytes,
+          );
+          return { ...entry, previewRanges: bounded.ranges, preview: bounded.preview };
+        }
+        const providerEntry = providerConversationEntries([
+          JSON.parse(entry.text) as ConversationEntry,
+        ])[0]!;
+        const stringFields = Object.keys(providerEntry).filter(
+          (key) => typeof providerEntry[key] === "string",
+        );
+        const fieldBudget =
+          stringFields.length === 0 ? 0 : Math.floor(maximumPreviewBytes / stringFields.length);
+        const boundedEntry = Object.fromEntries(
+          Object.entries(providerEntry).map(([key, value]) => {
+            if (typeof value !== "string") return [key, value];
+            const bounded = this.boundedCandidatePreview(
+              value,
+              [{ charStart: 0, charEnd: value.length }],
+              Math.max(1, fieldBudget),
+            );
+            if (bounded.preview.length > 0) return [key, bounded.preview];
+            let firstNonWhitespaceFound = false;
+            let offset = 0;
+            let firstScalarEnd = 0;
+            while (offset < value.length) {
+              const codePoint = value.codePointAt(offset)!;
+              const scalarLength = codePoint > 0xffff ? 2 : 1;
+              const scalarEnd = offset + scalarLength;
+              if (firstScalarEnd === 0) firstScalarEnd = scalarEnd;
+              const scalar = value.slice(offset, scalarEnd);
+              offset = scalarEnd;
+              if (scalar.trim().length > 0) {
+                firstNonWhitespaceFound = true;
+                break;
+              }
+            }
+            return [key, value.slice(0, firstNonWhitespaceFound ? offset : firstScalarEnd)];
+          }),
+        );
+        const preview = JSON.stringify(boundedEntry);
+        return {
+          ...entry,
+          previewRanges: [{ charStart: 0, charEnd: preview.length }],
+          preview,
+        };
+      });
+    const fits = (maximumPreviewBytes: number): boolean => {
+      const payload = build(project(maximumPreviewBytes));
+      const request = structuredRequestInput(
+        payload.system,
+        payload.user,
+        load.acceptanceScope.fastModelId,
+        this.config.aiFastOutputMaxTokens,
+        payload.outputToolName,
+        payload.outputToolDescription,
+        payload.outputSchema,
+      );
+      return model.countRequestTokens(request) <= usableInputTokens;
+    };
+    if (!fits(0)) throw controlledRuntimeFailure("context_mandatory_too_large");
+    let low = 0;
+    let high = 16 * 1024;
+    let best = 0;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      if (fits(middle)) {
+        best = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    const fittedEntries = project(best);
+    return { entries: fittedEntries, payload: build(fittedEntries) };
+  }
+
+  private freezeCandidateLedger(value: CandidateLedger): CandidateLedger {
+    const freeze = <T>(item: T): T => {
+      if (item !== null && typeof item === "object" && !Object.isFrozen(item)) {
+        for (const child of Object.values(item as Record<string, unknown>)) freeze(child);
+        Object.freeze(item);
+      }
+      return item;
+    };
+    return freeze(value);
+  }
+
+  private buildCandidateLedger(
+    candidates: readonly AnswerCandidate[],
+    modelId: RuntimeModelId,
+    selectedConversation: readonly ConversationEntry[] = [],
+  ): CandidateLedger {
+    const conversationEntries = selectedConversation.map((entry, index): CandidateLedgerEntry => {
+      const normalizedEntry: ConversationEntry =
+        "assistantContent" in entry
+          ? { ...entry, assistantContent: stripHistoricalCitationTags(entry.assistantContent) }
+          : entry;
+      const text = JSON.stringify(normalizedEntry);
+      const ranges = [{ charStart: 0, charEnd: text.length }];
+      const bounded = this.boundedCandidatePreview(text, ranges);
+      return Object.freeze({
+        candidateId: candidateLocalId(index + 1),
+        kind: "conversation_entry" as const,
+        identity: {
+          kind: "conversation_entry" as const,
+          turnId: normalizedEntry.turnId,
+          userMessageId: normalizedEntry.userMessageId,
+          ...("assistantMessageId" in normalizedEntry
+            ? { assistantMessageId: normalizedEntry.assistantMessageId }
+            : {}),
+        },
+        provenance: Object.freeze({
+          label: null,
+          purpose: "plan-turn-selected recent turn",
+          date: null,
+        }),
+        text,
+        baseRanges: Object.freeze(ranges),
+        previewRanges: Object.freeze([...bounded.ranges]),
+        preview: bounded.preview,
+        renderedTokenCount: this.visibleTokenCount(text, modelId),
+      });
+    });
+    const evidenceEntries = candidates.map((candidate, index): CandidateLedgerEntry => {
+      const rawText = candidate.kind === "document" ? candidate.text : candidateText(candidate);
+      const chatRole =
+        candidate.kind === "chat_message"
+          ? (candidate as AnswerCandidate & { readonly chatRole?: "user" | "assistant" }).chatRole
+          : undefined;
+      const text =
+        candidate.kind === "chat_message" && chatRole === "assistant"
+          ? stripHistoricalCitationTags(rawText)
+          : rawText;
+      const baseRanges =
+        candidate.kind === "document" ? candidate.ranges : [{ charStart: 0, charEnd: text.length }];
+      const bounded = this.boundedCandidatePreview(text, baseRanges);
+      return Object.freeze({
+        candidateId: candidateLocalId(selectedConversation.length + index + 1),
+        kind: candidate.kind,
+        identity: this.candidateIdentity(candidate),
+        provenance: Object.freeze({
+          label: candidate.label,
+          purpose: candidate.purpose,
+          date:
+            candidate.kind === "document"
+              ? (candidate.publicProvenance.publishedAt ?? null)
+              : candidate.kind === "web"
+                ? (candidate.publishedAt ?? null)
+                : null,
+        }),
+        text,
+        baseRanges: Object.freeze([...baseRanges]),
+        previewRanges: Object.freeze([...bounded.ranges]),
+        ...(candidate.kind === "chat_message" && chatRole !== undefined ? { chatRole } : {}),
+        preview: bounded.preview,
+        renderedTokenCount: candidate.renderedTokenCount || this.visibleTokenCount(text, modelId),
+      });
+    });
+    return this.freezeCandidateLedger(
+      CandidateLedgerSchema.parse({
+        candidates: Object.freeze([...conversationEntries, ...evidenceEntries]),
+      }) as CandidateLedger,
+    );
+  }
+
+  private updateCandidateLedgerTokenCounts(
+    ledger: CandidateLedger,
+    candidates: readonly AnswerCandidate[],
+    counts: readonly number[],
+    conversationCounts: readonly number[] = [],
+  ): CandidateLedger {
+    const evidenceEntries = ledger.candidates.filter(
+      (entry) => entry.kind !== "conversation_entry",
+    );
+    if (evidenceEntries.length !== candidates.length || counts.length !== candidates.length)
+      return ledger;
+    return this.freezeCandidateLedger(
+      CandidateLedgerSchema.parse({
+        candidates: Object.freeze(
+          ledger.candidates.map((entry) => {
+            if (entry.kind === "conversation_entry") {
+              const index = ledger.candidates
+                .slice(0, ledger.candidates.indexOf(entry))
+                .filter((candidate) => candidate.kind === "conversation_entry").length;
+              return Object.freeze({
+                ...entry,
+                renderedTokenCount: conversationCounts[index] ?? entry.renderedTokenCount,
+              });
+            }
+            const index = evidenceEntries.indexOf(entry);
+            return Object.freeze({
+              ...entry,
+              renderedTokenCount: counts[index] ?? entry.renderedTokenCount,
+            });
+          }),
+        ),
+      }) as CandidateLedger,
+    );
+  }
+
+  private selectConversation(
     entries: readonly ConversationEntry[],
     selectedTurnIds: readonly string[],
   ): readonly ConversationEntry[] {
@@ -4761,7 +4031,12 @@ export class CanonicalWorkflowOperations {
     );
     const rejections = candidates.flatMap((candidate) =>
       candidate.kind === "chat_message" && recentMessageIds.has(candidate.messageId)
-        ? [{ candidateId: candidate.id, reason: "duplicate" as const }]
+        ? [
+            {
+              candidateId: chatMessageEvidenceIdentity(candidate.messageId),
+              reason: "duplicate" as const,
+            },
+          ]
         : [],
     );
     await Promise.all(
@@ -4907,206 +4182,183 @@ export class CanonicalWorkflowOperations {
     const candidates: AnswerCandidate[] = [];
     const rejections: CandidateRejection[] = [];
     let rank = 0;
-    for (const reference of selectors.internal) {
-      if (reference.kind === "document") {
+    const structured = selectors.structuredInternal;
+    if (structured === undefined) {
+      throw new Error("structured retrieval result is required");
+    }
+    if (structured !== null) {
+      if (
+        typeof structured !== "object" ||
+        !structured.fused ||
+        typeof structured.fused !== "object" ||
+        !Array.isArray(structured.fused.results)
+      ) {
+        throw new Error("structured retrieval result has an invalid fused result set");
+      }
+      const fusedResults = structured.fused.results as RetrievalPlanResult["fused"]["results"];
+      for (const fused of fusedResults) {
+        const identity = fused.identity;
+        const value = fused.value as HydratedReviewValue;
+        const queryPlan = structured.queryPlan;
+        const queries = queryPlan.action === "search" ? queryPlan.queries : [];
+        const purpose =
+          fused.matchedQueryOrdinals
+            .map((ordinal) => queries[ordinal - 1]?.purpose)
+            .find(
+              (candidatePurpose): candidatePurpose is string => candidatePurpose !== undefined,
+            ) ?? "structured internal retrieval";
+        if (identity.kind === "chat_message") {
+          const chatRole =
+            value.label === "assistant" ? "assistant" : value.label === "user" ? "user" : undefined;
+          if (chatRole === undefined) {
+            rejections.push({
+              candidateId: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
+              reason: "invalid_range",
+            });
+            continue;
+          }
+          candidates.push({
+            id: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
+            kind: "chat_message",
+            rank: rank++,
+            purpose,
+            messageId: identity.messageId,
+            text: value.text,
+            label: value.label,
+            chatRole,
+            renderedTokenCount: value.mainTokenCount,
+          } as AnswerCandidate);
+          continue;
+        }
+        const ranges =
+          value.previewRanges.length > 0
+            ? [...value.previewRanges]
+            : [{ charStart: 0, charEnd: value.text.length }];
+        if (value.text.length === 0) {
+          rejections.push({
+            candidateId: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
+            reason: "missing",
+          });
+          continue;
+        }
+        if (identity.kind === "public_document") {
+          const row = await this.db(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              const rows = yield* sql<{
+                readonly sourceName: string;
+                readonly documentTitle: string;
+                readonly citationUrl: string;
+                readonly publishedAt: Date | null;
+              }>`
+                select s.display_name as "sourceName", d.title as "documentTitle",
+                       d.canonical_url as "citationUrl", d.published_at as "publishedAt"
+                from public_source_documents d
+                join public_sources s on s.source_id = d.source_id
+                where d.source_id = ${identity.sourceId}
+                  and d.document_id = ${identity.documentId}
+              `;
+              return rows[0] ?? null;
+            }),
+          );
+          if (row === null) {
+            rejections.push({
+              candidateId: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
+              reason: "inaccessible",
+            });
+            continue;
+          }
+          candidates.push({
+            id: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
+            kind: "document",
+            rank: rank++,
+            purpose,
+            sourceId: `public:${identity.sourceId}`,
+            documentId: identity.documentId,
+            snapshotId: value.snapshotId,
+            contentHash: value.contentHash,
+            text: value.text,
+            ranges,
+            label: value.label ?? row.documentTitle,
+            publicProvenance: {
+              sourceName: value.sourceName ?? row.sourceName,
+              documentTitle: row.documentTitle,
+              citationUrl: row.citationUrl,
+              ...((value.date ?? row.publishedAt?.toISOString()) === undefined
+                ? {}
+                : { publishedAt: value.date ?? row.publishedAt!.toISOString() }),
+            },
+            renderedTokenCount: value.mainTokenCount,
+          });
+          continue;
+        }
+        if (identity.kind !== "publisher_document") {
+          rejections.push({
+            candidateId: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
+            reason: "missing",
+          });
+          continue;
+        }
         const row = await this.db(
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
             const rows = yield* sql<{
-              readonly sourceId: string;
-              readonly documentId: string;
-              readonly snapshotId: string;
-              readonly publisherExtractionId: string | null;
-              readonly contentHash: string;
-              readonly text: string;
-              readonly title: string;
-              readonly canonicalUrl: string;
               readonly sourceName: string;
-              readonly issueId: string | null;
-              readonly issueTitle: string | null;
+              readonly documentTitle: string;
+              readonly citationUrl: string;
+              readonly issueId: string;
+              readonly issueTitle: string;
               readonly publishedAt: Date | null;
+              readonly sourceId: string;
             }>`
-              select d.source_id as "sourceId", d.document_id as "documentId", d.document_id as "snapshotId",
-                     null::text as "publisherExtractionId",
-                     d.content_hash as "contentHash", d.text,
-                     d.title, d.canonical_url as "canonicalUrl", s.display_name as "sourceName",
-                     null::text as "issueId",
-                     null::text as "issueTitle",
-                     d.published_at as "publishedAt"
-              from public_source_documents d
-              join public_sources s on s.source_id = d.source_id
-              join chats public_chat
-                on public_chat.company_id = ${load.acceptanceScope.companyId}
-               and public_chat.id = ${load.chatId}
-               and public_chat.deleted_at is null
-              join ai_runs public_run
-                on public_run.id = ${load.aiRunId}
-               and public_run.chat_id = public_chat.id
-               and public_run.initiating_user_id = ${load.initiatingUserId}
-               and public_run.finished_at is null
-               and public_run.failed_at is null
-              join client_companies public_company
-                on public_company.id = public_chat.company_id
-               and public_company.recovery_deleted_at is null
-               and public_company.purged_at is null
-              where ${reference.source.kind === "public"}
-                and d.source_id = ${reference.source.kind === "public" ? reference.source.sourceId.slice("public:".length) : ""}
-                and d.document_id = ${reference.documentId}
-                and d.document_id = ${reference.snapshotId}
-              union all
-              select subscriptions.id::text as "sourceId",
-                     documents.id::text as "documentId",
-                     versions.id::text as "snapshotId",
-                     versions.publisher_extraction_id::text as "publisherExtractionId",
-                     versions.content_hash as "contentHash",
-                     versions.canonical_text as text,
-                     documents.title,
-                     '/v1/issues/' || issues.id::text || '/documents/' || documents.id::text || '/content' as "canonicalUrl",
-                     companies.name as "sourceName",
-                     issues.id::text as "issueId",
-                     issues.title as "issueTitle",
-                     issues.published_at as "publishedAt"
-              from issue_deliveries deliveries
-              join issue_delivery_recipients recipients
-                on recipients.issue_id = deliveries.issue_id
-               and recipients.client_company_id = deliveries.client_company_id
-               and recipients.user_id = ${load.initiatingUserId}
-              join publisher_issues issues
-                on issues.id = deliveries.issue_id
-               and issues.status = 'published'
-               and issues.restricted_at is null
-               and issues.deleted_at is null
+              select companies.name as "sourceName", documents.title as "documentTitle",
+                     '/v1/issues/' || issues.id::text || '/documents/' || documents.id::text || '/content' as "citationUrl",
+                     issues.id::text as "issueId", issues.title as "issueTitle", issues.published_at as "publishedAt",
+                     subscriptions.id::text as "sourceId"
+              from brief_documents documents
+              join publisher_issues issues on issues.id = documents.issue_id
               join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
-              join publisher_companies companies
-                on companies.id = subscriptions.publisher_company_id
-              join brief_documents documents
-                on documents.issue_id = issues.id
-               and documents.id::text = ${reference.documentId}
-               and documents.id::text = ${reference.source.kind === "publisher" ? reference.source.documentId : ""}
-               and documents.deleted_at is null
-              join brief_document_versions versions
-                on versions.brief_document_id = documents.id
-               and versions.id::text = ${reference.snapshotId}
-              join chats publisher_chat
-                on publisher_chat.id = ${load.chatId}
-               and publisher_chat.deleted_at is null
-              join ai_runs publisher_run
-                on publisher_run.id = ${load.aiRunId}
-               and publisher_run.chat_id = publisher_chat.id
-               and publisher_run.initiating_user_id = ${load.initiatingUserId}
-               and publisher_run.finished_at is null
-               and publisher_run.failed_at is null
-              join client_companies publisher_client_company
-                on publisher_client_company.id = publisher_chat.company_id
-               and publisher_client_company.recovery_deleted_at is null
-               and publisher_client_company.purged_at is null
-              where ${reference.source.kind === "publisher"}
-                and deliveries.access_id::text = any(${load.acceptanceScope.accessIds}::text[])
-                and deliveries.client_company_id = ${load.acceptanceScope.companyId}
-                and issues.subscription_id::text = ${reference.source.kind === "publisher" ? reference.source.sourceId.slice("publisher:".length) : ""}
-                and issues.id::text = ${reference.source.kind === "publisher" ? reference.source.issueId : ""}
-              limit 1
+              join publisher_companies companies on companies.id = subscriptions.publisher_company_id
+                where subscriptions.id::text = ${identity.subscriptionId}
+                and issues.id::text = ${identity.issueId}
+                and documents.id::text = ${identity.documentId}
             `;
             return rows[0] ?? null;
           }),
         );
         if (row === null) {
           rejections.push({
-            candidateId: `${documentReferenceIdentity(reference)}:${reference.snapshotId}`,
+            candidateId: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
             reason: "inaccessible",
-          });
-          continue;
-        }
-        if (
-          (reference.source.kind === "public" && row.issueId !== null) ||
-          (reference.source.kind === "publisher" &&
-            (row.issueId !== reference.source.issueId ||
-              row.documentId !== reference.source.documentId ||
-              row.publisherExtractionId !== reference.publisherExtractionId))
-        ) {
-          rejections.push({
-            candidateId: `${documentReferenceIdentity(reference)}:${reference.snapshotId}`,
-            reason: "ambiguous_provenance",
-          });
-          continue;
-        }
-        let ranges;
-        try {
-          ranges = normalizeSelectedDocumentRanges(reference.ranges, row.text.length);
-        } catch {
-          rejections.push({
-            candidateId: `${documentReferenceIdentity(reference)}:${reference.snapshotId}`,
-            reason: "invalid_range",
           });
           continue;
         }
         candidates.push({
-          id: documentReferenceIdentity(reference),
+          id: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
           kind: "document",
           rank: rank++,
-          purpose: reference.purpose,
-          sourceId: reference.source.sourceId,
-          documentId: row.documentId,
-          snapshotId: row.snapshotId,
-          ...(row.publisherExtractionId === null
-            ? {}
-            : { publisherExtractionId: row.publisherExtractionId }),
-          ...(row.issueId === null
-            ? {}
-            : { publisherIssueId: row.issueId, publisherDocumentId: row.documentId }),
-          contentHash: row.contentHash,
-          text: row.text,
+          purpose,
+          sourceId: `publisher:${identity.subscriptionId}`,
+          documentId: identity.documentId,
+          snapshotId: value.snapshotId,
+          publisherExtractionId: identity.publisherExtractionId,
+          publisherIssueId: identity.issueId,
+          publisherDocumentId: identity.documentId,
+          contentHash: value.contentHash,
+          text: value.text,
           ranges,
-          label: row.title,
+          label: value.label ?? row.documentTitle,
           publicProvenance: {
-            sourceName: row.sourceName,
-            ...(row.issueTitle === null ? {} : { issueTitle: row.issueTitle }),
-            documentTitle: row.title,
-            citationUrl: row.canonicalUrl,
-            ...(row.publishedAt === null ? {} : { publishedAt: row.publishedAt.toISOString() }),
+            sourceName: value.sourceName ?? row.sourceName,
+            issueTitle: row.issueTitle,
+            documentTitle: row.documentTitle,
+            citationUrl: row.citationUrl,
+            ...((value.date ?? row.publishedAt?.toISOString()) === undefined
+              ? {}
+              : { publishedAt: value.date ?? row.publishedAt!.toISOString() }),
           },
-          renderedTokenCount: 0,
+          renderedTokenCount: value.mainTokenCount,
         });
-      } else {
-        const row = await this.db(
-          Effect.gen(function* () {
-            const sql = yield* PgClient.PgClient;
-            const rows = yield* sql<{ readonly messageId: string; readonly content: string }>`
-              select messages.id::text as "messageId", messages.content
-              from chat_messages messages
-              join chats on chats.id = messages.chat_id and chats.deleted_at is null
-              join ai_runs runs
-                on runs.id = ${load.aiRunId}
-               and runs.chat_id = chats.id
-               and runs.initiating_user_id = ${load.initiatingUserId}
-               and runs.finished_at is null
-               and runs.failed_at is null
-              join client_companies companies
-                on companies.id = chats.company_id
-               and companies.recovery_deleted_at is null
-               and companies.purged_at is null
-              where messages.id = ${reference.messageId}
-                and messages.chat_id = ${load.chatId}
-            `;
-            return rows[0] ?? null;
-          }),
-        );
-        if (row !== null)
-          candidates.push({
-            id: chatMessageEvidenceIdentity(row.messageId),
-            kind: "chat_message",
-            rank: rank++,
-            purpose: reference.purpose,
-            messageId: row.messageId,
-            text: stripHistoricalCitationTags(row.content),
-            label: null,
-            renderedTokenCount: 0,
-          });
-        else
-          rejections.push({
-            candidateId: `chat_message:${reference.messageId}`,
-            reason: "inaccessible",
-          });
       }
     }
     for (const reference of selectors.memories) {
@@ -5185,7 +4437,11 @@ export class CanonicalWorkflowOperations {
     consumerTaskId: string,
     contextOrder: number,
     topicId?: TopicId,
+    chatRanges: readonly SourceRange[] = [],
   ): FinalSourceRecord {
+    if (candidate.kind === "topic_packet") {
+      throw new Error("topic packet candidates are non-citable and have no source record");
+    }
     const use: SerializedSourceUse = {
       consumerTaskId,
       ...(topicId === undefined ? {} : { topicId }),
@@ -5193,7 +4449,12 @@ export class CanonicalWorkflowOperations {
       // measureContext replaces this pre-measurement sentinel with the exact marginal cost
       // of the source inside the real JSON-framed provider request.
       renderedTokenCount: 0,
-      ranges: candidate.kind === "document" ? candidate.ranges : [],
+      ranges:
+        candidate.kind === "document"
+          ? candidate.ranges
+          : candidate.kind === "chat_message"
+            ? chatRanges
+            : [],
     };
     const locator =
       candidate.kind === "document"
@@ -5286,16 +4547,20 @@ export class CanonicalWorkflowOperations {
     candidates: readonly AnswerCandidate[],
     sourceMap: readonly FinalSourceRecord[],
     gaps: readonly string[],
-    reductionRan: boolean,
+    compactionRan: boolean,
     topicId?: TopicId,
     selectedConversation: readonly ConversationEntry[] = [],
     ledgerCandidates: readonly AnswerCandidate[] = candidates,
     ledgerSourceMap: readonly FinalSourceRecord[] = sourceMap,
     requestedOutputTokens: number = this.config.aiMainOutputMaxTokens,
-    reductionFeedback: readonly string[] = [],
+    compactionFeedback: readonly string[] = [],
     ledgerConversation: readonly ConversationEntry[] = selectedConversation,
     ledgerConversationTokenCounts?: readonly number[] | undefined,
     ledgerGaps: readonly string[] = gaps,
+    candidateLedger: CandidateLedger = CandidateLedgerSchema.parse({
+      candidates: [],
+    }) as CandidateLedger,
+    chatSourceRanges: readonly ChatContextRange[] = [],
   ): ContextState {
     if (candidates.length !== sourceMap.length) {
       throw new Error("answer candidates and source records must have identical cardinality");
@@ -5309,7 +4574,12 @@ export class CanonicalWorkflowOperations {
         source.sourceKey,
         source.locator.kind,
         source.label,
-        candidateText(candidate),
+        candidateText(
+          candidate,
+          candidate.kind === "chat_message"
+            ? chatSourceRanges.find((item) => item.messageId === candidate.messageId)?.ranges
+            : undefined,
+        ),
       );
     });
     const visible = renderedSources.join("\n\n");
@@ -5387,8 +4657,53 @@ export class CanonicalWorkflowOperations {
         uses: [{ ...use, renderedTokenCount: sourceTokenCounts[index] ?? 0 }],
       };
     });
+    const sameCandidateProjection =
+      ledgerCandidates.length === candidates.length &&
+      ledgerCandidates.every((ledgerCandidate, index) => {
+        const currentCandidate = candidates[index];
+        if (
+          currentCandidate === undefined ||
+          ledgerCandidate.id !== currentCandidate.id ||
+          ledgerCandidate.kind !== currentCandidate.kind
+        ) {
+          return false;
+        }
+        const ledgerChatRanges =
+          ledgerCandidate.kind === "chat_message"
+            ? chatSourceRanges.find((item) => item.messageId === ledgerCandidate.messageId)?.ranges
+            : undefined;
+        const currentChatRanges =
+          currentCandidate.kind === "chat_message"
+            ? chatSourceRanges.find((item) => item.messageId === currentCandidate.messageId)?.ranges
+            : undefined;
+        return (
+          candidateText(ledgerCandidate, ledgerChatRanges) ===
+          candidateText(currentCandidate, currentChatRanges)
+        );
+      });
+    const sameSourceProjection =
+      ledgerSourceMap.length === sourceMap.length &&
+      ledgerSourceMap.every((ledgerSource, index) => {
+        const currentSource = sourceMap[index];
+        return (
+          currentSource !== undefined &&
+          ledgerSource.sourceKey === currentSource.sourceKey &&
+          stableJson(ledgerSource.locator) === stableJson(currentSource.locator)
+        );
+      });
     const isInitialEvidenceLedger =
-      ledgerCandidates === candidates && ledgerSourceMap === sourceMap;
+      !compactionRan &&
+      sameCandidateProjection &&
+      sameSourceProjection &&
+      ledgerConversation === selectedConversation;
+    const measuredCandidateLedger = isInitialEvidenceLedger
+      ? this.updateCandidateLedgerTokenCounts(
+          candidateLedger,
+          candidates,
+          sourceTokenCounts,
+          currentConversationTokenCounts,
+        )
+      : candidateLedger;
     const measuredLedgerSourceMap = isInitialEvidenceLedger ? measuredSourceMap : ledgerSourceMap;
     const measuredLedgerConversationTokenCounts =
       ledgerConversationTokenCounts ??
@@ -5408,7 +4723,7 @@ export class CanonicalWorkflowOperations {
         ? "failed"
         : inputTokens <= usableInputTokens
           ? "ready"
-          : "needs_reduction";
+          : "needs_compaction";
     const consumer: PublicContextConsumer = {
       consumer: topicId === undefined ? "direct" : "topic",
       ...(topicId === undefined ? {} : { topicId }),
@@ -5421,863 +4736,1838 @@ export class CanonicalWorkflowOperations {
       question,
       ...(topicId === undefined ? {} : { topicId }),
       candidates,
+      candidateLedger: measuredCandidateLedger,
       sourceMap: measuredSourceMap,
       ledgerCandidates,
       ledgerSourceMap: measuredLedgerSourceMap,
       selectedConversation,
       ledgerConversation,
+      chatSourceRanges,
       ledgerConversationTokenCounts: measuredLedgerConversationTokenCounts,
       consumers: [consumer],
       gaps,
       ledgerGaps,
-      reductionFeedback,
+      compactionFeedback,
       request,
       inputTokens,
       usableInputTokens,
-      reductionRan,
+      compactionRan,
       ...(status === "failed" ? { failureCode: "context_mandatory_too_large" } : {}),
     };
   }
 
-  private reductionCandidates(state: ContextState): readonly ReductionCandidate[] {
-    const conversation = state.ledgerConversation ?? state.selectedConversation;
-    const conversationTokenCounts = state.ledgerConversationTokenCounts ?? [];
-    const conversationCandidates = conversation.map(
-      (entry, index): ConversationReductionCandidate => ({
-        id: conversationReductionCandidateId(entry),
-        kind: "conversation_entry",
-        rank: index,
-        purpose: "plan-turn-selected recent turn",
-        label: null,
-        renderedTokenCount:
-          conversationTokenCounts[index] ??
-          this.visibleTokenCount(JSON.stringify(entry), state.request.model),
-        entry,
-        text: JSON.stringify(entry),
-      }),
-    );
-    const evidenceCandidates = state.ledgerCandidates.map((candidate, index) => ({
-      ...candidate,
-      rank: conversationCandidates.length + index,
-      renderedTokenCount: state.ledgerSourceMap[index]?.uses[0]?.renderedTokenCount ?? 0,
-    }));
-    return [...conversationCandidates, ...evidenceCandidates];
+  private compactionPassageOptions(load: LoadedTurn): PassageIndexOptions {
+    const model = resolveRuntimeModel(load.acceptanceScope.fastModelId);
+    return {
+      maxTokens: Math.max(1, Math.min(this.config.aiFastOutputMaxTokens, 256)),
+      maxUtf8Bytes: 8_192,
+      countTokens: model.countTextTokens,
+    };
   }
-
-  async planReduction(
-    load: LoadedTurn,
-    state: ContextState,
-    taskId: string,
-    _workflowIteration: number,
-  ): Promise<ContextReductionPlan> {
-    if (state.status !== "needs_reduction") {
-      throw new Error("context reduction planning requires an oversized context");
-    }
-    const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
-    const reductionCandidates = this.reductionCandidates(state);
-    // O's inspection transcript is cumulative. Keep each complete inspection
-    // small enough that inspecting several candidates cannot push the next
-    // provider request beyond the exact fast-input gate.
-    const inspectionResponseAllowanceTokens = Math.min(this.config.aiFastOutputMaxTokens, 2_048);
-    // The live oversized fixture has six independently relevant documents. A
-    // provider may serialize each search and inspection into its own turn, so
-    // reserve enough of the code-owned hard maximum for six of each, a
-    // measurement turn, and a later terminal turn.
-    const reductionMaximumTurns = Math.min(16, Math.max(this.config.aiRetrievalMaxTurns, 16));
-    const candidateHandleById = new Map(
-      reductionCandidates.map((candidate, index) => [
-        candidate.id,
-        `opaque_candidate_${index + 1}`,
-      ]),
-    );
-    const candidateIdByHandle = new Map(
-      [...candidateHandleById.entries()].map(([candidateId, handle]) => [handle, candidateId]),
-    );
-    const compact = reductionCandidates.map((candidate) => ({
-      id: candidateHandleById.get(candidate.id)!,
-      kind: candidate.kind,
-      label: candidate.label,
-      purpose: candidate.purpose,
-      rank: candidate.rank,
-      renderedTokenCount: candidate.renderedTokenCount,
-    }));
-    const providerExposures = new Map<
+  private compactionCostOptions(load: LoadedTurn, state: ContextState) {
+    const model = resolveRuntimeModel(load.acceptanceScope.mainModelId);
+    const sourceByCandidateId = new Map<
       string,
       {
         readonly candidate: AnswerCandidate;
-        readonly contentItemIdentity: string;
-        readonly visibleTokenCount: number;
-        readonly documentReconstruction?: AiDocumentExposureReconstruction | undefined;
+        readonly entry: CandidateLedgerEntry;
+        readonly source: FinalSourceRecord;
+      }
+    >(
+      state.ledgerCandidates.flatMap((candidate, index) => {
+        const source = state.ledgerSourceMap[index];
+        const entry = state.candidateLedger.candidates.find(
+          (candidateEntry) => candidateEntry.candidateId === candidate.id,
+        );
+        return source === undefined || entry === undefined
+          ? []
+          : [[candidate.id, { candidate, entry, source }] as const];
+      }),
+    );
+    const prompt = state.topicId === undefined ? DirectAnswerPrompt : TopicAnswerPrompt;
+    const userInput = (evidence: string): string =>
+      JSON.stringify({
+        locale: load.locale,
+        originalMessage: load.userMessage,
+        question: state.question,
+        ...(state.topicId === undefined ? {} : { topicId: state.topicId }),
+        selectedConversation: state.selectedConversation,
+        evidence,
+        gaps: state.gaps,
+      });
+    const buildRequest = (evidence: string): LiveProviderRequest =>
+      state.topicId === undefined
+        ? fullRequestInput(
+            prompt,
+            userInput(evidence),
+            load.acceptanceScope.mainModelId,
+            state.request.requestedOutputTokens,
+          )
+        : structuredRequestInput(
+            prompt,
+            userInput(evidence),
+            load.acceptanceScope.mainModelId,
+            state.request.requestedOutputTokens,
+            "emit_topic_packet",
+            "Emit a grounded topic packet.",
+            z.toJSONSchema(TopicPacketSchema),
+          );
+    const sourceEntries = state.candidates.flatMap((activeCandidate) => {
+      const original = sourceByCandidateId.get(activeCandidate.id);
+      if (original === undefined) return [];
+      const chatRanges =
+        activeCandidate.kind === "chat_message"
+          ? state.chatSourceRanges?.find((item) => item.messageId === activeCandidate.messageId)
+              ?.ranges
+          : undefined;
+      return [
+        {
+          candidateId: activeCandidate.id,
+          source: original.source,
+          text: candidateText(activeCandidate, chatRanges),
+        },
+      ];
+    });
+    const sourceOrder = new Map<string, number>(
+      state.candidateLedger.candidates.map((entry, index) => [entry.candidateId, index]),
+    );
+    const sortSources = (
+      sources: readonly {
+        readonly candidateId: string;
+        readonly source: FinalSourceRecord;
+        readonly text: string;
+      }[],
+    ) =>
+      [...sources].sort((left, right) => {
+        const byKey = compareSourceKeys(left.source.sourceKey, right.source.sourceKey);
+        return byKey !== 0
+          ? byKey
+          : (sourceOrder.get(left.candidateId) ?? Number.MAX_SAFE_INTEGER) -
+              (sourceOrder.get(right.candidateId) ?? Number.MAX_SAFE_INTEGER);
+      });
+    const serializeSources = (
+      sources: readonly {
+        readonly candidateId: string;
+        readonly source: FinalSourceRecord;
+        readonly text: string;
+      }[],
+    ): string =>
+      sortSources(sources)
+        .map((source) =>
+          sourceText(
+            source.source.sourceKey,
+            source.source.locator.kind,
+            source.source.label,
+            source.text,
+          ),
+        )
+        .join("\n\n");
+    return {
+      countRenderedTokens: (
+        sources: readonly RenderedGroupSource[],
+        replacedCandidateIds: readonly string[] = sources.map((source) => source.candidateId),
+      ) => {
+        const replaced = new Set(replacedCandidateIds);
+        const baseline = sourceEntries.filter((source) => !replaced.has(source.candidateId));
+        const rendered = [
+          ...baseline,
+          ...sources.map((source) => {
+            const original = sourceByCandidateId.get(source.candidateId);
+            if (original === undefined) {
+              throw new Error(`unknown compaction candidate ${source.candidateId}`);
+            }
+            return { candidateId: source.candidateId, source: original.source, text: source.text };
+          }),
+        ];
+        const renderedTokens = model.countRequestTokens(buildRequest(serializeSources(rendered)));
+        const baselineTokens = model.countRequestTokens(buildRequest(serializeSources(baseline)));
+        return Math.max(0, renderedTokens - baselineTokens);
+      },
+    };
+  }
+
+  private compactionLedgerEntry(state: ContextState, candidateId: string): CandidateLedgerEntry {
+    const entry = state.candidateLedger.candidates.find(
+      (candidate) => candidate.candidateId === candidateId,
+    );
+    if (entry === undefined) throw new Error(`unknown compaction candidate ${candidateId}`);
+    return entry;
+  }
+
+  private compactionProviderCandidate(
+    entry: CandidateLedgerEntry,
+    options: PassageIndexOptions,
+    selectedPassageIds?: readonly string[],
+  ) {
+    if (entry.kind === "topic_packet") {
+      throw new Error("topic packets cannot be compacted as source candidates");
+    }
+    const index = buildCandidatePassageIndex(entry, {
+      ...options,
+      authorizedRanges: entry.baseRanges,
+    });
+    const selected =
+      selectedPassageIds === undefined
+        ? index.passages
+        : index.passages.filter((passage) => selectedPassageIds.includes(passage.passageId));
+    return {
+      candidateId: entry.candidateId,
+      kind: entry.kind,
+      label: entry.provenance.label,
+      purpose: entry.provenance.purpose,
+      date: entry.provenance.date,
+      passages: selected.map(toProviderPassageView),
+    };
+  }
+
+  private compactionDocumentReconstruction(
+    entry: CandidateLedgerEntry,
+    ranges: readonly SourceRange[],
+  ): AiDocumentExposureReconstruction | undefined {
+    if (entry.identity.kind === "public_document") {
+      return {
+        sourceId: entry.identity.sourceId,
+        documentId: entry.identity.documentId,
+        snapshotId: entry.identity.snapshotId,
+        contentHash: entry.identity.contentHash,
+        ranges,
+      };
+    }
+    if (entry.identity.kind === "publisher_document") {
+      return {
+        sourceId: entry.identity.subscriptionId.startsWith("publisher:")
+          ? entry.identity.subscriptionId
+          : `publisher:${entry.identity.subscriptionId}`,
+        documentId: entry.identity.documentId,
+        snapshotId: entry.identity.snapshotId,
+        contentHash: entry.identity.contentHash,
+        publisherExtractionId: entry.identity.publisherExtractionId,
+        ranges,
+      };
+    }
+    return undefined;
+  }
+
+  private compactionProofs(
+    load: LoadedTurn,
+    entries: readonly CandidateLedgerEntry[],
+    options: PassageIndexOptions,
+    stage = "context_compaction_input",
+    selectedPassageIds?: ReadonlyMap<string, readonly string[]>,
+  ): readonly CodeOwnedSourceExposureProof[] {
+    const proofs: CodeOwnedSourceExposureProof[] = [];
+    for (const entry of entries) {
+      if (entry.kind === "conversation_entry" || entry.kind === "topic_packet") continue;
+      const index = buildCandidatePassageIndex(entry, {
+        ...options,
+        authorizedRanges: entry.baseRanges,
+      });
+      const passages =
+        selectedPassageIds?.get(entry.candidateId) === undefined
+          ? index.passages
+          : index.passages.filter((passage) =>
+              selectedPassageIds.get(entry.candidateId)!.includes(passage.passageId),
+            );
+      for (const passage of passages) {
+        const logicalSourceIdentity = compactionLogicalSourceIdentity(entry.identity);
+        const contentItemIdentity = compactionContentItemIdentity(
+          entry.identity,
+          logicalSourceIdentity,
+          passage.text,
+          { passageId: passage.passageId, range: passage.range },
+        );
+        const immutableContentHash =
+          entry.identity.kind === "chat_message"
+            ? entry.identity.sanitizedContentHash
+            : entry.identity.kind === "public_document" ||
+                entry.identity.kind === "publisher_document"
+              ? entry.identity.contentHash
+              : sha256Base64Url(entry.text);
+        const immutableSourceIdentityCommitment = sha256Base64Url(logicalSourceIdentity);
+        const marker = codeOwnedExposureProof(
+          {
+            sourceKind: entry.kind,
+            logicalSourceIdentity,
+            contentItemIdentity,
+            stage,
+            visibleTokenCount: this.visibleTokenCount(
+              passage.text,
+              load.acceptanceScope.fastModelId,
+            ),
+          },
+          passage.text,
+        );
+        const charStart = passage.range.charStart;
+        const charEnd = passage.range.charEnd;
+        const visibleByteCount = new TextEncoder().encode(passage.text).byteLength;
+        const compactionBinding = stableJson({
+          sourceKind: entry.kind,
+          candidateId: entry.candidateId,
+          passageId: passage.passageId,
+          charStart,
+          charEnd,
+          visibleByteCount,
+          visibleTextHash: sha256Base64Url(passage.text),
+        });
+        proofs.push({
+          ...marker,
+          immutableContentHash,
+          candidateId: entry.candidateId,
+          passageId: passage.passageId,
+          charStart,
+          charEnd,
+          visibleByteCount,
+          ...(entry.kind === "document"
+            ? {
+                documentReconstruction: this.compactionDocumentReconstruction(entry, [
+                  passage.range,
+                ]),
+              }
+            : {}),
+          ...(entry.identity.kind === "publisher_document"
+            ? {
+                publisherIssueId: entry.identity.issueId,
+                publisherDocumentId: entry.identity.documentId,
+              }
+            : {}),
+          immutableSourceIdentityCommitment,
+          immutableSourceCommitment: providerVisibleSourceExposureCommitment(
+            marker,
+            compactionBinding,
+            immutableContentHash,
+            immutableSourceIdentityCommitment,
+          ),
+        });
+      }
+    }
+    return proofs;
+  }
+  private compactionPreviewProofs(
+    load: LoadedTurn,
+    entries: readonly CandidateLedgerEntry[],
+    stage = "context_compaction_input",
+  ): readonly CodeOwnedSourceExposureProof[] {
+    const model = resolveRuntimeModel(load.acceptanceScope.fastModelId);
+    return entries.flatMap((entry) => {
+      if (entry.kind === "topic_packet" || entry.preview.length === 0) return [];
+      if (entry.kind === "conversation_entry") {
+        type ProviderConversationPreview =
+          | { readonly userContent: string; readonly assistantContent: string }
+          | {
+              readonly userContent: string;
+              readonly errorCode: string;
+              readonly retryable: boolean;
+            };
+        let privateEntry: ConversationEntry;
+        let providerEntry: ProviderConversationPreview;
+        const proofs: CodeOwnedSourceExposureProof[] = [];
+        try {
+          const parsedPrivate: unknown = JSON.parse(entry.text);
+          const parsedProvider: unknown = JSON.parse(entry.preview);
+          if (
+            parsedPrivate === null ||
+            typeof parsedPrivate !== "object" ||
+            Array.isArray(parsedPrivate) ||
+            parsedProvider === null ||
+            typeof parsedProvider !== "object" ||
+            Array.isArray(parsedProvider)
+          ) {
+            throw new Error("conversation payload is not an object");
+          }
+          privateEntry = parsedPrivate as ConversationEntry;
+          const providerRecord = parsedProvider as Record<string, unknown>;
+          const providerKeys = Object.keys(providerRecord);
+          const complete =
+            providerKeys.length === 2 &&
+            providerKeys.includes("userContent") &&
+            providerKeys.includes("assistantContent") &&
+            typeof providerRecord.userContent === "string" &&
+            typeof providerRecord.assistantContent === "string";
+          const failed =
+            providerKeys.length === 3 &&
+            providerKeys.includes("userContent") &&
+            providerKeys.includes("errorCode") &&
+            providerKeys.includes("retryable") &&
+            typeof providerRecord.userContent === "string" &&
+            typeof providerRecord.errorCode === "string" &&
+            typeof providerRecord.retryable === "boolean";
+          if (!complete && !failed) throw new Error("provider preview shape is not canonical");
+          providerEntry = complete
+            ? {
+                userContent: providerRecord.userContent as string,
+                assistantContent: providerRecord.assistantContent as string,
+              }
+            : {
+                userContent: providerRecord.userContent as string,
+                errorCode: providerRecord.errorCode as string,
+                retryable: providerRecord.retryable as boolean,
+              };
+        } catch {
+          throw new Error("conversation compaction candidate is not canonical JSON");
+        }
+        if (
+          entry.identity.kind !== "conversation_entry" ||
+          typeof privateEntry.turnId !== "string" ||
+          typeof privateEntry.userMessageId !== "string" ||
+          typeof privateEntry.userContent !== "string" ||
+          privateEntry.turnId !== entry.identity.turnId ||
+          privateEntry.userMessageId !== entry.identity.userMessageId
+        ) {
+          throw new Error(
+            "conversation compaction candidate identity does not match its private entry",
+          );
+        }
+        const privateAssistantId =
+          "assistantMessageId" in privateEntry ? privateEntry.assistantMessageId : undefined;
+        if (privateAssistantId !== entry.identity.assistantMessageId) {
+          throw new Error("conversation compaction candidate assistant identity does not match");
+        }
+        const privateComplete =
+          privateAssistantId !== undefined &&
+          "assistantContent" in privateEntry &&
+          typeof privateEntry.assistantContent === "string";
+        const privateFailed =
+          privateAssistantId === undefined &&
+          "errorCode" in privateEntry &&
+          typeof privateEntry.errorCode === "string" &&
+          "retryable" in privateEntry &&
+          typeof privateEntry.retryable === "boolean";
+        if (!privateComplete && !privateFailed) {
+          throw new Error("conversation compaction private entry shape is not canonical");
+        }
+        const providerComplete = "assistantContent" in providerEntry;
+        if (privateComplete !== providerComplete) {
+          throw new Error("conversation compaction candidate completion shape differs");
+        }
+        const addConversationProof = (
+          messageId: string,
+          privateText: string,
+          visibleText: string,
+        ): void => {
+          if (
+            privateText.length === 0 ||
+            visibleText.length === 0 ||
+            !privateText.startsWith(visibleText)
+          ) {
+            throw new Error("conversation compaction preview is outside its private message range");
+          }
+          const logicalSourceIdentity = chatMessageEvidenceIdentity(messageId);
+          const marker = codeOwnedExposureProof(
+            {
+              sourceKind: "chat_message",
+              logicalSourceIdentity,
+              contentItemIdentity: messageId,
+              stage,
+              visibleTokenCount: model.countTextTokens(visibleText),
+            },
+            visibleText,
+          );
+          const charStart = 0;
+          const charEnd = visibleText.length;
+          const visibleByteCount = new TextEncoder().encode(visibleText).byteLength;
+          const immutableContentHash = createHash("sha256")
+            .update(privateText, "utf8")
+            .digest("hex");
+          const immutableSourceIdentityCommitment = sha256Base64Url(logicalSourceIdentity);
+          const compactionBinding = stableJson({
+            sourceKind: "chat_message",
+            candidateId: entry.candidateId,
+            passageId: undefined,
+            charStart,
+            charEnd,
+            visibleByteCount,
+            visibleTextHash: sha256Base64Url(visibleText),
+          });
+          proofs.push({
+            ...marker,
+            candidateId: entry.candidateId,
+            charStart,
+            charEnd,
+            visibleByteCount,
+            immutableContentHash,
+            immutableSourceIdentityCommitment,
+            immutableSourceCommitment: providerVisibleSourceExposureCommitment(
+              marker,
+              compactionBinding,
+              immutableContentHash,
+              immutableSourceIdentityCommitment,
+            ),
+          });
+        };
+        addConversationProof(
+          privateEntry.userMessageId,
+          privateEntry.userContent,
+          providerEntry.userContent,
+        );
+        if (
+          "assistantMessageId" in privateEntry &&
+          "assistantContent" in privateEntry &&
+          typeof privateEntry.assistantContent === "string" &&
+          "assistantContent" in providerEntry
+        ) {
+          addConversationProof(
+            privateEntry.assistantMessageId,
+            privateEntry.assistantContent,
+            providerEntry.assistantContent,
+          );
+        }
+        return proofs;
+      }
+      const ranges = entry.previewRanges;
+      if (ranges.length === 0) return [];
+      const first = ranges[0]!;
+      const last = ranges[ranges.length - 1]!;
+      const sourceKind = entry.kind;
+      const logicalSourceIdentity = compactionLogicalSourceIdentity(entry.identity);
+      const contentItemIdentity = compactionContentItemIdentity(
+        entry.identity,
+        logicalSourceIdentity,
+        entry.preview,
+        { previewRanges: ranges },
+      );
+      const marker = codeOwnedExposureProof(
+        {
+          sourceKind,
+          logicalSourceIdentity,
+          contentItemIdentity,
+          stage,
+          visibleTokenCount: model.countTextTokens(entry.preview),
+        },
+        entry.preview,
+      );
+      const charStart = first.charStart;
+      const charEnd = last.charEnd;
+      const visibleByteCount = new TextEncoder().encode(entry.preview).byteLength;
+      const immutableContentHash =
+        entry.identity.kind === "chat_message"
+          ? entry.identity.sanitizedContentHash
+          : entry.identity.kind === "public_document" ||
+              entry.identity.kind === "publisher_document"
+            ? entry.identity.contentHash
+            : sha256Base64Url(entry.text);
+      const immutableSourceIdentityCommitment = sha256Base64Url(logicalSourceIdentity);
+      const compactionBinding = stableJson({
+        sourceKind,
+        candidateId: entry.candidateId,
+        passageId: undefined,
+        charStart,
+        charEnd,
+        visibleByteCount,
+        visibleTextHash: sha256Base64Url(entry.preview),
+      });
+      return [
+        {
+          ...marker,
+          candidateId: entry.candidateId,
+          charStart,
+          charEnd,
+          visibleByteCount,
+          ...(entry.kind === "document"
+            ? {
+                documentReconstruction: this.compactionDocumentReconstruction(entry, ranges),
+              }
+            : {}),
+          ...(entry.identity.kind === "publisher_document"
+            ? {
+                publisherIssueId: entry.identity.issueId,
+                publisherDocumentId: entry.identity.documentId,
+              }
+            : {}),
+          immutableContentHash,
+          immutableSourceIdentityCommitment,
+          immutableSourceCommitment: providerVisibleSourceExposureCommitment(
+            marker,
+            compactionBinding,
+            immutableContentHash,
+            immutableSourceIdentityCommitment,
+          ),
+        },
+      ];
+    });
+  }
+  private async recordCompactionExposureProofs(
+    load: LoadedTurn,
+    taskId: string,
+    request: ProviderRequest,
+    coordinates: AttestedPiBoundaryCoordinates,
+  ): Promise<void> {
+    const proofs = request.sourceExposureProofs ?? [];
+    if (proofs.length === 0) return;
+    const bindings = providerRequestSourceExposureProofBindings(
+      request,
+      resolveRuntimeModel(request.model).countTextTokens,
+    );
+    const consumedBindingIndexes = new Set<number>();
+    const execution = ownedProviderExecutionCoordinates(taskId, coordinates);
+    await Promise.all(
+      proofs.map((proof) => {
+        if (!("candidateId" in proof) || typeof proof.candidateId !== "string") {
+          throw new Error("compaction source exposure proof lacks its candidate ID");
+        }
+        const codeProof = proof as CodeOwnedSourceExposureProof;
+        const bindingIndex = bindings.findIndex((item, index) => {
+          if (consumedBindingIndexes.has(index)) return false;
+          if (
+            item.marker.sourceKind !== proof.sourceKind ||
+            item.marker.logicalSourceIdentity !== proof.logicalSourceIdentity ||
+            item.marker.contentItemIdentity !== proof.contentItemIdentity ||
+            item.marker.exposureStage !== proof.exposureStage ||
+            item.marker.visibleTokenCount !== proof.visibleTokenCount
+          ) {
+            return false;
+          }
+          if (
+            (proof.messageIndex !== undefined &&
+              item.binding.messageIndex !== proof.messageIndex) ||
+            (proof.serializedField !== undefined &&
+              item.binding.serializedField !== proof.serializedField) ||
+            (proof.sourceOrdinal !== undefined &&
+              item.binding.sourceOrdinal !== proof.sourceOrdinal)
+          ) {
+            return false;
+          }
+          let descriptor: Record<string, unknown>;
+          try {
+            descriptor = JSON.parse(item.binding.orderedSourceDescriptor) as Record<
+              string,
+              unknown
+            >;
+          } catch {
+            return false;
+          }
+          return (
+            descriptor.candidateId === proof.candidateId &&
+            (proof.passageId === undefined || descriptor.passageId === proof.passageId) &&
+            (proof.charStart === undefined || descriptor.charStart === proof.charStart) &&
+            (proof.charEnd === undefined || descriptor.charEnd === proof.charEnd) &&
+            (proof.visibleByteCount === undefined ||
+              descriptor.visibleByteCount === proof.visibleByteCount) &&
+            (proof.sourceToolCallId === undefined ||
+              descriptor.sourceToolCallId === proof.sourceToolCallId) &&
+            (proof.sourceResultIndex === undefined ||
+              descriptor.sourceResultIndex === proof.sourceResultIndex) &&
+            (proof.orderedSourceDescriptor === undefined ||
+              proof.orderedSourceDescriptor === item.binding.orderedSourceDescriptor)
+          );
+        });
+        if (bindingIndex < 0) {
+          throw new Error("compaction source exposure proof lacks its exact provider binding");
+        }
+        consumedBindingIndexes.add(bindingIndex);
+        const binding = bindings[bindingIndex]!;
+        return this.db(
+          insertAiSourceExposure({
+            runId: load.aiRunId,
+            taskId: execution.taskId,
+            loopIteration: execution.loopIteration,
+            attempt: execution.attempt,
+            providerRequestIndex: execution.providerRequestIndex,
+            providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
+            sourceKind: proof.sourceKind,
+            logicalSourceIdentity: proof.logicalSourceIdentity,
+            contentItemIdentity: proof.contentItemIdentity,
+            exposureStage: proof.exposureStage,
+            visibleTokenCount: proof.visibleTokenCount,
+            providerSerializationProofBinding: binding.binding,
+            ...(codeProof.documentReconstruction === undefined
+              ? {}
+              : {
+                  requireCanonicalDocumentIdentity: true,
+                  ...(codeProof.publisherIssueId === undefined ||
+                  codeProof.publisherDocumentId === undefined
+                    ? {}
+                    : {
+                        publisherIssueId: codeProof.publisherIssueId,
+                        publisherDocumentId: codeProof.publisherDocumentId,
+                      }),
+                  documentReconstruction: codeProof.documentReconstruction,
+                }),
+          }),
+        );
+      }),
+    );
+  }
+
+  private assertSynthesisPacketManifest(
+    state: ContextState,
+    manifest: InitialContextManifest | FallbackContextManifest,
+    fallback: boolean,
+  ): void {
+    const packets = state.candidateLedger.candidates.filter(
+      (candidate) => candidate.kind === "topic_packet",
+    );
+    if (packets.length === 0) return;
+    const decisions = new Map(
+      manifest.decisions.map((decision) => [decision.candidateId, decision]),
+    );
+    const retained = packets.filter((packet) => {
+      const decision = decisions.get(packet.candidateId);
+      if (decision === undefined) {
+        throw new CompactionContractError(
+          "synthesis compaction manifest must account for every topic packet",
+        );
+      }
+      if (fallback) {
+        if (decision.action !== "retain" && decision.action !== "omit") {
+          throw new CompactionContractError("topic packets may only be retained or omitted");
+        }
+      } else if (decision.action !== "keep" && decision.action !== "omit") {
+        throw new CompactionContractError("topic packets may only be kept or omitted");
+      }
+      return decision.action === (fallback ? "retain" : "keep");
+    });
+    if (retained.length < 2) {
+      throw new CompactionContractError(
+        "synthesis compaction must retain at least two topic packets",
+      );
+    }
+  }
+
+  private compactionGroupsForManifest(
+    load: LoadedTurn,
+    state: ContextState,
+    manifest: InitialContextManifest,
+    measurementTaskId = "compaction_measure",
+  ): readonly CompactionGroup[] {
+    const passageOptions = this.compactionPassageOptions(load);
+    const costOptions = this.compactionCostOptions(load, state);
+    const groupMeasurements = new Map<
+      string,
+      {
+        readonly inputTokens: number;
+        readonly usableInputTokens: number;
+        readonly minimumSelectablePassageCost: number;
       }
     >();
-    const inspectedConversation = new Map<string, ConversationEntry>();
-    const providerRequestDigests = new Map<number, string>();
-    let measurementRequested = false;
-    let measurementResolved = false;
-    let measuredDecisionSet: readonly ContextDecision[] | undefined;
-    let measuredDecisionProviderRequestIndex: number | undefined;
-    let inspectionOrSearchCompleted = false;
-    const parseInspectCandidateArguments = (value: unknown) =>
-      z
-        .object({
-          id: z.string(),
-          range: z
-            .object({
-              charStart: z.number().int().min(0),
-              charEnd: z.number().int().positive(),
-            })
-            .strict()
-            .optional(),
-        })
-        .strict()
-        .parse(value);
-    const parseSearchWithinCandidateArguments = (value: unknown) =>
-      z
-        .object({
-          id: z.string(),
-          terms: z.string().min(1),
-          cursor: z.number().int().min(0).optional(),
-        })
-        .strict()
-        .parse(value);
-    const parseMeasurePlanArguments = (value: unknown) => ContextPlanOutputSchema.parse(value);
-    const decodeProviderDecisions = (value: unknown): readonly ContextDecision[] => {
-      const parsed = ContextPlanOutputSchema.parse(value);
-      return parsed.decisions.map((decision) => {
-        const candidateId = candidateIdByHandle.get(decision.id);
-        if (candidateId === undefined) {
-          throw new Error("context plan contains an unknown opaque candidate handle");
-        }
-        return { ...decision, id: candidateId };
+    const ledger = state.candidateLedger;
+    for (const declared of manifest.groups) {
+      const candidateIds = manifest.decisions
+        .filter(
+          (decision) => decision.action === "compact" && decision.groupId === declared.groupId,
+        )
+        .map((decision) => decision.candidateId);
+      const candidates = candidateIds.map((candidateId) =>
+        this.compactionProviderCandidate(
+          this.compactionLedgerEntry(state, candidateId),
+          passageOptions,
+        ),
+      );
+      const group = {
+        ...declared,
+        candidateIds,
+        mode: "normal" as const,
+      };
+      const payload = buildGroupCompactionRequest(load, {
+        taskId: measurementTaskId,
+        phase: "compact",
+        question: state.question,
+        group,
+        candidates,
       });
+      const request = structuredRequestInput(
+        payload.system,
+        payload.user,
+        load.acceptanceScope.fastModelId,
+        this.config.aiFastOutputMaxTokens,
+        payload.outputToolName,
+        payload.outputToolDescription,
+        payload.outputSchema,
+      );
+      const model = resolveRuntimeModel(request.model);
+      const usableInputTokens = Math.min(
+        this.config.aiFastInputMaxTokens,
+        model.contextWindow - request.requestedOutputTokens,
+      );
+      const minimumSelectablePassageCost = Math.min(
+        ...candidateIds.map((candidateId) => {
+          const entry = this.compactionLedgerEntry(state, candidateId);
+          const index = buildCandidatePassageIndex(entry, {
+            ...passageOptions,
+            authorizedRanges: entry.baseRanges,
+          });
+          return Math.min(
+            ...index.passages.map((passage) =>
+              costOptions.countRenderedTokens(
+                [{ candidateId, text: passage.text, passageIds: [], ranges: [] }],
+                candidateIds,
+              ),
+            ),
+          );
+        }),
+      );
+      groupMeasurements.set(declared.groupId, {
+        inputTokens: model.countRequestTokens(request),
+        usableInputTokens,
+        minimumSelectablePassageCost,
+      });
+    }
+    const sourceToolEligibleCandidateIds = manifest.decisions
+      .filter((decision) => decision.action === "compact")
+      .filter((decision) => {
+        const memberCount = manifest.decisions.filter(
+          (item) => item.action === "compact" && item.groupId === decision.groupId,
+        ).length;
+        if (memberCount !== 1) return false;
+        const entry = this.compactionLedgerEntry(state, decision.candidateId);
+        const measurement = groupMeasurements.get(decision.groupId);
+        return (
+          (entry.kind === "document" || entry.kind === "chat_message") &&
+          measurement !== undefined &&
+          measurement.inputTokens > measurement.usableInputTokens
+        );
+      })
+      .map((decision) => decision.candidateId);
+    const measurement = this.contextMeasurementPayload(
+      state,
+      measurementTaskId,
+      state.citationSourceMap !== undefined
+        ? "synthesis"
+        : state.topicId === undefined
+          ? "direct"
+          : "topic",
+    );
+    return createPureCompactionGroups(manifest, ledger, {
+      sourceToolEligibleCandidateIds,
+      remainingAnswerTokens: state.usableInputTokens - measurement.mandatoryInputTokens,
+      passageOptions,
+      costOptions,
+      groupMeasurements,
+    });
+  }
+
+  async initialCompactionManifest(
+    load: LoadedTurn,
+    state: ContextState,
+    taskId: string,
+  ): Promise<InitialContextManifest> {
+    if (state.status !== "needs_compaction") {
+      throw new Error("initial compaction manifest requires an oversized context");
+    }
+    const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
+    const planner = this.fitCompactionPlannerRequest(
+      load,
+      state.candidateLedger.candidates,
+      (entries) =>
+        buildInitialCompactionRequest(
+          load,
+          {
+            question: state.question,
+            allowance: state.usableInputTokens,
+            overage: state.inputTokens - state.usableInputTokens,
+            mandatoryInputCost: this.contextMeasurementPayload(
+              state,
+              taskId,
+              state.citationSourceMap !== undefined
+                ? "synthesis"
+                : state.topicId === undefined
+                  ? "direct"
+                  : "topic",
+            ).mandatoryInputTokens,
+            candidates: entries.map((candidate) => ({
+              candidateId: candidate.candidateId,
+              kind: candidate.kind,
+              label: candidate.provenance.label,
+              purpose: candidate.provenance.purpose,
+              date: candidate.provenance.date,
+              renderedTokenCount: candidate.renderedTokenCount,
+              preview:
+                candidate.kind === "conversation_entry"
+                  ? JSON.parse(candidate.preview)
+                  : candidate.preview,
+            })),
+            toolBounds: {
+              maximumCandidates: Math.max(1, entries.length),
+              maximumGroups: Math.max(1, entries.length),
+            },
+          },
+          taskId,
+        ),
+    );
+    const payload = planner.payload;
+    const passageOptions = this.compactionPassageOptions(load);
+    const taskEvidence = await this.compactionTaskEvidence(load.aiRunId, taskId);
+    this.assertCompactionTaskNotConsumed(taskEvidence);
+    const repairAlreadyUsed =
+      this.compactionRepairTaskIds.has(taskId) || taskEvidence.repairConsumed;
+    const costOptions = this.compactionCostOptions(load, state);
+    const requestUser = payload.user;
+    const output = await this.agents.structured<InitialContextManifest>({
+      requestClass: "fast",
+      model: load.acceptanceScope.fastModelId,
+      ...payload,
+      validate: (value) => {
+        const validated = validateInitialContextManifest(
+          value,
+          state.candidateLedger,
+          passageOptions,
+          costOptions,
+        );
+        this.assertSynthesisPacketManifest(state, validated, false);
+        this.compactionGroupsForManifest(load, state, validated, taskId);
+        return validated;
+      },
+      repair: () => {
+        if (repairAlreadyUsed) return undefined;
+        this.compactionRepairTaskIds.add(taskId);
+        return {
+          user: JSON.stringify({
+            ...JSON.parse(requestUser),
+            priorValidationFeedback: "schema_invalid",
+          }),
+        };
+      },
+      requestedOutputTokens: this.config.aiFastOutputMaxTokens,
+      reasoning: "medium",
+      sourceExposureProofs: this.compactionPreviewProofs(load, planner.entries),
+      coordinates: taskCoordinates(taskId, "context_manifest", execution),
+      onBeforeRequest: async (request, requestCoordinates) => {
+        await this.validateFrozenScope(load, state);
+        await this.recordCompactionExposureProofs(load, taskId, request, requestCoordinates);
+      },
+    });
+    return output;
+  }
+
+  async createCompactionGroups(
+    load: LoadedTurn,
+    state: ContextState,
+    manifest: InitialContextManifest,
+    taskId: string,
+  ): Promise<readonly CompactionGroup[]> {
+    const validated = validateInitialContextManifest(
+      manifest,
+      state.candidateLedger,
+      this.compactionPassageOptions(load),
+      this.compactionCostOptions(load, state),
+    );
+    this.assertSynthesisPacketManifest(state, validated, false);
+    return this.compactionGroupsForManifest(load, state, validated, taskId);
+  }
+  private async normalCompactionGroup(
+    load: LoadedTurn,
+    state: ContextState,
+    group: CompactionGroup,
+    taskId: string,
+    phase: CompactionPhase,
+    priorResult?: GroupResultEnvelope,
+  ): Promise<GroupResultEnvelope> {
+    const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
+    const taskEvidence = await this.compactionTaskEvidence(load.aiRunId, taskId);
+    this.assertCompactionTaskNotConsumed(taskEvidence);
+    const repairAlreadyUsed =
+      this.compactionRepairTaskIds.has(taskId) || taskEvidence.repairConsumed;
+    const passageOptions = this.compactionPassageOptions(load);
+    const priorPassageIds = new Map<string, readonly string[]>();
+    const entries = group.candidateIds.map((candidateId) => {
+      const entry = this.compactionLedgerEntry(state, candidateId);
+      const previous = priorResult?.result.decisions.find(
+        (decision) => decision.candidateId === candidateId,
+      );
+      if (previous?.action === "select") {
+        priorPassageIds.set(candidateId, previous.passageIds);
+      }
+      return entry;
+    });
+    const candidates = entries.map((entry) =>
+      this.compactionProviderCandidate(
+        entry,
+        passageOptions,
+        priorPassageIds.get(entry.candidateId),
+      ),
+    );
+    const runtimeRequest: NormalCompactionRequest = {
+      taskId,
+      phase,
+      question: state.question,
+      group,
+      candidates,
+      ...(priorResult === undefined ? {} : { priorResult: priorResult.result }),
+    };
+    const payload = buildGroupCompactionRequest(load, runtimeRequest);
+    const requestUser = payload.user;
+    const proofs = this.compactionProofs(
+      load,
+      entries,
+      passageOptions,
+      "context_compaction_input",
+      priorPassageIds,
+    );
+    const measure = (result: GroupCompactionResult): number => {
+      const byId = new Map(
+        group.candidateIds.map((candidateId) => [
+          candidateId,
+          buildCandidatePassageIndex(this.compactionLedgerEntry(state, candidateId), {
+            ...passageOptions,
+            authorizedRanges: this.compactionLedgerEntry(state, candidateId).baseRanges,
+          }),
+        ]),
+      );
+      const sources = result.decisions.flatMap((decision) => {
+        if (decision.action === "omit") return [];
+        const index = byId.get(decision.candidateId);
+        if (index === undefined) throw new Error("compaction result names an unknown candidate");
+        const ranges = mapPassageIdsToRanges(index, decision.passageIds);
+        return [
+          {
+            candidateId: decision.candidateId,
+            text: selectedTextFromRanges(index.text, ranges),
+            passageIds: [...decision.passageIds],
+            ranges,
+          },
+        ];
+      });
+      return this.compactionCostOptions(load, state).countRenderedTokens(
+        sources,
+        group.candidateIds,
+      );
+    };
+    const validate = (value: unknown): GroupResultEnvelope => {
+      const parsed = GroupCompactionResultSchema.parse(value);
+      const result =
+        priorResult === undefined
+          ? parsed
+          : validateTightenedGroupCompactionResult(
+              parsed,
+              group,
+              state.candidateLedger,
+              priorResult.result,
+              passageOptions,
+            );
+      return GroupResultEnvelopeSchema.parse(
+        validateGroupResultEnvelope(
+          {
+            groupId: group.groupId,
+            result,
+            renderedTokenCount: measure(result),
+          },
+          group,
+          state.candidateLedger,
+          passageOptions,
+          this.compactionCostOptions(load, state),
+        ),
+      );
+    };
+    const request = {
+      requestClass: "fast" as const,
+      model: load.acceptanceScope.fastModelId,
+      ...payload,
+      validate,
+      repair: () => {
+        if (repairAlreadyUsed) return undefined;
+        this.compactionRepairTaskIds.add(taskId);
+        return {
+          user: JSON.stringify({
+            ...JSON.parse(requestUser),
+            priorValidationFeedback: "schema_invalid",
+          }),
+        };
+      },
+      requestedOutputTokens: this.config.aiFastOutputMaxTokens,
+      reasoning: "medium" as const,
+      coordinates: taskCoordinates(taskId, `context_${phase}_group`, execution),
+      sourceExposureProofs: proofs,
+      onBeforeRequest: async (
+        request: ProviderRequest,
+        requestCoordinates: AttestedPiBoundaryCoordinates,
+      ) => {
+        await this.validateFrozenScope(load, state);
+        await this.recordCompactionExposureProofs(load, taskId, request, requestCoordinates);
+      },
+    };
+    return this.agents.structured(request);
+  }
+  private async sourceToolCompactionGroup(
+    load: LoadedTurn,
+    state: ContextState,
+    group: CompactionGroup,
+    taskId: string,
+    phase: CompactionPhase,
+    priorResult?: GroupResultEnvelope,
+  ): Promise<GroupResultEnvelope> {
+    if (group.candidateIds.length !== 1) {
+      throw new Error("source-tool compaction requires one candidate");
+    }
+    const candidate = this.compactionLedgerEntry(state, group.candidateIds[0]!);
+    if (candidate.kind !== "document" && candidate.kind !== "chat_message") {
+      throw new Error("source-tool compaction requires a document or chat candidate");
+    }
+    const sourceKind: "document" | "chat_message" = candidate.kind;
+    const toolBounds = {
+      maximumTurns: Math.max(4, Math.min(this.config.aiRetrievalMaxTurns, 8)),
+      maximumResults: DEFAULT_SOURCE_COMPACTION_TOOL_BOUNDS.maximumResults,
+      maximumBytes: DEFAULT_SOURCE_COMPACTION_TOOL_BOUNDS.maximumBytes,
+    } as const;
+    const passageOptions = this.compactionPassageOptions(load);
+    const index = buildCandidatePassageIndex(candidate, {
+      ...passageOptions,
+      authorizedRanges: candidate.baseRanges,
+    });
+    const fastModel = resolveRuntimeModel(load.acceptanceScope.fastModelId);
+    const usableFastInputTokens = Math.max(
+      1,
+      Math.min(
+        this.config.aiFastInputMaxTokens,
+        fastModel.contextWindow - this.config.aiFastOutputMaxTokens,
+      ),
+    );
+    const maximumSourceResultTokens = Math.max(
+      1,
+      Math.min(
+        toolBounds.maximumResults * passageOptions.maxTokens,
+        Math.floor(usableFastInputTokens * 0.75),
+      ),
+    );
+    const priorDecision = priorResult?.result.decisions.find(
+      (decision) => decision.candidateId === candidate.candidateId,
+    );
+    const priorPassageIds = priorDecision?.action === "select" ? priorDecision.passageIds : [];
+    const priorPassageIdSet = new Set(priorPassageIds);
+    const passages = index.passages
+      .filter((passage) => priorResult === undefined || priorPassageIdSet.has(passage.passageId))
+      .map(toProviderPassageView);
+    const discovered = new Set<string>();
+    let terminalReady = false;
+    const exposedSourcePassages = new Map<string, string>();
+    let exposedSourceResultCount = 0;
+    let exposedSourceResultBytes = 0;
+    let exposedSourceResultTokens = 0;
+    const assertSourceToolResultBound = (
+      items: readonly PassageView[],
+      result: Readonly<Record<string, unknown>>,
+    ): void => {
+      const pending = new Map<string, string>();
+      for (const item of items) {
+        const key = item.passageId;
+        const previous = exposedSourcePassages.get(key) ?? pending.get(key);
+        if (previous !== undefined && previous !== item.text) {
+          throw new Error("source-tool passage identity changed across results");
+        }
+        pending.set(key, item.text);
+      }
+      const serializedResult = toolResultJson(result);
+      const resultBytes = new TextEncoder().encode(serializedResult).byteLength;
+      const resultTokens = fastModel.countTextTokens(serializedResult);
+      const nextCount = exposedSourceResultCount + items.length;
+      const nextBytes = exposedSourceResultBytes + resultBytes;
+      const nextTokens = exposedSourceResultTokens + resultTokens;
+      if (
+        nextCount > toolBounds.maximumResults ||
+        nextBytes > toolBounds.maximumBytes ||
+        nextTokens > maximumSourceResultTokens
+      ) {
+        throw new Error("source-tool result exceeds its cumulative bound");
+      }
+      exposedSourceResultCount = nextCount;
+      exposedSourceResultBytes = nextBytes;
+      exposedSourceResultTokens = nextTokens;
+      for (const [key, text] of pending) {
+        exposedSourcePassages.set(key, text);
+      }
+    };
+    const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
+    const taskEvidence = await this.compactionTaskEvidence(load.aiRunId, taskId);
+    this.assertCompactionTaskNotConsumed(taskEvidence);
+    const repairAlreadyUsed =
+      this.compactionRepairTaskIds.has(taskId) || taskEvidence.repairConsumed;
+    const markerForPassage = (passageId: string): ProviderVisibleSourceExposureMarker => {
+      const passage = index.passages.find((item) => item.passageId === passageId);
+      if (passage === undefined) throw new Error("unknown source-tool passage");
+      const logicalSourceIdentity = compactionLogicalSourceIdentity(candidate.identity);
+      return providerVisibleExposureMarker({
+        sourceKind,
+        logicalSourceIdentity,
+        contentItemIdentity: compactionContentItemIdentity(
+          candidate.identity,
+          logicalSourceIdentity,
+          passage.text,
+          { passageId, range: passage.range },
+        ),
+        stage: "context_compaction_input",
+        visibleTokenCount: this.visibleTokenCount(passage.text, load.acceptanceScope.fastModelId),
+      });
+    };
+    const privateIdentityForPassage = (passage: PassageView) => {
+      const sourcePassage = index.passages.find((item) => item.passageId === passage.passageId);
+      if (sourcePassage === undefined) throw new Error("unknown source-tool passage");
+      if (candidate.kind === "document") {
+        const identity = candidate.identity;
+        if (identity.kind === "public_document") {
+          return {
+            snapshotId: identity.snapshotId,
+            contentHash: identity.contentHash,
+            source: { kind: "public" as const, sourceId: identity.sourceId },
+            ranges: [sourcePassage.range],
+          };
+        }
+        if (identity.kind === "publisher_document") {
+          return {
+            snapshotId: identity.snapshotId,
+            contentHash: identity.contentHash,
+            source: {
+              kind: "publisher" as const,
+              sourceId: identity.subscriptionId.startsWith("publisher:")
+                ? identity.subscriptionId
+                : `publisher:${identity.subscriptionId}`,
+              issueId: identity.issueId,
+              documentId: identity.documentId,
+            },
+            ranges: [sourcePassage.range],
+            publisherExtractionId: identity.publisherExtractionId,
+          };
+        }
+        throw new Error("document source-tool candidate lacks its canonical identity");
+      }
+      return {
+        candidateId: candidate.candidateId,
+        passageId: passage.passageId,
+        charStart: sourcePassage.range.charStart,
+        charEnd: sourcePassage.range.charEnd,
+        visibleByteCount: new TextEncoder().encode(passage.text).byteLength,
+      };
+    };
+    const parseSearch = (value: unknown) => SearchSourcePassagesArgumentsSchema.parse(value);
+    const parseRead = (value: unknown) => ReadSourcePassagesArgumentsSchema.parse(value);
+    const tools = [
+      {
+        definition: SourceCompactionToolDefinitions[0]!,
+        parseArguments: parseSearch,
+        execute: async (arguments_: Readonly<Record<string, unknown>>) => {
+          const parsed = parseSearch(arguments_);
+          if (parsed.candidateId !== candidate.candidateId) {
+            return { found: false, complete: true, scope: "accepted_candidate_only" };
+          }
+          const normalizedTerms = normalizeAndCaseFold(parsed.query);
+          const start = parsed.cursor === undefined ? 0 : Number(parsed.cursor);
+          if (!Number.isSafeInteger(start) || start < 0) {
+            return { found: false, complete: true, scope: "invalid_cursor" };
+          }
+          const matches = passages.filter((passage) =>
+            normalizeAndCaseFold(passage.text).includes(normalizedTerms),
+          );
+          const page = matches.slice(start, start + 8);
+          const truncated = start + page.length < matches.length;
+          const result = {
+            found: page.length > 0,
+            complete: !truncated,
+            truncated,
+            cursor: truncated ? String(start + page.length) : null,
+            passages: page,
+            __briefSourceExposures: page.map((passage) => markerForPassage(passage.passageId)),
+            __briefSourceIdentity: page.map(privateIdentityForPassage),
+          };
+          if (!truncated && page.length === 0) terminalReady = true;
+          assertSourceToolResultBound(page, result);
+          for (const passage of page) discovered.add(passage.passageId);
+          return result;
+        },
+      },
+      {
+        definition: SourceCompactionToolDefinitions[1]!,
+        parseArguments: parseRead,
+        execute: async (arguments_: Readonly<Record<string, unknown>>) => {
+          const parsed = parseRead(arguments_);
+          if (parsed.passageIds.length > toolBounds.maximumResults) {
+            return { found: false, complete: true, scope: "source_tool_bounds" };
+          }
+          if (parsed.candidateId !== candidate.candidateId) {
+            return { found: false, complete: true, scope: "accepted_candidate_only" };
+          }
+          const anchorId = parsed.adjacentToPassageId;
+          const anchorOrdinal =
+            anchorId === undefined
+              ? -1
+              : index.passages.findIndex((item) => item.passageId === anchorId);
+          const anchorDiscovered = anchorId === undefined || discovered.has(anchorId);
+          const valid = [...new Set(parsed.passageIds)]
+            .filter((passageId) => {
+              if (discovered.has(passageId)) return true;
+              if (!anchorDiscovered || anchorId === undefined || anchorOrdinal < 0) return false;
+              const ordinal = index.passages.findIndex((item) => item.passageId === passageId);
+              return ordinal >= 0 && Math.abs(ordinal - anchorOrdinal) === 1;
+            })
+            .sort(
+              (left, right) =>
+                index.passages.findIndex((item) => item.passageId === left) -
+                index.passages.findIndex((item) => item.passageId === right),
+            );
+          const selected = valid.flatMap((passageId) => {
+            const passage = passages.find((item) => item.passageId === passageId);
+            return passage === undefined ? [] : [passage];
+          });
+          const result = {
+            found: selected.length > 0,
+            complete: true,
+            truncated: false,
+            cursor: null,
+            passages: selected,
+            __briefSourceExposures: selected.map((passage) => markerForPassage(passage.passageId)),
+            __briefSourceIdentity: selected.map(privateIdentityForPassage),
+          };
+          assertSourceToolResultBound(selected, result);
+          if (selected.length > 0) terminalReady = true;
+          for (const passage of selected) discovered.add(passage.passageId);
+          return result;
+        },
+      },
+    ];
+    const runtimeRequest = {
+      taskId,
+      phase,
+      question: state.question,
+      group,
+      candidate: this.compactionProviderCandidate(candidate, passageOptions),
+      toolBounds,
+      ...(priorResult === undefined ? {} : { priorResult: priorResult.result }),
+    } satisfies SourceToolCompactionRequest & {
+      readonly toolBounds: typeof toolBounds;
+    };
+    const payload = buildGroupCompactionRequest(load, runtimeRequest);
+    const validate = (value: unknown): GroupResultEnvelope => {
+      const result = GroupCompactionResultSchema.parse(value);
+      for (const decision of result.decisions) {
+        if (
+          decision.action === "select" &&
+          decision.passageIds.some((passageId) => !discovered.has(passageId))
+        ) {
+          throw new Error("source-tool terminal selected an undisclosed passage");
+        }
+      }
+      const decisions = new Map(
+        result.decisions.map((decision) => [decision.candidateId, decision]),
+      );
+      const sources = group.candidateIds.flatMap((candidateId) => {
+        const decision = decisions.get(candidateId);
+        if (decision === undefined || decision.action === "omit") return [];
+        const ranges = mapPassageIdsToRanges(index, decision.passageIds);
+        return [
+          {
+            candidateId,
+            text: selectedTextFromRanges(index.text, ranges),
+            passageIds: [...decision.passageIds],
+            ranges,
+          },
+        ];
+      });
+      const costOptions = this.compactionCostOptions(load, state);
+      const renderedTokenCount = costOptions.countRenderedTokens(sources, group.candidateIds);
+      return GroupResultEnvelopeSchema.parse(
+        validateGroupResultEnvelope(
+          { groupId: group.groupId, result, renderedTokenCount },
+          group,
+          state.candidateLedger,
+          passageOptions,
+          costOptions,
+        ),
+      );
     };
     const raw = await this.agents.toolLoop({
       requestClass: "fast",
       model: load.acceptanceScope.fastModelId,
-      system: ContextReductionPrompt,
-      user: JSON.stringify({
-        question: state.question,
-        allowance: state.usableInputTokens,
-        mandatoryInputCost: this.contextMeasurementPayload(state, taskId).mandatoryInputTokens,
-        overage: state.inputTokens - state.usableInputTokens,
-        candidates: compact,
-        priorValidationFeedback: state.reductionFeedback,
-        toolBounds: {
-          maximumTurns: reductionMaximumTurns,
-          maximumCandidates: reductionCandidates.length,
-          maximumReductionIterations: this.config.aiContextReductionMaxIterations,
-        },
-      }),
-      maximumTurns: reductionMaximumTurns,
+      ...payload,
+      sourceExposureProofs: [],
+      tools,
+      maximumResultTokens: maximumSourceResultTokens,
+      terminalToolName: "emit_compaction_result",
+      validateTerminal: validate,
+      maximumTurns: toolBounds.maximumTurns,
+      maximumResults: toolBounds.maximumResults,
+      maximumBytes: toolBounds.maximumBytes,
       requestedOutputTokens: this.config.aiFastOutputMaxTokens,
       reasoning: "medium",
-      coordinates: { taskId, attempt: execution.attempt, agentRole: "context_reducer" },
-      sourceExposureProofs: this.conversationExposureProofMarkers(
-        load,
-        [...inspectedConversation.values()],
-        false,
-      ),
-      onBeforeRequest: async (_request, requestCoordinates) => {
-        providerRequestDigests.set(
-          requestCoordinates.providerRequestIndex,
-          requestCoordinates.providerRequestSha256Hex,
-        );
-        await this.validateFrozenScope(load, state);
-        await this.recordConversationExposures(
-          load,
-          taskId,
-          [...inspectedConversation.values()],
-          requestCoordinates,
-          {
-            includeCurrentUser: false,
-          },
-        );
-        for (const {
-          candidate,
-          contentItemIdentity,
-          visibleTokenCount,
-          documentReconstruction,
-        } of providerExposures.values()) {
-          await this.db(
-            insertAiSourceExposure({
-              runId: load.aiRunId,
-              taskId,
-              loopIteration: requestCoordinates.loopIteration,
-              attempt: requestCoordinates.attempt,
-              providerRequestIndex: requestCoordinates.providerRequestIndex,
-              providerRequestSha256Hex: requestCoordinates.providerRequestSha256Hex,
-              sourceKind: candidate.kind,
-              logicalSourceIdentity:
-                candidate.kind === "document"
-                  ? documentCandidateIdentity(candidate)
-                  : candidate.kind === "chat_message"
-                    ? chatMessageEvidenceIdentity(candidate.messageId)
-                    : candidate.kind === "memory"
-                      ? memoryEvidenceIdentity(candidate.memoryId)
-                      : webEvidenceIdentity(candidate.url, candidate.quote),
-              ...(candidate.kind === "document" && candidate.publisherIssueId !== undefined
-                ? {
-                    publisherIssueId: candidate.publisherIssueId,
-                    publisherDocumentId: candidate.publisherDocumentId,
-                  }
-                : {}),
-              contentItemIdentity,
-              exposureStage: "context_candidate_inspection",
-              visibleTokenCount,
-              ...(documentReconstruction === undefined ? {} : { documentReconstruction }),
-            }),
-          );
-        }
-      },
-      terminalToolName: "emit_context_plan",
-      validateTerminal: decodeProviderDecisions,
-      recoverTerminal: (_value, error) => ({
-        complete: false,
-        terminalRejected: true,
-        message:
-          error instanceof Error
-            ? error.message
-            : "The context plan was rejected; inspect or search candidates before measuring and terminalizing.",
-        instruction:
-          "Use the advertised inspection/search tools, then measure a complete plan and emit it on the reserved terminal turn.",
-      }),
+      coordinates: { taskId, attempt: execution.attempt, agentRole: "context_source_tool" },
+      exclusiveToolNames: ["emit_compaction_result"],
       enforceTerminalTurn: true,
-      // O must leave a distinct terminal turn after inspection/measurement;
-      // otherwise a long oversized transcript can consume the final turn with
-      // another plan check and never emit its provider-authored decision.
       reserveFinalTurnForTerminal: true,
-      disabledToolsForTurn: () => {
-        if (measurementRequested) return ["inspect_candidate", "search_within_candidate"];
-        if (!inspectionOrSearchCompleted) return ["measure_plan"];
-        return [];
+      terminalOnlyForTurn: () => terminalReady,
+      recoverTerminal: (_value, _error) => {
+        terminalReady = true;
+        if (repairAlreadyUsed || this.compactionRepairTaskIds.has(taskId)) return undefined;
+        this.compactionRepairTaskIds.add(taskId);
+        return {
+          complete: true,
+          repair: true,
+          feedback: "schema_invalid",
+        };
       },
-      terminalOnlyForTurn: () => measurementResolved,
-      exclusiveToolNames: ["measure_plan", "emit_context_plan"],
-      recoverMalformedToolCallArray: (toolNames) => ({
-        malformedPhase: true,
-        rejectedTools: toolNames,
-        instruction:
-          "No call was executed. Retry only advertised inspection/search tools with exact arguments; call measure_plan alone only after inspection.",
-      }),
-      recoverConflictingToolCalls: (toolNames) => ({
-        phaseConflict: true,
-        rejectedTools: toolNames,
-        instruction:
-          "No call was executed. Inspect or search without measure_plan, or call measure_plan alone after inspection. emit_context_plan is terminal-only.",
-      }),
-      onTerminal: async (output, terminalCoordinates, completion) => {
-        if (
-          !measurementResolved ||
-          measuredDecisionSet === undefined ||
-          measuredDecisionProviderRequestIndex === undefined
-        ) {
-          throw new Error("context plan terminal requires a successful prior measurement");
-        }
-        if (terminalCoordinates.providerRequestIndex <= measuredDecisionProviderRequestIndex) {
-          throw new Error("context plan terminal requires a later provider turn than measurement");
-        }
-        const terminalDecisions = canonicalContextDecisionSet(
-          validateContextDecisions(output, reductionCandidates),
-          reductionCandidates,
-        );
-        if (stableJson(terminalDecisions) !== stableJson(measuredDecisionSet)) {
-          throw new Error("context plan terminal drifted from its successfully measured decisions");
-        }
-        const providerRequestDigest = providerRequestDigests.get(
-          terminalCoordinates.providerRequestIndex,
-        );
-        if (providerRequestDigest === undefined) {
-          throw new Error("terminal reducer request lacks its exact request digest");
-        }
-        await this.observe(
-          load,
-          taskId,
-          "context_reducer_terminal",
-          {
-            terminalUsageCoordinate: {
-              taskId,
-              loopIteration: terminalCoordinates.loopIteration,
-              attempt: terminalCoordinates.attempt,
-              providerRequestIndex: terminalCoordinates.providerRequestIndex,
-            },
-            modelId: load.acceptanceScope.fastModelId,
-            requestSha256Hex: providerRequestDigest,
-            providerInputTokens: completion.usage.inputTokens + completion.usage.cachedTokens,
-            totalTokens: completion.usage.totalTokens,
-            stopReason: completion.stopReason,
-          },
-          terminalCoordinates,
-        );
+      onBeforeRequest: async (request, requestCoordinates) => {
+        await this.validateFrozenScope(load, state);
+        await this.recordCompactionExposureProofs(load, taskId, request, requestCoordinates);
       },
-      tools: [
-        {
-          definition: {
-            name: "inspect_candidate",
-            description: "Inspect one candidate or document range.",
-            parameters: z.toJSONSchema(
-              z
-                .object({
-                  id: z.string(),
-                  range: z
-                    .object({
-                      charStart: z.number().int().min(0),
-                      charEnd: z.number().int().positive(),
-                    })
-                    .strict()
-                    .optional(),
-                })
-                .strict(),
-            ),
-          },
-          parseArguments: parseInspectCandidateArguments,
-          execute: async (args) => {
-            const parsed = parseInspectCandidateArguments(args);
-            const candidateId = candidateIdByHandle.get(parsed.id);
-            const item =
-              candidateId === undefined
-                ? undefined
-                : reductionCandidates.find((candidate) => candidate.id === candidateId);
-            if (item === undefined)
-              return {
-                found: false,
-                complete: true,
-                truncated: false,
-                cursor: null,
-                scope: { kind: "unknown_candidate" },
-              };
-            if (parsed.range !== undefined && item.kind !== "document") {
-              return {
-                found: true,
-                complete: true,
-                rangeRejected: true,
-                invalidRangeKind: true,
-                message: "Only document candidates accept inspection ranges.",
-              };
-            }
-            if (
-              parsed.range !== undefined &&
-              item.kind === "document" &&
-              (parsed.range.charEnd <= parsed.range.charStart ||
-                !item.ranges.some(
-                  (range) =>
-                    parsed.range !== undefined &&
-                    parsed.range.charStart >= range.charStart &&
-                    parsed.range.charEnd <= range.charEnd,
-                ))
-            ) {
-              return {
-                found: true,
-                complete: true,
-                rangeRejected: true,
-                invalidRange: true,
-                message:
-                  "The document inspection range must be non-empty and inside a selected range.",
-              };
-            }
-            const text =
-              parsed.range === undefined
-                ? reductionCandidateText(item)
-                : item.kind === "document"
-                  ? item.text.slice(parsed.range.charStart, parsed.range.charEnd)
-                  : "";
-            const contentItemIdentity =
-              item.kind === "conversation_entry"
-                ? undefined
-                : item.kind === "document"
-                  ? documentContentItemIdentity(
-                      documentCandidateIdentity(item),
-                      item.snapshotId,
-                      sha256Base64Url(
-                        JSON.stringify(
-                          parsed.range === undefined
-                            ? item.ranges
-                            : [
-                                {
-                                  charStart: parsed.range.charStart,
-                                  charEnd: parsed.range.charEnd,
-                                },
-                              ],
-                        ),
-                      ),
-                    )
-                  : item.kind === "chat_message"
-                    ? item.messageId
-                    : item.kind === "memory"
-                      ? item.memoryRevisionId
-                      : `${item.url}:${item.quoteHash}`;
-            const sourceExposure =
-              contentItemIdentity === undefined || item.kind === "conversation_entry"
-                ? undefined
-                : providerVisibleExposureMarker({
-                    sourceKind: item.kind,
-                    logicalSourceIdentity:
-                      item.kind === "document"
-                        ? documentCandidateIdentity(item)
-                        : item.kind === "chat_message"
-                          ? chatMessageEvidenceIdentity(item.messageId)
-                          : item.kind === "memory"
-                            ? memoryEvidenceIdentity(item.memoryId)
-                            : webEvidenceIdentity(item.url, item.quote),
-                    contentItemIdentity,
-                    stage: "context_candidate_inspection",
-                    visibleTokenCount: this.visibleTokenCount(
-                      text,
-                      load.acceptanceScope.fastModelId,
-                    ),
-                  });
-            const response = {
-              found: true,
-              complete: true,
-              ...(item.kind === "conversation_entry"
-                ? { conversationEntry: item.entry }
-                : {
-                    text,
-                    kind: item.kind,
-                    ...(item.kind === "document"
-                      ? {
-                          documentId: item.documentId,
-                          snapshotId: item.snapshotId,
-                          source:
-                            item.publisherIssueId !== undefined &&
-                            item.publisherDocumentId !== undefined
-                              ? {
-                                  kind: "publisher" as const,
-                                  sourceId: item.sourceId,
-                                  issueId: item.publisherIssueId,
-                                  documentId: item.publisherDocumentId,
-                                }
-                              : { kind: "public" as const, sourceId: item.sourceId },
-                          ranges:
-                            parsed.range === undefined
-                              ? item.ranges
-                              : [
-                                  {
-                                    charStart: parsed.range.charStart,
-                                    charEnd: parsed.range.charEnd,
-                                  },
-                                ],
-                        }
-                      : item.kind === "memory"
-                        ? { memoryId: item.memoryId, memoryRevisionId: item.memoryRevisionId }
-                        : {}),
-                    ["__briefSourceIdentity"]:
-                      item.kind === "document"
-                        ? {
-                            snapshotId: item.snapshotId,
-                            contentHash: item.contentHash,
-                            ...(item.publisherExtractionId === undefined
-                              ? {}
-                              : { publisherExtractionId: item.publisherExtractionId }),
-                            source:
-                              item.publisherIssueId !== undefined &&
-                              item.publisherDocumentId !== undefined
-                                ? {
-                                    kind: "publisher" as const,
-                                    sourceId: item.sourceId,
-                                    issueId: item.publisherIssueId,
-                                    documentId: item.publisherDocumentId,
-                                  }
-                                : { kind: "public" as const, sourceId: item.sourceId },
-                          }
-                        : item.kind === "chat_message"
-                          ? {
-                              messageId: item.messageId,
-                              contentHash: sha256Base64Url(item.text),
-                            }
-                          : item.kind === "memory"
-                            ? {
-                                memoryId: item.memoryId,
-                                memoryRevisionId: item.memoryRevisionId,
-                                contentHash: sha256Base64Url(item.text),
-                              }
-                            : {
-                                url: item.url,
-                                quoteHash: item.quoteHash,
-                                contentHash: sha256Base64Url(item.quote),
-                              },
-                  }),
-              ...(item.kind === "conversation_entry"
-                ? {
-                    __briefSourceExposures: [
-                      {
-                        messageId: item.entry.userMessageId,
-                        content: item.entry.userContent,
-                      },
-                      ...("assistantMessageId" in item.entry
-                        ? [
-                            {
-                              messageId: item.entry.assistantMessageId,
-                              content: item.entry.assistantContent,
-                            },
-                          ]
-                        : []),
-                    ].map(({ messageId, content }) =>
-                      providerVisibleExposureMarker({
-                        sourceKind: "chat_message",
-                        logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
-                        contentItemIdentity: messageId,
-                        stage: "provider_input",
-                        visibleTokenCount: this.visibleTokenCount(
-                          content,
-                          load.acceptanceScope.fastModelId,
-                        ),
-                      }),
-                    ),
-                  }
-                : sourceExposure === undefined
-                  ? {}
-                  : { __briefSourceExposures: [sourceExposure] }),
-            };
-            if (
-              requiresExplicitInspectionRange(
-                this.visibleTokenCount(JSON.stringify(response), load.acceptanceScope.fastModelId),
-                inspectionResponseAllowanceTokens,
-              )
-            ) {
-              if (item.kind !== "document") {
-                inspectionOrSearchCompleted = true;
-                return {
-                  found: true,
-                  complete: true,
-                  itemTooLarge: true,
-                  message:
-                    "This whole-item candidate exceeds the inspection response bound; account for it from its compact metadata.",
-                };
-              }
-              return {
-                found: true,
-                complete: false,
-                narrowerRangeRequired: true,
-                ranges: item.ranges,
-              };
-            }
-            if (item.kind === "conversation_entry") {
-              inspectedConversation.set(item.entry.turnId, item.entry);
-              inspectionOrSearchCompleted = true;
-              return response;
-            }
-            if (contentItemIdentity === undefined || sourceExposure === undefined) {
-              throw new Error("non-conversation inspection lacks its source marker");
-            }
-            providerExposures.set(contentItemIdentity, {
-              candidate: item,
-              contentItemIdentity,
-              visibleTokenCount: this.visibleTokenCount(text, load.acceptanceScope.fastModelId),
-              ...(item.kind === "document"
-                ? {
-                    documentReconstruction: {
-                      sourceId: item.sourceId,
-                      documentId: item.documentId,
-                      snapshotId: item.snapshotId,
-                      contentHash: item.contentHash,
-                      ...(item.publisherExtractionId === undefined
-                        ? {}
-                        : { publisherExtractionId: item.publisherExtractionId }),
-                      ranges:
-                        parsed.range === undefined
-                          ? item.ranges
-                          : [
-                              {
-                                charStart: parsed.range.charStart,
-                                charEnd: parsed.range.charEnd,
-                              },
-                            ],
-                    },
-                  }
-                : {}),
-            });
-            inspectionOrSearchCompleted = true;
-            return response;
-          },
-        },
-        {
-          definition: {
-            name: "search_within_candidate",
-            description: "Find literal occurrences inside one candidate.",
-            parameters: z.toJSONSchema(
-              z
-                .object({
-                  id: z.string(),
-                  terms: z.string().min(1),
-                  cursor: z.number().int().min(0).optional(),
-                })
-                .strict(),
-            ),
-          },
-          parseArguments: parseSearchWithinCandidateArguments,
-          execute: async (args) => {
-            const parsed = parseSearchWithinCandidateArguments(args);
-            const candidateId = candidateIdByHandle.get(parsed.id);
-            const item =
-              candidateId === undefined
-                ? undefined
-                : reductionCandidates.find((candidate) => candidate.id === candidateId);
-            if (item === undefined)
-              return {
-                found: false,
-                matches: [],
-                matchPreviews: [],
-                complete: true,
-                truncated: false,
-                cursor: null,
-                scope: { kind: "unknown_candidate" },
-              };
-            const result = searchWithinCandidatePage(item, parsed.terms, parsed.cursor ?? 0, 500);
-            const previewExposures =
-              item.kind === "document"
-                ? result.matchPreviews.map((preview) => {
-                    const contentItemIdentity = documentContentItemIdentity(
-                      documentCandidateIdentity(item),
-                      item.snapshotId,
-                      sha256Base64Url(JSON.stringify([preview.range])),
-                    );
-                    const visibleTokenCount = this.visibleTokenCount(
-                      preview.text,
-                      load.acceptanceScope.fastModelId,
-                    );
-                    providerExposures.set(contentItemIdentity, {
-                      candidate: item,
-                      contentItemIdentity,
-                      visibleTokenCount,
-                      documentReconstruction: {
-                        sourceId: item.sourceId,
-                        documentId: item.documentId,
-                        snapshotId: item.snapshotId,
-                        contentHash: item.contentHash,
-                        ...(item.publisherExtractionId === undefined
-                          ? {}
-                          : { publisherExtractionId: item.publisherExtractionId }),
-                        ranges: [preview.range],
-                      },
-                    });
-                    return providerVisibleExposureMarker({
-                      sourceKind: "document",
-                      logicalSourceIdentity: documentCandidateIdentity(item),
-                      contentItemIdentity,
-                      stage: "context_candidate_inspection",
-                      visibleTokenCount,
-                    });
-                  })
-                : [];
-            if (result.complete) inspectionOrSearchCompleted = true;
-            return {
-              found: true,
-              kind: item.kind,
-              ...(item.kind === "document" ? { documentId: item.documentId } : {}),
-              ...(item.kind === "document" ? { snapshotId: item.snapshotId } : {}),
-              ...(item.kind === "document"
-                ? {
-                    ["__briefSourceIdentity"]: {
-                      snapshotId: item.snapshotId,
-                      contentHash: item.contentHash,
-                      ...(item.publisherExtractionId === undefined
-                        ? {}
-                        : { publisherExtractionId: item.publisherExtractionId }),
-                      source:
-                        item.publisherIssueId !== undefined &&
-                        item.publisherDocumentId !== undefined
-                          ? {
-                              kind: "publisher" as const,
-                              sourceId: item.sourceId,
-                              issueId: item.publisherIssueId,
-                              documentId: item.publisherDocumentId,
-                            }
-                          : { kind: "public" as const, sourceId: item.sourceId },
-                    },
-                  }
-                : {}),
-              ...result,
-              ...(previewExposures.length === 0
-                ? {}
-                : { __briefSourceExposures: previewExposures }),
-            };
-          },
-        },
-        {
-          definition: {
-            name: "measure_plan",
-            description: "Validate and measure a complete candidate plan.",
-            parameters: z.toJSONSchema(ContextPlanOutputSchema),
-          },
-          parseArguments: parseMeasurePlanArguments,
-          execute: async (args, requestCoordinates) => {
-            measurementRequested = true;
-            measurementResolved = false;
-            measuredDecisionSet = undefined;
-            measuredDecisionProviderRequestIndex = undefined;
-            try {
-              const decisions = validateContextDecisions(
-                decodeProviderDecisions(args),
-                reductionCandidates,
-              );
-              const canonicalDecisions = canonicalContextDecisionSet(
-                decisions,
-                reductionCandidates,
-              );
-              const measured = this.applyDecisions(load, state, decisions);
-              measurementResolved = measured.status === "ready";
-              if (measurementResolved) {
-                measuredDecisionSet = canonicalDecisions;
-                measuredDecisionProviderRequestIndex = requestCoordinates.providerRequestIndex;
-              }
-              return {
-                valid: true,
-                resolved: measured.status === "ready",
-                inputTokens: measured.inputTokens,
-                usableInputTokens: measured.usableInputTokens,
-              };
-            } catch (error) {
-              return {
-                valid: false,
-                complete: true,
-                feedback: error instanceof Error ? error.message : String(error),
-              };
-            }
-          },
-        },
-        {
-          definition: {
-            name: "emit_context_plan",
-            description: "Emit the complete final context plan.",
-            parameters: z.toJSONSchema(ContextPlanOutputSchema),
-          },
-          execute: async () => ({ complete: true }),
-        },
-      ],
     });
-    return { decisions: raw };
+    return raw;
   }
 
-  async measureReduction(
+  async compactContextGroup(
     load: LoadedTurn,
     state: ContextState,
-    plan: ContextReductionPlan,
+    group: CompactionGroup,
     taskId: string,
-    _workflowIteration: number,
-  ): Promise<ContextState> {
-    if (state.status !== "needs_reduction") return state;
-    const execution = requireCurrentTaskCoordinates(taskId);
-    try {
-      const decisions = validateContextDecisions(plan.decisions, this.reductionCandidates(state));
-      const measured = this.applyDecisions(load, state, decisions);
-      const reductionFeedback =
-        measured.status === "needs_reduction"
-          ? [
-              `validated plan remains ${measured.inputTokens - measured.usableInputTokens} tokens over the exact allowance`,
-            ]
-          : [];
-      const result = { ...measured, reductionFeedback };
-      await this.observe(load, taskId, "context_decision", { valid: true, decisions }, execution);
-      await this.observe(
-        load,
-        taskId,
-        "context_measurement",
-        this.contextMeasurementPayload(result, taskId),
-        execution,
-      );
-      return result;
-    } catch (error) {
-      const feedback = error instanceof Error ? error.message : String(error);
-      const result: ContextState = {
-        ...state,
-        status: "needs_reduction",
-        reductionRan: true,
-        reductionFeedback: [feedback],
-      };
-      await this.observe(
-        load,
-        taskId,
-        "context_decision",
-        { valid: false, decisions: plan.decisions, feedback },
-        execution,
-      );
-      await this.observe(
-        load,
-        taskId,
-        "context_measurement",
-        this.contextMeasurementPayload(result, taskId),
-        execution,
-      );
-      return result;
-    }
+    phase: CompactionPhase = "compact",
+    priorResult?: GroupResultEnvelope,
+  ): Promise<GroupResultEnvelope> {
+    return this.withCompactionRunPermit(load.aiRunId, () =>
+      group.mode === "source_tool"
+        ? this.sourceToolCompactionGroup(load, state, group, taskId, phase, priorResult)
+        : this.normalCompactionGroup(load, state, group, taskId, phase, priorResult),
+    );
   }
 
-  private applyDecisions(
+  async fallbackCompactionManifest(
     load: LoadedTurn,
     state: ContextState,
-    decisions: readonly ContextDecision[],
-  ): ContextState {
-    const decisionById = new Map(decisions.map((decision) => [decision.id, decision]));
-      const decision = decisionById.get(ledgerEvidenceIds[index] ?? "");
-      if (decision !== undefined) decisionById.set(candidate.id, decision);
-    }
-    const kept: AnswerCandidate[] = [];
-    const sourceMap: FinalSourceRecord[] = [];
-    const gaps = [...(state.ledgerGaps ?? state.gaps)];
-    const ledgerConversation = state.ledgerConversation ?? state.selectedConversation;
-    const selectedConversation = ledgerConversation.filter((entry) => {
-      const decision = decisionById.get(conversationReductionCandidateId(entry));
-      if (decision === undefined) {
-        throw new Error(`conversation entry ${entry.turnId} is unaccounted for`);
-      }
-      if (decision.action === "range") {
-        throw new Error(`range is not valid for conversation entry ${entry.turnId}`);
-      }
-      if (decision.action === "omit") {
-        gaps.push(decision.reason);
-        return false;
-      }
-      return true;
-    });
-    for (const [index, candidate] of state.ledgerCandidates.entries()) {
-      const decision = decisionById.get(candidate.id);
-      const source = state.ledgerSourceMap[index];
-      if (decision === undefined || source === undefined) {
-        throw new Error(`evidence candidate ${candidate.id} is unaccounted for`);
-      }
-      if (decision.action === "omit") {
-        gaps.push(decision.reason);
-        continue;
-      }
-      if (decision.action === "range" && candidate.kind === "document") {
-        const ranges = normalizeCharacterRanges(decision.ranges, candidate.text.length);
-        const outsideSelection = ranges.some(
-          (range) =>
-            !candidate.ranges.some(
-              (selected) =>
-                range.charStart >= selected.charStart && range.charEnd <= selected.charEnd,
-            ),
-        );
-        if (outsideSelection) throw new Error("reducer range expands beyond selected evidence");
-        const narrowed = { ...candidate, ranges };
-        kept.push(narrowed);
-        if (source.locator.kind !== "document")
-          throw new Error("document candidate has a non-document locator");
-        const use = source.uses[0];
-        if (use === undefined) throw new Error("document source lacks a serialized use");
-        sourceMap.push(
-          this.sourceRecord(
-            narrowed,
-            source.sourceKey,
-            use.consumerTaskId,
-            sourceMap.length,
-            use.topicId,
-          ),
-        );
-      } else {
-        kept.push(candidate);
-        sourceMap.push({
-          ...source,
-          uses: source.uses.map((use) => ({ ...use, contextOrder: sourceMap.length })),
+    initialManifest: InitialContextManifest,
+    firstPass: CompactionPassResult,
+    measurement: ExactContextMeasurement,
+    taskId: string,
+  ): Promise<FallbackContextManifest> {
+    const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
+    const taskEvidence = await this.compactionTaskEvidence(load.aiRunId, taskId);
+    this.assertCompactionTaskNotConsumed(taskEvidence);
+    const repairAlreadyUsed =
+      this.compactionRepairTaskIds.has(taskId) || taskEvidence.repairConsumed;
+    const planner = this.fitCompactionPlannerRequest(
+      load,
+      state.candidateLedger.candidates,
+      (entries) => {
+        const plannerLedger = { candidates: entries } as CandidateLedger;
+        return buildFallbackCompactionRequest(load, {
+          taskId,
+          question: state.question,
+          ledger: plannerLedger,
+          initialManifest,
+          firstPass,
+          state: {
+            phase: "compact",
+            question: state.question,
+            ledger: plannerLedger,
+            selections: firstPass.selections,
+            groups: firstPass.groups,
+            envelopes: firstPass.envelopes,
+          },
+          measurement,
         });
+      },
+    );
+    const payload = planner.payload;
+    const passageOptions = this.compactionPassageOptions(load);
+    const costOptions = this.compactionCostOptions(load, state);
+    const requestUser = payload.user;
+    const fallbackProofs = this.compactionPreviewProofs(load, planner.entries);
+    return this.agents.structured({
+      requestClass: "fast",
+      model: load.acceptanceScope.fastModelId,
+      ...payload,
+      validate: (value) => {
+        const validated = validateFallbackContextManifest(
+          value,
+          initialManifest,
+          state.candidateLedger,
+          firstPass.envelopes,
+          passageOptions,
+          costOptions,
+        );
+        this.assertSynthesisPacketManifest(state, validated, true);
+        this.fallbackCompactionGroupsForManifest(
+          load,
+          state,
+          initialManifest,
+          firstPass,
+          validated,
+          taskId,
+        );
+        return validated;
+      },
+      repair: () => {
+        if (repairAlreadyUsed) return undefined;
+        this.compactionRepairTaskIds.add(taskId);
+        return {
+          user: JSON.stringify({
+            ...JSON.parse(requestUser),
+            priorValidationFeedback: "schema_invalid",
+          }),
+        };
+      },
+      requestedOutputTokens: this.config.aiFastOutputMaxTokens,
+      reasoning: "medium",
+      coordinates: taskCoordinates(taskId, "context_fallback_manifest", execution),
+      sourceExposureProofs: fallbackProofs,
+      onBeforeRequest: async (request, requestCoordinates) => {
+        await this.validateFrozenScope(load, state);
+        await this.recordCompactionExposureProofs(load, taskId, request, requestCoordinates);
+      },
+    });
+  }
+
+  private fallbackCompactionGroupsForManifest(
+    load: LoadedTurn,
+    state: ContextState,
+    initialManifest: InitialContextManifest,
+    firstPass: CompactionPassResult,
+    fallbackManifest: FallbackContextManifest,
+    taskId: string,
+  ): readonly CompactionGroup[] {
+    const passageOptions = this.compactionPassageOptions(load);
+    const costOptions = this.compactionCostOptions(load, state);
+    const initialGroups = this.compactionGroupsForManifest(load, state, initialManifest, taskId);
+    const provisional = createPureFallbackCompactionGroups(
+      fallbackManifest,
+      initialManifest,
+      state.candidateLedger,
+      firstPass.envelopes,
+      { passageOptions, costOptions },
+    );
+    const eligible = new Set(
+      initialGroups
+        .filter((group) => group.mode === "source_tool")
+        .flatMap((group) => group.candidateIds),
+    );
+    const firstByGroup = new Map(
+      firstPass.envelopes.map((envelope) => [envelope.groupId, envelope]),
+    );
+    const measureRequest = (
+      request: ProviderRequest,
+    ): { inputTokens: number; allowance: number } => {
+      const model = resolveRuntimeModel(request.model);
+      return {
+        inputTokens: model.countRequestTokens(request),
+        allowance: Math.min(
+          this.config.aiFastInputMaxTokens,
+          model.contextWindow - request.requestedOutputTokens,
+        ),
+      };
+    };
+    for (const group of provisional) {
+      const priorResult = firstByGroup.get(group.groupId);
+      const priorPassageIds = new Map<string, readonly string[]>();
+      for (const decision of priorResult?.result.decisions ?? []) {
+        if (decision.action === "select") {
+          priorPassageIds.set(decision.candidateId, decision.passageIds);
+        }
+      }
+      const candidates = group.candidateIds.map((candidateId) =>
+        this.compactionProviderCandidate(
+          this.compactionLedgerEntry(state, candidateId),
+          passageOptions,
+          priorPassageIds.get(candidateId),
+        ),
+      );
+      const normalGroup = { ...group, mode: "normal" as const };
+      const normalRequest = structuredRequestInput(
+        CompactionGroupPrompt,
+        JSON.stringify({
+          question: state.question,
+          group: normalGroup,
+          candidates,
+          ...(priorResult === undefined ? {} : { priorResult: priorResult.result }),
+        }),
+        load.acceptanceScope.fastModelId,
+        this.config.aiFastOutputMaxTokens,
+        "emit_compaction_result",
+        "Emit a complete compaction result.",
+        z.toJSONSchema(GroupCompactionResultSchema),
+      );
+      const normalMeasurement = measureRequest(normalRequest);
+      const entry = this.compactionLedgerEntry(state, group.candidateIds[0]!);
+      if (
+        normalMeasurement.inputTokens > normalMeasurement.allowance &&
+        (group.candidateIds.length !== 1 ||
+          (entry.kind !== "document" && entry.kind !== "chat_message"))
+      ) {
+        throw new CompactionContractError(
+          `normal fallback group ${group.groupId} request does not fit its exact input allowance`,
+        );
+      }
+      if (normalMeasurement.inputTokens > normalMeasurement.allowance) {
+        eligible.add(entry.candidateId);
+      }
+      const finalGroup = {
+        ...group,
+        mode: eligible.has(entry.candidateId) ? ("source_tool" as const) : ("normal" as const),
+      };
+      const finalPayload =
+        finalGroup.mode === "source_tool"
+          ? buildGroupCompactionRequest(load, {
+              taskId,
+              phase: "fallback",
+              question: state.question,
+              group: finalGroup,
+              candidate: this.compactionProviderCandidate(
+                entry,
+                passageOptions,
+                priorPassageIds.get(entry.candidateId),
+              ),
+              toolBounds: DEFAULT_SOURCE_COMPACTION_TOOL_BOUNDS,
+              ...(priorResult === undefined ? {} : { priorResult: priorResult.result }),
+            })
+          : buildGroupCompactionRequest(load, {
+              taskId,
+              phase: "fallback",
+              question: state.question,
+              group: finalGroup,
+              candidates,
+              ...(priorResult === undefined ? {} : { priorResult: priorResult.result }),
+            });
+      const finalMeasurement = measureRequest(
+        structuredRequestInput(
+          finalPayload.system,
+          finalPayload.user,
+          load.acceptanceScope.fastModelId,
+          this.config.aiFastOutputMaxTokens,
+          finalPayload.outputToolName,
+          finalPayload.outputToolDescription,
+          finalPayload.outputSchema,
+        ),
+      );
+      if (finalMeasurement.inputTokens > finalMeasurement.allowance) {
+        throw new CompactionContractError(
+          `fallback group ${group.groupId} request does not fit its exact input allowance`,
+        );
       }
     }
+    const measurement = this.contextMeasurementPayload(
+      state,
+      taskId,
+      state.citationSourceMap !== undefined
+        ? "synthesis"
+        : state.topicId === undefined
+          ? "direct"
+          : "topic",
+    );
+    const remainingAnswerTokens = state.usableInputTokens - measurement.mandatoryInputTokens;
+    if (remainingAnswerTokens < 1) {
+      throw new CompactionContractError("remaining answer budget must be a positive safe integer");
+    }
+    const groups = createPureFallbackCompactionGroups(
+      fallbackManifest,
+      initialManifest,
+      state.candidateLedger,
+      firstPass.envelopes,
+      {
+        sourceToolEligibleCandidateIds: [...eligible],
+        passageOptions,
+        costOptions,
+      },
+    );
+    const keptCost = fallbackManifest.decisions.reduce((total, decision) => {
+      if (decision.action !== "retain") return total;
+      return (
+        total +
+        (state.candidateLedger.candidates.find(
+          (candidate) => candidate.candidateId === decision.candidateId,
+        )?.renderedTokenCount ?? 0)
+      );
+    }, 0);
+    if (
+      keptCost + groups.reduce((total, group) => total + group.renderedTokenBudget, 0) >
+      remainingAnswerTokens
+    ) {
+      throw new CompactionContractError("fallback manifest cannot fit the remaining answer budget");
+    }
+    return groups;
+  }
+
+  async createFallbackCompactionGroups(
+    load: LoadedTurn,
+    state: ContextState,
+    initialManifest: InitialContextManifest,
+    firstPass: CompactionPassResult,
+    fallbackManifest: FallbackContextManifest,
+    taskId: string,
+  ): Promise<readonly CompactionGroup[]> {
+    this.assertSynthesisPacketManifest(state, fallbackManifest, true);
+    return this.fallbackCompactionGroupsForManifest(
+      load,
+      state,
+      initialManifest,
+      firstPass,
+      fallbackManifest,
+      taskId,
+    );
+  }
+  private synthesisSelectionsToContext(
+    load: LoadedTurn,
+    state: ContextState,
+    selections: readonly CompactionSelection[],
+  ): ContextState {
+    const selectionById = new Map(
+      selections.map((selection) => [selection.candidateId, selection]),
+    );
+    const ledgerConversationEntries = state.candidateLedger.candidates.filter(
+      (candidate) => candidate.kind === "conversation_entry",
+    );
+    const ledgerConversation = state.ledgerConversation ?? state.selectedConversation;
+    const selectedConversation = ledgerConversation.filter((_entry, index) => {
+      const selection = selectionById.get(ledgerConversationEntries[index]?.candidateId ?? "");
+      return selection?.action !== "omit";
+    });
+    const packetEntries = state.candidateLedger.candidates.filter(
+      (candidate) => candidate.kind === "topic_packet",
+    );
+    const retainedEntries = packetEntries.filter((entry) => {
+      const selection = selectionById.get(entry.candidateId);
+      if (selection === undefined) {
+        throw new Error(`compaction selection is missing ${entry.candidateId}`);
+      }
+      if (selection.action !== "keep" && selection.action !== "omit") {
+        throw new Error("topic packet compaction must keep or omit whole packets");
+      }
+      return selection.action === "keep";
+    });
+    if (retainedEntries.length < 2) {
+      throw new Error("synthesis compaction must retain at least two topic packets");
+    }
+    const retainedPackets = retainedEntries.map((entry) =>
+      TopicPacketSchema.parse(JSON.parse(entry.text) as unknown),
+    );
+    const retainedIds: ReadonlySet<string> = new Set(
+      retainedEntries.map((entry) => entry.candidateId),
+    );
+    const retainedTopicIds = new Set(retainedPackets.map((packet) => packet.topicId));
+    const claimedSourceKeys = new Set(
+      retainedPackets.flatMap((packet) => packet.claims.flatMap((claim) => claim.sourceKeys)),
+    );
+    const citationSourceMap = Object.freeze(
+      (state.citationSourceMap ?? []).flatMap((source) => {
+        if (!claimedSourceKeys.has(source.sourceKey)) return [];
+        const uses = source.uses.filter(
+          (use) =>
+            use.topicId !== undefined &&
+            retainedTopicIds.has(use.topicId) &&
+            use.consumerTaskId === `topic-${use.topicId}-answer`,
+        );
+        return uses.length === 0 ? [] : [{ ...source, uses }];
+      }),
+    );
+    const omittedPacketCount = packetEntries.length - retainedEntries.length;
+    const contextGaps =
+      omittedPacketCount === 0
+        ? []
+        : ["Some topic packet content was omitted during context compaction."];
+    const request = this.rebuildSynthesisRequest(
+      load,
+      selectedConversation,
+      retainedPackets,
+      state.request.requestedOutputTokens,
+      contextGaps,
+    );
+    const model = resolveRuntimeModel(request.model);
+    const inputTokens = model.countRequestTokens(request);
+    const usableInputTokens = Math.min(
+      this.config.aiMainInputMaxTokens,
+      model.contextWindow - request.requestedOutputTokens,
+    );
+    const synthesisConsumer: PublicContextConsumer = {
+      consumer: "synthesis",
+      inputTokens,
+      requestedOutputTokens: request.requestedOutputTokens,
+      usableInputTokens,
+    };
+    const consumers = [
+      ...state.consumers.filter((consumer) => consumer.consumer !== "synthesis"),
+      synthesisConsumer,
+    ];
+    const retainedCandidates = state.ledgerCandidates.filter((candidate) =>
+      retainedIds.has(candidate.id),
+    );
+    const status: ContextState["status"] =
+      inputTokens <= usableInputTokens ? "ready" : "needs_compaction";
+    const gaps = [...retainedPackets.flatMap((packet) => packet.gaps), ...contextGaps];
+    return {
+      ...state,
+      status,
+      candidates: retainedCandidates,
+      candidateLedger: state.candidateLedger,
+      sourceMap: [],
+      citationSourceMap,
+      ledgerCandidates: retainedCandidates,
+      ledgerSourceMap: [],
+      selectedConversation,
+      consumers,
+      gaps,
+      ledgerGaps: gaps,
+      compactionFeedback: [],
+      request,
+      inputTokens,
+      usableInputTokens,
+      compactionRan: true,
+      ...(status === "ready" ? { failureCode: undefined } : { failureCode: undefined }),
+    };
+  }
+
+  private selectionsToContext(
+    load: LoadedTurn,
+    state: ContextState,
+    selections: readonly CompactionSelection[],
+  ): ContextState {
+    if (state.citationSourceMap !== undefined) {
+      return this.synthesisSelectionsToContext(load, state, selections);
+    }
+    const selectionById = new Map(
+      selections.map((selection) => [selection.candidateId, selection]),
+    );
+    const ledgerConversationEntries = state.candidateLedger.candidates.filter(
+      (candidate) => candidate.kind === "conversation_entry",
+    );
+    const ledgerConversation = state.ledgerConversation ?? state.selectedConversation;
+    const selectedConversation = ledgerConversation.filter((_entry, index) => {
+      const selection = selectionById.get(ledgerConversationEntries[index]?.candidateId ?? "");
+      return selection?.action !== "omit";
+    });
+    const ledgerEvidence = state.candidateLedger.candidates.filter(
+      (candidate) => candidate.kind !== "conversation_entry",
+    );
+    const candidateById = new Map(
+      state.ledgerCandidates.map((candidate) => [candidate.id, candidate]),
+    );
+    const sourceById = new Map(
+      state.ledgerCandidates.map((candidate, index) => [
+        candidate.id,
+        state.ledgerSourceMap[index],
+      ]),
+    );
+    const candidates: AnswerCandidate[] = [];
+    const sourceMap: FinalSourceRecord[] = [];
+    const chatSourceRanges = new Map(
+      (state.chatSourceRanges ?? []).map((item) => [item.messageId, item.ranges]),
+    );
+    for (const entry of ledgerEvidence) {
+      const selection = selectionById.get(entry.candidateId);
+      const candidate = candidateById.get(entry.candidateId);
+      const source = sourceById.get(entry.candidateId);
+      if (selection === undefined || candidate === undefined || source === undefined) {
+        throw new Error(`compaction selection is missing ${entry.candidateId}`);
+      }
+      if (selection.action === "omit") continue;
+      const ranges = selection.action === "range" ? selection.ranges : entry.baseRanges;
+      let nextCandidate = candidate;
+      if (candidate.kind === "document") {
+        nextCandidate = { ...candidate, ranges };
+      } else if (candidate.kind === "chat_message") {
+        chatSourceRanges.set(candidate.messageId, ranges);
+      }
+      candidates.push(nextCandidate);
+      const consumer = source.uses[0];
+      if (consumer === undefined) throw new Error("compacted source lacks a consumer");
+      sourceMap.push(
+        this.sourceRecord(
+          nextCandidate,
+          source.sourceKey,
+          consumer.consumerTaskId,
+          sourceMap.length,
+          consumer.topicId,
+          nextCandidate.kind === "chat_message" ? ranges : [],
+        ),
+      );
+    }
+    const omitted = state.candidateLedger.candidates
+      .filter((entry) => selectionById.get(entry.candidateId)?.action === "omit")
+      .map((entry) => `context candidate omitted: ${entry.kind}`);
     const measured = this.measureContext(
       load,
       state.question,
-      kept,
+      candidates,
       sourceMap,
-      gaps,
+      [...(state.ledgerGaps ?? state.gaps), ...omitted],
       true,
       state.topicId,
       selectedConversation,
@@ -6288,8 +6578,211 @@ export class CanonicalWorkflowOperations {
       ledgerConversation,
       state.ledgerConversationTokenCounts,
       state.ledgerGaps ?? state.gaps,
+      state.candidateLedger,
+      [...chatSourceRanges.entries()].map(([messageId, ranges]) => ({ messageId, ranges })),
     );
     return measured;
+  }
+
+  async collectCompaction(
+    load: LoadedTurn,
+    state: ContextState,
+    manifest: InitialContextManifest,
+    groups: readonly CompactionGroup[],
+    envelopes: readonly GroupResultEnvelope[],
+    taskId: string,
+  ): Promise<CompactionPassResult> {
+    const passageOptions = this.compactionPassageOptions(load);
+    const costOptions = this.compactionCostOptions(load, state);
+    const selections = mergeCompactionSelections(
+      state.candidateLedger,
+      manifest,
+      envelopes,
+      passageOptions,
+      costOptions,
+    );
+    const prefix = taskId.replace(/-compact-collect$/u, "");
+    const taskIds = groups.map((_group, index) =>
+      compactionGroupTaskId(prefix, "compact", index + 1),
+    );
+    return {
+      phase: "compact",
+      groups,
+      taskIds,
+      envelopes,
+      selections,
+      repairUsed: taskIds.some((groupTaskId) => this.compactionRepairTaskIds.has(groupTaskId)),
+    };
+  }
+
+  async collectFallbackCompaction(
+    load: LoadedTurn,
+    state: ContextState,
+    fallbackManifest: FallbackContextManifest,
+    fallbackGroups: readonly CompactionGroup[],
+    fallbackEnvelopes: readonly GroupResultEnvelope[],
+    firstPass: CompactionPassResult,
+    taskId: string,
+  ): Promise<CompactionPassResult> {
+    const passageOptions = this.compactionPassageOptions(load);
+    const costOptions = this.compactionCostOptions(load, state);
+    const firstEnvelopeByGroup = new Map(
+      firstPass.envelopes.map((envelope) => [envelope.groupId, envelope]),
+    );
+    const firstSelectionById = new Map(
+      firstPass.selections.map((selection) => [selection.candidateId, selection]),
+    );
+    for (const envelope of fallbackEnvelopes) {
+      const group = fallbackGroups.find((item) => item.groupId === envelope.groupId);
+      const firstEnvelope = firstEnvelopeByGroup.get(envelope.groupId);
+      if (group === undefined) {
+        throw new Error("fallback result names an unknown fallback group");
+      }
+      if (firstEnvelope === undefined) continue;
+      for (const candidateId of group.candidateIds) {
+        const fallbackDecision = fallbackManifest.decisions.find(
+          (decision) => decision.candidateId === candidateId,
+        );
+        const nextDecision = envelope.result.decisions.find(
+          (decision) => decision.candidateId === candidateId,
+        );
+        const firstDecision = firstEnvelope.result.decisions.find(
+          (decision) => decision.candidateId === candidateId,
+        );
+        if (
+          fallbackDecision === undefined ||
+          nextDecision === undefined ||
+          firstDecision === undefined
+        ) {
+          throw new Error("fallback result does not cover its exact first-pass membership");
+        }
+        if (fallbackDecision.action === "retain") {
+          if (JSON.stringify(nextDecision) !== JSON.stringify(firstDecision)) {
+            throw new Error("fallback retain changed a first-pass result envelope");
+          }
+          continue;
+        }
+        if (fallbackDecision.action !== "tighten") continue;
+        if (nextDecision.action !== "select" || firstDecision.action !== "select") {
+          throw new Error("fallback tighten must retain a strict selected passage subset");
+        }
+        const previousPassageIds = new Set(firstDecision.passageIds);
+        const nextPassageIds = new Set(nextDecision.passageIds);
+        if (
+          nextPassageIds.size >= previousPassageIds.size ||
+          [...nextPassageIds].some((passageId) => !previousPassageIds.has(passageId))
+        ) {
+          throw new Error("fallback tighten widened or retained first-pass passages");
+        }
+        if (firstSelectionById.get(candidateId)?.action === "omit") {
+          throw new Error("fallback tighten restored a first-pass omission");
+        }
+      }
+    }
+    const changed = mergeGroupCompactionResults(
+      state.candidateLedger,
+      fallbackGroups,
+      fallbackEnvelopes,
+      passageOptions,
+      costOptions,
+    );
+    const changedById = new Map(changed.map((selection) => [selection.candidateId, selection]));
+    const firstById = new Map(
+      firstPass.selections.map((selection) => [selection.candidateId, selection]),
+    );
+    const selections = state.candidateLedger.candidates.map((candidate) => {
+      const decision = fallbackManifest.decisions.find(
+        (item) => item.candidateId === candidate.candidateId,
+      );
+      if (decision === undefined) throw new Error(`fallback omitted ${candidate.candidateId}`);
+      if (decision.action === "omit") {
+        return {
+          candidateId: candidate.candidateId,
+          action: "omit",
+          passageIds: [],
+          ranges: [],
+        } satisfies CompactionSelection;
+      }
+      if (decision.action === "retain") {
+        const previous = firstById.get(candidate.candidateId);
+        if (previous === undefined)
+          throw new Error(`fallback retained unknown ${candidate.candidateId}`);
+        return previous;
+      }
+      const next = changedById.get(candidate.candidateId);
+      if (next === undefined)
+        throw new Error(`fallback changed ${candidate.candidateId} without a result`);
+      return next;
+    });
+    const prefix = taskId.replace(/-fallback-collect$/u, "");
+    const taskIds = fallbackGroups.map((_group, index) =>
+      compactionGroupTaskId(prefix, "fallback", index + 1),
+    );
+    return {
+      phase: "fallback",
+      groups: fallbackGroups,
+      taskIds,
+      envelopes: fallbackEnvelopes,
+      selections,
+      repairUsed: taskIds.some((groupTaskId) => this.compactionRepairTaskIds.has(groupTaskId)),
+    };
+  }
+  async measureCompaction(
+    load: LoadedTurn,
+    state: ContextState,
+    pass: CompactionPassResult,
+    taskId: string,
+  ): Promise<ContextState> {
+    if (pass.phase !== "compact" && pass.phase !== "fallback") {
+      throw new Error("compaction measurement has an unknown pass phase");
+    }
+    const measured = this.selectionsToContext(load, state, pass.selections);
+    const overByTokens = Math.max(0, measured.inputTokens - measured.usableInputTokens);
+    const compactionFeedback =
+      measured.status === "needs_compaction"
+        ? [`${pass.phase} compaction remains oversized by ${overByTokens} tokens`]
+        : [];
+    const result =
+      pass.phase === "fallback" && measured.status === "needs_compaction"
+        ? {
+            ...measured,
+            status: "failed" as const,
+            failureCode: "context_plan_unfit" as const,
+            compactionFeedback,
+          }
+        : { ...measured, compactionFeedback };
+    await this.observe(
+      load,
+      taskId,
+      "context_measurement",
+      this.contextMeasurementPayload(
+        result,
+        result.citationSourceMap !== undefined
+          ? "fanout-synthesis"
+          : result.topicId === undefined
+            ? "single-answer"
+            : `topic-${result.topicId}-answer`,
+        result.citationSourceMap !== undefined
+          ? "synthesis"
+          : result.topicId === undefined
+            ? "direct"
+            : "topic",
+      ),
+    );
+    return result;
+  }
+
+  async selectCompactionContext(
+    load: LoadedTurn,
+    context: ContextState,
+    _taskId: string,
+  ): Promise<ContextState> {
+    if (context.status === "failed") return context;
+    if (context.status !== "ready") {
+      return { ...context, status: "failed", failureCode: "context_plan_unfit" };
+    }
+    await this.validateFrozenScope(load, context);
+    return context;
   }
 
   async answerDirect(
@@ -6330,9 +6823,10 @@ export class CanonicalWorkflowOperations {
           throwIfAborted(signal);
         },
         async (request, requestCoordinates) => {
+          assertMeasuredAnswerRequest(context.request, request);
           await this.validateFrozenScope(load, context);
           await this.emitAnswerStart(load, context, "single", taskId, requestCoordinates);
-          await this.recordContextExposures(load, context, taskId, requestCoordinates);
+          await this.recordContextExposures(load, context, taskId, requestCoordinates, request);
           await this.observe(
             load,
             taskId,
@@ -6378,11 +6872,10 @@ export class CanonicalWorkflowOperations {
         event: {
           type: "context_ready",
           mode,
-          reductionRan: context.reductionRan,
+          reductionRan: context.compactionRan,
           sourcesRead: context.sourceMap.map(publicSourceRecordFromFinalSource),
           consumers: context.consumers.map((consumer) => ({ ...consumer })),
         },
-        emittedByTask: taskId,
       }),
     );
     await this.db(
@@ -6410,7 +6903,6 @@ export class CanonicalWorkflowOperations {
           sourcesRead: [],
           consumers: [],
         },
-        emittedByTask: taskId,
       }),
     );
     await this.db(
@@ -6484,11 +6976,16 @@ export class CanonicalWorkflowOperations {
     if (context.status !== "ready" || context.topicId === undefined)
       throw controlledRuntimeFailure(context.failureCode ?? "context_plan_unfit");
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
+    const request: LiveProviderRequest = {
+      ...context.request,
+      sourceExposureProofs: this.contextExposureProofMarkers(load, context),
+    };
     const output = await this.agents.structured({
       requestClass: "main",
       model: load.acceptanceScope.mainModelId,
       system: TopicAnswerPrompt,
       user: context.request.messages.find((message) => message.role === "user")?.content ?? "",
+      request,
       outputToolName: "emit_topic_packet",
       outputToolDescription: "Emit a grounded topic packet.",
       outputSchema: z.toJSONSchema(TopicPacketSchema),
@@ -6496,10 +6993,10 @@ export class CanonicalWorkflowOperations {
       requestedOutputTokens: context.request.requestedOutputTokens,
       reasoning: "medium",
       coordinates: taskCoordinates(taskId, "topic_answer", execution),
-      sourceExposureProofs: this.contextExposureProofMarkers(load, context),
       onBeforeRequest: async (request, requestCoordinates) => {
+        assertMeasuredAnswerRequest(context.request, request);
         await this.validateFrozenScope(load, context);
-        await this.recordContextExposures(load, context, taskId, requestCoordinates);
+        await this.recordContextExposures(load, context, taskId, requestCoordinates, request);
         await this.observe(
           load,
           taskId,
@@ -6544,6 +7041,29 @@ export class CanonicalWorkflowOperations {
     return packet;
   }
 
+  rebuildSynthesisRequest(
+    load: Pick<LoadedTurn, "locale" | "userMessage" | "acceptanceScope">,
+    selectedConversation: readonly ConversationEntry[],
+    packets: readonly TopicPacket[],
+    requestedOutputTokens: number,
+    contextGaps: readonly string[] = [],
+  ): LiveProviderRequest {
+    const canonicalPackets = packets.map((packet) =>
+      TopicPacketSchema.parse(canonicalValue(packet)),
+    );
+    return fullRequestInput(
+      SynthesisPrompt,
+      JSON.stringify({
+        locale: load.locale,
+        originalMessage: load.userMessage,
+        selectedConversation,
+        packets: canonicalPackets,
+        ...(contextGaps.length === 0 ? {} : { contextGaps: [...contextGaps] }),
+      }),
+      load.acceptanceScope.mainModelId,
+      requestedOutputTokens,
+    );
+  }
   async synthesisContext(
     load: LoadedTurn,
     packets: readonly TopicPacket[],
@@ -6557,15 +7077,13 @@ export class CanonicalWorkflowOperations {
     const selectedConversation = (await this.currentPriorTurns(load)).filter((entry) =>
       selectedTurnIds.has(entry.turnId),
     );
-    const request = fullRequestInput(
-      SynthesisPrompt,
-      JSON.stringify({
-        locale: load.locale,
-        originalMessage: load.userMessage,
-        selectedConversation,
-        packets,
-      }),
-      load.acceptanceScope.mainModelId,
+    const canonicalPackets = packets.map((packet) =>
+      TopicPacketSchema.parse(canonicalValue(packet)),
+    );
+    const request = this.rebuildSynthesisRequest(
+      load,
+      selectedConversation,
+      canonicalPackets,
       this.config.aiMainOutputMaxTokens,
     );
     const model = resolveRuntimeModel(load.acceptanceScope.mainModelId);
@@ -6574,66 +7092,145 @@ export class CanonicalWorkflowOperations {
       this.config.aiMainInputMaxTokens,
       model.contextWindow - request.requestedOutputTokens,
     );
-    const fixedRequest = fullRequestInput(
-      SynthesisPrompt,
-      JSON.stringify({
-        locale: load.locale,
-        originalMessage: load.userMessage,
-        selectedConversation,
-        packets: packets.map((packet) => ({
-          topicId: packet.topicId,
-          status: "partial" as const,
-          claims: [],
-          gaps: [],
-        })),
-      }),
-      load.acceptanceScope.mainModelId,
+    const fixedPackets = canonicalPackets.map((packet) => ({
+      topicId: packet.topicId,
+      status: "partial" as const,
+      claims: [],
+      gaps: [],
+    }));
+    const fixedRequest = this.rebuildSynthesisRequest(
+      load,
+      selectedConversation,
+      fixedPackets,
       this.config.aiMainOutputMaxTokens,
     );
     const measuredFixedInput = model.countRequestTokens(fixedRequest);
-    const packetAllowanceTotal = allocation.packetOutputTokens * packets.length;
-    const packetTopicIds = packets.map((packet) => packet.topicId);
+    const packetAllowanceTotal = allocation.packetOutputTokens * canonicalPackets.length;
+    const packetTopicIds = canonicalPackets.map((packet) => packet.topicId);
     const topicContextIds = topicContexts.map((context) => context.topicId);
     const canonicalTopicIds: readonly TopicId[] = ["t1", "t2", "t3"];
+    const packetSourceProofsValid = canonicalPackets.every((packet) => {
+      const visibleTopicSourceKeys = sourceMap
+        .filter((source) =>
+          source.uses.some(
+            (use) =>
+              use.consumerTaskId === `topic-${packet.topicId}-answer` &&
+              use.topicId === packet.topicId,
+          ),
+        )
+        .map((source) => source.sourceKey);
+      const claimedSourceKeys = packet.claims.flatMap((claim) => claim.sourceKeys);
+      return (
+        new Set(claimedSourceKeys).size === claimedSourceKeys.length &&
+        claimedSourceKeys.every((sourceKey) => visibleTopicSourceKeys.includes(sourceKey))
+      );
+    });
     const preallocationMatches =
-      packets.length >= 2 &&
-      packets.length <= 3 &&
+      canonicalPackets.length >= 2 &&
+      canonicalPackets.length <= 3 &&
       packetTopicIds.every((topicId, index) => topicId === canonicalTopicIds[index]) &&
       packetTopicIds.every((topicId, index) => topicId === topicContextIds[index]) &&
       measuredFixedInput === allocation.fixedSynthesisInput &&
       usableInputTokens === allocation.synthesisUsableInput &&
       allocation.fixedSynthesisInput + packetAllowanceTotal <= allocation.synthesisUsableInput &&
-      inputTokens <= allocation.fixedSynthesisInput + packetAllowanceTotal &&
+      packetSourceProofsValid &&
       topicContexts.every(
         (context) =>
           context.request.requestedOutputTokens === allocation.packetOutputTokens &&
           context.request.requestedOutputTokens <= this.config.aiMainOutputMaxTokens &&
           context.request.requestedOutputTokens <= model.maximumOutputTokens,
       );
+    const historyLedger = this.buildCandidateLedger(
+      [],
+      load.acceptanceScope.mainModelId,
+      selectedConversation,
+    );
+    const packetCandidates: readonly TopicPacketCandidate[] = canonicalPackets.map(
+      (packet, index) => {
+        const text = JSON.stringify(canonicalValue(packet));
+        const requestWithoutPacket = this.rebuildSynthesisRequest(
+          load,
+          selectedConversation,
+          canonicalPackets.filter((_candidate, candidateIndex) => candidateIndex !== index),
+          this.config.aiMainOutputMaxTokens,
+        );
+        const renderedTokenCount =
+          model.countRequestTokens(request) - model.countRequestTokens(requestWithoutPacket);
+        return {
+          id: candidateLocalId(selectedConversation.length + index + 1),
+          kind: "topic_packet",
+          rank: index,
+          purpose: "provider-authored fanout topic packet",
+          topicId: packet.topicId,
+          text,
+          packetSha256Hex: createHash("sha256").update(text).digest("hex"),
+          label: packet.topicId,
+          renderedTokenCount,
+        };
+      },
+    );
+    const packetLedgerEntries = packetCandidates.map((candidate): CandidateLedgerEntry => {
+      const baseRanges = [{ charStart: 0, charEnd: candidate.text.length }];
+      const bounded = this.boundedCandidatePreview(candidate.text, baseRanges);
+      return {
+        candidateId: candidate.id as `c${number}`,
+        kind: "topic_packet",
+        identity: {
+          kind: "topic_packet",
+          topicId: candidate.topicId,
+          packetSha256Hex: candidate.packetSha256Hex,
+        },
+        provenance: {
+          label: candidate.label,
+          purpose: candidate.purpose,
+          date: null,
+        },
+        text: candidate.text,
+        baseRanges,
+        previewRanges: bounded.ranges,
+        preview: bounded.preview,
+        renderedTokenCount: candidate.renderedTokenCount,
+      };
+    });
+    const candidateLedger = this.freezeCandidateLedger(
+      CandidateLedgerSchema.parse({
+        candidates: [...historyLedger.candidates, ...packetLedgerEntries],
+      }) as CandidateLedger,
+    );
     const synthesisConsumer: PublicContextConsumer = {
       consumer: "synthesis",
       inputTokens,
       requestedOutputTokens: request.requestedOutputTokens,
       usableInputTokens,
     };
+    const status: ContextState["status"] = !preallocationMatches
+      ? "failed"
+      : inputTokens <= usableInputTokens
+        ? "ready"
+        : "needs_compaction";
     return {
-      status: preallocationMatches && inputTokens <= usableInputTokens ? "ready" : "failed",
+      status,
       question: load.userMessage,
-      candidates: [],
-      sourceMap,
-      ledgerCandidates: [],
-      ledgerSourceMap: sourceMap,
+      candidateLedger,
+      candidates: packetCandidates,
+      sourceMap: [],
+      citationSourceMap: Object.freeze([...sourceMap]),
+      ledgerCandidates: packetCandidates,
+      ledgerSourceMap: [],
       selectedConversation,
+      ledgerConversation: selectedConversation,
+      ledgerConversationTokenCounts: candidateLedger.candidates
+        .slice(0, selectedConversation.length)
+        .map((candidate) => candidate.renderedTokenCount),
       consumers: [...topicContexts.flatMap((context) => context.consumers), synthesisConsumer],
-      gaps: packets.flatMap((packet) => packet.gaps),
-      reductionFeedback: [],
+      gaps: canonicalPackets.flatMap((packet) => packet.gaps),
+      ledgerGaps: canonicalPackets.flatMap((packet) => packet.gaps),
+      compactionFeedback: [],
       request,
       inputTokens,
       usableInputTokens,
-      reductionRan: false,
-      ...(preallocationMatches && inputTokens <= usableInputTokens
-        ? {}
-        : { failureCode: "synthesis_budget_mismatch" }),
+      compactionRan: false,
+      ...(status === "failed" ? { failureCode: "synthesis_budget_mismatch" as const } : {}),
     };
   }
 
@@ -6660,9 +7257,18 @@ export class CanonicalWorkflowOperations {
         retryable: isRetryableAiRunError(context.failureCode ?? "synthesis_budget_mismatch"),
       };
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
+    const citationSourceMap = context.citationSourceMap ?? [];
+    const providerContext: ContextState = {
+      ...context,
+      candidates: [],
+      sourceMap: [],
+      ledgerCandidates: [],
+      ledgerSourceMap: [],
+    };
+    const answerContext: ContextState = { ...context, sourceMap: citationSourceMap };
     const request: LiveProviderRequest = {
       ...context.request,
-      sourceExposureProofs: this.contextExposureProofMarkers(load, context),
+      sourceExposureProofs: this.contextExposureProofMarkers(load, providerContext),
     };
     let resultText: string;
     try {
@@ -6682,8 +7288,9 @@ export class CanonicalWorkflowOperations {
           throwIfAborted(signal);
         },
         async (request, requestCoordinates) => {
-          await this.validateFrozenScope(load, context);
-          await this.emitAnswerStart(load, context, "synthesis", taskId, requestCoordinates);
+          assertMeasuredAnswerRequest(context.request, request);
+          await this.validateFrozenScope(load, answerContext);
+          await this.emitAnswerStart(load, answerContext, "synthesis", taskId, requestCoordinates);
           await this.recordConversationExposures(
             load,
             taskId,
@@ -6697,7 +7304,7 @@ export class CanonicalWorkflowOperations {
             "context_serialized",
             {
               consumerTaskId: taskId,
-              sourceKeys: context.sourceMap.map((source) => source.sourceKey),
+              sourceKeys: citationSourceMap.map((source) => source.sourceKey),
               restrictedContextLedger: this.restrictedContextLedger(context, "synthesis", request),
               terminalUsageCoordinate: {
                 taskId,
@@ -6718,7 +7325,7 @@ export class CanonicalWorkflowOperations {
       throw error;
     }
     throwIfAborted(signal);
-    return { status: "ok", mode: "synthesis", content: resultText, sourceMap: context.sourceMap };
+    return { status: "ok", mode: "synthesis", content: resultText, sourceMap: citationSourceMap };
   }
 
   async finalize(

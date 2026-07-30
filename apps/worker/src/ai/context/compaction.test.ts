@@ -11,6 +11,7 @@ import {
 import {
   buildCandidatePassageIndex,
   createCompactionGroups,
+  createFallbackCompactionGroups,
   mergeGroupCompactionResults,
   validateFallbackContextManifest,
   validateGroupCompactionResult,
@@ -208,6 +209,48 @@ describe("complete compaction contracts", () => {
     ).toBeDefined();
   });
 
+  it("caps initial compaction manifests before task generation", () => {
+    const ledgerFor = (count: number): CandidateLedger => ({
+      candidates: Array.from({ length: count }, (_, index) => {
+        const candidateId = candidateLocalId(index + 1);
+        return {
+          candidateId,
+          kind: "document" as const,
+          identity: {
+            kind: "public_document" as const,
+            sourceId: `source-${index + 1}`,
+            documentId: `document-${index + 1}`,
+            snapshotId: "snapshot-1",
+            contentHash: hash,
+          },
+          provenance: { label: `Document ${index + 1}`, purpose: "answer", date: null },
+          text: "Long text",
+          baseRanges: [{ charStart: 0, charEnd: 9 }],
+          previewRanges: [{ charStart: 0, charEnd: 9 }],
+          preview: "Long text",
+          renderedTokenCount: 10,
+        };
+      }),
+    });
+    const manifestFor = (count: number) => ({
+      decisions: Array.from({ length: count }, (_, index) => ({
+        candidateId: candidateLocalId(index + 1),
+        action: "compact" as const,
+        groupId: `g${index + 1}`,
+        reason: "long",
+      })),
+      groups: Array.from({ length: count }, (_, index) => ({
+        groupId: `g${index + 1}`,
+        renderedTokenBudget: 1,
+      })),
+    });
+    const valid = validateInitialContextManifest(manifestFor(999), ledgerFor(999));
+    expect(valid.groups).toHaveLength(999);
+    expect(() => validateInitialContextManifest(manifestFor(1000), ledgerFor(1000))).toThrow(
+      /more than 999 groups/u,
+    );
+  });
+
   it("projects candidate views without any private proof fields", () => {
     const view = toProviderCandidateView(ledger.candidates[0]!);
     expect(view).toEqual({
@@ -277,6 +320,149 @@ describe("complete compaction contracts", () => {
     expect(user.text).toBe("Literal [[cite:old]] text");
     expect(user.passages[0]?.range.charStart).toBe(0);
     expect(user.passages.at(-1)?.range.charEnd).toBe(user.text.length);
+  });
+
+  it("restricts candidate passages to authorized base ranges", () => {
+    const restricted = CandidateLedgerSchema.parse({
+      candidates: [
+        {
+          ...ledger.candidates[0]!,
+          baseRanges: [{ charStart: 0, charEnd: 6 }],
+          previewRanges: [{ charStart: 0, charEnd: 6 }],
+          preview: "Alpha.",
+        },
+      ],
+    }).candidates[0]! as CandidateLedgerEntry;
+    const index = buildCandidatePassageIndex(restricted, passageOptions);
+    expect(index.passages.map((passage) => passage.text)).toEqual(["Alpha."]);
+    expect(index.passages.every((passage) => passage.range.charEnd <= 6)).toBe(true);
+  });
+
+  it("treats empty base ranges as no authorization", () => {
+    const candidate = CandidateLedgerSchema.parse({
+      candidates: [
+        {
+          ...ledger.candidates[0]!,
+          baseRanges: [],
+          previewRanges: [],
+          preview: "",
+        },
+      ],
+    }).candidates[0]! as CandidateLedgerEntry;
+    const emptyLedger = { candidates: [candidate] };
+    expect(buildCandidatePassageIndex(candidate, passageOptions).passages).toEqual([]);
+    expect(() =>
+      validateInitialContextManifest(
+        {
+          decisions: [{ candidateId: "c1", action: "compact", groupId: "g1", reason: "long" }],
+          groups: [{ groupId: "g1", renderedTokenBudget: 10 }],
+        },
+        emptyLedger,
+      ),
+    ).toThrow(/no authorized passages/u);
+    expect(() =>
+      validateGroupCompactionResult(
+        {
+          decisions: [
+            {
+              candidateId: "c1",
+              action: "select",
+              passageIds: ["p1"],
+              reason: "forged",
+            },
+          ],
+        },
+        {
+          groupId: "g1",
+          candidateIds: ["c1"],
+          renderedTokenBudget: 10,
+          mode: "normal",
+        },
+        emptyLedger,
+        passageOptions,
+      ),
+    ).toThrow(/not in this index/u);
+  });
+
+  it("rejects a budget below the smallest selectable passage", () => {
+    expect(() =>
+      validateInitialContextManifest(
+        {
+          decisions: [
+            { candidateId: "c1", action: "compact", groupId: "g1", reason: "long" },
+            { candidateId: "c2", action: "keep", reason: "keep" },
+            { candidateId: "c3", action: "omit", reason: "omit" },
+          ],
+          groups: [{ groupId: "g1", renderedTokenBudget: 4 }],
+        },
+        ledger,
+        passageOptions,
+      ),
+    ).toThrow(/smallest selectable passage/u);
+  });
+
+  it("rejects an oversized multi-source normal group from measured input", () => {
+    expect(() =>
+      createCompactionGroups(initialValue, ledger, {
+        sourceToolEligibleCandidateIds: [],
+        passageOptions,
+        groupMeasurements: {
+          g1: {
+            inputTokens: 101,
+            usableInputTokens: 100,
+            minimumSelectablePassageCost: 2,
+          },
+        },
+      }),
+    ).toThrow(/normal group g1 request does not fit/u);
+    const single = validateInitialContextManifest(
+      {
+        decisions: [
+          { candidateId: "c1", action: "compact", groupId: "g1", reason: "long" },
+          { candidateId: "c2", action: "keep", reason: "keep" },
+          { candidateId: "c3", action: "omit", reason: "omit" },
+        ],
+        groups: [{ groupId: "g1", renderedTokenBudget: 12 }],
+      },
+      ledger,
+    );
+    expect(
+      createCompactionGroups(single, ledger, {
+        sourceToolEligibleCandidateIds: ["c1"],
+        passageOptions,
+        groupMeasurements: {
+          g1: {
+            inputTokens: 101,
+            usableInputTokens: 100,
+            minimumSelectablePassageCost: 5,
+          },
+        },
+      }),
+    ).toEqual([
+      { groupId: "g1", candidateIds: ["c1"], renderedTokenBudget: 12, mode: "source_tool" },
+    ]);
+  });
+  it("orders independent groups by earliest ledger member", () => {
+    const manifest = validateInitialContextManifest(
+      {
+        decisions: [
+          { candidateId: "c1", action: "compact", groupId: "g2", reason: "first" },
+          { candidateId: "c2", action: "compact", groupId: "g1", reason: "second" },
+          { candidateId: "c3", action: "omit", reason: "omit" },
+        ],
+        groups: [
+          { groupId: "g1", renderedTokenBudget: 9 },
+          { groupId: "g2", renderedTokenBudget: 20 },
+        ],
+      },
+      ledger,
+    );
+    expect(
+      createCompactionGroups(manifest, ledger, { sourceToolEligibleCandidateIds: [] }),
+    ).toEqual([
+      { groupId: "g2", candidateIds: ["c1"], renderedTokenBudget: 20, mode: "normal" },
+      { groupId: "g1", candidateIds: ["c2"], renderedTokenBudget: 9, mode: "normal" },
+    ]);
   });
 
   it("rejects undeclared groups and requires measured source-tool eligibility", () => {
@@ -357,7 +543,7 @@ describe("complete compaction contracts", () => {
       ledger,
       passageOptions,
     );
-    const envelope = { groupId: "g1", result, renderedTokenCount: 12 };
+    const envelope = { groupId: "g1", result, renderedTokenCount: 20 };
     expect(mergeGroupCompactionResults(ledger, [group], [envelope], passageOptions)).toHaveLength(
       2,
     );
@@ -368,7 +554,7 @@ describe("complete compaction contracts", () => {
         [{ ...envelope, renderedTokenCount: 21 }],
         passageOptions,
       ),
-    ).toThrow(/budget/u);
+    ).toThrow(/budget|exact reconstruction/u);
     expect(() => mergeGroupCompactionResults(ledger, [group], [], passageOptions)).toThrow(
       /every expected group/u,
     );
@@ -442,6 +628,9 @@ describe("complete compaction contracts", () => {
       [envelope],
     );
     expect(fallback.groups[0]?.groupId).toBe("g1");
+    expect(createFallbackCompactionGroups(fallback, initial, ledger, [envelope])).toEqual([
+      { groupId: "g1", candidateIds: ["c1"], renderedTokenBudget: 7, mode: "normal" },
+    ]);
     expect(() =>
       validateFallbackContextManifest(
         {

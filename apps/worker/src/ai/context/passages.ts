@@ -246,6 +246,12 @@ export interface PassageIndexOptions {
   readonly maxTokens: number;
   readonly maxUtf8Bytes: number;
   readonly countTokens: (text: string) => number;
+  /**
+   * Restrict passage views to these immutable UTF-16 source ranges. An
+   * omitted value means the complete text; an empty array means no text is
+   * authorized.
+   */
+  readonly authorizedRanges?: readonly SourceRange[] | undefined;
 }
 
 const assertPassageLimit = (value: number, name: string): void => {
@@ -262,25 +268,57 @@ const splitRangeByTokenCount = (
 ): readonly SourceRange[] => {
   const normalized = normalizeRange(text, range);
   const ranges: SourceRange[] = [];
-  let start = normalized.charStart;
-  let end = start;
-  while (end < normalized.charEnd) {
-    const codePoint = text.codePointAt(end);
+  const scalarEnds: number[] = [normalized.charStart];
+  for (let index = normalized.charStart; index < normalized.charEnd; ) {
+    const codePoint = text.codePointAt(index);
     if (codePoint === undefined) throw new Error("passage ended before a Unicode scalar");
-    const next = end + String.fromCodePoint(codePoint).length;
-    const count = countTokens(text.slice(start, next));
-    if (!Number.isSafeInteger(count) || count < 0) {
-      throw new Error("token counter must return a non-negative safe integer");
-    }
-    if (count > maxTokens) {
-      if (end === start) throw new Error("one Unicode scalar exceeds the token cap");
-      ranges.push({ charStart: start, charEnd: end });
-      start = end;
-      continue;
-    }
-    end = next;
+    index += String.fromCodePoint(codePoint).length;
+    scalarEnds.push(index);
   }
-  if (start < normalized.charEnd) ranges.push({ charStart: start, charEnd: normalized.charEnd });
+
+  let startScalar = 0;
+  const lastScalar = scalarEnds.length - 1;
+  while (startScalar < lastScalar) {
+    const start = scalarEnds[startScalar]!;
+    const countPrefix = (endScalar: number): number => {
+      const count = countTokens(text.slice(start, scalarEnds[endScalar]!));
+      if (!Number.isSafeInteger(count) || count < 0) {
+        throw new Error("token counter must return a non-negative safe integer");
+      }
+      return count;
+    };
+
+    let accepted = 0;
+    let probe = 1;
+    while (probe <= lastScalar - startScalar) {
+      const count = countPrefix(startScalar + probe);
+      if (count > maxTokens) break;
+      accepted = probe;
+      if (probe === lastScalar - startScalar) break;
+      probe = Math.min(lastScalar - startScalar, probe * 2);
+    }
+    if (accepted === 0) throw new Error("one Unicode scalar exceeds the token cap");
+
+    let low = accepted;
+    let high = Math.min(probe, lastScalar - startScalar);
+    if (high === low && low < lastScalar - startScalar) {
+      high = low + 1;
+    }
+    while (high - low > 1) {
+      const middle = low + Math.floor((high - low) / 2);
+      if (countPrefix(startScalar + middle) <= maxTokens) low = middle;
+      else high = middle;
+    }
+
+    const endScalar = startScalar + low;
+    const end = scalarEnds[endScalar]!;
+    const finalCount = countPrefix(endScalar);
+    if (finalCount > maxTokens) {
+      throw new Error("token-bounded passage exceeds its exact token cap");
+    }
+    ranges.push({ charStart: start, charEnd: end });
+    startScalar = endScalar;
+  }
   return ranges;
 };
 
@@ -322,16 +360,40 @@ export const buildPassageIndex = (value: string, options: PassageIndexOptions): 
     });
   };
 
-  for (const [paragraphIndex, paragraphRange] of paragraphRanges(text).entries()) {
-    const paragraphText = text.slice(paragraphRange.charStart, paragraphRange.charEnd);
+  const authorizedRanges =
+    options.authorizedRanges === undefined
+      ? text.length === 0
+        ? []
+        : [{ charStart: 0, charEnd: text.length }]
+      : mergeAdjacentRanges(text, options.authorizedRanges);
+  const paragraphsInText = paragraphRanges(text);
+  const addAuthorizedParagraph = (
+    paragraphOrdinal: number,
+    paragraphRange: SourceRange,
+    authorizedRange: SourceRange,
+  ): void => {
+    const range = trimRange(
+      text,
+      Math.max(paragraphRange.charStart, authorizedRange.charStart),
+      Math.min(paragraphRange.charEnd, authorizedRange.charEnd),
+    );
+    if (range === null) return;
+    const paragraphText = text.slice(range.charStart, range.charEnd);
+    const paragraphTokenCount = options.countTokens(paragraphText);
+    const paragraphByteCount = encoder.encode(paragraphText).byteLength;
     if (
-      encoder.encode(paragraphText).byteLength <= options.maxUtf8Bytes &&
-      options.countTokens(paragraphText) <= options.maxTokens
+      !Number.isSafeInteger(paragraphTokenCount) ||
+      paragraphTokenCount < 0 ||
+      !Number.isSafeInteger(paragraphByteCount)
     ) {
-      addPassage("paragraph", paragraphIndex + 1, null, paragraphRange);
-      continue;
+      throw new Error("token counter must return a non-negative safe integer");
     }
-    for (const [sentenceIndex, sentenceRange] of sentenceRanges(text, paragraphRange).entries()) {
+    if (paragraphByteCount <= options.maxUtf8Bytes && paragraphTokenCount <= options.maxTokens) {
+      addPassage("paragraph", paragraphOrdinal, null, range);
+      return;
+    }
+
+    for (const [sentenceIndex, sentenceRange] of sentenceRanges(text, range).entries()) {
       const byteRanges = splitRangeByUtf8Bytes(text, sentenceRange, options.maxUtf8Bytes);
       for (const byteRange of byteRanges) {
         for (const tokenRange of splitRangeByTokenCount(
@@ -340,9 +402,21 @@ export const buildPassageIndex = (value: string, options: PassageIndexOptions): 
           options.maxTokens,
           options.countTokens,
         )) {
-          addPassage("sentence", paragraphIndex + 1, sentenceIndex + 1, tokenRange);
+          addPassage("sentence", paragraphOrdinal, sentenceIndex + 1, tokenRange);
         }
       }
+    }
+  };
+
+  for (const authorizedRange of authorizedRanges) {
+    for (const [paragraphIndex, paragraphRange] of paragraphsInText.entries()) {
+      if (
+        paragraphRange.charEnd <= authorizedRange.charStart ||
+        paragraphRange.charStart >= authorizedRange.charEnd
+      ) {
+        continue;
+      }
+      addAuthorizedParagraph(paragraphIndex + 1, paragraphRange, authorizedRange);
     }
   }
   for (let index = 1; index < passages.length; index += 1) {
@@ -382,11 +456,3 @@ export const selectedTextFromRanges = (
   mergeAdjacentRanges(text, ranges)
     .map((range) => text.slice(range.charStart, range.charEnd))
     .join(separator);
-
-export const passageIdsToRanges = mapPassageIdsToRanges;
-export const createPassageIndex = buildPassageIndex;
-export const selectPassageRanges = mapPassageIdsToRanges;
-export const normalizeRanges = mergeAdjacentRanges;
-export const rangesAreSubset = rangesSubsetOf;
-export const stripCitationTags = stripHistoricalCitationTags;
-export const splitPassageRange = splitRangeByUtf8Bytes;

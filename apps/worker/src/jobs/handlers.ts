@@ -15,6 +15,7 @@ import {
   type PiBoundaryOptions,
 } from "../ai/runtime/pi-boundary";
 import { providerRequestSha256Hex } from "../ai/runtime/provider-request";
+import type { LiveProviderRequest } from "../ai/runtime/provider-request";
 import {
   RUNTIME_MODEL_ID,
   ZAI_CODING_PLAN_BASE_URL,
@@ -794,6 +795,10 @@ export const providerEndpointIdentityForConfig = (
 ): AiProviderEndpointIdentity =>
   `${providerServiceIdForConfig(config)}:${config.aiBaseUrl}` as AiProviderEndpointIdentity;
 
+export const providerMeasurementRepairConsumed = (
+  request: Pick<LiveProviderRequest, "repairConsumed">,
+): boolean => request.repairConsumed === true;
+
 export const makeDurableProviderBoundary = (
   connectionString: string,
   aiRunId: string,
@@ -875,6 +880,7 @@ export const makeDurableProviderBoundary = (
               kind: "provider_request_measurement",
               payload: {
                 agentRole: coordinates.agentRole,
+                repairConsumed: providerMeasurementRepairConsumed(request),
                 modelId: measurement.modelId,
                 requestSha256Hex: providerRequestSha256Hex(request),
                 sourceExposureProofSha256Hexes,

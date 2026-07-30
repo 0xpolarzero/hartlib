@@ -168,7 +168,10 @@ const loadResetProductChat = async (): Promise<ResetProductChat> => {
 const newCitationNamespace = (): string =>
   `cn_${crypto.randomUUID().replaceAll("-", "").slice(0, 22)}`;
 
-const turnPlanPayload = (mode: TurnPlanMode) =>
+const turnPlanPayload = (
+  mode: TurnPlanMode,
+  topicIds: readonly ("t1" | "t2" | "t3")[] = ["t1", "t2"],
+) =>
   mode === "clarify"
     ? { mode, question: "current question" }
     : mode === "single"
@@ -176,10 +179,12 @@ const turnPlanPayload = (mode: TurnPlanMode) =>
       : {
           mode,
           question: "current question",
-          topics: [
-            { topicId: "t1" as const, question: "first topic", relevantTurnIds: [] },
-            { topicId: "t2" as const, question: "second topic", relevantTurnIds: [] },
-          ],
+          topics: topicIds.map((topicId) => ({
+            topicId,
+            question:
+              topicId === "t1" ? "first topic" : topicId === "t2" ? "second topic" : "third topic",
+            relevantTurnIds: [],
+          })),
         };
 
 const createFixture = (
@@ -189,6 +194,7 @@ const createFixture = (
   webRequested = true,
   webEnabled = webRequested,
   publicSourceIds: readonly string[] = [],
+  topicIds: readonly ("t1" | "t2" | "t3")[] = ["t1", "t2"],
 ): Effect.Effect<Fixture, unknown, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
@@ -278,7 +284,7 @@ const createFixture = (
       values (
         ${runId}, ${chatId}, 'plan-turn', 0, 0,
         'fixture:turn_plan', 'turn_plan',
-        ${sql.json(turnPlanPayload(mode))}
+        ${sql.json(turnPlanPayload(mode, topicIds))}
       )
     `;
     return { companyId, userId, chatId, userMessageId, runId, citationNamespace, mode, memoryMode };
@@ -420,6 +426,108 @@ const createNextRun = (fixture: Fixture, content: string, mode: TurnPlanMode = "
 const sourceKeyFor = (fixture: Pick<Fixture, "citationNamespace">, ordinal = 1): string =>
   `k_${fixture.citationNamespace}_${ordinal}`;
 
+type StructuredReviewPreviewIdentity =
+  | {
+      readonly kind: "public_document";
+      readonly sourceId: string;
+      readonly documentId: string;
+      readonly snapshotId: string;
+      readonly contentHash: string;
+    }
+  | {
+      readonly kind: "publisher_document";
+      readonly subscriptionId: string;
+      readonly issueId: string;
+      readonly documentId: string;
+      readonly snapshotId: string;
+      readonly publisherExtractionId: string;
+      readonly contentHash: string;
+    }
+  | {
+      readonly kind: "chat_message";
+      readonly messageId: string;
+      readonly sanitizedContentHash: string;
+    };
+
+type StructuredReviewPreviewRecordInput = {
+  readonly identity: StructuredReviewPreviewIdentity;
+  readonly sourceText: string;
+  readonly previewRanges: readonly { readonly charStart: number; readonly charEnd: number }[];
+};
+
+const canonicalJsonForProductState = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(canonicalJsonForProductState).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJsonForProductState(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const structuredReviewPreviewRecord = (input: StructuredReviewPreviewRecordInput) => {
+  const contentHash = createHash("sha256").update(input.sourceText, "utf8").digest("hex");
+  const previewText = input.previewRanges
+    .map((range) => input.sourceText.slice(range.charStart, range.charEnd))
+    .join("\n…\n");
+  const previewBytes = new TextEncoder().encode(previewText);
+  const recordWithoutDigest = {
+    identity: input.identity,
+    snapshotId:
+      input.identity.kind === "chat_message" ? input.identity.messageId : input.identity.snapshotId,
+    contentHash,
+    ...(input.identity.kind === "publisher_document"
+      ? { publisherExtractionId: input.identity.publisherExtractionId }
+      : {}),
+    previewRanges: input.previewRanges,
+    previewByteLength: previewBytes.byteLength,
+    previewSha256Hex: createHash("sha256").update(previewBytes).digest("hex"),
+    fastTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(previewText),
+    mainTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(previewText),
+  };
+  return {
+    ...recordWithoutDigest,
+    recordDigestSha256Hex: createHash("sha256")
+      .update(canonicalJsonForProductState(recordWithoutDigest), "utf8")
+      .digest("hex"),
+  };
+};
+const insertStructuredReviewPreview = (
+  fixture: Fixture,
+  options: {
+    readonly taskId: string;
+    readonly loopIteration: number;
+    readonly attempt: number;
+    readonly providerRequestIndex?: number;
+    readonly providerInputSha256Hex: string;
+    readonly slot?: "initial" | "replacement";
+    readonly records?: readonly StructuredReviewPreviewRecordInput[];
+  },
+) => {
+  const providerRequestIndex = options.providerRequestIndex ?? 0;
+  const slot = options.slot ?? (providerRequestIndex === 1 ? "initial" : "replacement");
+  return insertAiObservation({
+    runId: fixture.runId,
+    chatId: fixture.chatId,
+    emittingTask: options.taskId,
+    loopIteration: options.loopIteration,
+    attempt: options.attempt,
+    observationKey: `${options.taskId}:${options.loopIteration}:${options.attempt}:structured_retrieval_review_preview:${slot}`,
+    kind: "structured_retrieval_review_preview",
+    payload: {
+      taskId: options.taskId,
+      loopIteration: options.loopIteration,
+      attempt: options.attempt,
+      providerRequestIndex,
+      agentRole: "internal_retrieval",
+      slot,
+      providerInputSha256Hex: options.providerInputSha256Hex,
+      records: (options.records ?? []).map(structuredReviewPreviewRecord),
+    },
+  });
+};
+
 const seedSingleObservability = (
   fixture: Fixture,
   options: {
@@ -438,6 +546,7 @@ const seedSingleObservability = (
     }[];
     readonly includeAnswerMeasurement?: boolean;
     readonly includeAnswerContext?: boolean;
+    readonly selectedConversation?: readonly unknown[];
     readonly includeMemorySelectorMeasurement?: boolean;
     readonly contextSources?: readonly {
       readonly sourceKey: string;
@@ -735,6 +844,16 @@ const seedSingleObservability = (
           stopReason: "stop",
         },
       });
+      if (selectorRole === "internal") {
+        yield* insertProviderMeasurementAndUsage(fixture, {
+          taskId,
+          agentRole: "internal_retrieval",
+          loopIteration: 0,
+          attempt: 0,
+          providerRequestIndex: 1,
+          requestSha256Hex: "f".repeat(64),
+        });
+      }
       yield* sql`
         insert into ai_observations (
           run_id, chat_id, emitting_task, loop_iteration, attempt,
@@ -755,9 +874,9 @@ const seedSingleObservability = (
       modelId: "glm-5-turbo",
       requestSha256Hex: options.answerRequestSha256Hex ?? "b".repeat(64),
       inputTokens: 10,
-      usableInputTokens: 6144,
       requestedOutputTokens: 2048,
-      selectedConversation: [],
+      usableInputTokens: 6144,
+      selectedConversation: options.selectedConversation ?? [],
       question: "current question",
       gaps: [],
       sources: contextSources.map((source, index) => ({
@@ -787,8 +906,8 @@ const seedSingleObservability = (
           usableInputTokens: 6144,
           contextWindow: 8192,
           status: "ready",
-          reductionRan: false,
-          reductionFeedback: [],
+          compactionRan: false,
+          compactionFeedback: [],
           restrictedContextLedger: contextLedger,
         })}
       )
@@ -844,6 +963,26 @@ const failedTopicContextLedger = (requestSha256Hex: string) => ({
   sources: [],
 });
 
+const failedSynthesisContextLedger = (
+  requestSha256Hex: string,
+  topicIds: readonly ("t1" | "t2" | "t3")[] = ["t1", "t2"],
+) => ({
+  requestKind: "synthesis" as const,
+  modelId: "glm-5-turbo",
+  requestSha256Hex,
+  inputTokens: 10,
+  usableInputTokens: 6144,
+  requestedOutputTokens: 2048,
+  selectedConversation: [],
+  packets: topicIds.map((topicId, index) => ({
+    topicId,
+    status: "partial" as const,
+    claimCount: 0,
+    gapCount: 0,
+    packetSha256Hex: String.fromCharCode("c".charCodeAt(0) + index).repeat(64),
+  })),
+});
+
 const insertProviderMeasurementAndUsage = (
   fixture: Fixture,
   options: {
@@ -851,21 +990,24 @@ const insertProviderMeasurementAndUsage = (
     readonly agentRole: string;
     readonly loopIteration: number;
     readonly attempt: number;
+    readonly providerRequestIndex?: number;
     readonly requestSha256Hex: string;
     readonly withUsage?: boolean;
+    readonly repairConsumed?: boolean;
   },
 ) =>
   Effect.gen(function* () {
+    const providerRequestIndex = options.providerRequestIndex ?? 0;
     yield* insertAiObservation({
       runId: fixture.runId,
       chatId: fixture.chatId,
       emittingTask: options.taskId,
       loopIteration: options.loopIteration,
       attempt: options.attempt,
-      observationKey: `fixture:${options.taskId}:measurement:${options.loopIteration}:${options.attempt}`,
+      observationKey: `fixture:${options.taskId}:measurement:${options.loopIteration}:${options.attempt}:${providerRequestIndex}`,
       kind: "provider_request_measurement",
       payload: {
-        providerRequestIndex: 0,
+        providerRequestIndex,
         agentRole: options.agentRole,
         modelId: "glm-5-turbo",
         requestSha256Hex: options.requestSha256Hex,
@@ -876,15 +1018,25 @@ const insertProviderMeasurementAndUsage = (
         usableInputTokens: 6144,
         contextWindow: 8192,
         passed: true,
+        ...(options.repairConsumed === undefined ? {} : { repairConsumed: options.repairConsumed }),
       },
     });
+    if (options.agentRole === "internal_retrieval" && providerRequestIndex > 0) {
+      yield* insertStructuredReviewPreview(fixture, {
+        taskId: options.taskId,
+        loopIteration: options.loopIteration,
+        attempt: options.attempt,
+        providerRequestIndex,
+        providerInputSha256Hex: options.requestSha256Hex,
+      });
+    }
     if (options.withUsage === false) return;
     yield* insertAiRunUsage({
       runId: fixture.runId,
       taskId: options.taskId,
       loopIteration: options.loopIteration,
       attempt: options.attempt,
-      providerRequestIndex: 0,
+      providerRequestIndex,
       agentRole: options.agentRole,
       modelId: "glm-5-turbo",
       providerServiceId: "zai_coding_plan_official",
@@ -896,6 +1048,38 @@ const insertProviderMeasurementAndUsage = (
         totalTokens: 14,
         stopReason: "stop",
       },
+    });
+  });
+
+const insertInternalRetrievalPlanAndReview = (
+  fixture: Fixture,
+  options: {
+    readonly taskId: string;
+    readonly loopIteration: number;
+    readonly attempt: number;
+    readonly planRequestSha256Hex?: string;
+    readonly reviewRequestSha256Hex?: string;
+    readonly withUsage?: boolean;
+  },
+) =>
+  Effect.gen(function* () {
+    yield* insertProviderMeasurementAndUsage(fixture, {
+      taskId: options.taskId,
+      agentRole: "internal_retrieval",
+      loopIteration: options.loopIteration,
+      attempt: options.attempt,
+      providerRequestIndex: 0,
+      requestSha256Hex: options.planRequestSha256Hex ?? "e".repeat(64),
+      ...(options.withUsage === undefined ? {} : { withUsage: options.withUsage }),
+    });
+    yield* insertProviderMeasurementAndUsage(fixture, {
+      taskId: options.taskId,
+      agentRole: "internal_retrieval",
+      loopIteration: options.loopIteration,
+      attempt: options.attempt,
+      providerRequestIndex: 1,
+      requestSha256Hex: options.reviewRequestSha256Hex ?? "f".repeat(64),
+      ...(options.withUsage === undefined ? {} : { withUsage: options.withUsage }),
     });
   });
 
@@ -951,7 +1135,10 @@ const insertProviderMeasurementAndUsageAfterTerminal = (
     `;
   });
 
-const seedFanoutFailureBase = (fixture: Fixture) =>
+const seedFanoutFailureBase = (
+  fixture: Fixture,
+  topicIds: readonly ("t1" | "t2" | "t3")[] = ["t1", "t2"],
+) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const stateRows = yield* sql<{
@@ -976,14 +1163,14 @@ const seedFanoutFailureBase = (fixture: Fixture) =>
       attempt: 0,
       requestSha256Hex: "a".repeat(64),
     });
-    for (const topicId of ["t1", "t2"] as const) {
+    for (const [topicIndex, topicId] of topicIds.entries()) {
       const internalTaskId = `topic-${topicId}-retrieve-internal`;
-      yield* insertProviderMeasurementAndUsage(fixture, {
+      yield* insertInternalRetrievalPlanAndReview(fixture, {
         taskId: internalTaskId,
-        agentRole: "internal_retrieval",
         loopIteration: 0,
         attempt: 0,
-        requestSha256Hex: `${topicId === "t1" ? "b" : "c"}`.repeat(64),
+        planRequestSha256Hex: String.fromCharCode("b".charCodeAt(0) + topicIndex).repeat(64),
+        reviewRequestSha256Hex: String.fromCharCode("d".charCodeAt(0) + topicIndex).repeat(64),
       });
       yield* insertAiObservation({
         runId: fixture.runId,
@@ -1018,26 +1205,30 @@ const seedFanoutFailureBase = (fixture: Fixture) =>
     }
   });
 
-const seedFailedReducedContext = (
+const seedFailedCompactedContext = (
   fixture: Fixture,
   options:
     | {
         readonly answerTaskId: "single-answer";
         readonly answerAttempt: number;
         readonly initialLedger: ReturnType<typeof failedDirectContextLedger>;
-        readonly reducedLedger: ReturnType<typeof failedDirectContextLedger>;
+        readonly compactedLedger: ReturnType<typeof failedDirectContextLedger>;
         readonly initialAttempt?: number;
-        readonly reducedLoopIteration?: number;
-        readonly reducedAttempt?: number;
+        readonly compactedLoopIteration?: number;
+        readonly compactedAttempt?: number;
+        readonly answerRepairConsumed?: boolean;
+        readonly compactedBeforeInitial?: boolean;
       }
     | {
         readonly answerTaskId: "topic-t1-answer";
         readonly answerAttempt: number;
         readonly initialLedger: ReturnType<typeof failedTopicContextLedger>;
-        readonly reducedLedger: ReturnType<typeof failedTopicContextLedger>;
+        readonly compactedLedger: ReturnType<typeof failedTopicContextLedger>;
         readonly initialAttempt?: number;
-        readonly reducedLoopIteration?: number;
-        readonly reducedAttempt?: number;
+        readonly compactedLoopIteration?: number;
+        readonly compactedAttempt?: number;
+        readonly answerRepairConsumed?: boolean;
+        readonly compactedBeforeInitial?: boolean;
       },
 ) =>
   Effect.gen(function* () {
@@ -1054,15 +1245,18 @@ const seedFailedReducedContext = (
       agentRole: options.answerTaskId === "single-answer" ? "direct_answer" : "topic_answer",
       loopIteration: 0,
       attempt: options.answerAttempt,
-      requestSha256Hex: options.reducedLedger.requestSha256Hex,
+      requestSha256Hex: options.compactedLedger.requestSha256Hex,
+      ...(options.answerRepairConsumed === undefined
+        ? {}
+        : { repairConsumed: options.answerRepairConsumed }),
       withUsage: false,
     });
     const initialTaskId =
       options.answerTaskId === "single-answer" ? "single-measure" : "topic-t1-measure";
-    const reducedTaskId =
+    const compactedTaskId =
       options.answerTaskId === "single-answer"
-        ? "single-reduce-measure"
-        : "topic-t1-reduce-measure";
+        ? "single-compact-measure"
+        : "topic-t1-compact-measure";
     const topicId = options.answerTaskId === "single-answer" ? undefined : "t1";
     const insertContextMeasurement = (
       taskId: string,
@@ -1071,8 +1265,8 @@ const seedFailedReducedContext = (
       ledger:
         | ReturnType<typeof failedDirectContextLedger>
         | ReturnType<typeof failedTopicContextLedger>,
-      status: "needs_reduction" | "ready",
-      reductionRan: boolean,
+      status: "needs_compaction" | "ready",
+      compactionRan: boolean,
     ) =>
       insertAiObservation({
         runId: fixture.runId,
@@ -1092,27 +1286,36 @@ const seedFailedReducedContext = (
           usableInputTokens: ledger.usableInputTokens,
           contextWindow: 8192,
           status,
-          reductionRan,
-          reductionFeedback: [],
+          compactionRan,
+          compactionFeedback: [],
           restrictedContextLedger: ledger,
         },
       });
-    yield* insertContextMeasurement(
-      initialTaskId,
-      0,
-      options.initialAttempt ?? 1,
-      options.initialLedger,
-      "needs_reduction",
-      false,
-    );
-    yield* insertContextMeasurement(
-      reducedTaskId,
-      options.reducedLoopIteration ?? 1,
-      options.reducedAttempt ?? 2,
-      options.reducedLedger,
-      "ready",
-      true,
-    );
+    const insertInitial = () =>
+      insertContextMeasurement(
+        initialTaskId,
+        0,
+        options.initialAttempt ?? 1,
+        options.initialLedger,
+        "needs_compaction",
+        false,
+      );
+    const insertCompacted = () =>
+      insertContextMeasurement(
+        compactedTaskId,
+        options.compactedLoopIteration ?? 1,
+        options.compactedAttempt ?? 2,
+        options.compactedLedger,
+        "ready",
+        true,
+      );
+    if (options.compactedBeforeInitial) {
+      yield* insertCompacted();
+      yield* insertInitial();
+    } else {
+      yield* insertInitial();
+      yield* insertCompacted();
+    }
     yield* insertAiObservation({
       runId: fixture.runId,
       chatId: fixture.chatId,
@@ -1125,11 +1328,108 @@ const seedFailedReducedContext = (
         consumerTaskId: options.answerTaskId,
         ...(topicId === undefined ? {} : { topicId }),
         sourceKeys: [],
-        restrictedContextLedger: options.reducedLedger,
+        restrictedContextLedger: options.compactedLedger,
         terminalUsageCoordinate: {
           taskId: options.answerTaskId,
           loopIteration: 0,
           attempt: options.answerAttempt,
+          providerRequestIndex: 0,
+        },
+      },
+    });
+  });
+
+type SuccessfulCompactedContextLedger = {
+  readonly requestKind: "direct" | "topic" | "synthesis";
+  readonly modelId: string;
+  readonly requestSha256Hex: string;
+  readonly inputTokens: number;
+  readonly usableInputTokens: number;
+  readonly requestedOutputTokens: number;
+  readonly selectedConversation: readonly unknown[];
+  readonly question?: string;
+  readonly topicId?: "t1" | "t2" | "t3";
+  readonly gaps?: readonly string[];
+  readonly sources?: readonly unknown[];
+  readonly packets?: readonly {
+    readonly topicId: "t1" | "t2" | "t3";
+    readonly status: "answered" | "partial";
+    readonly claimCount: number;
+    readonly gapCount: number;
+    readonly packetSha256Hex: string;
+  }[];
+};
+
+const insertSuccessfulCompactedContextPath = (
+  fixture: Fixture,
+  options: {
+    readonly consumerTaskId: string;
+    readonly topicId?: "t1" | "t2" | "t3";
+    readonly sourceKeys?: readonly string[];
+    readonly initialTaskId: string;
+    readonly compactedTaskId: string;
+    readonly initialLedger: SuccessfulCompactedContextLedger;
+    readonly compactedLedger: SuccessfulCompactedContextLedger;
+  },
+) =>
+  Effect.gen(function* () {
+    const insertMeasurement = (
+      taskId: string,
+      loopIteration: number,
+      attempt: number,
+      ledger: SuccessfulCompactedContextLedger,
+      status: "needs_compaction" | "ready",
+      compactionRan: boolean,
+    ) =>
+      insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: taskId,
+        loopIteration,
+        attempt,
+        observationKey: `fixture:${taskId}:context-measurement:${loopIteration}:${attempt}`,
+        kind: "context_measurement",
+        payload: {
+          consumerTaskId: options.consumerTaskId,
+          ...(options.topicId === undefined ? {} : { topicId: options.topicId }),
+          mandatoryInputTokens: 10,
+          discretionaryInputTokens: Math.max(0, ledger.inputTokens - 10),
+          totalInputTokens: ledger.inputTokens,
+          requestedOutputTokens: ledger.requestedOutputTokens,
+          usableInputTokens: ledger.usableInputTokens,
+          contextWindow: 8192,
+          status,
+          compactionRan,
+          compactionFeedback: [],
+          restrictedContextLedger: ledger,
+        },
+      });
+    yield* insertMeasurement(
+      options.initialTaskId,
+      0,
+      1,
+      options.initialLedger,
+      "needs_compaction",
+      false,
+    );
+    yield* insertMeasurement(options.compactedTaskId, 1, 2, options.compactedLedger, "ready", true);
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId: fixture.chatId,
+      emittingTask: options.consumerTaskId,
+      loopIteration: 0,
+      attempt: 0,
+      observationKey: `fixture:${options.consumerTaskId}:context-serialized`,
+      kind: "context_serialized",
+      payload: {
+        consumerTaskId: options.consumerTaskId,
+        ...(options.topicId === undefined ? {} : { topicId: options.topicId }),
+        sourceKeys: options.sourceKeys ?? [],
+        restrictedContextLedger: options.compactedLedger,
+        terminalUsageCoordinate: {
+          taskId: options.consumerTaskId,
+          loopIteration: 0,
+          attempt: 0,
           providerRequestIndex: 0,
         },
       },
@@ -1190,8 +1490,8 @@ const seedFailedSingleAnswerObservability = (
         usableInputTokens: 6144,
         contextWindow: 8192,
         status: "ready",
-        reductionRan: false,
-        reductionFeedback: [],
+        compactionRan: false,
+        compactionFeedback: [],
         restrictedContextLedger,
       },
     });
@@ -2080,6 +2380,14 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             stopReason: "stop",
           },
         });
+        yield* insertProviderMeasurementAndUsage(fixture, {
+          taskId: "single-retrieve-internal",
+          agentRole: "internal_retrieval",
+          loopIteration: 0,
+          attempt: 1,
+          providerRequestIndex: 1,
+          requestSha256Hex: "9".repeat(64),
+        });
         yield* insertAiObservation({
           runId: fixture.runId,
           chatId: fixture.chatId,
@@ -2124,12 +2432,12 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           kind: "retrieval_manifest",
           payload: { selectorRole: "internal", references: [] },
         });
-        yield* insertProviderMeasurementAndUsage(fixture, {
+        yield* insertInternalRetrievalPlanAndReview(fixture, {
           taskId: "single-retrieve-internal",
-          agentRole: "internal_retrieval",
           loopIteration: 0,
           attempt: 2,
-          requestSha256Hex: "9".repeat(64),
+          planRequestSha256Hex: "9".repeat(64),
+          reviewRequestSha256Hex: "a".repeat(64),
         });
         yield* insertAiObservation({
           runId: fixture.runId,
@@ -2776,6 +3084,10 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
       visibleText,
     };
+    const markers = [
+      { ...marker, sourceOrdinal: 0, serializedField: "messages[1].content.currentMessage" },
+      { ...marker, sourceOrdinal: 1, serializedField: "messages[2].content.currentMessage" },
+    ] satisfies readonly CodeOwnedSourceExposureProof[];
     const request = {
       requestClass: "fast" as const,
       model: "glm-5-turbo" as const,
@@ -2798,13 +3110,13 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       ],
       requestedOutputTokens: 128,
       reasoning: "medium" as const,
-      sourceExposureProofs: [marker, marker],
+      sourceExposureProofs: markers,
     };
     const model = resolveRegisteredModel("glm-5-turbo");
     const bindings = providerRequestSourceExposureProofBindings(request, model.countTextTokens);
-    expect(bindings).toHaveLength(1);
-    expect(bindings[0]?.binding.sourceOrdinal).toBe(1);
-    const proof = bindings[0]!;
+    expect(bindings).toHaveLength(2);
+    expect(bindings.map((binding) => binding.binding.sourceOrdinal).sort()).toEqual([0, 1]);
+    const proofs = bindings.map((binding) => binding.providerSerializationProofSha256Hex);
     const requestSha256Hex = providerRequestSha256Hex(request);
 
     await runDb(
@@ -2821,13 +3133,11 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           agentRole: "context_reducer",
           modelId: "glm-5-turbo",
           requestSha256Hex,
-          sourceExposureProofSha256Hexes: [proof.providerSerializationProofSha256Hex],
-          sourceExposureProofBindings: [
-            {
-              providerSerializationProofSha256Hex: proof.providerSerializationProofSha256Hex,
-              providerSerializationProofBinding: proof.binding,
-            },
-          ],
+          sourceExposureProofSha256Hexes: [...proofs].sort(),
+          sourceExposureProofBindings: bindings.map((proof) => ({
+            providerSerializationProofSha256Hex: proof.providerSerializationProofSha256Hex,
+            providerSerializationProofBinding: proof.binding,
+          })),
           inputTokens: 10,
           requestedOutputTokens: 128,
           usableInputTokens: 6144,
@@ -2865,7 +3175,10 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           attempt: 0,
           providerRequestIndex: 0,
           providerRequestSha256Hex: requestSha256Hex,
-          ...marker,
+          ...markers[0]!,
+          providerSerializationProofBinding: bindings.find(
+            (binding) => binding.binding.sourceOrdinal === 0,
+          )!.binding,
         }),
       ),
     ).resolves.toBe(true);
@@ -2878,11 +3191,13 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           attempt: 0,
           providerRequestIndex: 0,
           providerRequestSha256Hex: requestSha256Hex,
-          ...marker,
-          providerSerializationProofBinding: proof.binding,
+          ...markers[1]!,
+          providerSerializationProofBinding: bindings.find(
+            (binding) => binding.binding.sourceOrdinal === 1,
+          )!.binding,
         }),
       ),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
     const attestationBinding = await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -2896,7 +3211,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         return rows[0]?.binding;
       }),
     );
-    expect(attestationBinding?.sourceOrdinal).toBe(1);
+    expect(attestationBinding?.sourceOrdinal).toBe(0);
   });
 
   it("finalizes valid retry and crash-resume histories from the terminal attempt", async () => {
@@ -3004,8 +3319,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             usableInputTokens: 6144,
             contextWindow: 8192,
             status: "ready",
-            reductionRan: false,
-            reductionFeedback: [],
+            compactionRan: false,
+            compactionFeedback: [],
             restrictedContextLedger: {
               requestKind: "direct",
               modelId: "glm-5-turbo",
@@ -3163,8 +3478,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             usableInputTokens: 6144,
             contextWindow: 8192,
             status: "ready",
-            reductionRan: false,
-            reductionFeedback: [],
+            compactionRan: false,
+            compactionFeedback: [],
             restrictedContextLedger: {
               requestKind: "direct",
               modelId: "glm-5-turbo",
@@ -3390,6 +3705,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       "usage:request:model:plan-turn:0:0:0",
       "usage:request:model:single-answer:0:0:0",
       "usage:request:model:single-retrieve-internal:0:0:0",
+      "usage:request:model:single-retrieve-internal:0:0:1",
       "usage:request:model:single-retrieve-web:0:0:0",
       "usage:request:model:memory-extract:0:1:0",
       "memory_updated",
@@ -5381,6 +5697,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     expect(controlledState.keys).toEqual([
       "usage:request:model:plan-turn:0:0:0",
       "usage:request:model:single-retrieve-internal:0:0:0",
+      "usage:request:model:single-retrieve-internal:0:0:1",
       "usage:request:model:single-retrieve-web:0:0:0",
       "usage:request:model:memory-extract:0:1:0",
       "memory_updated",
@@ -5423,22 +5740,22 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     });
   });
 
-  it("binds a reduced direct failed answer to the terminal reduce measurement", async () => {
-    const fixture = await runDb(createFixture("failed-context-direct-reduced"));
+  it("binds a compacted direct failed answer to the terminal compact measurement", async () => {
+    const fixture = await runDb(createFixture("failed-context-direct-compacted"));
     const initialLedger = {
       ...failedDirectContextLedger("5".repeat(64)),
       inputTokens: 7000,
     };
-    const reducedLedger = failedDirectContextLedger("6".repeat(64));
+    const compactedLedger = failedDirectContextLedger("6".repeat(64));
     await runDb(
-      seedFailedReducedContext(fixture, {
+      seedFailedCompactedContext(fixture, {
         answerTaskId: "single-answer",
         answerAttempt: 4,
         initialLedger,
-        reducedLedger,
+        compactedLedger,
         initialAttempt: 5,
-        reducedLoopIteration: 0,
-        reducedAttempt: 0,
+        compactedLoopIteration: 0,
+        compactedAttempt: 0,
       }),
     );
     const memory = await runDb(
@@ -5462,22 +5779,22 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     });
   });
 
-  it("binds a reduced topic failed answer to its topic reduce measurement", async () => {
-    const fixture = await runDb(createFixture("failed-context-topic-reduced", "fanout"));
+  it("binds a compacted topic failed answer to its topic compact measurement", async () => {
+    const fixture = await runDb(createFixture("failed-context-topic-compacted", "fanout"));
     const initialLedger = {
       ...failedTopicContextLedger("7".repeat(64)),
       inputTokens: 7000,
     };
-    const reducedLedger = failedTopicContextLedger("8".repeat(64));
+    const compactedLedger = failedTopicContextLedger("8".repeat(64));
     await runDb(
-      seedFailedReducedContext(fixture, {
+      seedFailedCompactedContext(fixture, {
         answerTaskId: "topic-t1-answer",
         answerAttempt: 5,
         initialLedger,
-        reducedLedger,
+        compactedLedger,
         initialAttempt: 5,
-        reducedLoopIteration: 0,
-        reducedAttempt: 0,
+        compactedLoopIteration: 0,
+        compactedAttempt: 0,
       }),
     );
     const memory = await runDb(
@@ -5546,8 +5863,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                 usableInputTokens: 6144,
                 contextWindow: 8192,
                 status: "ready",
-                reductionRan: false,
-                reductionFeedback: [],
+                compactionRan: false,
+                compactionFeedback: [],
                 restrictedContextLedger: failedDirectContextLedger("7".repeat(64)),
               },
             });
@@ -5569,8 +5886,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                 usableInputTokens: 6144,
                 contextWindow: 8192,
                 status: "ready",
-                reductionRan: false,
-                reductionFeedback: [],
+                compactionRan: false,
+                compactionFeedback: [],
                 restrictedContextLedger: failedDirectContextLedger("7".repeat(64)),
               },
             });
@@ -5596,6 +5913,902 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       );
     }
   });
+
+  it.each(["direct", "topic", "synthesis"] as const)(
+    "finalizes an operation-shaped compacted %s answer",
+    async (label) => {
+      const fixture = await runDb(
+        createFixture(`successful-compacted-${label}`, label === "direct" ? "single" : "fanout"),
+      );
+      if (label === "direct") {
+        const initialLedger = failedDirectContextLedger("a".repeat(64));
+        const compactedLedger = failedDirectContextLedger("b".repeat(64));
+        await runDb(
+          seedFailedCompactedContext(fixture, {
+            answerTaskId: "single-answer",
+            answerAttempt: 0,
+            initialLedger,
+            compactedLedger,
+            initialAttempt: 0,
+            answerRepairConsumed: true,
+            compactedLoopIteration: 1,
+            compactedAttempt: 0,
+          }),
+        );
+        await runDb(
+          insertProviderMeasurementAndUsage(fixture, {
+            taskId: "single-answer",
+            agentRole: "direct_answer",
+            loopIteration: 0,
+            attempt: 0,
+            requestSha256Hex: compactedLedger.requestSha256Hex,
+            repairConsumed: true,
+          }),
+        );
+      } else {
+        await runDb(seedFanoutFailureBase(fixture));
+        const packetLedger = failedSynthesisContextLedger("8".repeat(64));
+        for (const topicId of ["t1", "t2"] as const) {
+          const topicTaskId = `topic-${topicId}-answer`;
+          const topicLedger = {
+            ...failedTopicContextLedger(`${topicId === "t1" ? "1" : "2"}`.repeat(64)),
+            topicId,
+            question: topicId === "t1" ? "first topic" : "second topic",
+          };
+          const compactedTopicLedger = {
+            ...topicLedger,
+            requestSha256Hex: `${topicId === "t1" ? "3" : "4"}`.repeat(64),
+          };
+          await runDb(
+            insertProviderMeasurementAndUsage(fixture, {
+              taskId: topicTaskId,
+              agentRole: "topic_answer",
+              loopIteration: 0,
+              attempt: 0,
+              requestSha256Hex: compactedTopicLedger.requestSha256Hex,
+            }),
+          );
+          await runDb(
+            insertSuccessfulCompactedContextPath(fixture, {
+              consumerTaskId: topicTaskId,
+              topicId,
+              initialTaskId: `topic-${topicId}-measure`,
+              compactedTaskId:
+                topicId === "t1" && label === "topic"
+                  ? `topic-${topicId}-compact-measure`
+                  : `topic-${topicId}-fallback-measure`,
+              initialLedger: topicLedger,
+              compactedLedger: compactedTopicLedger,
+            }),
+          );
+          await runDb(
+            insertAiObservation({
+              runId: fixture.runId,
+              chatId: fixture.chatId,
+              emittingTask: topicTaskId,
+              loopIteration: 0,
+              attempt: 0,
+              observationKey: `fixture:${topicTaskId}:topic-packet`,
+              kind: "topic_packet",
+              payload: {
+                topicId,
+                status: "partial",
+                sourceKeys: [],
+                claimCount: 0,
+                gapCount: 0,
+                packetSha256Hex:
+                  topicId === "t1"
+                    ? packetLedger.packets[0]!.packetSha256Hex
+                    : packetLedger.packets[1]!.packetSha256Hex,
+              },
+            }),
+          );
+        }
+        await runDb(
+          insertProviderMeasurementAndUsage(fixture, {
+            taskId: "fanout-synthesis",
+            agentRole: "synthesis",
+            loopIteration: 0,
+            attempt: 0,
+            requestSha256Hex: packetLedger.requestSha256Hex,
+          }),
+        );
+        await runDb(
+          insertSuccessfulCompactedContextPath(fixture, {
+            consumerTaskId: "fanout-synthesis",
+            initialTaskId: "fanout-synthesis-measure",
+            compactedTaskId:
+              label === "synthesis"
+                ? "fanout-synthesis-compact-measure"
+                : "fanout-synthesis-fallback-measure",
+            initialLedger: {
+              ...packetLedger,
+              requestSha256Hex: "7".repeat(64),
+            },
+            compactedLedger: packetLedger,
+          }),
+        );
+      }
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+      await expect(
+        runDb(
+          finalizeAiRun({
+            runId: fixture.runId,
+            expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+            coordinates: finalizeCoordinates,
+            answer:
+              label === "direct"
+                ? {
+                    status: "ok",
+                    mode: "single",
+                    content: "Compacted direct answer",
+                    sourceMap: [],
+                  }
+                : {
+                    status: "ok",
+                    mode: "synthesis",
+                    content: "Compacted synthesis answer",
+                    sourceMap: [],
+                  },
+            memory,
+          }),
+        ),
+      ).resolves.toMatchObject({ status: "succeeded", alreadyTerminal: false });
+    },
+  );
+
+  it.each([
+    { label: "absent", mutation: "absent", accepted: true },
+    { label: "true", mutation: "true", accepted: true },
+    { label: "false", mutation: "false", accepted: true },
+    { label: "string", mutation: "string", accepted: false },
+    { label: "number", mutation: "number", accepted: false },
+    { label: "null", mutation: "null", accepted: false },
+    { label: "unknown", mutation: "unknown", accepted: false },
+  ] as const)(
+    "enforces strict repairConsumed shape (%s)",
+    async ({ label, mutation, accepted }) => {
+      const fixture = await runDb(createFixture(`repair-consumed-${label}`));
+      await runDb(seedSingleObservability(fixture));
+      if (mutation !== "absent") {
+        await runDb(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            if (mutation === "unknown") {
+              yield* sql`
+              update ai_observations
+              set payload = payload || '{"unexpectedRepairField":true}'::jsonb
+              where run_id = ${fixture.runId}
+                and observation_key = 'fixture:single-answer:measurement'
+            `;
+            } else {
+              const value =
+                mutation === "true"
+                  ? "true"
+                  : mutation === "false"
+                    ? "false"
+                    : mutation === "null"
+                      ? "null"
+                      : mutation === "number"
+                        ? "1"
+                        : '"yes"';
+              yield* sql`
+              update ai_observations
+              set payload = jsonb_set(payload, '{repairConsumed}', ${value}::jsonb)
+              where run_id = ${fixture.runId}
+                and observation_key = 'fixture:single-answer:measurement'
+            `;
+            }
+          }),
+        );
+      }
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+      const terminal = runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Repair shape", sourceMap: [] },
+          memory,
+        }),
+      );
+      if (accepted) {
+        await expect(terminal).resolves.toMatchObject({ status: "succeeded" });
+      } else {
+        await expect(terminal).rejects.toThrow(/provider request measurement|strict|unknown/u);
+      }
+    },
+  );
+
+  it("selects compact over an earlier tied measurement regardless of insertion order", async () => {
+    const fixture = await runDb(createFixture("tied-compaction-measurements"));
+    const initialLedger = failedDirectContextLedger("a".repeat(64));
+    const compactedLedger = failedDirectContextLedger("b".repeat(64));
+    await runDb(
+      seedFailedCompactedContext(fixture, {
+        answerTaskId: "single-answer",
+        answerAttempt: 0,
+        initialLedger,
+        compactedLedger,
+        initialAttempt: 0,
+        compactedLoopIteration: 0,
+        compactedAttempt: 0,
+        answerRepairConsumed: true,
+        compactedBeforeInitial: true,
+      }),
+    );
+    await runDb(
+      insertProviderMeasurementAndUsage(fixture, {
+        taskId: "single-answer",
+        agentRole: "direct_answer",
+        loopIteration: 0,
+        attempt: 0,
+        requestSha256Hex: compactedLedger.requestSha256Hex,
+        repairConsumed: true,
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Tied compact", sourceMap: [] },
+          memory,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "succeeded", alreadyTerminal: false });
+  });
+
+  it.each([
+    { mutation: "subset", accepted: true },
+    { mutation: "reorder", accepted: false },
+    { mutation: "add", accepted: false },
+    { mutation: "mutate", accepted: false },
+  ] as const)(
+    "binds compacted selected conversation to immutable turn bytes (%s)",
+    async ({ mutation, accepted }) => {
+      const fixture = await runDb(createFixture(`conversation-compaction-${mutation}`));
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`update ai_runs set finished_at = now() where id = ${fixture.runId}`;
+        }),
+      );
+      const priorOne = await runDb(createNextRun(fixture, "Historical question one"));
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`update ai_runs set finished_at = now() where id = ${priorOne.runId}`;
+        }),
+      );
+      const priorTwo = await runDb(createNextRun(fixture, "Historical question two"));
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update ai_runs
+            set finished_at = now()
+            where id in (${priorOne.runId}, ${priorTwo.runId})
+          `;
+        }),
+      );
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update ai_runs
+            set finished_at = null
+            where id = ${fixture.runId}
+          `;
+        }),
+      );
+      const history = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const first = yield* sql<{ readonly id: string }>`
+            insert into chat_messages (chat_id, author, content)
+            values (${fixture.chatId}, 'assistant', 'Historical answer one')
+            returning id::text
+          `;
+          const second = yield* sql<{ readonly id: string }>`
+            insert into chat_messages (chat_id, author, content)
+            values (${fixture.chatId}, 'assistant', 'Historical answer two')
+            returning id::text
+          `;
+          return { firstAssistantId: first[0]!.id, secondAssistantId: second[0]!.id };
+        }),
+      );
+      const baselineConversation = [
+        {
+          kind: "complete" as const,
+          turnId: priorOne.runId,
+          userMessageId: priorOne.userMessageId,
+          assistantMessageId: history.firstAssistantId,
+        },
+        {
+          kind: "complete" as const,
+          turnId: priorTwo.runId,
+          userMessageId: priorTwo.userMessageId,
+          assistantMessageId: history.secondAssistantId,
+        },
+      ];
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update ai_observations
+            set payload = jsonb_set(
+              payload,
+              '{relevantTurnIds}',
+              ${JSON.stringify(baselineConversation.map((entry) => entry.turnId))}::jsonb
+            )
+            where run_id = ${fixture.runId}
+              and kind = 'turn_plan'
+          `;
+        }),
+      );
+      const compactedConversation =
+        mutation === "subset"
+          ? baselineConversation.slice(0, 1)
+          : mutation === "reorder"
+            ? [baselineConversation[1]!, baselineConversation[0]!]
+            : mutation === "add"
+              ? [
+                  ...baselineConversation,
+                  { ...baselineConversation[0]!, turnId: crypto.randomUUID() },
+                ]
+              : [
+                  {
+                    ...baselineConversation[0]!,
+                    assistantMessageId: crypto.randomUUID(),
+                  },
+                ];
+      const initialLedger = {
+        ...failedDirectContextLedger("a".repeat(64)),
+        selectedConversation: baselineConversation,
+      };
+      const compactedLedger = {
+        ...failedDirectContextLedger("b".repeat(64)),
+        selectedConversation: compactedConversation,
+      };
+      await runDb(
+        seedSingleObservability(fixture, {
+          includeAnswerMeasurement: false,
+          includeAnswerContext: false,
+          selectedConversation: baselineConversation,
+        }),
+      );
+      await runDb(
+        insertProviderMeasurementAndUsage(fixture, {
+          taskId: "single-answer",
+          agentRole: "direct_answer",
+          loopIteration: 0,
+          attempt: 0,
+          requestSha256Hex: compactedLedger.requestSha256Hex,
+        }),
+      );
+      await runDb(
+        insertSuccessfulCompactedContextPath(fixture, {
+          consumerTaskId: "single-answer",
+          initialTaskId: "single-measure",
+          compactedTaskId: "single-compact-measure",
+          initialLedger,
+          compactedLedger,
+        }),
+      );
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+      const terminal = runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Conversation subset", sourceMap: [] },
+          memory,
+        }),
+      );
+      if (accepted) {
+        await expect(terminal).resolves.toMatchObject({ status: "succeeded" });
+      } else {
+        await expect(terminal).rejects.toThrow(/conversation|turn|subset|ledger/u);
+      }
+    },
+  );
+
+  it.each([
+    { taskId: "single-compact-g001", agentRole: "context_compact_group", accepted: true },
+    { taskId: "single-compact-g099", agentRole: "context_source_tool", accepted: true },
+    { taskId: "single-fallback-g001", agentRole: "context_fallback_group", accepted: true },
+    { taskId: "single-compact-g1000", agentRole: "context_compact_group", accepted: false },
+    { taskId: "single-compact-g01", agentRole: "context_compact_group", accepted: false },
+    { taskId: "single-compact-g000", agentRole: "context_compact_group", accepted: false },
+    { taskId: "topic-t1-compact-g001", agentRole: "context_compact_group", accepted: false },
+  ] as const)(
+    "resolves canonical compaction group task $taskId with strict role $agentRole",
+    async ({ taskId, agentRole, accepted }) => {
+      const fixture = await runDb(createFixture(`compaction-group-${taskId}`));
+      await runDb(seedSingleObservability(fixture));
+      await runDb(
+        insertProviderMeasurementAndUsage(fixture, {
+          taskId,
+          agentRole,
+          loopIteration: 0,
+          attempt: 0,
+          requestSha256Hex: "c".repeat(64),
+        }),
+      );
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+      const terminal = runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "failed", code: "answer_failed", retryable: false },
+          memory,
+        }),
+      );
+      if (accepted) {
+        await expect(terminal).resolves.toMatchObject({
+          status: "failed",
+          alreadyTerminal: false,
+        });
+      } else {
+        await expect(terminal).rejects.toThrow(/foreign task owner/u);
+      }
+    },
+  );
+
+  it.each([
+    { phase: "compact", mutation: "success", accepted: true },
+    { phase: "fallback", mutation: "success", accepted: true },
+    { phase: "compact", mutation: "reordered", accepted: false },
+    { phase: "compact", mutation: "unproved", accepted: false },
+    { phase: "compact", mutation: "forged", accepted: false },
+  ] as const)(
+    "finalizes a 3-to-2 %s synthesis packet compaction (%s)",
+    async ({ phase, mutation, accepted }) => {
+      const topicIds = ["t1", "t2", "t3"] as const;
+      const fixture = await runDb(
+        createFixture(`three-topic-${phase}`, "fanout", "private_owner", true, true, [], topicIds),
+      );
+      await runDb(seedFanoutFailureBase(fixture, topicIds));
+      const fullSynthesisLedger = failedSynthesisContextLedger("7".repeat(64), topicIds);
+      const compactedSynthesisLedger = {
+        ...fullSynthesisLedger,
+        requestSha256Hex: "8".repeat(64),
+        packets:
+          mutation === "reordered"
+            ? [fullSynthesisLedger.packets[2]!, fullSynthesisLedger.packets[0]!]
+            : mutation === "unproved"
+              ? [
+                  { ...fullSynthesisLedger.packets[0]!, packetSha256Hex: "f".repeat(64) },
+                  fullSynthesisLedger.packets[2]!,
+                ]
+              : [fullSynthesisLedger.packets[0]!, fullSynthesisLedger.packets[2]!],
+      };
+      for (const [topicIndex, topicId] of topicIds.entries()) {
+        const topicTaskId = `topic-${topicId}-answer`;
+        const topicLedger = {
+          ...failedTopicContextLedger(String(topicIndex + 1).repeat(64)),
+          topicId,
+          question:
+            topicId === "t1" ? "first topic" : topicId === "t2" ? "second topic" : "third topic",
+        };
+        const compactedTopicLedger = {
+          ...topicLedger,
+          requestSha256Hex: String(topicIndex + 4).repeat(64),
+        };
+        await runDb(
+          insertProviderMeasurementAndUsage(fixture, {
+            taskId: topicTaskId,
+            agentRole: "topic_answer",
+            loopIteration: 0,
+            attempt: 0,
+            requestSha256Hex: compactedTopicLedger.requestSha256Hex,
+          }),
+        );
+        await runDb(
+          insertSuccessfulCompactedContextPath(fixture, {
+            consumerTaskId: topicTaskId,
+            topicId,
+            initialTaskId: `topic-${topicId}-measure`,
+            compactedTaskId: `topic-${topicId}-compact-measure`,
+            initialLedger: topicLedger,
+            compactedLedger: compactedTopicLedger,
+          }),
+        );
+        await runDb(
+          insertAiObservation({
+            runId: fixture.runId,
+            chatId: fixture.chatId,
+            emittingTask: topicTaskId,
+            loopIteration: 0,
+            attempt: 0,
+            observationKey: `fixture:${topicTaskId}:topic-packet`,
+            kind: "topic_packet",
+            payload: {
+              topicId,
+              status: "partial",
+              sourceKeys: [],
+              claimCount: 0,
+              gapCount: 0,
+              packetSha256Hex: fullSynthesisLedger.packets[topicIndex]!.packetSha256Hex,
+            },
+          }),
+        );
+      }
+      if (mutation === "forged") {
+        await runDb(
+          insertAiObservation({
+            runId: fixture.runId,
+            chatId: fixture.chatId,
+            emittingTask: "topic-t1-answer",
+            loopIteration: 1,
+            attempt: 0,
+            observationKey: "fixture:forged-topic-packet-owner",
+            kind: "topic_packet",
+            payload: {
+              topicId: "t3",
+              status: "partial",
+              sourceKeys: [],
+              claimCount: 0,
+              gapCount: 0,
+              packetSha256Hex: fullSynthesisLedger.packets[2]!.packetSha256Hex,
+            },
+          }),
+        );
+      }
+      await runDb(
+        insertProviderMeasurementAndUsage(fixture, {
+          taskId: "fanout-synthesis",
+          agentRole: "synthesis",
+          loopIteration: 0,
+          attempt: 0,
+          requestSha256Hex: compactedSynthesisLedger.requestSha256Hex,
+        }),
+      );
+      await runDb(
+        insertSuccessfulCompactedContextPath(fixture, {
+          consumerTaskId: "fanout-synthesis",
+          initialTaskId: "fanout-synthesis-measure",
+          compactedTaskId: `fanout-synthesis-${phase}-measure`,
+          initialLedger: fullSynthesisLedger,
+          compactedLedger: compactedSynthesisLedger,
+        }),
+      );
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+      const terminal = runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: {
+            status: "ok",
+            mode: "synthesis",
+            content: `3-to-2 ${phase} synthesis answer`,
+            sourceMap: [],
+          },
+          memory,
+        }),
+      );
+      if (accepted) {
+        await expect(terminal).resolves.toMatchObject({
+          status: "succeeded",
+          alreadyTerminal: false,
+        });
+      } else {
+        await expect(terminal).rejects.toThrow(
+          /synthesis packet order|synthesis ledger differs|canonical packet ledger|foreign owner|topic_packet output is not bound/u,
+        );
+      }
+    },
+  );
+
+  it.each([
+    { mutation: "success", accepted: true },
+    { mutation: "omitted-subset", accepted: true },
+    { mutation: "omitted-foreign", accepted: false },
+    { mutation: "omitted-duplicate", accepted: false },
+    { mutation: "omitted-reorder", accepted: false },
+    { mutation: "leak-omitted", accepted: false },
+    { mutation: "drop-retained", accepted: false },
+    { mutation: "tamper-retained", accepted: false },
+    { mutation: "tamper-omitted", accepted: false },
+  ] as const)(
+    "finalizes source-bearing omitted topic packets (%s)",
+    async ({ mutation, accepted }) => {
+      const topicIds = ["t1", "t2", "t3"] as const;
+      const fixture = await runDb(
+        createFixture(
+          `source-bearing-${mutation}`,
+          "fanout",
+          "private_owner",
+          true,
+          true,
+          [],
+          topicIds,
+        ),
+      );
+      const sourceMessageIds = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const ids: string[] = [];
+          for (const topicId of topicIds) {
+            const rows = yield* sql<{ readonly id: string }>`
+              insert into chat_messages (chat_id, author, content)
+              values (${fixture.chatId}, 'user', ${`Evidence ${topicId}`})
+              returning id::text
+            `;
+            ids.push(rows[0]!.id);
+          }
+          return ids;
+        }),
+      );
+      const sources = sourceMessageIds.map((messageId, index) => ({
+        sourceKey: sourceKeyFor(fixture, index + 1),
+        locator: { kind: "chat_message" as const, messageId },
+        label: `Evidence ${topicIds[index]}`,
+        publicProvenance: {},
+        uses: [],
+      })) satisfies readonly FinalSourceRecord[];
+      const omittedSource = {
+        sourceKey: sourceKeyFor(fixture, 4),
+        locator: { kind: "chat_message" as const, messageId: sourceMessageIds[1]! },
+        label: "Evidence t2 secondary",
+        publicProvenance: {},
+        uses: [],
+      } satisfies FinalSourceRecord;
+      const sourceEntryFor = (source: FinalSourceRecord) => ({
+        candidateId: candidateIdForSource(source),
+        sourceKey: source.sourceKey,
+        kind: "chat_message" as const,
+        purpose: "provider-authored topic evidence",
+        label: source.label,
+        ranges: [],
+      });
+      const answerSources = sources.map((source, index) => ({
+        ...source,
+        uses:
+          index === 1
+            ? []
+            : [
+                {
+                  consumerTaskId: `topic-${topicIds[index]}-answer`,
+                  topicId: topicIds[index],
+                  contextOrder: 0,
+                  renderedTokenCount: 3,
+                  ranges: [],
+                },
+              ],
+      }));
+      const terminalSources =
+        mutation === "leak-omitted"
+          ? answerSources.map((source, index) =>
+              index === 1
+                ? {
+                    ...source,
+                    uses: [
+                      {
+                        consumerTaskId: "topic-t2-answer",
+                        topicId: "t2" as const,
+                        contextOrder: 1,
+                        renderedTokenCount: 3,
+                        ranges: [],
+                      },
+                    ],
+                  }
+                : source,
+            )
+          : mutation === "drop-retained"
+            ? answerSources.filter((source) => source.sourceKey !== sources[0]!.sourceKey)
+            : answerSources.filter((source) => source.uses.length > 0);
+      await runDb(seedFanoutFailureBase(fixture, topicIds));
+      const fullSynthesisLedger = failedSynthesisContextLedger("7".repeat(64), topicIds);
+      const compactedSynthesisLedger = {
+        ...fullSynthesisLedger,
+        requestSha256Hex: "8".repeat(64),
+        packets: [fullSynthesisLedger.packets[0]!, fullSynthesisLedger.packets[2]!],
+      };
+      for (const [topicIndex, topicId] of topicIds.entries()) {
+        const topicTaskId = `topic-${topicId}-answer`;
+        const source = sources[topicIndex]!;
+        const topicSources =
+          topicId === "t2"
+            ? [sourceEntryFor(source), sourceEntryFor(omittedSource)]
+            : [sourceEntryFor(source)];
+        const packetSourceKeys =
+          topicId !== "t2" ||
+          mutation === "success" ||
+          mutation === "leak-omitted" ||
+          mutation === "drop-retained" ||
+          mutation === "tamper-retained" ||
+          mutation === "tamper-omitted"
+            ? [source.sourceKey]
+            : mutation === "omitted-subset"
+              ? [source.sourceKey]
+              : mutation === "omitted-foreign"
+                ? [sources[0]!.sourceKey]
+                : mutation === "omitted-duplicate"
+                  ? [source.sourceKey, source.sourceKey]
+                  : [omittedSource.sourceKey, source.sourceKey];
+        const topicLedger = {
+          ...failedTopicContextLedger(String(topicIndex + 1).repeat(64)),
+          topicId,
+          question:
+            topicId === "t1" ? "first topic" : topicId === "t2" ? "second topic" : "third topic",
+          sources: topicSources,
+        };
+        const compactedTopicLedger = {
+          ...topicLedger,
+          requestSha256Hex: String(topicIndex + 4).repeat(64),
+        };
+        await runDb(
+          insertProviderMeasurementAndUsage(fixture, {
+            taskId: topicTaskId,
+            agentRole: "topic_answer",
+            loopIteration: 0,
+            attempt: 0,
+            requestSha256Hex: compactedTopicLedger.requestSha256Hex,
+          }),
+        );
+        await runDb(
+          insertSuccessfulCompactedContextPath(fixture, {
+            consumerTaskId: topicTaskId,
+            topicId,
+            sourceKeys: topicSources.map((entry) => entry.sourceKey),
+            initialTaskId: `topic-${topicId}-measure`,
+            compactedTaskId: `topic-${topicId}-compact-measure`,
+            initialLedger: topicLedger,
+            compactedLedger: compactedTopicLedger,
+          }),
+        );
+        await runDb(
+          insertAiObservation({
+            runId: fixture.runId,
+            chatId: fixture.chatId,
+            emittingTask: topicTaskId,
+            loopIteration: 0,
+            attempt: 0,
+            observationKey: `fixture:${topicTaskId}:topic-packet`,
+            kind: "topic_packet",
+            payload: {
+              topicId,
+              status: "partial",
+              sourceKeys: packetSourceKeys,
+              claimCount: 0,
+              gapCount: 0,
+              packetSha256Hex: fullSynthesisLedger.packets[topicIndex]!.packetSha256Hex,
+            },
+          }),
+        );
+        if (topicId !== "t2") {
+          const binding = {
+            messageIndex: 0,
+            sourceOrdinal: 0,
+            serializedField: `messages[0].content.evidence.source[0](${source.sourceKey})`,
+            orderedSourceDescriptor: `fixture:${source.sourceKey}`,
+          } as const;
+          const proof = providerVisibleSourceExposureProofSha256Hex(
+            {
+              sourceKind: "chat_message",
+              logicalSourceIdentity: candidateIdForSource(source),
+              contentItemIdentity: source.locator.messageId,
+              exposureStage: "answer_serialized",
+              visibleTokenCount: 3,
+            },
+            binding,
+          );
+          await runDb(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              yield* sql`
+                update ai_observations
+                set payload = payload || ${sql.json({
+                  sourceExposureProofSha256Hexes: [proof],
+                  sourceExposureProofBindings: [
+                    {
+                      providerSerializationProofSha256Hex: proof,
+                      providerSerializationProofBinding: binding,
+                    },
+                  ],
+                })}
+                where run_id = ${fixture.runId}
+                  and emitting_task = ${topicTaskId}
+                  and kind = 'provider_request_measurement'
+              `;
+            }),
+          );
+          await runDb(
+            insertAiSourceExposure({
+              runId: fixture.runId,
+              taskId: topicTaskId,
+              loopIteration: 0,
+              attempt: 0,
+              providerRequestIndex: 0,
+              providerRequestSha256Hex: compactedTopicLedger.requestSha256Hex,
+              sourceKind: "chat_message",
+              logicalSourceIdentity: candidateIdForSource(source),
+              contentItemIdentity: source.locator.messageId,
+              exposureStage: "answer_serialized",
+              visibleTokenCount: 3,
+              providerSerializationProofBinding: binding,
+            }),
+          );
+        }
+      }
+      if (mutation === "tamper-retained" || mutation === "tamper-omitted") {
+        const topicId = mutation === "tamper-retained" ? "t1" : "t2";
+        await runDb(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql`
+              update ai_observations
+              set payload = jsonb_set(payload, '{packetSha256Hex}', to_jsonb(${`f`.repeat(64)}::text))
+              where run_id = ${fixture.runId}
+                and kind = 'topic_packet'
+                and emitting_task = ${`topic-${topicId}-answer`}
+            `;
+          }),
+        );
+      }
+      await runDb(
+        insertProviderMeasurementAndUsage(fixture, {
+          taskId: "fanout-synthesis",
+          agentRole: "synthesis",
+          loopIteration: 0,
+          attempt: 0,
+          requestSha256Hex: compactedSynthesisLedger.requestSha256Hex,
+        }),
+      );
+      await runDb(
+        insertSuccessfulCompactedContextPath(fixture, {
+          consumerTaskId: "fanout-synthesis",
+          sourceKeys: terminalSources.flatMap((source) =>
+            source.uses.length > 0 ? [source.sourceKey] : [],
+          ),
+          initialTaskId: "fanout-synthesis-measure",
+          compactedTaskId: "fanout-synthesis-compact-measure",
+          initialLedger: fullSynthesisLedger,
+          compactedLedger: compactedSynthesisLedger,
+        }),
+      );
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+      const terminal = runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: {
+            status: "ok",
+            mode: "synthesis",
+            content: "Source-bearing omitted packet answer",
+            sourceMap: terminalSources,
+          },
+          memory,
+        }),
+      );
+      if (accepted) {
+        await expect(terminal).resolves.toMatchObject({ status: "succeeded" });
+      } else {
+        await expect(terminal).rejects.toThrow(/omitted topic|packet|source|exposure|canonical/u);
+      }
+    },
+  );
 
   it("fences success and controlled failure before any terminal mutation when Smithers identity is stale", async () => {
     const success = await runDb(createFixture("stale-smithers-success", "clarify"));

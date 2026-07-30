@@ -4,7 +4,9 @@ import { type AiRunActivityEvent, activityCodeForPhase, activityStageForCode } f
 import {
   AiRuntimeError,
   isAbortError,
+  isAiRunErrorCode,
   isAiRuntimeError,
+  isRetryableAiRunError,
   type AiRunErrorCode,
 } from "../runtime/errors";
 import { currentTaskRuntime } from "../runtime/task-cancellation";
@@ -28,12 +30,50 @@ export interface AiPhaseLogEntry {
   readonly totalTokens?: number | undefined;
   readonly requestedOutputTokens?: number | undefined;
   readonly usableInputTokens?: number | undefined;
+  readonly afterInputTokens?: number | undefined;
   readonly itemCount?: number | undefined;
   readonly sourceCount?: number | undefined;
   readonly topicCount?: number | undefined;
   readonly conversationCount?: number | undefined;
   readonly memoryCount?: number | undefined;
   readonly consumerCount?: number | undefined;
+  readonly queryCount?: number | undefined;
+  readonly branchCount?: number | undefined;
+  readonly applicableBranchCount?: number | undefined;
+  readonly hitCount?: number | undefined;
+  readonly candidateCount?: number | undefined;
+  readonly groupCount?: number | undefined;
+  readonly passageCount?: number | undefined;
+  readonly decisionCount?: number | undefined;
+  readonly selectedCount?: number | undefined;
+  readonly omittedCount?: number | undefined;
+  readonly keepCount?: number | undefined;
+  readonly compactCount?: number | undefined;
+  readonly omitCount?: number | undefined;
+  readonly retainCount?: number | undefined;
+  readonly tightenCount?: number | undefined;
+  readonly renderedTokenCount?: number | undefined;
+  readonly overByTokens?: number | undefined;
+  readonly capApplied?: boolean | undefined;
+  readonly fallbackRan?: boolean | undefined;
+  readonly repairUsed?: boolean | undefined;
+  readonly action?:
+    | "accept"
+    | "replace"
+    | "no_evidence"
+    | "keep"
+    | "compact"
+    | "omit"
+    | "retain"
+    | "tighten"
+    | "select"
+    | undefined;
+  readonly failureStage?:
+    | "context_plan_unfit"
+    | "context_mandatory_too_large"
+    | "synthesis_budget_mismatch"
+    | undefined;
+  readonly retryable?: boolean | undefined;
   readonly errorCode?: AiRunErrorCode | undefined;
   readonly outcome?:
     | "single"
@@ -55,12 +95,30 @@ export type AiActivityLogger = (
   entry: AiPhaseLogEntry,
 ) => Promise<void> | void;
 
+const contextPreparationPhases: Record<string, true> = {
+  context_compaction_plan: true,
+  context_compaction_group: true,
+  context_compaction_group_plan: true,
+  context_compaction_fallback_group_plan: true,
+  context_compaction_collect: true,
+  context_compaction_fallback_group: true,
+  context_compaction_fallback_collect: true,
+  context_compaction_fallback_plan: true,
+  context_compaction_measure: true,
+  context_compaction_fallback_measure: true,
+  context_compaction_final_measure: true,
+  context_compaction_select: true,
+};
+
+const publicCodeForPhase = (phase: string): AiRunActivityEvent["code"] | undefined =>
+  contextPreparationPhases[phase] === true ? "context_preparation" : activityCodeForPhase(phase);
+
 export const publicActivityFromPhase = (
   entry: AiPhaseLogEntry,
   args: readonly unknown[] = [],
 ): AiRunActivityEvent | undefined => {
   if (entry.phase === "load_turn" || entry.phase === "answer_stream") return undefined;
-  const code = activityCodeForPhase(entry.phase);
+  const code = publicCodeForPhase(entry.phase);
   if (code === undefined) return undefined;
   if (entry.phase === "web_retrieval") {
     const scope = record(record(args[0]).acceptanceScope);
@@ -70,11 +128,16 @@ export const publicActivityFromPhase = (
     const scope = record(record(args[0]).acceptanceScope);
     if (scope.memoryMode !== "private_owner") return undefined;
   }
+  const retryable =
+    entry.retryable ??
+    (entry.errorCode === undefined ? true : isRetryableAiRunError(entry.errorCode));
   const status =
     entry.status === "started"
       ? "running"
       : entry.status === "failed"
-        ? "retrying"
+        ? retryable
+          ? "retrying"
+          : "failed"
         : entry.status === "rejected"
           ? "retrying"
           : "complete";
@@ -116,13 +179,41 @@ export const safeAiPhaseLogFields = (entry: AiPhaseLogEntry): AiPhaseLogEntry =>
     ? {}
     : { requestedOutputTokens: entry.requestedOutputTokens }),
   ...(entry.usableInputTokens === undefined ? {} : { usableInputTokens: entry.usableInputTokens }),
+  ...(entry.afterInputTokens === undefined ? {} : { afterInputTokens: entry.afterInputTokens }),
   ...(entry.itemCount === undefined ? {} : { itemCount: entry.itemCount }),
   ...(entry.sourceCount === undefined ? {} : { sourceCount: entry.sourceCount }),
   ...(entry.topicCount === undefined ? {} : { topicCount: entry.topicCount }),
   ...(entry.conversationCount === undefined ? {} : { conversationCount: entry.conversationCount }),
   ...(entry.memoryCount === undefined ? {} : { memoryCount: entry.memoryCount }),
   ...(entry.consumerCount === undefined ? {} : { consumerCount: entry.consumerCount }),
+  ...(entry.queryCount === undefined ? {} : { queryCount: entry.queryCount }),
+  ...(entry.branchCount === undefined ? {} : { branchCount: entry.branchCount }),
+  ...(entry.applicableBranchCount === undefined
+    ? {}
+    : { applicableBranchCount: entry.applicableBranchCount }),
+  ...(entry.hitCount === undefined ? {} : { hitCount: entry.hitCount }),
+  ...(entry.candidateCount === undefined ? {} : { candidateCount: entry.candidateCount }),
+  ...(entry.groupCount === undefined ? {} : { groupCount: entry.groupCount }),
+  ...(entry.passageCount === undefined ? {} : { passageCount: entry.passageCount }),
+  ...(entry.decisionCount === undefined ? {} : { decisionCount: entry.decisionCount }),
+  ...(entry.selectedCount === undefined ? {} : { selectedCount: entry.selectedCount }),
+  ...(entry.omittedCount === undefined ? {} : { omittedCount: entry.omittedCount }),
+  ...(entry.keepCount === undefined ? {} : { keepCount: entry.keepCount }),
+  ...(entry.compactCount === undefined ? {} : { compactCount: entry.compactCount }),
+  ...(entry.retainCount === undefined ? {} : { retainCount: entry.retainCount }),
+  ...(entry.omitCount === undefined ? {} : { omitCount: entry.omitCount }),
+  ...(entry.tightenCount === undefined ? {} : { tightenCount: entry.tightenCount }),
+  ...(entry.renderedTokenCount === undefined
+    ? {}
+    : { renderedTokenCount: entry.renderedTokenCount }),
+  ...(entry.overByTokens === undefined ? {} : { overByTokens: entry.overByTokens }),
+  ...(entry.capApplied === undefined ? {} : { capApplied: entry.capApplied }),
+  ...(entry.fallbackRan === undefined ? {} : { fallbackRan: entry.fallbackRan }),
+  ...(entry.repairUsed === undefined ? {} : { repairUsed: entry.repairUsed }),
+  ...(entry.action === undefined ? {} : { action: entry.action }),
+  ...(entry.failureStage === undefined ? {} : { failureStage: entry.failureStage }),
   ...(entry.errorCode === undefined ? {} : { errorCode: entry.errorCode }),
+  ...(entry.retryable === undefined ? {} : { retryable: entry.retryable }),
   ...(entry.outcome === undefined ? {} : { outcome: entry.outcome }),
 });
 
@@ -132,14 +223,21 @@ type OperationName =
   | "extractMemory"
   | "freezeContext"
   | "selectMemories"
-  | "retrieveInternal"
+  | "retrieveStructuredInternal"
   | "retrieveWeb"
   | "assembleContext"
   | "measureAssembly"
   | "mergeFanoutSources"
-  | "planReduction"
-  | "measureReduction"
+  | "createCompactionGroups"
+  | "createFallbackCompactionGroups"
   | "answerDirect"
+  | "initialCompactionManifest"
+  | "compactContextGroup"
+  | "collectCompaction"
+  | "collectFallbackCompaction"
+  | "measureCompaction"
+  | "fallbackCompactionManifest"
+  | "selectCompactionContext"
   | "clarify"
   | "allocateFanout"
   | "answerTopic"
@@ -148,7 +246,7 @@ type OperationName =
   | "finalize";
 
 interface PhaseRule {
-  readonly phase: string;
+  readonly phase: string | ((args: readonly unknown[]) => string);
   readonly additionalPhases?: readonly string[] | undefined;
   readonly asynchronous: boolean;
   readonly taskId: (args: readonly unknown[]) => string | undefined;
@@ -157,10 +255,10 @@ interface PhaseRule {
   readonly fallbackErrorCode: AiRunErrorCode;
 }
 
-const record = (value: unknown): Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const record = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : {});
 
 const stringAt = (args: readonly unknown[], index: number): string | undefined =>
   typeof args[index] === "string" ? args[index] : undefined;
@@ -171,13 +269,40 @@ const fixed =
     value;
 
 const topicFromTask = (taskId: string | undefined): "t1" | "t2" | "t3" | undefined => {
-  const match = /^topic-(t[123])-/u.exec(taskId ?? "");
-  return match?.[1] as "t1" | "t2" | "t3" | undefined;
+  const topic = /^topic-(t[123])-/u.exec(taskId ?? "")?.[1];
+  return topic === "t1" || topic === "t2" || topic === "t3" ? topic : undefined;
 };
 
 const topicFrom = (value: unknown): "t1" | "t2" | "t3" | undefined => {
   const candidate = record(value).topicId;
   return candidate === "t1" || candidate === "t2" || candidate === "t3" ? candidate : undefined;
+};
+const compactionTaskId = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  return /(?:^|-)compact-(?:plan|collect|measure|g[0-9]{3})$/u.test(value) ||
+    /(?:^|-)fallback-(?:plan|collect|measure|g[0-9]{3})$/u.test(value) ||
+    /(?:^|-)context-select$/u.test(value)
+    ? value
+    : undefined;
+};
+
+const compactionTaskIdFrom = (args: readonly unknown[]): string | undefined =>
+  args.map(compactionTaskId).find((value): value is string => value !== undefined);
+
+const compactionTopicFrom = (args: readonly unknown[]): "t1" | "t2" | "t3" | undefined => {
+  for (const arg of args) {
+    const topic = topicFrom(arg) ?? topicFromTask(compactionTaskId(arg));
+    if (topic !== undefined) return topic;
+  }
+  return undefined;
+};
+
+const compactionPhaseFrom = (args: readonly unknown[]): "compact" | "fallback" => {
+  for (const arg of args) {
+    const phase = record(arg).phase;
+    if (phase === "fallback") return "fallback";
+  }
+  return compactionTaskIdFrom(args)?.includes("-fallback-") === true ? "fallback" : "compact";
 };
 
 const rules: Record<OperationName, PhaseRule> = {
@@ -221,7 +346,7 @@ const rules: Record<OperationName, PhaseRule> = {
     model: "fast",
     fallbackErrorCode: "memory_selector_failed",
   },
-  retrieveInternal: {
+  retrieveStructuredInternal: {
     phase: "internal_retrieval",
     asynchronous: true,
     taskId: (args) => stringAt(args, 2),
@@ -260,21 +385,83 @@ const rules: Record<OperationName, PhaseRule> = {
     model: null,
     fallbackErrorCode: "context_assembly_failed",
   },
-  planReduction: {
-    phase: "context_reduction_plan",
+  createCompactionGroups: {
+    phase: "context_compaction_group_plan",
     asynchronous: true,
-    taskId: (args) => stringAt(args, 2),
-    topicId: (args) => topicFrom(args[1]) ?? topicFromTask(stringAt(args, 2)),
-    model: "fast",
-    fallbackErrorCode: "context_reducer_failed",
-  },
-  measureReduction: {
-    phase: "context_reduction_measure",
-    asynchronous: true,
-    taskId: (args) => stringAt(args, 3),
-    topicId: (args) => topicFrom(args[1]) ?? topicFromTask(stringAt(args, 3)),
+    taskId: compactionTaskIdFrom,
+    topicId: compactionTopicFrom,
     model: null,
-    fallbackErrorCode: "context_reducer_failed",
+    fallbackErrorCode: "context_compaction_failed",
+  },
+  createFallbackCompactionGroups: {
+    phase: "context_compaction_fallback_group_plan",
+    asynchronous: true,
+    taskId: compactionTaskIdFrom,
+    topicId: compactionTopicFrom,
+    model: null,
+    fallbackErrorCode: "context_compaction_failed",
+  },
+  initialCompactionManifest: {
+    phase: "context_compaction_plan",
+    asynchronous: true,
+    taskId: compactionTaskIdFrom,
+    topicId: compactionTopicFrom,
+    model: "fast",
+    fallbackErrorCode: "context_compaction_failed",
+  },
+  compactContextGroup: {
+    phase: (args) =>
+      compactionPhaseFrom(args) === "fallback"
+        ? "context_compaction_fallback_group"
+        : "context_compaction_group",
+    asynchronous: true,
+    taskId: compactionTaskIdFrom,
+    topicId: compactionTopicFrom,
+    model: "fast",
+    fallbackErrorCode: "context_compaction_failed",
+  },
+  collectCompaction: {
+    phase: "context_compaction_collect",
+    asynchronous: true,
+    taskId: compactionTaskIdFrom,
+    topicId: compactionTopicFrom,
+    model: null,
+    fallbackErrorCode: "context_compaction_failed",
+  },
+  collectFallbackCompaction: {
+    phase: "context_compaction_fallback_collect",
+    asynchronous: true,
+    taskId: compactionTaskIdFrom,
+    topicId: compactionTopicFrom,
+    model: null,
+    fallbackErrorCode: "context_compaction_failed",
+  },
+  measureCompaction: {
+    phase: (args) =>
+      compactionPhaseFrom(args) === "fallback"
+        ? "context_compaction_fallback_measure"
+        : "context_compaction_measure",
+    asynchronous: true,
+    taskId: compactionTaskIdFrom,
+    topicId: compactionTopicFrom,
+    model: null,
+    fallbackErrorCode: "context_compaction_failed",
+  },
+  fallbackCompactionManifest: {
+    phase: "context_compaction_fallback_plan",
+    asynchronous: true,
+    taskId: compactionTaskIdFrom,
+    topicId: compactionTopicFrom,
+    model: "fast",
+    fallbackErrorCode: "context_compaction_failed",
+  },
+  selectCompactionContext: {
+    phase: "context_compaction_select",
+    asynchronous: true,
+    taskId: compactionTaskIdFrom,
+    topicId: compactionTopicFrom,
+    model: null,
+    fallbackErrorCode: "context_compaction_failed",
   },
   answerDirect: {
     phase: "direct_answer_call",
@@ -331,39 +518,170 @@ const rules: Record<OperationName, PhaseRule> = {
   },
 };
 
-const operationNames = new Set<string>(Object.keys(rules));
+const operationNames: Record<OperationName, true> = {
+  loadTurn: true,
+  planTurn: true,
+  extractMemory: true,
+  freezeContext: true,
+  selectMemories: true,
+  retrieveStructuredInternal: true,
+  retrieveWeb: true,
+  assembleContext: true,
+  measureAssembly: true,
+  mergeFanoutSources: true,
+  createCompactionGroups: true,
+  createFallbackCompactionGroups: true,
+  initialCompactionManifest: true,
+  compactContextGroup: true,
+  collectCompaction: true,
+  collectFallbackCompaction: true,
+  measureCompaction: true,
+  fallbackCompactionManifest: true,
+  selectCompactionContext: true,
+  answerDirect: true,
+  clarify: true,
+  allocateFanout: true,
+  answerTopic: true,
+  synthesisContext: true,
+  synthesize: true,
+  finalize: true,
+};
+
+const isOperationName = (value: string): value is OperationName =>
+  Object.prototype.hasOwnProperty.call(operationNames, value);
 
 const runIdFor = (name: OperationName, args: readonly unknown[]): string => {
   if (name === "loadTurn") return stringAt(args, 0) ?? "unknown";
-  return typeof record(args[0]).aiRunId === "string"
-    ? (record(args[0]).aiRunId as string)
-    : "unknown";
+  const aiRunId = record(args[0]).aiRunId;
+  return typeof aiRunId === "string" ? aiRunId : "unknown";
 };
 
 const safeNumber = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 
+type PhaseOutcome = NonNullable<AiPhaseLogEntry["outcome"]>;
+
+const phaseOutcome = (value: unknown): PhaseOutcome | undefined => {
+  switch (value) {
+    case "single":
+    case "fanout":
+    case "continue":
+    case "clarify":
+    case "ready":
+    case "needs_reduction":
+    case "ok":
+    case "partial":
+    case "answered":
+      return value;
+    default:
+      return undefined;
+  }
+};
+
+type PhaseAction = NonNullable<AiPhaseLogEntry["action"]>;
+
+const phaseAction = (value: unknown): PhaseAction | undefined => {
+  switch (value) {
+    case "accept":
+    case "replace":
+    case "no_evidence":
+    case "keep":
+    case "compact":
+    case "omit":
+    case "retain":
+    case "tighten":
+    case "select":
+      return value;
+    default:
+      return undefined;
+  }
+};
+
+const phaseFailureStage = (
+  value: unknown,
+): NonNullable<AiPhaseLogEntry["failureStage"]> | undefined => {
+  switch (value) {
+    case "context_plan_unfit":
+    case "context_mandatory_too_large":
+    case "synthesis_budget_mismatch":
+      return value;
+    default:
+      return undefined;
+  }
+};
+
+const safeBoolean = (value: unknown): boolean | undefined =>
+  typeof value === "boolean" ? value : undefined;
 const resultFields = (value: unknown): Partial<AiPhaseLogEntry> => {
   const result = record(value);
-  const allowedOutcomes = new Set([
-    "single",
-    "fanout",
-    "continue",
-    "clarify",
-    "ready",
-    "needs_reduction",
-    "ok",
-    "partial",
-    "answered",
-  ]);
-  const outcome = allowedOutcomes.has(String(result.status))
-    ? String(result.status)
-    : allowedOutcomes.has(String(result.mode))
-      ? String(result.mode)
-      : undefined;
+  const manifestValue = record(result.manifest);
+  const manifest = Object.keys(manifestValue).length === 0 ? result : manifestValue;
+  const measurement = record(result.measurement);
+  const fallbackManifestValue = record(result.fallbackManifest);
+  const fallbackManifest =
+    Object.keys(fallbackManifestValue).length === 0 ? result : fallbackManifestValue;
+  const context = record(result.context);
+  const fused = record(result.fused);
+  const outcome =
+    phaseOutcome(result.status) ??
+    phaseOutcome(result.mode) ??
+    phaseOutcome(measurement.status) ??
+    phaseOutcome(context.status);
+  const itemCount = Array.isArray(value)
+    ? value.length
+    : Array.isArray(result.entries)
+      ? result.entries.length
+      : Array.isArray(fused.results)
+        ? fused.results.length
+        : undefined;
+  const decisions = Array.isArray(result.decisions)
+    ? result.decisions
+    : Array.isArray(manifest.decisions)
+      ? manifest.decisions
+      : Array.isArray(fallbackManifest.decisions)
+        ? fallbackManifest.decisions
+        : undefined;
+  const groups = Array.isArray(result.groups)
+    ? result.groups
+    : Array.isArray(manifest.groups)
+      ? manifest.groups
+      : Array.isArray(fallbackManifest.groups)
+        ? fallbackManifest.groups
+        : undefined;
+  const groupResult = record(result.result);
+  const groupDecisions = Array.isArray(groupResult.decisions) ? groupResult.decisions : undefined;
+  const decisionCountFor = (key: string): number | undefined => {
+    const action = key.endsWith("Count") ? key.slice(0, -5) : key;
+    const source = groupDecisions ?? decisions;
+    return source === undefined
+      ? undefined
+      : source.filter((decision) => record(decision).action === action).length;
+  };
+  const groupSelectedCount = decisionCountFor("select");
+  const groupOmittedCount = decisionCountFor("omit");
+  const groupPassageCount =
+    groupDecisions?.reduce((count, decision) => {
+      const passageIds = record(decision).passageIds;
+      return count + (Array.isArray(passageIds) ? passageIds.length : 0);
+    }, 0) ?? undefined;
+  const numberFrom = (key: string): number | undefined =>
+    safeNumber(result[key]) ?? safeNumber(measurement[key]) ?? safeNumber(context[key]);
+  const actionCountFrom = (key: string): number | undefined => decisionCountFor(key);
+  const inputTokens = numberFrom("inputTokens");
+  const usableInputTokens = numberFrom("usableInputTokens");
+  const overByTokens = numberFrom("overByTokens");
+  const afterInputTokens = numberFrom("afterInputTokens");
+  const action = phaseAction(result.action);
+  const failureCode = result.failureCode ?? result.code;
+  const failureStage = phaseFailureStage(failureCode);
+  const resultError =
+    typeof failureCode === "string" && isAiRunErrorCode(failureCode) ? failureCode : undefined;
+  const resultRetryable = safeBoolean(result.retryable);
+  const capApplied = safeBoolean(result.capApplied);
+  const fallbackRan = safeBoolean(result.fallbackRan);
+  const repairUsed = safeBoolean(result.repairUsed);
   return {
-    ...(Array.isArray(value) ? { itemCount: value.length } : {}),
-    ...(Array.isArray(result.entries) ? { itemCount: result.entries.length } : {}),
+    ...(itemCount === undefined ? {} : { itemCount }),
     ...(Array.isArray(result.proposals) ? { memoryCount: result.proposals.length } : {}),
     ...(Array.isArray(result.sourceMap) ? { sourceCount: result.sourceMap.length } : {}),
     ...(Array.isArray(result.topics) ? { topicCount: result.topics.length } : {}),
@@ -372,23 +690,81 @@ const resultFields = (value: unknown): Partial<AiPhaseLogEntry> => {
       : {}),
     ...(Array.isArray(result.memories) ? { memoryCount: result.memories.length } : {}),
     ...(Array.isArray(result.consumers) ? { consumerCount: result.consumers.length } : {}),
-    ...(safeNumber(result.inputTokens) === undefined
+    ...(safeNumber(result.queryCount) === undefined
       ? {}
-      : { inputTokens: safeNumber(result.inputTokens) }),
-    ...(safeNumber(result.usableInputTokens) === undefined
+      : { queryCount: safeNumber(result.queryCount) }),
+    ...(safeNumber(result.branchCount) === undefined
       ? {}
-      : { usableInputTokens: safeNumber(result.usableInputTokens) }),
-    ...(outcome === undefined ? {} : { outcome: outcome as AiPhaseLogEntry["outcome"] }),
+      : { branchCount: safeNumber(result.branchCount) }),
+    ...(safeNumber(result.applicableBranchCount) === undefined
+      ? {}
+      : { applicableBranchCount: safeNumber(result.applicableBranchCount) }),
+    ...(safeNumber(result.hitCount) === undefined ? {} : { hitCount: safeNumber(result.hitCount) }),
+    ...(safeNumber(result.candidateCount) === undefined && decisions === undefined
+      ? {}
+      : { candidateCount: safeNumber(result.candidateCount) ?? decisions?.length }),
+    ...(safeNumber(result.groupCount) === undefined && groups === undefined
+      ? {}
+      : { groupCount: safeNumber(result.groupCount) ?? groups?.length }),
+    ...(safeNumber(result.passageCount) === undefined && groupPassageCount === undefined
+      ? {}
+      : { passageCount: safeNumber(result.passageCount) ?? groupPassageCount }),
+    ...(safeNumber(result.decisionCount) === undefined && decisions === undefined
+      ? {}
+      : { decisionCount: safeNumber(result.decisionCount) ?? decisions?.length }),
+    ...(safeNumber(result.selectedCount) === undefined && groupSelectedCount === undefined
+      ? {}
+      : { selectedCount: safeNumber(result.selectedCount) ?? groupSelectedCount }),
+    ...(safeNumber(result.omittedCount) === undefined && groupOmittedCount === undefined
+      ? {}
+      : { omittedCount: safeNumber(result.omittedCount) ?? groupOmittedCount }),
+    ...(actionCountFrom("keepCount") === undefined
+      ? {}
+      : { keepCount: actionCountFrom("keepCount") }),
+    ...(actionCountFrom("compactCount") === undefined
+      ? {}
+      : { compactCount: actionCountFrom("compactCount") }),
+    ...(actionCountFrom("omitCount") === undefined
+      ? {}
+      : { omitCount: actionCountFrom("omitCount") }),
+    ...(actionCountFrom("retainCount") === undefined
+      ? {}
+      : { retainCount: actionCountFrom("retainCount") }),
+    ...(actionCountFrom("tightenCount") === undefined
+      ? {}
+      : { tightenCount: actionCountFrom("tightenCount") }),
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(afterInputTokens === undefined ? {} : { afterInputTokens }),
+    ...(usableInputTokens === undefined ? {} : { usableInputTokens }),
+    ...(overByTokens === undefined ? {} : { overByTokens }),
+    ...(safeNumber(result.renderedTokenCount) === undefined
+      ? {}
+      : { renderedTokenCount: safeNumber(result.renderedTokenCount) }),
+    ...(capApplied === undefined ? {} : { capApplied }),
+    ...(fallbackRan === undefined ? {} : { fallbackRan }),
+    ...(repairUsed === undefined ? {} : { repairUsed }),
+    ...(resultError === undefined ? {} : { errorCode: resultError }),
+    ...(action === undefined ? {} : { action }),
+    ...(failureStage === undefined ? {} : { failureStage }),
+    ...(resultRetryable === undefined ? {} : { retryable: resultRetryable }),
+    ...(outcome === undefined ? {} : { outcome }),
   };
 };
 
 const errorCodeFor = (error: unknown, fallback: AiRunErrorCode): AiRunErrorCode =>
   isAiRuntimeError(error) ? error.code : fallback;
+const resultErrorCode = (value: unknown, fallback: AiRunErrorCode): AiRunErrorCode => {
+  const code = record(value).failureCode ?? record(value).code;
+  return typeof code === "string" && isAiRunErrorCode(code) ? code : fallback;
+};
 
 const durableOperationFailure = (error: unknown, fallback: AiRunErrorCode): Error => {
   if (isAbortError(error) || isAiRuntimeError(error)) return error;
   captureCause("workflow_operation", error);
-  if (error instanceof MemoryConflictError) {
+  if (
+    error instanceof MemoryConflictError ||
+    (error instanceof Error && error.name === "MemoryConflictError")
+  ) {
     return new AiRuntimeError("memory_conflict", "memory head changed during finalization");
   }
   return new AiRuntimeError(fallback, "workflow operation failed");
@@ -408,12 +784,14 @@ export const withAiPhaseLogging = (
   return new Proxy(operations, {
     get(target, property, receiver) {
       const original = Reflect.get(target, property, receiver);
-      if (typeof property !== "string" || !operationNames.has(property)) {
+      if (typeof property !== "string" || !isOperationName(property)) {
         return typeof original === "function" ? original.bind(target) : original;
       }
-      const name = property as OperationName;
+      const name = property;
       const rule = rules[name];
-      const invoke = original.bind(target) as (...args: readonly unknown[]) => unknown;
+      if (typeof original !== "function") return original;
+      const invoke = (...args: readonly unknown[]): unknown =>
+        Reflect.apply(original, target, args);
       return (...args: readonly unknown[]): unknown => {
         const startedAt = now();
         const runtime = currentTaskRuntime();
@@ -426,7 +804,11 @@ export const withAiPhaseLogging = (
             ? {}
             : { model: rule.model === "fast" ? options.fastModel : options.mainModel }),
         };
-        const phases = [rule.phase, ...(rule.additionalPhases ?? [])];
+        const primaryPhase = typeof rule.phase === "function" ? rule.phase(args) : rule.phase;
+        const phases = [primaryPhase, ...(rule.additionalPhases ?? [])];
+        const fallbackOperation =
+          name === "collectFallbackCompaction" ||
+          (name === "measureCompaction" && compactionPhaseFrom(args) === "fallback");
         const emit = (entry: Omit<AiPhaseLogEntry, "phase">, includePublicActivity = true) =>
           Promise.all(
             phases.map((phase) => {
@@ -447,18 +829,26 @@ export const withAiPhaseLogging = (
             await emit({ ...common, status: "started" });
             try {
               const result = await invoke(...args);
+              if (record(result).status === "failed") {
+                await emit({
+                  ...common,
+                  ...resultFields(result),
+                  ...(fallbackOperation ? { fallbackRan: true } : {}),
+                  status: "failed",
+                  durationMs: Math.max(0, now() - startedAt),
+                  errorCode: resultErrorCode(result, rule.fallbackErrorCode),
+                });
+                return result;
+              }
               await emit(
                 {
                   ...common,
                   ...resultFields(result),
+                  ...(fallbackOperation ? { fallbackRan: true } : {}),
                   status: "succeeded",
                   durationMs: Math.max(0, now() - startedAt),
                 },
-                name !== "finalize" &&
-                  !(
-                    (name === "answerDirect" || name === "answerTopic" || name === "synthesize") &&
-                    record(result).status === "failed"
-                  ),
+                name !== "finalize",
               );
               return result;
             } catch (error) {
@@ -467,6 +857,7 @@ export const withAiPhaseLogging = (
                 ...common,
                 status: "failed",
                 durationMs: Math.max(0, now() - startedAt),
+                ...(isAiRuntimeError(durableError) ? { retryable: durableError.retryable } : {}),
                 errorCode: errorCodeFor(durableError, rule.fallbackErrorCode),
               });
               throw durableError;
@@ -480,6 +871,7 @@ export const withAiPhaseLogging = (
             {
               ...common,
               ...resultFields(result),
+              ...(fallbackOperation ? { fallbackRan: true } : {}),
               status: "succeeded",
               durationMs: Math.max(0, now() - startedAt),
             },
@@ -497,6 +889,7 @@ export const withAiPhaseLogging = (
             status: "failed",
             durationMs: Math.max(0, now() - startedAt),
             errorCode: errorCodeFor(durableError, rule.fallbackErrorCode),
+            ...(isAiRuntimeError(durableError) ? { retryable: durableError.retryable } : {}),
           });
           throw durableError;
         }

@@ -8,6 +8,7 @@ import {
   sourceOrdinalFromKey,
   type DocumentEvidenceNamespace,
 } from "./canonicalization";
+import type { AiDocumentExposureReconstruction } from "../product-state/observability";
 
 export type ProviderMessage =
   | { readonly role: "system"; readonly content: string }
@@ -50,7 +51,48 @@ export interface ProviderRequest {
   readonly reasoning: "minimal" | "low" | "medium" | "high";
   /** Code-owned evidence inventory. It is never serialized to the provider. */
   readonly sourceExposureProofs?: readonly SourceExposureProof[] | undefined;
+  /** Code-owned semantic repair marker; stripped before provider transport and hashing. */
+  readonly repairConsumed?: true | undefined;
 }
+
+/**
+ * The exact request shape used by direct and topic answer measurements.
+ * Keeping construction here makes the request assembled for counting the same
+ * request shape handed to the provider transport.
+ */
+export interface ExactAnswerRequestInput {
+  readonly model: LiveProviderRequest["model"];
+  readonly system: string;
+  readonly user: string;
+  readonly requestedOutputTokens: number;
+  readonly reasoning: ProviderRequest["reasoning"];
+  readonly outputTool?:
+    | {
+        readonly name: string;
+        readonly description: string;
+        readonly parameters: Readonly<Record<string, unknown>>;
+      }
+    | undefined;
+}
+
+export const serializeExactAnswerRequest = (
+  input: ExactAnswerRequestInput,
+): LiveProviderRequest => ({
+  requestClass: "main",
+  model: input.model,
+  messages: [
+    { role: "system", content: input.system },
+    { role: "user", content: input.user },
+  ],
+  ...(input.outputTool === undefined
+    ? {}
+    : {
+        tools: [input.outputTool],
+        toolChoice: "auto" as const,
+      }),
+  requestedOutputTokens: input.requestedOutputTokens,
+  reasoning: input.reasoning,
+});
 
 /**
  * Request shape accepted by the live chat runtime.  Historical model IDs stay
@@ -95,6 +137,20 @@ export type CodeOwnedSourceExposureProof = ProviderVisibleSourceExposureMarker &
   readonly immutableSourceIdentityCommitment?: string | undefined;
   /** Commitment to the exact source identity and provider-visible range fields. */
   readonly immutableSourceCommitment?: string | undefined;
+  /** Run-local compaction candidate bound to this exact visible field. */
+  readonly candidateId?: string | undefined;
+  /** Run-local compaction passage bound to this exact visible field. */
+  readonly passageId?: string | undefined;
+  /** Exact immutable source range behind a compaction passage. */
+  readonly charStart?: number | undefined;
+  readonly charEnd?: number | undefined;
+  /** Exact UTF-8 byte length of the visible source field. */
+  readonly visibleByteCount?: number | undefined;
+  /** Canonical source locator needed to persist document exposure proofs. */
+  readonly documentReconstruction?: AiDocumentExposureReconstruction | undefined;
+  /** Publisher owner fields needed to bind namespaced publisher identities. */
+  readonly publisherIssueId?: string | undefined;
+  readonly publisherDocumentId?: string | undefined;
   /** Optional caller-supplied binding; the gate re-derives and checks it. */
   readonly messageIndex?: number | undefined;
   readonly serializedField?: string | undefined;
@@ -140,8 +196,11 @@ export const providerRequestSha256Hex = (request: ProviderRequest): string =>
     .update(
       stableJson(
         (() => {
-          const { sourceExposureProofs: _sourceExposureProofs, ...providerRequest } =
-            normalizeProviderRequest(request);
+          const {
+            sourceExposureProofs: _sourceExposureProofs,
+            repairConsumed: _repairConsumed,
+            ...providerRequest
+          } = normalizeProviderRequest(request);
           return providerRequest;
         })(),
       ),
@@ -303,14 +362,85 @@ const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourc
     "immutableContentHash",
     "immutableSourceIdentityCommitment",
     "immutableSourceCommitment",
+    "candidateId",
+    "passageId",
+    "charStart",
+    "charEnd",
+    "visibleByteCount",
     "messageIndex",
     "serializedField",
     "sourceOrdinal",
     "orderedSourceDescriptor",
     "publicDocumentId",
+    "documentReconstruction",
+    "publisherIssueId",
+    "publisherDocumentId",
     "sourceToolCallId",
     "sourceResultIndex",
   ]);
+  const hasStart = proof.charStart !== undefined;
+  const hasEnd = proof.charEnd !== undefined;
+  const validRange =
+    hasStart === hasEnd &&
+    (!hasStart ||
+      (typeof proof.charStart === "number" &&
+        Number.isSafeInteger(proof.charStart) &&
+        proof.charStart >= 0 &&
+        typeof proof.charEnd === "number" &&
+        Number.isSafeInteger(proof.charEnd) &&
+        proof.charEnd > proof.charStart));
+  const reconstruction = proof.documentReconstruction;
+  const validDocumentReconstruction =
+    reconstruction === undefined ||
+    (() => {
+      if (
+        proof.sourceKind !== "document" ||
+        typeof reconstruction !== "object" ||
+        reconstruction === null ||
+        Array.isArray(reconstruction)
+      ) {
+        return false;
+      }
+      const record = reconstruction as Record<string, unknown>;
+      const ranges = record.ranges;
+      return (
+        Object.keys(record).every((key) =>
+          new Set([
+            "sourceId",
+            "documentId",
+            "snapshotId",
+            "contentHash",
+            "publisherExtractionId",
+            "ranges",
+          ]).has(key),
+        ) &&
+        typeof record.sourceId === "string" &&
+        record.sourceId.length > 0 &&
+        typeof record.documentId === "string" &&
+        record.documentId.length > 0 &&
+        typeof record.snapshotId === "string" &&
+        record.snapshotId.length > 0 &&
+        typeof record.contentHash === "string" &&
+        /^[a-f0-9]{64}$/u.test(record.contentHash) &&
+        (record.publisherExtractionId === undefined ||
+          (typeof record.publisherExtractionId === "string" &&
+            record.publisherExtractionId.length > 0)) &&
+        Array.isArray(ranges) &&
+        ranges.every((range) => {
+          if (typeof range !== "object" || range === null || Array.isArray(range)) return false;
+          const rangeRecord = range as Record<string, unknown>;
+          return (
+            Object.keys(rangeRecord).length === 2 &&
+            typeof rangeRecord.charStart === "number" &&
+            Number.isSafeInteger(rangeRecord.charStart) &&
+            rangeRecord.charStart >= 0 &&
+            typeof rangeRecord.charEnd === "number" &&
+            Number.isSafeInteger(rangeRecord.charEnd) &&
+            rangeRecord.charEnd > rangeRecord.charStart
+          );
+        })
+      );
+    })();
   return (
     isProviderVisibleSourceExposureMarker(marker) &&
     Object.keys(proof).every((key) => allowedKeys.has(key)) &&
@@ -326,6 +456,20 @@ const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourc
     (proof.immutableSourceCommitment === undefined ||
       (typeof proof.immutableSourceCommitment === "string" &&
         /^[A-Za-z0-9_-]{43}$/u.test(proof.immutableSourceCommitment))) &&
+    (proof.candidateId === undefined ||
+      (typeof proof.candidateId === "string" && /^c[1-9][0-9]*$/u.test(proof.candidateId))) &&
+    (proof.passageId === undefined ||
+      (typeof proof.passageId === "string" && /^p[1-9][0-9]*$/u.test(proof.passageId))) &&
+    validDocumentReconstruction &&
+    (proof.publisherIssueId === undefined ||
+      (typeof proof.publisherIssueId === "string" && proof.publisherIssueId.length > 0)) &&
+    (proof.publisherDocumentId === undefined ||
+      (typeof proof.publisherDocumentId === "string" && proof.publisherDocumentId.length > 0)) &&
+    validRange &&
+    (proof.visibleByteCount === undefined ||
+      (typeof proof.visibleByteCount === "number" &&
+        Number.isSafeInteger(proof.visibleByteCount) &&
+        proof.visibleByteCount > 0)) &&
     (proof.sourceToolCallId === undefined ||
       (typeof proof.sourceToolCallId === "string" && proof.sourceToolCallId.length > 0)) &&
     (proof.sourceResultIndex === undefined ||
@@ -338,7 +482,7 @@ const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourc
 type JsonRecord = Readonly<Record<string, unknown>>;
 
 interface ExpectedVisibleSourceExposure {
-  readonly sourceKind: ProviderVisibleSourceExposureMarker["sourceKind"];
+  readonly sourceKind?: ProviderVisibleSourceExposureMarker["sourceKind"] | undefined;
   readonly logicalSourceIdentity?: string | undefined;
   readonly exposureStage: string;
   readonly visibleText: string;
@@ -354,6 +498,12 @@ interface ExpectedVisibleSourceExposure {
   /** Exact assistant call and result item that produced this exposure. */
   readonly sourceToolCallId?: string | undefined;
   readonly sourceResultIndex?: number | undefined;
+  /** Opaque run-local compaction coordinates. */
+  readonly candidateId?: string | undefined;
+  readonly passageId?: string | undefined;
+  readonly charStart?: number | undefined;
+  readonly charEnd?: number | undefined;
+  readonly visibleByteCount?: number | undefined;
 }
 
 const providerVisibleBindingForCall = (
@@ -488,145 +638,6 @@ const markersFromResult = (result: JsonRecord): readonly ProviderVisibleSourceEx
   });
 };
 
-const expectedInternalSearchExposures = (
-  result: JsonRecord,
-): readonly ExpectedVisibleSourceExposure[] => {
-  if (!Array.isArray(result.items)) {
-    throw sourceExposureFailure("search_internal result must contain an items array");
-  }
-  return result.items.map((value) => {
-    if (!isJsonRecord(value) || typeof value.snippet !== "string") {
-      throw sourceExposureFailure("search_internal item must contain an exact snippet");
-    }
-    const privateIdentity = isJsonRecord(value[SOURCE_IDENTITY_FIELD])
-      ? value[SOURCE_IDENTITY_FIELD]
-      : undefined;
-    const hasDocumentIdentity = typeof value.documentId === "string" && value.documentId.length > 0;
-    const hasMessageIdentity =
-      typeof value.messageId === "string" ||
-      (value.kind === "chat_message" &&
-        privateIdentity !== undefined &&
-        typeof privateIdentity.messageId === "string");
-    if (hasDocumentIdentity && hasMessageIdentity) {
-      throw sourceExposureFailure("search_internal item must have one canonical source identity");
-    }
-    if (hasDocumentIdentity) {
-      if (
-        value.kind !== "document" ||
-        Object.keys(value).some(
-          (key) =>
-            ![
-              "kind",
-              "documentId",
-              "snippet",
-              "ranges",
-              "title",
-              "publishedAt",
-              SOURCE_IDENTITY_FIELD,
-            ].includes(key),
-        )
-      ) {
-        throw sourceExposureFailure(
-          "search_internal document item contains a legacy or unchecked identity field",
-        );
-      }
-      const privateIdentity = isJsonRecord(value[SOURCE_IDENTITY_FIELD])
-        ? value[SOURCE_IDENTITY_FIELD]
-        : undefined;
-      const hasPrivateIdentity =
-        privateIdentity !== undefined &&
-        typeof privateIdentity.snapshotId === "string" &&
-        privateIdentity.snapshotId.length > 0 &&
-        typeof privateIdentity.contentHash === "string" &&
-        /^[a-f0-9]{64}$/u.test(privateIdentity.contentHash) &&
-        isJsonRecord(privateIdentity.source);
-      const visibleRanges = Object.hasOwn(value, "ranges")
-        ? canonicalPrivateDocumentRanges(value.ranges, "search_internal document item")
-        : undefined;
-      let logicalSourceIdentity: string | undefined;
-      let contentItemIdentity: string | undefined;
-      let documentRangeHash =
-        visibleRanges === undefined ? undefined : sha256Base64Url(JSON.stringify(visibleRanges));
-      if (hasPrivateIdentity) {
-        validatePrivateDocumentIdentity(
-          privateIdentity!,
-          value.documentId as string,
-          "search_internal document item",
-        );
-        const ranges = canonicalPrivateDocumentRanges(
-          privateIdentity!.ranges,
-          "search_internal document item",
-        );
-        documentRangeHash = sha256Base64Url(JSON.stringify(ranges));
-        if (
-          visibleRanges !== undefined &&
-          documentRangeHash !== sha256Base64Url(JSON.stringify(visibleRanges))
-        ) {
-          throw sourceExposureFailure(
-            "search_internal document ranges differ from its private identity",
-          );
-        }
-        const namespace = documentNamespaceFromValue(
-          privateIdentity!.source,
-          value.documentId as string,
-          "search_internal document item",
-        );
-        logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
-          namespace,
-          value.documentId as string,
-        );
-        contentItemIdentity = `${logicalSourceIdentity}:${privateIdentity!.snapshotId}:${sha256Base64Url(
-          JSON.stringify(ranges),
-        )}`;
-      }
-      return {
-        sourceKind: "document" as const,
-        exposureStage: "internal_search_preview",
-        visibleText: value.snippet,
-        documentId: value.documentId as string,
-        ...(logicalSourceIdentity === undefined ? {} : { logicalSourceIdentity }),
-        ...(contentItemIdentity === undefined ? {} : { contentItemIdentity }),
-        ...(documentRangeHash === undefined ? {} : { documentRangeHash }),
-        providerVisibleBinding: stableJson({
-          sourceKind: "document",
-          documentId: value.documentId,
-          visibleTextHash: sha256Base64Url(value.snippet as string),
-        }),
-        ...(hasPrivateIdentity ? {} : { requiresPrivateCommitment: true }),
-      };
-    }
-    if (value.kind === "document") {
-      throw sourceExposureFailure(
-        "search_internal document item lacks its exact document identity",
-      );
-    }
-    if (value.kind !== undefined && value.kind !== "chat_message") {
-      throw sourceExposureFailure("search_internal chat item has an invalid source kind");
-    }
-    const messageId =
-      typeof value.messageId === "string"
-        ? value.messageId
-        : privateIdentity !== undefined && typeof privateIdentity.messageId === "string"
-          ? privateIdentity.messageId
-          : undefined;
-    return {
-      sourceKind: "chat_message" as const,
-      ...(messageId === undefined
-        ? { requiresPrivateCommitment: true }
-        : {
-            logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
-            contentItemIdentity: messageId,
-          }),
-      exposureStage: "internal_chat_search_preview",
-      visibleText: value.snippet,
-      providerVisibleBinding: stableJson({
-        sourceKind: "chat_message",
-        visibleTextHash: sha256Base64Url(value.snippet as string),
-      }),
-    };
-  });
-};
-
 const canonicalInspectionRanges = (value: unknown): readonly CanonicalInspectionRange[] => {
   if (!Array.isArray(value)) {
     throw sourceExposureFailure("document inspection must contain exact ranges");
@@ -662,118 +673,6 @@ const canonicalPrivateDocumentRanges = (
     }
   }
   return ranges;
-};
-
-const expectedInternalInspectionExposures = (
-  result: JsonRecord,
-  toolCall: ProviderToolCall,
-): readonly ExpectedVisibleSourceExposure[] => {
-  const reference = isJsonRecord(toolCall.arguments.reference)
-    ? toolCall.arguments.reference
-    : undefined;
-  const message = isJsonRecord(result.message) ? result.message : undefined;
-  const hasText = typeof result.text === "string";
-  if (message !== undefined && hasText) {
-    throw sourceExposureFailure("inspect_internal result has two visible source bodies");
-  }
-  if (message === undefined && !hasText) return [];
-  if (result.found !== true || result.complete !== true || reference === undefined) {
-    throw sourceExposureFailure("inspect_internal visible body is not a complete found result");
-  }
-  if (message !== undefined) {
-    if (
-      reference.kind !== "chat_message" ||
-      typeof reference.messageId !== "string" ||
-      typeof message.messageId !== "string" ||
-      message.messageId !== reference.messageId ||
-      typeof message.content !== "string"
-    ) {
-      throw sourceExposureFailure("inspect_internal chat result differs from its tool reference");
-    }
-    return [
-      {
-        sourceKind: "chat_message",
-        logicalSourceIdentity: chatMessageEvidenceIdentity(message.messageId),
-        contentItemIdentity: message.messageId,
-        exposureStage: "internal_inspection",
-        visibleText: message.content,
-      },
-    ];
-  }
-  if (
-    reference.kind !== "document" ||
-    typeof reference.documentId !== "string" ||
-    reference.documentId.length === 0
-  ) {
-    throw sourceExposureFailure("inspect_internal document result lacks its tool reference");
-  }
-  if (
-    Object.keys(reference).some((key) => !["kind", "documentId", "purpose", "range"].includes(key))
-  ) {
-    throw sourceExposureFailure(
-      "inspect_internal document reference contains hidden immutable identity",
-    );
-  }
-  const ranges = canonicalInspectionRanges(result.ranges);
-  if (
-    Object.hasOwn(reference, "range") &&
-    stableJson(canonicalInspectionRanges([reference.range])) !== stableJson(ranges)
-  ) {
-    throw sourceExposureFailure("inspect_internal document range differs from its tool reference");
-  }
-  if (
-    Object.hasOwn(result, "documentId") &&
-    (typeof result.documentId !== "string" || result.documentId !== reference.documentId)
-  ) {
-    throw sourceExposureFailure(
-      "inspect_internal visible document ID differs from its tool reference",
-    );
-  }
-  const privateIdentity = isJsonRecord(result[SOURCE_IDENTITY_FIELD])
-    ? result[SOURCE_IDENTITY_FIELD]
-    : undefined;
-  let logicalSourceIdentity: string | undefined;
-  let contentItemIdentity: string | undefined;
-  if (privateIdentity !== undefined) {
-    validatePrivateDocumentIdentity(
-      privateIdentity,
-      reference.documentId as string,
-      "inspect_internal document result",
-    );
-    const namespace = documentNamespaceFromValue(
-      privateIdentity.source,
-      reference.documentId as string,
-      "inspect_internal document result",
-    );
-    logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
-      namespace,
-      reference.documentId as string,
-    );
-    contentItemIdentity = `${logicalSourceIdentity}:${privateIdentity.snapshotId}:${sha256Base64Url(
-      JSON.stringify(ranges),
-    )}`;
-  }
-  return [
-    {
-      sourceKind: "document",
-      // Live inspect_internal references intentionally contain only the public
-      // document ID and range. The immutable namespace/version/range identity
-      // stays in the code-owned sidecar and is checked against this location.
-      exposureStage: "internal_inspection",
-      visibleText: result.text as string,
-      documentId: reference.documentId,
-      documentRangeHash: sha256Base64Url(JSON.stringify(ranges)),
-      ...(logicalSourceIdentity === undefined ? {} : { logicalSourceIdentity }),
-      ...(contentItemIdentity === undefined ? {} : { contentItemIdentity }),
-      providerVisibleBinding: stableJson({
-        sourceKind: "document",
-        documentId: reference.documentId,
-        ranges,
-        visibleTextHash: sha256Base64Url(result.text as string),
-      }),
-      ...(privateIdentity === undefined ? { requiresPrivateCommitment: true } : {}),
-    },
-  ];
 };
 
 const expectedCandidateInspectionExposures = (
@@ -1284,6 +1183,187 @@ const expectedCandidateSearchExposures = (
   });
 };
 
+const expectedSourceToolExposures = (
+  toolName: string,
+  result: JsonRecord,
+  toolCall: ProviderToolCall,
+): readonly ExpectedVisibleSourceExposure[] => {
+  if (toolName === "emit_compaction_result") {
+    if (
+      Object.keys(result).some(
+        (key) => !["decisions"].includes(key) && key !== SOURCE_EXPOSURE_FIELD,
+      ) ||
+      Object.hasOwn(result, "text") ||
+      Object.hasOwn(result, "passages") ||
+      Object.hasOwn(result, "range") ||
+      Object.hasOwn(result, "ranges") ||
+      Object.hasOwn(result, SOURCE_EXPOSURE_FIELD)
+    ) {
+      throw sourceExposureFailure("emit_compaction_result must not carry source text or proof");
+    }
+    return [];
+  }
+  const candidateId = toolCall.arguments.candidateId;
+  if (typeof candidateId !== "string" || !/^c[1-9][0-9]*$/u.test(candidateId)) {
+    throw sourceExposureFailure(`${toolName} lacks its exact run-local candidate ID`);
+  }
+  if (toolName !== "search_source_passages" && toolName !== "read_source_passages") {
+    throw sourceExposureFailure(`${toolName} is not a compaction source tool`);
+  }
+  const argumentKeys = Object.keys(toolCall.arguments);
+  const requestedCursor = toolCall.arguments.cursor;
+  if (toolName === "search_source_passages") {
+    if (
+      argumentKeys.some((key) => !["candidateId", "query", "cursor"].includes(key)) ||
+      typeof toolCall.arguments.query !== "string" ||
+      toolCall.arguments.query.trim().length === 0 ||
+      (requestedCursor !== undefined &&
+        (typeof requestedCursor !== "string" || requestedCursor.trim().length === 0))
+    ) {
+      throw sourceExposureFailure("search_source_passages arguments are not canonical");
+    }
+  } else if (toolName === "read_source_passages") {
+    if (
+      argumentKeys.some(
+        (key) => !["candidateId", "passageIds", "adjacentToPassageId"].includes(key),
+      ) ||
+      !Array.isArray(toolCall.arguments.passageIds) ||
+      toolCall.arguments.passageIds.length === 0
+    ) {
+      throw sourceExposureFailure("read_source_passages arguments are not canonical");
+    }
+    if (
+      toolCall.arguments.passageIds.some(
+        (passageId) => typeof passageId !== "string" || !/^p[1-9][0-9]*$/u.test(passageId),
+      ) ||
+      new Set(toolCall.arguments.passageIds).size !== toolCall.arguments.passageIds.length
+    ) {
+      throw sourceExposureFailure("read_source_passages passage IDs are not canonical");
+    }
+    if (
+      toolCall.arguments.adjacentToPassageId !== undefined &&
+      (typeof toolCall.arguments.adjacentToPassageId !== "string" ||
+        !/^p[1-9][0-9]*$/u.test(toolCall.arguments.adjacentToPassageId))
+    ) {
+      throw sourceExposureFailure("read_source_passages adjacent passage ID is not canonical");
+    }
+  }
+  if (result.protocolError === "tool arguments did not match the advertised schema") return [];
+  if (
+    Object.keys(result).some(
+      (key) =>
+        !["found", "complete", "truncated", "cursor", "passages", "passage"].includes(key) &&
+        key !== SOURCE_EXPOSURE_FIELD &&
+        key !== SOURCE_IDENTITY_FIELD,
+    )
+  ) {
+    throw sourceExposureFailure(`${toolName} result contains hidden or unknown canonical fields`);
+  }
+  if (typeof result.found !== "boolean" || typeof result.complete !== "boolean") {
+    throw sourceExposureFailure(`${toolName} result lacks complete found semantics`);
+  }
+  const resultCursor = result.cursor;
+  if (toolName === "search_source_passages") {
+    if (Object.hasOwn(result, "passage") || !Array.isArray(result.passages)) {
+      throw sourceExposureFailure("search_source_passages result must contain passages only");
+    }
+    if (Object.hasOwn(result, "truncated") && typeof result.truncated !== "boolean") {
+      throw sourceExposureFailure("search_source_passages truncated flag is invalid");
+    }
+    if (
+      Object.hasOwn(result, "cursor") &&
+      resultCursor !== null &&
+      (typeof resultCursor !== "string" || resultCursor.trim().length === 0)
+    ) {
+      throw sourceExposureFailure("search_source_passages cursor is invalid");
+    }
+    let previousOrdinal = 0;
+    return result.passages.map((value, index) => {
+      if (
+        !isJsonRecord(value) ||
+        Object.keys(value).some((key) => key !== "passageId" && key !== "text") ||
+        typeof value.passageId !== "string" ||
+        !/^p[1-9][0-9]*$/u.test(value.passageId) ||
+        typeof value.text !== "string" ||
+        value.text.length === 0
+      ) {
+        throw sourceExposureFailure("search_source_passages passage is not canonical");
+      }
+      const ordinal = Number(value.passageId.slice(1));
+      if (ordinal <= previousOrdinal) {
+        throw sourceExposureFailure("search_source_passages passages are not ordered");
+      }
+      previousOrdinal = ordinal;
+      return {
+        exposureStage: "context_compaction_input",
+        visibleText: value.text,
+        candidateId,
+        passageId: value.passageId,
+        visibleByteCount: new TextEncoder().encode(value.text).byteLength,
+        providerVisibleBinding: stableJson({
+          candidateId,
+          passageId: value.passageId,
+          visibleTextHash: sha256Base64Url(value.text),
+        }),
+        requiresPrivateCommitment: true,
+        sourceResultIndex: index,
+      };
+    });
+  }
+  if (Object.hasOwn(result, "passage") || !Array.isArray(result.passages)) {
+    throw sourceExposureFailure("read_source_passages result must contain passages only");
+  }
+  const readPassageIds = Array.isArray(toolCall.arguments.passageIds)
+    ? toolCall.arguments.passageIds
+    : [];
+  const readAdjacentPassageId = toolCall.arguments.adjacentToPassageId;
+  if (
+    result.complete !== true ||
+    result.truncated !== false ||
+    result.cursor !== null ||
+    result.passages.length > readPassageIds.length + (readAdjacentPassageId === undefined ? 0 : 2)
+  ) {
+    throw sourceExposureFailure("read_source_passages result exceeds its complete bounded range");
+  }
+  const seenPassageIds = new Set<string>();
+  let previousOrdinal = 0;
+  return result.passages.map((value, index) => {
+    if (
+      !isJsonRecord(value) ||
+      Object.keys(value).some((key) => key !== "passageId" && key !== "text") ||
+      typeof value.passageId !== "string" ||
+      !/^p[1-9][0-9]*$/u.test(value.passageId) ||
+      typeof value.text !== "string" ||
+      value.text.length === 0
+    ) {
+      throw sourceExposureFailure("read_source_passages passage is not canonical");
+    }
+    if (seenPassageIds.has(value.passageId)) {
+      throw sourceExposureFailure("read_source_passages repeats a passage");
+    }
+    seenPassageIds.add(value.passageId);
+    const ordinal = Number(value.passageId.slice(1));
+    if (ordinal <= previousOrdinal) {
+      throw sourceExposureFailure("read_source_passages passages are not ordered");
+    }
+    previousOrdinal = ordinal;
+    return {
+      exposureStage: "context_compaction_input",
+      visibleText: value.text,
+      candidateId,
+      passageId: value.passageId,
+      visibleByteCount: new TextEncoder().encode(value.text).byteLength,
+      providerVisibleBinding: stableJson({
+        candidateId,
+        passageId: value.passageId,
+        visibleTextHash: sha256Base64Url(value.text),
+      }),
+      requiresPrivateCommitment: true,
+      sourceResultIndex: index,
+    };
+  });
+};
+
 const expectedSourceExposures = (
   toolName: string,
   result: JsonRecord,
@@ -1292,15 +1372,23 @@ const expectedSourceExposures = (
   if (
     toolName !== "search_evidence" &&
     toolName !== "inspect_evidence" &&
-    toolName !== "search_internal" &&
-    toolName !== "inspect_internal" &&
     toolName !== "inspect_candidate" &&
-    toolName !== "search_within_candidate"
+    toolName !== "search_within_candidate" &&
+    toolName !== "search_source_passages" &&
+    toolName !== "read_source_passages" &&
+    toolName !== "emit_compaction_result"
   ) {
     return undefined;
   }
   if (toolCall === undefined || toolCall.name !== toolName) {
     throw sourceExposureFailure(`${toolName} result lacks its exact assistant tool call`);
+  }
+  if (
+    toolName === "search_source_passages" ||
+    toolName === "read_source_passages" ||
+    toolName === "emit_compaction_result"
+  ) {
+    return expectedSourceToolExposures(toolName, result, toolCall);
   }
   if (toolName === "search_evidence") {
     if (!Array.isArray(result.matches)) {
@@ -1391,10 +1479,6 @@ const expectedSourceExposures = (
         ...(documentRangeHash === undefined ? {} : { documentRangeHash }),
       },
     ];
-  }
-  if (toolName === "search_internal") return expectedInternalSearchExposures(result);
-  if (toolName === "inspect_internal") {
-    return expectedInternalInspectionExposures(result, toolCall);
   }
   return toolName === "inspect_candidate"
     ? expectedCandidateInspectionExposures(result, toolCall)
@@ -1499,7 +1583,7 @@ const assertExactSourceExposureMarker = (
     expected.documentRangeHash === undefined ||
     documentContentIdentityMatchesRange(marker, expected.documentRangeHash);
   if (
-    marker.sourceKind !== expected.sourceKind ||
+    (expected.sourceKind !== undefined && marker.sourceKind !== expected.sourceKind) ||
     (expected.logicalSourceIdentity !== undefined &&
       marker.logicalSourceIdentity !== expected.logicalSourceIdentity) ||
     marker.exposureStage !== expected.exposureStage ||
@@ -1516,10 +1600,6 @@ const expectedStrippedToolResultExposures = (
   result: JsonRecord,
   toolCall: ProviderToolCall,
 ): readonly ExpectedVisibleSourceExposure[] | undefined => {
-  if (toolName === "search_internal") {
-    return expectedInternalSearchExposures(result);
-  }
-
   if (toolName === "search_memories") {
     if (!Array.isArray(result.items)) {
       throw sourceExposureFailure("search_memories result must contain an items array");
@@ -1611,8 +1691,13 @@ const privateIdentityForExposure = (
   result: JsonRecord,
   index: number,
 ): JsonRecord | undefined => {
+  if (toolName === "search_source_passages" || toolName === "read_source_passages") {
+    const raw = result[SOURCE_IDENTITY_FIELD];
+    const candidate = Array.isArray(raw) ? raw[index] : raw;
+    return isJsonRecord(candidate) ? candidate : undefined;
+  }
   const item =
-    toolName === "search_internal" || toolName === "search_memories"
+    toolName === "search_memories"
       ? Array.isArray(result.items)
         ? result.items[index]
         : undefined
@@ -1647,6 +1732,9 @@ const immutableContentHashForExposure = (
   const directHash = result.contentHash;
   if (typeof directHash === "string" && /^[a-f0-9]{64}$/u.test(directHash)) {
     return directHash;
+  }
+  if (toolName === "search_source_passages" || toolName === "read_source_passages") {
+    return createHash("sha256").update(expected.visibleText, "utf8").digest("hex");
   }
   if (expected.sourceKind === "document") {
     throw sourceExposureFailure("document exposure lacks its immutable full-content hash");
@@ -1804,9 +1892,13 @@ export const providerSourceExposureProofFromToolResult = (
     throw sourceExposureFailure("marker cardinality differs from visible source bodies");
   }
   return expected.map((item, index) => {
+    const sourcePrivateIdentity = privateIdentityForExposure(toolName, result, index);
     const marker = embedded[index]!;
     assertExactSourceExposureMarker(marker, item, countTextTokens);
-    if (item.sourceKind === "document") {
+    let documentReconstruction: AiDocumentExposureReconstruction | undefined;
+    let publisherIssueId: string | undefined;
+    let publisherDocumentId: string | undefined;
+    if (marker.sourceKind === "document") {
       const privateIdentity = privateIdentityForExposure(toolName, result, index);
       if (privateIdentity === undefined) {
         throw sourceExposureFailure(
@@ -1824,22 +1916,37 @@ export const providerSourceExposureProofFromToolResult = (
           documentId,
           `${toolName} document result`,
         );
+        if (Object.hasOwn(privateIdentity, "ranges")) {
+          const ranges = canonicalPrivateDocumentRanges(
+            privateIdentity.ranges,
+            `${toolName} document result`,
+          );
+          documentReconstruction = {
+            sourceId: namespace.sourceId,
+            documentId,
+            snapshotId: privateIdentity.snapshotId as string,
+            contentHash: privateIdentity.contentHash as string,
+            ...(privateIdentity.publisherExtractionId === undefined
+              ? {}
+              : { publisherExtractionId: privateIdentity.publisherExtractionId as string }),
+            ranges,
+          };
+          if (namespace.kind === "publisher") {
+            publisherIssueId = namespace.issueId;
+            publisherDocumentId = namespace.documentId;
+          }
+        }
         if (
-          toolName !== "search_internal" &&
-          ((Object.hasOwn(result, "snapshotId") &&
+          (Object.hasOwn(result, "snapshotId") &&
             result.snapshotId !== privateIdentity.snapshotId) ||
-            (Object.hasOwn(result, "contentHash") &&
-              result.contentHash !== privateIdentity.contentHash) ||
-            (Object.hasOwn(result, "publisherExtractionId") &&
-              result.publisherExtractionId !== privateIdentity.publisherExtractionId) ||
-            (Object.hasOwn(result, "source") &&
-              stableJson(
-                documentNamespaceFromValue(
-                  result.source,
-                  documentId,
-                  `${toolName} document result`,
-                ),
-              ) !== stableJson(namespace)))
+          (Object.hasOwn(result, "contentHash") &&
+            result.contentHash !== privateIdentity.contentHash) ||
+          (Object.hasOwn(result, "publisherExtractionId") &&
+            result.publisherExtractionId !== privateIdentity.publisherExtractionId) ||
+          (Object.hasOwn(result, "source") &&
+            stableJson(
+              documentNamespaceFromValue(result.source, documentId, `${toolName} document result`),
+            ) !== stableJson(namespace))
         ) {
           throw sourceExposureFailure(
             `${toolName} document identity differs from its private identity`,
@@ -1851,8 +1958,18 @@ export const providerSourceExposureProofFromToolResult = (
             `${toolName} marker namespace differs from its private identity`,
           );
         }
+        const privateRangeHash = Object.hasOwn(privateIdentity, "ranges")
+          ? sha256Base64Url(
+              JSON.stringify(
+                canonicalPrivateDocumentRanges(
+                  privateIdentity.ranges,
+                  `${toolName} document result`,
+                ),
+              ),
+            )
+          : undefined;
         const privateContentIdentity = `${privateLogicalIdentity}:${privateIdentity.snapshotId}:${
-          item.documentRangeHash ?? sha256Base64Url(item.visibleText)
+          item.documentRangeHash ?? privateRangeHash ?? sha256Base64Url(item.visibleText)
         }`;
         if (marker.contentItemIdentity !== privateContentIdentity) {
           throw sourceExposureFailure(
@@ -1874,7 +1991,26 @@ export const providerSourceExposureProofFromToolResult = (
       }
     } else {
       const privateIdentity = privateIdentityForExposure(toolName, result, index);
-      if (
+      if (item.exposureStage === "context_compaction_input") {
+        if (privateIdentity === undefined) {
+          throw sourceExposureFailure(`${toolName} lacks its immutable passage proof sidecar`);
+        }
+        if (
+          typeof privateIdentity.candidateId !== "string" ||
+          privateIdentity.candidateId !== item.candidateId ||
+          typeof privateIdentity.passageId !== "string" ||
+          privateIdentity.passageId !== item.passageId ||
+          typeof privateIdentity.charStart !== "number" ||
+          !Number.isSafeInteger(privateIdentity.charStart) ||
+          typeof privateIdentity.charEnd !== "number" ||
+          !Number.isSafeInteger(privateIdentity.charEnd) ||
+          privateIdentity.charEnd <= privateIdentity.charStart ||
+          typeof privateIdentity.visibleByteCount !== "number" ||
+          privateIdentity.visibleByteCount !== item.visibleByteCount
+        ) {
+          throw sourceExposureFailure(`${toolName} passage proof differs from its result`);
+        }
+      } else if (
         item.requiresPrivateCommitment === true &&
         privateIdentity === undefined &&
         (item.logicalSourceIdentity === undefined || item.contentItemIdentity === undefined)
@@ -1883,7 +2019,7 @@ export const providerSourceExposureProofFromToolResult = (
           `${toolName} opaque ${item.sourceKind} result lacks its immutable identity sidecar`,
         );
       }
-      if (privateIdentity !== undefined) {
+      if (privateIdentity !== undefined && item.exposureStage !== "context_compaction_input") {
         validatePrivateNonDocumentIdentity(privateIdentity, item, marker, toolName);
       }
     }
@@ -1908,6 +2044,18 @@ export const providerSourceExposureProofFromToolResult = (
       sourceResultIndex: index,
       immutableContentHash,
       immutableSourceIdentityCommitment,
+      ...(item.candidateId === undefined ? {} : { candidateId: item.candidateId }),
+      ...(item.passageId === undefined ? {} : { passageId: item.passageId }),
+      ...(typeof sourcePrivateIdentity?.charStart !== "number"
+        ? {}
+        : { charStart: sourcePrivateIdentity.charStart }),
+      ...(typeof sourcePrivateIdentity?.charEnd !== "number"
+        ? {}
+        : { charEnd: sourcePrivateIdentity.charEnd }),
+      ...(item.visibleByteCount === undefined ? {} : { visibleByteCount: item.visibleByteCount }),
+      ...(documentReconstruction === undefined ? {} : { documentReconstruction }),
+      ...(publisherIssueId === undefined ? {} : { publisherIssueId }),
+      ...(publisherDocumentId === undefined ? {} : { publisherDocumentId }),
       immutableSourceCommitment: providerVisibleSourceExposureCommitment(
         marker,
         providerVisibleBinding,
@@ -1963,8 +2111,6 @@ export interface ProviderRequestSourceExposureProofBinding {
 }
 
 const sourceToolName = (name: string): boolean =>
-  name === "search_internal" ||
-  name === "inspect_internal" ||
   name === "inspect_candidate" ||
   name === "search_within_candidate" ||
   name === "search_memories" ||
@@ -1972,7 +2118,10 @@ const sourceToolName = (name: string): boolean =>
   name === "search_evidence" ||
   name === "inspect_evidence" ||
   name === "web_search" ||
-  name === "web_fetch";
+  name === "web_fetch" ||
+  name === "search_source_passages" ||
+  name === "read_source_passages" ||
+  name === "emit_compaction_result";
 
 const containsHiddenProviderToolResultField = (value: unknown): boolean => {
   if (Array.isArray(value)) return value.some(containsHiddenProviderToolResultField);
@@ -2005,17 +2154,16 @@ const sourceResultField = (
   index: number,
   expected: ExpectedVisibleSourceExposure,
 ): string => {
-  if (toolName === "search_internal" || toolName === "search_memories") {
+  if (toolName === "search_memories") {
     return `items[${index}].${toolName === "search_memories" ? "content" : "snippet"}`;
   }
   if (toolName === "search_within_candidate") return `matchPreviews[${index}].text`;
+  if (toolName === "search_source_passages") return `passages[${index}].text`;
+  if (toolName === "read_source_passages") return `passages[${index}].text`;
   if (toolName === "search_evidence") return `matches[${index}].text`;
   if (toolName === "web_search") return `results[${index}].snippet`;
   if (toolName === "inspect_memory") return "memory.content";
   if (toolName === "web_fetch") return "text";
-  if (toolName === "inspect_internal") {
-    return expected.sourceKind === "chat_message" ? "message.content" : "text";
-  }
   if (
     toolName === "inspect_candidate" &&
     expected.sourceKind === "chat_message" &&
@@ -2050,6 +2198,13 @@ interface CodeOwnedSourceDescriptor {
   readonly logicalSourceIdentity?: string | undefined;
   readonly contentItemIdentity?: string | undefined;
   readonly documentId?: string | undefined;
+  /** Run-local compaction identity, never a canonical source identity. */
+  readonly candidateId?: string | undefined;
+  readonly passageId?: string | undefined;
+  readonly charStart?: number | undefined;
+  readonly charEnd?: number | undefined;
+  readonly visibleByteCount?: number | undefined;
+  readonly requiresCompactionBinding?: boolean | undefined;
   readonly location: SourceExposureLocation;
 }
 
@@ -2143,6 +2298,384 @@ const answerSourceDescriptors = (
   }
   return descriptors;
 };
+const compactionSourceKind = (
+  value: unknown,
+  context: string,
+): ProviderVisibleSourceExposureMarker["sourceKind"] => {
+  if (value === "document" || value === "chat_message" || value === "memory" || value === "web") {
+    return value;
+  }
+  if (value === "conversation_entry") return "chat_message";
+  throw sourceExposureFailure(`${context} has an invalid candidate kind`);
+};
+
+const assertCompactionKeys = (
+  value: JsonRecord,
+  allowed: readonly string[],
+  context: string,
+): void => {
+  const allowedKeys = new Set(allowed);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw sourceExposureFailure(`${context} contains hidden or unknown canonical fields`);
+  }
+};
+
+const compactionCandidateId = (value: unknown, context: string): string => {
+  if (typeof value !== "string" || !/^c[1-9][0-9]*$/u.test(value)) {
+    throw sourceExposureFailure(`${context} has an invalid run-local candidate ID`);
+  }
+  return value;
+};
+
+const compactionPassageId = (value: unknown, context: string): string => {
+  if (typeof value !== "string" || !/^p[1-9][0-9]*$/u.test(value)) {
+    throw sourceExposureFailure(`${context} has an invalid run-local passage ID`);
+  }
+  return value;
+};
+
+const addCompactionCandidateDescriptors = (
+  descriptors: CodeOwnedSourceDescriptor[],
+  messageIndex: number,
+  value: unknown,
+  path: readonly (string | number)[],
+  mode: "preview" | "passages",
+): void => {
+  const addCandidate = (
+    candidateValue: unknown,
+    candidatePath: readonly (string | number)[],
+  ): void => {
+    if (!isJsonRecord(candidateValue)) {
+      throw sourceExposureFailure("compaction candidate must be an object");
+    }
+    const candidateId = compactionCandidateId(
+      candidateValue.candidateId,
+      `compaction ${pathText(candidatePath)}`,
+    );
+    const sourceKind = compactionSourceKind(
+      candidateValue.kind,
+      `compaction candidate ${candidateId}`,
+    );
+    if (mode === "preview") {
+      assertCompactionKeys(
+        candidateValue,
+        ["candidateId", "kind", "label", "purpose", "date", "renderedTokenCount", "preview"],
+        `compaction candidate ${candidateId}`,
+      );
+      if (
+        (typeof candidateValue.label !== "string" && candidateValue.label !== null) ||
+        typeof candidateValue.purpose !== "string" ||
+        (typeof candidateValue.date !== "string" && candidateValue.date !== null) ||
+        typeof candidateValue.renderedTokenCount !== "number" ||
+        !Number.isSafeInteger(candidateValue.renderedTokenCount) ||
+        candidateValue.renderedTokenCount < 0
+      ) {
+        throw sourceExposureFailure(`compaction candidate ${candidateId} preview is not canonical`);
+      }
+      const addPreviewDescriptor = (
+        field: string,
+        text: string,
+        range?: { readonly charStart: number; readonly charEnd: number },
+      ): void => {
+        descriptors.push({
+          sourceKind,
+          exposureStage: "context_compaction_input",
+          visibleText: text,
+          candidateId,
+          ...(range === undefined ? {} : range),
+          visibleByteCount: new TextEncoder().encode(text).byteLength,
+          requiresCompactionBinding: true,
+          location: {
+            messageIndex,
+            sourceOrdinal: -1,
+            serializedField: `messages[${messageIndex}].${pathText([
+              ...candidatePath,
+              "preview",
+              ...(field === "" ? [] : [field]),
+            ])}`,
+          },
+        });
+      };
+      if (sourceKind === "chat_message" && isJsonRecord(candidateValue.preview)) {
+        const preview = candidateValue.preview;
+        const previewKeys = Object.keys(preview);
+        const complete =
+          previewKeys.length === 2 &&
+          previewKeys.includes("userContent") &&
+          previewKeys.includes("assistantContent");
+        const failed =
+          previewKeys.length === 3 &&
+          previewKeys.includes("userContent") &&
+          previewKeys.includes("errorCode") &&
+          previewKeys.includes("retryable");
+        if (
+          (!complete && !failed) ||
+          typeof preview.userContent !== "string" ||
+          preview.userContent.length === 0 ||
+          (complete &&
+            (typeof preview.assistantContent !== "string" ||
+              preview.assistantContent.length === 0)) ||
+          (failed &&
+            (typeof preview.errorCode !== "string" || typeof preview.retryable !== "boolean"))
+        ) {
+          throw sourceExposureFailure(
+            `compaction candidate ${candidateId} conversation preview is not canonical`,
+          );
+        }
+        addPreviewDescriptor("userContent", preview.userContent, {
+          charStart: 0,
+          charEnd: preview.userContent.length,
+        });
+        if (complete)
+          addPreviewDescriptor("assistantContent", preview.assistantContent as string, {
+            charStart: 0,
+            charEnd: (preview.assistantContent as string).length,
+          });
+        return;
+      }
+      if (typeof candidateValue.preview !== "string" || candidateValue.preview.length === 0) {
+        throw sourceExposureFailure(`compaction candidate ${candidateId} preview is not canonical`);
+      }
+      addPreviewDescriptor("", candidateValue.preview);
+      return;
+    }
+    assertCompactionKeys(
+      candidateValue,
+      ["candidateId", "kind", "label", "purpose", "date", "passages"],
+      `compaction candidate ${candidateId}`,
+    );
+    if (
+      (typeof candidateValue.label !== "string" && candidateValue.label !== null) ||
+      typeof candidateValue.purpose !== "string" ||
+      (typeof candidateValue.date !== "string" && candidateValue.date !== null) ||
+      !Array.isArray(candidateValue.passages)
+    ) {
+      throw sourceExposureFailure(`compaction candidate ${candidateId} is not canonical`);
+    }
+    const passageIds = new Set<string>();
+    candidateValue.passages.forEach((passage, passageIndex) => {
+      if (!isJsonRecord(passage)) {
+        throw sourceExposureFailure(`compaction candidate ${candidateId} passage is not canonical`);
+      }
+      assertCompactionKeys(
+        passage,
+        ["passageId", "text"],
+        `compaction candidate ${candidateId} passage`,
+      );
+      const passageId = compactionPassageId(
+        passage.passageId,
+        `compaction candidate ${candidateId} passage ${passageIndex}`,
+      );
+      if (passageIds.has(passageId)) {
+        throw sourceExposureFailure(`compaction candidate ${candidateId} repeats a passage`);
+      }
+      passageIds.add(passageId);
+      if (typeof passage.text !== "string" || passage.text.length === 0) {
+        throw sourceExposureFailure(`compaction candidate ${candidateId} passage text is invalid`);
+      }
+      descriptors.push({
+        sourceKind,
+        exposureStage: "context_compaction_input",
+        visibleText: passage.text,
+        candidateId,
+        passageId,
+        visibleByteCount: new TextEncoder().encode(passage.text).byteLength,
+        requiresCompactionBinding: true,
+        location: {
+          messageIndex,
+          sourceOrdinal: -1,
+          serializedField: `messages[${messageIndex}].${pathText([
+            ...candidatePath,
+            "passages",
+            passageIndex,
+            "text",
+          ])}`,
+        },
+      });
+    });
+  };
+  if (!Array.isArray(value) || value.length === 0) {
+    throw sourceExposureFailure("compaction candidate inventory must be a non-empty array");
+  }
+  const seenCandidates = new Set<string>();
+  value.forEach((candidate, index) => {
+    if (!isJsonRecord(candidate)) {
+      throw sourceExposureFailure("compaction candidate inventory contains a non-object");
+    }
+    const candidateId = compactionCandidateId(candidate.candidateId, "compaction candidate");
+    if (seenCandidates.has(candidateId)) {
+      throw sourceExposureFailure("compaction candidate inventory repeats a candidate");
+    }
+    seenCandidates.add(candidateId);
+    addCandidate(candidate, [...path, index]);
+  });
+};
+
+const compactionDescriptorsForUserPayload = (
+  messageIndex: number,
+  parsed: JsonRecord,
+): readonly CodeOwnedSourceDescriptor[] => {
+  const descriptors: CodeOwnedSourceDescriptor[] = [];
+  const previewCandidateField = Array.isArray(parsed.candidates)
+    ? "candidates"
+    : Array.isArray(parsed.originalCandidates)
+      ? "originalCandidates"
+      : undefined;
+  const hasPreviewCandidates =
+    previewCandidateField !== undefined &&
+    (parsed[previewCandidateField] as unknown[]).some(
+      (candidate) => isJsonRecord(candidate) && Object.hasOwn(candidate, "preview"),
+    );
+  const hasPassageCandidates =
+    Array.isArray(parsed.candidates) &&
+    parsed.candidates.some(
+      (candidate) => isJsonRecord(candidate) && Object.hasOwn(candidate, "passages"),
+    );
+  const hasSinglePassageCandidate =
+    isJsonRecord(parsed.candidate) && Object.hasOwn(parsed.candidate, "passages");
+  if (!hasPreviewCandidates && !hasPassageCandidates && !hasSinglePassageCandidate)
+    return descriptors;
+  if (hasPreviewCandidates) {
+    const fallbackPreview = previewCandidateField === "originalCandidates";
+    assertCompactionKeys(
+      parsed,
+      fallbackPreview
+        ? [
+            "question",
+            "allowance",
+            "remainingOverage",
+            "originalCandidates",
+            "initialManifest",
+            "firstPass",
+            "priorValidationFeedback",
+          ]
+        : [
+            "question",
+            "allowance",
+            "overage",
+            "mandatoryInputCost",
+            "candidates",
+            "toolBounds",
+            "priorValidationFeedback",
+            "taskId",
+            "phase",
+          ],
+      fallbackPreview ? "fallback compaction payload" : "initial compaction payload",
+    );
+    const candidateField = previewCandidateField!;
+    addCompactionCandidateDescriptors(
+      descriptors,
+      messageIndex,
+      parsed[candidateField],
+      [candidateField],
+      "preview",
+    );
+    return descriptors;
+  }
+  if (hasPassageCandidates) {
+    assertCompactionKeys(
+      parsed,
+      [
+        "question",
+        "group",
+        "candidates",
+        "priorResult",
+        "priorValidationFeedback",
+        "taskId",
+        "phase",
+      ],
+      "group compaction payload",
+    );
+    if (!isJsonRecord(parsed.group)) {
+      throw sourceExposureFailure("group compaction payload lacks its group");
+    }
+    assertCompactionKeys(
+      parsed.group,
+      ["groupId", "candidateIds", "renderedTokenBudget", "mode"],
+      "group compaction group",
+    );
+    const groupBudget = parsed.group.renderedTokenBudget;
+    if (
+      typeof parsed.group.groupId !== "string" ||
+      !/^g[1-9][0-9]*$/u.test(parsed.group.groupId) ||
+      !Array.isArray(parsed.group.candidateIds) ||
+      typeof groupBudget !== "number" ||
+      !Number.isSafeInteger(groupBudget) ||
+      groupBudget <= 0 ||
+      (parsed.group.mode !== "normal" && parsed.group.mode !== "source_tool")
+    ) {
+      throw sourceExposureFailure("group compaction group is not canonical");
+    }
+    const groupIds = parsed.group.candidateIds.map((candidateId) =>
+      compactionCandidateId(candidateId, "group compaction group"),
+    );
+    if (new Set(groupIds).size !== groupIds.length) {
+      throw sourceExposureFailure("group compaction group repeats a candidate");
+    }
+    if (!Array.isArray(parsed.candidates) || parsed.candidates.length !== groupIds.length) {
+      throw sourceExposureFailure("group compaction candidate count differs from its group");
+    }
+    parsed.candidates.forEach((candidate, index) => {
+      if (!isJsonRecord(candidate) || candidate.candidateId !== groupIds[index]) {
+        throw sourceExposureFailure("group compaction candidate order differs from its group");
+      }
+    });
+    addCompactionCandidateDescriptors(
+      descriptors,
+      messageIndex,
+      parsed.candidates,
+      ["candidates"],
+      "passages",
+    );
+    return descriptors;
+  }
+  assertCompactionKeys(
+    parsed,
+    [
+      "question",
+      "group",
+      "candidate",
+      "priorResult",
+      "priorValidationFeedback",
+      "toolBounds",
+      "taskId",
+      "phase",
+    ],
+    "source-tool compaction payload",
+  );
+  if (!isJsonRecord(parsed.group))
+    throw sourceExposureFailure("source-tool payload lacks its group");
+  assertCompactionKeys(
+    parsed.group,
+    ["groupId", "candidateIds", "renderedTokenBudget", "mode"],
+    "source-tool compaction group",
+  );
+  const sourceToolGroupBudget = parsed.group.renderedTokenBudget;
+  if (
+    typeof parsed.group.groupId !== "string" ||
+    !/^g[1-9][0-9]*$/u.test(parsed.group.groupId) ||
+    typeof sourceToolGroupBudget !== "number" ||
+    !Number.isSafeInteger(sourceToolGroupBudget) ||
+    sourceToolGroupBudget <= 0 ||
+    parsed.group.mode !== "source_tool" ||
+    !Array.isArray(parsed.group.candidateIds) ||
+    parsed.group.candidateIds.length !== 1
+  ) {
+    throw sourceExposureFailure("source-tool compaction group must contain one candidate");
+  }
+  const candidateId = compactionCandidateId(parsed.group.candidateIds[0], "source-tool group");
+  if (!isJsonRecord(parsed.candidate) || parsed.candidate.candidateId !== candidateId) {
+    throw sourceExposureFailure("source-tool candidate differs from its group");
+  }
+  addCompactionCandidateDescriptors(
+    descriptors,
+    messageIndex,
+    [parsed.candidate],
+    ["candidate"],
+    "passages",
+  );
+  return descriptors;
+};
 
 const codeOwnedExposureDescriptors = (
   normalized: ProviderRequest,
@@ -2157,6 +2690,7 @@ const codeOwnedExposureDescriptors = (
       return;
     }
     if (!isJsonRecord(parsed)) return;
+    candidates.push(...compactionDescriptorsForUserPayload(messageIndex, parsed));
     const addMessageField = (field: string, idField: string): void => {
       if (typeof parsed[field] !== "string") return;
       const identity = parsed[idField];
@@ -2187,17 +2721,18 @@ const codeOwnedExposureDescriptors = (
         ["userMessageId", "userContent"],
         ["assistantMessageId", "assistantContent"],
       ] as const) {
-        if (
-          typeof value[idField] === "string" &&
-          value[idField].length > 0 &&
-          typeof value[contentField] === "string"
-        ) {
+        if (typeof value[contentField] === "string") {
+          const messageId = value[idField];
           candidates.push({
             sourceKind: "chat_message",
             exposureStage: "provider_input",
             visibleText: value[contentField],
-            logicalSourceIdentity: chatMessageEvidenceIdentity(value[idField]),
-            contentItemIdentity: value[idField],
+            ...(typeof messageId === "string" && messageId.length > 0
+              ? {
+                  logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
+                  contentItemIdentity: messageId,
+                }
+              : {}),
             location: {
               messageIndex,
               sourceOrdinal: -1,
@@ -2207,6 +2742,23 @@ const codeOwnedExposureDescriptors = (
         }
       }
     };
+    const addReviewPreviews = (value: unknown, path: readonly (string | number)[]): void => {
+      if (!Array.isArray(value)) return;
+      value.forEach((item, index) => {
+        if (!isJsonRecord(item) || typeof item.preview !== "string") return;
+        if (item.kind !== "document" && item.kind !== "chat_message") return;
+        candidates.push({
+          sourceKind: item.kind,
+          exposureStage: "internal_search_preview",
+          visibleText: item.preview,
+          location: {
+            messageIndex,
+            sourceOrdinal: -1,
+            serializedField: `messages[${messageIndex}].${pathText([...path, index, "preview"])}`,
+          },
+        });
+      });
+    };
     for (const [key, value] of Object.entries(parsed)) {
       if (key === "currentMessage") addMessageField(key, "currentMessageId");
       if (key === "currentUserMessage") addMessageField(key, "currentUserMessageId");
@@ -2214,6 +2766,7 @@ const codeOwnedExposureDescriptors = (
       if (key === "entries" || key === "selectedConversation") {
         addConversationRecords(value, [key]);
       }
+      if (key === "results") addReviewPreviews(value, [key]);
       if (key === "evidence" && typeof value === "string") {
         candidates.push(...answerSourceDescriptors(messageIndex, value));
       }
@@ -2250,9 +2803,32 @@ const assertCodeOwnedMarkerShape = (proof: CodeOwnedSourceExposureProof): void =
       "web_fetch",
       "evaluation_general_planner_search",
       "evaluation_general_planner_inspect",
+      "context_compaction_input",
     ].includes(proof.exposureStage)
   ) {
     throw sourceExposureFailure("code-owned proof has an invalid exposure stage");
+  }
+  if (proof.exposureStage === "context_compaction_input") {
+    if (proof.candidateId === undefined) {
+      throw sourceExposureFailure("compaction proof lacks its run-local candidate ID");
+    }
+    if (
+      proof.passageId === undefined &&
+      (proof.charStart === undefined || proof.charEnd === undefined)
+    ) {
+      throw sourceExposureFailure("compaction proof lacks its passage or preview range");
+    }
+    const byteCount = new TextEncoder().encode(proof.visibleText).byteLength;
+    if (proof.visibleByteCount !== byteCount) {
+      throw sourceExposureFailure("compaction proof byte count differs from visible text");
+    }
+    if (
+      proof.immutableContentHash === undefined ||
+      proof.immutableSourceIdentityCommitment === undefined ||
+      proof.immutableSourceCommitment === undefined
+    ) {
+      throw sourceExposureFailure("compaction proof lacks its immutable commitment");
+    }
   }
   if (
     proof.sourceKind === "document" &&
@@ -2307,6 +2883,7 @@ const assertCodeOwnedMarkerShape = (proof: CodeOwnedSourceExposureProof): void =
     throw sourceExposureFailure("code-owned memory proof identity is not canonical");
   }
   if (!evaluationGeneralPlannerExposure && proof.sourceKind === "web") {
+    const compactionWeb = proof.exposureStage === "context_compaction_input";
     const namespaced = proof.logicalSourceIdentity.startsWith("web:");
     const identity = namespaced
       ? proof.logicalSourceIdentity.slice("web:".length)
@@ -2319,12 +2896,20 @@ const assertCodeOwnedMarkerShape = (proof: CodeOwnedSourceExposureProof): void =
     } catch {
       throw sourceExposureFailure("code-owned web proof identity is not canonical");
     }
-    const contentHash = proof.visibleText.normalize("NFC").replace(/\r\n?/gu, "\n").trim();
+    const visibleQuoteHash = sha256Base64Url(
+      proof.visibleText.normalize("NFC").replace(/\r\n?/gu, "\n").trim(),
+    );
+    const quoteHash = compactionWeb
+      ? namespaced && separator > 0
+        ? identity.slice(separator + 1)
+        : ""
+      : visibleQuoteHash;
     if (
       canonicalUrl !== url ||
-      (namespaced && separator <= 0) ||
-      proof.contentItemIdentity !== `${canonicalUrl}:${sha256Base64Url(contentHash)}` ||
-      (namespaced && identity.slice(separator + 1) !== sha256Base64Url(contentHash))
+      (compactionWeb && (!namespaced || separator <= 0)) ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(quoteHash) ||
+      proof.contentItemIdentity !== `${canonicalUrl}:${quoteHash}` ||
+      (namespaced && identity.slice(separator + 1) !== quoteHash)
     ) {
       throw sourceExposureFailure("code-owned web proof identity is not canonical");
     }
@@ -2334,7 +2919,7 @@ const assertCodeOwnedMarkerShape = (proof: CodeOwnedSourceExposureProof): void =
     (!isCanonicalDocumentLogicalIdentity(proof.logicalSourceIdentity) ||
       documentIdFromLogicalIdentity(proof.logicalSourceIdentity) === undefined ||
       !new RegExp(
-        `^${escapeRegExp(proof.logicalSourceIdentity)}:[^:\\s]+:[A-Za-z0-9_-]{43}$`,
+        `^${escapeRegExp(proof.logicalSourceIdentity)}:[^\\s]+:[A-Za-z0-9_-]{43}$`,
         "u",
       ).test(proof.contentItemIdentity))
   ) {
@@ -2346,8 +2931,21 @@ const codeOwnedDescriptorBinding = (
   descriptor: CodeOwnedSourceDescriptor,
   proof: SourceExposureProof,
   sourceOrdinal: number,
-): string =>
-  stableJson({
+): string => {
+  const boundCharStart =
+    descriptor.charStart ??
+    (isCodeOwnedSourceExposureProof(proof) && descriptor.requiresCompactionBinding === true
+      ? proof.charStart
+      : undefined);
+  const boundCharEnd =
+    descriptor.charEnd ??
+    (isCodeOwnedSourceExposureProof(proof) && descriptor.requiresCompactionBinding === true
+      ? proof.charEnd
+      : undefined);
+  if ((boundCharStart === undefined) !== (boundCharEnd === undefined)) {
+    throw sourceExposureFailure("compaction descriptor range is incomplete");
+  }
+  return stableJson({
     sourceOrdinal,
     messageIndex: descriptor.location.messageIndex,
     serializedField: descriptor.location.serializedField,
@@ -2360,6 +2958,13 @@ const codeOwnedDescriptorBinding = (
     contentItemIdentity: proof.contentItemIdentity,
     publicDocumentId:
       descriptor.documentId ?? documentIdFromLogicalIdentity(proof.logicalSourceIdentity),
+    ...(descriptor.candidateId === undefined ? {} : { candidateId: descriptor.candidateId }),
+    ...(descriptor.passageId === undefined ? {} : { passageId: descriptor.passageId }),
+    ...(boundCharStart === undefined ? {} : { charStart: boundCharStart }),
+    ...(boundCharEnd === undefined ? {} : { charEnd: boundCharEnd }),
+    ...(descriptor.visibleByteCount === undefined
+      ? {}
+      : { visibleByteCount: descriptor.visibleByteCount }),
     visibleTokenCount: proof.visibleTokenCount,
     ...(isCodeOwnedSourceExposureProof(proof) && proof.sourceToolCallId !== undefined
       ? { sourceToolCallId: proof.sourceToolCallId }
@@ -2378,6 +2983,7 @@ const codeOwnedDescriptorBinding = (
       ? { immutableSourceCommitment: proof.immutableSourceCommitment }
       : {}),
   });
+};
 
 const expectedToolExposures = (normalized: ProviderRequest): readonly LocatedSourceExposure[] => {
   const toolCalls = new Map<
@@ -2444,7 +3050,7 @@ const expectedToolExposures = (normalized: ProviderRequest): readonly LocatedSou
       const marker = embedded?.[index];
       exposures.push({
         marker: marker ?? {
-          sourceKind: item.sourceKind,
+          sourceKind: item.sourceKind ?? "document",
           logicalSourceIdentity: item.logicalSourceIdentity ?? "",
           contentItemIdentity: item.contentItemIdentity ?? "",
           exposureStage: item.exposureStage,
@@ -2536,6 +3142,46 @@ const assertProofMatchesDescriptor = (
       "sidecar document identity differs from its visible document field",
     );
   }
+  if (descriptor.requiresCompactionBinding === true) {
+    if (proof.candidateId !== descriptor.candidateId) {
+      throw sourceExposureFailure("sidecar candidate identity differs from its compaction field");
+    }
+    if (proof.passageId !== descriptor.passageId) {
+      throw sourceExposureFailure("sidecar passage identity differs from its compaction field");
+    }
+    if (proof.visibleByteCount !== descriptor.visibleByteCount) {
+      throw sourceExposureFailure("sidecar byte count differs from its compaction field");
+    }
+    if (
+      (descriptor.passageId === undefined &&
+        (proof.charStart === undefined || proof.charEnd === undefined)) ||
+      proof.immutableContentHash === undefined ||
+      proof.immutableSourceIdentityCommitment === undefined
+    ) {
+      throw sourceExposureFailure("compaction field lacks its exact range or commitment");
+    }
+    const compactionBinding = stableJson({
+      sourceKind: descriptor.sourceKind,
+      candidateId: descriptor.candidateId,
+      passageId: descriptor.passageId,
+      charStart: proof.charStart,
+      charEnd: proof.charEnd,
+      visibleByteCount: descriptor.visibleByteCount,
+      visibleTextHash: sha256Base64Url(descriptor.visibleText),
+    });
+    if (
+      proof.immutableSourceCommitment !== undefined &&
+      proof.immutableSourceCommitment !==
+        providerVisibleSourceExposureCommitment(
+          proof,
+          compactionBinding,
+          proof.immutableContentHash,
+          proof.immutableSourceIdentityCommitment,
+        )
+    ) {
+      throw sourceExposureFailure("compaction immutable commitment does not match its field");
+    }
+  }
   if (proof.messageIndex !== undefined && proof.messageIndex !== location.messageIndex) {
     throw sourceExposureFailure("sidecar message location differs from its normalized request");
   }
@@ -2578,12 +3224,46 @@ const verifyCodeOwnedExposureInventory = (
     throw sourceExposureFailure("code-owned exposure inventory contains an invalid proof");
   }
   const markerProofs = markers;
+  const seenExplicitLocations = new Set<string>();
   for (const proof of markerProofs) {
     if (!isCodeOwnedSourceExposureProof(proof)) continue;
     assertCodeOwnedMarkerShape(proof);
+    const hasExplicitFieldLocation =
+      proof.messageIndex !== undefined || proof.serializedField !== undefined;
+    const hasExplicitOrdinalLocation = proof.sourceOrdinal !== undefined;
+    if (hasExplicitFieldLocation || hasExplicitOrdinalLocation) {
+      const locationKey = stableJson(
+        hasExplicitFieldLocation
+          ? {
+              messageIndex: proof.messageIndex ?? null,
+              serializedField: proof.serializedField ?? null,
+            }
+          : { sourceOrdinal: proof.sourceOrdinal },
+      );
+      if (seenExplicitLocations.has(locationKey)) {
+        throw sourceExposureFailure("duplicate source exposure proof at exact request location");
+      }
+      seenExplicitLocations.add(locationKey);
+    }
     const visibleTokenCount = countTextTokens(proof.visibleText);
     if (!Number.isSafeInteger(visibleTokenCount) || visibleTokenCount !== proof.visibleTokenCount) {
       throw sourceExposureFailure("sidecar tokenizer count differs from its visible content");
+    }
+  }
+  const immutableContentByIdentity = new Map<string, string>();
+  for (const proof of markerProofs) {
+    if (!isCodeOwnedSourceExposureProof(proof)) continue;
+    const identityKey = `${proof.sourceKind}|${proof.logicalSourceIdentity}|${proof.contentItemIdentity}`;
+    const priorHash = immutableContentByIdentity.get(identityKey);
+    if (
+      priorHash !== undefined &&
+      proof.immutableContentHash !== undefined &&
+      priorHash !== proof.immutableContentHash
+    ) {
+      throw sourceExposureFailure("source exposure identity was rebound to different content");
+    }
+    if (proof.immutableContentHash !== undefined) {
+      immutableContentByIdentity.set(identityKey, proof.immutableContentHash);
     }
   }
   const normalizedExposures = withGlobalSourceOrdinals(normalized);
@@ -2642,13 +3322,20 @@ const verifyCodeOwnedExposureInventory = (
         ) {
           throw sourceExposureFailure("sidecar tool-result coordinate differs from its source");
         }
+        if (
+          (expected.candidateId !== undefined && proof.candidateId !== expected.candidateId) ||
+          (expected.passageId !== undefined && proof.passageId !== expected.passageId) ||
+          (expected.visibleByteCount !== undefined &&
+            proof.visibleByteCount !== expected.visibleByteCount)
+        ) {
+          throw sourceExposureFailure("sidecar compaction identity differs from its tool result");
+        }
       }
       if (
         expected.requiresPrivateCommitment === true &&
         (!isCodeOwnedSourceExposureProof(proof) ||
           proof.immutableContentHash === undefined ||
-          proof.immutableSourceIdentityCommitment === undefined ||
-          proof.immutableSourceCommitment === undefined)
+          proof.immutableSourceIdentityCommitment === undefined)
       ) {
         throw sourceExposureFailure(
           "redacted source exposure lacks its immutable code-owned commitment",
@@ -2688,12 +3375,25 @@ const verifyCodeOwnedExposureInventory = (
           publicDocumentId:
             expected.documentId ?? documentIdFromLogicalIdentity(proof.logicalSourceIdentity),
           visibleTokenCount: proof.visibleTokenCount,
+          ...(expected.candidateId === undefined ? {} : { candidateId: expected.candidateId }),
+          ...(expected.passageId === undefined ? {} : { passageId: expected.passageId }),
+          ...(expected.charStart === undefined ? {} : { charStart: expected.charStart }),
+          ...(expected.charEnd === undefined ? {} : { charEnd: expected.charEnd }),
+          ...(expected.visibleByteCount === undefined
+            ? {}
+            : { visibleByteCount: expected.visibleByteCount }),
           ...(proof.sourceToolCallId === undefined
             ? {}
             : { sourceToolCallId: proof.sourceToolCallId }),
           ...(proof.sourceResultIndex === undefined
             ? {}
             : { sourceResultIndex: proof.sourceResultIndex }),
+          ...(proof.immutableContentHash === undefined
+            ? {}
+            : { immutableContentHash: proof.immutableContentHash }),
+          ...(proof.immutableSourceIdentityCommitment === undefined
+            ? {}
+            : { immutableSourceIdentityCommitment: proof.immutableSourceIdentityCommitment }),
         });
         if (
           proof.orderedSourceDescriptor !== undefined &&
@@ -2755,6 +3455,18 @@ const verifyCodeOwnedExposureInventory = (
       sourceKind: proof.sourceKind,
       exposureStage: proof.exposureStage,
       visibleText: isCodeOwnedSourceExposureProof(proof) ? proof.visibleText : "",
+      ...(expected?.candidateId === undefined ? {} : { candidateId: expected.candidateId }),
+      ...(expected?.passageId === undefined ? {} : { passageId: expected.passageId }),
+      ...(expected?.visibleByteCount === undefined
+        ? {}
+        : { visibleByteCount: expected.visibleByteCount }),
+      ...(isCodeOwnedSourceExposureProof(proof) && proof.charStart !== undefined
+        ? { charStart: proof.charStart }
+        : {}),
+      ...(isCodeOwnedSourceExposureProof(proof) && proof.charEnd !== undefined
+        ? { charEnd: proof.charEnd }
+        : {}),
+      requiresCompactionBinding: expected?.requiresPrivateCommitment === true,
       location: exposure.location,
     };
     const orderedSourceDescriptor = codeOwnedDescriptorBinding(bindingDescriptor, proof, index);
@@ -2798,15 +3510,9 @@ const verifyCodeOwnedExposureInventory = (
       binding.binding,
     );
   }
-  const latestBindingByMarker = new Map<string, ProviderRequestSourceExposureProofBinding>();
-  for (const binding of bindings) {
-    const markerKey = providerSourceExposureMarkerKey(binding.marker);
-    const previous = latestBindingByMarker.get(markerKey);
-    if (previous === undefined || binding.binding.sourceOrdinal > previous.binding.sourceOrdinal) {
-      latestBindingByMarker.set(markerKey, binding);
-    }
-  }
-  const selectedBindings = [...latestBindingByMarker.values()].sort((left, right) =>
+  // A marker identifies source content, not its request location. Keep every
+  // exact binding: the same text may occur at two distinct serialized fields.
+  const selectedBindings = [...bindings].sort((left, right) =>
     left.providerSerializationProofSha256Hex.localeCompare(
       right.providerSerializationProofSha256Hex,
     ),
@@ -2832,11 +3538,6 @@ export const providerRequestSourceExposureProofBindings = (
   verifyCodeOwnedExposureInventory(request, request.sourceExposureProofs ?? [], countTextTokens)
     .bindings;
 
-/**
- * Reads a legacy test-only marker inventory when one is supplied directly.
- * Live agent-client tool messages strip that field before this boundary; live
- * exposure proofs come from the code-owned ledger instead.
- */
 export const providerRequestSourceExposureProofs = (
   request: ProviderRequest,
   countTextTokens: (text: string) => number,
@@ -2845,67 +3546,10 @@ export const providerRequestSourceExposureProofs = (
     return verifyCodeOwnedExposureInventory(request, request.sourceExposureProofs, countTextTokens)
       .proofs;
   }
-  const normalized = normalizeProviderRequest(request);
-  if (codeOwnedExposureDescriptors(normalized).length > 0) {
+  if (codeOwnedExposureDescriptors(normalizeProviderRequest(request)).length > 0) {
     throw sourceExposureFailure("missing code-owned proof for an exact normalized request field");
   }
-  const proofs = new Set<string>();
-  const toolCalls = new Map<
-    string,
-    { readonly call: ProviderToolCall; readonly messageIndex: number }
-  >();
-  for (const [messageIndex, message] of normalized.messages.entries()) {
-    if (message.role === "assistant") {
-      for (const call of message.toolCalls ?? []) {
-        if (toolCalls.has(call.id)) throw sourceExposureFailure("duplicate tool-call location");
-        toolCalls.set(call.id, { call, messageIndex });
-      }
-      continue;
-    }
-    if (message.role !== "tool") continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(message.content) as unknown;
-    } catch {
-      if (
-        message.name.endsWith("_internal") ||
-        message.name === "inspect_candidate" ||
-        message.name === "search_within_candidate"
-      ) {
-        throw sourceExposureFailure(`${message.name} result is not JSON`);
-      }
-      continue;
-    }
-    if (!isJsonRecord(parsed)) continue;
-    const callLocation = toolCalls.get(message.toolCallId);
-    const call =
-      callLocation !== undefined && callLocation.messageIndex < messageIndex
-        ? callLocation.call
-        : undefined;
-    const expected =
-      expectedSourceExposures(message.name, parsed, call) ??
-      (call === undefined
-        ? undefined
-        : expectedStrippedToolResultExposures(message.name, parsed, call));
-    if (!Object.hasOwn(parsed, SOURCE_EXPOSURE_FIELD)) {
-      if (expected !== undefined && expected.length > 0) {
-        throw sourceExposureFailure("missing proof for an exact normalized tool-result field");
-      }
-      continue;
-    }
-    if (expected === undefined) {
-      throw sourceExposureFailure("reserved marker inventory appeared on an unrelated tool");
-    }
-    const markers = markersFromResult(parsed);
-    if (markers.length !== expected.length) {
-      throw sourceExposureFailure("marker cardinality differs from visible source bodies");
-    }
-    for (const [index, marker] of markers.entries()) {
-      assertExactSourceExposureMarker(marker, expected[index]!, countTextTokens);
-      proofs.add(providerVisibleSourceExposureProofSha256Hex(marker));
-    }
-  }
-  return [...proofs].sort();
+  return [];
 };
 
 export interface GlmTemplateMessage {
@@ -2997,6 +3641,7 @@ export const normalizeProviderRequest = (request: ProviderRequest): ProviderRequ
     ...(request.sourceExposureProofs === undefined
       ? {}
       : { sourceExposureProofs: request.sourceExposureProofs }),
+    ...(request.repairConsumed === true ? { repairConsumed: true as const } : {}),
   };
 };
 

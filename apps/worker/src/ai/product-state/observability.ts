@@ -375,9 +375,31 @@ export const insertAiSourceExposure = (
       input.documentReconstruction === undefined
         ? null
         : JSON.stringify(input.documentReconstruction.ranges);
+    const marker = {
+      sourceKind: input.sourceKind,
+      logicalSourceIdentity: input.logicalSourceIdentity,
+      contentItemIdentity: input.contentItemIdentity,
+      exposureStage: input.exposureStage,
+      visibleTokenCount: input.visibleTokenCount,
+    } as const;
+    const providerSerializationProofSha256Hex =
+      input.providerSerializationProofBinding === undefined
+        ? undefined
+        : providerVisibleSourceExposureProofSha256Hex(
+            marker,
+            input.providerSerializationProofBinding,
+          );
+    // The table's existing content identity is the unique key. Extend it
+    // with the exact provider-field proof only when one exists, so repeated
+    // source content at distinct fields stays a durable multiset without a
+    // schema change. Attestation payloads keep the canonical identity.
+    const storedContentItemIdentity =
+      providerSerializationProofSha256Hex === undefined
+        ? input.contentItemIdentity
+        : `${input.contentItemIdentity}#proof=${providerSerializationProofSha256Hex}`;
     return yield* sql.withTransaction(
       Effect.gen(function* () {
-        const replayKey = `${input.runId}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.providerRequestIndex}:${input.exposureStage}:${input.contentItemIdentity}`;
+        const replayKey = `${input.runId}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.providerRequestIndex}:${input.exposureStage}:${storedContentItemIdentity}`;
         const coordinateLockKey = [
           input.runId,
           input.taskId,
@@ -392,6 +414,63 @@ export const insertAiSourceExposure = (
         yield* sql`
           select pg_advisory_xact_lock(hashtext(${`brief:source-exposure-proof:${coordinateLockKey}`}))
         `;
+        const baseIdentity = input.contentItemIdentity.replace(/#proof=[0-9a-f]{64}$/u, "");
+        const existingSourceKinds = yield* sql<{ readonly sourceKind: string }>`
+          select source_kind as "sourceKind"
+          from ai_source_exposures
+          where run_id = ${input.runId}
+            and task_id = ${input.taskId}
+            and loop_iteration = ${input.loopIteration}
+            and attempt = ${input.attempt}
+            and provider_request_index = ${input.providerRequestIndex}
+            and exposure_stage = ${input.exposureStage}
+            and (
+              content_item_identity = ${baseIdentity}
+              or content_item_identity like ${`${baseIdentity}#proof=%`}
+            )
+          for update
+        `;
+        if (existingSourceKinds.some(({ sourceKind }) => sourceKind !== input.sourceKind)) {
+          return yield* Effect.fail(replayConflict("ai_source_exposures", replayKey));
+        }
+        const callerBoundProof =
+          input.providerSerializationProofBinding === undefined
+            ? undefined
+            : providerVisibleSourceExposureProofSha256Hex(
+                marker,
+                input.providerSerializationProofBinding,
+              );
+        if (
+          callerBoundProof !== undefined &&
+          input.providerSerializationProofBinding !== undefined
+        ) {
+          const candidateAttestationPayload = sourceExposureAttestationPayloadForProof(
+            input,
+            callerBoundProof,
+            input.providerSerializationProofBinding,
+          );
+          const sameFieldPayloads = yield* sql<{ readonly id: string }>`
+            select id::text
+            from ai_observations
+            where run_id = ${input.runId}
+              and emitting_task = ${input.taskId}
+              and loop_iteration = ${input.loopIteration}
+              and attempt = ${input.attempt}
+              and kind = 'source_exposure_attestation'
+              and (payload->>'providerRequestIndex')::int = ${input.providerRequestIndex}
+              and payload->>'sourceKind' = ${input.sourceKind}
+              and payload->>'exposureStage' = ${input.exposureStage}
+              and payload->>'contentItemIdentity' = ${baseIdentity}
+              and payload->'providerSerializationProofBinding' = ${JSON.stringify(input.providerSerializationProofBinding)}::jsonb
+              and payload <> ${JSON.stringify(candidateAttestationPayload)}::jsonb
+            for update
+          `;
+          if (sameFieldPayloads.length > 0) {
+            return yield* Effect.fail(
+              replayConflict("ai_observations(source_exposure_attestation)", replayKey),
+            );
+          }
+        }
         const existing = yield* sql<IdRow>`
           select id::text
           from ai_source_exposures
@@ -401,7 +480,7 @@ export const insertAiSourceExposure = (
             and attempt = ${input.attempt}
             and provider_request_index = ${input.providerRequestIndex}
             and exposure_stage = ${input.exposureStage}
-            and content_item_identity = ${input.contentItemIdentity}
+            and content_item_identity = ${storedContentItemIdentity}
           for update
         `;
         if (existing.length > 1) {
@@ -421,7 +500,7 @@ export const insertAiSourceExposure = (
               and logical_source_identity = ${input.logicalSourceIdentity}
               and publisher_issue_id is not distinct from ${input.publisherIssueId ?? null}
               and publisher_document_id is not distinct from ${input.publisherDocumentId ?? null}
-              and content_item_identity = ${input.contentItemIdentity}
+              and content_item_identity = ${storedContentItemIdentity}
               and exposure_stage = ${input.exposureStage}
               and visible_token_count = ${input.visibleTokenCount}
               and document_source_id is not distinct from ${input.documentReconstruction?.sourceId ?? null}
@@ -467,7 +546,7 @@ export const insertAiSourceExposure = (
               ${input.logicalSourceIdentity},
               ${input.publisherIssueId ?? null},
               ${input.publisherDocumentId ?? null},
-              ${input.contentItemIdentity},
+              ${storedContentItemIdentity},
               ${input.exposureStage},
               ${input.visibleTokenCount},
               ${input.documentReconstruction?.sourceId ?? null},
@@ -481,26 +560,15 @@ export const insertAiSourceExposure = (
           inserted = true;
         }
 
-        const marker = {
-          sourceKind: input.sourceKind,
-          logicalSourceIdentity: input.logicalSourceIdentity,
-          contentItemIdentity: input.contentItemIdentity,
-          exposureStage: input.exposureStage,
-          visibleTokenCount: input.visibleTokenCount,
-        } as const;
-        const callerBoundProof =
-          input.providerSerializationProofBinding === undefined
-            ? undefined
-            : providerVisibleSourceExposureProofSha256Hex(
-                marker,
-                input.providerSerializationProofBinding,
-              );
+        if (input.sourceKind === "web") return inserted;
         const existingAttestedProofs = yield* sql<{
           readonly proof: string;
           readonly binding: unknown;
+          readonly providerRequestSha256Hex: string | null;
         }>`
           select payload->>'providerSerializationProofSha256Hex' as proof,
-                 payload->'providerSerializationProofBinding' as binding
+                 payload->'providerSerializationProofBinding' as binding,
+                 payload->>'providerRequestSha256Hex' as "providerRequestSha256Hex"
           from ai_observations
           where run_id = ${input.runId}
             and emitting_task = ${input.taskId}
@@ -514,6 +582,17 @@ export const insertAiSourceExposure = (
             and payload->>'exposureStage' = ${input.exposureStage}
           for update
         `;
+        if (
+          existingAttestedProofs.some(
+            (attestation) =>
+              attestation.providerRequestSha256Hex !== null &&
+              attestation.providerRequestSha256Hex !== input.providerRequestSha256Hex,
+          )
+        ) {
+          return yield* Effect.fail(
+            replayConflict("ai_observations(source_exposure_attestation)", replayKey),
+          );
+        }
         const measurementRows = yield* sql<{
           readonly proofs: unknown;
           readonly bindings: unknown;
@@ -601,7 +680,9 @@ export const insertAiSourceExposure = (
             ).size !== measurementBindings.length
           ) {
             return yield* Effect.fail(
-              new Error("provider measurement lacks its exact source exposure bindings"),
+              new Error(
+                "provider measurement lacks its exact source exposure bindings: provider request measurement source proof bindings are not exact",
+              ),
             );
           }
           const expectedProofs = [...measurementProofs].sort();
@@ -653,7 +734,9 @@ export const insertAiSourceExposure = (
             });
             if (markerMatches.length !== 1) {
               return yield* Effect.fail(
-                new Error("source exposure lacks its exact durable provider sidecar binding"),
+                new Error(
+                  "source exposure lacks its exact durable provider sidecar binding: source exposure requires its exact provider field binding",
+                ),
               );
             }
             providerSerializationProofSha256Hex =
@@ -677,12 +760,12 @@ export const insertAiSourceExposure = (
             providerSerializationProofSha256Hex = callerBoundProof;
             providerSerializationProofBinding = input.providerSerializationProofBinding;
           } else {
-            // A logical exposure can repeat in one provider request while the
-            // product ledger keeps one immutable row for that content item.
-            // The latest normalized occurrence owns that row.
-            providerSerializationProofBinding = sidecarBindings.reduce((latest, candidate) =>
-              candidate.sourceOrdinal > latest.sourceOrdinal ? candidate : latest,
-            );
+            if (sidecarBindings.length !== 1) {
+              return yield* Effect.fail(
+                new Error("source exposure requires its exact repeated-field binding"),
+              );
+            }
+            providerSerializationProofBinding = sidecarBindings[0]!;
             providerSerializationProofSha256Hex = providerVisibleSourceExposureProofSha256Hex(
               marker,
               providerSerializationProofBinding,
@@ -711,14 +794,7 @@ export const insertAiSourceExposure = (
           ),
         };
         const attestationPayloadJson = JSON.stringify(attestationPayload);
-        const attestationIdentity = {
-          providerRequestIndex: input.providerRequestIndex,
-          sourceKind: input.sourceKind,
-          logicalSourceIdentity: input.logicalSourceIdentity,
-          contentItemIdentity: input.contentItemIdentity,
-          exposureStage: input.exposureStage,
-        };
-        const identityAttestations = yield* sql<IdRow>`
+        const sameFieldDivergences = yield* sql<IdRow>`
           select id::text
           from ai_observations
           where run_id = ${input.runId}
@@ -726,9 +802,22 @@ export const insertAiSourceExposure = (
             and loop_iteration = ${input.loopIteration}
             and attempt = ${input.attempt}
             and kind = 'source_exposure_attestation'
-            and payload @> ${sql.json(attestationIdentity)}
+            and (payload->>'providerRequestIndex')::int = ${input.providerRequestIndex}
+            and payload->>'sourceKind' = ${input.sourceKind}
+            and payload->>'exposureStage' = ${input.exposureStage}
+            and payload->>'contentItemIdentity' = ${baseIdentity}
+            and payload->'providerSerializationProofBinding' = ${JSON.stringify(providerSerializationProofBinding)}::jsonb
+            and payload <> ${attestationPayloadJson}::jsonb
           for update
         `;
+        if (sameFieldDivergences.length > 0) {
+          return yield* Effect.fail(
+            replayConflict(
+              "ai_observations(source_exposure_attestation)",
+              `${input.runId}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.providerRequestIndex}:${input.exposureStage}:${input.contentItemIdentity}`,
+            ),
+          );
+        }
         const exactAttestations = yield* sql<IdRow>`
           select id::text
           from ai_observations
@@ -740,10 +829,7 @@ export const insertAiSourceExposure = (
             and payload = ${attestationPayloadJson}::jsonb
           for update
         `;
-        if (
-          identityAttestations.length > 0 &&
-          (identityAttestations.length !== 1 || exactAttestations.length !== 1)
-        ) {
+        if (exactAttestations.length > 1) {
           return yield* Effect.fail(
             replayConflict(
               "ai_observations(source_exposure_attestation)",

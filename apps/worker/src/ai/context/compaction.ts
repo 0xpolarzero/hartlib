@@ -6,17 +6,13 @@ import {
   PassageLocalIdSchema,
   isWellFormedUtf16,
 } from "../workflow/types";
-import type {
-  CandidateKind,
-  CandidateLedger,
-  CandidateLedgerEntry,
-  SourceRange,
-} from "../workflow/types";
+import type { CandidateLedger, CandidateLedgerEntry, SourceRange } from "../workflow/types";
 import { CandidateLedgerSchema } from "../workflow/types";
 import {
   buildPassageIndex,
   mapPassageIdsToRanges,
   rangesSubsetOf,
+  selectedTextFromRanges,
   type PassageIndexOptions,
 } from "./passages";
 
@@ -33,6 +29,8 @@ const reasonSchema = z
   .refine(isWellFormedUtf16, "reason must be well-formed UTF-16")
   .refine((value) => new TextEncoder().encode(value).byteLength <= 4096, "reason is too large");
 const positiveInt = z.number().int().finite().safe().positive();
+
+export const MAX_COMPACTION_GROUPS = 999;
 
 export type InitialContextDecision =
   | { readonly candidateId: string; readonly action: "keep"; readonly reason: string }
@@ -78,6 +76,56 @@ export interface CompactionGroup {
   readonly renderedTokenBudget: number;
   readonly mode: CompactionGroupMode;
 }
+export interface RenderedGroupSource {
+  readonly candidateId: string;
+  readonly text: string;
+  readonly passageIds: readonly string[];
+  readonly ranges: readonly SourceRange[];
+}
+
+export interface CompactionGroupMeasurement {
+  /** Exact input count for the normal compactor request. */
+  readonly inputTokens: number;
+  /** Fast-model input allowance for the normal compactor request. */
+  readonly usableInputTokens: number;
+  /** Exact answer-source cost of the smallest selectable passage. */
+  readonly minimumSelectablePassageCost: number;
+}
+
+export type CompactionGroupMeasurements =
+  | ReadonlyMap<string, CompactionGroupMeasurement>
+  | Readonly<Record<string, CompactionGroupMeasurement>>;
+
+export interface CompactionCostOptions {
+  /**
+   * Count the exact replacement marginal for a group in the canonical answer
+   * request. The second argument contains every candidate replaced by the
+   * group, including members omitted by the proposed result.
+   */
+  readonly countRenderedTokens?: (
+    sources: readonly RenderedGroupSource[],
+    replacedCandidateIds?: readonly string[],
+  ) => number;
+  readonly groupMeasurements?: CompactionGroupMeasurements | undefined;
+}
+
+const asGroupMeasurement = (
+  measurements: CompactionGroupMeasurements | undefined,
+  groupId: string,
+): CompactionGroupMeasurement | undefined => {
+  if (measurements === undefined) return undefined;
+  if (typeof (measurements as ReadonlyMap<string, CompactionGroupMeasurement>).get === "function") {
+    return (measurements as ReadonlyMap<string, CompactionGroupMeasurement>).get(groupId);
+  }
+  return (measurements as Readonly<Record<string, CompactionGroupMeasurement>>)[groupId];
+};
+
+const assertMeasuredCount = (value: number, label: string): number => {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new CompactionContractError(`${label} must be a non-negative safe integer`);
+  }
+  return value;
+};
 
 export type GroupSelection =
   | {
@@ -305,6 +353,103 @@ const ledgerEntries = (ledger: LedgerInput): readonly CandidateLedgerEntry[] => 
 const candidateMap = (ledger: LedgerInput): Map<string, CandidateLedgerEntry> =>
   new Map(ledgerEntries(ledger).map((candidate) => [candidate.candidateId, candidate]));
 
+const renderedGroupSources = (
+  result: GroupCompactionResult,
+  group: CompactionGroup,
+  ledger: LedgerInput,
+  passageOptions: PassageIndexOptions,
+): readonly RenderedGroupSource[] => {
+  const candidates = candidateMap(ledger);
+  const decisions = new Map(result.decisions.map((decision) => [decision.candidateId, decision]));
+  return group.candidateIds.flatMap((candidateId) => {
+    const decision = decisions.get(candidateId);
+    if (decision === undefined || decision.action === "omit") return [];
+    const candidate = candidates.get(candidateId);
+    if (candidate === undefined) {
+      throw new CompactionContractError(`unknown candidate ${candidateId}`);
+    }
+    const index = buildCandidatePassageIndex(candidate, passageOptions);
+    const ranges = mapPassageIdsToRanges(index, decision.passageIds);
+    return [
+      {
+        candidateId,
+        text: selectedTextFromRanges(index.text, ranges),
+        passageIds: [...decision.passageIds],
+        ranges,
+      },
+    ];
+  });
+};
+
+const exactGroupRenderedTokenCount = (
+  result: GroupCompactionResult,
+  group: CompactionGroup,
+  ledger: LedgerInput,
+  passageOptions: PassageIndexOptions,
+  costOptions: CompactionCostOptions | undefined,
+): number => {
+  const sources = renderedGroupSources(result, group, ledger, passageOptions);
+  const count =
+    costOptions?.countRenderedTokens === undefined
+      ? sources.reduce((total, source) => total + passageOptions.countTokens(source.text), 0)
+      : costOptions.countRenderedTokens(sources, group.candidateIds);
+  return assertMeasuredCount(count, `group ${group.groupId} rendered token count`);
+};
+const renderedPassageCost = (
+  candidateId: string,
+  passageId: string,
+  text: string,
+  range: SourceRange,
+  passageOptions: PassageIndexOptions,
+  costOptions: CompactionCostOptions | undefined,
+  replacedCandidateIds: readonly string[],
+): number => {
+  const count =
+    costOptions?.countRenderedTokens === undefined
+      ? passageOptions.countTokens(text)
+      : costOptions.countRenderedTokens(
+          [{ candidateId, text, passageIds: [passageId], ranges: [range] }],
+          replacedCandidateIds,
+        );
+  return assertMeasuredCount(count, `passage ${passageId} rendered token count`);
+};
+
+const minimumSelectablePassageCost = (
+  candidate: CandidateLedgerEntry,
+  passageOptions: PassageIndexOptions,
+  costOptions: CompactionCostOptions | undefined,
+  replacedCandidateIds: readonly string[],
+): number => {
+  const index = buildCandidatePassageIndex(candidate, passageOptions);
+  const costs = index.passages.map((passage) =>
+    renderedPassageCost(
+      candidate.candidateId,
+      passage.passageId,
+      passage.text,
+      passage.range,
+      passageOptions,
+      costOptions,
+      replacedCandidateIds,
+    ),
+  );
+  if (costs.length === 0) {
+    throw new CompactionContractError(
+      `candidate ${candidate.candidateId} has no selectable authorized passages`,
+    );
+  }
+  return Math.min(...costs);
+};
+
+const groupMembersInLedgerOrder = (
+  groupCandidateIds: readonly string[],
+  ledger: LedgerInput,
+): readonly string[] => {
+  const members = new Set(groupCandidateIds);
+  return ledgerEntries(ledger)
+    .map((candidate) => candidate.candidateId)
+    .filter((candidateId) => members.has(candidateId));
+};
+
 export const buildCandidatePassageIndex = (
   candidate: CandidateLedgerEntry,
   options: PassageIndexOptions,
@@ -314,7 +459,10 @@ export const buildCandidatePassageIndex = (
       "candidate passage indexing requires ledger-sanitized text coordinates",
     );
   }
-  return buildPassageIndex(candidate.text, options);
+  return buildPassageIndex(candidate.text, {
+    ...options,
+    authorizedRanges: candidate.baseRanges,
+  });
 };
 
 const parseOrThrow = <T>(schema: z.ZodType<T>, value: unknown, label: string): T => {
@@ -327,8 +475,15 @@ const parseOrThrow = <T>(schema: z.ZodType<T>, value: unknown, label: string): T
 export const validateInitialContextManifest = (
   value: unknown,
   ledger: LedgerInput,
+  passageOptions?: PassageIndexOptions,
+  costOptions?: CompactionCostOptions,
 ): InitialContextManifest => {
   const manifest = parseOrThrow(InitialContextManifestSchema, value, "initial context manifest");
+  if (manifest.groups.length > MAX_COMPACTION_GROUPS) {
+    throw new CompactionContractError(
+      `initial context manifest has more than ${MAX_COMPACTION_GROUPS} groups`,
+    );
+  }
   const candidates = candidateMap(ledger);
   const ids = manifest.decisions.map((decision) => decision.candidateId);
   if (ids.length !== candidates.size || ids.some((id) => !candidates.has(id))) {
@@ -338,12 +493,14 @@ export const validateInitialContextManifest = (
   }
   for (const decision of manifest.decisions) {
     const candidate = candidates.get(decision.candidateId)!;
-    if (
-      decision.action === "compact" &&
-      candidate.kind !== "document" &&
-      candidate.kind !== "chat_message"
-    ) {
+    if (decision.action !== "compact") continue;
+    if (candidate.kind !== "document" && candidate.kind !== "chat_message") {
       throw new CompactionContractError(`candidate ${decision.candidateId} cannot be compacted`);
+    }
+    if (candidate.baseRanges.length === 0) {
+      throw new CompactionContractError(
+        `candidate ${decision.candidateId} has no authorized passages to compact`,
+      );
     }
   }
   for (const group of manifest.groups) {
@@ -359,6 +516,37 @@ export const validateInitialContextManifest = (
         `group ${group.groupId} budget must be below its whole cost`,
       );
     }
+    const measured = asGroupMeasurement(costOptions?.groupMeasurements, group.groupId);
+    if (measured !== undefined) {
+      assertMeasuredCount(measured.minimumSelectablePassageCost, "minimum selectable passage cost");
+      if (group.renderedTokenBudget < measured.minimumSelectablePassageCost) {
+        throw new CompactionContractError(
+          `group ${group.groupId} budget is below its measured smallest passage cost`,
+        );
+      }
+    }
+    if (passageOptions !== undefined) {
+      const minimumCost = Math.min(
+        ...members.map((decision) =>
+          minimumSelectablePassageCost(
+            candidates.get(decision.candidateId)!,
+            passageOptions,
+            costOptions,
+            members.map((member) => member.candidateId),
+          ),
+        ),
+      );
+      if (group.renderedTokenBudget < minimumCost) {
+        throw new CompactionContractError(
+          `group ${group.groupId} budget is below its smallest selectable passage cost`,
+        );
+      }
+      if (measured !== undefined && measured.minimumSelectablePassageCost !== minimumCost) {
+        throw new CompactionContractError(
+          `group ${group.groupId} minimum passage cost is not exact`,
+        );
+      }
+    }
   }
   return manifest;
 };
@@ -369,9 +557,21 @@ export const createCompactionGroups = (
   options: {
     readonly sourceToolEligibleCandidateIds: readonly string[];
     readonly remainingAnswerTokens?: number | undefined;
+    readonly passageOptions?: PassageIndexOptions | undefined;
+    readonly costOptions?: CompactionCostOptions | undefined;
+    readonly groupMeasurements?: CompactionGroupMeasurements | undefined;
   },
 ): readonly CompactionGroup[] => {
-  const validatedManifest = validateInitialContextManifest(manifest, ledger);
+  const costOptions =
+    options.groupMeasurements === undefined
+      ? options.costOptions
+      : { ...options.costOptions, groupMeasurements: options.groupMeasurements };
+  const validatedManifest = validateInitialContextManifest(
+    manifest,
+    ledger,
+    options.passageOptions,
+    costOptions,
+  );
   const candidates = candidateMap(ledger);
   const eligible = new Set(options.sourceToolEligibleCandidateIds);
   if (eligible.size !== options.sourceToolEligibleCandidateIds.length) {
@@ -399,7 +599,7 @@ export const createCompactionGroups = (
     }
   }
   const groups = validatedManifest.groups.map((group) => {
-    const candidateIds = grouped.get(group.groupId) ?? [];
+    const candidateIds = groupMembersInLedgerOrder(grouped.get(group.groupId) ?? [], ledger);
     if (candidateIds.length === 0)
       throw new CompactionContractError(`group ${group.groupId} is empty`);
     const mode: CompactionGroupMode =
@@ -412,6 +612,39 @@ export const createCompactionGroups = (
       throw new CompactionContractError(
         `group ${group.groupId} budget must be below its whole cost`,
       );
+    if (options.passageOptions !== undefined) {
+      const minimumCost = Math.min(
+        ...candidateIds.map((candidateId) =>
+          minimumSelectablePassageCost(
+            candidates.get(candidateId)!,
+            options.passageOptions!,
+            costOptions,
+            candidateIds,
+          ),
+        ),
+      );
+      if (group.renderedTokenBudget < minimumCost) {
+        throw new CompactionContractError(
+          `group ${group.groupId} budget is below its smallest selectable passage cost`,
+        );
+      }
+    }
+    const measured = asGroupMeasurement(costOptions?.groupMeasurements, group.groupId);
+    if (measured !== undefined && mode === "normal") {
+      const inputTokens = assertMeasuredCount(
+        measured.inputTokens,
+        `group ${group.groupId} normal request input`,
+      );
+      const allowance = assertMeasuredCount(
+        measured.usableInputTokens,
+        `group ${group.groupId} normal request allowance`,
+      );
+      if (inputTokens > allowance) {
+        throw new CompactionContractError(
+          `normal group ${group.groupId} request does not fit its exact input allowance`,
+        );
+      }
+    }
     return {
       groupId: group.groupId,
       candidateIds,
@@ -436,7 +669,15 @@ export const createCompactionGroups = (
       throw new CompactionContractError("manifest cannot fit the remaining answer budget");
     }
   }
-  return groups;
+  return groups.sort((left, right) => {
+    const leftOrdinal = ledgerEntries(ledger).findIndex((candidate) =>
+      left.candidateIds.includes(candidate.candidateId),
+    );
+    const rightOrdinal = ledgerEntries(ledger).findIndex((candidate) =>
+      right.candidateIds.includes(candidate.candidateId),
+    );
+    return leftOrdinal - rightOrdinal;
+  });
 };
 
 export const validateGroupCompactionResult = (
@@ -473,10 +714,7 @@ export const validateGroupCompactionResult = (
       const index = buildCandidatePassageIndex(candidate, passageOptions);
       try {
         const ranges = mapPassageIdsToRanges(index, selection.passageIds);
-        if (
-          candidate.baseRanges.length > 0 &&
-          !rangesSubsetOf(index.text, ranges, candidate.baseRanges)
-        ) {
+        if (!rangesSubsetOf(index.text, ranges, candidate.baseRanges)) {
           throw new CompactionContractError(
             `candidate ${selection.candidateId} selection widens its base ranges`,
           );
@@ -501,6 +739,37 @@ export const validateGroupCompactionResult = (
     };
   });
   return { decisions: canonicalDecisions };
+};
+export const validateGroupResultEnvelope = (
+  value: unknown,
+  group: CompactionGroup,
+  ledger: LedgerInput,
+  passageOptions: PassageIndexOptions,
+  costOptions?: CompactionCostOptions,
+): GroupResultEnvelope => {
+  const envelope = parseOrThrow(GroupResultEnvelopeSchema, value, "group result envelope");
+  if (envelope.groupId !== group.groupId) {
+    throw new CompactionContractError("group result envelope has the wrong group ID");
+  }
+  const result = validateGroupCompactionResult(envelope.result, group, ledger, passageOptions);
+  const renderedTokenCount = exactGroupRenderedTokenCount(
+    result,
+    group,
+    ledger,
+    passageOptions,
+    costOptions,
+  );
+  if (envelope.renderedTokenCount !== renderedTokenCount) {
+    throw new CompactionContractError(
+      `group ${group.groupId} rendered token count is not an exact reconstruction`,
+    );
+  }
+  if (renderedTokenCount > group.renderedTokenBudget) {
+    throw new CompactionContractError(
+      `group ${group.groupId} result exceeds its rendered token budget`,
+    );
+  }
+  return { groupId: group.groupId, result, renderedTokenCount };
 };
 
 export const validateTightenedGroupCompactionResult = (
@@ -541,23 +810,74 @@ export const validateTightenedGroupCompactionResult = (
   return result;
 };
 
+const exactSelectedPassageCost = (
+  candidate: CandidateLedgerEntry,
+  passageIds: readonly string[],
+  replacedCandidateIds: readonly string[],
+  passageOptions: PassageIndexOptions,
+  costOptions: CompactionCostOptions | undefined,
+): number => {
+  const index = buildCandidatePassageIndex(candidate, passageOptions);
+  const ranges = mapPassageIdsToRanges(index, passageIds);
+  const text = selectedTextFromRanges(index.text, ranges);
+  const count =
+    costOptions?.countRenderedTokens === undefined
+      ? passageOptions.countTokens(text)
+      : costOptions.countRenderedTokens(
+          [{ candidateId: candidate.candidateId, text, passageIds, ranges }],
+          replacedCandidateIds,
+        );
+  return assertMeasuredCount(count, `candidate ${candidate.candidateId} selected cost`);
+};
+
+const strictPriorSubsetMinimumCost = (
+  candidate: CandidateLedgerEntry,
+  priorPassageIds: readonly string[],
+  replacedCandidateIds: readonly string[],
+  passageOptions: PassageIndexOptions,
+  costOptions: CompactionCostOptions | undefined,
+): number => {
+  if (priorPassageIds.length < 2) {
+    throw new CompactionContractError(
+      `candidate ${candidate.candidateId} has no feasible strict tightened subset`,
+    );
+  }
+  return Math.min(
+    ...priorPassageIds.map((passageId) =>
+      exactSelectedPassageCost(
+        candidate,
+        [passageId],
+        replacedCandidateIds,
+        passageOptions,
+        costOptions,
+      ),
+    ),
+  );
+};
+
 export const validateFallbackContextManifest = (
   value: unknown,
   initial: InitialContextManifest,
   ledger: LedgerInput,
   firstResults: readonly GroupResultEnvelope[],
   passageOptions?: PassageIndexOptions,
+  costOptions?: CompactionCostOptions,
 ): FallbackContextManifest => {
   const fallback = parseOrThrow(FallbackContextManifestSchema, value, "fallback context manifest");
-  const validatedInitial = validateInitialContextManifest(initial, ledger);
+  const validatedInitial = validateInitialContextManifest(
+    initial,
+    ledger,
+    passageOptions,
+    costOptions,
+  );
   const candidates = candidateMap(ledger);
   const initialById = new Map(
     validatedInitial.decisions.map((decision) => [decision.candidateId, decision]),
   );
+  const expectedGroupIds = validatedInitial.groups.map((group) => group.groupId);
   const parsedFirstResults = firstResults.map((result) =>
     parseOrThrow(GroupResultEnvelopeSchema, result, "first group result envelope"),
   );
-  const expectedGroupIds = validatedInitial.groups.map((group) => group.groupId);
   const firstGroupIds = parsedFirstResults.map((result) => result.groupId);
   if (
     firstGroupIds.length !== expectedGroupIds.length ||
@@ -568,37 +888,33 @@ export const validateFallbackContextManifest = (
       "first group result envelopes must cover every declared group exactly once",
     );
   }
-  const firstByGroup = new Map(parsedFirstResults.map((result) => [result.groupId, result]));
+  const firstByGroup = new Map<string, GroupResultEnvelope>();
   for (const envelope of parsedFirstResults) {
     const expectedGroup = validatedInitial.groups.find(
       (group) => group.groupId === envelope.groupId,
-    );
+    )!;
+    const expectedMembers = validatedInitial.decisions
+      .filter((decision) => decision.action === "compact" && decision.groupId === envelope.groupId)
+      .map((decision) => decision.candidateId);
+    const group: CompactionGroup = {
+      groupId: envelope.groupId,
+      candidateIds: groupMembersInLedgerOrder(expectedMembers, ledger),
+      renderedTokenBudget: expectedGroup.renderedTokenBudget,
+      mode: "normal",
+    };
+    const validatedEnvelope =
+      passageOptions === undefined
+        ? envelope
+        : validateGroupResultEnvelope(envelope, group, ledger, passageOptions, costOptions);
     if (
-      expectedGroup !== undefined &&
-      envelope.renderedTokenCount > expectedGroup.renderedTokenBudget
+      passageOptions === undefined &&
+      validatedEnvelope.renderedTokenCount > expectedGroup.renderedTokenBudget
     ) {
       throw new CompactionContractError(
         `first group result ${envelope.groupId} exceeds its rendered token budget`,
       );
     }
-    if (passageOptions !== undefined && expectedGroup !== undefined) {
-      const expectedMembers = validatedInitial.decisions
-        .filter(
-          (decision) => decision.action === "compact" && decision.groupId === envelope.groupId,
-        )
-        .map((decision) => decision.candidateId);
-      validateGroupCompactionResult(
-        envelope.result,
-        {
-          groupId: envelope.groupId,
-          candidateIds: expectedMembers,
-          renderedTokenBudget: expectedGroup.renderedTokenBudget,
-          mode: "normal",
-        },
-        ledger,
-        passageOptions,
-      );
-    }
+    firstByGroup.set(envelope.groupId, validatedEnvelope);
   }
   const ids = fallback.decisions.map((decision) => decision.candidateId);
   if (ids.length !== candidates.size || ids.some((id) => !candidates.has(id)))
@@ -633,10 +949,11 @@ export const validateFallbackContextManifest = (
   const initialGroups = new Set(validatedInitial.groups.map((group) => group.groupId));
   for (const decision of fallback.decisions) {
     const previous = initialById.get(decision.candidateId)!;
-    if (previous.action === "omit" && decision.action !== "omit")
+    if (previous.action === "omit" && decision.action !== "omit") {
       throw new CompactionContractError(
         `omitted candidate ${decision.candidateId} cannot be restored`,
       );
+    }
     if (previous.action === "compact") {
       const firstSelection = firstByGroup
         .get(previous.groupId)!
@@ -646,23 +963,34 @@ export const validateFallbackContextManifest = (
           `first-pass omission ${decision.candidateId} cannot be restored`,
         );
       }
-      if (decision.action === "compact")
+      if (decision.action === "compact") {
         throw new CompactionContractError("a compacted candidate cannot move to a new group");
-      if (decision.action === "tighten" && decision.groupId !== previous.groupId)
+      }
+      if (decision.action === "tighten" && decision.groupId !== previous.groupId) {
         throw new CompactionContractError("tighten must keep the original group");
-      if (decision.action === "retain" && !firstByGroup.has(previous.groupId))
+      }
+      if (decision.action === "retain" && !firstByGroup.has(previous.groupId)) {
         throw new CompactionContractError("retain needs the prior compacted result");
+      }
     }
-    if (previous.action === "keep" && decision.action === "tighten")
+    if (previous.action === "keep" && decision.action === "tighten") {
       throw new CompactionContractError("whole-kept candidates cannot tighten without a group");
+    }
     if (decision.action === "compact") {
       const candidate = candidates.get(decision.candidateId)!;
-      if (candidate.kind !== "document" && candidate.kind !== "chat_message")
+      if (previous.action !== "keep") {
+        throw new CompactionContractError(
+          `new fallback group ${decision.groupId} may contain only whole-kept candidates`,
+        );
+      }
+      if (candidate.kind !== "document" && candidate.kind !== "chat_message") {
         throw new CompactionContractError(`candidate ${decision.candidateId} cannot be compacted`);
-      if (initialGroups.has(decision.groupId))
+      }
+      if (initialGroups.has(decision.groupId)) {
         throw new CompactionContractError(
           "fallback cannot reuse an existing group for a new compacted item",
         );
+      }
     }
   }
   for (const group of fallback.groups) {
@@ -670,6 +998,68 @@ export const validateFallbackContextManifest = (
     if (previous !== undefined) {
       if (group.renderedTokenBudget >= previous.renderedTokenCount) {
         throw new CompactionContractError(`tightened group ${group.groupId} must lower its budget`);
+      }
+      if (passageOptions !== undefined) {
+        const members = validatedInitial.decisions
+          .filter((decision) => decision.action === "compact" && decision.groupId === group.groupId)
+          .map((decision) => decision.candidateId);
+        const activeIds = members.filter(
+          (candidateId) =>
+            fallback.decisions.find((decision) => decision.candidateId === candidateId)?.action !==
+            "omit",
+        );
+        if (activeIds.length === 0) {
+          throw new CompactionContractError(
+            `tightened group ${group.groupId} has no active members`,
+          );
+        }
+        const firstResult = previous.result;
+        const actualCost = activeIds.reduce((total, candidateId) => {
+          const nextDecision = fallback.decisions.find(
+            (decision) => decision.candidateId === candidateId,
+          )!;
+          const priorDecision = firstResult.decisions.find(
+            (decision) => decision.candidateId === candidateId,
+          )!;
+          const candidate = candidates.get(candidateId)!;
+          if (nextDecision.action === "retain") {
+            if (priorDecision.action !== "select") {
+              throw new CompactionContractError(
+                `retained candidate ${candidateId} lacks a prior selected passage`,
+              );
+            }
+            return (
+              total +
+              exactSelectedPassageCost(
+                candidate,
+                priorDecision.passageIds,
+                activeIds,
+                passageOptions,
+                costOptions,
+              )
+            );
+          }
+          if (nextDecision.action !== "tighten" || priorDecision.action !== "select") {
+            throw new CompactionContractError(
+              `fallback group ${group.groupId} has an invalid member`,
+            );
+          }
+          return (
+            total +
+            strictPriorSubsetMinimumCost(
+              candidate,
+              priorDecision.passageIds,
+              activeIds,
+              passageOptions,
+              costOptions,
+            )
+          );
+        }, 0);
+        if (actualCost > group.renderedTokenBudget) {
+          throw new CompactionContractError(
+            `fallback group ${group.groupId} retained selections exceed its budget`,
+          );
+        }
       }
       continue;
     }
@@ -685,8 +1075,101 @@ export const validateFallbackContextManifest = (
         `new fallback group ${group.groupId} budget must be below its whole cost`,
       );
     }
+    if (passageOptions !== undefined) {
+      const minimumCost = Math.min(
+        ...members.map((decision) =>
+          minimumSelectablePassageCost(
+            candidates.get(decision.candidateId)!,
+            passageOptions,
+            costOptions,
+            members.map((member) => member.candidateId),
+          ),
+        ),
+      );
+      if (group.renderedTokenBudget < minimumCost) {
+        throw new CompactionContractError(
+          `new fallback group ${group.groupId} budget is below its smallest selectable passage cost`,
+        );
+      }
+    }
   }
   return fallback;
+};
+export const createFallbackCompactionGroups = (
+  fallback: FallbackContextManifest,
+  initial: InitialContextManifest,
+  ledger: LedgerInput,
+  firstResults: readonly GroupResultEnvelope[],
+  options: {
+    readonly sourceToolEligibleCandidateIds?: readonly string[] | undefined;
+    readonly passageOptions?: PassageIndexOptions | undefined;
+    readonly costOptions?: CompactionCostOptions | undefined;
+  } = {},
+): readonly CompactionGroup[] => {
+  const validatedFallback = validateFallbackContextManifest(
+    fallback,
+    initial,
+    ledger,
+    firstResults,
+    options.passageOptions,
+    options.costOptions,
+  );
+  const validatedInitial = validateInitialContextManifest(
+    initial,
+    ledger,
+    options.passageOptions,
+    options.costOptions,
+  );
+  const entries = ledgerEntries(ledger);
+  const eligible = new Set(options.sourceToolEligibleCandidateIds ?? []);
+  const initialByGroup = new Set(validatedInitial.groups.map((group) => group.groupId));
+  const firstByGroup = new Map(firstResults.map((result) => [result.groupId, result] as const));
+  const groups = validatedFallback.groups.flatMap((group) => {
+    const previous = firstByGroup.get(group.groupId);
+    const candidateIds =
+      previous === undefined
+        ? validatedFallback.decisions
+            .filter(
+              (decision) => decision.action === "compact" && decision.groupId === group.groupId,
+            )
+            .map((decision) => decision.candidateId)
+        : validatedInitial.decisions
+            .filter(
+              (decision) =>
+                decision.action === "compact" &&
+                decision.groupId === group.groupId &&
+                validatedFallback.decisions.some(
+                  (next) => next.candidateId === decision.candidateId && next.action !== "omit",
+                ),
+            )
+            .map((decision) => decision.candidateId);
+    const ordered = groupMembersInLedgerOrder(candidateIds, ledger);
+    if (ordered.length === 0) return [];
+    const mode: CompactionGroupMode =
+      ordered.length === 1 && eligible.has(ordered[0]!) ? "source_tool" : "normal";
+    if (previous === undefined && initialByGroup.has(group.groupId)) {
+      throw new CompactionContractError(
+        `fallback group ${group.groupId} collides with initial group`,
+      );
+    }
+    return [
+      {
+        groupId: group.groupId,
+        candidateIds: ordered,
+        renderedTokenBudget: group.renderedTokenBudget,
+        mode,
+      },
+    ];
+  });
+  return groups.sort((left, right) => {
+    const leftOrdinal = entries.findIndex((candidate) =>
+      left.candidateIds.includes(candidate.candidateId),
+    );
+    const rightOrdinal = entries.findIndex((candidate) =>
+      right.candidateIds.includes(candidate.candidateId),
+    );
+    return leftOrdinal - rightOrdinal;
+  });
 };
 
 export const mergeGroupCompactionResults = (
@@ -694,6 +1177,7 @@ export const mergeGroupCompactionResults = (
   expectedGroups: readonly CompactionGroup[],
   groups: readonly GroupResultEnvelope[],
   passageOptions: PassageIndexOptions,
+  costOptions?: CompactionCostOptions,
 ): readonly CompactionSelection[] => {
   const expectedGroupIds = expectedGroups.map((group) => group.groupId);
   if (
@@ -722,18 +1206,14 @@ export const mergeGroupCompactionResults = (
   const byCandidate = new Map<string, CompactionSelection>();
   for (const group of groups) {
     const expected = expectedGroups.find((candidate) => candidate.groupId === group.groupId)!;
-    const parsedEnvelope = parseOrThrow(GroupResultEnvelopeSchema, group, "group result envelope");
-    if (group.renderedTokenCount > expected.renderedTokenBudget) {
-      throw new CompactionContractError(
-        `group ${group.groupId} result exceeds its rendered token budget`,
-      );
-    }
-    const validatedResult = validateGroupCompactionResult(
-      parsedEnvelope.result,
+    const validatedEnvelope = validateGroupResultEnvelope(
+      group,
       expected,
       ledger,
       passageOptions,
+      costOptions,
     );
+    const validatedResult = validatedEnvelope.result;
     const decisionIds = validatedResult.decisions.map((decision) => decision.candidateId);
     if (
       decisionIds.length !== expected.candidateIds.length ||
@@ -745,15 +1225,17 @@ export const mergeGroupCompactionResults = (
       const candidate = ledgerEntries(ledger).find(
         (entry) => entry.candidateId === selection.candidateId,
       );
-      if (candidate === undefined)
+      if (candidate === undefined) {
         throw new CompactionContractError(`unknown candidate ${selection.candidateId}`);
+      }
       const index = buildCandidatePassageIndex(candidate, passageOptions);
       const ranges =
         selection.action === "select" ? mapPassageIdsToRanges(index, selection.passageIds) : [];
-      if (byCandidate.has(selection.candidateId))
+      if (byCandidate.has(selection.candidateId)) {
         throw new CompactionContractError(
           `candidate ${selection.candidateId} appears in two group results`,
         );
+      }
       byCandidate.set(selection.candidateId, {
         candidateId: selection.candidateId,
         action: selection.action === "omit" ? "omit" : "range",
@@ -764,19 +1246,56 @@ export const mergeGroupCompactionResults = (
     }
   }
   const expectedCandidateIds = expectedGroups.flatMap((group) => group.candidateIds);
-  for (const candidateId of expectedCandidateIds) {
-    if (!byCandidate.has(candidateId)) {
-      throw new CompactionContractError(`missing group member output ${candidateId}`);
-    }
+  if (
+    new Set(expectedCandidateIds).size !== expectedCandidateIds.length ||
+    expectedCandidateIds.some((candidateId) => !byCandidate.has(candidateId))
+  ) {
+    throw new CompactionContractError(
+      "group outputs must cover every expected candidate exactly once",
+    );
   }
   return ledgerEntries(ledger)
-    .filter((candidate) => expectedCandidateIds.includes(candidate.candidateId))
+    .filter((candidate) => byCandidate.has(candidate.candidateId))
     .map((candidate) => byCandidate.get(candidate.candidateId)!);
 };
 
-export type CandidateKindForCompaction = CandidateKind;
-
-export const validateManifest = validateInitialContextManifest;
-export const validateFallbackManifest = validateFallbackContextManifest;
-export const validateGroupResult = validateGroupCompactionResult;
-export const mergeGroupResults = mergeGroupCompactionResults;
+export const mergeCompactionSelections = (
+  ledger: LedgerInput,
+  initial: InitialContextManifest,
+  groups: readonly GroupResultEnvelope[],
+  passageOptions: PassageIndexOptions,
+  costOptions?: CompactionCostOptions,
+): readonly CompactionSelection[] => {
+  const validated = validateInitialContextManifest(initial, ledger, passageOptions, costOptions);
+  const compactGroups = createCompactionGroups(validated, ledger, {
+    sourceToolEligibleCandidateIds: [],
+    passageOptions,
+    costOptions,
+  });
+  const grouped = new Map(
+    mergeGroupCompactionResults(ledger, compactGroups, groups, passageOptions, costOptions).map(
+      (selection) => [selection.candidateId, selection] as const,
+    ),
+  );
+  return ledgerEntries(ledger).map((candidate) => {
+    const decision = validated.decisions.find(
+      (entry) => entry.candidateId === candidate.candidateId,
+    )!;
+    if (decision.action === "keep") {
+      return {
+        candidateId: candidate.candidateId,
+        action: "keep",
+        passageIds: [],
+        ranges: candidate.baseRanges,
+      };
+    }
+    if (decision.action === "omit") {
+      return { candidateId: candidate.candidateId, action: "omit", passageIds: [], ranges: [] };
+    }
+    const selection = grouped.get(candidate.candidateId);
+    if (selection === undefined) {
+      throw new CompactionContractError(`missing compacted output ${candidate.candidateId}`);
+    }
+    return selection;
+  });
+};

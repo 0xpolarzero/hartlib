@@ -19,22 +19,44 @@ import type {
   PlanTurnResult,
   MemoryExtractionArtifact,
   MemoryReference,
-  InternalReference,
   TopicPacket,
   WebEvidence,
 } from "../runtime/types";
+import type { RetrievalPlanResult } from "../retrieval/retrieval";
+import { stripHistoricalCitationTags } from "../runtime/canonicalization";
+import {
+  BranchReasonCodeSchema,
+  InternalQueryPlanSchema,
+  PHYSICAL_QUERY_BRANCHES,
+} from "../retrieval/query-spec";
+import {
+  FusedResultSchema,
+  FusedResultSetSchema,
+  ReviewModelFusedResultSchema,
+} from "../retrieval/rank-fusion";
 import type {
   ContextAssembly,
-  ContextReductionPlan,
   ContextState,
   FanoutSourceKeySet,
   MemorySelectorResult,
   SelectorBundle,
   WebSelectorResult,
 } from "./operations";
-import { RunAcceptanceScopeSchema, type LoadedTurn } from "./types";
+import {
+  FallbackContextManifestSchema,
+  GroupResultEnvelopeSchema,
+  InitialContextManifestSchema,
+} from "../context/compaction";
+import {
+  compactionGroupTaskId,
+  MAX_COMPACTION_CONCURRENCY,
+  type CompactionPassResult,
+  type ExactContextMeasurement,
+} from "../context/compaction-runtime";
+import { RunAcceptanceScopeSchema, candidateLocalId, type LoadedTurn } from "./types";
 import { CanonicalWorkflowOperations } from "./operations";
 import { PublicProvenanceSchema } from "../runtime/source-schemas";
+import { CandidateLedgerSchema } from "./types";
 
 const CharacterRangeSchema = z
   .strictObject({
@@ -69,16 +91,6 @@ const NormalizedDocumentRangesSchema = z
 const Sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const PublicDocumentSourceIdSchema = z.string().regex(/^public:[^:\s]+$/u);
 const PublisherDocumentSourceIdSchema = z.string().regex(/^publisher:[^:\s]+$/u);
-const ContextDecisionSchema = z.discriminatedUnion("action", [
-  z.strictObject({ id: z.string(), action: z.literal("keep"), reason: z.string() }),
-  z.strictObject({
-    id: z.string(),
-    action: z.literal("range"),
-    ranges: z.array(CharacterRangeSchema),
-    reason: z.string(),
-  }),
-  z.strictObject({ id: z.string(), action: z.literal("omit"), reason: z.string() }),
-]);
 const ConversationEntrySchema = z.union([
   z.strictObject({
     turnId: z.string(),
@@ -115,46 +127,6 @@ const LoadedTurnSchema = z.strictObject({
 });
 // Provider output contains only logical document IDs.  Durable Smithers output
 // keeps the server-owned binding that retrieval resolved before the task ended.
-const BoundInternalReferenceSchema = z.union([
-  z
-    .strictObject({
-      kind: z.literal("document"),
-      documentId: z.string(),
-      snapshotId: z.string(),
-      publisherExtractionId: z.string().optional(),
-      source: z.union([
-        z.strictObject({ kind: z.literal("public"), sourceId: z.string() }),
-        z.strictObject({
-          kind: z.literal("publisher"),
-          sourceId: z.string(),
-          issueId: z.string(),
-          documentId: z.string(),
-        }),
-      ]),
-      ranges: z.array(CharacterRangeSchema).optional(),
-      purpose: z.string(),
-    })
-    .superRefine((reference, context) => {
-      if (
-        reference.source.kind === "publisher" &&
-        (reference.source.documentId !== reference.documentId ||
-          reference.publisherExtractionId === undefined)
-      ) {
-        context.addIssue({
-          code: "custom",
-          message: "publisher source documentId must match reference",
-        });
-      }
-      if (reference.source.kind === "public" && reference.publisherExtractionId !== undefined) {
-        context.addIssue({
-          code: "custom",
-          path: ["publisherExtractionId"],
-          message: "public source cannot carry publisher extraction identity",
-        });
-      }
-    }),
-  z.strictObject({ kind: z.literal("chat_message"), messageId: z.string(), purpose: z.string() }),
-]);
 const PlanTurnWorkflowSchema = z.discriminatedUnion("mode", [
   z.strictObject({ mode: z.literal("clarify"), question: z.string() }),
   z.strictObject({
@@ -327,6 +299,7 @@ const CandidateSchema = z.discriminatedUnion("kind", [
     purpose: z.string(),
     messageId: z.string(),
     text: z.string(),
+    chatRole: z.enum(["user", "assistant"]),
     label: z.string().nullable(),
     renderedTokenCount: z.number().int().nonnegative(),
   }),
@@ -353,6 +326,17 @@ const CandidateSchema = z.discriminatedUnion("kind", [
     quoteHash: z.string(),
     publishedAt: z.string().optional(),
     capturedAt: z.string(),
+    label: z.string().nullable(),
+    renderedTokenCount: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    id: z.string(),
+    kind: z.literal("topic_packet"),
+    rank: z.number().int().nonnegative(),
+    purpose: z.string(),
+    topicId: z.enum(["t1", "t2", "t3"]),
+    text: z.string().min(1),
+    packetSha256Hex: Sha256HexSchema,
     label: z.string().nullable(),
     renderedTokenCount: z.number().int().nonnegative(),
   }),
@@ -416,53 +400,584 @@ const SourceRecordSchema = z.strictObject({
   publicProvenance: PublicProvenanceSchema,
   uses: z.array(SourceUseSchema).min(1),
 });
-const ContextAssemblySchema = z.strictObject({
-  question: z.string(),
-  topicId: z.enum(["t1", "t2", "t3"]).optional(),
-  candidates: z.array(CandidateSchema),
-  sourceMap: z.array(SourceRecordSchema),
-  selectedConversation: z.array(ConversationEntrySchema),
-  gaps: z.array(z.string()),
-  consumerTaskId: z.string(),
-  requestedOutputTokens: z.number().int().positive(),
+const TypedFinalSourceRecordSchema = z.custom<FinalSourceRecord>(
+  (value) => SourceRecordSchema.safeParse(value).success,
+  "invalid final source record",
+);
+
+type ConversationEntryValue = z.infer<typeof ConversationEntrySchema>;
+type CandidateValue = z.infer<typeof CandidateSchema>;
+type SourceRecordValue = FinalSourceRecord;
+type CandidateLedgerValue = z.infer<typeof CandidateLedgerSchema>;
+
+const sanitizedConversationEntry = (entry: ConversationEntryValue): ConversationEntryValue =>
+  "assistantContent" in entry
+    ? { ...entry, assistantContent: stripHistoricalCitationTags(entry.assistantContent) }
+    : entry;
+
+const conversationMatchesLedgerEntry = (
+  entry: ConversationEntryValue,
+  ledgerEntry: CandidateLedgerValue["candidates"][number] | undefined,
+): boolean => {
+  if (ledgerEntry === undefined || ledgerEntry.kind !== "conversation_entry") return false;
+  const normalized = sanitizedConversationEntry(entry);
+  const identity = ledgerEntry.identity;
+  return (
+    identity.kind === "conversation_entry" &&
+    identity.turnId === normalized.turnId &&
+    identity.userMessageId === normalized.userMessageId &&
+    ("assistantMessageId" in normalized
+      ? identity.assistantMessageId === normalized.assistantMessageId
+      : identity.assistantMessageId === undefined) &&
+    ledgerEntry.text === JSON.stringify(normalized)
+  );
+};
+
+const sourceMatchesCandidate = (
+  candidate: CandidateValue,
+  source: SourceRecordValue | undefined,
+): boolean => {
+  if (candidate.kind === "topic_packet") return false;
+  if (source === undefined || source.locator.kind !== candidate.kind) return false;
+  switch (candidate.kind) {
+    case "document":
+      return (
+        source.locator.kind === "document" &&
+        source.locator.sourceId === candidate.sourceId &&
+        source.locator.documentId === candidate.documentId &&
+        source.locator.snapshotId === candidate.snapshotId &&
+        source.locator.contentHash === candidate.contentHash &&
+        JSON.stringify(source.locator.ranges) === JSON.stringify(candidate.ranges) &&
+        (candidate.publisherIssueId === undefined ||
+          ("publisherIssueId" in source.locator &&
+            source.locator.publisherIssueId === candidate.publisherIssueId &&
+            source.locator.publisherDocumentId === candidate.publisherDocumentId &&
+            source.locator.publisherExtractionId === candidate.publisherExtractionId))
+      );
+    case "chat_message":
+      return (
+        source.locator.kind === "chat_message" && source.locator.messageId === candidate.messageId
+      );
+    case "memory":
+      return (
+        source.locator.kind === "memory" &&
+        source.locator.memoryId === candidate.memoryId &&
+        source.locator.memoryRevisionId === candidate.memoryRevisionId
+      );
+    case "web":
+      return (
+        source.locator.kind === "web" &&
+        source.locator.url === candidate.url &&
+        source.locator.quoteHash === candidate.quoteHash &&
+        source.locator.capturedAt === candidate.capturedAt
+      );
+  }
+};
+
+const candidateMatchesLedgerEntry = (
+  candidate: CandidateValue,
+  ledgerEntry: CandidateLedgerValue["candidates"][number] | undefined,
+  allowNarrowedDocumentRanges = false,
+): boolean => {
+  if (ledgerEntry === undefined || candidate.id !== ledgerEntry.candidateId) return false;
+  const rawText = candidate.kind === "web" ? candidate.quote : candidate.text;
+  const text =
+    candidate.kind === "chat_message" && candidate.chatRole === "assistant"
+      ? stripHistoricalCitationTags(rawText)
+      : rawText;
+  if (candidate.kind !== ledgerEntry.kind || text !== ledgerEntry.text) return false;
+  const candidateRanges =
+    candidate.kind === "document" ? candidate.ranges : [{ charStart: 0, charEnd: text.length }];
+  const rangesMatch =
+    JSON.stringify(candidateRanges) === JSON.stringify(ledgerEntry.baseRanges) ||
+    (allowNarrowedDocumentRanges &&
+      candidate.kind === "document" &&
+      candidateRanges.every((range) =>
+        ledgerEntry.baseRanges.some(
+          (baseRange) =>
+            range.charStart >= baseRange.charStart && range.charEnd <= baseRange.charEnd,
+        ),
+      ));
+  if (!rangesMatch) return false;
+  const candidateDate =
+    candidate.kind === "document"
+      ? (candidate.publicProvenance.publishedAt ?? null)
+      : candidate.kind === "web"
+        ? (candidate.publishedAt ?? null)
+        : null;
+  if (
+    ledgerEntry.provenance.label !== candidate.label ||
+    ledgerEntry.provenance.purpose !== candidate.purpose ||
+    ledgerEntry.provenance.date !== candidateDate
+  ) {
+    return false;
+  }
+  const identity = ledgerEntry.identity;
+  switch (candidate.kind) {
+    case "document":
+      return (
+        (identity.kind === "public_document" || identity.kind === "publisher_document") &&
+        (identity.kind === "public_document"
+          ? candidate.sourceId === identity.sourceId
+          : candidate.sourceId === `publisher:${identity.subscriptionId}` &&
+            candidate.publisherIssueId === identity.issueId &&
+            candidate.publisherDocumentId === identity.documentId &&
+            candidate.publisherExtractionId === identity.publisherExtractionId) &&
+        identity.documentId === candidate.documentId &&
+        identity.snapshotId === candidate.snapshotId &&
+        identity.contentHash === candidate.contentHash
+      );
+    case "chat_message":
+      return identity.kind === "chat_message" && identity.messageId === candidate.messageId;
+    case "memory":
+      return (
+        identity.kind === "memory" &&
+        identity.memoryId === candidate.memoryId &&
+        identity.memoryRevisionId === candidate.memoryRevisionId
+      );
+    case "web":
+      return (
+        identity.kind === "web" &&
+        identity.canonicalUrl === candidate.url &&
+        identity.quoteHash === candidate.quoteHash &&
+        identity.capturedAt === candidate.capturedAt
+      );
+    case "topic_packet":
+      return (
+        identity.kind === "topic_packet" &&
+        identity.topicId === candidate.topicId &&
+        identity.packetSha256Hex === candidate.packetSha256Hex
+      );
+  }
+};
+
+const ledgerEntryMatchesSource = (
+  ledgerEntry: CandidateLedgerValue["candidates"][number] | undefined,
+  source: SourceRecordValue | undefined,
+): boolean => {
+  if (ledgerEntry === undefined || source === undefined) return false;
+  const identity = ledgerEntry.identity;
+  const locator = source.locator;
+  if (identity.kind === "conversation_entry") return false;
+  if (identity.kind === "topic_packet") return false;
+  if (identity.kind === "public_document") {
+    return (
+      locator.kind === "document" &&
+      locator.sourceId === identity.sourceId &&
+      locator.documentId === identity.documentId &&
+      locator.snapshotId === identity.snapshotId &&
+      locator.contentHash === identity.contentHash
+    );
+  }
+  if (identity.kind === "publisher_document") {
+    return (
+      locator.kind === "document" &&
+      locator.sourceId === `publisher:${identity.subscriptionId}` &&
+      locator.documentId === identity.documentId &&
+      locator.snapshotId === identity.snapshotId &&
+      locator.contentHash === identity.contentHash &&
+      "publisherIssueId" in locator &&
+      locator.publisherIssueId === identity.issueId &&
+      locator.publisherDocumentId === identity.documentId &&
+      locator.publisherExtractionId === identity.publisherExtractionId
+    );
+  }
+  if (identity.kind === "chat_message") {
+    return locator.kind === "chat_message" && locator.messageId === identity.messageId;
+  }
+  if (identity.kind === "memory") {
+    return (
+      locator.kind === "memory" &&
+      locator.memoryId === identity.memoryId &&
+      locator.memoryRevisionId === identity.memoryRevisionId
+    );
+  }
+  return (
+    locator.kind === "web" &&
+    locator.url === identity.canonicalUrl &&
+    locator.quoteHash === identity.quoteHash &&
+    locator.capturedAt === identity.capturedAt
+  );
+};
+
+const validateConversationLedgerBinding = (
+  ledger: CandidateLedgerValue,
+  selectedConversation: readonly ConversationEntryValue[],
+  context: z.RefinementCtx,
+  path: string,
+  allowReducedSelection: boolean,
+  ledgerConversation?: readonly ConversationEntryValue[] | undefined,
+): number => {
+  const prefixCount = ledger.candidates.findIndex(
+    (candidate) => candidate.kind !== "conversation_entry",
+  );
+  const conversationCount = prefixCount === -1 ? ledger.candidates.length : prefixCount;
+  const prefix = ledger.candidates.slice(0, conversationCount);
+  if (ledger.candidates.length === 0 && selectedConversation.length > 0) {
+    context.addIssue({
+      code: "custom",
+      path: [path],
+      message: "selected conversation requires a non-empty candidate ledger",
+    });
+  }
+  const canonicalConversation = ledgerConversation ?? selectedConversation;
+  if (canonicalConversation.length !== conversationCount) {
+    context.addIssue({
+      code: "custom",
+      path: [path],
+      message: "selected conversation must equal the ledger conversation prefix",
+    });
+  }
+  for (let index = 0; index < canonicalConversation.length; index += 1) {
+    if (!conversationMatchesLedgerEntry(canonicalConversation[index]!, prefix[index])) {
+      context.addIssue({
+        code: "custom",
+        path: [path, index],
+        message: "conversation entry does not match its ordered ledger identity or sanitized text",
+      });
+    }
+  }
+  if (
+    ledger.candidates
+      .slice(conversationCount)
+      .some((candidate) => candidate.kind === "conversation_entry")
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["candidateLedger", "candidates"],
+      message: "conversation entries must form one ordered ledger prefix",
+    });
+  }
+  if (allowReducedSelection && ledgerConversation !== undefined) {
+    let cursor = 0;
+    for (const entry of selectedConversation) {
+      const next = ledgerConversation
+        .slice(cursor)
+        .findIndex(
+          (candidate) =>
+            JSON.stringify(sanitizedConversationEntry(candidate)) ===
+            JSON.stringify(sanitizedConversationEntry(entry)),
+        );
+      if (next < 0) {
+        context.addIssue({
+          code: "custom",
+          path: [path],
+          message: "active conversation is not an ordered subset of the ledger conversation",
+        });
+        break;
+      }
+      cursor += next + 1;
+    }
+  }
+  return conversationCount;
+};
+
+const validateEvidenceLedgerBinding = (
+  ledger: CandidateLedgerValue,
+  conversationCount: number,
+  candidates: readonly CandidateValue[],
+  sourceMap: readonly SourceRecordValue[],
+  context: z.RefinementCtx,
+  path: string,
+  requireComplete: boolean,
+): void => {
+  const suffix = ledger.candidates.slice(conversationCount);
+  if (requireComplete && candidates.length !== suffix.length) {
+    context.addIssue({
+      code: "custom",
+      path: [path],
+      message: "evidence candidates must match the complete ledger suffix",
+    });
+  }
+  const citableCandidates = candidates.filter((candidate) => candidate.kind !== "topic_packet");
+  if (sourceMap.length !== citableCandidates.length) {
+    context.addIssue({
+      code: "custom",
+      path: ["sourceMap"],
+      message: "source map must match citable evidence candidate cardinality",
+    });
+  }
+  let suffixCursor = 0;
+  let sourceIndex = 0;
+  for (const [index, candidate] of candidates.entries()) {
+    const expected = requireComplete
+      ? suffix[index]
+      : suffix.find((entry) => entry.candidateId === candidate.id);
+    if (expected === undefined || candidate.id !== expected.candidateId) {
+      context.addIssue({
+        code: "custom",
+        path: [path, index, "id"],
+        message: "evidence candidate IDs must match the ordered ledger suffix",
+      });
+      continue;
+    }
+    if (!candidateMatchesLedgerEntry(candidate, expected, !requireComplete)) {
+      context.addIssue({
+        code: "custom",
+        path: [path, index],
+        message: "evidence candidate does not match its immutable ledger entry",
+      });
+    }
+    if (!requireComplete) {
+      const expectedIndex = suffix.indexOf(expected);
+      if (expectedIndex < suffixCursor) {
+        context.addIssue({
+          code: "custom",
+          path: [path, index, "id"],
+          message: "evidence candidates must preserve ledger order",
+        });
+      }
+      suffixCursor = expectedIndex + 1;
+    }
+    if (candidate.kind === "topic_packet") continue;
+    const source = sourceMap[sourceIndex];
+    sourceIndex += 1;
+    if (!sourceMatchesCandidate(candidate, source)) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceMap", sourceIndex - 1],
+        message: "source map entry does not match its citable evidence candidate",
+      });
+    }
+    if (!ledgerEntryMatchesSource(expected, source)) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceMap", sourceIndex - 1],
+        message: "source map entry does not match its ordered ledger identity",
+      });
+    }
+  }
+};
+
+const ContextAssemblySchema = z
+  .strictObject({
+    question: z.string(),
+    topicId: z.enum(["t1", "t2", "t3"]).optional(),
+    candidates: z.array(CandidateSchema),
+    candidateLedger: CandidateLedgerSchema,
+    sourceMap: z.array(TypedFinalSourceRecordSchema),
+    selectedConversation: z.array(ConversationEntrySchema),
+    gaps: z.array(z.string()),
+    consumerTaskId: z.string(),
+    requestedOutputTokens: z.number().int().positive(),
+  })
+  .superRefine((value, context) => {
+    const conversationCount = validateConversationLedgerBinding(
+      value.candidateLedger,
+      value.selectedConversation,
+      context,
+      "selectedConversation",
+      false,
+    );
+    const evidence = value.candidateLedger.candidates.filter(
+      (candidate) => candidate.kind !== "conversation_entry",
+    );
+    if (value.candidates.length !== evidence.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["candidates"],
+        message: "assembled candidates must match the required ledger cardinality",
+      });
+    }
+    for (const [index, candidate] of value.candidates.entries()) {
+      if (candidate.id !== evidence[index]?.candidateId) {
+        context.addIssue({
+          code: "custom",
+          path: ["candidates", index, "id"],
+          message: "candidate IDs must come from the ordered code-owned ledger",
+        });
+      }
+    }
+    if (value.sourceMap.length !== value.candidates.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceMap"],
+        message: "source map must match assembled candidate cardinality",
+      });
+    }
+    validateEvidenceLedgerBinding(
+      value.candidateLedger,
+      conversationCount,
+      value.candidates,
+      value.sourceMap,
+      context,
+      "candidates",
+      true,
+    );
+  });
+const ContextSchema = z
+  .strictObject({
+    status: z.enum(["ready", "needs_compaction", "failed"]),
+    question: z.string(),
+    topicId: z.enum(["t1", "t2", "t3"]).optional(),
+    candidates: z.array(CandidateSchema),
+    candidateLedger: CandidateLedgerSchema,
+    sourceMap: z.array(TypedFinalSourceRecordSchema),
+    /** Original topic evidence retained for final citations, not provider input. */
+    citationSourceMap: z.array(TypedFinalSourceRecordSchema).optional(),
+    ledgerCandidates: z.array(CandidateSchema),
+    ledgerSourceMap: z.array(TypedFinalSourceRecordSchema),
+    selectedConversation: z.array(ConversationEntrySchema),
+    ledgerConversation: z.array(ConversationEntrySchema).optional(),
+    ledgerConversationTokenCounts: z.array(z.number().int()).optional(),
+    chatSourceRanges: z
+      .array(z.strictObject({ messageId: z.string(), ranges: z.array(CharacterRangeSchema) }))
+      .optional(),
+    consumers: z.array(
+      z.strictObject({
+        consumer: z.enum(["direct", "topic", "synthesis"]),
+        topicId: z.enum(["t1", "t2", "t3"]).optional(),
+        inputTokens: z.number().int(),
+        requestedOutputTokens: z.number().int().positive(),
+        usableInputTokens: z.number().int(),
+      }),
+    ),
+    gaps: z.array(z.string()),
+    ledgerGaps: z.array(z.string()).optional(),
+    compactionFeedback: z.array(z.string()),
+    request: ProviderRequestSchema,
+    inputTokens: z.number().int(),
+    usableInputTokens: z.number().int(),
+    compactionRan: z.boolean(),
+    failureCode: z
+      .enum([
+        "context_mandatory_too_large",
+        "context_plan_unfit",
+        "context_budget_mismatch",
+        "synthesis_budget_mismatch",
+      ])
+      .optional(),
+  })
+  .superRefine((value, context) => {
+    const conversationCount = validateConversationLedgerBinding(
+      value.candidateLedger,
+      value.selectedConversation,
+      context,
+      "selectedConversation",
+      true,
+      value.ledgerConversation,
+    );
+    const evidence = value.candidateLedger.candidates.filter(
+      (candidate) => candidate.kind !== "conversation_entry",
+    );
+    const ledgerIds = new Set(evidence.map((candidate) => candidate.candidateId));
+    if (value.ledgerCandidates.length !== evidence.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["ledgerCandidates"],
+        message: "ledger candidate view must match the required ledger cardinality",
+      });
+    }
+    const citableCandidates = value.candidates.filter(
+      (candidate) => candidate.kind !== "topic_packet",
+    );
+    if (value.sourceMap.length !== citableCandidates.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["sourceMap"],
+        message: "source map must match active citable candidate cardinality",
+      });
+    }
+    for (const [index, candidate] of value.ledgerCandidates.entries()) {
+      if (candidate.id !== evidence[index]?.candidateId) {
+        context.addIssue({
+          code: "custom",
+          path: ["ledgerCandidates", index, "id"],
+          message: "ledger candidate IDs must come from the ordered code-owned ledger",
+        });
+      }
+    }
+    const activeIds = new Set<string>();
+    for (const [index, candidate] of value.candidates.entries()) {
+      if (!ledgerIds.has(candidate.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["candidates", index, "id"],
+          message: "active candidates must come from the code-owned ledger",
+        });
+      }
+      if (activeIds.has(candidate.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["candidates", index, "id"],
+          message: "active candidate IDs must be unique",
+        });
+      }
+      activeIds.add(candidate.id);
+    }
+    validateEvidenceLedgerBinding(
+      value.candidateLedger,
+      conversationCount,
+      value.ledgerCandidates,
+      value.ledgerSourceMap,
+      context,
+      "ledgerCandidates",
+      true,
+    );
+    validateEvidenceLedgerBinding(
+      value.candidateLedger,
+      conversationCount,
+      value.candidates,
+      value.sourceMap,
+      context,
+      "candidates",
+      false,
+    );
+  });
+const CompactionGroupSchema = z.strictObject({
+  groupId: z.string().regex(/^g[1-9][0-9]*$/u),
+  candidateIds: z.array(z.string().regex(/^c[1-9][0-9]*$/u)),
+  renderedTokenBudget: z.number().int().positive(),
+  mode: z.enum(["normal", "source_tool"]),
 });
-const ContextSchema = z.strictObject({
-  status: z.enum(["ready", "needs_reduction", "failed"]),
-  question: z.string(),
-  topicId: z.enum(["t1", "t2", "t3"]).optional(),
-  candidates: z.array(CandidateSchema),
-  sourceMap: z.array(SourceRecordSchema),
-  ledgerCandidates: z.array(CandidateSchema),
-  ledgerSourceMap: z.array(SourceRecordSchema),
-  selectedConversation: z.array(ConversationEntrySchema),
-  ledgerConversation: z.array(ConversationEntrySchema).optional(),
-  ledgerConversationTokenCounts: z.array(z.number().int()).optional(),
-  consumers: z.array(
-    z.strictObject({
-      consumer: z.enum(["direct", "topic", "synthesis"]),
-      topicId: z.enum(["t1", "t2", "t3"]).optional(),
-      inputTokens: z.number().int(),
-      requestedOutputTokens: z.number().int().positive(),
-      usableInputTokens: z.number().int(),
-    }),
-  ),
-  gaps: z.array(z.string()),
-  ledgerGaps: z.array(z.string()).optional(),
-  reductionFeedback: z.array(z.string()),
-  request: ProviderRequestSchema,
-  inputTokens: z.number().int(),
-  usableInputTokens: z.number().int(),
-  reductionRan: z.boolean(),
-  failureCode: z
-    .enum([
-      "context_mandatory_too_large",
-      "context_plan_unfit",
-      "context_budget_mismatch",
-      "synthesis_budget_mismatch",
-      "context_assembly_failed",
-      "unsupported_policy",
-    ])
+const CompactionSelectionSchema = z.strictObject({
+  candidateId: z.string().regex(/^c[1-9][0-9]*$/u),
+  action: z.enum(["keep", "range", "omit"]),
+  groupId: z
+    .string()
+    .regex(/^g[1-9][0-9]*$/u)
     .optional(),
+  passageIds: z.array(z.string().regex(/^p[1-9][0-9]*$/u)),
+  ranges: z.array(CharacterRangeSchema),
+});
+const CompactionPassSchema = z.strictObject({
+  phase: z.enum(["compact", "fallback"]),
+  groups: z.array(CompactionGroupSchema),
+  taskIds: z.array(z.string().min(1)),
+  envelopes: z.array(GroupResultEnvelopeSchema),
+  selections: z.array(CompactionSelectionSchema),
+  repairUsed: z.boolean(),
+});
+const CompactionPlanSchema = z.strictObject({
+  manifest: InitialContextManifestSchema,
+  groups: z.array(CompactionGroupSchema),
+});
+const FallbackCompactionPlanSchema = z.strictObject({
+  manifest: FallbackContextManifestSchema,
+  groups: z.array(CompactionGroupSchema),
+});
+const CompactionCollectionSchema = CompactionPassSchema;
+const parseContextValue = (value: unknown): ContextState => {
+  const parsed = ContextSchema.parse(value);
+  return {
+    ...parsed,
+    candidateLedger: {
+      candidates: parsed.candidateLedger.candidates.map((candidate) => ({
+        ...candidate,
+        candidateId: candidateLocalId(Number(candidate.candidateId.slice(1))),
+      })),
+    },
+  };
+};
+const parseCompactionCollection = (value: unknown): CompactionPassResult => {
+  const parsedEnvelope = aiChatSchemas.aiChatCompactionCollect.parse(value);
+  return CompactionCollectionSchema.parse(parsedEnvelope.value);
+};
+const exactMeasurementFromContext = (state: ContextState): ExactContextMeasurement => ({
+  fits: state.status === "ready",
+  inputTokens: state.inputTokens,
+  usableInputTokens: state.usableInputTokens,
+  overByTokens: Math.max(0, state.inputTokens - state.usableInputTokens),
 });
 const AnswerSchema = z.discriminatedUnion("status", [
   z.strictObject({
@@ -500,20 +1015,117 @@ const TopicPacketSchema = z.strictObject({
   claims: z.array(z.strictObject({ text: z.string(), sourceKeys: z.array(z.string()) })),
   gaps: z.array(z.string()),
 });
+const StructuredRetrievalIdentitySchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("public_document"),
+    sourceId: z.string().min(1),
+    documentId: z.string().min(1),
+    snapshotId: z.string().min(1),
+    contentHash: Sha256HexSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("publisher_document"),
+    subscriptionId: z.string().min(1),
+    issueId: z.string().min(1),
+    documentId: z.string().min(1),
+    snapshotId: z.string().min(1),
+    publisherExtractionId: z.string().min(1),
+    contentHash: Sha256HexSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("chat_message"),
+    messageId: z.string().min(1),
+    sanitizedContentHash: Sha256HexSchema,
+  }),
+]);
+const StructuredPhysicalValueSchema = z.strictObject({
+  kind: z.enum(["document", "chat_message"]),
+  label: z.string().nullable(),
+  date: z.string().nullable(),
+  textCharCount: z.number().int().nonnegative(),
+  sourceName: z.string().optional(),
+  tokenCount: z.number().int().nonnegative(),
+  fullTokenCount: z.number().int().nonnegative(),
+  preview: z.string(),
+  previewRanges: z.array(CharacterRangeSchema),
+  text: z.string(),
+  snapshotId: z.string().min(1),
+  contentHash: Sha256HexSchema,
+  publisherExtractionId: z.string().min(1).optional(),
+  fastTokenCount: z.number().int().nonnegative(),
+  mainTokenCount: z.number().int().nonnegative(),
+  previewBytes: z.union([z.instanceof(Uint8Array), z.array(z.number().int().nonnegative())]),
+});
+const StructuredFusedResultSchema = z.strictObject({
+  ...FusedResultSchema.shape,
+  identity: StructuredRetrievalIdentitySchema,
+  physicalIdentities: z.array(StructuredRetrievalIdentitySchema).min(1).optional(),
+  value: StructuredPhysicalValueSchema,
+});
+const StructuredFusedSetSchema = z.strictObject({
+  ...FusedResultSetSchema.shape,
+  results: z.array(StructuredFusedResultSchema),
+});
+const StructuredBranchResultSchema = z.strictObject({
+  queryOrdinal: z.number().int().positive(),
+  branch: z.enum(PHYSICAL_QUERY_BRANCHES),
+  order: z.enum(["relevance", "newest", "oldest"]).optional(),
+  status: z.enum(["applicable", "not_applicable"]),
+  reason: BranchReasonCodeSchema.optional(),
+  hits: z.array(
+    z.strictObject({
+      queryOrdinal: z.number().int().positive(),
+      branch: z.enum(PHYSICAL_QUERY_BRANCHES),
+      rank: z.number().int().positive(),
+      identity: StructuredRetrievalIdentitySchema,
+      value: StructuredPhysicalValueSchema.pick({
+        kind: true,
+        label: true,
+        date: true,
+        textCharCount: true,
+        sourceName: true,
+      }),
+      date: z.string().nullable().optional(),
+    }),
+  ),
+  cap: z.number().int().positive(),
+  truncated: z.boolean(),
+});
+const StructuredPreviewExposureSchema = z.strictObject({
+  identity: StructuredRetrievalIdentitySchema,
+  snapshotId: z.string().min(1),
+  contentHash: Sha256HexSchema,
+  publisherExtractionId: z.string().min(1).optional(),
+  previewRanges: z.array(CharacterRangeSchema),
+  previewBytes: z.union([z.instanceof(Uint8Array), z.array(z.number().int().nonnegative())]),
+  fastTokenCount: z.number().int().nonnegative(),
+  mainTokenCount: z.number().int().nonnegative(),
+});
+const StructuredRetrievalResultSchema = z.union([
+  z.null(),
+  z.strictObject({
+    queryPlan: InternalQueryPlanSchema,
+    branches: z.array(StructuredBranchResultSchema),
+    fused: StructuredFusedSetSchema,
+    review: z.array(ReviewModelFusedResultSchema),
+    previewExposures: z.array(StructuredPreviewExposureSchema),
+  }),
+]);
 
 export const aiChatSchemas = {
   input: z.strictObject({ aiRunId: z.string() }),
   aiChatLoadTurn: z.strictObject({ value: LoadedTurnSchema }),
   aiChatMemory: z.strictObject({ value: MemoryExtractionSchema }),
   aiChatPlanTurn: z.strictObject({ value: PlanTurnWorkflowSchema }),
-  aiChatInternal: z.strictObject({ value: z.array(BoundInternalReferenceSchema) }),
+  aiChatStructuredInternal: z.strictObject({ value: StructuredRetrievalResultSchema }),
   aiChatMemories: z.strictObject({ value: MemorySelectorResultSchema }),
   aiChatWeb: z.strictObject({ value: WebSelectorResultSchema }),
   aiChatAssembly: z.strictObject({ value: ContextAssemblySchema }),
   aiChatContext: z.strictObject({ value: ContextSchema }),
-  aiChatReductionPlan: z.strictObject({
-    value: z.strictObject({ decisions: z.array(ContextDecisionSchema) }),
-  }),
+  aiChatCompactionPlan: z.strictObject({ value: CompactionPlanSchema }),
+  aiChatCompactionGroup: z.strictObject({ value: GroupResultEnvelopeSchema }),
+  aiChatCompactionCollect: z.strictObject({ value: CompactionCollectionSchema }),
+  aiChatFallbackPlan: z.strictObject({ value: FallbackCompactionPlanSchema }),
   aiChatAnswer: z.strictObject({ value: AnswerSchema }),
   aiChatAllocation: z.strictObject({
     value: z.strictObject({
@@ -524,13 +1136,14 @@ export const aiChatSchemas = {
   }),
   aiChatFanoutSources: z.strictObject({
     value: z.strictObject({
-      sources: z.array(z.strictObject({ candidateId: z.string(), sourceKey: z.string() })),
+      sources: z.array(z.strictObject({ identityKey: z.string(), sourceKey: z.string() })),
     }),
   }),
   aiChatTopicResult: z.strictObject({
     status: z.enum(["ok", "failed"]),
     packet: TopicPacketSchema.optional(),
     code: z.string().optional(),
+    retryable: z.boolean(),
   }),
   aiChatFanoutCollect: z.strictObject({
     status: z.enum(["ok", "failed"]),
@@ -538,6 +1151,7 @@ export const aiChatSchemas = {
     sourceMap: z.array(SourceRecordSchema),
     contexts: z.array(ContextSchema),
     code: z.string().optional(),
+    retryable: z.boolean(),
   }),
   aiChatFinalize: z.strictObject({
     status: z.enum(["succeeded", "failed"]),
@@ -556,7 +1170,6 @@ export const aiChatSchemas = {
 export const aiChatRuntimeInputSchema = aiChatSchemas.input.extend({
   runId: z.string().optional(),
 });
-
 export type AiChatSchemas = typeof aiChatSchemas;
 export type AiChatWorkflow = ReturnType<CreateSmithersApi<AiChatSchemas>["smithers"]>;
 
@@ -567,7 +1180,6 @@ export interface AiChatWorkflowRuntime {
     | "aiAnswerTimeoutMs"
     | "aiTopicResearchMaxConcurrency"
     | "aiTopicAnswerMaxConcurrency"
-    | "aiContextReductionMaxIterations"
   >;
   readonly operations: CanonicalWorkflowOperations;
 }
@@ -593,10 +1205,13 @@ export const aiChatRetryPolicy = Object.freeze({
   backoff: "exponential" as const,
   initialDelayMs: 250,
 });
-const controlledFailure = (code: AiRunErrorCode): AnswerLaneResult => ({
+const controlledFailure = (
+  code: AiRunErrorCode,
+  retryableOverride?: boolean,
+): AnswerLaneResult => ({
   status: "failed",
   code,
-  retryable: isRetryableAiRunError(code),
+  retryable: retryableOverride ?? isRetryableAiRunError(code),
 });
 
 const parseRunId = (input: unknown): string => aiChatRuntimeInputSchema.parse(input).aiRunId;
@@ -605,7 +1220,7 @@ export function buildAiChatWorkflow(
   api: CreateSmithersApi<AiChatSchemas>,
   runtime: AiChatWorkflowRuntime,
 ): AiChatWorkflow {
-  const { Workflow, Task, Sequence, Parallel, Branch, Loop, smithers, outputs } = api;
+  const { Workflow, Task, Sequence, Parallel, Branch, smithers, outputs } = api;
   const fast = runtime.config.aiFastTaskTimeoutMs;
   const answerTimeout = runtime.config.aiAnswerTimeoutMs;
   const retryPolicy = aiChatRetryPolicy;
@@ -618,71 +1233,316 @@ export function buildAiChatWorkflow(
     })?.value as PlanTurnResult | undefined;
     const topics = planTurnMaybe?.mode === "fanout" ? planTurnMaybe.topics : [];
 
-    const ReductionLoop = ({ prefix, initialNode }: { prefix: string; initialNode: string }) => {
-      const initial = ctx.outputMaybe(outputs.aiChatContext, { nodeId: initialNode })?.value as
-        | ContextState
-        | undefined;
-      const latest = ctx.latest(outputs.aiChatContext, `${prefix}-reduce-measure`)?.value as
-        | ContextState
-        | undefined;
-      return (
-        <Loop
-          id={`${prefix}-reduction-loop`}
-          skipIf={initial?.status !== "needs_reduction"}
-          until={latest?.status === "ready"}
-          maxIterations={runtime.config.aiContextReductionMaxIterations}
-          onMaxReached="return-last"
-        >
+    const CompactionFlow = ({ prefix, initialNode }: { prefix: string; initialNode: string }) => {
+      const contextOutput = (nodeId: string): ContextState | undefined => {
+        const output = ctx.outputMaybe(outputs.aiChatContext, { nodeId });
+        return output === undefined ? undefined : parseContextValue(output.value);
+      };
+      const initial = contextOutput(initialNode);
+      const compactPlanOutput = ctx.outputMaybe(outputs.aiChatCompactionPlan, {
+        nodeId: `${prefix}-compact-plan`,
+      });
+      const compactPlan =
+        compactPlanOutput === undefined
+          ? undefined
+          : aiChatSchemas.aiChatCompactionPlan.parse(compactPlanOutput).value;
+      const compactCollectionOutput = ctx.outputMaybe(outputs.aiChatCompactionCollect, {
+        nodeId: `${prefix}-compact-collect`,
+      });
+      const compactCollection =
+        compactCollectionOutput === undefined
+          ? undefined
+          : parseCompactionCollection(compactCollectionOutput);
+      const compactMeasure = contextOutput(`${prefix}-compact-measure`);
+      const fallbackPlanOutput = ctx.outputMaybe(outputs.aiChatFallbackPlan, {
+        nodeId: `${prefix}-fallback-plan`,
+      });
+      const fallbackPlan =
+        fallbackPlanOutput === undefined
+          ? undefined
+          : aiChatSchemas.aiChatFallbackPlan.parse(fallbackPlanOutput).value;
+      const fallbackMeasure = contextOutput(`${prefix}-fallback-measure`);
+      const firstState = initial?.status === "needs_compaction" ? initial : undefined;
+      const compactGroups = compactPlan?.groups ?? [];
+      const fallbackGroups = fallbackPlan?.groups ?? [];
+      const compactResults = compactGroups.map((group, index) => {
+        const taskId = compactionGroupTaskId(prefix, "compact", index + 1);
+        return (
+          <Task
+            key={taskId}
+            id={taskId}
+            output={outputs.aiChatCompactionGroup}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => {
+              if (firstState === undefined) throw new Error("compaction state is unavailable");
+              return {
+                value: await runtime.operations.compactContextGroup(
+                  load(),
+                  firstState,
+                  group,
+                  taskId,
+                ),
+              };
+            }}
+          </Task>
+        );
+      });
+      const fallbackResults = fallbackGroups.map((group, index) => {
+        const taskId = compactionGroupTaskId(prefix, "fallback", index + 1);
+        const priorResult = compactCollection?.envelopes.find(
+          (envelope) => envelope.groupId === group.groupId,
+        );
+        return (
+          <Task
+            key={taskId}
+            id={taskId}
+            output={outputs.aiChatCompactionGroup}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => {
+              const context = compactMeasure;
+              if (context === undefined) throw new Error("fallback context is unavailable");
+              return {
+                value: await runtime.operations.compactContextGroup(
+                  load(),
+                  context,
+                  group,
+                  taskId,
+                  "fallback",
+                  priorResult,
+                ),
+              };
+            }}
+          </Task>
+        );
+      });
+      const compactPass =
+        firstState !== undefined && compactPlan !== undefined ? (
           <Sequence>
+            <Parallel id={`${prefix}-compact-groups`} maxConcurrency={MAX_COMPACTION_CONCURRENCY}>
+              {compactResults}
+            </Parallel>
             <Task
-              id={`${prefix}-reduce-plan`}
-              output={outputs.aiChatReductionPlan}
+              id={`${prefix}-compact-collect`}
+              output={outputs.aiChatCompactionCollect}
               retries={2}
               retryPolicy={retryPolicy}
               timeoutMs={fast}
             >
               {async () => {
-                const state = (ctx.latest(outputs.aiChatContext, `${prefix}-reduce-measure`)
-                  ?.value ??
-                  ctx.output(outputs.aiChatContext, { nodeId: initialNode }).value) as ContextState;
-                const workflowIteration = ctx.iterations?.[`${prefix}-reduction-loop`] ?? 0;
+                const envelopes = compactGroups.map((group, index) =>
+                  GroupResultEnvelopeSchema.parse(
+                    ctx.output(outputs.aiChatCompactionGroup, {
+                      nodeId: compactionGroupTaskId(prefix, "compact", index + 1),
+                    }).value,
+                  ),
+                );
                 return {
-                  value: await runtime.operations.planReduction(
+                  value: await runtime.operations.collectCompaction(
                     load(),
-                    state,
-                    `${prefix}-reduce-plan`,
-                    workflowIteration,
+                    firstState,
+                    compactPlan.manifest,
+                    compactGroups,
+                    envelopes,
+                    `${prefix}-compact-collect`,
                   ),
                 };
               }}
             </Task>
             <Task
-              id={`${prefix}-reduce-measure`}
+              id={`${prefix}-compact-measure`}
               output={outputs.aiChatContext}
               retries={2}
               retryPolicy={retryPolicy}
               timeoutMs={fast}
             >
               {async () => {
-                const state = (ctx.latest(outputs.aiChatContext, `${prefix}-reduce-measure`)
-                  ?.value ??
-                  ctx.output(outputs.aiChatContext, { nodeId: initialNode }).value) as ContextState;
-                const plan = ctx.latest(outputs.aiChatReductionPlan, `${prefix}-reduce-plan`)!
-                  .value as ContextReductionPlan;
-                const workflowIteration = ctx.iterations?.[`${prefix}-reduction-loop`] ?? 0;
+                const pass = parseCompactionCollection(
+                  ctx.output(outputs.aiChatCompactionCollect, {
+                    nodeId: `${prefix}-compact-collect`,
+                  }),
+                );
                 return {
-                  value: await runtime.operations.measureReduction(
+                  value: await runtime.operations.measureCompaction(
                     load(),
-                    state,
-                    plan,
-                    `${prefix}-reduce-measure`,
-                    workflowIteration,
+                    firstState,
+                    pass,
+                    `${prefix}-compact-measure`,
                   ),
                 };
               }}
             </Task>
           </Sequence>
-        </Loop>
+        ) : null;
+      const fallbackPass =
+        compactMeasure?.status === "needs_compaction" &&
+        compactCollection !== undefined &&
+        fallbackPlan !== undefined ? (
+          <Sequence>
+            <Parallel id={`${prefix}-fallback-groups`} maxConcurrency={MAX_COMPACTION_CONCURRENCY}>
+              {fallbackResults}
+            </Parallel>
+            <Task
+              id={`${prefix}-fallback-collect`}
+              output={outputs.aiChatCompactionCollect}
+              retries={2}
+              retryPolicy={retryPolicy}
+              timeoutMs={fast}
+            >
+              {async () => {
+                const envelopes = fallbackGroups.map((group, index) =>
+                  GroupResultEnvelopeSchema.parse(
+                    ctx.output(outputs.aiChatCompactionGroup, {
+                      nodeId: compactionGroupTaskId(prefix, "fallback", index + 1),
+                    }).value,
+                  ),
+                );
+                return {
+                  value: await runtime.operations.collectFallbackCompaction(
+                    load(),
+                    compactMeasure,
+                    fallbackPlan.manifest,
+                    fallbackGroups,
+                    envelopes,
+                    compactCollection,
+                    `${prefix}-fallback-collect`,
+                  ),
+                };
+              }}
+            </Task>
+            <Task
+              id={`${prefix}-fallback-measure`}
+              output={outputs.aiChatContext}
+              retries={2}
+              retryPolicy={retryPolicy}
+              timeoutMs={fast}
+            >
+              {async () => {
+                const pass = parseCompactionCollection(
+                  ctx.output(outputs.aiChatCompactionCollect, {
+                    nodeId: `${prefix}-fallback-collect`,
+                  }),
+                );
+                return {
+                  value: await runtime.operations.measureCompaction(
+                    load(),
+                    compactMeasure,
+                    pass,
+                    `${prefix}-fallback-measure`,
+                  ),
+                };
+              }}
+            </Task>
+          </Sequence>
+        ) : null;
+      return (
+        <Sequence>
+          {initial?.status === "needs_compaction" ? (
+            <Sequence>
+              {compactPlan === undefined ? (
+                <Task
+                  id={`${prefix}-compact-plan`}
+                  output={outputs.aiChatCompactionPlan}
+                  retries={2}
+                  retryPolicy={retryPolicy}
+                  timeoutMs={fast}
+                >
+                  {async () => {
+                    const state = parseContextValue(
+                      ctx.output(outputs.aiChatContext, { nodeId: initialNode }).value,
+                    );
+                    const manifest = await runtime.operations.initialCompactionManifest(
+                      load(),
+                      state,
+                      `${prefix}-compact-plan`,
+                    );
+                    const groups = await runtime.operations.createCompactionGroups(
+                      load(),
+                      state,
+                      manifest,
+                      `${prefix}-compact-plan`,
+                    );
+                    return { value: { manifest, groups } };
+                  }}
+                </Task>
+              ) : null}
+              {compactPlan !== undefined ? compactPass : null}
+              {compactMeasure?.status === "needs_compaction" && compactCollection !== undefined ? (
+                <Sequence>
+                  {fallbackPlan === undefined ? (
+                    <Task
+                      id={`${prefix}-fallback-plan`}
+                      output={outputs.aiChatFallbackPlan}
+                      retries={2}
+                      retryPolicy={retryPolicy}
+                      timeoutMs={fast}
+                    >
+                      {async () => {
+                        const collection = parseCompactionCollection(
+                          ctx.output(outputs.aiChatCompactionCollect, {
+                            nodeId: `${prefix}-compact-collect`,
+                          }),
+                        );
+                        const state = parseContextValue(
+                          ctx.output(outputs.aiChatContext, {
+                            nodeId: `${prefix}-compact-measure`,
+                          }).value,
+                        );
+                        const initialPlan = aiChatSchemas.aiChatCompactionPlan.parse(
+                          ctx.output(outputs.aiChatCompactionPlan, {
+                            nodeId: `${prefix}-compact-plan`,
+                          }),
+                        ).value;
+                        const manifest = await runtime.operations.fallbackCompactionManifest(
+                          load(),
+                          state,
+                          initialPlan.manifest,
+                          collection,
+                          exactMeasurementFromContext(state),
+                          `${prefix}-fallback-plan`,
+                        );
+                        const groups = await runtime.operations.createFallbackCompactionGroups(
+                          load(),
+                          state,
+                          initialPlan.manifest,
+                          collection,
+                          manifest,
+                          `${prefix}-fallback-plan`,
+                        );
+                        return { value: { manifest, groups } };
+                      }}
+                    </Task>
+                  ) : null}
+                  {fallbackPlan !== undefined ? fallbackPass : null}
+                </Sequence>
+              ) : null}
+            </Sequence>
+          ) : null}
+          <Task
+            id={`${prefix}-context-select`}
+            output={outputs.aiChatContext}
+            retries={2}
+            retryPolicy={retryPolicy}
+            timeoutMs={fast}
+          >
+            {async () => {
+              const state = fallbackMeasure ?? compactMeasure ?? initial;
+              if (state === undefined) throw new Error("context selection state is unavailable");
+              return {
+                value: await runtime.operations.selectCompactionContext(
+                  load(),
+                  state,
+                  `${prefix}-context-select`,
+                ),
+              };
+            }}
+          </Task>
+        </Sequence>
       );
     };
 
@@ -694,7 +1554,7 @@ export function buildAiChatWorkflow(
           <Parallel id="single-selectors" maxConcurrency={AI_CHAT_SINGLE_SELECTOR_MAX_CONCURRENCY}>
             <Task
               id="single-retrieve-internal"
-              output={outputs.aiChatInternal}
+              output={outputs.aiChatStructuredInternal}
               retries={2}
               retryPolicy={retryPolicy}
               timeoutMs={fast}
@@ -704,12 +1564,12 @@ export function buildAiChatWorkflow(
                   nodeId: "plan-turn",
                 }).value as Extract<PlanTurnResult, { mode: "single" }>;
                 return {
-                  value: (await runtime.operations.retrieveInternal(
+                  value: await runtime.operations.retrieveStructuredInternal(
                     load(),
                     plan.question,
                     "single-retrieve-internal",
                     plan.relevantTurnIds,
-                  )) as readonly InternalReference[],
+                  ),
                 };
               }}
             </Task>
@@ -766,8 +1626,9 @@ export function buildAiChatWorkflow(
                 nodeId: "plan-turn",
               }).value as Extract<PlanTurnResult, { mode: "single" }>;
               const selectors: SelectorBundle = {
-                internal: ctx.output(outputs.aiChatInternal, { nodeId: "single-retrieve-internal" })
-                  .value as readonly InternalReference[],
+                structuredInternal: ctx.output(outputs.aiChatStructuredInternal, {
+                  nodeId: "single-retrieve-internal",
+                }).value as RetrievalPlanResult | null,
                 memories: memorySelectorEntries(
                   ctx.output(outputs.aiChatMemories, { nodeId: "single-select-memories" }).value,
                 ),
@@ -809,21 +1670,7 @@ export function buildAiChatWorkflow(
               ),
             })}
           </Task>
-          <ReductionLoop prefix="single" initialNode="single-measure" />
-          <Task
-            id="single-context-select"
-            output={outputs.aiChatContext}
-            retries={2}
-            retryPolicy={retryPolicy}
-            timeoutMs={fast}
-          >
-            {async () => {
-              const state = (ctx.latest(outputs.aiChatContext, "single-reduce-measure")?.value ??
-                ctx.output(outputs.aiChatContext, { nodeId: "single-measure" })
-                  .value) as ContextState;
-              return { value: await runtime.operations.freezeContext(load(), state) };
-            }}
-          </Task>
+          <CompactionFlow prefix="single" initialNode="single-measure" />
           <Task
             id="single-answer-route"
             output={outputs.aiChatContext}
@@ -917,9 +1764,9 @@ export function buildAiChatWorkflow(
                 });
               }
               const selectors: SelectorBundle = {
-                internal: ctx.output(outputs.aiChatInternal, {
+                structuredInternal: ctx.output(outputs.aiChatStructuredInternal, {
                   nodeId: `${prefix}-retrieve-internal`,
-                }).value as readonly InternalReference[],
+                }).value as RetrievalPlanResult | null,
                 memories: memorySelectorEntries(
                   ctx.output(outputs.aiChatMemories, {
                     nodeId: `${prefix}-select-memories`,
@@ -968,21 +1815,7 @@ export function buildAiChatWorkflow(
               ),
             })}
           </Task>
-          <ReductionLoop prefix={prefix} initialNode={`${prefix}-measure`} />
-          <Task
-            id={`${prefix}-context-select`}
-            output={outputs.aiChatContext}
-            retries={2}
-            retryPolicy={retryPolicy}
-            timeoutMs={fast}
-          >
-            {async () => {
-              const state = (ctx.latest(outputs.aiChatContext, `${prefix}-reduce-measure`)?.value ??
-                ctx.output(outputs.aiChatContext, { nodeId: `${prefix}-measure` })
-                  .value) as ContextState;
-              return { value: await runtime.operations.freezeContext(load(), state) };
-            }}
-          </Task>
+          <CompactionFlow prefix={prefix} initialNode={`${prefix}-measure`} />
           <Task
             id={`${prefix}-answer-route`}
             output={outputs.aiChatContext}
@@ -1017,10 +1850,15 @@ export function buildAiChatWorkflow(
                         ctx.output(outputs.aiChatAllocation, { nodeId: "fanout-allocate" }).value
                           .packetOutputTokens,
                       ),
+                      retryable: false,
                     };
                   } catch (error) {
                     if (error instanceof AiRuntimeError && !error.retryable) {
-                      return { status: "failed" as const, code: error.code };
+                      return {
+                        status: "failed" as const,
+                        code: error.code,
+                        retryable: error.retryable,
+                      };
                     }
                     throw error;
                   }
@@ -1035,14 +1873,18 @@ export function buildAiChatWorkflow(
                 retryPolicy={retryPolicy}
                 timeoutMs={fast}
               >
-                {async () => ({
-                  status: "failed" as const,
-                  code:
+                {async () => {
+                  const code =
                     (
                       ctx.output(outputs.aiChatContext, { nodeId: `${prefix}-answer-route` })
                         .value as ContextState
-                    ).failureCode ?? "context_plan_unfit",
-                })}
+                    ).failureCode ?? "context_plan_unfit";
+                  return {
+                    status: "failed" as const,
+                    code,
+                    retryable: isAiRunErrorCode(code) ? isRetryableAiRunError(code) : false,
+                  };
+                }}
               </Task>
             }
           />
@@ -1058,8 +1900,12 @@ export function buildAiChatWorkflow(
                 ctx.outputMaybe(outputs.aiChatTopicResult, { nodeId: `${prefix}-answer` }) ??
                 ctx.output(outputs.aiChatTopicResult, { nodeId: `${prefix}-failure` });
               return result.status === "ok" && result.packet !== undefined
-                ? { status: "ok" as const, packet: result.packet }
-                : { status: "failed" as const, code: result.code ?? "context_plan_unfit" };
+                ? { status: "ok" as const, packet: result.packet, retryable: false }
+                : {
+                    status: "failed" as const,
+                    retryable: result.retryable === true,
+                    code: result.code ?? "context_plan_unfit",
+                  };
             }}
           </Task>
         </Sequence>
@@ -1099,18 +1945,18 @@ export function buildAiChatWorkflow(
                 <Task
                   key={`${prefix}-a`}
                   id={`${prefix}-retrieve-internal`}
-                  output={outputs.aiChatInternal}
+                  output={outputs.aiChatStructuredInternal}
                   retries={2}
                   retryPolicy={retryPolicy}
                   timeoutMs={fast}
                 >
                   {async () => ({
-                    value: (await runtime.operations.retrieveInternal(
+                    value: await runtime.operations.retrieveStructuredInternal(
                       load(),
                       topic.question,
                       `${prefix}-retrieve-internal`,
                       topic.relevantTurnIds,
-                    )) as readonly InternalReference[],
+                    ),
                   })}
                 </Task>,
                 <Task
@@ -1163,9 +2009,9 @@ export function buildAiChatWorkflow(
                 plan.topics.map((topic) => [
                   topic.topicId,
                   {
-                    internal: ctx.output(outputs.aiChatInternal, {
+                    structuredInternal: ctx.output(outputs.aiChatStructuredInternal, {
                       nodeId: `topic-${topic.topicId}-retrieve-internal`,
-                    }).value,
+                    }).value as RetrievalPlanResult | null,
                     memories: memorySelectorEntries(
                       ctx.output(outputs.aiChatMemories, {
                         nodeId: `topic-${topic.topicId}-select-memories`,
@@ -1223,6 +2069,7 @@ export function buildAiChatWorkflow(
                   sourceMap: [],
                   contexts,
                   code: failed.code ?? "context_plan_unfit",
+                  retryable: failed.retryable === true,
                 };
               const packets = results.flatMap((result) =>
                 result.packet === undefined ? [] : [result.packet],
@@ -1234,12 +2081,14 @@ export function buildAiChatWorkflow(
                   sourceMap: [],
                   contexts,
                   code: "context_plan_unfit",
+                  retryable: false,
                 };
               return {
                 status: "ok" as const,
                 packets,
                 sourceMap: runtime.operations.mergeFanoutSourceMaps(contexts),
                 contexts,
+                retryable: false,
               };
             }}
           </Task>
@@ -1274,6 +2123,7 @@ export function buildAiChatWorkflow(
               return { value: context };
             }}
           </Task>
+          <CompactionFlow prefix="fanout-synthesis" initialNode="fanout-synthesis-measure" />
           <Task
             id="fanout-synthesis-route"
             output={outputs.aiChatContext}
@@ -1282,8 +2132,9 @@ export function buildAiChatWorkflow(
             timeoutMs={fast}
           >
             {async () => ({
-              value: ctx.output(outputs.aiChatContext, { nodeId: "fanout-synthesis-measure" })
-                .value,
+              value: ctx.output(outputs.aiChatContext, {
+                nodeId: "fanout-synthesis-context-select",
+              }).value,
             })}
           </Task>
           <Branch
@@ -1318,13 +2169,26 @@ export function buildAiChatWorkflow(
                   const collected = ctx.output(outputs.aiChatFanoutCollect, {
                     nodeId: "fanout-collect",
                   });
-                  const code =
+                  const synthesisCode =
+                    collected.status === "ok" &&
+                    synthesis?.status === "failed" &&
+                    synthesis.failureCode !== undefined &&
+                    isAiRunErrorCode(synthesis.failureCode)
+                      ? synthesis.failureCode
+                      : undefined;
+                  const collectionCode =
                     collected.status === "failed" &&
                     collected.code !== undefined &&
                     isAiRunErrorCode(collected.code)
                       ? collected.code
-                      : "synthesis_budget_mismatch";
-                  return { value: controlledFailure(code) };
+                      : undefined;
+                  const failureCode =
+                    synthesisCode ?? collectionCode ?? "synthesis_budget_mismatch";
+                  const failureRetryable =
+                    collected.status === "failed" ? collected.retryable === true : undefined;
+                  return {
+                    value: controlledFailure(failureCode, failureRetryable),
+                  };
                 }}
               </Task>
             }

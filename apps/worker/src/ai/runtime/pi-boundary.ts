@@ -30,7 +30,6 @@ import {
   normalizeProviderRequest,
   providerRequestSha256Hex,
   providerRequestSourceExposureProofBindings,
-  providerRequestSourceExposureProofs,
   requireLiveProviderRequest,
   type ProviderMessage,
   type LiveProviderRequest,
@@ -427,14 +426,13 @@ export class ExactPiBoundary {
     const limits =
       normalizedRequest.requestClass === "main" ? this.options.mainLimits : this.options.fastLimits;
     const measurement = measureProviderRequest(normalizedRequest, model, limits);
-    const sourceExposureProofSha256Hexes = providerRequestSourceExposureProofs(
-      normalizedRequest,
-      (text) => model.countTextTokens(text),
-    );
     const sourceExposureProofBindings = providerRequestSourceExposureProofBindings(
       normalizedRequest,
       (text) => model.countTextTokens(text),
     );
+    const sourceExposureProofSha256Hexes = sourceExposureProofBindings
+      .map(({ providerSerializationProofSha256Hex }) => providerSerializationProofSha256Hex)
+      .sort();
     throwIfAborted(signal);
     // `passed` is computed before any durable observation, event, exposure, or
     // authorization callback can run. Failed gates retain their measurement but
