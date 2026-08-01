@@ -1,5 +1,4 @@
 import { Duration, Effect, Schedule } from "effect";
-import { captureCause } from "../diagnostic-cause";
 
 import { JobRepository } from "./repository";
 import type { JobKind } from "./types";
@@ -58,31 +57,23 @@ export const enqueueMaintenanceJobs = (now?: Date) =>
   });
 
 const safeHourlyMaintenanceTick = enqueueHourlyMaintenanceJobs().pipe(
-  Effect.catch((error) =>
-    Effect.sync(() => captureCause("maintenance_enqueue", error)).pipe(
-      Effect.andThen(
-        Effect.logError("maintenance enqueue failed").pipe(
-          Effect.annotateLogs({
-            component: "maintenance_scheduler",
-            errorCode: "maintenance_enqueue_failed",
-          }),
-        ),
-      ),
+  Effect.catch(() =>
+    Effect.logError("maintenance enqueue failed").pipe(
+      Effect.annotateLogs({
+        component: "maintenance_scheduler",
+        errorCode: "maintenance_enqueue_failed",
+      }),
     ),
   ),
 );
 
 const safeExportGcTick = enqueueExportGcJob().pipe(
-  Effect.catch((error) =>
-    Effect.sync(() => captureCause("export_gc_enqueue", error)).pipe(
-      Effect.andThen(
-        Effect.logError("export GC enqueue failed").pipe(
-          Effect.annotateLogs({
-            component: "export_gc_scheduler",
-            errorCode: "export_gc_enqueue_failed",
-          }),
-        ),
-      ),
+  Effect.catch(() =>
+    Effect.logError("export GC enqueue failed").pipe(
+      Effect.annotateLogs({
+        component: "export_gc_scheduler",
+        errorCode: "export_gc_enqueue_failed",
+      }),
     ),
   ),
 );

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import * as SmithersTaskRuntimeModule from "@smithers-orchestrator/driver/task-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -513,6 +514,11 @@ describe("exact Pi boundary", () => {
       exposureStage: "provider_input",
       visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
       visibleText,
+      chatReconstruction: {
+        messageId: "message-1",
+        contentHash: createHash("sha256").update(visibleText, "utf8").digest("hex"),
+        ranges: [{ charStart: 0, charEnd: visibleText.length }],
+      },
     } as const;
     const sourceRequest: LiveProviderRequest = {
       ...request,

@@ -127,8 +127,8 @@ export interface ToolLoopInput<Output> {
   readonly terminalOnlyForTurn?: ((providerRequestIndex: number) => boolean) | undefined;
   /**
    * Tool names that must occupy a complete provider turn by themselves.
-   * This is used for reducer measurement: inspection/search and measurement
-   * are separate protocol phases even when the provider emits parallel calls.
+   * This is used for source-local compaction: passage lookup and final
+   * selection occupy separate protocol phases even when the provider emits parallel calls.
    */
   readonly exclusiveToolNames?: readonly string[] | undefined;
   /**
@@ -234,11 +234,7 @@ const exposureMarkersFromResult = (
 // result object for the durable exposure ledger.
 export const toolResultJson = (value: Readonly<Record<string, unknown>>): string =>
   JSON.stringify(redactProviderToolResult(value));
-const emptyToolResultShape = (toolName: string): Readonly<Record<string, unknown>> =>
-  toolName === "search_within_candidate" ? { matches: [], matchPreviews: [] } : {};
-
-const malformedToolResult = (toolName: string): Readonly<Record<string, unknown>> => ({
-  ...emptyToolResultShape(toolName),
+const malformedToolResult = (): Readonly<Record<string, unknown>> => ({
   complete: true,
   protocolError: "tool arguments did not match the advertised schema",
 });
@@ -724,7 +720,7 @@ export class CanonicalAgentClient {
               name: call.name,
               content: toolResultJson({
                 ...recovery,
-                ...malformedToolResult(call.name),
+                ...malformedToolResult(),
                 noCallsExecuted: true,
               }),
             });
@@ -751,7 +747,7 @@ export class CanonicalAgentClient {
             name: call.name,
             content: toolResultJson({
               ...recovery,
-              ...malformedToolResult(call.name),
+              ...malformedToolResult(),
             }),
           });
         }
@@ -813,7 +809,6 @@ export class CanonicalAgentClient {
             toolCallId: call.id,
             name: call.name,
             content: toolResultJson({
-              ...emptyToolResultShape(call.name),
               ...recovery,
               complete: true,
               protocolError: "exclusive tool phase contained conflicting calls",
@@ -958,7 +953,6 @@ export class CanonicalAgentClient {
               toolCallId: call.id,
               name: call.name,
               content: toolResultJson({
-                ...emptyToolResultShape(call.name),
                 ...disabledResult,
               }),
             });
@@ -985,7 +979,6 @@ export class CanonicalAgentClient {
             toolCallId: call.id,
             name: call.name,
             content: toolResultJson({
-              ...emptyToolResultShape(call.name),
               complete: true,
               continuationRequired: true,
               message:
@@ -1002,7 +995,7 @@ export class CanonicalAgentClient {
           if (recovery === undefined) {
             throw toAiRuntimeError(error, aiRunErrorCodeForRole(input.coordinates.agentRole));
           }
-          result = { ...emptyToolResultShape(call.name), ...recovery };
+          result = { ...recovery };
         }
         if (
           (call.name === "search_source_passages" || call.name === "read_source_passages") &&

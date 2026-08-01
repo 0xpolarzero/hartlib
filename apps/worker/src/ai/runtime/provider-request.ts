@@ -8,7 +8,10 @@ import {
   sourceOrdinalFromKey,
   type DocumentEvidenceNamespace,
 } from "./canonicalization";
-import type { AiDocumentExposureReconstruction } from "../product-state/observability";
+import type {
+  AiChatExposureReconstruction,
+  AiDocumentExposureReconstruction,
+} from "../product-state/observability";
 
 export type ProviderMessage =
   | { readonly role: "system"; readonly content: string }
@@ -131,6 +134,8 @@ export interface ProviderVisibleSourceExposureMarker {
  */
 export type CodeOwnedSourceExposureProof = ProviderVisibleSourceExposureMarker & {
   readonly visibleText: string;
+  /** Private immutable chat identity and exact source-use ranges. */
+  readonly chatReconstruction?: AiChatExposureReconstruction | undefined;
   /** Hash of the immutable source body, kept only in the code-owned sidecar. */
   readonly immutableContentHash?: string | undefined;
   /** Commitment to namespace, version, and publisher/external identity fields. */
@@ -342,6 +347,44 @@ const isProviderVisibleSourceExposureMarker = (
   );
 };
 
+const isValidChatExposureReconstruction = (
+  value: unknown,
+): value is AiChatExposureReconstruction => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 3 ||
+    Object.keys(record).some((key) => !["messageId", "contentHash", "ranges"].includes(key)) ||
+    typeof record.messageId !== "string" ||
+    record.messageId.trim().length === 0 ||
+    typeof record.contentHash !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(record.contentHash) ||
+    !Array.isArray(record.ranges) ||
+    record.ranges.length === 0
+  ) {
+    return false;
+  }
+  let previousEnd = -1;
+  for (const range of record.ranges) {
+    if (range === null || typeof range !== "object" || Array.isArray(range)) return false;
+    const rangeRecord = range as Record<string, unknown>;
+    if (
+      Object.keys(rangeRecord).length !== 2 ||
+      typeof rangeRecord.charStart !== "number" ||
+      !Number.isSafeInteger(rangeRecord.charStart) ||
+      rangeRecord.charStart < 0 ||
+      typeof rangeRecord.charEnd !== "number" ||
+      !Number.isSafeInteger(rangeRecord.charEnd) ||
+      rangeRecord.charEnd <= rangeRecord.charStart ||
+      rangeRecord.charStart <= previousEnd
+    ) {
+      return false;
+    }
+    previousEnd = rangeRecord.charEnd;
+  }
+  return true;
+};
+
 const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourceExposureProof => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const proof = value as Record<string, unknown>;
@@ -352,6 +395,9 @@ const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourc
     exposureStage: proof.exposureStage,
     visibleTokenCount: proof.visibleTokenCount,
   };
+  const chatReconstruction = proof.chatReconstruction;
+  const validChatReconstruction =
+    chatReconstruction === undefined || isValidChatExposureReconstruction(chatReconstruction);
   const allowedKeys = new Set([
     "sourceKind",
     "logicalSourceIdentity",
@@ -359,6 +405,7 @@ const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourc
     "exposureStage",
     "visibleTokenCount",
     "visibleText",
+    "chatReconstruction",
     "immutableContentHash",
     "immutableSourceIdentityCommitment",
     "immutableSourceCommitment",
@@ -461,6 +508,8 @@ const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourc
     (proof.passageId === undefined ||
       (typeof proof.passageId === "string" && /^p[1-9][0-9]*$/u.test(proof.passageId))) &&
     validDocumentReconstruction &&
+    validChatReconstruction &&
+    (proof.sourceKind !== "chat_message" || chatReconstruction !== undefined) &&
     (proof.publisherIssueId === undefined ||
       (typeof proof.publisherIssueId === "string" && proof.publisherIssueId.length > 0)) &&
     (proof.publisherDocumentId === undefined ||
@@ -706,6 +755,7 @@ const expectedCandidateInspectionExposures = (
       "complete",
       "conversationEntry",
       SOURCE_EXPOSURE_FIELD,
+      SOURCE_IDENTITY_FIELD,
     ]);
     if (Object.keys(result).some((key) => !allowedResultKeys.has(key))) {
       throw sourceExposureFailure(
@@ -1711,7 +1761,8 @@ const privateIdentityForExposure = (
             : undefined
           : result;
   if (!isJsonRecord(item)) return undefined;
-  const value = item[SOURCE_IDENTITY_FIELD];
+  const raw = item[SOURCE_IDENTITY_FIELD];
+  const value = Array.isArray(raw) ? raw[index] : raw;
   if (value !== undefined && !isJsonRecord(value)) {
     throw sourceExposureFailure("source identity sidecar must be an object");
   }
@@ -1810,20 +1861,40 @@ const validatePrivateNonDocumentIdentity = (
     toolName === "inspect_memory" ||
     toolName === "search_memories";
   if (expected.sourceKind === "chat_message") {
+    const nestedChatReconstruction = privateIdentity.chatReconstruction;
+    const chatReconstruction = isValidChatExposureReconstruction(nestedChatReconstruction)
+      ? nestedChatReconstruction
+      : isValidChatExposureReconstruction(privateIdentity)
+        ? privateIdentity
+        : undefined;
     if (
-      Object.keys(privateIdentity).some((key) => !["messageId", "contentHash"].includes(key)) ||
-      typeof privateIdentity.messageId !== "string" ||
-      privateIdentity.messageId.length === 0 ||
-      typeof privateIdentity.contentHash !== "string" ||
-      !/^[A-Za-z0-9_-]{43}$/u.test(privateIdentity.contentHash)
+      chatReconstruction === undefined ||
+      (nestedChatReconstruction !== undefined &&
+        (Object.keys(privateIdentity).length !== 1 ||
+          Object.keys(privateIdentity)[0] !== "chatReconstruction")) ||
+      marker.logicalSourceIdentity !== chatMessageEvidenceIdentity(chatReconstruction.messageId)
     ) {
       throw sourceExposureFailure(`${toolName} chat identity is not canonical`);
     }
-    if (
-      marker.logicalSourceIdentity !== chatMessageEvidenceIdentity(privateIdentity.messageId) ||
-      marker.contentItemIdentity !== privateIdentity.messageId
-    ) {
-      throw sourceExposureFailure(`${toolName} chat identity differs from its private identity`);
+    const evaluationPlannerExposure =
+      expected.exposureStage === "evaluation_general_planner_search" ||
+      expected.exposureStage === "evaluation_general_planner_inspect";
+    if (evaluationPlannerExposure) {
+      const match = /^(.*):([0-9]+):([0-9]+):([0-9a-f]{64})$/u.exec(marker.contentItemIdentity);
+      const range =
+        chatReconstruction.ranges.length === 1 ? chatReconstruction.ranges[0] : undefined;
+      if (
+        match === null ||
+        match[1] !== marker.logicalSourceIdentity ||
+        range === undefined ||
+        Number(match[2]) !== range.charStart ||
+        Number(match[3]) !== range.charEnd ||
+        match[4] !== createHash("sha256").update(expected.visibleText, "utf8").digest("hex")
+      ) {
+        throw sourceExposureFailure(`${toolName} chat range identity differs from its exact proof`);
+      }
+    } else if (marker.contentItemIdentity !== chatReconstruction.messageId) {
+      throw sourceExposureFailure(`${toolName} chat identity is not canonical`);
     }
   } else if (expected.sourceKind === "memory") {
     if (
@@ -1835,15 +1906,11 @@ const validatePrivateNonDocumentIdentity = (
       typeof privateIdentity.memoryRevisionId !== "string" ||
       privateIdentity.memoryRevisionId.length === 0 ||
       typeof privateIdentity.contentHash !== "string" ||
-      !/^[A-Za-z0-9_-]{43}$/u.test(privateIdentity.contentHash)
-    ) {
-      throw sourceExposureFailure(`${toolName} memory identity is not canonical`);
-    }
-    if (
+      !/^[A-Za-z0-9_-]{43}$/u.test(privateIdentity.contentHash) ||
       marker.logicalSourceIdentity !== `memory:${privateIdentity.memoryId}` ||
       marker.contentItemIdentity !== privateIdentity.memoryRevisionId
     ) {
-      throw sourceExposureFailure(`${toolName} memory identity differs from its private identity`);
+      throw sourceExposureFailure(`${toolName} memory identity is not canonical`);
     }
   } else if (expected.sourceKind === "web") {
     let url: string;
@@ -1867,7 +1934,11 @@ const validatePrivateNonDocumentIdentity = (
       throw sourceExposureFailure(`${toolName} web identity differs from its private identity`);
     }
   }
-  if (exactVisibleBody && privateIdentity.contentHash !== sha256Base64Url(expected.visibleText)) {
+  if (
+    exactVisibleBody &&
+    expected.sourceKind !== "chat_message" &&
+    privateIdentity.contentHash !== sha256Base64Url(expected.visibleText)
+  ) {
     throw sourceExposureFailure(`${toolName} private content hash differs from its visible body`);
   }
 };
@@ -1895,6 +1966,14 @@ export const providerSourceExposureProofFromToolResult = (
     const sourcePrivateIdentity = privateIdentityForExposure(toolName, result, index);
     const marker = embedded[index]!;
     assertExactSourceExposureMarker(marker, item, countTextTokens);
+    const chatReconstruction =
+      marker.sourceKind === "chat_message"
+        ? isValidChatExposureReconstruction(sourcePrivateIdentity?.chatReconstruction)
+          ? sourcePrivateIdentity.chatReconstruction
+          : isValidChatExposureReconstruction(sourcePrivateIdentity)
+            ? sourcePrivateIdentity
+            : undefined
+        : undefined;
     let documentReconstruction: AiDocumentExposureReconstruction | undefined;
     let publisherIssueId: string | undefined;
     let publisherDocumentId: string | undefined;
@@ -2023,7 +2102,9 @@ export const providerSourceExposureProofFromToolResult = (
         validatePrivateNonDocumentIdentity(privateIdentity, item, marker, toolName);
       }
     }
-    const immutableContentHash = immutableContentHashForExposure(toolName, result, index, item);
+    const immutableContentHash =
+      chatReconstruction?.contentHash ??
+      immutableContentHashForExposure(toolName, result, index, item);
     const immutableSourceIdentityCommitment = immutableSourceIdentityCommitmentForExposure(
       toolName,
       result,
@@ -2040,6 +2121,7 @@ export const providerSourceExposureProofFromToolResult = (
     return {
       ...marker,
       visibleText: item.visibleText,
+      ...(chatReconstruction === undefined ? {} : { chatReconstruction }),
       sourceToolCallId: toolCall.id,
       sourceResultIndex: index,
       immutableContentHash,
@@ -2749,7 +2831,10 @@ const codeOwnedExposureDescriptors = (
         if (item.kind !== "document" && item.kind !== "chat_message") return;
         candidates.push({
           sourceKind: item.kind,
-          exposureStage: "internal_search_preview",
+          exposureStage:
+            item.kind === "chat_message"
+              ? "internal_chat_search_preview"
+              : "internal_search_preview",
           visibleText: item.preview,
           location: {
             messageIndex,
@@ -2829,6 +2914,21 @@ const assertCodeOwnedMarkerShape = (proof: CodeOwnedSourceExposureProof): void =
     ) {
       throw sourceExposureFailure("compaction proof lacks its immutable commitment");
     }
+    if (proof.sourceKind === "chat_message") {
+      const reconstructionRange = proof.chatReconstruction?.ranges;
+      if (
+        proof.charStart === undefined ||
+        proof.charEnd === undefined ||
+        reconstructionRange === undefined ||
+        reconstructionRange.length !== 1 ||
+        reconstructionRange[0]?.charStart !== proof.charStart ||
+        reconstructionRange[0]?.charEnd !== proof.charEnd
+      ) {
+        throw sourceExposureFailure(
+          "chat compaction proof reconstruction range differs from its exact passage range",
+        );
+      }
+    }
   }
   if (
     proof.sourceKind === "document" &&
@@ -2865,6 +2965,16 @@ const assertCodeOwnedMarkerShape = (proof: CodeOwnedSourceExposureProof): void =
     proof.logicalSourceIdentity !== chatMessageEvidenceIdentity(proof.contentItemIdentity)
   ) {
     throw sourceExposureFailure("code-owned chat proof identity is not canonical");
+  }
+  if (
+    !evaluationGeneralPlannerExposure &&
+    proof.sourceKind === "chat_message" &&
+    (proof.chatReconstruction === undefined ||
+      proof.chatReconstruction.messageId !== proof.contentItemIdentity ||
+      (proof.immutableContentHash !== undefined &&
+        proof.immutableContentHash !== proof.chatReconstruction.contentHash))
+  ) {
+    throw sourceExposureFailure("chat proof lacks its exact immutable reconstruction");
   }
   if (
     !evaluationGeneralPlannerExposure &&

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { MessageRow, SourceRow, SourceUseRow } from "./chat-runtime";
+import type { MessageRow, RunRow, SourceRow, SourceUseRow } from "./chat-runtime";
 import { chatMessagesResponseFromRows } from "./chat-response";
 
 const assistantMessage: MessageRow = {
@@ -98,6 +98,62 @@ const documentSource = (url: string, publisher = false): SourceRow => ({
   source_identity_digest: integrityDigest,
   source_identity_valid: true,
 });
+const chatMessage = (
+  id: string,
+  author: MessageRow["author"],
+  content: string,
+  createdAt: string,
+): MessageRow => ({
+  id,
+  author,
+  content,
+  created_at: new Date(createdAt),
+});
+
+const chatSource = (messageId: string): SourceRow => ({
+  assistant_message_id: assistantMessage.id,
+  source_key: `k_${citationNamespaceHex}_4`,
+  citation_namespace: citationNamespaceHex,
+  publisher_extraction_id: null,
+  message_id: messageId,
+  kind: "chat_message",
+  locator: { kind: "chat_message", messageId },
+  display_label: null,
+  public_provenance: {},
+  source_identity_digest: integrityDigest,
+  source_identity_valid: true,
+});
+
+const reloadChat = (
+  sourceMessage: MessageRow,
+  ranges: unknown,
+  sourceOverrides: Partial<SourceRow> = {},
+  sourceUses: readonly SourceUseRow[] = [],
+) => {
+  const source = { ...chatSource(sourceMessage.id), ...sourceOverrides };
+  const runs: readonly RunRow[] =
+    sourceMessage.author === "user"
+      ? [
+          {
+            id: `run-${sourceMessage.id}`,
+            chat_id: "chat-1",
+            user_message_id: sourceMessage.id,
+            assistant_message_id: assistantMessage.id,
+            started_at: new Date("2025-12-31T23:59:01.000Z"),
+            finished_at: new Date("2025-12-31T23:59:02.000Z"),
+            failed_at: null,
+            error_code: null,
+            retryable: null,
+          },
+        ]
+      : [];
+  return chatMessagesResponseFromRows(
+    [sourceMessage, assistantMessage],
+    runs,
+    [source],
+    sourceUses.length === 0 ? [use(source.source_key, ranges)] : sourceUses,
+  );
+};
 
 const reload = (sources: readonly SourceRow[]) =>
   chatMessagesResponseFromRows(
@@ -520,6 +576,103 @@ describe("chat response reload boundaries", () => {
         [use(sourceKey, [{ charStart: 0, charEnd: 4 }])],
       ),
     ).toThrow("persisted source use ranges do not cover source locator");
+  });
+
+  it("reloads exact private chat ranges while keeping the public range projection empty", () => {
+    const sourceMessage = chatMessage(
+      "user-source-1",
+      "user",
+      "Earlier evidence 😀 text",
+      "2025-12-31T23:59:00.000Z",
+    );
+    const response = reloadChat(sourceMessage, [
+      { charStart: 0, charEnd: sourceMessage.content.length },
+    ]);
+    expect(response).toMatchObject([
+      { id: sourceMessage.id, author: "user" },
+      {
+        id: assistantMessage.id,
+        sourcesRead: [
+          {
+            kind: "chat_message",
+            messageId: sourceMessage.id,
+            ranges: [],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("rejects empty, paged, overlapping, adjacent, and out-of-bounds chat ranges", () => {
+    const sourceMessage = chatMessage(
+      "user-source-2",
+      "user",
+      "Earlier evidence",
+      "2025-12-31T23:59:00.000Z",
+    );
+    for (const ranges of [
+      [],
+      [{ charStart: 0, charEnd: 1, pageNumber: 1 }],
+      [
+        { charStart: 0, charEnd: 5 },
+        { charStart: 4, charEnd: 8 },
+      ],
+      [
+        { charStart: 0, charEnd: 4 },
+        { charStart: 4, charEnd: 8 },
+      ],
+      [{ charStart: 0, charEnd: sourceMessage.content.length + 1 }],
+    ]) {
+      expect(() => reloadChat(sourceMessage, ranges), JSON.stringify(ranges)).toThrow(
+        /invalid persisted chat message source range/,
+      );
+    }
+  });
+
+  it("rejects chat source identity tampering and foreign source messages", () => {
+    const sourceMessage = chatMessage(
+      "user-source-3",
+      "user",
+      "Earlier evidence",
+      "2025-12-31T23:59:00.000Z",
+    );
+    const validRange = [{ charStart: 0, charEnd: sourceMessage.content.length }];
+    expect(() =>
+      reloadChat(sourceMessage, validRange, {
+        locator: { kind: "chat_message", messageId: "tampered-message" },
+      }),
+    ).toThrow("persisted chat message source identity mismatch");
+    expect(() =>
+      reloadChat(sourceMessage, validRange, {
+        message_id: "foreign-message",
+        locator: { kind: "chat_message", messageId: "foreign-message" },
+      }),
+    ).toThrow("persisted chat message source is missing or not earlier");
+  });
+
+  it("sanitizes historical assistant citations but preserves literal user citation text", () => {
+    const assistantSource = chatMessage(
+      "assistant-source-1",
+      "assistant",
+      "A [[cite:old]] B [[cite:unterminated",
+      "2025-12-31T23:59:00.000Z",
+    );
+    expect(() =>
+      reloadChat(assistantSource, [{ charStart: 0, charEnd: "A  B ".length }]),
+    ).not.toThrow();
+    expect(() =>
+      reloadChat(assistantSource, [{ charStart: 0, charEnd: "A  B ".length + 1 }]),
+    ).toThrow("invalid persisted chat message source range");
+
+    const userSource = chatMessage(
+      "user-source-4",
+      "user",
+      "Literal [[cite:old]] text",
+      "2025-12-31T23:59:00.000Z",
+    );
+    expect(() =>
+      reloadChat(userSource, [{ charStart: 0, charEnd: userSource.content.length }]),
+    ).not.toThrow();
   });
 
   it("requires zero-based contiguous context order per consumer and canonical topic ownership", () => {

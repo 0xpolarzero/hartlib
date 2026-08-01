@@ -11,6 +11,7 @@ import {
   memoryExtractionSha256Hex,
   namespacedDocumentEvidenceIdentity,
   sha256Base64Url,
+  stripHistoricalCitationTags,
   webEvidenceIdentity,
 } from "../runtime/canonicalization";
 import {
@@ -84,6 +85,35 @@ const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>, url = testU
       ),
     ),
   );
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const causeOf = (value: unknown): unknown => {
+  if (!isRecord(value) || !("cause" in value)) return undefined;
+  return value.cause;
+};
+
+const messageOf = (value: unknown): string | undefined => {
+  const message = isRecord(value) ? value.message : undefined;
+  return typeof message === "string" ? message : undefined;
+};
+
+const errorText = (error: unknown): string => {
+  const parts = [String(error)];
+  const cause = causeOf(error);
+  if (cause !== undefined) {
+    parts.push(String(cause));
+    const causeMessage = messageOf(cause);
+    if (causeMessage) parts.push(causeMessage);
+    const nestedCause = causeOf(cause);
+    if (nestedCause !== undefined) {
+      parts.push(String(nestedCause));
+      const nestedCauseMessage = messageOf(nestedCause);
+      if (nestedCauseMessage) parts.push(nestedCauseMessage);
+    }
+  }
+  return parts.join("\n");
+};
 
 const runDbAs = <A, E>(
   applicationName: string,
@@ -128,6 +158,7 @@ interface Fixture {
   readonly chatId: string;
   readonly userMessageId: string;
   readonly runId: string;
+  readonly chatContent: string;
   readonly citationNamespace: string;
   readonly mode: TurnPlanMode;
   readonly memoryMode: "private_owner" | "disabled";
@@ -287,7 +318,17 @@ const createFixture = (
         ${sql.json(turnPlanPayload(mode, topicIds))}
       )
     `;
-    return { companyId, userId, chatId, userMessageId, runId, citationNamespace, mode, memoryMode };
+    return {
+      companyId,
+      userId,
+      chatId,
+      userMessageId,
+      runId,
+      chatContent: `Question ${suffix}`,
+      citationNamespace,
+      mode,
+      memoryMode,
+    };
   });
 
 const persistMemoryArtifact = (
@@ -426,6 +467,20 @@ const createNextRun = (fixture: Fixture, content: string, mode: TurnPlanMode = "
 const sourceKeyFor = (fixture: Pick<Fixture, "citationNamespace">, ordinal = 1): string =>
   `k_${fixture.citationNamespace}_${ordinal}`;
 
+const chatReconstructionFor = (
+  messageId: string,
+  content: string,
+  author: "user" | "assistant" = "user",
+  ranges?: readonly { readonly charStart: number; readonly charEnd: number }[],
+) => {
+  const sanitizedContent = author === "assistant" ? stripHistoricalCitationTags(content) : content;
+  return {
+    messageId,
+    contentHash: createHash("sha256").update(sanitizedContent, "utf8").digest("hex"),
+    ranges: ranges ?? [{ charStart: 0, charEnd: sanitizedContent.length }],
+  };
+};
+
 type StructuredReviewPreviewIdentity =
   | {
       readonly kind: "public_document";
@@ -493,6 +548,40 @@ const structuredReviewPreviewRecord = (input: StructuredReviewPreviewRecordInput
       .digest("hex"),
   };
 };
+const structuredReviewCoverage = [
+  {
+    queryOrdinal: 1,
+    branch: "public_documents" as const,
+    status: "applicable" as const,
+    hitCount: 0,
+    truncated: false,
+    cap: 1,
+  },
+  {
+    queryOrdinal: 1,
+    branch: "publisher_documents" as const,
+    status: "not_applicable" as const,
+    reason: "scope_documents" as const,
+    hitCount: 0,
+    truncated: false,
+    cap: 1,
+  },
+  {
+    queryOrdinal: 1,
+    branch: "chat_messages" as const,
+    status: "not_applicable" as const,
+    reason: "scope_documents" as const,
+    hitCount: 0,
+    truncated: false,
+    cap: 1,
+  },
+] as const;
+const structuredReviewTruncation = {
+  branch: false,
+  candidates: false,
+  hydration: false,
+} as const;
+
 const insertStructuredReviewPreview = (
   fixture: Fixture,
   options: {
@@ -503,9 +592,28 @@ const insertStructuredReviewPreview = (
     readonly providerInputSha256Hex: string;
     readonly slot?: "initial" | "replacement";
     readonly records?: readonly StructuredReviewPreviewRecordInput[];
+    readonly results?: readonly Record<string, unknown>[];
+    readonly coverage?: readonly (typeof structuredReviewCoverage)[number][];
+    readonly truncation?: typeof structuredReviewTruncation;
   },
 ) => {
   const providerRequestIndex = options.providerRequestIndex ?? 0;
+  const records = options.records ?? [];
+  const coverage = options.coverage ?? structuredReviewCoverage;
+  const truncation = options.truncation ?? structuredReviewTruncation;
+  const results =
+    options.results ??
+    records.map((record, index) => ({
+      resultId: `r${index + 1}`,
+      kind: record.identity.kind === "chat_message" ? "chat_message" : "document",
+      label: null,
+      date: null,
+      tokenCount: 0,
+      normalizedFusedScore: 0,
+      matchedQueryOrdinals: [],
+      branchCoverage: coverage,
+      truncationFlags: truncation,
+    }));
   const slot = options.slot ?? (providerRequestIndex === 1 ? "initial" : "replacement");
   return insertAiObservation({
     runId: fixture.runId,
@@ -522,8 +630,11 @@ const insertStructuredReviewPreview = (
       providerRequestIndex,
       agentRole: "internal_retrieval",
       slot,
+      results,
+      coverage,
+      truncation,
       providerInputSha256Hex: options.providerInputSha256Hex,
-      records: (options.records ?? []).map(structuredReviewPreviewRecord),
+      records: records.map(structuredReviewPreviewRecord),
     },
   });
 };
@@ -545,6 +656,7 @@ const seedSingleObservability = (
       readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
     }[];
     readonly includeAnswerMeasurement?: boolean;
+    readonly includeStructuredRetrievalTrace?: boolean;
     readonly includeAnswerContext?: boolean;
     readonly selectedConversation?: readonly unknown[];
     readonly includeMemorySelectorMeasurement?: boolean;
@@ -554,6 +666,7 @@ const seedSingleObservability = (
       readonly kind: "document" | "chat_message" | "memory" | "web";
       readonly ranges: readonly { readonly charStart: number; readonly charEnd: number }[];
       readonly label?: string | null;
+      readonly visibleTokenCount?: number;
       readonly documentSourceId?: string;
       readonly documentId?: string;
       readonly snapshotId?: string;
@@ -609,7 +722,19 @@ const seedSingleObservability = (
             ? `${source.candidateId ?? `candidate:${source.sourceKey}`}:${source.snapshotId ?? "fixture-version"}:${sha256Base64Url(JSON.stringify(source.ranges))}`
             : source.sourceKey),
       exposureStage: "answer_serialized",
-      visibleTokenCount: 3,
+      visibleTokenCount:
+        source.visibleTokenCount ??
+        (source.kind === "chat_message"
+          ? resolveRegisteredModel("glm-5-turbo").countTextTokens(
+              source.ranges
+                .map((range) =>
+                  (source.contentItemIdentity ?? fixture.userMessageId) === fixture.userMessageId
+                    ? fixture.chatContent.slice(range.charStart, range.charEnd)
+                    : (source.label ?? "Question").slice(range.charStart, range.charEnd),
+                )
+                .join("\n…\n"),
+            )
+          : 3),
       ...(source.publisherIssueId === undefined
         ? {}
         : { publisherIssueId: source.publisherIssueId }),
@@ -634,6 +759,18 @@ const seedSingleObservability = (
                 ? {}
                 : { publisherExtractionId: source.publisherExtractionId }),
             },
+          }
+        : {}),
+      ...(source.kind === "chat_message"
+        ? {
+            chatReconstruction: chatReconstructionFor(
+              source.contentItemIdentity ?? fixture.userMessageId,
+              (source.contentItemIdentity ?? fixture.userMessageId) === fixture.userMessageId
+                ? fixture.chatContent
+                : (source.label ?? "Question"),
+              "user",
+              source.ranges,
+            ),
           }
         : {}),
     }));
@@ -865,6 +1002,35 @@ const seedSingleObservability = (
           ${sql.json({ selectorRole, references: [] })}
         )
       `;
+      if (selectorRole === "internal" && options.includeStructuredRetrievalTrace !== false) {
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: taskId,
+          loopIteration: 0,
+          attempt: 0,
+          observationKey: `${taskId}:0:0:structured_retrieval_trace:result`,
+          kind: "structured_retrieval_trace",
+          payload: {
+            initialPlan: {
+              action: "search",
+              queries: [
+                {
+                  purpose: "fixture",
+                  all: [{ text: "fixture", mode: "term" }],
+                  anyOf: [],
+                  not: [],
+                  filters: {},
+                  order: "relevance",
+                },
+              ],
+            },
+            review: { action: "accept", reason: "sufficient_coverage" },
+            replacementPlan: null,
+            outcome: "accepted",
+          },
+        });
+      }
     }
     for (const exposure of answerExposureInputs) {
       yield* insertAiSourceExposure(exposure);
@@ -992,10 +1158,15 @@ const insertProviderMeasurementAndUsage = (
     readonly attempt: number;
     readonly providerRequestIndex?: number;
     readonly requestSha256Hex: string;
+    readonly sourceExposureProofSha256Hexes?: readonly string[];
+    readonly sourceExposureProofBindings?: readonly {
+      readonly providerSerializationProofSha256Hex: string;
+      readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+    }[];
     readonly withUsage?: boolean;
     readonly repairConsumed?: boolean;
   },
-) =>
+): Effect.Effect<void, unknown, PgClient.PgClient> =>
   Effect.gen(function* () {
     const providerRequestIndex = options.providerRequestIndex ?? 0;
     yield* insertAiObservation({
@@ -1011,8 +1182,8 @@ const insertProviderMeasurementAndUsage = (
         agentRole: options.agentRole,
         modelId: "glm-5-turbo",
         requestSha256Hex: options.requestSha256Hex,
-        sourceExposureProofSha256Hexes: [],
-        sourceExposureProofBindings: [],
+        sourceExposureProofSha256Hexes: options.sourceExposureProofSha256Hexes ?? [],
+        sourceExposureProofBindings: options.sourceExposureProofBindings ?? [],
         inputTokens: 10,
         requestedOutputTokens: 2048,
         usableInputTokens: 6144,
@@ -1050,6 +1221,135 @@ const insertProviderMeasurementAndUsage = (
       },
     });
   });
+const prepareGeneralPlannerEvaluation = (
+  fixture: Fixture,
+  options: {
+    readonly sourceExposureProofSha256Hexes?: readonly string[];
+    readonly sourceExposureProofBindings?: readonly {
+      readonly providerSerializationProofSha256Hex: string;
+      readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+    }[];
+  } = {},
+) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const sessionId = crypto.randomUUID();
+    yield* sql`
+      delete from ai_source_exposures where run_id = ${fixture.runId}
+    `;
+    yield* sql`
+      delete from ai_run_usage
+      where run_id = ${fixture.runId}
+        and task_id <> 'memory-extract'
+    `;
+    yield* sql`
+      delete from ai_observations
+      where run_id = ${fixture.runId}
+        and not (
+          kind = 'turn_plan'
+          or (
+            emitting_task = 'memory-extract'
+            and kind in ('provider_request_measurement', 'memory_extraction_result')
+          )
+        )
+    `;
+    yield* sql`
+      update ai_observations
+      set emitting_task = 'evaluation-general-planner',
+          observation_key = 'evaluation-general-planner:turn-plan'
+      where run_id = ${fixture.runId}
+        and kind = 'turn_plan'
+    `;
+    yield* sql`
+      insert into ai_evaluation_sessions (
+        id, artifact_version, golden_set_version, fixture_sha256_hex, status
+      ) values (${sessionId}, 4, 4, ${"a".repeat(64)}, 'preparing')
+    `;
+    yield* sql`
+      insert into ai_evaluation_case_runs (
+        session_id, case_id, topology, ai_run_id, seed_manifest, status
+      ) values (
+        ${sessionId}, ${`general-planner-${fixture.runId}`}, 'general_planner',
+        ${fixture.runId}, '{}'::jsonb, 'seeded'
+      )
+    `;
+    yield* insertProviderMeasurementAndUsage(fixture, {
+      taskId: "evaluation-general-planner",
+      agentRole: "evaluation_general_planner",
+      loopIteration: 0,
+      attempt: 0,
+      requestSha256Hex: "a".repeat(64),
+      ...(options.sourceExposureProofSha256Hexes === undefined
+        ? {}
+        : { sourceExposureProofSha256Hexes: options.sourceExposureProofSha256Hexes }),
+      ...(options.sourceExposureProofBindings === undefined
+        ? {}
+        : { sourceExposureProofBindings: options.sourceExposureProofBindings }),
+    });
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId: fixture.chatId,
+      emittingTask: "evaluation-general-planner",
+      loopIteration: 0,
+      attempt: 0,
+      observationKey: "evaluation-general-planner:0:0:retrieval_manifest:result",
+      kind: "retrieval_manifest",
+      payload: { selectorRole: "general_planner", references: [] },
+    });
+  });
+
+const generalPlannerChatSourceEvidenceFor = (fixture: Fixture, source: FinalSourceRecord) => {
+  const use = source.uses[0]!;
+  const ranges = use.ranges;
+  const binding = {
+    messageIndex: 0,
+    sourceOrdinal: 0,
+    serializedField: `messages[0].tool.inspect_evidence.source[0](${source.sourceKey})`,
+    orderedSourceDescriptor: `evaluation:${source.sourceKey}`,
+  } as const;
+  const visibleTokenCount = resolveRegisteredModel("glm-5-turbo").countTextTokens(
+    ranges.map((range) => fixture.chatContent.slice(range.charStart, range.charEnd)).join("\n…\n"),
+  );
+  const marker = {
+    sourceKind: "chat_message" as const,
+    logicalSourceIdentity: chatMessageEvidenceIdentity(fixture.userMessageId),
+    contentItemIdentity: fixture.userMessageId,
+    exposureStage: "evaluation_general_planner_inspect" as const,
+    visibleTokenCount,
+  };
+  return {
+    ranges,
+    binding,
+    marker,
+    proof: providerVisibleSourceExposureProofSha256Hex(marker, binding),
+    visibleTokenCount,
+  };
+};
+
+const insertGeneralPlannerChatSourceExposure = (fixture: Fixture, source: FinalSourceRecord) =>
+  Effect.gen(function* () {
+    const evidence = generalPlannerChatSourceEvidenceFor(fixture, source);
+    yield* insertAiSourceExposure({
+      runId: fixture.runId,
+      taskId: "evaluation-general-planner",
+      loopIteration: 0,
+      attempt: 0,
+      providerRequestIndex: 0,
+      providerRequestSha256Hex: "a".repeat(64),
+      sourceKind: "chat_message",
+      logicalSourceIdentity: evidence.marker.logicalSourceIdentity,
+      contentItemIdentity: evidence.marker.contentItemIdentity,
+      chatReconstruction: chatReconstructionFor(
+        fixture.userMessageId,
+        fixture.chatContent,
+        "user",
+        evidence.ranges,
+      ),
+      exposureStage: evidence.marker.exposureStage,
+      visibleTokenCount: evidence.visibleTokenCount,
+      providerSerializationProofBinding: evidence.binding,
+    });
+  });
 
 const insertInternalRetrievalPlanAndReview = (
   fixture: Fixture,
@@ -1080,6 +1380,33 @@ const insertInternalRetrievalPlanAndReview = (
       providerRequestIndex: 1,
       requestSha256Hex: options.reviewRequestSha256Hex ?? "f".repeat(64),
       ...(options.withUsage === undefined ? {} : { withUsage: options.withUsage }),
+    });
+    yield* insertAiObservation({
+      runId: fixture.runId,
+      chatId: fixture.chatId,
+      emittingTask: options.taskId,
+      loopIteration: options.loopIteration,
+      attempt: options.attempt,
+      observationKey: `${options.taskId}:${options.loopIteration}:${options.attempt}:structured_retrieval_trace:result`,
+      kind: "structured_retrieval_trace",
+      payload: {
+        initialPlan: {
+          action: "search",
+          queries: [
+            {
+              purpose: "fixture",
+              all: [{ text: "fixture", mode: "term" }],
+              anyOf: [],
+              not: [],
+              filters: {},
+              order: "relevance",
+            },
+          ],
+        },
+        review: { action: "accept", reason: "sufficient_coverage" },
+        replacementPlan: null,
+        outcome: "accepted",
+      },
     });
   });
 
@@ -1527,7 +1854,7 @@ const sourceFor = (fixture: Fixture): FinalSourceRecord => ({
       consumerTaskId: "single-answer",
       contextOrder: 0,
       renderedTokenCount: 3,
-      ranges: [],
+      ranges: [{ charStart: 0, charEnd: fixture.chatContent.length }],
     },
   ],
 });
@@ -1886,7 +2213,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       { ...observation, emittingTask: "other-task" },
       { ...observation, loopIteration: 1 },
       { ...observation, attempt: 1 },
-      { ...observation, kind: "context_decision" },
+      { ...observation, kind: "context_serialized" },
       { ...observation, payload: { mandatoryTokens: 4, passed: true } },
     ]) {
       await expectConflict(runDb(insertAiObservation(divergent)));
@@ -2398,6 +2725,33 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           kind: "retrieval_manifest",
           payload: { selectorRole: "internal", references: [] },
         });
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "single-retrieve-internal",
+          loopIteration: 0,
+          attempt: 1,
+          observationKey: "single-retrieve-internal:0:1:structured_retrieval_trace:result",
+          kind: "structured_retrieval_trace",
+          payload: {
+            initialPlan: {
+              action: "search",
+              queries: [
+                {
+                  purpose: "fixture",
+                  all: [{ text: "fixture", mode: "term" }],
+                  anyOf: [],
+                  not: [],
+                  filters: {},
+                  order: "relevance",
+                },
+              ],
+            },
+            review: { action: "accept", reason: "sufficient_coverage" },
+            replacementPlan: null,
+            outcome: "accepted",
+          },
+        });
       }),
     );
     const memory = await runDb(
@@ -2415,6 +2769,77 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         }),
       ),
     ).resolves.toMatchObject({ status: "succeeded" });
+  });
+
+  it("rejects missing, extra, and mismatched structured review metadata", async () => {
+    const tamperKinds = [
+      "missing_results",
+      "extra_field",
+      "empty_coverage",
+      "extra_result",
+    ] as const;
+    for (const tamperKind of tamperKinds) {
+      const fixture = await runDb(createFixture(`structured-review-${tamperKind}`));
+      await runDb(seedSingleObservability(fixture));
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const rows = yield* sql<{ readonly payload: Record<string, unknown> }>`
+            select payload
+            from ai_observations
+            where run_id = ${fixture.runId}
+              and kind = 'structured_retrieval_review_preview'
+          `;
+          const original = rows[0]?.payload;
+          if (original === undefined)
+            throw new Error("structured review fixture is missing preview");
+          const { results: _results, ...withoutResults } = original;
+          const payload =
+            tamperKind === "missing_results"
+              ? withoutResults
+              : tamperKind === "extra_field"
+                ? { ...original, question: "source text must not be durable" }
+                : tamperKind === "empty_coverage"
+                  ? { ...original, coverage: [] }
+                  : {
+                      ...original,
+                      results: [
+                        {
+                          resultId: "r1",
+                          kind: "document",
+                          label: null,
+                          date: null,
+                          tokenCount: 0,
+                          normalizedFusedScore: 0,
+                          matchedQueryOrdinals: [],
+                          branchCoverage: original.coverage,
+                          truncationFlags: original.truncation,
+                        },
+                      ],
+                    };
+          yield* sql`
+            update ai_observations
+            set payload = ${sql.json(payload)}
+            where run_id = ${fixture.runId}
+              and kind = 'structured_retrieval_review_preview'
+          `;
+        }),
+      );
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+      await expect(
+        runDb(
+          finalizeAiRun({
+            runId: fixture.runId,
+            expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+            coordinates: finalizeCoordinates,
+            answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+            memory,
+          }),
+        ),
+      ).rejects.toThrow(/structured retrieval review preview/u);
+    }
   });
 
   it("rejects an older retrieval attempt without its own provider proof", async () => {
@@ -2646,6 +3071,10 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       sourceKind: "chat_message" as const,
       logicalSourceIdentity: `chat_message:${fixture.userMessageId}`,
       contentItemIdentity: fixture.userMessageId,
+      chatReconstruction: chatReconstructionFor(
+        fixture.userMessageId,
+        "Question exposure-request-digest",
+      ),
       exposureStage: "provider_input",
       visibleTokenCount: 1,
       providerSerializationProofBinding: {
@@ -2881,7 +3310,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             sourceKey: source.sourceKey,
             candidateId: candidateIdForSource(source),
             kind: "chat_message",
-            ranges: [],
+            ranges: [{ charStart: 0, charEnd: fixture.chatContent.length }],
             label: source.label,
           },
         ],
@@ -3006,6 +3435,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       sourceKind: "chat_message" as const,
       logicalSourceIdentity: `chat_message:${fixture.userMessageId}`,
       contentItemIdentity: fixture.userMessageId,
+      chatReconstruction: chatReconstructionFor(fixture.userMessageId, visibleText),
       exposureStage: "provider_input",
       visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
       visibleText,
@@ -3079,6 +3509,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     const marker: CodeOwnedSourceExposureProof = {
       sourceKind: "chat_message",
       logicalSourceIdentity: `chat_message:${fixture.userMessageId}`,
+      chatReconstruction: chatReconstructionFor(fixture.userMessageId, visibleText),
       contentItemIdentity: fixture.userMessageId,
       exposureStage: "provider_input",
       visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
@@ -3130,7 +3561,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         kind: "provider_request_measurement",
         payload: {
           providerRequestIndex: 0,
-          agentRole: "context_reducer",
+          agentRole: "context_manifest",
           modelId: "glm-5-turbo",
           requestSha256Hex,
           sourceExposureProofSha256Hexes: [...proofs].sort(),
@@ -3153,7 +3584,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         loopIteration: 0,
         attempt: 0,
         providerRequestIndex: 0,
-        agentRole: "context_reducer",
+        agentRole: "context_manifest",
         modelId: "glm-5-turbo",
         providerServiceId: "zai_coding_plan_official",
         usage: {
@@ -3568,7 +3999,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             sourceKey: source.sourceKey,
             candidateId: candidateIdForSource(source),
             kind: "chat_message",
-            ranges: [],
+            ranges: [{ charStart: 0, charEnd: fixture.chatContent.length }],
             label: source.label,
           },
         ],
@@ -3715,6 +4146,328 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     ]);
   });
 
+  it("accepts a full surrogate pair and disjoint chat ranges with the exact separator token count", async () => {
+    for (const [suffix, ranges] of [
+      ["chat-full-pair", [{ charStart: 1, charEnd: 3 }]],
+      [
+        "chat-disjoint-ranges",
+        [
+          { charStart: 0, charEnd: 1 },
+          { charStart: 3, charEnd: 4 },
+        ],
+      ],
+    ] as const) {
+      const fixture = await runDb(createFixture(suffix));
+      const text = "A😀B";
+      const sourceMessage = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const rows = yield* sql<{ readonly id: string }>`
+            insert into chat_messages (chat_id, author, content)
+            values (${fixture.chatId}, 'user', ${text})
+            returning id::text
+          `;
+          return rows[0]!.id;
+        }),
+      );
+      const selectedText = ranges
+        .map((range) => text.slice(range.charStart, range.charEnd))
+        .join("\n…\n");
+      const source: FinalSourceRecord = {
+        sourceKey: sourceKeyFor(fixture),
+        locator: { kind: "chat_message", messageId: sourceMessage },
+        label: text,
+        publicProvenance: {},
+        uses: [
+          {
+            consumerTaskId: "single-answer",
+            contextOrder: 0,
+            renderedTokenCount: 3,
+            ranges,
+          },
+        ],
+      };
+      await runDb(
+        seedSingleObservability(fixture, {
+          contextSources: [
+            {
+              sourceKey: source.sourceKey,
+              candidateId: candidateIdForSource(source),
+              kind: "chat_message",
+              contentItemIdentity: sourceMessage,
+              ranges,
+              label: text,
+              visibleTokenCount:
+                resolveRegisteredModel("glm-5-turbo").countTextTokens(selectedText),
+            },
+          ],
+        }),
+      );
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+      await expect(
+        runDb(
+          finalizeAiRun({
+            runId: fixture.runId,
+            expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+            coordinates: finalizeCoordinates,
+            answer: {
+              status: "ok",
+              mode: "single",
+              content: `Answer [[cite:${source.sourceKey}]]`,
+              sourceMap: [source],
+            },
+            memory,
+          }),
+        ),
+      ).resolves.toMatchObject({ status: "succeeded" });
+    }
+  });
+
+  it("rejects chat ranges that split either side of a surrogate pair", async () => {
+    for (const [suffix, ranges] of [
+      ["chat-split-start", [{ charStart: 2, charEnd: 3 }]],
+      ["chat-split-end", [{ charStart: 1, charEnd: 2 }]],
+    ] as const) {
+      const fixture = await runDb(createFixture(suffix));
+      const text = "A😀B";
+      const sourceMessage = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const rows = yield* sql<{ readonly id: string }>`
+            insert into chat_messages (chat_id, author, content)
+            values (${fixture.chatId}, 'user', ${text})
+            returning id::text
+          `;
+          return rows[0]!.id;
+        }),
+      );
+      const source: FinalSourceRecord = {
+        sourceKey: sourceKeyFor(fixture),
+        locator: { kind: "chat_message", messageId: sourceMessage },
+        label: text,
+        publicProvenance: {},
+        uses: [
+          {
+            consumerTaskId: "single-answer",
+            contextOrder: 0,
+            renderedTokenCount: 3,
+            ranges,
+          },
+        ],
+      };
+      let seedFailure: unknown;
+      try {
+        await runDb(
+          seedSingleObservability(fixture, {
+            contextSources: [
+              {
+                sourceKey: source.sourceKey,
+                candidateId: candidateIdForSource(source),
+                kind: "chat_message",
+                contentItemIdentity: sourceMessage,
+                ranges,
+                label: text,
+              },
+            ],
+          }),
+        );
+      } catch (error) {
+        seedFailure = error;
+      }
+      expect(seedFailure).toBeDefined();
+      expect(errorText(seedFailure)).toContain(
+        "chat source exposure ranges exceed citation-sanitized UTF-16 text",
+      );
+    }
+  });
+
+  it("rejects a token-count tamper after reconstructing selected chat text", async () => {
+    const fixture = await runDb(createFixture("chat-token-tamper"));
+    const text = "A😀B";
+    const ranges = [{ charStart: 0, charEnd: text.length }] as const;
+    const sourceMessage = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content)
+          values (${fixture.chatId}, 'user', ${text})
+          returning id::text
+        `;
+        return rows[0]!.id;
+      }),
+    );
+    const source: FinalSourceRecord = {
+      sourceKey: sourceKeyFor(fixture),
+      locator: { kind: "chat_message", messageId: sourceMessage },
+      label: text,
+      publicProvenance: {},
+      uses: [
+        {
+          consumerTaskId: "single-answer",
+          contextOrder: 0,
+          renderedTokenCount: 3,
+          ranges,
+        },
+      ],
+    };
+    await runDb(
+      seedSingleObservability(fixture, {
+        contextSources: [
+          {
+            sourceKey: source.sourceKey,
+            candidateId: candidateIdForSource(source),
+            kind: "chat_message",
+            contentItemIdentity: sourceMessage,
+            ranges,
+            label: text,
+            visibleTokenCount: resolveRegisteredModel("glm-5-turbo").countTextTokens(text) + 1,
+          },
+        ],
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: {
+            status: "ok",
+            mode: "single",
+            content: `Answer [[cite:${source.sourceKey}]]`,
+            sourceMap: [source],
+          },
+          memory,
+        }),
+      ),
+    ).rejects.toThrow(/exact sanitized answer exposure/u);
+  });
+
+  it("rejects a future same-chat source even when its exposure proof is otherwise exact", async () => {
+    const fixture = await runDb(createFixture("chat-future-source"));
+    const text = "Future source";
+    const sourceMessage = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const rows = yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content, created_at)
+          values (${fixture.chatId}, 'user', ${text}, now() + interval '1 hour')
+          returning id::text
+        `;
+        return rows[0]!.id;
+      }),
+    );
+    const source: FinalSourceRecord = {
+      sourceKey: sourceKeyFor(fixture),
+      locator: { kind: "chat_message", messageId: sourceMessage },
+      label: text,
+      publicProvenance: {},
+      uses: [
+        {
+          consumerTaskId: "single-answer",
+          contextOrder: 0,
+          renderedTokenCount: 3,
+          ranges: [{ charStart: 0, charEnd: text.length }],
+        },
+      ],
+    };
+    await runDb(
+      seedSingleObservability(fixture, {
+        contextSources: [
+          {
+            sourceKey: source.sourceKey,
+            candidateId: candidateIdForSource(source),
+            kind: "chat_message",
+            contentItemIdentity: sourceMessage,
+            ranges: [{ charStart: 0, charEnd: text.length }],
+            label: text,
+          },
+        ],
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: {
+            status: "ok",
+            mode: "single",
+            content: `Answer [[cite:${source.sourceKey}]]`,
+            sourceMap: [source],
+          },
+          memory,
+        }),
+      ),
+    ).rejects.toThrow(/strict predecessor/u);
+  });
+
+  it("does not borrow a chat hash or range proof from another answer coordinate", async () => {
+    const fixture = await runDb(createFixture("chat-cross-coordinate-proof"));
+    const source = sourceFor(fixture);
+    await runDb(
+      seedSingleObservability(fixture, {
+        contextSources: [
+          {
+            sourceKey: source.sourceKey,
+            candidateId: candidateIdForSource(source),
+            kind: "chat_message",
+            ranges: [{ charStart: 0, charEnd: fixture.chatContent.length }],
+            label: source.label,
+          },
+        ],
+      }),
+    );
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update ai_source_exposures
+          set attempt = 1
+          where run_id = ${fixture.runId}
+            and task_id = 'single-answer'
+            and exposure_stage = 'answer_serialized'
+        `;
+        yield* sql`
+          update ai_observations
+          set attempt = 1
+          where run_id = ${fixture.runId}
+            and emitting_task = 'single-answer'
+            and kind = 'source_exposure_attestation'
+            and payload->>'exposureStage' = 'answer_serialized'
+        `;
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: {
+            status: "ok",
+            mode: "single",
+            content: `Answer [[cite:${source.sourceKey}]]`,
+            sourceMap: [source],
+          },
+          memory,
+        }),
+      ),
+    ).rejects.toThrow(/answer_serialized exposure|provider measurement/u);
+  });
+
   it("revalidates every required durable ledger class before terminal replay", async () => {
     for (const ledger of [
       "turn_plan",
@@ -3748,7 +4501,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               sourceKey: source.sourceKey,
               candidateId: candidateIdForSource(source),
               kind: "chat_message",
-              ranges: [],
+              ranges: [{ charStart: 0, charEnd: fixture.chatContent.length }],
               label: source.label,
             },
           ],
@@ -5055,10 +5808,111 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             content: "Malformed publisher source",
             sourceMap: [malformedSource],
           },
+
           memory: malformedMemory,
         }),
       ),
     ).rejects.toThrow("publisher document identity does not match database ownership");
+  });
+  it("rejects tampered document attestation identity and ranges", async () => {
+    const fixture = await runDb(createFixture("document-attestation-tamper"));
+    const document = await runDb(createPublicExposureFixture(fixture));
+    const documentLocator = {
+      kind: "document" as const,
+      sourceId: `public:${document.sourceId}`,
+      documentId: document.documentId,
+      snapshotId: document.documentId,
+      contentHash: document.contentHash,
+      ranges: [{ charStart: 0, charEnd: 8 }],
+    };
+    const source: FinalSourceRecord = {
+      sourceKey: sourceKeyFor(fixture),
+      locator: documentLocator,
+      label: "Public exposure document",
+      publicProvenance: {
+        documentTitle: "Exposure document",
+        citationUrl: `https://public.example/${document.documentId}`,
+      },
+      uses: [
+        {
+          consumerTaskId: "single-answer",
+          contextOrder: 0,
+          renderedTokenCount: 8,
+          ranges: [{ charStart: 0, charEnd: 8 }],
+        },
+      ],
+    };
+    await runDb(
+      seedSingleObservability(fixture, {
+        includeAnswerMeasurement: true,
+        contextSources: [
+          {
+            sourceKey: source.sourceKey,
+            candidateId: candidateIdForSource(source),
+            kind: "document",
+            label: source.label,
+            ranges: documentLocator.ranges,
+            documentSourceId: documentLocator.sourceId,
+            documentId: documentLocator.documentId,
+            snapshotId: documentLocator.snapshotId,
+            contentHash: documentLocator.contentHash,
+          },
+        ],
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    for (const tamperedPayload of [
+      { documentId: `${document.documentId}-tampered` },
+      { documentRanges: [{ charStart: 1, charEnd: 8 }] },
+    ]) {
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update ai_observations
+            set payload = payload || ${JSON.stringify(tamperedPayload)}::jsonb
+            where run_id = ${fixture.runId}
+              and emitting_task = 'single-answer'
+              and kind = 'source_exposure_attestation'
+              and payload->>'exposureStage' = 'answer_serialized'
+          `;
+        }),
+      );
+      await expect(
+        runDb(
+          finalizeAiRun({
+            runId: fixture.runId,
+            expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+            coordinates: finalizeCoordinates,
+            answer: {
+              status: "ok",
+              mode: "single",
+              content: `Public [[cite:${source.sourceKey}]]`,
+              sourceMap: [source],
+            },
+            memory,
+          }),
+        ),
+      ).rejects.toThrow("document exposure attestation reconstruction differs");
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update ai_observations
+            set payload = payload || ${JSON.stringify({
+              documentId: document.documentId,
+              documentRanges: documentLocator.ranges,
+            })}::jsonb
+            where run_id = ${fixture.runId}
+              and emitting_task = 'single-answer'
+              and kind = 'source_exposure_attestation'
+              and payload->>'exposureStage' = 'answer_serialized'
+          `;
+        }),
+      );
+    }
   });
 
   it("blocks success finalization between full chat projection queries", async () => {
@@ -6369,6 +7223,247 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     },
   );
 
+  it("finalizes a successful fanout general-planner evaluation without context rows", async () => {
+    const fixture = await runDb(createFixture("evaluation-general-planner-no-context", "fanout"));
+    await runDb(seedSingleObservability(fixture));
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await runDb(prepareGeneralPlannerEvaluation(fixture));
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "synthesis", content: "Evaluated", sourceMap: [] },
+          memory,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "succeeded", alreadyTerminal: false });
+  });
+
+  it("finalizes source-bearing general-planner output only with exact inspect evidence", async () => {
+    const setup = async (suffix: string) => {
+      const fixture = await runDb(createFixture(suffix, "single"));
+      await runDb(seedSingleObservability(fixture));
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+      const source = sourceFor(fixture);
+      const evidence = generalPlannerChatSourceEvidenceFor(fixture, source);
+      await runDb(
+        prepareGeneralPlannerEvaluation(fixture, {
+          sourceExposureProofSha256Hexes: [evidence.proof],
+          sourceExposureProofBindings: [
+            {
+              providerSerializationProofSha256Hex: evidence.proof,
+              providerSerializationProofBinding: evidence.binding,
+            },
+          ],
+        }),
+      );
+      await runDb(insertGeneralPlannerChatSourceExposure(fixture, source));
+      return { fixture, memory, source };
+    };
+
+    const exact = await setup("evaluation-general-planner-source-exact");
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: exact.fixture.runId,
+          expectedSmithersRunId: `ai-chat:${exact.fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: {
+            status: "ok",
+            mode: "single",
+            content: `Evaluated [[cite:${exact.source.sourceKey}]]`,
+            sourceMap: [exact.source],
+          },
+          memory: exact.memory,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "succeeded", alreadyTerminal: false });
+
+    const mismatch = await setup("evaluation-general-planner-source-mismatch");
+    const mismatchedSource: FinalSourceRecord = {
+      ...mismatch.source,
+      uses: [
+        {
+          ...mismatch.source.uses[0]!,
+          renderedTokenCount: 1,
+          ranges: [{ charStart: 0, charEnd: 1 }],
+        },
+      ],
+    };
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: mismatch.fixture.runId,
+          expectedSmithersRunId: `ai-chat:${mismatch.fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: {
+            status: "ok",
+            mode: "single",
+            content: `Mismatched [[cite:${mismatchedSource.sourceKey}]]`,
+            sourceMap: [mismatchedSource],
+          },
+          memory: mismatch.memory,
+        }),
+      ),
+    ).rejects.toThrow(/exact sanitized answer exposure/u);
+  });
+
+  it("rejects an injected general-planner evaluation context row", async () => {
+    const fixture = await runDb(createFixture("evaluation-general-planner-context-row"));
+    await runDb(seedSingleObservability(fixture));
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+    await runDb(prepareGeneralPlannerEvaluation(fixture));
+    await runDb(
+      insertAiObservation({
+        runId: fixture.runId,
+        chatId: fixture.chatId,
+        emittingTask: "evaluation-general-planner",
+        loopIteration: 0,
+        attempt: 0,
+        observationKey: "evaluation-general-planner:context-serialized",
+        kind: "context_serialized",
+        payload: { consumerTaskId: "evaluation-general-planner", sourceKeys: [] },
+      }),
+    );
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Evaluated", sourceMap: [] },
+          memory,
+        }),
+      ),
+    ).rejects.toThrow(/general-planner evaluation cannot carry context rows/u);
+  });
+
+  it("keeps specialized successful output strict when context rows are missing", async () => {
+    const fixture = await runDb(createFixture("specialized-missing-context"));
+    await runDb(seedSingleObservability(fixture, { includeAnswerContext: false }));
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+        }),
+      ),
+    ).rejects.toThrow(/missing context_measurement/u);
+  });
+
+  it.each([
+    { taskId: "topic-t1-answer", accepted: true },
+    { taskId: "topic-t3-answer", accepted: false },
+    { taskId: "topic-t4-answer", accepted: false },
+  ] as const)(
+    "allows only exact parsed general-planner fanout answer task %s",
+    async ({ taskId, accepted }) => {
+      const fixture = await runDb(
+        createFixture(
+          `evaluation-fanout-owner-${taskId}`,
+          "fanout",
+          "private_owner",
+          true,
+          true,
+          [],
+          ["t1", "t2"],
+        ),
+      );
+      const sessionId = crypto.randomUUID();
+      await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql`
+            update ai_observations
+            set emitting_task = 'evaluation-general-planner',
+                observation_key = 'evaluation-general-planner:turn-plan'
+            where run_id = ${fixture.runId}
+              and kind = 'turn_plan'
+          `;
+          yield* sql`
+            insert into ai_evaluation_sessions (
+              id, artifact_version, golden_set_version, fixture_sha256_hex, status
+            ) values (${sessionId}, 4, 4, ${"a".repeat(64)}, 'preparing')
+          `;
+          yield* sql`
+            insert into ai_evaluation_case_runs (
+              session_id, case_id, topology, ai_run_id, seed_manifest, status
+            ) values (
+              ${sessionId}, ${taskId}, 'general_planner', ${fixture.runId}, '{}'::jsonb, 'seeded'
+            )
+          `;
+        }),
+      );
+      await runDb(
+        insertProviderMeasurementAndUsage(fixture, {
+          taskId: "evaluation-general-planner",
+          agentRole: "evaluation_general_planner",
+          loopIteration: 0,
+          attempt: 0,
+          requestSha256Hex: "a".repeat(64),
+        }),
+      );
+      await runDb(
+        insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "evaluation-general-planner",
+          loopIteration: 0,
+          attempt: 0,
+          observationKey: "evaluation-general-planner:retrieval-manifest",
+          kind: "retrieval_manifest",
+          payload: { selectorRole: "general_planner", references: [] },
+        }),
+      );
+      await runDb(
+        insertProviderMeasurementAndUsage(fixture, {
+          taskId,
+          agentRole: "topic_answer",
+          loopIteration: 0,
+          attempt: 0,
+          requestSha256Hex: "b".repeat(64),
+        }),
+      );
+      const memory = await runDb(
+        persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+      );
+      const terminal = runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "failed", code: "topic_answer_failed", retryable: false },
+          memory,
+        }),
+      );
+      if (accepted) {
+        await expect(terminal).resolves.toMatchObject({
+          status: "failed",
+          alreadyTerminal: false,
+        });
+      } else {
+        await expect(terminal).rejects.toThrow(/foreign task owner/u);
+      }
+    },
+  );
+
   it.each([
     { phase: "compact", mutation: "success", accepted: true },
     { phase: "fallback", mutation: "success", accepted: true },
@@ -6557,6 +7652,31 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           return ids;
         }),
       );
+      const chatContentById = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          const contentById = new Map<string, string>();
+          for (const messageId of sourceMessageIds) {
+            const rows = yield* sql<{ readonly content: string }>`
+              select content
+              from chat_messages
+              where id = ${messageId}
+                and chat_id = ${fixture.chatId}
+                and author = 'user'
+            `;
+            if (rows[0] === undefined) throw new Error(`missing fixture chat source ${messageId}`);
+            contentById.set(messageId, rows[0].content);
+          }
+          return contentById;
+        }),
+      );
+      const chatContentFor = (source: FinalSourceRecord): string => {
+        if (source.locator.kind !== "chat_message") return source.label ?? "";
+        const content = chatContentById.get(source.locator.messageId);
+        if (content === undefined)
+          throw new Error(`missing fixture chat source ${source.sourceKey}`);
+        return content;
+      };
       const sources = sourceMessageIds.map((messageId, index) => ({
         sourceKey: sourceKeyFor(fixture, index + 1),
         locator: { kind: "chat_message" as const, messageId },
@@ -6577,7 +7697,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         kind: "chat_message" as const,
         purpose: "provider-authored topic evidence",
         label: source.label,
-        ranges: [],
+        ranges: [{ charStart: 0, charEnd: chatContentFor(source).length }],
       });
       const answerSources = sources.map((source, index) => ({
         ...source,
@@ -6590,7 +7710,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                   topicId: topicIds[index],
                   contextOrder: 0,
                   renderedTokenCount: 3,
-                  ranges: [],
+                  ranges: [{ charStart: 0, charEnd: chatContentFor(source).length }],
                 },
               ],
       }));
@@ -6606,7 +7726,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                         topicId: "t2" as const,
                         contextOrder: 1,
                         renderedTokenCount: 3,
-                        ranges: [],
+                        ranges: [{ charStart: 0, charEnd: chatContentFor(source).length }],
                       },
                     ],
                   }
@@ -6742,6 +7862,10 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               sourceKind: "chat_message",
               logicalSourceIdentity: candidateIdForSource(source),
               contentItemIdentity: source.locator.messageId,
+              chatReconstruction: chatReconstructionFor(
+                source.locator.messageId,
+                chatContentFor(source),
+              ),
               exposureStage: "answer_serialized",
               visibleTokenCount: 3,
               providerSerializationProofBinding: binding,
@@ -7494,7 +8618,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               id, artifact_version, golden_set_version, fixture_sha256_hex,
               execution_config_sha256_hex, provider_endpoint_identity, status, completed_at
             ) values (
-              ${evaluation.sessionId}, 3, 3, ${"a".repeat(64)}, ${"b".repeat(64)},
+              ${evaluation.sessionId}, 4, 4, ${"a".repeat(64)}, ${"b".repeat(64)},
               ${TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY},
               ${evaluation.status},
               ${evaluation.status === "complete" ? new Date() : null}

@@ -427,17 +427,19 @@ export const DOCS_HTML: string = `<!doctype html>
   </p>
   <h3>Retrieval</h3>
   <ul>
-    <li><strong>Internal documents</strong> — ranked search over public-source documents (Postgres <code>websearch_to_tsquery</code> with language-aware regconfig, <code>ts_rank_cd</code> × recency decay, content-hash dedup), plus publisher documents and prior chat messages, gathered by a bounded tool loop with <code>search_internal</code> / <code>inspect_internal</code> tools.</li>
+    <li><strong>Internal documents</strong> — structured search across public-source documents, publisher documents, and prior chat messages. Each plan runs bounded query branches compiled with <code>phraseto_tsquery</code> or <code>plainto_tsquery</code> as needed, then combines branch results with reciprocal-rank fusion before bounded hydration and review.</li>
     <li><strong>Memories</strong> — selected by a tool loop from the exact memory revision IDs in the immutable acceptance scope; later edits do not change this run.</li>
     <li><strong>Web</strong> — only when the saved <code>webRequested</code>/<code>webEnabled</code> state allows it. Backed by Tinyfish search and a sandboxed fetch; usage is recorded per call.</li>
   </ul>
   <h3>Context budget</h3>
   <p>
-    Assembled candidates are measured against the model's context window. If
-    the assembly is too large, a bounded reduction loop runs
-    <code>planReduction</code> → <code>measureReduction</code> until the context
-    fits or the iteration cap is reached. If it cannot fit, the run fails with
-    <code>context_plan_unfit</code>.
+    Each assembled provider request is measured exactly. A fitting request
+    skips compaction. An oversized request creates one complete manifest,
+    runs at most three independent passage-selection groups at once, and
+    measures the rebuilt request. If it still does not fit, one monotone
+    fallback may only omit or tighten prior selections. A remaining overage
+    fails with <code>context_plan_unfit</code>; the worker never truncates the
+    request in code or runs a second fallback.
   </p>
   <h3>Streaming the answer</h3>
   <p>
@@ -558,7 +560,7 @@ export const DOCS_HTML: string = `<!doctype html>
       </tr>
       <tr>
         <td><code>context_ready</code></td>
-        <td><code>mode</code>, <code>reductionRan</code>, <code>sourcesRead[]</code>, <code>consumers[]</code></td>
+        <td><code>mode</code>, <code>compactionRan</code>, <code>sourcesRead[]</code>, <code>consumers[]</code></td>
         <td>Emitted before the answer phase. For <code>single</code>/<code>synthesis</code> the context is frozen and about to be sent to the model; for <code>clarification</code> the question has already been produced and no answer request follows that event. <code>mode ∈ {clarification, single, synthesis}</code>; <code>consumers</code> describes per-consumer token budgets.</td>
         <td><span class="badge">no</span></td>
       </tr>
@@ -744,7 +746,7 @@ data: {"type":"text_delta","delta":"Q3 "}
   <h3>Retries</h3>
   <ul>
     <li><strong>Queue layer</strong> — <code>ai_chat_run</code> is always retryable; a crashed worker's lease is reaped and the row returns to <code>retrying</code> with exponential backoff.</li>
-    <li><strong>Workflow layer</strong> — every task has bounded retries with a shared retry policy; the reduction loop is iteration-capped; tool loops are turn-capped and force a terminal tool on the final turn.</li>
+    <li><strong>Workflow layer</strong> — every task has bounded retries with a shared retry policy; compaction runs only after an exact overage, uses bounded parallel groups, and allows one monotone fallback; tool loops are turn-capped and force a terminal tool on the final turn.</li>
     <li><strong>Terminal boundary</strong> — only <code>finalizeAiRun</code> / <code>failAiRun</code> may set <code>finished_at</code> / <code>failed_at</code> and emit <code>done</code> / <code>error</code>; both are guarded by <code>smithers_run_id</code> match and execution-scope invariants.</li>
   </ul>
   <h3>Web policy lifecycle</h3>

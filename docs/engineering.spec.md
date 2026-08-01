@@ -411,10 +411,12 @@ The chat runtime uses the composed workflow in `docs/ai-chat-runtime.spec.md`:
 
 - code loads only the stable run and request record, including the random per-answer `citationNamespace`
 - `plan-turn` reads current prior turns, resolves references, selects valid turn IDs, and returns `clarify`, `single`, or `fanout` before retrieval on every turn
-- after a valid `plan-turn` result, each selected single/topic path runs internal retriever A, memory selector B, and eligible web researcher W in parallel
-- agents emit typed queries and references, never SQL; code enforces authorization and executes parameterized retrieval
+- after a valid `plan-turn`, each selected path runs `*-retrieve-internal`, `*-select-memories`, and eligible `*-retrieve-web` in parallel
+- structured retrieval emits one `InternalQueryPlan`; Brief executes authorized bounded branches, hydrates exact immutable results, and performs one `QueryReview` or complete replacement
+- agents emit typed queries, references, memory selections, web selections, and compaction choices, never SQL or durable source identities
 - code authorizes, hydrates, deduplicates, renders, and exact-counts every complete provider-shaped request, including fast-agent tool transcripts
-- an oversized single/topic path uses context reducer O in a bounded keep/range/omit correction loop; code never silently truncates context
+- an oversized single/topic or synthesis path creates one `CompactionPlan`, code-owned groups run under bounded parallel concurrency, and one oversized source may use one bounded source-local passage loop
+- the exact fit gate runs after assembly and after compaction; a single monotone fallback may tighten or omit prior selections, and a remaining overage is `context_plan_unfit`
 - the direct answer, topic-answer, and synthesis agents have zero tools
 - fanout topic packets are bounded, citation-bearing intermediate state; only final synthesis streams
 - memory extraction starts only after a valid `plan-turn` result, runs in parallel with the selected answer lane, and is required before finalization and `done`
@@ -447,7 +449,7 @@ AI request lifecycle:
 
 Billing and credit accounting are out of scope for the demo. Production billing must be designed explicitly before launch and must not be inferred from demo usage fields.
 
-Internal retrieval is exposed to agent A through the typed `search_internal`, `inspect_internal`, and manifest boundary in `docs/ai-chat-runtime.spec.md`. The document target covers every document in the demo user's authorized seeded-publisher and public-source set, plus production publisher-issue documents as those sources are indexed. Source-specific SQL and storage adapters remain behind that stable tool contract.
+Internal retrieval runs through the typed structured plan, bounded branch search, and review boundary in `docs/ai-chat-runtime.spec.md`. The document target covers every document in the demo user's authorized seeded-publisher and public-source set, plus production publisher-issue documents as those sources are indexed. Source-specific SQL and storage adapters remain behind that stable contract.
 
 Production public-source authorization is deny-by-default per client company. `GET /v1/client-companies/:companyId/public-sources` lists the globally ingested catalog with the company's effective toggle; `PUT /v1/client-companies/:companyId/public-sources/:sourceId` accepts exactly `{ enabled: boolean }` and requires an MFA-verified company admin. An absent setting is disabled. New AI acceptance derives the enabled scope once and saves it in the immutable run scope; internal search, context, retries, streams, and final save use that scope. A later toggle affects later runs only. Current catalog browsing may use the current toggle, while saved answers and citation metadata remain readable historical records. Public-source subscriber/open/download/AI-context-pull fields are nullable and remain null until an authoritative persisted fact exists; zero placeholders are not valid projections.
 
@@ -481,7 +483,7 @@ Use Railway logs for basic runtime logs.
 
 Use structured backend and worker logs.
 
-For local AI chat development, `bun run dev:demo` must emit enough structured API and worker logs to follow a single chat message from send, enqueue, job claim, workflow execution, plan-turn, per-path A/B/W selectors, exact context measurement, O reduction iterations, direct or topic/synthesis calls, streaming, parallel memory extraction, finalization, and cleanup. These logs use stable IDs, topic/task IDs, durations, counts, and exact token totals. Raw user text, resolved questions, topic questions, search terms, retrieved text, web quotations, context-decision reasons, topic packets, answer deltas, and memory content do not belong in console logs.
+For local AI chat development, `bun run dev:demo` must emit enough structured API and worker logs to follow a single chat message from send, enqueue, job claim, workflow execution, plan-turn, per-path structured retrieval/review, memory/web selectors, exact context measurement, compaction plan/groups/fallback, direct or topic/synthesis calls, streaming, parallel memory extraction, finalization, and cleanup. These logs use stable IDs, topic/task IDs, durations, counts, and exact token totals. Raw user text, resolved questions, topic questions, search terms, retrieved text, web quotations, context-decision reasons, topic packets, answer deltas, and memory content do not belong in console logs.
 
 Store product events in Postgres first.
 
@@ -517,7 +519,7 @@ Use real Postgres integration tests for:
 - AI source metadata
 - AI source-exposure idempotency and sources-read/citation persistence
 - same-chat older-message retrieval and deleted-message exclusion
-- exact context-plan persistence and atomic answer-plus-memory finalization
+- exact compaction plan/group/fallback persistence and atomic answer-plus-memory finalization
 - durable job locking, retries, and public-source ingestion state
 - credits
 - Stripe webhook state changes
@@ -535,9 +537,9 @@ Use pure unit tests for:
 - strict plan-turn union validation and prior-turn selection
 - deterministic context deduplication and source-key assignment
 - exact provider-request token counting
-- complete keep/range/omit accounting and fanout output allocation
+- complete compaction manifest/group accounting and fanout output allocation
 - topic-packet and synthesis citation preservation
-- reset reducer/controller generation fencing, optimistic empty projection, pending send gate, success reconciliation, rollback with preserved draft text, and two-tab conflict recovery
+- reset controller generation fencing, optimistic empty projection, pending send gate, success reconciliation, rollback with preserved draft text, and two-tab conflict recovery
 - chat composer permission gating across authoritative write access and active versus archived state
 
 Use Effect test layers for service tests.

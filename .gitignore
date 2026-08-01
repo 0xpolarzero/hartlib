@@ -14,3 +14,6 @@ smithers.db-shm
 smithers.db-wal
 artifacts
 .agents
+.claude
+.kiro
+.qwen

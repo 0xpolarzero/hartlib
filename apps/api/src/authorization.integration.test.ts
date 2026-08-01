@@ -1459,12 +1459,9 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           `;
         }),
       );
-      const reset = await runProductRoute(
-        "owner",
-        "POST",
-        `/v1/chats/${created.chat.id}/reset`,
-        { replacementChatId },
-      );
+      const reset = await runProductRoute("owner", "POST", `/v1/chats/${created.chat.id}/reset`, {
+        replacementChatId,
+      });
       expect(reset.status).toBe(403);
       await expectResetDeniedWithoutMutation(url, created.chat.id, replacementChatId);
     } finally {
@@ -1488,7 +1485,6 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       await runProductRoute("owner", "DELETE", `/v1/chats/${replacementChatId}`);
     }
   });
-
 
   it("linearizes membership revocation before concurrent chat share and delete mutations", async () => {
     const url = databaseUrlFor(isolatedDatabaseName);

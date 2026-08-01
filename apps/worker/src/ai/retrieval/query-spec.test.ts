@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   BranchCoverageSchema,
   BranchResultSchema,
+  PHYSICAL_QUERY_BRANCHES,
+  InternalQueryPlanProviderSchema,
   InternalQueryPlanSchema,
+  InternalQueryProviderSchema,
   InternalQuerySchema,
   QUERY_CONTRACT_LIMITS,
+  QueryReviewProviderSchema,
   QueryReviewSchema,
+  StructuredRetrievalTraceSchema,
+  normalizeInternalQuery,
 } from "./query-spec";
 
 const query = (purpose = "Résumé des batteries") => ({
@@ -33,6 +40,102 @@ const branchHit = {
 };
 
 describe("Phase A query contracts", () => {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  const containsUniqueItems = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(containsUniqueItems);
+    if (!isRecord(value)) return false;
+    return value.uniqueItems === true || Object.values(value).some(containsUniqueItems);
+  };
+
+  it("exposes strict JSON-schema-safe provider contracts and normalizes after return", () => {
+    const planSchema = z.toJSONSchema(InternalQueryPlanProviderSchema);
+    const reviewSchema = z.toJSONSchema(QueryReviewProviderSchema);
+    expect(planSchema).toHaveProperty("oneOf");
+    expect(reviewSchema).toHaveProperty("oneOf");
+
+    const rawPlan = {
+      action: "search" as const,
+      queries: [
+        {
+          purpose: "  Résumé  ",
+          all: [{ text: "  cafe\u0301  ", mode: "term" as const }],
+          anyOf: [],
+          not: [],
+          filters: { documents: { publishedAt: { after: " 2026-02-01 " } } },
+          order: "relevance" as const,
+        },
+      ],
+    };
+    expect(() => InternalQueryPlanProviderSchema.parse(rawPlan)).not.toThrow();
+    const normalized = normalizeInternalQuery(rawPlan.queries[0]);
+    expect(normalized.purpose).toBe("Résumé");
+    expect(normalized.all[0]?.text).toBe("café");
+    expect(normalized.filters.documents?.publishedAt?.after).toBe("2026-02-01");
+    expect(() => InternalQueryPlanProviderSchema.parse({ ...rawPlan, extra: true })).toThrow();
+    expect(JSON.stringify(planSchema)).toContain("additionalProperties");
+    expect(() =>
+      InternalQueryProviderSchema.parse({
+        ...rawPlan.queries[0],
+        anyOf: [[]],
+      }),
+    ).toThrow();
+    expect(() =>
+      InternalQueryPlanSchema.parse({
+        action: "search",
+        queries: [
+          {
+            ...rawPlan.queries[0],
+            filters: { documents: { publishedAt: { after: "2023-02-29" } } },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("keeps provider date and author constraints in raw parsing and emitted JSON Schema", () => {
+    const plan = {
+      action: "search" as const,
+      queries: [
+        {
+          purpose: "date and author check",
+          all: [{ text: "evidence", mode: "term" as const }],
+          anyOf: [],
+          not: [],
+          filters: {
+            chatMessages: {
+              sentAt: { after: "2023-02-29" },
+              authors: ["user", "user"],
+            },
+          },
+          order: "relevance" as const,
+        },
+      ],
+    };
+    expect(PHYSICAL_QUERY_BRANCHES).toEqual([
+      "public_documents",
+      "publisher_documents",
+      "chat_messages",
+    ]);
+    expect(() => InternalQueryPlanProviderSchema.parse(plan)).toThrow();
+    expect(
+      InternalQueryPlanProviderSchema.parse({
+        ...plan,
+        queries: [
+          {
+            ...plan.queries[0],
+            filters: { chatMessages: { sentAt: { after: "2024-02-29" }, authors: ["user"] } },
+          },
+        ],
+      }),
+    ).toBeDefined();
+    expect(containsUniqueItems(z.toJSONSchema(InternalQueryPlanProviderSchema))).toBe(true);
+    expect(containsUniqueItems(z.toJSONSchema(QueryReviewProviderSchema))).toBe(true);
+    expect(JSON.stringify(z.toJSONSchema(InternalQueryPlanProviderSchema))).toContain(
+      '"format":"date"',
+    );
+  });
+
   it("uses NFC and outer trim only and rejects hostile unknown fields", () => {
     const parsed = InternalQuerySchema.parse({
       ...query("  Re\u0301sume\u0301  exact  wording  "),
@@ -323,6 +426,72 @@ describe("Phase A query contracts", () => {
         truncated: false,
         cap: 4,
         hits: [branchHit],
+      }),
+    ).toThrow();
+  });
+  it("enforces strict terminal retrieval trace outcomes", () => {
+    const initialPlan = { action: "search" as const, queries: [query()] };
+    const replacementPlan = { action: "search" as const, queries: [query("replacement")] };
+    expect(
+      StructuredRetrievalTraceSchema.parse({
+        initialPlan: { action: "skip", reason: "not needed" },
+        review: null,
+        replacementPlan: null,
+        outcome: "skipped",
+      }).outcome,
+    ).toBe("skipped");
+    expect(
+      StructuredRetrievalTraceSchema.parse({
+        initialPlan,
+        review: { action: "accept", reason: "sufficient_coverage" },
+        replacementPlan: null,
+        outcome: "accepted",
+      }).outcome,
+    ).toBe("accepted");
+    expect(() =>
+      StructuredRetrievalTraceSchema.parse({
+        initialPlan,
+        review: { action: "replace", reason: "missed_concept", queries: initialPlan.queries },
+        replacementPlan,
+        outcome: "replaced",
+      }),
+    ).toThrow();
+    const matchingReplacement = { action: "search" as const, queries: [query()] };
+    expect(
+      StructuredRetrievalTraceSchema.parse({
+        initialPlan,
+        review: {
+          action: "replace",
+          reason: "missed_concept",
+          queries: matchingReplacement.queries,
+        },
+        replacementPlan: matchingReplacement,
+        outcome: "replaced",
+      }).outcome,
+    ).toBe("replaced");
+    expect(
+      StructuredRetrievalTraceSchema.parse({
+        initialPlan,
+        review: { action: "no_evidence", reason: "no_supporting_evidence" },
+        replacementPlan: null,
+        outcome: "no_evidence",
+      }).outcome,
+    ).toBe("no_evidence");
+    expect(() =>
+      StructuredRetrievalTraceSchema.parse({
+        initialPlan,
+        review: null,
+        replacementPlan: null,
+        outcome: "accepted",
+      }),
+    ).toThrow();
+    expect(() =>
+      StructuredRetrievalTraceSchema.parse({
+        initialPlan,
+        review: { action: "accept", reason: "sufficient_coverage" },
+        replacementPlan: null,
+        outcome: "accepted",
+        extra: true,
       }),
     ).toThrow();
   });

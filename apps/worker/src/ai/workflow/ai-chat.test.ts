@@ -331,7 +331,7 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
   readonly collectedTaskIds: string[][] = [];
   constructor(
     readonly route: "clarify" | "single" | "fanout",
-    readonly reduction: "none" | "fit" | "correct-then-fit" | "unfit" = "none",
+    readonly compaction: "none" | "fit" | "correct-then-fit" | "unfit" = "none",
     readonly topicFailure: "context_plan_unfit" | undefined = undefined,
   ) {
     super(
@@ -345,11 +345,9 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
         aiFastOutputMaxTokens: 16_384,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
         aiWebMaxSearches: 4,
         aiWebMaxFetches: 8,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 50,
         webResearchProvider: "",
       },
@@ -433,7 +431,7 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
     observationTaskId: string,
   ) {
     this.calls.push(observationTaskId);
-    return this.reduction === "none" || value.topicId !== undefined
+    return this.compaction === "none" || value.topicId !== undefined
       ? context(value.topicId)
       : {
           ...context(),
@@ -532,7 +530,7 @@ class ScriptedOperations extends CanonicalWorkflowOperations {
   ): Promise<ContextState> {
     this.calls.push(taskId);
     const ready =
-      this.reduction !== "unfit" && (pass.phase === "fallback" || this.reduction === "fit");
+      this.compaction !== "unfit" && (pass.phase === "fallback" || this.compaction === "fit");
     return {
       ...state,
       status: ready ? "ready" : pass.phase === "fallback" ? "failed" : "needs_compaction",

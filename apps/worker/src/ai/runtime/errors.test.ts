@@ -210,7 +210,6 @@ describe("AI run error classification", () => {
     ["internal_retrieval", "internal_retrieval_failed"],
     ["memory_selector", "memory_selector_failed"],
     ["web_research", "web_research_failed"],
-    ["context_reducer", "context_reducer_failed"],
     ["context_manifest", "context_compaction_failed"],
     ["context_compact_group", "context_compaction_failed"],
     ["context_fallback_manifest", "context_compaction_failed"],

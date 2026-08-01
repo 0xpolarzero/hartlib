@@ -23,6 +23,7 @@ import {
   type PassageView,
 } from "./passages";
 import type { CandidateLedger, CandidateLedgerEntry } from "../workflow/types";
+import { CandidateLocalIdSchema, GroupLocalIdSchema } from "../workflow/types";
 
 type Ledger = CandidateLedger | readonly CandidateLedgerEntry[];
 type RuntimeEffect<A, R> = Effect.Effect<A, unknown, R>;
@@ -211,19 +212,46 @@ const validatePassInput = (input: CompactionPassInput): void => {
   if (!isPositiveSafeInteger(input.concurrency)) {
     throw runtimeError("concurrency must be a positive safe integer");
   }
+  if (input.concurrency > MAX_COMPACTION_CONCURRENCY) {
+    throw runtimeError(`concurrency exceeds ${MAX_COMPACTION_CONCURRENCY}`);
+  }
   if (input.groups.length > MAX_COMPACTION_GROUPS) {
     throw runtimeError(`group count exceeds ${MAX_COMPACTION_GROUPS}`);
   }
   if (new Set(input.groups.map((group) => group.groupId)).size !== input.groups.length) {
     throw runtimeError("group IDs must be unique");
   }
+  const entries = ledgerEntries(input.ledger);
+  const ledgerIds = new Set<string>(entries.map((candidate) => candidate.candidateId));
+  const assignedIds = new Set<string>();
   for (const group of input.groups) {
+    if (!GroupLocalIdSchema.safeParse(group.groupId).success) {
+      throw runtimeError(`group ${group.groupId} ID is invalid`);
+    }
+    if (!Number.isSafeInteger(group.renderedTokenBudget) || group.renderedTokenBudget < 1) {
+      throw runtimeError(`group ${group.groupId} budget is invalid`);
+    }
     if (group.candidateIds.length === 0) throw runtimeError("groups must not be empty");
+    if (new Set(group.candidateIds).size !== group.candidateIds.length) {
+      throw runtimeError(`group ${group.groupId} candidate IDs must be unique`);
+    }
     if (group.mode !== "normal" && group.mode !== "source_tool") {
       throw runtimeError(`group ${group.groupId} mode is invalid`);
     }
     if (group.mode === "source_tool" && group.candidateIds.length !== 1) {
       throw runtimeError(`source-tool group ${group.groupId} must have one candidate`);
+    }
+    for (const candidateId of group.candidateIds) {
+      if (
+        !CandidateLocalIdSchema.safeParse(candidateId as unknown).success ||
+        !ledgerIds.has(candidateId)
+      ) {
+        throw runtimeError(`group ${group.groupId} names an unknown candidate ${candidateId}`);
+      }
+      if (assignedIds.has(candidateId)) {
+        throw runtimeError(`candidate ${candidateId} appears in multiple groups`);
+      }
+      assignedIds.add(candidateId);
     }
   }
 };
@@ -697,6 +725,8 @@ export const runCompaction = <R = never>(
         createCompactionGroups(input.initialManifest, input.ledger, {
           sourceToolEligibleCandidateIds: input.sourceToolEligibleCandidateIds,
           remainingAnswerTokens: input.remainingAnswerTokens,
+          passageOptions: input.passageOptions,
+          costOptions: deps.costOptions,
         }),
       catch: (error) => (error instanceof Error ? error : runtimeError(String(error))),
     });
@@ -755,6 +785,7 @@ export const runCompaction = <R = never>(
           input.ledger,
           firstPass.envelopes,
           input.passageOptions,
+          deps.costOptions,
         ),
       catch: (error) => (error instanceof Error ? error : runtimeError(String(error))),
     });

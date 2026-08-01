@@ -153,7 +153,7 @@ test.describe("deterministic canonical runtime", () => {
     expect(state.runs[0]?.status).toBe("succeeded");
     const ready = state.events.filter((event) => event.type === "context_ready");
     expect(ready).toHaveLength(1);
-    expect(ready[0]?.event).toMatchObject({ mode: "single", reductionRan: false });
+    expect(ready[0]?.event).toMatchObject({ mode: "single", compactionRan: false });
     const sources = ready[0]?.event.sourcesRead;
     expect(Array.isArray(sources)).toBe(true);
     expect((sources as unknown[]).length).toBeGreaterThan(0);

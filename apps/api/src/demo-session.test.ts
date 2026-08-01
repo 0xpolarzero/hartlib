@@ -4,7 +4,12 @@ import { describe, expect, it } from "vitest";
 import { resolveRequestIdentity } from "./auth";
 import type { ApiConfig } from "./config";
 import { demoSessionRoutes } from "./domain/demo-session";
-import { DEMO_COOKIE_NAME, createDemoSession, readCookie, verifyDemoSessionCookie } from "./demo-session";
+import {
+  DEMO_COOKIE_NAME,
+  createDemoSession,
+  readCookie,
+  verifyDemoSessionCookie,
+} from "./demo-session";
 import { routeRequest } from "./http";
 
 const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
@@ -75,14 +80,18 @@ const call = (request: Request) =>
   Effect.runPromise(
     routeRequest(demoSessionRoutes, request).pipe(
       Effect.provide(
-        ConfigProvider.layer(ConfigProvider.fromEnv({ env: { NODE_ENV: "test", AUTH_MODE: "demo" } })),
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { NODE_ENV: "test", AUTH_MODE: "demo" } }),
+        ),
       ),
     ),
   );
 
 describe("POST /v1/demo/session", () => {
   it("mints a visitor cookie for a new browser and authenticates end to end", async () => {
-    const response = await call(new Request("https://brief.test/v1/demo/session", { method: "POST" }));
+    const response = await call(
+      new Request("https://brief.test/v1/demo/session", { method: "POST" }),
+    );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true });
     const setCookie = response.headers.get("set-cookie");
@@ -95,7 +104,9 @@ describe("POST /v1/demo/session", () => {
     // The minted cookie authenticates the request identity end to end.
     const identity = await Effect.runPromise(
       resolveRequestIdentity(
-        new Request("https://brief.test/v1/chat", { headers: { cookie: `${DEMO_COOKIE_NAME}=${cookieValue}` } }),
+        new Request("https://brief.test/v1/chat", {
+          headers: { cookie: `${DEMO_COOKIE_NAME}=${cookieValue}` },
+        }),
         config(),
       ),
     );
@@ -120,7 +131,10 @@ describe("POST /v1/demo/session", () => {
 
   it("answers 404 outside demo mode", async () => {
     const response = await Effect.runPromise(
-      routeRequest(demoSessionRoutes, new Request("https://brief.test/v1/demo/session", { method: "POST" })).pipe(
+      routeRequest(
+        demoSessionRoutes,
+        new Request("https://brief.test/v1/demo/session", { method: "POST" }),
+      ).pipe(
         Effect.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({

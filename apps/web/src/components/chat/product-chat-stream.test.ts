@@ -125,31 +125,31 @@ describe("product chat stream resume state", () => {
     const initial = emptyStreamDraft("run-1");
     const running = reduceRunStreamEvent("run-1", 0, initial, 1, {
       type: "activity",
-      stage: "evidence",
-      code: "internal_sources",
+      stage: "preparing",
+      code: "context_preparation",
       status: "running",
       attempt: 1,
     });
     const retrying = reduceRunStreamEvent("run-1", 1, running.draft!, 2, {
       type: "activity",
-      stage: "evidence",
-      code: "internal_sources",
+      stage: "preparing",
+      code: "context_preparation",
       status: "retrying",
       attempt: 1,
       resultCount: 0,
     });
     const replay = reduceRunStreamEvent("run-1", 2, retrying.draft!, 2, {
       type: "activity",
-      stage: "evidence",
-      code: "internal_sources",
+      stage: "preparing",
+      code: "context_preparation",
       status: "complete",
       attempt: 1,
       resultCount: 2,
     });
     const complete = reduceRunStreamEvent("run-1", 2, retrying.draft!, 3, {
       type: "activity",
-      stage: "evidence",
-      code: "internal_sources",
+      stage: "preparing",
+      code: "context_preparation",
       status: "complete",
       attempt: 2,
       resultCount: 2,
@@ -162,18 +162,34 @@ describe("product chat stream resume state", () => {
   it("marks terminal events and caps persistent exponential reconnects", () => {
     const terminal = reduceRunStreamEvent("run-1", 7, emptyStreamDraft("run-1"), 8, {
       type: "error",
-      code: "answer_failed",
+      code: "context_compaction_failed",
       retryable: true,
     });
     expect(terminal).toMatchObject({
       applied: true,
       terminal: true,
       lastSeq: 8,
-      draft: { text: "", terminalFailure: { code: "answer_failed", retryable: true } },
+      draft: {
+        text: "",
+        terminalFailure: { code: "context_compaction_failed", retryable: true },
+      },
     });
     expect([0, 1, 2, 3, 4, 5, 50].map(reconnectDelayMs)).toEqual([
       250, 500, 1_000, 2_000, 4_000, 4_000, 4_000,
     ]);
+  });
+
+  it("keeps context_plan_unfit as a non-retryable terminal failure", () => {
+    const terminal = reduceRunStreamEvent("run-1", 2, emptyStreamDraft("run-1"), 3, {
+      type: "error",
+      code: "context_plan_unfit",
+      retryable: false,
+    });
+    expect(terminal.draft?.terminalFailure).toEqual({
+      code: "context_plan_unfit",
+      retryable: false,
+    });
+    expect(terminal.terminal).toBe(true);
   });
 });
 

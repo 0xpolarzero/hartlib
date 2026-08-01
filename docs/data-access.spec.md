@@ -49,9 +49,9 @@ Restricted content:
 - selected recent and older chat messages sent to an AI provider
 - saved memories and memory revisions
 - resolved retrieval questions and clarification questions
-- internal and web search queries, previews, inspected ranges, and manifests
+- internal and web search queries, review previews, selected passage ranges, and manifests
 - web page results and selected quotations
-- strict turn plans, context measurements, keep/range/omit reasons, and topic questions
+- strict turn plans, context measurements, keep/compact/omit reasons, fallback decisions, and topic questions
 - topic claim packets and synthesis inputs
 - turn-local source maps and citation defects
 - transient Smithers inputs and outputs
@@ -139,7 +139,7 @@ AI context pull metrics roll up across the whole issue.
 
 AI context pull metrics also break down per brief document.
 
-Issue AI context pulls count runs in which some issue content became visible to an AI model. SQL-only matches do not count; previews or snippets exposed to internal retriever A do count even when they are not selected for a final answer context. Each issue/document counts at most once per run.
+Issue AI context pulls count runs in which some issue content became visible to an AI model. SQL-only matches do not count; structured retrieval previews or compaction passages exposed to a model count even when they are not selected for a final answer context. Each issue/document counts at most once per run.
 
 Publisher metrics include only that publisher's issues and documents.
 
@@ -219,7 +219,7 @@ New client companies have web research disabled. Admins can enable it only after
 
 Client users see sources used for their own AI answers.
 
-For their own answers, client users can distinguish final sources read from inline cited sources. They do not see SQL-only matches, selector previews, reducer inspections, omitted candidates, agent plans, topic packets, or another user's source exposures.
+For their own answers, client users can distinguish final sources read from inline cited sources. They do not see SQL-only matches, selector previews, compaction passages, omitted candidates, agent plans, topic packets, or another user's source exposures.
 
 Client users do not see aggregate AI context pull analytics.
 
@@ -250,10 +250,10 @@ The approved development runtime uses the exact registered GLM-5-Turbo contract 
 The platform sends the configured AI provider only the role-specific context required by `docs/ai-chat-runtime.spec.md`:
 
 - plan-turn receives the current message and a bounded live read of recent complete user/assistant turns or terminal failed user-only turns; failed drafts are never included.
-- A receives the resolved/topic question and authorized internal search previews or inspected ranges through Brief tools.
+- structured internal retrieval receives one `InternalQueryPlan`; Brief executes its authorized parallel searches and supplies one complete `QueryReview` projection, with no provider search tools or SQL
 - B receives the resolved/topic question and bounded results from its authorized search/inspect tool loop over the exact memory revisions captured in the immutable acceptance scope; code does not create a semantic shortlist or reauthorize against the current memory head.
 - W receives the resolved/topic question and search/fetch results from allowed web domains.
-- O receives compact candidate metadata and only the candidate content it explicitly inspects through Brief tools.
+- compaction receives only code-owned candidate projections and its assigned group passages; a source-local oversized candidate may use only the bounded `search_source_passages`/`read_source_passages` tools
 - direct/topic answer agents receive only their exact fitted prompt.
 - synthesis receives bounded topic claim packets and source keys, not the original full documents.
 - memory extraction receives only the current user message and bounded results from its authorized search/inspect tools over the exact memory revision IDs captured in the immutable acceptance scope; it does not read the current memory head or active-memory setting.
@@ -269,9 +269,10 @@ code additionally binds it to the exact extraction row through the required
 one-to-one version relation, with the same immutable snapshot, hash, source
 scope, and ranges.
 Metadata-only search and lookup results create no exposure or evidence row. Any
-content-bearing document preview, including a search preview, carries the
+content-bearing document preview creates a private exposure record carrying the
 complete source namespace, document ID, immutable snapshot, exact text hash,
-and normalized ranges.
+and normalized ranges; provider-visible projections contain only their strict
+non-identity fields.
 The server creates one random per-answer `citationNamespace` at request
 acceptance. It scopes local citation handles only; the saved scope and exact
 immutable evidence identity validate every claim.
@@ -287,6 +288,31 @@ restriction, and exact identity mismatch remain explicit exceptional denies.
 Finalization validates the complete final evidence set inside one save transaction
 before applying memory proposals, usage, source maps, messages, and the terminal
 event, while holding the canonical locks in the documented order.
+
+Internal content and chat retrieval remain in Postgres. Immutable document versions
+store canonical text, lowercase content hash, stable page/character metadata,
+and the generated full-text projection; `chat_messages.search_vector` uses the
+PostgreSQL `simple` configuration with a GIN index, and
+`(chat_id, created_at, id)` provides deterministic same-chat ordering. Older-chat
+search is same-chat and same-tenant only, excludes the current and selected
+recent message IDs, and returns a truncation sentinel before hydration. There is
+no cross-chat retrieval.
+
+Every content-bearing chat exposure stores the sanitized-content SHA-256 and
+normalized UTF-16 ranges. Empty ranges are normalized to the complete
+sanitized message range only by the fenced migration contract; otherwise ranges
+must be non-empty, in bounds, non-overlapping, and a subset of the authorized
+message text. `assistant_message_source_uses` stores the exact rendered
+consumer task, topic, order, token count, and range subset; its union must match
+the source locator's authorized range union. Run-local candidate and passage IDs
+are private projections and never replace durable source identity.
+Migration `0072_ai_retrieval_compaction.sql` is the current durable cutover.
+New evaluation sessions and captures write only `artifact_version = 4` and
+`golden_set_version = 4`; v3 evidence is immutable, read-only historical data
+decoded only for compatibility and is never a live runtime result or new write
+target. The migration's fenced schema is the source of truth for structured
+retrieval/review, candidate assembly, compaction groups, fallback, context,
+answer, and finalization outputs.
 
 Web search/fetch services receive the minimum query and URL data required for the requested web path. Company domain allowlists are enforced before a request leaves Brief. Selected web quotations and provenance are stored with the chat; full fetched pages remain transient unless they are already canonical platform content under another ingestion contract. Web research is disabled in any deployment that has no approved `WebResearchService` adapter.
 
@@ -563,6 +589,6 @@ Apply tenant, chat, source-selection, subscription, deletion, and web-allowlist 
 
 Parameterize every SQL query generated from an agent's typed query object.
 
-Use execution-coordinate idempotency keys for source exposures, model usage, and external web-tool operations, plus outcome keys for final assistant persistence, memory revisions, and terminal events. Replaying the same attempt cannot duplicate a row; distinct retry attempts remain distinct detailed exposure/usage rows. Run-level exposure items deduplicate by content-item identity, while publisher document pulls deduplicate by logical document per run.
+Use execution-coordinate idempotency keys for source exposures, model usage, and external web-tool operations, plus outcome keys for final assistant persistence, memory revisions, and terminal events. Replaying the same attempt cannot duplicate a row; distinct retry attempts remain distinct detailed exposure/usage rows. Source-exposure evidence keeps every exact request field path, index, and occurrence, even when two locations contain the same content. Aggregate run counts may deduplicate content, but durable evidence rows do not; publisher document pulls may still aggregate by logical document per run.
 
 Keep normal logs content-free. Raw selector inputs/outputs, model prompts, web quotations, context decisions, topic packets, and memory content belong only in restricted product/runtime storage.

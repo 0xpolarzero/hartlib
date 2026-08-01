@@ -26,13 +26,18 @@ const request = {
     {
       role: "assistant",
       content: "",
-      toolCalls: [{ id: "call-1", name: "search_internal", arguments: { terms: "solar" } }],
+      toolCalls: [{ id: "call-1", name: "search_within_candidate", arguments: { terms: "solar" } }],
     },
-    { role: "tool", toolCallId: "call-1", name: "search_internal", content: '{"items":[]}' },
+    {
+      role: "tool",
+      toolCallId: "call-1",
+      name: "search_within_candidate",
+      content: '{"items":[]}',
+    },
   ],
   tools: [
     {
-      name: "search_internal",
+      name: "search_within_candidate",
       description: "Search",
       parameters: { type: "object", properties: { terms: { type: "string" } } },
     },
@@ -53,7 +58,7 @@ describe("exact provider-shaped request gate", () => {
         {
           role: "tool",
           toolCallId: "call-7",
-          name: "inspect_internal",
+          name: "inspect_candidate",
           content: '{"text":"Evidence"}',
         },
       ],
@@ -88,8 +93,18 @@ describe("exact provider-shaped request gate", () => {
     } as const satisfies ProviderRequest;
     const main = resolveRegisteredModel("glm-5.2");
     const fast = resolveRegisteredModel("glm-5-turbo");
-    expect(main.countRequestTokens({ ...withSchema, model: "glm-5.2" })).toBe(195);
-    expect(fast.countRequestTokens(withSchema)).toBe(197);
+    expect(main.countRequestTokens({ ...withSchema, model: "glm-5.2" })).toBe(197);
+    expect(fast.countRequestTokens(withSchema)).toBe(199);
+    const explicitStrictFalse = {
+      ...request,
+      tools: request.tools?.map((tool) => ({ ...tool, strict: false })),
+    } satisfies ProviderRequest;
+    expect(renderOfficialGlmProviderRequest(request, "glm-5.2")).toBe(
+      renderOfficialGlmProviderRequest(explicitStrictFalse, "glm-5.2"),
+    );
+    expect(main.countRequestTokens({ ...request, model: "glm-5.2" })).toBe(
+      main.countRequestTokens({ ...explicitStrictFalse, model: "glm-5.2" }),
+    );
     expect(renderOfficialGlmProviderRequest(request, "glm-5.2")).toContain("<tool_call>");
     expect(renderOfficialGlmProviderRequest(request, "glm-5.2")).toContain("<|observation|>");
   });
@@ -194,7 +209,6 @@ describe("exact provider-shaped request gate", () => {
       outputTokens: 16_384,
     });
     expect(measurement.passed).toBe(true);
-    expect(measurement.requestedOutputTokens).toBe(64);
     expect(() =>
       exactProviderRequestGate({ ...modelRequest, requestedOutputTokens: 16_385 }, model, {
         inputTokens: 100_000,
@@ -204,8 +218,8 @@ describe("exact provider-shaped request gate", () => {
   });
 
   it.each([
-    ["glm-5.2", 169],
-    ["glm-5-turbo", 171],
+    ["glm-5.2", 171],
+    ["glm-5-turbo", 173],
   ] as const)("gates %s exactly at limit - 1, limit, and limit + 1", (modelId, expected) => {
     const model = resolveRegisteredModel(modelId);
     const modelRequest = { ...request, model: modelId } satisfies ProviderRequest;

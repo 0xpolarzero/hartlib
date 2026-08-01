@@ -13,6 +13,7 @@ import {
   createCompactionGroups,
   createFallbackCompactionGroups,
   mergeGroupCompactionResults,
+  validateFallbackGroupCompactionResult,
   validateFallbackContextManifest,
   validateGroupCompactionResult,
   validateInitialContextManifest,
@@ -68,7 +69,7 @@ const ledger: CandidateLedger = {
       identity: {
         kind: "web",
         canonicalUrl: "https://example.com/a",
-        quoteHash: hash,
+        quoteHash: "A".repeat(43),
         capturedAt: "2026-01-01T00:00:00Z",
       },
       provenance: { label: "Web", purpose: "answer", date: null },
@@ -401,16 +402,44 @@ describe("complete compaction contracts", () => {
     ).toThrow(/smallest selectable passage/u);
   });
 
+  it("short-circuits exact passage cost proof at the first fitting witness", () => {
+    const calls: string[] = [];
+    const costOptions = {
+      countRenderedTokens: (sources: readonly { readonly text: string }[]) => {
+        calls.push(sources[0]!.text);
+        return 4;
+      },
+    };
+    const manifest = {
+      ...initialValue,
+      groups: [{ groupId: "g1", renderedTokenBudget: 20 }],
+    };
+    expect(validateInitialContextManifest(manifest, ledger, passageOptions, costOptions)).toEqual(
+      manifest,
+    );
+    expect(calls).toEqual(["Alpha."]);
+
+    calls.length = 0;
+    expect(() =>
+      validateInitialContextManifest(
+        { ...manifest, groups: [{ groupId: "g1", renderedTokenBudget: 3 }] },
+        ledger,
+        passageOptions,
+        costOptions,
+      ),
+    ).toThrow(/smallest selectable passage/u);
+    expect(calls.length).toBeGreaterThan(1);
+  });
+
   it("rejects an oversized multi-source normal group from measured input", () => {
     expect(() =>
       createCompactionGroups(initialValue, ledger, {
         sourceToolEligibleCandidateIds: [],
-        passageOptions,
         groupMeasurements: {
           g1: {
             inputTokens: 101,
             usableInputTokens: 100,
-            minimumSelectablePassageCost: 2,
+            selectablePassageCost: 2,
           },
         },
       }),
@@ -429,12 +458,11 @@ describe("complete compaction contracts", () => {
     expect(
       createCompactionGroups(single, ledger, {
         sourceToolEligibleCandidateIds: ["c1"],
-        passageOptions,
         groupMeasurements: {
           g1: {
             inputTokens: 101,
             usableInputTokens: 100,
-            minimumSelectablePassageCost: 5,
+            selectablePassageCost: 5,
           },
         },
       }),
@@ -513,6 +541,28 @@ describe("complete compaction contracts", () => {
         ledger,
       ),
     ).toThrow(/not declared/u);
+  });
+
+  it("rejects malformed expected group modes", () => {
+    const initial = validateInitialContextManifest(initialValue, ledger);
+    const group = createCompactionGroups(initial, ledger, {
+      sourceToolEligibleCandidateIds: [],
+    })[0]!;
+    const firstResult = {
+      decisions: [
+        { candidateId: "c1", action: "omit" as const, reason: "omit" },
+        { candidateId: "c2", action: "omit" as const, reason: "omit" },
+      ],
+    };
+    const envelope = { groupId: group.groupId, result: firstResult, renderedTokenCount: 0 };
+    expect(() =>
+      mergeGroupCompactionResults(
+        ledger,
+        [{ ...group, mode: "source_tool", candidateIds: ["c1", "c2"] }],
+        [envelope],
+        passageOptions,
+      ),
+    ).toThrow(/expected compaction groups are invalid/u);
   });
 
   it("requires complete group envelopes and fails partial merges", () => {
@@ -632,6 +682,16 @@ describe("complete compaction contracts", () => {
       { groupId: "g1", candidateIds: ["c1"], renderedTokenBudget: 7, mode: "normal" },
     ]);
     expect(() =>
+      createFallbackCompactionGroups(fallback, initial, ledger, [envelope], {
+        sourceToolEligibleCandidateIds: ["c1", "c1"],
+      }),
+    ).toThrow(/eligibility IDs must be unique/u);
+    expect(() =>
+      createFallbackCompactionGroups(fallback, initial, ledger, [envelope], {
+        sourceToolEligibleCandidateIds: ["c3"],
+      }),
+    ).toThrow(/invalid source-tool eligibility/u);
+    expect(() =>
       validateFallbackContextManifest(
         {
           decisions: [
@@ -705,5 +765,68 @@ describe("complete compaction contracts", () => {
         passageOptions,
       ),
     ).toThrow(/strict prior subset/u);
+    expect(() =>
+      validateTightenedGroupCompactionResult(
+        {
+          decisions: [{ candidateId: "c1", action: "omit", reason: "omit" }],
+        },
+        tightenGroup,
+        ledger,
+        firstResult,
+        passageOptions,
+      ),
+    ).toThrow(/must retain a selected prior result/u);
+  });
+
+  it("allows retained members beside strictly tightened members", () => {
+    const group = {
+      groupId: "g1" as const,
+      candidateIds: ["c1", "c2"] as const,
+      renderedTokenBudget: 20,
+      mode: "normal" as const,
+    };
+    const c1Passages = buildPassageIndex(ledger.candidates[0]!.text, passageOptions).passages;
+    const c2Passages = buildPassageIndex(ledger.candidates[1]!.text, passageOptions).passages;
+    const priorResult = {
+      decisions: [
+        {
+          candidateId: "c1" as const,
+          action: "select" as const,
+          passageIds: c1Passages.map((passage) => passage.passageId),
+          reason: "first",
+        },
+        {
+          candidateId: "c2" as const,
+          action: "select" as const,
+          passageIds: c2Passages.map((passage) => passage.passageId),
+          reason: "first",
+        },
+      ],
+    };
+    expect(
+      validateFallbackGroupCompactionResult(
+        {
+          decisions: [
+            {
+              candidateId: "c1",
+              action: "select",
+              passageIds: [c1Passages[0]!.passageId],
+              reason: "tighten",
+            },
+            {
+              candidateId: "c2",
+              action: "select",
+              passageIds: c2Passages.map((passage) => passage.passageId),
+              reason: "new rationale",
+            },
+          ],
+        },
+        group,
+        ledger,
+        priorResult,
+        ["c1"],
+        passageOptions,
+      ),
+    ).toBeDefined();
   });
 });

@@ -10,7 +10,11 @@ import {
   providerVisibleSourceExposureProofSha256Hex,
   type ProviderVisibleSourceExposureProofBinding,
 } from "../runtime/provider-request";
-import { namespacedDocumentEvidenceIdentity, sha256Base64Url } from "../runtime/canonicalization";
+import {
+  chatMessageEvidenceIdentity,
+  namespacedDocumentEvidenceIdentity,
+  sha256Base64Url,
+} from "../runtime/canonicalization";
 import {
   appendAiRunEventInTransaction,
   lockAiRunForMutationInTransaction,
@@ -31,6 +35,15 @@ export interface AiDocumentExposureReconstruction {
   readonly ranges: readonly { readonly charStart: number; readonly charEnd: number }[];
 }
 
+/** Private identity and exact UTF-16 source-use ranges for one chat message exposure. */
+export interface AiChatExposureReconstruction {
+  readonly messageId: string;
+  /** SHA-256 hex digest of citation-sanitized immutable chat text. */
+  readonly contentHash: string;
+  /** Ordered, non-empty, disjoint UTF-16 ranges into that sanitized text. */
+  readonly ranges: readonly { readonly charStart: number; readonly charEnd: number }[];
+}
+
 export interface AiSourceExposureInput {
   readonly runId: string;
   readonly taskId: string;
@@ -40,6 +53,8 @@ export interface AiSourceExposureInput {
   /** Digest of the exact normalized request persisted independently by the Pi gate. */
   readonly providerRequestSha256Hex: string;
   readonly sourceKind: SourceKind;
+  /** Private immutable chat identity and exact source-use ranges. */
+  readonly chatReconstruction?: AiChatExposureReconstruction | undefined;
   readonly logicalSourceIdentity: string;
   readonly publisherIssueId?: string | undefined;
   readonly publisherDocumentId?: string | undefined;
@@ -60,6 +75,57 @@ const canonicalRangeHash = (
   sha256Base64Url(
     JSON.stringify(ranges.map((range) => ({ charStart: range.charStart, charEnd: range.charEnd }))),
   );
+
+export const assertCanonicalChatExposureIdentity = (
+  input: Pick<
+    AiSourceExposureInput,
+    "sourceKind" | "logicalSourceIdentity" | "contentItemIdentity" | "chatReconstruction"
+  >,
+): void => {
+  if (input.sourceKind !== "chat_message") {
+    if (input.chatReconstruction !== undefined) {
+      throw new Error("non-chat exposure cannot carry chat reconstruction");
+    }
+    return;
+  }
+  const reconstruction = input.chatReconstruction;
+  if (
+    reconstruction === undefined ||
+    typeof reconstruction !== "object" ||
+    Array.isArray(reconstruction) ||
+    Object.keys(reconstruction).length !== 3 ||
+    Object.keys(reconstruction).some(
+      (key) => !["messageId", "contentHash", "ranges"].includes(key),
+    ) ||
+    reconstruction.messageId !== input.contentItemIdentity ||
+    input.logicalSourceIdentity !== chatMessageEvidenceIdentity(reconstruction.messageId) ||
+    reconstruction.messageId.trim().length === 0 ||
+    !/^[a-f0-9]{64}$/u.test(reconstruction.contentHash) ||
+    !Array.isArray(reconstruction.ranges) ||
+    reconstruction.ranges.length === 0
+  ) {
+    throw new Error("chat exposure reconstruction is not canonical");
+  }
+  let previousEnd = -1;
+  for (const range of reconstruction.ranges) {
+    if (
+      typeof range !== "object" ||
+      range === null ||
+      Array.isArray(range) ||
+      Object.keys(range).length !== 2 ||
+      !Object.hasOwn(range, "charStart") ||
+      !Object.hasOwn(range, "charEnd") ||
+      !Number.isSafeInteger(range.charStart) ||
+      !Number.isSafeInteger(range.charEnd) ||
+      range.charStart < 0 ||
+      range.charEnd <= range.charStart ||
+      range.charStart <= previousEnd
+    ) {
+      throw new Error("chat exposure reconstruction ranges are not canonical");
+    }
+    previousEnd = range.charEnd;
+  }
+};
 
 export interface AiObservationInput {
   readonly runId: string;
@@ -193,6 +259,7 @@ const sourceExposureAttestationKey = (
           providerSerializationProofSha256Hex,
           providerSerializationProofBinding,
           input.documentReconstruction,
+          input.chatReconstruction,
         ]),
       )
       .digest("hex"),
@@ -212,6 +279,13 @@ const sourceExposureAttestationPayloadForProof = (
   visibleTokenCount: input.visibleTokenCount,
   providerSerializationProofSha256Hex,
   providerSerializationProofBinding,
+  ...(input.chatReconstruction === undefined
+    ? {}
+    : {
+        chatMessageId: input.chatReconstruction.messageId,
+        chatContentHash: input.chatReconstruction.contentHash,
+        chatRanges: input.chatReconstruction.ranges,
+      }),
   ...(input.documentReconstruction === undefined
     ? {}
     : {
@@ -346,6 +420,7 @@ export const assertCanonicalDocumentExposureIdentity = (
  * measurement before calling the internal proof-aware builder below.
  */
 export const sourceExposureAttestationPayload = (input: AiSourceExposureInput) => {
+  assertCanonicalChatExposureIdentity(input);
   if (input.providerSerializationProofBinding === undefined) {
     throw new Error("source exposure attestation requires its provider field binding");
   }
@@ -369,12 +444,18 @@ export const insertAiSourceExposure = (
   Effect.gen(function* () {
     // Reject malformed document identities before any database constraint can
     // mask the canonical validation error.
+    assertCanonicalChatExposureIdentity(input);
     assertCanonicalDocumentExposureIdentity(input);
     const sql = yield* PgClient.PgClient;
     const documentRangesJson =
       input.documentReconstruction === undefined
         ? null
         : JSON.stringify(input.documentReconstruction.ranges);
+    const chatContentHash = input.chatReconstruction?.contentHash ?? null;
+    const chatRangesJson =
+      input.chatReconstruction === undefined
+        ? null
+        : JSON.stringify(input.chatReconstruction.ranges);
     const marker = {
       sourceKind: input.sourceKind,
       logicalSourceIdentity: input.logicalSourceIdentity,
@@ -508,6 +589,8 @@ export const insertAiSourceExposure = (
               and snapshot_id is not distinct from ${input.documentReconstruction?.snapshotId ?? null}
               and content_hash is not distinct from ${input.documentReconstruction?.contentHash ?? null}
               and document_ranges is not distinct from ${documentRangesJson}::jsonb
+              and chat_content_hash is not distinct from ${chatContentHash}
+              and chat_ranges is not distinct from ${chatRangesJson}::jsonb
               and publisher_extraction_id is not distinct from ${input.documentReconstruction?.publisherExtractionId ?? null}
             for update
           `;
@@ -534,6 +617,8 @@ export const insertAiSourceExposure = (
               snapshot_id,
               content_hash,
               document_ranges,
+              chat_content_hash,
+              chat_ranges,
               publisher_extraction_id
             )
             values (
@@ -554,6 +639,8 @@ export const insertAiSourceExposure = (
               ${input.documentReconstruction?.snapshotId ?? null},
               ${input.documentReconstruction?.contentHash ?? null},
               ${documentRangesJson}::jsonb,
+              ${chatContentHash},
+              ${chatRangesJson}::jsonb,
               ${input.documentReconstruction === undefined ? null : (input.documentReconstruction.publisherExtractionId ?? null)}
             )
           `;

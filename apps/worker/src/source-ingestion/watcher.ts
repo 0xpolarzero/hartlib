@@ -2,7 +2,6 @@ import { publicSourceDefinitions } from "@brief/source-ingestion";
 import { Duration, Effect, Schedule } from "effect";
 import { JobRepository } from "../jobs/repository";
 import type { PublicSourceIngestionMode } from "./types";
-import { captureCause } from "../diagnostic-cause";
 
 export interface PublicSourceWatcherConfig {
   readonly enabled: boolean;
@@ -60,15 +59,11 @@ export const runPublicSourceSafePollTick = (
   config: PublicSourceWatcherConfig,
 ): Effect.Effect<void, never, JobRepository> =>
   runPublicSourcePollTick(config).pipe(
-    Effect.catch((error) =>
-      Effect.sync(() => captureCause("public_source_poll_enqueue", error)).pipe(
-        Effect.andThen(
-          Effect.logError("public source poll enqueue failed").pipe(
-            Effect.annotateLogs({
-              errorCode: "public_source_poll_enqueue_failed",
-            }),
-          ),
-        ),
+    Effect.catch(() =>
+      Effect.logError("public source poll enqueue failed").pipe(
+        Effect.annotateLogs({
+          errorCode: "public_source_poll_enqueue_failed",
+        }),
       ),
     ),
   );

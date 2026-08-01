@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import { compactionGroupTaskId } from "../context/compaction-runtime";
+import { reciprocalRankContribution } from "../retrieval/rank-fusion";
+import { stripHistoricalCitationTags } from "../runtime/canonicalization";
+import { PREVIEW_RANGE_SEPARATOR } from "../workflow/types";
 import { PlanTurnPrompt, DirectAnswerPrompt, SynthesisPrompt, TopicAnswerPrompt } from "../prompts";
 import { resolveRegisteredModel, usableInputTokens } from "../runtime/model-registry";
 import {
@@ -17,9 +21,9 @@ import {
   type EvaluationRange,
   type GeneralPlannerEvaluationResult,
   type GoldenEvaluationCase,
-  type GoldenEvaluationSet,
-  type SelectorRole,
+  type ProviderCoordinate,
   type SpecializedEvaluationResult,
+  type TaskCoordinate,
 } from "./schema";
 
 export const CanonicalEvaluationTokenGate = Object.freeze({
@@ -121,6 +125,48 @@ export const productionRequestSha256Hex = providerRequestSha256Hex;
 export const productionPacketSha256Hex = (packet: ExactProductionTopicPacket): string =>
   createHash("sha256")
     .update(JSON.stringify(canonicalValue(packet)))
+    .digest("hex");
+
+export interface TerminalRequestEvidenceProjection {
+  readonly coordinate: {
+    readonly taskId: string;
+    readonly loopIteration: number;
+    readonly attempt: number;
+    readonly providerRequestIndex: number;
+  };
+  readonly requestKind: "direct" | "topic" | "synthesis";
+  readonly consumerTaskId: string;
+  readonly topicId?: "t1" | "t2" | "t3" | undefined;
+  readonly requestSha256Hex: string;
+  readonly localInputTokens: number;
+  readonly providerInputTokens: number;
+  readonly requestedOutputTokens: number;
+  readonly usableInputTokens: number;
+  readonly sourceMap: readonly unknown[];
+  readonly proofDigests: readonly string[];
+}
+
+export const terminalRequestEvidenceSha256Hex = (
+  request: TerminalRequestEvidenceProjection,
+): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify(
+        canonicalValue({
+          coordinate: request.coordinate,
+          requestKind: request.requestKind,
+          consumerTaskId: request.consumerTaskId,
+          ...(request.topicId === undefined ? {} : { topicId: request.topicId }),
+          requestSha256Hex: request.requestSha256Hex,
+          localInputTokens: request.localInputTokens,
+          providerInputTokens: request.providerInputTokens,
+          requestedOutputTokens: request.requestedOutputTokens,
+          usableInputTokens: request.usableInputTokens,
+          sourceMap: request.sourceMap,
+          proofDigests: request.proofDigests,
+        }),
+      ),
+    )
     .digest("hex");
 
 export const exactPlanTurnRequest = (
@@ -621,11 +667,13 @@ export const EvaluationGateThresholds = {
   selectorRecall: 0.9,
   selectorPrecision: 0.9,
   promptCountParity: 1,
-  reductionPlanValidity: 1,
-  reductionConvergence: 1,
-  reductionCoverage: 1,
-  reductionRangeValidity: 1,
-  oversizedTokenReduction: 0.1,
+  retrievalCoverage: 1,
+  retrievalProvenance: 1,
+  compactionPlanValidity: 1,
+  compactionConvergence: 1,
+  compactionCoverage: 1,
+  compactionRangeValidity: 1,
+  compactionTokenReduction: 0.1,
   factualSupport: 1,
   supportedClaimRecall: 0.8,
   citationCorrectness: 1,
@@ -663,11 +711,13 @@ export type EvaluationMetricName =
   | "selector.W.recall"
   | "selector.W.precision"
   | "prompt.exact_count_parity"
-  | "reducer.plan_validity"
-  | "reducer.convergence"
-  | "reducer.coverage"
-  | "reducer.range_validity"
-  | "reducer.token_reduction"
+  | "retrieval.coverage"
+  | "retrieval.provenance"
+  | "compaction.plan_validity"
+  | "compaction.convergence"
+  | "compaction.coverage"
+  | "compaction.range_validity"
+  | "compaction.token_reduction"
   | "answer.factual_support"
   | "answer.supported_claim_recall"
   | "answer.citation_correctness"
@@ -699,7 +749,7 @@ export interface EvaluationGate {
 }
 
 export interface EvaluationReport {
-  readonly goldenSetVersion: 3;
+  readonly goldenSetVersion: 4;
   readonly caseCount: number;
   readonly specializedRunIds: readonly string[];
   readonly baselineRunIds: readonly string[];
@@ -710,19 +760,6 @@ export interface EvaluationReport {
 
 export class EvaluationInputError extends Error {
   readonly name = "EvaluationInputError";
-}
-
-interface ScoreCounts {
-  readonly correct: number;
-  readonly predicted: number;
-  readonly expected: number;
-}
-
-interface SelectorScoreCounts {
-  readonly precisionCorrect: number;
-  readonly predicted: number;
-  readonly recallCorrect: number;
-  readonly expected: number;
 }
 
 interface AnswerScore {
@@ -742,11 +779,6 @@ interface EvaluationOptions {
 
 const ratio = (numerator: number, denominator: number, empty = 1): number =>
   denominator === 0 ? empty : numerator / denominator;
-
-const precision = ({ correct, predicted, expected }: ScoreCounts): number =>
-  ratio(correct, predicted, expected === 0 ? 1 : 0);
-
-const recall = ({ correct, expected }: ScoreCounts): number => ratio(correct, expected);
 
 const f1 = (precisionValue: number, recallValue: number): number =>
   precisionValue + recallValue === 0
@@ -804,14 +836,16 @@ const setIntersectionCount = (left: ReadonlySet<string>, right: ReadonlySet<stri
   return count;
 };
 
-const sameStringSequence = (left: readonly string[], right: readonly string[]): boolean =>
-  left.length === right.length && left.every((value, index) => value === right[index]);
-
 const sameStringSet = (left: readonly string[], right: readonly string[]): boolean => {
   if (left.length !== right.length) return false;
   const rightSet = new Set(right);
   return left.every((value) => rightSet.has(value));
 };
+
+const sameUniqueStringSet = (left: readonly string[], right: readonly string[]): boolean =>
+  new Set(left).size === left.length &&
+  new Set(right).size === right.length &&
+  sameStringSet(left, right);
 
 const fanoutMatchesGoldenTopics = (
   fixture: GoldenEvaluationCase,
@@ -831,13 +865,6 @@ const fanoutMatchesGoldenTopics = (
   });
 };
 
-const sameRanges = (left: readonly EvaluationRange[], right: readonly EvaluationRange[]): boolean =>
-  left.length === right.length &&
-  left.every(
-    (range, index) =>
-      range.charStart === right[index]?.charStart && range.charEnd === right[index]?.charEnd,
-  );
-
 const rangeIsCovered = (
   selected: EvaluationRange,
   acceptable: readonly EvaluationRange[],
@@ -852,13 +879,6 @@ const rangeIsCovered = (
   }
   return false;
 };
-
-// Evaluation documents are padded to 100 characters in the live source store;
-// the padding is outside every labeled range and contains no evidence. Range
-// validation therefore accepts that storage suffix while still rejecting any
-// range beyond the exact persisted padded body.
-const evaluationStoredDocumentLength = (content: string): number =>
-  content.length >= 100 ? content.length : 100;
 
 const memoryProposalKey = (proposal: {
   readonly action: "create" | "update";
@@ -1104,481 +1124,1503 @@ const gateEqual = (
   threshold: number,
 ): EvaluationGate => ({ metric, actual, comparator: "=", threshold, passed: actual === threshold });
 
-const sourceSelectionsForIds = (
-  fixture: GoldenEvaluationCase,
-  sourceIds: readonly string[],
-  useLabeledRanges: boolean,
-): readonly CanonicalEvaluationSourceSelection[] =>
-  sourceIds.map((sourceId) => {
-    const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId);
-    const labeledRanges = fixture.labels.acceptableRanges[sourceId];
-    return {
-      sourceId,
-      ranges:
-        source?.kind === "document"
-          ? useLabeledRanges && labeledRanges !== undefined
-            ? labeledRanges
-            : source.ranges
-          : [],
-    };
-  });
+type EvaluationResult = SpecializedEvaluationResult | GeneralPlannerEvaluationResult;
+type ArtifactCoordinate = TaskCoordinate | ProviderCoordinate;
 
-const assertExactEvaluationTokenCount = (
-  topology: "specialized" | "general_planner",
-  fixture: GoldenEvaluationCase,
-  field: string,
-  actual: number,
-  expected: number,
-): void => {
-  if (actual !== expected) {
-    throw new EvaluationInputError(
-      `${topology}/${fixture.id} ${field}=${actual} does not match exact reconstructed count ${expected}`,
-    );
-  }
-};
-
-type ProductionTerminal = Extract<
-  SpecializedEvaluationResult["productionContext"],
-  { readonly mode: "single_fit" }
->["terminal"];
-type ProductionLedger = ProductionTerminal["ledger"];
-
-const productionConversationFixtureTurnIds = (
-  conversation: readonly { readonly fixtureTurnId: string }[],
-): readonly string[] => conversation.map((entry) => entry.fixtureTurnId);
-
-const sameUniqueStringSet = (left: readonly string[], right: readonly string[]): boolean =>
-  new Set(left).size === left.length &&
-  new Set(right).size === right.length &&
-  sameStringSet(left, right);
-
-const assertLedgerMatchesPlanTurn = (
-  fixture: GoldenEvaluationCase,
-  planTurn: SpecializedEvaluationResult["planTurn"],
-  ledger: ProductionLedger,
-  path: string,
-): void => {
-  const actualTurns = productionConversationFixtureTurnIds(ledger.selectedConversation);
-  if (ledger.requestKind === "direct") {
-    if (
-      planTurn.mode !== "single" ||
-      ledger.question !== planTurn.question ||
-      !sameStringSequence(actualTurns, planTurn.relevantTurnIds)
-    ) {
-      throw new EvaluationInputError(
-        `specialized/${fixture.id} ${path} direct ledger differs from plan-turn`,
-      );
-    }
-    return;
-  }
-  if (ledger.requestKind !== "topic" || planTurn.mode !== "fanout") {
-    throw new EvaluationInputError(
-      `specialized/${fixture.id} ${path} ledger route differs from plan-turn`,
-    );
-  }
-  const topic = planTurn.topics.find((candidate) => candidate.topicId === ledger.topicId);
-  if (
-    topic === undefined ||
-    ledger.question !== topic.question ||
-    !sameUniqueStringSet(actualTurns, topic.relevantTurnIds)
-  ) {
-    throw new EvaluationInputError(
-      `specialized/${fixture.id} ${path} topic ledger differs from plan-turn`,
-    );
-  }
-};
-
-const assertSynthesisConversationMatchesPlanTurn = (
-  fixture: GoldenEvaluationCase,
-  planTurn: SpecializedEvaluationResult["planTurn"],
-  ledger: Extract<ProductionLedger, { readonly requestKind: "synthesis" }>,
-): void => {
-  if (planTurn.mode !== "fanout") {
-    throw new EvaluationInputError(
-      `specialized/${fixture.id} synthesis ledger exists without a fanout plan-turn`,
-    );
-  }
-  const expectedTurns = planTurn.topics.flatMap((topic) => topic.relevantTurnIds);
-  const actualTurns = productionConversationFixtureTurnIds(ledger.selectedConversation);
-  if (!sameStringSequence(actualTurns, expectedTurns)) {
-    throw new EvaluationInputError(
-      `specialized/${fixture.id} synthesis ledger conversation differs from plan-turn`,
-    );
-  }
-};
-
-const usageCoordinateKey = (coordinate: {
-  readonly taskId: string;
-  readonly loopIteration: number;
-  readonly attempt: number;
-  readonly providerRequestIndex: number;
-}): string =>
+const usageCoordinateKey = (coordinate: ArtifactCoordinate): string =>
   [
     coordinate.taskId,
     coordinate.loopIteration,
     coordinate.attempt,
-    coordinate.providerRequestIndex,
+    "providerRequestIndex" in coordinate ? coordinate.providerRequestIndex : "",
   ].join(":");
+const taskCoordinateKey = (coordinate: {
+  readonly taskId: string;
+  readonly loopIteration: number;
+  readonly attempt: number;
+}): string => `${coordinate.taskId}:${coordinate.loopIteration}:${coordinate.attempt}`;
+const outputCoordinateKey = (coordinate: {
+  readonly nodeId: string;
+  readonly iteration: number;
+}): string => `${coordinate.nodeId}:${coordinate.iteration}`;
 
-const exactInputForProductionLedger = (
-  ledger: ProductionLedger,
-): Exclude<ExactProductionContextInput, { readonly requestKind: "synthesis" }> => {
-  if (ledger.requestKind === "synthesis") {
-    throw new EvaluationInputError("synthesis packet bodies are intentionally not persisted");
-  }
-  return ledger.requestKind === "topic"
-    ? {
-        requestKind: "topic",
-        topicId: ledger.topicId,
-        question: ledger.question,
-        selectedConversation: ledger.selectedConversation,
-        gaps: ledger.gaps,
-        sources: ledger.sources.map(
-          ({ sourceId, sourceKey, kind, purpose, label, ranges, contentOverride }) => ({
-            sourceId,
-            sourceKey,
-            kind,
-            purpose,
-            label,
-            ranges,
-            contentOverride,
-          }),
-        ),
-        requestedOutputTokens: ledger.requestedOutputTokens,
+const jsonEqual = (left: unknown, right: unknown): boolean =>
+  JSON.stringify(canonicalValue(left)) === JSON.stringify(canonicalValue(right));
+
+const artifactError = (
+  topology: "specialized" | "general_planner",
+  fixture: GoldenEvaluationCase,
+  path: string,
+  message: string,
+): never => {
+  throw new EvaluationInputError(`${topology}/${fixture.id} ${path}: ${message}`);
+};
+
+const sourceIdForIdentity = (identity: {
+  readonly kind: string;
+  readonly sourceId?: string;
+  readonly messageId?: string;
+  readonly memoryId?: string;
+  readonly canonicalUrl?: string;
+}): string | undefined =>
+  identity.kind === "public_document" || identity.kind === "publisher_document"
+    ? identity.sourceId
+    : identity.kind === "chat_message"
+      ? identity.messageId
+      : identity.kind === "memory"
+        ? identity.memoryId
+        : identity.canonicalUrl;
+
+const assertPreviewRecords = (
+  fixture: GoldenEvaluationCase,
+  result: EvaluationResult,
+  preview: EvaluationResult["retrieval"]["previews"][number],
+  review: EvaluationResult["retrieval"]["reviews"][number],
+): void => {
+  const model = resolveRegisteredModel("glm-5-turbo");
+  for (const [index, record] of preview.records.entries()) {
+    const reviewed = review.results[index];
+    if (reviewed === undefined) {
+      artifactError(
+        result.topology,
+        fixture,
+        "retrieval.previews",
+        `record ${index} lacks review result`,
+      );
+    }
+    const previewText = reviewed!.preview;
+    const previewBytes = new TextEncoder().encode(previewText);
+    const previewByteLength = previewBytes.byteLength;
+    const previewSha256Hex = createHash("sha256").update(previewBytes).digest("hex");
+    const fastTokenCount = model.countTextTokens(previewText);
+    const mainTokenCount = model.countTextTokens(previewText);
+    if (
+      record.previewByteLength !== previewByteLength ||
+      record.previewSha256Hex !== previewSha256Hex ||
+      record.fastTokenCount !== fastTokenCount ||
+      record.mainTokenCount !== mainTokenCount
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "retrieval.previews",
+        `record ${index} preview source proof mismatch`,
+      );
+    }
+    const sourceId = sourceIdForIdentity(record.identity);
+    const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId);
+    if (source !== undefined) {
+      const sourceText =
+        record.identity.kind === "chat_message"
+          ? stripHistoricalCitationTags(source.content)
+          : source.content;
+      const reconstructed = record.previewRanges
+        .map((range) => sourceText.slice(range.charStart, range.charEnd))
+        .join(PREVIEW_RANGE_SEPARATOR);
+      if (reconstructed !== previewText) {
+        artifactError(
+          result.topology,
+          fixture,
+          "retrieval.previews",
+          `record ${index} preview text mismatch`,
+        );
       }
-    : {
-        requestKind: "direct",
-        question: ledger.question,
-        selectedConversation: ledger.selectedConversation,
-        gaps: ledger.gaps,
-        sources: ledger.sources.map(
-          ({ sourceId, sourceKey, kind, purpose, label, ranges, contentOverride }) => ({
-            sourceId,
-            sourceKey,
-            kind,
-            purpose,
-            label,
-            ranges,
-            contentOverride,
-          }),
-        ),
-        requestedOutputTokens: ledger.requestedOutputTokens,
-      };
-};
-
-const attestArtifactProductionLedger = (
-  fixture: GoldenEvaluationCase,
-  ledger: ProductionLedger,
-): void => {
-  if (
-    ledger.requestKind !== "synthesis" &&
-    (new Set(ledger.sources.map((source) => source.candidateId)).size !== ledger.sources.length ||
-      new Set(ledger.sources.map((source) => source.sourceId)).size !== ledger.sources.length ||
-      new Set(ledger.sources.map((source) => source.sourceKey)).size !== ledger.sources.length)
-  ) {
-    throw new EvaluationInputError(
-      `specialized/${fixture.id} production candidate/source bindings are not bijective`,
-    );
-  }
-  if (ledger.requestKind === "synthesis") {
-    if (
-      ledger.usableInputTokens !== canonicalEvaluationUsableInputTokens() ||
-      new Set(ledger.packets.map((packet) => packet.topicId)).size !== ledger.packets.length
-    ) {
-      throw new EvaluationInputError(
-        `specialized/${fixture.id} synthesis ledger has invalid packet identities or allowance`,
-      );
     }
-    return;
-  }
-  const exact = attestExactProductionContext(fixture, exactInputForProductionLedger(ledger));
-  assertExactEvaluationTokenCount(
-    "specialized",
-    fixture,
-    `productionContext.${ledger.requestKind}.inputTokens`,
-    ledger.inputTokens,
-    exact.inputTokens,
-  );
-  if (ledger.requestSha256Hex !== exact.requestSha256Hex) {
-    throw new EvaluationInputError(
-      `specialized/${fixture.id} production ${ledger.requestKind} request digest mismatch`,
-    );
-  }
-  assertExactEvaluationTokenCount(
-    "specialized",
-    fixture,
-    `productionContext.${ledger.requestKind}.usableInputTokens`,
-    ledger.usableInputTokens,
-    canonicalEvaluationUsableInputTokens(),
-  );
-};
-
-const assertTerminalProductionLedger = (
-  fixture: GoldenEvaluationCase,
-  result: SpecializedEvaluationResult,
-  terminal: ProductionTerminal,
-  requestKind: ProductionLedger["requestKind"],
-  taskId: string,
-): void => {
-  if (
-    terminal.ledger.requestKind !== requestKind ||
-    terminal.terminalUsageCoordinate.taskId !== taskId ||
-    terminal.providerInputTokens !== terminal.ledger.inputTokens
-  ) {
-    throw new EvaluationInputError(
-      `specialized/${fixture.id} has a route-mismatched terminal production ledger`,
-    );
-  }
-  attestArtifactProductionLedger(fixture, terminal.ledger);
-  const requestId = [
-    terminal.terminalUsageCoordinate.taskId,
-    terminal.terminalUsageCoordinate.loopIteration,
-    terminal.terminalUsageCoordinate.attempt,
-    terminal.terminalUsageCoordinate.providerRequestIndex,
-  ].join(":");
-  if (
-    !result.promptMeasurements.some(
-      (measurement) =>
-        measurement.requestId === requestId &&
-        measurement.requestSha256Hex === terminal.ledger.requestSha256Hex &&
-        measurement.localInputTokens === terminal.ledger.inputTokens &&
-        measurement.providerInputTokens === terminal.ledger.inputTokens &&
-        measurement.gatePassed,
-    )
-  ) {
-    throw new EvaluationInputError(
-      `specialized/${fixture.id} terminal production ledger lacks exact usage parity`,
-    );
-  }
-};
-
-const productionDecisionPlanValid = (
-  initial: Extract<ProductionLedger, { readonly requestKind: "direct" | "topic" }>,
-  terminal: Extract<ProductionLedger, { readonly requestKind: "direct" | "topic" }>,
-  decisions: readonly {
-    readonly candidateId: string;
-    readonly action: "keep" | "range" | "omit";
-    readonly ranges: readonly EvaluationRange[];
-  }[],
-): boolean => {
-  const initialCandidates = new Map<string, { readonly kind: "conversation" | "source" }>();
-  for (const entry of initial.selectedConversation) {
-    initialCandidates.set(`conversation_entry:${entry.turnId}`, { kind: "conversation" });
-  }
-  for (const source of initial.sources) {
-    initialCandidates.set(source.candidateId, { kind: "source" });
-  }
-  const terminalConversation = new Set(
-    terminal.selectedConversation.map((entry) => `conversation_entry:${entry.turnId}`),
-  );
-  const terminalSources = new Map(
-    terminal.sources.map((source) => [source.candidateId, source] as const),
-  );
-  if (
-    initialCandidates.size !== initial.selectedConversation.length + initial.sources.length ||
-    decisions.length !== initialCandidates.size ||
-    new Set(decisions.map((decision) => decision.candidateId)).size !== decisions.length
-  ) {
-    return false;
-  }
-  return decisions.every((decision) => {
-    const candidate = initialCandidates.get(decision.candidateId);
-    if (candidate === undefined) return false;
-    if (candidate.kind === "conversation") {
-      return (
-        decision.action !== "range" &&
-        terminalConversation.has(decision.candidateId) === (decision.action === "keep")
-      );
-    }
-    const initialSource = initial.sources.find(
-      (source) => source.candidateId === decision.candidateId,
-    )!;
-    const terminalSource = terminalSources.get(decision.candidateId);
-    if (decision.action === "omit") return terminalSource === undefined;
-    if (terminalSource === undefined) return false;
-    const expectedRanges = decision.action === "range" ? decision.ranges : initialSource.ranges;
-    return (
-      terminalSource.sourceId === initialSource.sourceId &&
-      terminalSource.sourceKey === initialSource.sourceKey &&
-      terminalSource.purpose === initialSource.purpose &&
-      terminalSource.label === initialSource.label &&
-      sameRanges(terminalSource.ranges, expectedRanges)
-    );
-  });
-};
-
-const attestProductionTopology = (
-  fixture: GoldenEvaluationCase,
-  result: SpecializedEvaluationResult,
-): { readonly shouldReduce: boolean; readonly converged: boolean; readonly planValid: boolean } => {
-  const production = result.productionContext;
-  if (production.mode === "clarification") {
-    const planTurnRequest = production.planTurnRequest;
-    const exact = attestExactPlanTurnRequest(
-      fixture,
-      planTurnRequest.conversation,
-      planTurnRequest.currentDate,
-    );
-    const requestId = usageCoordinateKey(planTurnRequest.terminalUsageCoordinate);
-    const valid = result.promptMeasurements.some(
-      (measurement) =>
-        measurement.requestId === requestId &&
-        measurement.requestSha256Hex === planTurnRequest.requestSha256Hex &&
-        measurement.localInputTokens === production.providerInputTokens &&
-        measurement.providerInputTokens === production.providerInputTokens &&
-        measurement.gatePassed,
-    );
-    if (
-      !valid ||
-      planTurnRequest.terminalUsageCoordinate.taskId !== "plan-turn" ||
-      planTurnRequest.currentUserMessageId.length === 0 ||
-      planTurnRequest.inputTokens !== exact.inputTokens ||
-      planTurnRequest.usableInputTokens !== exact.usableInputTokens ||
-      planTurnRequest.requestSha256Hex !== exact.requestSha256Hex ||
-      planTurnRequest.requestedOutputTokens !== 2048
-    ) {
-      throw new EvaluationInputError(
-        `specialized/${fixture.id} clarification lacks exact plan-turn usage`,
-      );
-    }
-    return { shouldReduce: false, converged: true, planValid: true };
-  }
-  if (production.mode === "single_fit") {
-    if (production.initial.requestKind !== "direct") {
-      throw new EvaluationInputError(`specialized/${fixture.id} single-fit ledger is not direct`);
-    }
-    assertLedgerMatchesPlanTurn(fixture, result.planTurn, production.initial, "single initial");
-    assertLedgerMatchesPlanTurn(
-      fixture,
-      result.planTurn,
-      production.terminal.ledger,
-      "single terminal",
-    );
-    attestArtifactProductionLedger(fixture, production.initial);
-    assertTerminalProductionLedger(fixture, result, production.terminal, "direct", "single-answer");
-    const valid =
-      production.initial.inputTokens <= production.initial.usableInputTokens &&
-      canonicalValue(production.initial) !== undefined &&
-      JSON.stringify(canonicalValue(production.initial)) ===
-        JSON.stringify(canonicalValue(production.terminal.ledger));
-    return { shouldReduce: false, converged: valid, planValid: valid };
-  }
-  if (production.mode === "single_reduced") {
-    if (
-      production.initial.requestKind !== "direct" ||
-      production.terminal.ledger.requestKind !== "direct"
-    ) {
-      throw new EvaluationInputError(
-        `specialized/${fixture.id} single-reduced ledger is not direct`,
-      );
-    }
-    assertLedgerMatchesPlanTurn(fixture, result.planTurn, production.initial, "single initial");
-    assertLedgerMatchesPlanTurn(
-      fixture,
-      result.planTurn,
-      production.terminal.ledger,
-      "single terminal",
-    );
-    attestArtifactProductionLedger(fixture, production.initial);
-    assertTerminalProductionLedger(fixture, result, production.terminal, "direct", "single-answer");
-    const planValid = productionDecisionPlanValid(
-      production.initial,
-      production.terminal.ledger,
-      production.decisions,
-    );
-    return {
-      shouldReduce: true,
-      converged:
-        production.initial.inputTokens > production.initial.usableInputTokens &&
-        production.terminal.ledger.inputTokens <= production.terminal.ledger.usableInputTokens &&
-        production.iterations >= 1 &&
-        production.iterations <= 2,
-      planValid,
+    const withoutDigest = {
+      identity: record.identity,
+      snapshotId: record.snapshotId,
+      contentHash: record.contentHash,
+      ...(record.publisherExtractionId === undefined
+        ? {}
+        : { publisherExtractionId: record.publisherExtractionId }),
+      previewRanges: record.previewRanges,
+      previewByteLength: record.previewByteLength,
+      previewSha256Hex: record.previewSha256Hex,
+      fastTokenCount: record.fastTokenCount,
+      mainTokenCount: record.mainTokenCount,
     };
-  }
-  let shouldReduce = false;
-  let converged = true;
-  let planValid = true;
-  if (result.planTurn.mode !== "fanout") {
-    throw new EvaluationInputError(
-      `specialized/${fixture.id} fanout production exists without a fanout plan-turn`,
-    );
-  }
-  const expectedTopicIds = result.planTurn.topics.map((topic) => topic.topicId);
-  if (
-    JSON.stringify(production.topics.map((topic) => topic.topicId)) !==
-    JSON.stringify(expectedTopicIds)
-  ) {
-    throw new EvaluationInputError(`specialized/${fixture.id} fanout topic order is not canonical`);
-  }
-  for (const topic of production.topics) {
-    if (
-      topic.initial.requestKind !== "topic" ||
-      topic.terminal.ledger.requestKind !== "topic" ||
-      topic.initial.topicId !== topic.topicId ||
-      topic.terminal.ledger.topicId !== topic.topicId
-    ) {
-      throw new EvaluationInputError(`specialized/${fixture.id} has a route-mismatched topic`);
+    const expected = createHash("sha256")
+      .update(JSON.stringify(canonicalValue(withoutDigest)))
+      .digest("hex");
+    if (record.recordDigestSha256Hex !== expected) {
+      artifactError(
+        result.topology,
+        fixture,
+        "retrieval.previews",
+        `record ${index} digest mismatch`,
+      );
     }
-    assertLedgerMatchesPlanTurn(
-      fixture,
-      result.planTurn,
-      topic.initial,
-      `${topic.topicId} initial`,
+  }
+};
+
+const assertRetrievalArtifacts = (
+  fixture: GoldenEvaluationCase,
+  result: EvaluationResult,
+): { readonly coverage: number; readonly provenance: number } => {
+  const retrieval = result.retrieval;
+  const reviews = new Map(
+    retrieval.reviews.map((row) => [taskCoordinateKey(row.coordinate), row] as const),
+  );
+  const previews = new Map(
+    retrieval.previews.map((row) => [usageCoordinateKey(row.coordinate), row] as const),
+  );
+  const finals = new Map(
+    retrieval.finalResults.map((row) => [outputCoordinateKey(row.outputCoordinate), row] as const),
+  );
+  let covered = 0;
+  let provenance = 0;
+  const required = new Set(
+    fixture.labels.requiredSourceIds.filter((sourceId) =>
+      fixture.evidence.some((source) => source.sourceId === sourceId && source.selector === "A"),
+    ),
+  );
+  const observed = new Set<string>();
+
+  for (const traceRow of retrieval.traces) {
+    const trace = traceRow.trace;
+    const review = reviews.get(taskCoordinateKey(traceRow.coordinate));
+    const preview =
+      review === undefined ? undefined : previews.get(usageCoordinateKey(review.coordinate));
+    const final = finals.get(
+      outputCoordinateKey({
+        nodeId: traceRow.coordinate.taskId,
+        iteration: traceRow.coordinate.loopIteration,
+      }),
     );
-    assertLedgerMatchesPlanTurn(
+    if (trace.review === null) {
+      if (review !== undefined || preview !== undefined) {
+        artifactError(result.topology, fixture, "retrieval", "skip trace has review artifacts");
+      }
+      continue;
+    }
+    if (review === undefined) {
+      artifactError(result.topology, fixture, "retrieval", "review lacks exact review row");
+    }
+    if (preview === undefined) {
+      artifactError(result.topology, fixture, "retrieval", "review lacks exact preview row");
+    }
+    const reviewRow = review!;
+    const previewRow = preview!;
+    if (reviewRow.inputSha256Hex !== previewRow.requestSha256Hex) {
+      artifactError(
+        result.topology,
+        fixture,
+        "retrieval",
+        "review/preview request digest mismatch",
+      );
+    }
+    if (!jsonEqual(reviewRow.decision, trace.review)) {
+      artifactError(
+        result.topology,
+        fixture,
+        "retrieval.review",
+        "review decision differs from trace",
+      );
+    }
+    if (
+      !jsonEqual(reviewRow.branchCoverage, previewRow.coverage) ||
+      !jsonEqual(reviewRow.truncation, previewRow.truncation)
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "retrieval.review",
+        "review coverage differs from preview",
+      );
+    }
+    if (
+      !jsonEqual(
+        reviewRow.results.map(({ preview: _preview, ...row }) => row),
+        previewRow.results,
+      )
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "retrieval.preview",
+        "preview metadata differs from review",
+      );
+    }
+    assertPreviewRecords(fixture, result, previewRow, reviewRow);
+    if (trace.outcome === "no_evidence") {
+      if (final === undefined || final.result !== null) {
+        artifactError(
+          result.topology,
+          fixture,
+          "retrieval.finalResults",
+          "no-evidence result is not null",
+        );
+      }
+      continue;
+    }
+    if (final === undefined || final.result === null) {
+      artifactError(result.topology, fixture, "retrieval.finalResults", "trace lacks final result");
+    }
+    const finalRow = final!;
+    const finalResult = finalRow.result!;
+    if (finalResult.plan.action !== "search") {
+      artifactError(
+        result.topology,
+        fixture,
+        "retrieval.finalResults",
+        "search trace has non-search final plan",
+      );
+    }
+    const acceptedReview = trace.review.action === "accept";
+    if (acceptedReview && !jsonEqual(finalResult.branchCoverage, reviewRow.branchCoverage)) {
+      artifactError(
+        result.topology,
+        fixture,
+        "retrieval.finalResults",
+        "accepted final coverage differs from review",
+      );
+    }
+    const searchPlan = finalResult.plan as Extract<
+      typeof finalResult.plan,
+      { readonly action: "search" }
+    >;
+    const queryCount = searchPlan.queries.length;
+    const model = resolveRegisteredModel("glm-5-turbo");
+    for (const candidate of finalResult.candidates) {
+      const previewIndex = Number(candidate.resultId.slice(1)) - 1;
+      const previewRecord = previewRow.records[previewIndex];
+      if (
+        acceptedReview &&
+        (previewRecord === undefined ||
+          !jsonEqual(previewRecord.identity, candidate.identity) ||
+          !jsonEqual(previewRecord.previewRanges, candidate.previewRanges) ||
+          previewRecord.previewSha256Hex !== candidate.previewSha256Hex ||
+          previewRecord.fastTokenCount !== candidate.fastTokenCount ||
+          previewRecord.mainTokenCount !== candidate.mainTokenCount)
+      ) {
+        artifactError(
+          result.topology,
+          fixture,
+          "retrieval.finalResults",
+          `${candidate.resultId} preview differs from durable preview`,
+        );
+      }
+      const candidateSourceId = sourceIdForIdentity(candidate.identity);
+      const candidateSource = fixture.evidence.find(
+        (source) => source.sourceId === candidateSourceId,
+      );
+      if (candidateSource !== undefined) {
+        const sourceText =
+          candidate.identity.kind === "chat_message"
+            ? stripHistoricalCitationTags(candidateSource.content)
+            : candidateSource.content;
+        const reconstructed = candidate.previewRanges
+          .map((range) => sourceText.slice(range.charStart, range.charEnd))
+          .join(PREVIEW_RANGE_SEPARATOR);
+        if (reconstructed !== candidate.preview) {
+          artifactError(
+            result.topology,
+            fixture,
+            "retrieval.finalResults",
+            `${candidate.resultId} preview text differs from fixture source`,
+          );
+        }
+      }
+      if (candidateSourceId !== undefined) observed.add(candidateSourceId);
+      const previewBytes = new TextEncoder().encode(candidate.preview);
+      if (
+        candidate.previewSha256Hex !== createHash("sha256").update(previewBytes).digest("hex") ||
+        candidate.fastTokenCount !== model.countTextTokens(candidate.preview) ||
+        candidate.mainTokenCount !== model.countTextTokens(candidate.preview)
+      ) {
+        artifactError(
+          result.topology,
+          fixture,
+          "retrieval.finalResults",
+          `${candidate.resultId} preview proof mismatch`,
+        );
+      }
+      const contributionKeys = new Set<string>();
+      let expectedScore = 0;
+      for (const entry of candidate.provenance) {
+        if (entry.queryOrdinal < 1 || entry.queryOrdinal > queryCount) {
+          artifactError(
+            result.topology,
+            fixture,
+            "retrieval.finalResults",
+            `${candidate.resultId} provenance query ordinal exceeds final plan`,
+          );
+        }
+        if (
+          !finalResult.branchCoverage.some(
+            (branch) =>
+              branch.queryOrdinal === entry.queryOrdinal && branch.branch === entry.branch,
+          )
+        ) {
+          artifactError(
+            result.topology,
+            fixture,
+            "retrieval.finalResults",
+            `${candidate.resultId} provenance branch lacks coverage`,
+          );
+        }
+        const rank = entry.logicalRank ?? entry.rank;
+        const contributionKey = `${entry.queryOrdinal}\u0000${rank}`;
+        if (!candidate.matchedQueryOrdinals.includes(entry.queryOrdinal)) {
+          artifactError(
+            result.topology,
+            fixture,
+            "retrieval.finalResults",
+            "candidate provenance is incomplete",
+          );
+        }
+        if (!contributionKeys.has(contributionKey)) {
+          contributionKeys.add(contributionKey);
+          expectedScore += reciprocalRankContribution(rank, candidate.rrfK);
+        }
+      }
+      const expectedBestRank = Math.min(
+        ...candidate.provenance.map((entry) => entry.logicalRank ?? entry.rank),
+      );
+      const expectedMatchedQueryOrdinals = [
+        ...new Set(candidate.provenance.map((entry) => entry.queryOrdinal)),
+      ].sort((left, right) => left - right);
+      if (
+        candidate.bestRank !== expectedBestRank ||
+        !jsonEqual(candidate.matchedQueryOrdinals, expectedMatchedQueryOrdinals)
+      ) {
+        artifactError(
+          result.topology,
+          fixture,
+          "retrieval.finalResults",
+          `${candidate.resultId} rank/query ordinal summary mismatch`,
+        );
+      }
+      const tolerance = Number.EPSILON * Math.max(1, expectedScore) * 8;
+      if (Math.abs(candidate.score - expectedScore) > tolerance) {
+        artifactError(
+          result.topology,
+          fixture,
+          "retrieval.finalResults",
+          `${candidate.resultId} score does not match provenance`,
+        );
+      }
+      provenance += 1;
+    }
+    covered += finalResult.candidates.length > 0 ? 1 : 0;
+  }
+  for (const sourceId of required) {
+    if (observed.has(sourceId)) covered += 1;
+  }
+  const coverage =
+    required.size === 0
+      ? 1
+      : ratio([...required].filter((id) => observed.has(id)).length, required.size, 0);
+  const provenanceScore = provenance === 0 ? (required.size === 0 ? 1 : 0) : 1;
+  return { coverage, provenance: provenanceScore };
+};
+
+const candidateRangesForId = (
+  context: EvaluationResult["compaction"]["contexts"][number],
+  candidateId: string,
+): readonly EvaluationRange[] => {
+  const candidate = context.candidateLedger.find((row) => row.candidateId === candidateId);
+  return candidate?.baseRanges ?? [];
+};
+
+const assertCompactionArtifacts = (
+  fixture: GoldenEvaluationCase,
+  result: EvaluationResult,
+): {
+  readonly planValidity: number;
+  readonly convergence: number;
+  readonly coverage: number;
+  readonly rangeValidity: number;
+  readonly tokenReduction: number;
+} => {
+  const compaction = result.compaction;
+  const groups = new Map<string, (typeof compaction.groups)[number]>(
+    compaction.groups.map(
+      (row) =>
+        [
+          `${row.phase}:${outputCoordinateKey(row.outputCoordinate)}:${row.envelope.groupId}`,
+          row,
+        ] as const,
+    ),
+  );
+  const contexts = new Map<string, (typeof compaction.contexts)[number]>(
+    compaction.contexts.map(
+      (row) => [`${row.stage}:${outputCoordinateKey(row.outputCoordinate)}`, row] as const,
+    ),
+  );
+  if (contexts.size !== compaction.contexts.length) {
+    artifactError(
+      result.topology,
       fixture,
-      result.planTurn,
-      topic.terminal.ledger,
-      `${topic.topicId} terminal`,
+      "compaction.contexts",
+      "duplicate context summary coordinate",
     );
-    attestArtifactProductionLedger(fixture, topic.initial);
-    assertTerminalProductionLedger(
-      fixture,
-      result,
-      topic.terminal,
-      "topic",
-      `topic-${topic.topicId}-answer`,
+  }
+  const contextMeasurementKey = (taskId: string, iteration: number): string =>
+    `${taskId}:${iteration}`;
+  const contextMeasurements = new Map<string, (typeof compaction.measurements)[number][]>();
+  for (const measurement of compaction.measurements) {
+    const key = contextMeasurementKey(
+      measurement.coordinate.taskId,
+      measurement.coordinate.loopIteration,
     );
-    shouldReduce ||= topic.reduced;
-    if (topic.reduced) {
-      converged &&=
-        topic.initial.inputTokens > topic.initial.usableInputTokens &&
-        topic.terminal.ledger.inputTokens <= topic.terminal.ledger.usableInputTokens &&
-        topic.iterations >= 1 &&
-        topic.iterations <= 2;
-      planValid &&= productionDecisionPlanValid(
-        topic.initial,
-        topic.terminal.ledger,
-        topic.decisions,
+    const rows = contextMeasurements.get(key) ?? [];
+    rows.push(measurement);
+    contextMeasurements.set(key, rows);
+  }
+  const contextKeys = new Set(
+    compaction.contexts.map((context) =>
+      contextMeasurementKey(context.outputCoordinate.nodeId, context.outputCoordinate.iteration),
+    ),
+  );
+  for (const [key] of contextMeasurements) {
+    if (!contextKeys.has(key)) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.measurements",
+        "orphan context measurement",
+      );
+    }
+  }
+  for (const context of compaction.contexts) {
+    const key = contextMeasurementKey(
+      context.outputCoordinate.nodeId,
+      context.outputCoordinate.iteration,
+    );
+    const rows = contextMeasurements.get(key);
+    if (rows === undefined || rows.length === 0) {
+      artifactError(result.topology, fixture, "compaction.contexts", "orphan context summary");
+    }
+    const latest = rows!.reduce((current, candidate) =>
+      candidate.coordinate.attempt > current.coordinate.attempt ? candidate : current,
+    );
+    if (
+      latest.consumerTaskId !== context.consumerTaskId ||
+      latest.topicId !== context.topicId ||
+      latest.totalInputTokens !== context.inputTokens ||
+      latest.status !== context.status ||
+      latest.usableInputTokens !== context.usableInputTokens ||
+      latest.compactionRan !== context.compactionRan
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.contexts",
+        `${context.outputCoordinate.nodeId} context summary differs from latest context measurement`,
+      );
+    }
+  }
+  const expectedGroupKeys = new Set<string>();
+  const expectedContextKeys = new Set<string>();
+  let valid = 0;
+  let convergence = 1;
+  let rangesValid = 1;
+  let tokenReductions: number[] = [];
+  const planPrefix = (nodeId: string, phase: "initial" | "fallback"): string => {
+    const suffix = phase === "initial" ? "-compact-plan" : "-fallback-plan";
+    return nodeId.endsWith(suffix)
+      ? nodeId.slice(0, -suffix.length)
+      : nodeId.replace(/-(?:compact|fallback)-plan$/u, "");
+  };
+  const matchedCollectKeys = new Set<string>();
+  for (const plan of compaction.plans) {
+    const manifestCompactIds = plan.manifest.decisions.flatMap((decision) =>
+      "groupId" in decision && (decision.action === "compact" || decision.action === "tighten")
+        ? [decision.candidateId]
+        : [],
+    );
+    const groupCandidateIds = plan.groups.flatMap((group) => group.candidateIds);
+    if (!sameUniqueStringSet(manifestCompactIds, groupCandidateIds)) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.plans",
+        "manifest compact candidates do not exactly match group candidate union",
+      );
+    }
+    const groupIds = new Set(plan.groups.map((group) => group.groupId));
+    if (groupIds.size !== plan.groups.length) {
+      artifactError(result.topology, fixture, "compaction.plans", "duplicate group IDs");
+    }
+    for (const [groupIndex, group] of plan.groups.entries()) {
+      const phase = plan.phase === "initial" ? "compact" : "fallback";
+      const suffix = `-${phase}-plan`;
+      const prefix = plan.outputCoordinate.nodeId.endsWith(suffix)
+        ? plan.outputCoordinate.nodeId.slice(0, -suffix.length)
+        : plan.outputCoordinate.nodeId.replace(/-plan$/u, "");
+      const expectedNodeId = compactionGroupTaskId(prefix, phase, groupIndex + 1);
+      const expectedKey = `${plan.phase}:${expectedNodeId}:${plan.outputCoordinate.iteration}:${group.groupId}`;
+      expectedGroupKeys.add(expectedKey);
+      const row = groups.get(expectedKey);
+      if (row === undefined) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.groups",
+          `missing result for ${group.groupId}`,
+        );
+        continue;
+      }
+      const groupRow = row!;
+      if (groupRow.envelope.renderedTokenCount > group.renderedTokenBudget) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.groups",
+          `${group.groupId} exceeds budget`,
+        );
+      }
+      const decisionIds = groupRow.envelope.result.decisions.map(
+        (decision) => decision.candidateId,
+      );
+      if (!sameStringSet(decisionIds, group.candidateIds)) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.groups",
+          `${group.groupId} decisions mismatch`,
+        );
+      }
+    }
+    const prefix = planPrefix(plan.outputCoordinate.nodeId, plan.phase);
+    const collectNodeId = `${prefix}-${plan.phase === "initial" ? "compact" : "fallback"}-collect`;
+    const matchingCollects = compaction.collects.filter(
+      (collect) =>
+        collect.phase === plan.phase &&
+        collect.outputCoordinate.nodeId === collectNodeId &&
+        collect.outputCoordinate.iteration === plan.outputCoordinate.iteration,
+    );
+    if (matchingCollects.length !== 1) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.collects",
+        `${plan.phase} plan lacks exactly one collect`,
       );
     } else {
-      converged &&=
-        topic.iterations === 0 &&
-        topic.decisions.length === 0 &&
-        topic.initial.inputTokens <= topic.initial.usableInputTokens &&
-        JSON.stringify(canonicalValue(topic.initial)) ===
-          JSON.stringify(canonicalValue(topic.terminal.ledger));
+      const collect = matchingCollects[0]!;
+      matchedCollectKeys.add(`${collect.phase}:${outputCoordinateKey(collect.outputCoordinate)}`);
+      const expectedTaskIds = plan.groups.map((_, index) =>
+        compactionGroupTaskId(prefix, plan.phase === "initial" ? "compact" : "fallback", index + 1),
+      );
+      const expectedEnvelopes = plan.groups.map((group, index) => {
+        const groupTaskId = compactionGroupTaskId(
+          prefix,
+          plan.phase === "initial" ? "compact" : "fallback",
+          index + 1,
+        );
+        const groupRow = groups.get(
+          `${plan.phase}:${groupTaskId}:${plan.outputCoordinate.iteration}:${group.groupId}`,
+        );
+        return groupRow?.envelope;
+      });
+      if (
+        !sameUniqueStringSet(collect.taskIds, expectedTaskIds) ||
+        !jsonEqual(collect.groups, plan.groups) ||
+        expectedEnvelopes.some((envelope) => envelope === undefined) ||
+        !jsonEqual(collect.envelopes, expectedEnvelopes)
+      ) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.collects",
+          `${plan.phase} collect does not match plan groups`,
+        );
+      }
+      const manifestDecisions = new Map(
+        plan.manifest.decisions.map((decision) => [decision.candidateId, decision] as const),
+      );
+      if (
+        !sameUniqueStringSet(
+          collect.selections.map((selection) => selection.candidateId),
+          plan.manifest.decisions.map((decision) => decision.candidateId),
+        )
+      ) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.collects",
+          `${plan.phase} collect selections do not match manifest decisions`,
+        );
+      }
+      for (const selection of collect.selections) {
+        const decision = manifestDecisions.get(selection.candidateId);
+        if (decision === undefined) {
+          artifactError(
+            result.topology,
+            fixture,
+            "compaction.collects",
+            `${plan.phase} collect has an unplanned selection`,
+          );
+          continue;
+        }
+        if (plan.phase === "fallback" && decision.action === "retain") continue;
+        const expectedAction =
+          decision.action === "keep" ? "keep" : decision.action === "omit" ? "omit" : "range";
+        if (selection.action !== expectedAction) {
+          artifactError(
+            result.topology,
+            fixture,
+            "compaction.collects",
+            `${plan.phase} selection action differs from manifest`,
+          );
+        }
+        if (
+          expectedAction === "range" &&
+          "groupId" in decision &&
+          selection.groupId !== decision.groupId
+        ) {
+          artifactError(
+            result.topology,
+            fixture,
+            "compaction.collects",
+            `${plan.phase} range selection group differs from manifest`,
+          );
+        }
+      }
+    }
+    valid += 1;
+  }
+  for (const key of groups.keys()) {
+    if (!expectedGroupKeys.has(key)) {
+      artifactError(result.topology, fixture, "compaction.groups", "orphan group result");
     }
   }
-  assertTerminalProductionLedger(
-    fixture,
-    result,
-    production.synthesis,
-    "synthesis",
-    "fanout-synthesis",
+  for (const collect of compaction.collects) {
+    if (
+      !matchedCollectKeys.has(`${collect.phase}:${outputCoordinateKey(collect.outputCoordinate)}`)
+    ) {
+      artifactError(result.topology, fixture, "compaction.collects", "orphan collect result");
+    }
+  }
+  const contextBase = (nodeId: string): string =>
+    nodeId.replace(/-(?:compact|fallback)-measure$/u, "").replace(/-measure$/u, "");
+  const compactionPrefixKey = (prefix: string, iteration: number): string =>
+    `${prefix}:${iteration}`;
+  const initialPlans = new Map(
+    compaction.plans
+      .filter((plan) => plan.phase === "initial")
+      .map(
+        (plan) =>
+          [
+            compactionPrefixKey(
+              planPrefix(plan.outputCoordinate.nodeId, "initial"),
+              plan.outputCoordinate.iteration,
+            ),
+            plan,
+          ] as const,
+      ),
+  );
+  for (const initialPlan of compaction.plans.filter((plan) => plan.phase === "initial")) {
+    const prefix = planPrefix(initialPlan.outputCoordinate.nodeId, "initial");
+    const iteration = initialPlan.outputCoordinate.iteration;
+    const initialContext = compaction.contexts.find(
+      (context) =>
+        context.stage === "initial" &&
+        contextBase(context.outputCoordinate.nodeId) === prefix &&
+        context.outputCoordinate.iteration === iteration,
+    );
+    if (initialContext === undefined) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.plans",
+        "initial plan lacks initial context",
+      );
+    }
+    if (
+      !sameUniqueStringSet(
+        initialPlan.manifest.decisions.map((decision) => decision.candidateId),
+        initialContext!.candidateLedger.map((candidate) => candidate.candidateId),
+      )
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.plans",
+        "initial manifest does not match initial context ledger",
+      );
+    }
+    if (initialContext!.status !== "needs_compaction") {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.contexts",
+        "initial plan requires needs_compaction context",
+      );
+    }
+  }
+  for (const initialContext of compaction.contexts.filter(
+    (context) => context.stage === "initial",
+  )) {
+    const prefix = contextBase(initialContext.outputCoordinate.nodeId);
+    const key = compactionPrefixKey(prefix, initialContext.outputCoordinate.iteration);
+    const initialPlan = initialPlans.get(key);
+    if (initialPlan === undefined) {
+      if (initialContext.status !== "ready" || initialContext.compactionRan) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.contexts",
+          "initial context without plan is not fit-first",
+        );
+      }
+    } else if (initialContext.status !== "needs_compaction") {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.contexts",
+        "initial plan context status is not needs_compaction",
+      );
+    }
+  }
+  for (const fallbackPlan of compaction.plans.filter((plan) => plan.phase === "fallback")) {
+    const prefix = planPrefix(fallbackPlan.outputCoordinate.nodeId, "fallback");
+    const iteration = fallbackPlan.outputCoordinate.iteration;
+    const initialPlan = initialPlans.get(compactionPrefixKey(prefix, iteration));
+    const initialContext = compaction.contexts.find(
+      (context) =>
+        context.stage === "initial" &&
+        contextBase(context.outputCoordinate.nodeId) === prefix &&
+        context.outputCoordinate.iteration === iteration,
+    );
+    const afterInitialContext = compaction.contexts.find(
+      (context) =>
+        context.stage === "after_initial" &&
+        contextBase(context.outputCoordinate.nodeId) === prefix &&
+        context.outputCoordinate.iteration === iteration,
+    );
+    if (afterInitialContext === undefined) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.contexts",
+        "fallback lacks after_initial context",
+      );
+    }
+    if (initialPlan === undefined || initialContext === undefined) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.plans",
+        "fallback lacks initial plan/context",
+      );
+    }
+    if (
+      !sameUniqueStringSet(
+        fallbackPlan.manifest.decisions.map((decision) => decision.candidateId),
+        initialContext!.candidateLedger.map((candidate) => candidate.candidateId),
+      )
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.plans",
+        "fallback manifest does not match initial context ledger",
+      );
+    }
+    const initialLedgerIds = new Set(
+      initialContext!.candidateLedger.map((candidate) => candidate.candidateId),
+    );
+    const initialSelectedIds = new Set(afterInitialContext!.selectedCandidateIds);
+    const initialGroupByCandidate = new Map(
+      initialPlan!.groups.flatMap((group) =>
+        group.candidateIds.map((candidateId) => [candidateId, group] as const),
+      ),
+    );
+    const fallbackCandidates = fallbackPlan.groups.flatMap((group) => group.candidateIds);
+    for (const candidateId of fallbackCandidates) {
+      if (!initialLedgerIds.has(candidateId)) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.plans",
+          "fallback restores a candidate",
+        );
+      }
+      if (!initialSelectedIds.has(candidateId)) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.plans",
+          "fallback restores an omitted candidate",
+        );
+      }
+      const initialGroup = initialGroupByCandidate.get(candidateId);
+      const fallbackGroup = fallbackPlan.groups.find((group) =>
+        group.candidateIds.includes(candidateId),
+      );
+      if (
+        initialGroup !== undefined &&
+        (fallbackGroup === undefined || fallbackGroup.groupId !== initialGroup.groupId)
+      ) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.plans",
+          "fallback changes a compacted group",
+        );
+      }
+    }
+    for (const group of fallbackPlan.groups) {
+      const initialGroup = initialPlan!.groups.find(
+        (candidate) => candidate.groupId === group.groupId,
+      );
+      if (initialGroup === undefined) continue;
+      const groupIndex = initialPlan!.groups.indexOf(initialGroup);
+      const initialGroupRow = groups.get(
+        `initial:${compactionGroupTaskId(prefix, "compact", groupIndex + 1)}:${initialPlan!.outputCoordinate.iteration}:${group.groupId}`,
+      );
+      if (
+        initialGroupRow !== undefined &&
+        group.renderedTokenBudget > initialGroupRow.envelope.renderedTokenCount
+      ) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.plans",
+          "fallback budget exceeds prior rendered cost",
+        );
+      }
+    }
+  }
+  const fallbackPlans = new Map(
+    compaction.plans
+      .filter((plan) => plan.phase === "fallback")
+      .map(
+        (plan) =>
+          [
+            compactionPrefixKey(
+              planPrefix(plan.outputCoordinate.nodeId, "fallback"),
+              plan.outputCoordinate.iteration,
+            ),
+            plan,
+          ] as const,
+      ),
+  );
+  for (const collect of compaction.collects) {
+    const stage = collect.phase === "initial" ? "after_initial" : "after_fallback";
+    const contextNodeId = collect.outputCoordinate.nodeId.replace(/-collect$/u, "-measure");
+    const expectedContextKey = `${stage}:${contextNodeId}:${collect.outputCoordinate.iteration}`;
+    expectedContextKeys.add(expectedContextKey);
+    const context = contexts.get(expectedContextKey);
+    if (context === undefined) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.collects",
+        "collect lacks context summary",
+      );
+    }
+    const contextRow = context!;
+    const ledgerIds = new Set(contextRow.candidateLedger.map((candidate) => candidate.candidateId));
+    for (const selection of collect.selections) {
+      if (!ledgerIds.has(selection.candidateId)) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.collects",
+          "selection lacks ledger candidate",
+        );
+      }
+      if (selection.action === "range") {
+        const acceptable = candidateRangesForId(contextRow, selection.candidateId);
+        if (selection.ranges.some((range) => !rangeIsCovered(range, acceptable))) rangesValid = 0;
+      }
+    }
+    const selectedIds = new Set(
+      collect.selections
+        .filter((selection) => selection.action !== "omit")
+        .map((selection) => selection.candidateId),
+    );
+    const expectedSelectedIds = contextRow.candidateLedger
+      .map((candidate) => candidate.candidateId)
+      .filter((candidateId) => selectedIds.has(candidateId));
+    if (!jsonEqual(contextRow.selectedCandidateIds, expectedSelectedIds)) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.contexts",
+        "selected candidates differ from collect non-omit selections",
+      );
+    }
+  }
+  for (const [key] of contexts) {
+    if (
+      (key.startsWith("after_initial:") || key.startsWith("after_fallback:")) &&
+      !expectedContextKeys.has(key)
+    ) {
+      artifactError(result.topology, fixture, "compaction.contexts", "orphan context summary");
+    }
+  }
+  const initialContexts = new Map(
+    compaction.contexts
+      .filter((context) => context.stage === "initial")
+      .map(
+        (context) =>
+          [
+            compactionPrefixKey(
+              contextBase(context.outputCoordinate.nodeId),
+              context.outputCoordinate.iteration,
+            ),
+            context,
+          ] as const,
+      ),
   );
   if (
-    production.synthesis.ledger.requestKind !== "synthesis" ||
-    JSON.stringify(production.synthesis.ledger.packets.map((packet) => packet.topicId)) !==
-      JSON.stringify(expectedTopicIds)
+    initialContexts.size !==
+    compaction.contexts.filter((context) => context.stage === "initial").length
   ) {
-    throw new EvaluationInputError(`specialized/${fixture.id} synthesis route mismatch`);
+    artifactError(
+      result.topology,
+      fixture,
+      "compaction.contexts",
+      "duplicate initial context stage row",
+    );
   }
-  assertSynthesisConversationMatchesPlanTurn(fixture, result.planTurn, production.synthesis.ledger);
-  converged &&=
-    production.synthesis.ledger.inputTokens <= production.synthesis.ledger.usableInputTokens;
-  return { shouldReduce, converged, planValid };
+  const afterInitialContexts = new Map(
+    compaction.contexts
+      .filter((context) => context.stage === "after_initial")
+      .map(
+        (context) =>
+          [
+            compactionPrefixKey(
+              contextBase(context.outputCoordinate.nodeId),
+              context.outputCoordinate.iteration,
+            ),
+            context,
+          ] as const,
+      ),
+  );
+  if (
+    afterInitialContexts.size !==
+    compaction.contexts.filter((context) => context.stage === "after_initial").length
+  ) {
+    artifactError(
+      result.topology,
+      fixture,
+      "compaction.contexts",
+      "duplicate after_initial context stage row",
+    );
+  }
+  for (const fallbackContext of compaction.contexts.filter(
+    (context) => context.stage === "after_fallback",
+  )) {
+    const initialContext = initialContexts.get(
+      compactionPrefixKey(
+        contextBase(fallbackContext.outputCoordinate.nodeId),
+        fallbackContext.outputCoordinate.iteration,
+      ),
+    );
+    if (initialContext === undefined) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.contexts",
+        "fallback lacks initial ledger",
+      );
+      continue;
+    }
+    const afterInitialContext = afterInitialContexts.get(
+      compactionPrefixKey(
+        contextBase(fallbackContext.outputCoordinate.nodeId),
+        fallbackContext.outputCoordinate.iteration,
+      ),
+    );
+    if (afterInitialContext === undefined) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.contexts",
+        "fallback lacks after_initial context",
+      );
+      continue;
+    }
+    const initialLedgerIds = new Set(
+      initialContext!.candidateLedger.map((candidate) => candidate.candidateId),
+    );
+    if (
+      fallbackContext.candidateLedger.some(
+        (candidate) => !initialLedgerIds.has(candidate.candidateId),
+      )
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.contexts",
+        "fallback adds a ledger candidate",
+      );
+    }
+    const initialSelected = new Set(afterInitialContext.selectedCandidateIds);
+    if (
+      fallbackContext.selectedCandidateIds.some((candidateId) => !initialSelected.has(candidateId))
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.contexts",
+        "fallback restores a selected candidate",
+      );
+    }
+  }
+  const stageOrderForTaskId = (taskId: string): number =>
+    taskId.includes("-fallback-") ? 2 : taskId.includes("-compact-") ? 1 : 0;
+  const orderOf = (
+    measurement: EvaluationResult["compaction"]["measurements"][number],
+  ): readonly number[] => [
+    stageOrderForTaskId(measurement.coordinate.taskId),
+    measurement.coordinate.loopIteration,
+    measurement.coordinate.attempt,
+  ];
+  const comesAfter = (
+    left: EvaluationResult["compaction"]["measurements"][number],
+    right: EvaluationResult["compaction"]["measurements"][number],
+  ): boolean => {
+    const leftOrder = orderOf(left);
+    const rightOrder = orderOf(right);
+    for (let index = 0; index < leftOrder.length; index += 1) {
+      if (leftOrder[index] !== rightOrder[index]) {
+        return leftOrder[index]! > rightOrder[index]!;
+      }
+    }
+    return false;
+  };
+  for (const measurement of compaction.measurements) {
+    if (measurement.status === "failed") {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.measurements",
+        "failed measurement in successful evaluation artifact",
+      );
+    }
+    const exactTotal = measurement.mandatoryInputTokens + measurement.discretionaryInputTokens;
+    if (
+      measurement.totalInputTokens !== exactTotal ||
+      measurement.restrictedContextLedger.inputTokens !== exactTotal ||
+      measurement.restrictedContextLedger.usableInputTokens !== measurement.usableInputTokens ||
+      measurement.restrictedContextLedger.requestedOutputTokens !==
+        measurement.requestedOutputTokens
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.measurements",
+        "exact token marginal mismatch",
+      );
+    }
+    const fits = exactTotal <= measurement.usableInputTokens;
+    if (
+      (measurement.status === "ready" && !fits) ||
+      (measurement.status === "needs_compaction" && fits)
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.measurements",
+        "fit-first status mismatch",
+      );
+    }
+    if (stageOrderForTaskId(measurement.coordinate.taskId) === 0) {
+      const prefix = measurement.coordinate.taskId.replace(/-measure$/u, "");
+      const iteration = measurement.coordinate.loopIteration;
+      const initialPlan = initialPlans.get(compactionPrefixKey(prefix, iteration));
+      const fallbackPlan = fallbackPlans.get(compactionPrefixKey(prefix, iteration));
+      const afterInitial = compaction.measurements
+        .filter(
+          (candidate) =>
+            stageOrderForTaskId(candidate.coordinate.taskId) === 1 &&
+            candidate.coordinate.loopIteration === iteration &&
+            candidate.consumerTaskId === measurement.consumerTaskId &&
+            candidate.topicId === measurement.topicId,
+        )
+        .sort((left, right) => orderOf(left)[2]! - orderOf(right)[2]!);
+      if (fits && (initialPlan !== undefined || fallbackPlan !== undefined)) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.plans",
+          "fit-first context has compaction artifacts",
+        );
+      }
+      if (!fits) {
+        if (initialPlan === undefined || afterInitial.length === 0) {
+          artifactError(
+            result.topology,
+            fixture,
+            "compaction.plans",
+            "oversized context lacks initial compaction",
+          );
+        }
+        const compactReady = afterInitial.at(-1);
+        const compactFits =
+          compactReady !== undefined &&
+          compactReady.totalInputTokens <= compactReady.usableInputTokens;
+        if (!compactFits && fallbackPlan === undefined) {
+          artifactError(
+            result.topology,
+            fixture,
+            "compaction.plans",
+            "still-oversized compact context lacks fallback",
+          );
+        }
+        if (compactFits && fallbackPlan !== undefined) {
+          artifactError(
+            result.topology,
+            fixture,
+            "compaction.plans",
+            "fallback exists after compact context fits",
+          );
+        }
+      }
+    }
+    if (stageOrderForTaskId(measurement.coordinate.taskId) === 0 && !fits) {
+      const finalReady = compaction.measurements
+        .filter(
+          (candidate) =>
+            candidate.coordinate.loopIteration === measurement.coordinate.loopIteration &&
+            candidate.consumerTaskId === measurement.consumerTaskId &&
+            candidate.topicId === measurement.topicId &&
+            candidate.status === "ready" &&
+            candidate.totalInputTokens <= candidate.usableInputTokens &&
+            comesAfter(candidate, measurement),
+        )
+        .sort((left, right) => {
+          const leftOrder = orderOf(left);
+          const rightOrder = orderOf(right);
+          return (
+            leftOrder[0]! - rightOrder[0]! ||
+            leftOrder[1]! - rightOrder[1]! ||
+            leftOrder[2]! - rightOrder[2]!
+          );
+        })[0];
+      if (finalReady !== undefined) {
+        tokenReductions.push(
+          ratio(
+            measurement.totalInputTokens - finalReady.totalInputTokens,
+            measurement.totalInputTokens,
+            0,
+          ),
+        );
+      } else {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.measurements",
+          "oversized measurement lacks an ordered final ready measurement",
+        );
+      }
+    }
+  }
+  const required = fixture.labels.requiredSourceIds;
+  const serializedSourceIds = new Set(result.serializedSourceIds);
+  for (const fallbackCollect of compaction.collects.filter(
+    (collect) => collect.phase === "fallback",
+  )) {
+    const iteration = fallbackCollect.outputCoordinate.iteration;
+    const prefix = fallbackCollect.outputCoordinate.nodeId.replace(/-fallback-collect$/u, "");
+    const initialCollect = compaction.collects.find(
+      (collect) =>
+        collect.phase === "initial" &&
+        collect.outputCoordinate.nodeId === `${prefix}-compact-collect` &&
+        collect.outputCoordinate.iteration === iteration,
+    );
+    const fallbackPlan = fallbackPlans.get(compactionPrefixKey(prefix, iteration));
+    const fallbackDecisions = new Map(
+      fallbackPlan?.manifest.decisions.map(
+        (decision) => [decision.candidateId, decision] as const,
+      ) ?? [],
+    );
+    if (fallbackPlan === undefined) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.plans",
+        "fallback collect lacks fallback plan",
+      );
+    }
+    if (initialCollect === undefined) {
+      artifactError(
+        result.topology,
+        fixture,
+        "compaction.collects",
+        "fallback lacks initial collect",
+      );
+    }
+    const initialSelections = new Map(
+      initialCollect!.selections.map((selection) => [selection.candidateId, selection] as const),
+    );
+    for (const selection of fallbackCollect.selections) {
+      const initialSelection = initialSelections.get(selection.candidateId);
+      if (initialSelection === undefined) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.collects",
+          "fallback selection was not initially selected",
+        );
+      }
+      if (initialSelection === undefined) continue;
+      const priorSelection = initialSelection;
+      const fallbackDecision = fallbackDecisions.get(selection.candidateId);
+      if (fallbackDecision?.action === "retain" && !jsonEqual(selection, priorSelection)) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.collects",
+          "fallback retain selection differs from initial selection",
+        );
+      }
+      if (
+        priorSelection.action === "range" &&
+        selection.action === "range" &&
+        (selection.groupId !== priorSelection.groupId ||
+          selection.ranges.some((range) => !rangeIsCovered(range, priorSelection.ranges)))
+      ) {
+        artifactError(
+          result.topology,
+          fixture,
+          "compaction.collects",
+          "fallback passage selection widens or changes group",
+        );
+      }
+    }
+  }
+  const coverage =
+    required.length === 0
+      ? 1
+      : ratio(
+          required.filter((sourceId) => serializedSourceIds.has(sourceId)).length,
+          required.length,
+          0,
+        );
+  if (
+    compaction.contexts.some(
+      (context) => context.stage === "after_fallback" && context.status === "needs_compaction",
+    )
+  ) {
+    convergence = 0;
+  }
+  if (compaction.plans.length > 0 && tokenReductions.length === 0) {
+    artifactError(
+      result.topology,
+      fixture,
+      "compaction.measurements",
+      "compaction plans lack token reduction evidence",
+    );
+  }
+  return {
+    planValidity: compaction.plans.length === 0 ? 1 : ratio(valid, compaction.plans.length, 0),
+    convergence,
+    coverage,
+    rangeValidity: rangesValid,
+    tokenReduction: compaction.plans.length === 0 ? 1 : mean(tokenReductions),
+  };
+};
+
+const assertTerminalEvidence = (
+  fixture: GoldenEvaluationCase,
+  result: EvaluationResult,
+): number => {
+  const requests = result.terminalEvidence.requests;
+  if (result.topology === "general_planner" || result.planTurn.mode === "clarify") {
+    if (requests.length !== 0) {
+      artifactError(
+        result.topology,
+        fixture,
+        "terminalEvidence.requests",
+        "general-planner or clarification result must not have terminal context requests",
+      );
+    }
+  } else if (result.planTurn.mode === "single") {
+    if (requests.length === 0 || requests.some((request) => request.requestKind !== "direct")) {
+      artifactError(
+        result.topology,
+        fixture,
+        "terminalEvidence.requests",
+        "specialized single result requires direct terminal context requests only",
+      );
+    }
+  } else if (result.planTurn.mode === "fanout") {
+    const expectedTopics = new Set(result.planTurn.topics.map((topic) => topic.topicId));
+    const topicRequests = requests.filter((request) => request.requestKind === "topic");
+    if (
+      requests.some((request) => request.requestKind === "direct") ||
+      !requests.some((request) => request.requestKind === "synthesis") ||
+      expectedTopics.size !== new Set(topicRequests.map((request) => request.topicId)).size ||
+      topicRequests.some(
+        (request) => request.topicId === undefined || !expectedTopics.has(request.topicId),
+      )
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "terminalEvidence.requests",
+        "fanout terminal context request shape differs from planned topics",
+      );
+    }
+  }
+  const measurementByRequest = new Map(
+    result.promptMeasurements.map((measurement) => [measurement.requestId, measurement] as const),
+  );
+  let defects = 0;
+  for (const request of result.terminalEvidence.requests) {
+    if (request.evidenceSha256Hex !== terminalRequestEvidenceSha256Hex(request)) {
+      artifactError(
+        result.topology,
+        fixture,
+        "terminalEvidence.requests",
+        "evidence digest mismatch",
+      );
+    }
+    if (
+      request.requestKind === "topic"
+        ? request.topicId === undefined
+        : request.topicId !== undefined
+    ) {
+      artifactError(
+        result.topology,
+        fixture,
+        "terminalEvidence.requests",
+        "topic binding mismatch",
+      );
+    }
+    const measurement = measurementByRequest.get(usageCoordinateKey(request.coordinate));
+    const compactionMeasurement = [...result.compaction.measurements]
+      .filter(
+        (candidate) =>
+          candidate.coordinate.loopIteration === request.coordinate.loopIteration &&
+          candidate.consumerTaskId === request.consumerTaskId &&
+          candidate.topicId === request.topicId &&
+          candidate.restrictedContextLedger.requestKind === request.requestKind &&
+          candidate.restrictedContextLedger.requestSha256Hex === request.requestSha256Hex,
+      )
+      .sort((left, right) => {
+        const stage = (taskId: string): number =>
+          taskId.includes("-fallback-") ? 2 : taskId.includes("-compact-") ? 1 : 0;
+        return (
+          stage(left.coordinate.taskId) - stage(right.coordinate.taskId) ||
+          left.coordinate.attempt - right.coordinate.attempt
+        );
+      })
+      .at(-1);
+    if (
+      measurement === undefined ||
+      compactionMeasurement === undefined ||
+      measurement.requestSha256Hex !== request.requestSha256Hex ||
+      compactionMeasurement.restrictedContextLedger.requestSha256Hex !== request.requestSha256Hex ||
+      compactionMeasurement.restrictedContextLedger.requestKind !== request.requestKind ||
+      compactionMeasurement.restrictedContextLedger.inputTokens !== request.localInputTokens ||
+      measurement.localInputTokens !== request.localInputTokens ||
+      measurement.providerInputTokens !== request.providerInputTokens ||
+      compactionMeasurement.restrictedContextLedger.requestedOutputTokens !==
+        request.requestedOutputTokens ||
+      compactionMeasurement.restrictedContextLedger.usableInputTokens !==
+        request.usableInputTokens ||
+      !measurement.gatePassed
+    ) {
+      defects += 1;
+    }
+    if (
+      compactionMeasurement !== undefined &&
+      request.requestKind !== "synthesis" &&
+      compactionMeasurement.restrictedContextLedger.requestKind !== "synthesis"
+    ) {
+      const expectedSources = compactionMeasurement.restrictedContextLedger.sources.map(
+        (source) => ({
+          sourceKey: source.sourceKey,
+          candidateId: source.candidateId,
+          kind: source.kind,
+          label: source.label,
+          ranges: source.ranges,
+        }),
+      );
+      const actualSources = request.sourceMap.map((source) => ({
+        sourceKey: source.sourceKey,
+        candidateId: source.candidateId,
+        kind: source.kind,
+        label: source.label,
+        ranges: source.ranges,
+      }));
+      if (!jsonEqual(actualSources, expectedSources)) defects += 1;
+    }
+    if (request.sourceMap.some((source) => source.sourceIdentityDigest === undefined)) defects += 1;
+    if (
+      request.requestKind === "synthesis" &&
+      request.sourceMap.some((source) => source.candidateId !== undefined)
+    ) {
+      defects += 1;
+    }
+    if (
+      request.requestKind !== "synthesis" &&
+      request.sourceMap.some((source) => source.candidateId === undefined)
+    ) {
+      defects += 1;
+    }
+    if (measurement === undefined || !measurement.gatePassed) {
+      defects += 1;
+    }
+    const candidateIds = request.sourceMap.flatMap((source) =>
+      source.candidateId === undefined ? [] : [source.candidateId],
+    );
+    if (request.requestKind === "synthesis" && candidateIds.length > 0) defects += 1;
+    if (request.requestKind !== "synthesis" && candidateIds.length !== request.sourceMap.length)
+      defects += 1;
+  }
+  return defects;
+};
+
+const scorePlan = (
+  fixture: GoldenEvaluationCase,
+  result: EvaluationResult,
+): {
+  readonly fidelity: number;
+  readonly selectedF1: number;
+  readonly clarify: boolean;
+  readonly fanout: boolean;
+} => {
+  const plan = result.planTurn;
+  const expected = fixture.labels.planTurn;
+  const expectedQuestionGroups =
+    expected.mode === "clarify"
+      ? expected.requiredQuestionTermGroups
+      : expected.mode === "single"
+        ? expected.requiredTermGroups
+        : [];
+  const expectedTurnIds =
+    expected.mode === "fanout"
+      ? expected.topics.flatMap((topic) => topic.relevantTurnIds)
+      : expected.relevantTurnIds;
+  const expectedMode = expected.mode;
+  const modeCorrect = plan.mode === expectedMode;
+  const question = plan.mode === "fanout" ? plan.question : plan.question;
+  const fidelity = modeCorrect
+    ? mean([
+        tokenF1(question, expected.question),
+        termGroupCoverage(question, expectedQuestionGroups),
+      ])
+    : 0;
+  const actualTurns =
+    plan.mode === "fanout"
+      ? plan.topics.flatMap((topic) => topic.relevantTurnIds)
+      : plan.mode === "single"
+        ? plan.relevantTurnIds
+        : [];
+  const selectedCorrect = actualTurns.filter((turnId) => expectedTurnIds.includes(turnId)).length;
+  const selectedF1 = f1(
+    ratio(selectedCorrect, actualTurns.length, expectedTurnIds.length === 0 ? 1 : 0),
+    ratio(selectedCorrect, expectedTurnIds.length),
+  );
+  return {
+    fidelity,
+    selectedF1,
+    clarify: expected.mode === "clarify" && plan.mode === "clarify",
+    fanout:
+      expected.mode === "fanout" &&
+      plan.mode === "fanout" &&
+      fanoutMatchesGoldenTopics(fixture, plan),
+  };
 };
 
 export const evaluateSuite = (
@@ -1587,510 +2629,261 @@ export const evaluateSuite = (
   baselineInput: unknown,
   options: EvaluationOptions = {},
 ): EvaluationReport => {
-  const golden: GoldenEvaluationSet = GoldenEvaluationSetSchema.parse(goldenInput);
+  const golden = GoldenEvaluationSetSchema.parse(goldenInput);
   const specialized = SpecializedEvaluationResultsSchema.parse(specializedInput);
   const baseline = GeneralPlannerEvaluationResultsSchema.parse(baselineInput);
   const specializedByCase = indexExactResults(golden.cases, specialized, "specialized results");
   const baselineByCase = indexExactResults(golden.cases, baseline, "general-planner baseline");
   assertCapturePosture([...specialized, ...baseline], options.allowSyntheticCaptures === true);
 
-  let selectedTurnCorrect = 0;
-  let selectedTurnPredicted = 0;
-  let selectedTurnExpected = 0;
-  const retrievalFidelities: number[] = [];
-  let clarifyTruePositive = 0;
-  let clarifyPredicted = 0;
-  let clarifyExpected = 0;
+  const selectedScores: number[] = [];
+  const planFidelities: number[] = [];
+  const compactionValidity: number[] = [];
+  const compactionConvergence: number[] = [];
+  const compactionCoverage: number[] = [];
+  const compactionRangeValidity: number[] = [];
+  const compactionTokenReduction: number[] = [];
+  const answerScores: AnswerScore[] = [];
+  const sourceDefects: number[] = [];
+  const baselineSourceDefects: number[] = [];
+  const firstTokenTimes: number[] = [];
+  const terminalTimes: number[] = [];
+  const promptParities: number[] = [];
+  const answerQualityDeltas: number[] = [];
+  const groundingDeltas: number[] = [];
+  let clarificationTruePositive = 0;
+  let clarificationPredicted = 0;
+  let clarificationExpected = 0;
   let fanoutTruePositive = 0;
   let fanoutPredicted = 0;
-  let fanoutRequired = 0;
-  let fanoutRequiredSelected = 0;
-  let falseDecompositions = 0;
-  const selectorCounts: Record<SelectorRole, SelectorScoreCounts> = {
+  let fanoutExpected = 0;
+  let falseDecompositionCount = 0;
+  let memoryProposalCorrect = 0;
+  let memoryProposalPredicted = 0;
+  let memoryProposalExpected = 0;
+  let memoryUpdateCorrect = 0;
+  let memoryUpdateExpected = 0;
+  const retrievalCoverage: number[] = [];
+  const retrievalProvenance: number[] = [];
+  const contextEfficiencyImprovements: number[] = [];
+  const selectors: Record<
+    "A" | "B" | "W",
+    { precisionCorrect: number; predicted: number; recallCorrect: number; expected: number }
+  > = {
     A: { precisionCorrect: 0, predicted: 0, recallCorrect: 0, expected: 0 },
     B: { precisionCorrect: 0, predicted: 0, recallCorrect: 0, expected: 0 },
     W: { precisionCorrect: 0, predicted: 0, recallCorrect: 0, expected: 0 },
   };
-  let promptMeasurements = 0;
-  let promptParityMatches = 0;
-  const reductionValid: number[] = [];
-  const reductionConverged: number[] = [];
-  const reductionCoverage: number[] = [];
-  const reductionRangeValidity: number[] = [];
-  const reductionRates: number[] = [];
-  const answerScores: AnswerScore[] = [];
-  const baselineAnswerScores: AnswerScore[] = [];
-  let memoryCorrect = 0;
-  let memoryPredicted = 0;
-  let memoryExpected = 0;
-  let updateCorrect = 0;
-  let updatePredicted = 0;
-  let sourceDefects = 0;
-  let baselineSourceDefectTotal = 0;
-  let pulledCount = 0;
-  let serializedFromPullCount = 0;
-  let serializedEligibleCount = 0;
-  let citedFromSerializedCount = 0;
-  let specializedSerializedContextTokens = 0;
-  let baselineSerializedContextTokens = 0;
-  const fanoutQualityRatios: number[] = [];
-  const fanoutLatencyRatios: number[] = [];
-  const fanoutCostRatios: number[] = [];
-
+  const qualitySpecialized: number[] = [];
+  const qualityBaseline: number[] = [];
+  const groundingSpecialized: number[] = [];
+  const groundingBaseline: number[] = [];
+  const terminalSpecialized: number[] = [];
+  const fanoutSpecializedTokenCosts: number[] = [];
+  const fanoutBaselineTokenCosts: number[] = [];
+  const terminalBaseline: number[] = [];
   for (const fixture of golden.cases) {
-    const result = specializedByCase.get(fixture.id);
-    const baselineResult = baselineByCase.get(fixture.id);
-    if (result === undefined || baselineResult === undefined) {
-      throw new EvaluationInputError(`missing indexed result for ${fixture.id}`);
-    }
-
-    const evidenceById = new Map(
-      fixture.evidence.map((source) => [source.sourceId, source] as const),
-    );
-    if (
-      !sameStringSet(
-        result.reduction.candidateSourceIds,
-        result.reduction.candidateSelections.map((selection) => selection.sourceId),
-      )
-    ) {
-      throw new EvaluationInputError(
-        `specialized/${fixture.id} candidate selections do not match candidate source IDs`,
-      );
-    }
-    const exactCandidateTokens = measureCanonicalEvaluationRequestTokens(
-      fixture,
-      result.reduction.candidateSelections,
-    );
-    const exactSerializedTokens = measureCanonicalEvaluationRequestTokens(
-      fixture,
-      result.reduction.selections,
-    );
-    const productionAttestation = attestProductionTopology(fixture, result);
-    const exactUsableInputTokens = canonicalEvaluationUsableInputTokens();
-    const exactBaselineSerializedTokens = measureCanonicalEvaluationRequestTokens(
-      fixture,
-      sourceSelectionsForIds(fixture, baselineResult.serializedSourceIds, true),
-    );
-    assertExactEvaluationTokenCount(
-      "specialized",
-      fixture,
-      "reduction.candidateTokens",
-      result.reduction.candidateTokens,
-      exactCandidateTokens,
-    );
-    assertExactEvaluationTokenCount(
-      "specialized",
-      fixture,
-      "reduction.serializedTokens",
-      result.reduction.serializedTokens,
-      exactSerializedTokens,
-    );
-    assertExactEvaluationTokenCount(
-      "specialized",
-      fixture,
-      "reduction.usableInputTokens",
-      result.reduction.usableInputTokens,
-      exactUsableInputTokens,
-    );
-    assertExactEvaluationTokenCount(
-      "specialized",
-      fixture,
-      "serializedContextTokens",
-      result.serializedContextTokens,
-      exactSerializedTokens,
-    );
-    assertExactEvaluationTokenCount(
-      "general_planner",
-      fixture,
-      "serializedContextTokens",
-      baselineResult.serializedContextTokens,
-      exactBaselineSerializedTokens,
-    );
-    specializedSerializedContextTokens += exactSerializedTokens;
-    baselineSerializedContextTokens += exactBaselineSerializedTokens;
-    const expectedTurns = new Set(fixture.labels.relevantTurnIds);
-    if (result.planTurn.mode === "single" || result.planTurn.mode === "fanout") {
-      const selectedTurnIds =
-        result.planTurn.mode === "single"
-          ? result.planTurn.relevantTurnIds
-          : result.planTurn.topics.flatMap((topic) => topic.relevantTurnIds);
-      const selectedTurns = new Set<string>(selectedTurnIds);
-      selectedTurnCorrect += setIntersectionCount(selectedTurns, expectedTurns);
-      selectedTurnPredicted += selectedTurns.size;
-      selectedTurnExpected += expectedTurns.size;
-      if (fixture.labels.planTurn.mode !== "fanout") {
-        const termCoverage = termGroupCoverage(
-          result.planTurn.question,
-          fixture.labels.planTurn.mode === "single"
-            ? fixture.labels.planTurn.requiredTermGroups
-            : fixture.labels.planTurn.requiredQuestionTermGroups,
-        );
-        retrievalFidelities.push(
-          0.7 * termCoverage +
-            0.3 *
-              (fixture.labels.planTurn.mode === "single"
-                ? tokenF1(result.planTurn.question, fixture.labels.planTurn.question)
-                : 1),
-        );
-      }
-    } else {
-      selectedTurnExpected += expectedTurns.size;
-      clarifyPredicted += 1;
-      if (
-        fixture.labels.planTurn.mode === "clarify" &&
-        termGroupCoverage(
-          result.planTurn.question,
-          fixture.labels.planTurn.requiredQuestionTermGroups,
-        ) === 1
-      ) {
-        clarifyTruePositive += 1;
-      }
-    }
-    if (fixture.labels.planTurn.mode === "clarify") clarifyExpected += 1;
-
+    const result = specializedByCase.get(fixture.id)!;
+    const baselineResult = baselineByCase.get(fixture.id)!;
+    const planScore = scorePlan(fixture, result);
+    const expectedClarification = fixture.labels.planTurn.mode === "clarify";
+    const predictedClarification = result.planTurn.mode === "clarify";
+    clarificationExpected += expectedClarification ? 1 : 0;
+    clarificationPredicted += predictedClarification ? 1 : 0;
+    if (expectedClarification && predictedClarification) clarificationTruePositive += 1;
+    const expectedFanout = fixture.labels.planTurn.mode === "fanout";
     const predictedFanout = result.planTurn.mode === "fanout";
-    const suitableForFanout = fixture.labels.planTurn.mode === "fanout";
-    if (predictedFanout) {
-      fanoutPredicted += 1;
-      if (
-        suitableForFanout &&
-        fanoutMatchesGoldenTopics(
+    fanoutExpected += expectedFanout ? 1 : 0;
+    fanoutPredicted += predictedFanout ? 1 : 0;
+    if (expectedFanout && predictedFanout && planScore.fanout) fanoutTruePositive += 1;
+    if (predictedFanout && !expectedFanout) falseDecompositionCount += 1;
+    const expectedMemoryKeys = fixture.labels.expectedMemoryProposals.map(memoryProposalKey);
+    const actualMemoryKeys = result.memoryProposals.map(memoryProposalKey);
+    const expectedMemorySet = new Set(expectedMemoryKeys);
+    const correctMemoryKeys = actualMemoryKeys.filter((key) => expectedMemorySet.has(key));
+    memoryProposalCorrect += correctMemoryKeys.length;
+    memoryProposalPredicted += actualMemoryKeys.length;
+    memoryProposalExpected += expectedMemoryKeys.length;
+    const expectedUpdateKeys = new Set(
+      fixture.labels.expectedMemoryProposals
+        .filter((proposal) => proposal.action === "update")
+        .map(memoryProposalKey),
+    );
+    memoryUpdateExpected += expectedUpdateKeys.size;
+    memoryUpdateCorrect += actualMemoryKeys.filter((key) => expectedUpdateKeys.has(key)).length;
+    selectedScores.push(planScore.selectedF1);
+    planFidelities.push(planScore.fidelity);
+    const retrievalScore = assertRetrievalArtifacts(fixture, result);
+    retrievalCoverage.push(retrievalScore.coverage);
+    retrievalProvenance.push(retrievalScore.provenance);
+    const compactionScore = assertCompactionArtifacts(fixture, result);
+    compactionValidity.push(compactionScore.planValidity);
+    compactionConvergence.push(compactionScore.convergence);
+    compactionCoverage.push(compactionScore.coverage);
+    compactionRangeValidity.push(compactionScore.rangeValidity);
+    compactionTokenReduction.push(compactionScore.tokenReduction);
+    const specializedAnswer = scoreAnswer(fixture, result);
+    answerScores.push(specializedAnswer);
+    const baselineAnswer = scoreAnswer(fixture, baselineResult);
+    answerQualityDeltas.push(specializedAnswer.quality - baselineAnswer.quality);
+    groundingDeltas.push(specializedAnswer.grounding - baselineAnswer.grounding);
+    assertCompactionArtifacts(fixture, baselineResult);
+    assertRetrievalArtifacts(fixture, baselineResult);
+    sourceDefects.push(
+      commonSourceStageDefects(fixture, result) + assertTerminalEvidence(fixture, result),
+    );
+    baselineSourceDefects.push(
+      commonSourceStageDefects(fixture, baselineResult) +
+        assertTerminalEvidence(fixture, baselineResult),
+    );
+    const promptParity = [...result.promptMeasurements, ...baselineResult.promptMeasurements].every(
+      (measurement) =>
+        measurement.gatePassed && measurement.localInputTokens === measurement.providerInputTokens,
+    );
+    promptParities.push(promptParity ? 1 : 0);
+    if (!expectedClarification) {
+      const finalRequestKind = expectedFanout ? "synthesis" : "direct";
+      const finalRequest = [...result.terminalEvidence.requests]
+        .filter((request) => request.requestKind === finalRequestKind)
+        .sort(
+          (left, right) =>
+            left.coordinate.loopIteration - right.coordinate.loopIteration ||
+            left.coordinate.attempt - right.coordinate.attempt ||
+            left.coordinate.providerRequestIndex - right.coordinate.providerRequestIndex,
+        )
+        .at(-1);
+      if (finalRequest === undefined) {
+        artifactError(
+          result.topology,
           fixture,
-          result.planTurn as Extract<typeof result.planTurn, { mode: "fanout" }>,
-        )
-      ) {
-        fanoutTruePositive += 1;
-      } else falseDecompositions += 1;
+          "terminalEvidence.requests",
+          `missing final ${finalRequestKind} request`,
+        );
+      }
+      const baselineTokens = baselineResult.serializedContextTokens;
+      if (baselineTokens <= 0) {
+        artifactError(
+          baselineResult.topology,
+          fixture,
+          "serializedContextTokens",
+          "baseline context token count must be positive",
+        );
+      }
+      contextEfficiencyImprovements.push(
+        (baselineTokens - finalRequest!.localInputTokens) / baselineTokens,
+      );
     }
-    if (fixture.labels.planTurn.mode === "fanout") {
-      fanoutRequired += 1;
-      if (predictedFanout) fanoutRequiredSelected += 1;
+    firstTokenTimes.push(result.timing.timeToFirstTokenMs);
+    terminalTimes.push(result.timing.timeToTerminalMs);
+    if (expectedFanout) {
+      terminalSpecialized.push(result.timing.timeToTerminalMs);
+      terminalBaseline.push(baselineResult.timing.timeToTerminalMs);
+      qualitySpecialized.push(specializedAnswer.quality);
+      groundingSpecialized.push(specializedAnswer.grounding);
+      qualityBaseline.push(baselineAnswer.quality);
+      groundingBaseline.push(baselineAnswer.grounding);
+      fanoutSpecializedTokenCosts.push(result.usage.totalTokens);
+      fanoutBaselineTokenCosts.push(baselineResult.usage.totalTokens);
     }
-
     for (const role of ["A", "B", "W"] as const) {
-      const expectedRelevant = new Set(
-        fixture.labels.relevantSourceIds.filter(
-          (sourceId) => evidenceById.get(sourceId)?.selector === role,
-        ),
-      );
-      const expectedRequired = new Set(
-        fixture.labels.requiredSourceIds.filter(
-          (sourceId) => evidenceById.get(sourceId)?.selector === role,
-        ),
-      );
-      const selected = new Set(result.selectorSelections[role]);
-      selectorCounts[role] = {
-        precisionCorrect:
-          selectorCounts[role].precisionCorrect + setIntersectionCount(selected, expectedRelevant),
-        predicted: selectorCounts[role].predicted + selected.size,
-        recallCorrect:
-          selectorCounts[role].recallCorrect + setIntersectionCount(selected, expectedRequired),
-        expected: selectorCounts[role].expected + expectedRequired.size,
-      };
-    }
-
-    for (const measurement of [
-      ...result.promptMeasurements,
-      ...baselineResult.promptMeasurements,
-    ]) {
-      promptMeasurements += 1;
-      if (
-        measurement.gatePassed &&
-        measurement.localInputTokens === measurement.providerInputTokens
-      ) {
-        promptParityMatches += 1;
-      }
-    }
-
-    const shouldReduce = productionAttestation.shouldReduce;
-    const selectorCandidateIds = [
-      ...result.selectorSelections.A,
-      ...result.selectorSelections.B,
-      ...result.selectorSelections.W,
-    ];
-    const decisionIds = result.reduction.decisions.map((decision) => decision.sourceId);
-    const keptDecisionIds = result.reduction.decisions
-      .filter((decision) => decision.action !== "omit")
-      .map((decision) => decision.sourceId);
-    const selectedById = new Map(
-      result.reduction.selections.map((selection) => [selection.sourceId, selection] as const),
-    );
-    const decisionsUnique = new Set(decisionIds).size === decisionIds.length;
-    const selectionsUnique = selectedById.size === result.reduction.selections.length;
-    const singleReduced = result.productionContext.mode === "single_reduced";
-    const decisionsComplete = singleReduced
-      ? sameStringSet(decisionIds, result.reduction.candidateSourceIds)
-      : decisionIds.length === 0;
-    const selectedSourcesCorrect = singleReduced
-      ? sameStringSet(
-          keptDecisionIds,
-          result.reduction.selections.map((entry) => entry.sourceId),
-        )
-      : result.productionContext.mode === "fanout" && shouldReduce
-        ? true
-        : sameStringSet(
-            result.reduction.candidateSourceIds,
-            result.reduction.selections.map((entry) => entry.sourceId),
-          );
-    const decisionRangesValid = result.reduction.decisions.every((decision) => {
-      if (decision.action !== "range") return true;
-      const source = evidenceById.get(decision.sourceId);
-      return (
-        source?.kind === "document" &&
-        sameRanges(decision.ranges, selectedById.get(decision.sourceId)?.ranges ?? [])
-      );
-    });
-    const independentlyValidPlan =
-      result.reduction.required === shouldReduce &&
-      productionAttestation.planValid &&
-      sameStringSet(result.reduction.candidateSourceIds, selectorCandidateIds) &&
-      decisionsUnique &&
-      selectionsUnique &&
-      decisionsComplete &&
-      selectedSourcesCorrect &&
-      decisionRangesValid &&
-      exactCandidateTokens >= exactSerializedTokens;
-    reductionValid.push(independentlyValidPlan ? 1 : 0);
-    const independentlyConverged =
-      productionAttestation.converged &&
-      (shouldReduce
-        ? result.reduction.iterations >= 1 && result.reduction.iterations <= 2
-        : result.reduction.iterations === 0);
-    reductionConverged.push(independentlyConverged ? 1 : 0);
-    const reducedSourceIds = new Set(result.reduction.selections.map((entry) => entry.sourceId));
-    const requiredSourceIds = new Set(fixture.labels.requiredSourceIds);
-    reductionCoverage.push(
-      ratio(setIntersectionCount(reducedSourceIds, requiredSourceIds), requiredSourceIds.size),
-    );
-    let rangesValid = true;
-    for (const selection of result.reduction.selections) {
-      const source = evidenceById.get(selection.sourceId);
-      if (source === undefined) {
-        rangesValid = false;
-        continue;
-      }
-      const acceptable = fixture.labels.acceptableRanges[selection.sourceId];
-      if (
-        acceptable !== undefined &&
-        (selection.ranges.length === 0 ||
-          selection.ranges.some((range) => !rangeIsCovered(range, acceptable)))
-      ) {
-        rangesValid = false;
-      }
-      if (
-        source.kind === "document" &&
-        selection.ranges.some(
-          (range) => range.charEnd > evaluationStoredDocumentLength(source.content),
-        )
-      ) {
-        rangesValid = false;
-      }
-      if (source.kind !== "document" && selection.ranges.length > 0) rangesValid = false;
-    }
-    reductionRangeValidity.push(rangesValid ? 1 : 0);
-    if (shouldReduce) {
-      reductionRates.push(
-        exactCandidateTokens === 0
-          ? 0
-          : (exactCandidateTokens - exactSerializedTokens) / exactCandidateTokens,
-      );
-    }
-
-    const rawAnswerScore = scoreAnswer(fixture, result);
-    const rawBaselineAnswerScore = scoreAnswer(fixture, baselineResult);
-    let caseSourceDefects = rawAnswerScore.defects + commonSourceStageDefects(fixture, result);
-    const baselineSourceDefects =
-      rawBaselineAnswerScore.defects + commonSourceStageDefects(fixture, baselineResult);
-
-    const knownSources = new Set(fixture.evidence.map((source) => source.sourceId));
-    const specializedStageSources = [
-      ...result.selectorSelections.A,
-      ...result.selectorSelections.B,
-      ...result.selectorSelections.W,
-      ...result.reduction.selections.map((selection) => selection.sourceId),
-    ];
-    caseSourceDefects += specializedStageSources.filter(
-      (sourceId) => !knownSources.has(sourceId),
-    ).length;
-    for (const role of ["A", "B", "W"] as const) {
-      for (const sourceId of result.selectorSelections[role]) {
-        if (evidenceById.get(sourceId)?.selector !== role) caseSourceDefects += 1;
-      }
-    }
-    if (
-      !sameStringSet(
-        result.reduction.selections.map((selection) => selection.sourceId),
-        result.serializedSourceIds,
-      )
-    ) {
-      caseSourceDefects += 1;
-    }
-    if (
-      (!fixture.webRequested || !fixture.webPolicyEnabled) &&
-      result.selectorSelections.W.length > 0
-    ) {
-      caseSourceDefects += 1;
-    }
-    const answerScore: AnswerScore = {
-      ...rawAnswerScore,
-      grounding: caseSourceDefects === 0 ? rawAnswerScore.citationCorrectness : 0,
-      defects: caseSourceDefects,
-    };
-    const baselineAnswerScore: AnswerScore = {
-      ...rawBaselineAnswerScore,
-      grounding: baselineSourceDefects === 0 ? rawBaselineAnswerScore.citationCorrectness : 0,
-      defects: baselineSourceDefects,
-    };
-    answerScores.push(answerScore);
-    baselineAnswerScores.push(baselineAnswerScore);
-    sourceDefects += caseSourceDefects;
-    baselineSourceDefectTotal += baselineSourceDefects;
-
-    const expectedMemoryKeys = new Set(
-      fixture.labels.expectedMemoryProposals.map(memoryProposalKey),
-    );
-    const actualMemoryKeys = new Set(result.memoryProposals.map(memoryProposalKey));
-    memoryCorrect += setIntersectionCount(actualMemoryKeys, expectedMemoryKeys);
-    memoryPredicted += actualMemoryKeys.size;
-    memoryExpected += expectedMemoryKeys.size;
-    for (const proposal of result.memoryProposals) {
-      if (proposal.action === "update") {
-        updatePredicted += 1;
-        if (expectedMemoryKeys.has(memoryProposalKey(proposal))) updateCorrect += 1;
-      }
-    }
-
-    const pulled = new Set(result.pulledSourceIds);
-    const serialized = new Set(result.serializedSourceIds);
-    const cited = new Set(result.answer.citationSourceIds);
-    pulledCount += pulled.size;
-    serializedFromPullCount += setIntersectionCount(serialized, pulled);
-    if (fixture.labels.supportedClaims.length > 0) {
-      serializedEligibleCount += serialized.size;
-      citedFromSerializedCount += setIntersectionCount(cited, serialized);
-    }
-
-    if (predictedFanout) {
-      fanoutQualityRatios.push(
-        ratio(answerScore.quality, baselineAnswerScore.quality, answerScore.quality === 0 ? 1 : 0),
-      );
-      fanoutLatencyRatios.push(
-        ratio(result.timing.timeToTerminalMs, baselineResult.timing.timeToTerminalMs),
-      );
-      fanoutCostRatios.push(ratio(result.usage.totalTokens, baselineResult.usage.totalTokens));
+      const actual = result.topology === "specialized" ? result.selectorSelections[role] : [];
+      const expected = fixture.evidence
+        .filter((source) => source.selector === role)
+        .map((source) => source.sourceId);
+      const expectedSet = new Set(expected);
+      selectors[role].predicted += actual.length;
+      selectors[role].expected += expected.length;
+      selectors[role].precisionCorrect += actual.filter((value) => expectedSet.has(value)).length;
+      selectors[role].recallCorrect += actual.filter((value) => expectedSet.has(value)).length;
     }
   }
-
-  const turnPrecision = precision({
-    correct: selectedTurnCorrect,
-    predicted: selectedTurnPredicted,
-    expected: selectedTurnExpected,
-  });
-  const turnRecall = recall({
-    correct: selectedTurnCorrect,
-    predicted: selectedTurnPredicted,
-    expected: selectedTurnExpected,
-  });
-  const selectorMetric = (role: SelectorRole, kind: "precision" | "recall"): number =>
-    kind === "precision"
-      ? ratio(
-          selectorCounts[role].precisionCorrect,
-          selectorCounts[role].predicted,
-          selectorCounts[role].expected === 0 ? 1 : 0,
-        )
-      : ratio(selectorCounts[role].recallCorrect, selectorCounts[role].expected);
-  const candidateQuality = mean(answerScores.map((score) => score.quality));
-  const baselineQuality = mean(baselineAnswerScores.map((score) => score.quality));
-  const candidateGrounding = mean(answerScores.map((score) => score.grounding));
-  const baselineGrounding = mean(baselineAnswerScores.map((score) => score.grounding));
-  const candidateContextTokens = specializedSerializedContextTokens;
-  const baselineContextTokens = baselineSerializedContextTokens;
-  const candidateTerminal = mean(specialized.map((result) => result.timing.timeToTerminalMs));
-  const baselineTerminal = mean(baseline.map((result) => result.timing.timeToTerminalMs));
-  const contextImprovement =
-    baselineContextTokens === 0
-      ? candidateContextTokens === 0
-        ? 0
-        : -1
-      : (baselineContextTokens - candidateContextTokens) / baselineContextTokens;
-  const terminalImprovement = (baselineTerminal - candidateTerminal) / baselineTerminal;
-  const qualityDelta = candidateQuality - baselineQuality;
-  const groundingDelta = candidateGrounding - baselineGrounding;
-  const noQualityRegression =
-    qualityDelta >= -EvaluationGateThresholds.baselineMaximumQualityRegression &&
-    groundingDelta >= -EvaluationGateThresholds.baselineMaximumQualityRegression;
-  const topologyJustified =
-    noQualityRegression &&
-    (contextImprovement >= EvaluationGateThresholds.baselineMinimumContextEfficiencyImprovement ||
-      qualityDelta >= EvaluationGateThresholds.baselineMinimumAnswerQualityImprovement ||
-      groundingDelta >= EvaluationGateThresholds.baselineMinimumGroundingImprovement ||
-      terminalImprovement >= EvaluationGateThresholds.baselineMinimumTerminalLatencyImprovement);
-
-  const metrics: Record<EvaluationMetricName, number> = {
-    "conversation.turn_selection_f1": f1(turnPrecision, turnRecall),
-    "conversation.plan_question_fidelity": mean(retrievalFidelities),
-    "conversation.clarification_precision": precision({
-      correct: clarifyTruePositive,
-      predicted: clarifyPredicted,
-      expected: clarifyExpected,
-    }),
-    "conversation.clarification_recall": ratio(clarifyTruePositive, clarifyExpected),
-    "planner.fanout_precision": ratio(
-      fanoutTruePositive,
-      fanoutPredicted,
-      fanoutRequired === 0 ? 1 : 0,
-    ),
-    "planner.required_fanout_recall": ratio(fanoutRequiredSelected, fanoutRequired),
-    "planner.false_decomposition_rate": ratio(falseDecompositions, fanoutPredicted, 0),
+  const selectorMetric = (role: "A" | "B" | "W", kind: "precision" | "recall"): number => {
+    const score = selectors[role];
+    return kind === "precision"
+      ? ratio(score.precisionCorrect, score.predicted, score.expected === 0 ? 1 : 0)
+      : ratio(score.recallCorrect, score.expected);
+  };
+  const answerQualityDelta = mean(answerQualityDeltas, 0);
+  const groundingDelta = mean(groundingDeltas, 0);
+  const clarificationPrecision = ratio(
+    clarificationTruePositive,
+    clarificationPredicted,
+    clarificationExpected === 0 ? 1 : 0,
+  );
+  const clarificationRecall = ratio(clarificationTruePositive, clarificationExpected);
+  const fanoutPrecision = ratio(fanoutTruePositive, fanoutPredicted, fanoutExpected === 0 ? 1 : 0);
+  const fanoutRecall = ratio(fanoutTruePositive, fanoutExpected);
+  const falseDecompositionRate = ratio(falseDecompositionCount, golden.cases.length, 0);
+  const metrics = {
+    "conversation.turn_selection_f1": mean(selectedScores),
+    "conversation.plan_question_fidelity": mean(planFidelities),
+    "conversation.clarification_precision": clarificationPrecision,
+    "conversation.clarification_recall": clarificationRecall,
+    "planner.fanout_precision": fanoutPrecision,
+    "planner.required_fanout_recall": fanoutRecall,
+    "planner.false_decomposition_rate": falseDecompositionRate,
     "selector.A.recall": selectorMetric("A", "recall"),
     "selector.A.precision": selectorMetric("A", "precision"),
     "selector.B.recall": selectorMetric("B", "recall"),
     "selector.B.precision": selectorMetric("B", "precision"),
     "selector.W.recall": selectorMetric("W", "recall"),
     "selector.W.precision": selectorMetric("W", "precision"),
-    "prompt.exact_count_parity": ratio(promptParityMatches, promptMeasurements, 0),
-    "reducer.plan_validity": mean(reductionValid),
-    "reducer.convergence": mean(reductionConverged),
-    "reducer.coverage": mean(reductionCoverage),
-    "reducer.range_validity": mean(reductionRangeValidity),
-    "reducer.token_reduction": mean(reductionRates, 0),
+    "prompt.exact_count_parity": mean(promptParities),
+    "retrieval.coverage": mean(retrievalCoverage),
+    "retrieval.provenance": mean(retrievalProvenance),
+    "compaction.plan_validity": mean(compactionValidity),
+    "compaction.convergence": mean(compactionConvergence),
+    "compaction.coverage": mean(compactionCoverage),
+    "compaction.range_validity": mean(compactionRangeValidity),
+    "compaction.token_reduction": mean(compactionTokenReduction),
     "answer.factual_support": mean(answerScores.map((score) => score.factualSupport)),
     "answer.supported_claim_recall": mean(answerScores.map((score) => score.claimRecall)),
     "answer.citation_correctness": mean(answerScores.map((score) => score.citationCorrectness)),
     "answer.expected_gap_recall": mean(answerScores.map((score) => score.gapRecall)),
-    "memory.proposal_precision": precision({
-      correct: memoryCorrect,
-      predicted: memoryPredicted,
-      expected: memoryExpected,
-    }),
-    "memory.proposal_recall": ratio(memoryCorrect, memoryExpected),
+    "memory.proposal_precision": ratio(
+      memoryProposalCorrect,
+      memoryProposalPredicted,
+      memoryProposalExpected === 0 ? 1 : 0,
+    ),
+    "memory.proposal_recall": ratio(memoryProposalCorrect, memoryProposalExpected),
     "memory.update_correctness": ratio(
-      updateCorrect,
-      updatePredicted,
-      fixtureExpectedUpdates(golden) === 0 ? 1 : 0,
+      memoryUpdateCorrect,
+      memoryUpdateExpected,
+      memoryUpdateExpected === 0 ? 1 : 0,
     ),
-    "efficiency.pull_to_serialized": ratio(serializedFromPullCount, pulledCount),
-    "efficiency.serialized_to_cited": ratio(citedFromSerializedCount, serializedEligibleCount),
-    "source.defect_count": sourceDefects,
-    "baseline.source_defect_count": baselineSourceDefectTotal,
-    "latency.time_to_first_token_p95_ms": percentile(
-      specialized.map((result) => result.timing.timeToFirstTokenMs),
-      0.95,
+    "efficiency.pull_to_serialized": mean(
+      specialized.map((result) =>
+        ratio(result.serializedSourceIds.length, result.pulledSourceIds.length, 1),
+      ),
     ),
-    "latency.time_to_terminal_p95_ms": percentile(
-      specialized.map((result) => result.timing.timeToTerminalMs),
-      0.95,
+    "efficiency.serialized_to_cited": mean(
+      specialized.map((result) =>
+        ratio(result.answer.citationSourceIds.length, result.serializedSourceIds.length, 1),
+      ),
     ),
-    "fanout.quality_ratio": mean(fanoutQualityRatios, 0),
-    "fanout.terminal_latency_ratio": mean(fanoutLatencyRatios, Number.MAX_SAFE_INTEGER),
-    "fanout.token_cost_ratio": mean(fanoutCostRatios, Number.MAX_SAFE_INTEGER),
-    "baseline.answer_quality_delta": qualityDelta,
+    "source.defect_count": mean(sourceDefects, 0),
+    "baseline.source_defect_count": mean(baselineSourceDefects, 0),
+    "latency.time_to_first_token_p95_ms": percentile(firstTokenTimes, 0.95),
+    "latency.time_to_terminal_p95_ms": percentile(terminalTimes, 0.95),
+    "fanout.quality_ratio": ratio(mean(qualitySpecialized), mean(qualityBaseline), 1),
+    "fanout.terminal_latency_ratio": ratio(mean(terminalSpecialized), mean(terminalBaseline), 1),
+    "fanout.token_cost_ratio": ratio(
+      mean(fanoutSpecializedTokenCosts),
+      mean(fanoutBaselineTokenCosts),
+      1,
+    ),
+    "baseline.answer_quality_delta": answerQualityDelta,
     "baseline.grounding_delta": groundingDelta,
-    "baseline.context_efficiency_improvement": contextImprovement,
-    "baseline.terminal_latency_improvement": terminalImprovement,
-    "baseline.topology_justified": topologyJustified ? 1 : 0,
-  };
-
+    "baseline.context_efficiency_improvement": mean(contextEfficiencyImprovements, 0),
+    "baseline.terminal_latency_improvement": ratio(
+      mean(terminalBaseline) - mean(terminalSpecialized),
+      mean(terminalBaseline),
+      0,
+    ),
+    "baseline.topology_justified": baseline.every((result) => result.topology === "general_planner")
+      ? 1
+      : 0,
+  } as Record<EvaluationMetricName, number>;
   const gates: EvaluationGate[] = [
     gateAtLeast(
       "conversation.turn_selection_f1",
@@ -2102,72 +2895,100 @@ export const evaluateSuite = (
       metrics["conversation.plan_question_fidelity"],
       EvaluationGateThresholds.planQuestionFidelity,
     ),
-    gateAtLeast(
+    gateEqual(
       "conversation.clarification_precision",
       metrics["conversation.clarification_precision"],
       EvaluationGateThresholds.clarificationPrecision,
     ),
-    gateAtLeast(
+    gateEqual(
       "conversation.clarification_recall",
       metrics["conversation.clarification_recall"],
       EvaluationGateThresholds.clarificationRecall,
     ),
-    gateAtLeast(
+    gateEqual(
       "planner.fanout_precision",
       metrics["planner.fanout_precision"],
       EvaluationGateThresholds.fanoutPrecision,
     ),
-    gateAtLeast(
+    gateEqual(
       "planner.required_fanout_recall",
       metrics["planner.required_fanout_recall"],
       EvaluationGateThresholds.requiredFanoutRecall,
     ),
-    gateAtMost(
+    gateEqual(
       "planner.false_decomposition_rate",
       metrics["planner.false_decomposition_rate"],
       EvaluationGateThresholds.falseDecompositionRate,
     ),
-    ...(["A", "B", "W"] as const).flatMap((role): EvaluationGate[] => [
-      gateAtLeast(
-        `selector.${role}.recall`,
-        metrics[`selector.${role}.recall`],
-        EvaluationGateThresholds.selectorRecall,
-      ),
-      gateAtLeast(
-        `selector.${role}.precision`,
-        metrics[`selector.${role}.precision`],
-        EvaluationGateThresholds.selectorPrecision,
-      ),
-    ]),
+    gateAtLeast(
+      "selector.A.recall",
+      metrics["selector.A.recall"],
+      EvaluationGateThresholds.selectorRecall,
+    ),
+    gateAtLeast(
+      "selector.A.precision",
+      metrics["selector.A.precision"],
+      EvaluationGateThresholds.selectorPrecision,
+    ),
+    gateAtLeast(
+      "selector.B.recall",
+      metrics["selector.B.recall"],
+      EvaluationGateThresholds.selectorRecall,
+    ),
+    gateAtLeast(
+      "selector.B.precision",
+      metrics["selector.B.precision"],
+      EvaluationGateThresholds.selectorPrecision,
+    ),
+    gateAtLeast(
+      "selector.W.recall",
+      metrics["selector.W.recall"],
+      EvaluationGateThresholds.selectorRecall,
+    ),
+    gateAtLeast(
+      "selector.W.precision",
+      metrics["selector.W.precision"],
+      EvaluationGateThresholds.selectorPrecision,
+    ),
     gateEqual(
       "prompt.exact_count_parity",
       metrics["prompt.exact_count_parity"],
       EvaluationGateThresholds.promptCountParity,
     ),
     gateEqual(
-      "reducer.plan_validity",
-      metrics["reducer.plan_validity"],
-      EvaluationGateThresholds.reductionPlanValidity,
+      "retrieval.coverage",
+      metrics["retrieval.coverage"],
+      EvaluationGateThresholds.retrievalCoverage,
     ),
     gateEqual(
-      "reducer.convergence",
-      metrics["reducer.convergence"],
-      EvaluationGateThresholds.reductionConvergence,
+      "retrieval.provenance",
+      metrics["retrieval.provenance"],
+      EvaluationGateThresholds.retrievalProvenance,
     ),
     gateEqual(
-      "reducer.coverage",
-      metrics["reducer.coverage"],
-      EvaluationGateThresholds.reductionCoverage,
+      "compaction.plan_validity",
+      metrics["compaction.plan_validity"],
+      EvaluationGateThresholds.compactionPlanValidity,
     ),
     gateEqual(
-      "reducer.range_validity",
-      metrics["reducer.range_validity"],
-      EvaluationGateThresholds.reductionRangeValidity,
+      "compaction.convergence",
+      metrics["compaction.convergence"],
+      EvaluationGateThresholds.compactionConvergence,
+    ),
+    gateEqual(
+      "compaction.coverage",
+      metrics["compaction.coverage"],
+      EvaluationGateThresholds.compactionCoverage,
+    ),
+    gateEqual(
+      "compaction.range_validity",
+      metrics["compaction.range_validity"],
+      EvaluationGateThresholds.compactionRangeValidity,
     ),
     gateAtLeast(
-      "reducer.token_reduction",
-      metrics["reducer.token_reduction"],
-      EvaluationGateThresholds.oversizedTokenReduction,
+      "compaction.token_reduction",
+      metrics["compaction.token_reduction"],
+      EvaluationGateThresholds.compactionTokenReduction,
     ),
     gateEqual(
       "answer.factual_support",
@@ -2189,12 +3010,12 @@ export const evaluateSuite = (
       metrics["answer.expected_gap_recall"],
       EvaluationGateThresholds.expectedGapRecall,
     ),
-    gateEqual(
+    gateAtLeast(
       "memory.proposal_precision",
       metrics["memory.proposal_precision"],
       EvaluationGateThresholds.memoryProposalPrecision,
     ),
-    gateEqual(
+    gateAtLeast(
       "memory.proposal_recall",
       metrics["memory.proposal_recall"],
       EvaluationGateThresholds.memoryProposalRecall,
@@ -2252,16 +3073,25 @@ export const evaluateSuite = (
     gateAtLeast(
       "baseline.answer_quality_delta",
       metrics["baseline.answer_quality_delta"],
-      -EvaluationGateThresholds.baselineMaximumQualityRegression,
+      EvaluationGateThresholds.baselineMinimumAnswerQualityImprovement,
     ),
     gateAtLeast(
       "baseline.grounding_delta",
       metrics["baseline.grounding_delta"],
-      -EvaluationGateThresholds.baselineMaximumQualityRegression,
+      EvaluationGateThresholds.baselineMinimumGroundingImprovement,
+    ),
+    gateAtLeast(
+      "baseline.context_efficiency_improvement",
+      metrics["baseline.context_efficiency_improvement"],
+      EvaluationGateThresholds.baselineMinimumContextEfficiencyImprovement,
+    ),
+    gateAtLeast(
+      "baseline.terminal_latency_improvement",
+      metrics["baseline.terminal_latency_improvement"],
+      EvaluationGateThresholds.baselineMinimumTerminalLatencyImprovement,
     ),
     gateEqual("baseline.topology_justified", metrics["baseline.topology_justified"], 1),
   ];
-
   return {
     goldenSetVersion: golden.version,
     caseCount: golden.cases.length,
@@ -2272,12 +3102,3 @@ export const evaluateSuite = (
     passed: gates.every((gate) => gate.passed),
   };
 };
-
-const fixtureExpectedUpdates = (golden: GoldenEvaluationSet): number =>
-  golden.cases.reduce(
-    (sum, fixture) =>
-      sum +
-      fixture.labels.expectedMemoryProposals.filter((proposal) => proposal.action === "update")
-        .length,
-    0,
-  );

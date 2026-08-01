@@ -349,7 +349,7 @@ const candidateIdentitySchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("web"),
     canonicalUrl: z.string().url(),
-    quoteHash: z.string().regex(/^[a-f0-9]{64}$/u),
+    quoteHash: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
     capturedAt: nonEmptyText,
   }),
   z.strictObject({

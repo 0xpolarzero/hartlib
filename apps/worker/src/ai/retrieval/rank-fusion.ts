@@ -508,9 +508,12 @@ export const fuseRankedResults = <T>(
     hydratedBytes += bytes;
   }
 
+  const branchOrder = new Map(PHYSICAL_QUERY_BRANCHES.map((branch, index) => [branch, index]));
   const orderedBranches = [...branches].sort(
     (left, right) =>
-      left.queryOrdinal - right.queryOrdinal || compareBytewise(left.branch, right.branch),
+      left.queryOrdinal - right.queryOrdinal ||
+      (branchOrder.get(left.branch) ?? Number.MAX_SAFE_INTEGER) -
+        (branchOrder.get(right.branch) ?? Number.MAX_SAFE_INTEGER),
   );
 
   return {
@@ -778,9 +781,12 @@ export const fuseTwoStageRankedResults = <T>(
     hydrated.push(result);
     hydratedBytes += bytes;
   }
+  const branchOrder = new Map(PHYSICAL_QUERY_BRANCHES.map((branch, index) => [branch, index]));
   const orderedBranches = [...branches].sort(
     (left, right) =>
-      left.queryOrdinal - right.queryOrdinal || compareBytewise(left.branch, right.branch),
+      left.queryOrdinal - right.queryOrdinal ||
+      (branchOrder.get(left.branch) ?? Number.MAX_SAFE_INTEGER) -
+        (branchOrder.get(right.branch) ?? Number.MAX_SAFE_INTEGER),
   );
   return {
     results: hydrated.map((result, index) => ({
@@ -824,7 +830,6 @@ export interface ReviewModelFusedResult extends ReviewResultValue {
   readonly branchCoverage: readonly BranchCoverage[];
   readonly truncationFlags: FusionTruncation;
 }
-
 export const ReviewModelFusedResultSchema = z.strictObject({
   resultId: ResultLocalIdSchema,
   kind: z.enum(["document", "chat_message"]),
@@ -854,6 +859,12 @@ export const ReviewModelFusedResultSchema = z.strictObject({
     hydration: z.boolean(),
   }),
 });
+export type ReviewModelFusedResultMetadata = Omit<ReviewModelFusedResult, "preview">;
+
+/** Durable review metadata omits provider-visible source preview text. */
+export const ReviewModelFusedResultMetadataSchema = ReviewModelFusedResultSchema.omit({
+  preview: true,
+}).strict();
 
 export const toReviewModelFusedResults = (
   fused: FusedResultSet<ReviewResultValue>,
@@ -1055,7 +1066,8 @@ export const FusedResultSetSchema = z
       if (
         current.queryOrdinal < previous.queryOrdinal ||
         (current.queryOrdinal === previous.queryOrdinal &&
-          compareBytewise(current.branch, previous.branch) < 0)
+          PHYSICAL_QUERY_BRANCHES.indexOf(current.branch) <
+            PHYSICAL_QUERY_BRANCHES.indexOf(previous.branch))
       ) {
         context.addIssue({
           code: "custom",
@@ -1070,8 +1082,3 @@ export const FusedResultSetSchema = z
       context.addIssue({ code: "custom", path: ["coverage"], message: envelopeError });
     }
   });
-
-export const fuseRrf = fuseRankedResults;
-export const fuseRankFusion = fuseRankedResults;
-export const identityTuple = canonicalIdentityTuple;
-export const identityKey = canonicalIdentityKey;

@@ -72,7 +72,7 @@ describe("reduceChatStream", () => {
         event: {
           type: "context_ready",
           mode: "single",
-          reductionRan: false,
+          compactionRan: false,
           sourcesRead: [source],
           consumers: [
             {
@@ -137,29 +137,31 @@ describe("reduceChatStream", () => {
         seq: 3,
         event: {
           type: "activity",
-          stage: "evidence",
-          code: "internal_sources",
+          stage: "preparing",
+          code: "context_preparation",
           status: "running",
         },
       },
-      { seq: 4, event: { type: "error", code: "internal_retrieval_failed", retryable: true } },
+      { seq: 4, event: { type: "error", code: "context_plan_unfit", retryable: false } },
     ]);
 
     expect(state.activities).toMatchObject([
       { code: "request_understanding", status: "retrying", attempt: 2 },
-      { code: "internal_sources", status: "failed" },
+      { code: "context_preparation", status: "failed" },
     ]);
+    expect(state.error).toEqual({ code: "context_plan_unfit", retryable: false });
   });
 
   it("discards provisional answer and sources on terminal error", () => {
     const state = reduceAll([
       { seq: 1, event: { type: "answer_started", mode: "synthesis", attempt: 1 } },
       { seq: 2, event: { type: "text_delta", delta: "provisional" } },
-      { seq: 3, event: { type: "error", code: "memory_conflict", retryable: true } },
+      { seq: 3, event: { type: "error", code: "context_compaction_failed", retryable: true } },
     ]);
     expect(state.phase).toBe("error");
     expect(state.assistantText).toBe("");
     expect(state.sourcesRead).toEqual([]);
+    expect(state.error).toEqual({ code: "context_compaction_failed", retryable: true });
   });
 
   it("keeps cursor replay idempotent", () => {

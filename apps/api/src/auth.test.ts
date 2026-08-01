@@ -37,11 +37,7 @@ const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
   ...overrides,
 });
 
-const run = (
-  apiConfig: ApiConfig,
-  authenticator?: RequestAuthenticator,
-  cookie?: string,
-) =>
+const run = (apiConfig: ApiConfig, authenticator?: RequestAuthenticator, cookie?: string) =>
   Effect.runPromise(
     resolveRequestIdentity(
       new Request(

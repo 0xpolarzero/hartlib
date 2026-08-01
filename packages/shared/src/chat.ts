@@ -662,7 +662,7 @@ export const AiRunActivityFailureCode = Schema.Literals([
   "memory_selector_failed",
   "web_research_failed",
   "context_assembly_failed",
-  "context_reducer_failed",
+  "context_compaction_failed",
   "answer_failed",
   "topic_answer_failed",
   "synthesis_failed",
@@ -684,7 +684,11 @@ export const activityCodeForAiRunError = (code: string): AiRunActivityCode => {
     case "web_research_failed":
       return "web_research";
     case "context_assembly_failed":
-    case "context_reducer_failed":
+    case "context_compaction_failed":
+    case "context_mandatory_too_large":
+    case "context_plan_unfit":
+    case "context_budget_mismatch":
+    case "synthesis_budget_mismatch":
       return "context_preparation";
     case "answer_failed":
     case "topic_answer_failed":
@@ -732,10 +736,20 @@ export const activityCodeForPhase = (phase: string): AiRunActivityCode | undefin
     case "context_measurement_exact_gate":
     case "context_freeze_gate":
     case "fanout_source_merge":
-    case "context_reduction_plan":
-    case "context_reduction_measure":
     case "fanout_allocation_exact_gate":
     case "synthesis_assembly_exact_gate":
+    case "context_compaction_plan":
+    case "context_compaction_group_plan":
+    case "context_compaction_fallback_group_plan":
+    case "context_compaction_group":
+    case "context_compaction_fallback_group":
+    case "context_compaction_collect":
+    case "context_compaction_fallback_collect":
+    case "context_compaction_measure":
+    case "context_compaction_fallback_measure":
+    case "context_compaction_fallback_plan":
+    case "context_compaction_select":
+    case "context_compaction_final_measure":
       return "context_preparation";
     case "direct_answer_call":
     case "topic_answer_call":
@@ -769,7 +783,7 @@ export const AiRunEvent = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("context_ready"),
     mode: Schema.Literals(["clarification", "single", "synthesis"]),
-    reductionRan: Schema.Boolean,
+    compactionRan: Schema.Boolean,
     sourcesRead: Schema.Array(PublicSourceRecord),
     consumers: Schema.Array(PublicContextConsumer),
   }),

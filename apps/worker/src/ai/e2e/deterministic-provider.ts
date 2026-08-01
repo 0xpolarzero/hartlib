@@ -1,4 +1,5 @@
 import { aiRunErrorCodeForRole, AiRuntimeError } from "../runtime/errors";
+import { z } from "zod";
 import {
   measureProviderRequest,
   resolveRuntimeModel,
@@ -23,6 +24,7 @@ import {
   providerRequestSha256Hex,
   providerRequestSourceExposureProofBindings,
   requireLiveProviderRequest,
+  stableJson,
 } from "../runtime/provider-request";
 import {
   currentTaskAbortSignal,
@@ -30,6 +32,30 @@ import {
   throwIfAborted,
 } from "../runtime/task-cancellation";
 import { e2eStreamGateIdFromMessage } from "./stream-gate";
+import {
+  BranchCoverageSchema,
+  InternalQueryPlanProviderSchema,
+  InternalQueryPlanSchema,
+  InternalQuerySchema,
+  PHYSICAL_QUERY_BRANCHES,
+  QueryReviewProviderSchema,
+  QueryReviewSchema,
+} from "../retrieval/query-spec";
+import {
+  FallbackContextManifestSchema,
+  GroupCompactionResultSchema,
+  InitialContextManifestSchema,
+} from "../context/compaction";
+import {
+  FallbackCompactionProviderInputSchema,
+  InitialCompactionProviderInputSchema,
+  NormalCompactionProviderInputSchema,
+  ReadSourcePassagesArgumentsSchema,
+  SearchSourcePassagesArgumentsSchema,
+  SourceCompactionToolDefinitions,
+  SourceToolCompactionProviderInputSchema,
+} from "../context/compaction-provider";
+import { ReviewModelFusedResultSchema } from "../retrieval/rank-fusion";
 
 export interface PiRuntimeBoundary {
   readonly bindAcceptedProviderProfile?: (profile: AcceptedProviderProfile) => void;
@@ -107,53 +133,6 @@ const resultIsIncomplete = (value: Readonly<Record<string, unknown>>): boolean =
 const sameRecord = (left: unknown, right: unknown): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
 
-const referenceIdentity = (value: unknown): string | undefined => {
-  const reference = asRecord(value);
-  if (reference.kind === "document" && typeof reference.documentId === "string") {
-    return `document:${reference.documentId}`;
-  }
-  if (reference.kind === "chat_message" && typeof reference.messageId === "string") {
-    return `chat_message:${reference.messageId}`;
-  }
-  return undefined;
-};
-
-const rangesFrom = (
-  value: unknown,
-): readonly { readonly charStart: number; readonly charEnd: number }[] => {
-  const record = asRecord(value);
-  const ranges = Array.isArray(record.ranges)
-    ? record.ranges
-    : record.range === undefined
-      ? []
-      : [record.range];
-  return ranges.flatMap((range) => {
-    const parsed = asRecord(range);
-    return typeof parsed.charStart === "number" && typeof parsed.charEnd === "number"
-      ? [{ charStart: parsed.charStart, charEnd: parsed.charEnd }]
-      : [];
-  });
-};
-
-const isStrictlyNarrower = (
-  previous: readonly { readonly charStart: number; readonly charEnd: number }[],
-  next: readonly { readonly charStart: number; readonly charEnd: number }[],
-): boolean => {
-  if (previous.length === 0 || next.length === 0) return false;
-  const previousLength = previous.reduce((sum, range) => sum + range.charEnd - range.charStart, 0);
-  const nextLength = next.reduce((sum, range) => sum + range.charEnd - range.charStart, 0);
-  return (
-    nextLength < previousLength &&
-    next.every((nextRange) =>
-      previous.some(
-        (previousRange) =>
-          nextRange.charStart >= previousRange.charStart &&
-          nextRange.charEnd <= previousRange.charEnd,
-      ),
-    )
-  );
-};
-
 const toolHistory = (
   request: ProviderRequest,
   name: string,
@@ -215,6 +194,558 @@ const keysFrom = (text: string): readonly string[] => [
 const synthesisCitation = (sourceKeys: readonly string[]): string =>
   sourceKeys.length === 0 ? "" : ` [[cite:${sourceKeys.join(",")}]]`;
 
+const structuredPlanInputSchema = z.strictObject({
+  question: z.string().min(1).max(4_096),
+  selectedConversation: z.array(
+    z.union([
+      z.strictObject({ userContent: z.string(), assistantContent: z.string() }),
+      z.strictObject({ userContent: z.string(), errorCode: z.string(), retryable: z.boolean() }),
+    ]),
+  ),
+  locale: z.string().min(1).max(128),
+  market: z.string().min(1).max(128),
+  currentDate: z.string().min(1).max(64),
+});
+
+const structuredReviewInputSchema = z.strictObject({
+  question: z.string().min(1).max(4_096),
+  queries: z.array(InternalQuerySchema).min(1).max(64),
+  results: z.array(ReviewModelFusedResultSchema),
+  coverage: z.array(BranchCoverageSchema).min(1),
+  truncation: z.strictObject({
+    branch: z.boolean(),
+    candidates: z.boolean(),
+    hydration: z.boolean(),
+  }),
+});
+
+const structuredCoverageBranches = PHYSICAL_QUERY_BRANCHES;
+
+const strictStructuredUser = <T>(
+  request: ProviderRequest,
+  schema: z.ZodType<T>,
+  role: string,
+  expectedToolName: string,
+  expectedParameters: Readonly<Record<string, unknown>>,
+): T => {
+  if (request.tools?.length !== 1 || request.tools[0]?.name !== expectedToolName) {
+    throw new AiRuntimeError(
+      "invalid_workflow_output",
+      `${role} request must advertise only ${expectedToolName}`,
+      { taskRetryable: false },
+    );
+  }
+  const parameters = request.tools[0]?.parameters;
+  if (parameters === undefined || stableJson(parameters) !== stableJson(expectedParameters)) {
+    throw new AiRuntimeError(
+      "invalid_workflow_output",
+      `${role} request advertises a schema different from production ${expectedToolName}`,
+      { taskRetryable: false },
+    );
+  }
+  const users = request.messages.filter((message) => message.role === "user");
+  if (users.length !== 1) {
+    throw new AiRuntimeError(
+      "invalid_workflow_output",
+      `${role} requires exactly one user request`,
+      { taskRetryable: false },
+    );
+  }
+  try {
+    return schema.parse(JSON.parse(users[0]!.content)) as T;
+  } catch (error) {
+    throw new AiRuntimeError(
+      "invalid_workflow_output",
+      `${role} request does not match its strict schema: ${error instanceof Error ? error.message : String(error)}`,
+      { taskRetryable: false },
+    );
+  }
+};
+
+const structuredTermsFor = (question: string): readonly string[] => {
+  const normalized = question.toLocaleLowerCase("en-US").normalize("NFC");
+  const preferred = [
+    ["solar", "solaire", "solaires", "solaire"],
+    ["storage", "stockage", "stockages"],
+    ["wind", "éolien", "éolienne", "éoliennes"],
+    ["curtailment", "curtailment"],
+    ["market", "marché", "price", "prix"],
+  ] as const;
+  const terms = preferred.flatMap(([canonical, ...aliases]) =>
+    [canonical, ...aliases].some((alias) => normalized.includes(alias)) ? [canonical] : [],
+  );
+  if (terms.length > 0) return [...new Set(terms)];
+  const words = normalized.match(/[\p{L}\p{N}]{3,}/gu) ?? [];
+  const ignored = new Set(["the", "and", "for", "what", "does", "this", "that", "avec"]);
+  return [words.find((word) => !ignored.has(word)) ?? "brief"];
+};
+
+const structuredQueriesFor = (question: string) => {
+  const purpose = question.trim().normalize("NFC").slice(0, 4_000);
+  return structuredTermsFor(question).map((term) => ({
+    purpose: `${purpose} (${term})`.slice(0, 4_096),
+    all: [{ text: term, mode: "term" as const }],
+    anyOf: [],
+    not: [],
+    filters: {},
+    order: "relevance" as const,
+  }));
+};
+
+const isCompactionCandidate = (candidate: {
+  readonly kind: string;
+  readonly renderedTokenCount: number;
+}): boolean =>
+  (candidate.kind === "document" || candidate.kind === "chat_message") &&
+  candidate.renderedTokenCount > 1;
+const assertUniqueIds = (ids: readonly string[], label: string): void => {
+  if (new Set(ids).size !== ids.length) {
+    throw new AiRuntimeError("invalid_workflow_output", `${label} contains duplicate IDs`, {
+      taskRetryable: false,
+    });
+  }
+};
+
+const assertExactIds = (
+  actual: readonly string[],
+  expected: readonly string[],
+  label: string,
+): void => {
+  assertUniqueIds(actual, label);
+  assertUniqueIds(expected, label);
+  if (
+    actual.length !== expected.length ||
+    expected.some((id) => !actual.includes(id)) ||
+    actual.some((id) => !expected.includes(id))
+  ) {
+    throw new AiRuntimeError("invalid_workflow_output", `${label} membership changed`, {
+      taskRetryable: false,
+    });
+  }
+};
+
+const assertSourceToolRequest = (
+  request: ProviderRequest,
+  input: z.infer<typeof SourceToolCompactionProviderInputSchema>,
+): { readonly terminalOnly: boolean; readonly candidateId: string } => {
+  assertExactIds(input.group.candidateIds, [input.candidate.candidateId], "source-tool group");
+  const advertised = request.tools?.map((tool) => tool.name) ?? [];
+  const expected = SourceCompactionToolDefinitions.map((tool) => tool.name).filter(
+    (name) => name !== "emit_compaction_result",
+  );
+  assertUniqueIds(advertised, "source-tool advertised tools");
+  const terminalOnly = advertised.length === 1 && advertised[0] === "emit_compaction_result";
+  if (!terminalOnly) assertExactIds(advertised, expected, "source-tool advertised tools");
+  return { terminalOnly, candidateId: input.candidate.candidateId };
+};
+
+const passageIdsFromToolResults = (
+  results: ReadonlyArray<{ readonly value: Record<string, unknown> }>,
+  label: string,
+): readonly string[] => {
+  const ids: string[] = [];
+  for (const { value } of results) {
+    if (!Array.isArray(value.passages)) continue;
+    for (const passage of value.passages) {
+      const passageId = asRecord(passage).passageId;
+      if (typeof passageId !== "string" || !/^p[1-9][0-9]*$/u.test(passageId)) {
+        throw new AiRuntimeError(
+          "invalid_workflow_output",
+          `${label} returned an invalid passage ID`,
+          { taskRetryable: false },
+        );
+      }
+      ids.push(passageId);
+    }
+  }
+  return ids;
+};
+
+const initialCompactionManifestFor = (
+  input: z.infer<typeof InitialCompactionProviderInputSchema>,
+) => {
+  const candidateIds = input.candidates.map((candidate) => candidate.candidateId);
+  assertUniqueIds(candidateIds, "initial manifest candidates");
+  if (input.candidates.length > input.toolBounds.maximumCandidates) {
+    throw new AiRuntimeError(
+      "invalid_workflow_output",
+      "initial manifest exceeds its candidate bound",
+      { taskRetryable: false },
+    );
+  }
+  const groups: { groupId: string; renderedTokenBudget: number }[] = [];
+  const groupByCandidate = new Map<string, string>();
+  let remaining =
+    input.allowance -
+    input.mandatoryInputCost -
+    input.candidates
+      .filter((candidate) => !isCompactionCandidate(candidate))
+      .reduce((total, candidate) => total + candidate.renderedTokenCount, 0);
+  for (const candidate of input.candidates) {
+    if (
+      !isCompactionCandidate(candidate) ||
+      groups.length >= input.toolBounds.maximumGroups ||
+      remaining < 1
+    ) {
+      continue;
+    }
+    const renderedTokenBudget = Math.min(candidate.renderedTokenCount - 1, remaining);
+    if (renderedTokenBudget < 1) continue;
+    const groupId = `g${groups.length + 1}`;
+    groups.push({ groupId, renderedTokenBudget });
+    groupByCandidate.set(candidate.candidateId, groupId);
+    remaining -= renderedTokenBudget;
+  }
+  const decisions = input.candidates.map((candidate) => {
+    const groupId = groupByCandidate.get(candidate.candidateId);
+    if (groupId !== undefined) {
+      return {
+        candidateId: candidate.candidateId,
+        action: "compact" as const,
+        groupId,
+        reason: "retain exact evidence passages",
+      };
+    }
+    if (isCompactionCandidate(candidate) && remaining < 1) {
+      return {
+        candidateId: candidate.candidateId,
+        action: "omit" as const,
+        reason: "omit the candidate when no compact budget remains",
+      };
+    }
+    return {
+      candidateId: candidate.candidateId,
+      action: "keep" as const,
+      reason: "retain provider-safe evidence",
+    };
+  });
+  return InitialContextManifestSchema.parse({ decisions, groups });
+};
+
+const groupCompactionResultFor = (input: z.infer<typeof NormalCompactionProviderInputSchema>) => {
+  const candidates = input.candidates;
+  const candidateIds = candidates.map((candidate) => candidate.candidateId);
+  assertExactIds(candidateIds, input.group.candidateIds, "compaction group candidates");
+  const byId = new Map(candidates.map((candidate) => [candidate.candidateId, candidate]));
+  const priorById = new Map(
+    input.priorResult?.decisions.map((decision) => [decision.candidateId, decision]) ?? [],
+  );
+  for (const candidate of candidates) {
+    assertUniqueIds(
+      candidate.passages.map((passage) => passage.passageId),
+      `candidate ${candidate.candidateId} passages`,
+    );
+  }
+  if (input.priorResult !== undefined) {
+    assertExactIds(
+      input.priorResult.decisions.map((decision) => decision.candidateId),
+      input.group.candidateIds,
+      "prior compaction group candidates",
+    );
+    for (const decision of input.priorResult.decisions) {
+      if (decision.action !== "select") continue;
+      const candidate = byId.get(decision.candidateId)!;
+      const suppliedPassageIds = candidate.passages.map((passage) => passage.passageId);
+      if (decision.passageIds.some((passageId) => !suppliedPassageIds.includes(passageId))) {
+        throw new AiRuntimeError(
+          "invalid_workflow_output",
+          `prior result selects an undisclosed passage for ${decision.candidateId}`,
+          { taskRetryable: false },
+        );
+      }
+    }
+  }
+  let remaining = input.group.renderedTokenBudget;
+  const decisions = input.group.candidateIds.map((candidateId) => {
+    const candidate = byId.get(candidateId)!;
+    const prior = priorById.get(candidateId);
+    if (prior?.action === "omit") {
+      return { candidateId, action: "omit" as const, reason: "retain the prior omission" };
+    }
+    const availablePassages =
+      prior?.action === "select"
+        ? candidate.passages.filter((passage) => prior.passageIds.includes(passage.passageId))
+        : candidate.passages;
+    const selected = availablePassages.find(
+      (passage) => resolveRuntimeModel("glm-5-turbo").countTextTokens(passage.text) <= remaining,
+    );
+    if (selected === undefined) {
+      return {
+        candidateId,
+        action: "omit" as const,
+        reason:
+          availablePassages.length === 0
+            ? "no selectable passage is supplied"
+            : "the exact passage does not fit the group budget",
+      };
+    }
+    const cost = resolveRuntimeModel("glm-5-turbo").countTextTokens(selected.text);
+    remaining -= cost;
+    return {
+      candidateId,
+      action: "select" as const,
+      passageIds: [selected.passageId],
+      reason:
+        prior?.action === "select" && prior.passageIds.length > 1
+          ? "tighten to one prior exact passage"
+          : selected === candidate.passages[0]
+            ? "select the first exact passage"
+            : "select the first fitting exact passage",
+    };
+  });
+  return GroupCompactionResultSchema.parse({ decisions });
+};
+
+const fallbackCompactionManifestFor = (
+  input: z.infer<typeof FallbackCompactionProviderInputSchema>,
+) => {
+  const originalIds = input.originalCandidates.map((candidate) => candidate.candidateId);
+  assertUniqueIds(originalIds, "fallback original candidates");
+  assertExactIds(
+    input.initialManifest.decisions.map((decision) => decision.candidateId),
+    originalIds,
+    "fallback initial decisions",
+  );
+  const compactDecisions = input.initialManifest.decisions.filter(
+    (decision) => decision.action === "compact",
+  );
+  const initialGroupIds = input.initialManifest.groups.map((group) => group.groupId);
+  assertExactIds(
+    compactDecisions.map((decision) => decision.groupId),
+    initialGroupIds,
+    "fallback initial groups",
+  );
+  const firstGroupIds = input.firstPass.map((pass) => pass.groupId);
+  assertExactIds(firstGroupIds, initialGroupIds, "fallback first-pass groups");
+  const firstByGroup = new Map(input.firstPass.map((pass) => [pass.groupId, pass]));
+  for (const groupId of initialGroupIds) {
+    const expectedMembers = compactDecisions
+      .filter((decision) => decision.groupId === groupId)
+      .map((decision) => decision.candidateId);
+    assertExactIds(
+      firstByGroup.get(groupId)!.decisions.map((decision) => decision.candidateId),
+      expectedMembers,
+      `fallback first-pass group ${groupId}`,
+    );
+  }
+  const initialById = new Map(
+    input.initialManifest.decisions.map((decision) => [decision.candidateId, decision]),
+  );
+  const decisions = input.originalCandidates.map((candidate) => {
+    const initial = initialById.get(candidate.candidateId)!;
+    if (initial.action === "omit") {
+      return {
+        candidateId: candidate.candidateId,
+        action: "omit" as const,
+        reason: "close the fallback without restoring evidence",
+      };
+    }
+    if (initial.action === "keep") {
+      return {
+        candidateId: candidate.candidateId,
+        action: "retain" as const,
+        reason: "retain the prior whole candidate",
+      };
+    }
+    const first = firstByGroup.get(initial.groupId)!;
+    const selection = first.decisions.find(
+      (decision) => decision.candidateId === candidate.candidateId,
+    )!;
+    if (
+      first.actualRenderedTokenCount > 1 &&
+      selection.action === "select" &&
+      selection.passageIds.length > 1
+    ) {
+      return {
+        candidateId: candidate.candidateId,
+        action: "tighten" as const,
+        groupId: initial.groupId,
+        reason: "tighten to a strict subset of the first pass",
+      };
+    }
+    return {
+      candidateId: candidate.candidateId,
+      action: "omit" as const,
+      reason:
+        selection.action === "omit"
+          ? "retain the first-pass omission"
+          : "omit the first-pass selection when it cannot tighten",
+    };
+  });
+  const groups = input.firstPass.flatMap((pass) => {
+    const active = decisions.some(
+      (decision) => decision.action === "tighten" && decision.groupId === pass.groupId,
+    );
+    return active && pass.actualRenderedTokenCount > 1
+      ? [
+          {
+            groupId: pass.groupId,
+            renderedTokenBudget: pass.actualRenderedTokenCount - 1,
+          },
+        ]
+      : [];
+  });
+  return FallbackContextManifestSchema.parse({ decisions, groups });
+};
+
+const sourceToolOutputFor = (
+  request: ProviderRequest,
+  input: z.infer<typeof SourceToolCompactionProviderInputSchema>,
+  coordinates: PiBoundaryCoordinates,
+) => {
+  const { terminalOnly, candidateId } = assertSourceToolRequest(request, input);
+  const searches = toolResults(request, "search_source_passages");
+  const reads = toolResults(request, "read_source_passages");
+  const searchHistory = toolHistory(request, "search_source_passages");
+  const lastSearch = searches.at(-1)?.value;
+  const lastSearchArguments = searchHistory.at(-1)?.arguments;
+  const lastCursor = lastSearch?.cursor;
+  if (!terminalOnly && searches.length > 0 && lastSearch?.complete !== true) {
+    if (typeof lastCursor !== "string" || lastCursor.length === 0) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "source-tool search result is incomplete without a cursor",
+        { taskRetryable: false },
+      );
+    }
+    return {
+      text: "",
+      toolCalls: [
+        call(coordinates, "search_source_passages", {
+          candidateId,
+          query:
+            typeof lastSearchArguments?.query === "string"
+              ? lastSearchArguments.query
+              : (structuredTermsFor(input.question)[0] ?? "evidence"),
+          cursor: lastCursor,
+        }),
+      ],
+    };
+  }
+  if (!terminalOnly && searches.length === 0) {
+    const arguments_ = SearchSourcePassagesArgumentsSchema.parse({
+      candidateId,
+      query: input.question.includes("[no-evidence]")
+        ? "__deterministic_no_evidence__"
+        : (structuredTermsFor(input.question)[0] ?? "evidence"),
+    });
+    return { text: "", toolCalls: [call(coordinates, "search_source_passages", arguments_)] };
+  }
+  const exposedPassageIds = [
+    ...passageIdsFromToolResults(searches, "source search"),
+    ...passageIdsFromToolResults(reads, "source read"),
+  ];
+  const uniquePassageIds = [...new Set(exposedPassageIds)];
+  if (!terminalOnly && reads.length === 0 && uniquePassageIds.length > 0) {
+    const arguments_ = ReadSourcePassagesArgumentsSchema.parse({
+      candidateId,
+      passageIds: uniquePassageIds.slice(0, 32),
+    });
+    return { text: "", toolCalls: [call(coordinates, "read_source_passages", arguments_)] };
+  }
+  const prior = input.priorResult?.decisions.find(
+    (decision) => decision.candidateId === candidateId,
+  );
+  const priorIds = prior?.action === "select" ? prior.passageIds : [];
+  const disclosed = new Set(uniquePassageIds);
+  const selectedIds =
+    priorIds.length > 1
+      ? priorIds.filter((passageId) => disclosed.has(passageId)).slice(0, -1)
+      : priorIds.length === 1
+        ? priorIds.filter((passageId) => disclosed.has(passageId))
+        : uniquePassageIds.slice(0, 1);
+  const result =
+    selectedIds.length === 0
+      ? {
+          decisions: [
+            {
+              candidateId,
+              action: "omit" as const,
+              reason: "no exact passage supports the focused question",
+            },
+          ],
+        }
+      : {
+          decisions: [
+            {
+              candidateId,
+              action: "select" as const,
+              passageIds: selectedIds,
+              reason:
+                priorIds.length > selectedIds.length
+                  ? "tighten to prior disclosed passages"
+                  : "select disclosed exact passages",
+            },
+          ],
+        };
+  return {
+    text: "",
+    toolCalls: [
+      call(coordinates, "emit_compaction_result", GroupCompactionResultSchema.parse(result)),
+    ],
+  };
+};
+
+const assertStructuredReviewEnvelope = (
+  input: z.infer<typeof structuredReviewInputSchema>,
+): void => {
+  const queryOrdinals = input.queries.map((_, index) => index + 1);
+  const branchOrder = new Map(structuredCoverageBranches.map((branch, index) => [branch, index]));
+  const expectedCoverage = queryOrdinals.flatMap((queryOrdinal) =>
+    structuredCoverageBranches.map((branch) => `${queryOrdinal}\u0000${branch}`),
+  );
+  const actualCoverage = input.coverage.map((row) => `${row.queryOrdinal}\u0000${row.branch}`);
+  if (
+    actualCoverage.length !== expectedCoverage.length ||
+    actualCoverage.some((key, index) => key !== expectedCoverage[index])
+  ) {
+    throw new AiRuntimeError(
+      "invalid_workflow_output",
+      "internal query review coverage must include every store in current order",
+      { taskRetryable: false },
+    );
+  }
+  for (const [index, result] of input.results.entries()) {
+    if (result.resultId !== `r${index + 1}`) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "internal query review result IDs must be sequential",
+        { taskRetryable: false },
+      );
+    }
+    if (JSON.stringify(result.branchCoverage) !== JSON.stringify(input.coverage)) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "internal query review result coverage does not match the request",
+        { taskRetryable: false },
+      );
+    }
+    if (
+      JSON.stringify(result.truncationFlags) !== JSON.stringify(input.truncation) ||
+      result.matchedQueryOrdinals.some(
+        (ordinal, ordinalIndex, ordinals) =>
+          !queryOrdinals.includes(ordinal) ||
+          (ordinalIndex > 0 && ordinal <= ordinals[ordinalIndex - 1]!),
+      )
+    ) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "internal query review result bounds do not match the request",
+        { taskRetryable: false },
+      );
+    }
+  }
+  for (const row of input.coverage) {
+    if (row.status === "applicable" && branchOrder.get(row.branch) === undefined) {
+      throw new AiRuntimeError(
+        "invalid_workflow_output",
+        "internal query review contains an unknown physical branch",
+        { taskRetryable: false },
+      );
+    }
+  }
+};
+
 const outputFor = (
   request: ProviderRequest,
   coordinates: PiBoundaryCoordinates,
@@ -224,7 +755,15 @@ const outputFor = (
     .filter((message) => message.role === "user")
     .map((message) => message.content)
     .join("\n");
-  switch (coordinates.agentRole) {
+  const agentRole =
+    coordinates.agentRole === "internal_retrieval"
+      ? request.tools?.[0]?.name === "emit_internal_query_plan"
+        ? "internal_query_plan"
+        : request.tools?.[0]?.name === "emit_internal_query_review"
+          ? "internal_query_review"
+          : coordinates.agentRole
+      : coordinates.agentRole;
+  switch (agentRole) {
     case "evaluation_general_planner": {
       const currentMessage = String(
         user.requestText ?? user.currentMessageText ?? user.currentMessage ?? "",
@@ -535,211 +1074,54 @@ const outputFor = (
         ],
       };
     }
-    case "internal_retrieval": {
-      const searches = toolResults(request, "search_internal");
-      if (searches.length === 0) {
-        return {
-          text: "",
-          toolCalls: [
-            call(coordinates, "search_internal", {
-              query: {
-                target: "documents",
-                // Keep the deterministic boundary compatible with both the
-                // French E2E corpus and the canonical evaluation fixture,
-                // whose fr-FR evidence text intentionally uses English.
-                terms: "solaire OR solar",
-                purpose: "ground the deterministic E2E answer",
-                countries: ["FR"],
-                languages: ["fr-FR"],
-                limit: 4,
-              },
-            }),
-          ],
-        };
-      }
-      const searchHistory = toolHistory(request, "search_internal");
-      const pendingSearch = searchHistory.find(({ arguments: arguments_, value }, index) => {
-        if (!resultIsIncomplete(value)) return false;
-        const cursor = value.cursor;
-        return !searchHistory
-          .slice(index + 1)
-          .some(
-            (later) =>
-              sameRecord(later.arguments.query, arguments_.query) &&
-              (typeof cursor !== "number" || later.arguments.cursor === cursor),
-          );
-      });
-      if (pendingSearch !== undefined) {
-        const cursor = pendingSearch.value.cursor;
-        if (typeof cursor === "number") {
-          return {
-            text: "",
-            toolCalls: [
-              call(coordinates, "search_internal", {
-                query: pendingSearch.arguments.query,
-                cursor,
-              }),
-            ],
-          };
-        }
-        throw new AiRuntimeError(
-          "invalid_workflow_output",
-          "deterministic internal retrieval cannot emit a manifest while search is incomplete",
-        );
-      }
-      const inspections = toolResults(request, "inspect_internal");
-      const inspectionHistory = toolHistory(request, "inspect_internal");
-      const pendingInspection = inspectionHistory.find(
-        ({ arguments: arguments_, value }, index) => {
-          if (!resultIsIncomplete(value)) return false;
-          const identity = referenceIdentity(arguments_.reference);
-          if (identity === undefined) return false;
-          const resultRanges = rangesFrom(value);
-          const referenceRanges = rangesFrom(arguments_.reference);
-          const previousRanges =
-            resultRanges.length > 0
-              ? resultRanges
-              : referenceRanges.length > 0
-                ? referenceRanges
-                : [{ charStart: 0, charEnd: 8_192 }];
-          const cursor = value.cursor;
-          return !inspectionHistory.slice(index + 1).some((later) => {
-            if (referenceIdentity(later.arguments.reference) !== identity) return false;
-            if (typeof cursor === "number") return later.arguments.cursor === cursor;
-            if (value.narrowerRangeRequired !== true) return false;
-            return isStrictlyNarrower(previousRanges, rangesFrom(later.arguments.reference));
-          });
-        },
+    case "internal_query_plan": {
+      const input = strictStructuredUser(
+        request,
+        structuredPlanInputSchema,
+        coordinates.agentRole,
+        "emit_internal_query_plan",
+        z.toJSONSchema(InternalQueryPlanProviderSchema),
       );
-      if (pendingInspection !== undefined) {
-        const cursor = pendingInspection.value.cursor;
-        if (typeof cursor === "number") {
-          return {
-            text: "",
-            toolCalls: [
-              call(coordinates, "inspect_internal", {
-                ...pendingInspection.arguments,
-                cursor,
-              }),
-            ],
-          };
-        }
-        if (pendingInspection.value.narrowerRangeRequired === true) {
-          const previousReference = asRecord(pendingInspection.arguments.reference);
-          const previousRanges = rangesFrom(pendingInspection.value);
-          const referenceRanges = rangesFrom(previousReference);
-          const previousRange = (previousRanges.length > 0 ? previousRanges : referenceRanges)[0];
-          const charStart = previousRange?.charStart ?? 0;
-          const charEnd = previousRange?.charEnd ?? 2_048;
-          const narrowerEnd = Math.max(
-            charStart + 1,
-            charStart + Math.floor((charEnd - charStart) / 2),
-          );
-          if (
-            previousReference.kind === "document" &&
-            typeof previousReference.documentId === "string"
-          ) {
-            return {
-              text: "",
-              toolCalls: [
-                call(coordinates, "inspect_internal", {
-                  reference: {
-                    kind: "document",
-                    documentId: previousReference.documentId,
-                    range: { charStart, charEnd: narrowerEnd },
-                    purpose: "ground the deterministic E2E answer",
-                  },
-                }),
-              ],
-            };
-          }
-        }
-        throw new AiRuntimeError(
-          "invalid_workflow_output",
-          "deterministic internal retrieval cannot emit a manifest while inspection is incomplete",
-        );
-      }
-      if (inspections.length === 0) {
-        const items = searches.flatMap(({ value }) =>
-          Array.isArray(value.items) ? (value.items as unknown[]) : [],
-        );
-        const calls = items.slice(0, 2).flatMap((value, index) => {
-          const item = asRecord(value);
-          if (typeof item.documentId === "string") {
-            return [
-              call(
-                coordinates,
-                "inspect_internal",
-                {
-                  reference: {
-                    kind: "document",
-                    documentId: item.documentId,
-                    purpose: "ground the deterministic E2E answer",
-                  },
-                },
-                index,
-              ),
-            ];
-          }
-          if (typeof item.messageId === "string") {
-            return [
-              call(
-                coordinates,
-                "inspect_internal",
-                {
-                  reference: {
-                    kind: "chat_message",
-                    messageId: item.messageId,
-                    purpose: "ground the deterministic E2E answer",
-                  },
-                },
-                index,
-              ),
-            ];
-          }
-          return [];
-        });
-        if (calls.length > 0) return { text: "", toolCalls: calls };
-      }
-      const completed = new Map<string, Record<string, unknown>>();
-      for (const { arguments: arguments_, value } of inspectionHistory) {
-        if (value.complete !== true || value.found !== true) continue;
-        const reference = asRecord(arguments_.reference);
-        const key = referenceIdentity(reference);
-        if (key === undefined) continue;
-        const purpose =
-          typeof reference.purpose === "string"
-            ? reference.purpose
-            : "ground the deterministic E2E answer";
-        if (key.startsWith("document:")) {
-          const resultRanges = rangesFrom(value);
-          const referenceRanges = rangesFrom(reference);
-          // A whole-document inspection is complete at the logical document
-          // level; its result range describes the returned body but is not an
-          // explicit bounded selection. Preserve ranges only when the
-          // successful request asked for a bounded window.
-          const ranges =
-            referenceRanges.length > 0
-              ? resultRanges.length > 0
-                ? resultRanges
-                : referenceRanges
-              : [];
-          completed.set(key, {
-            kind: "document",
-            documentId: reference.documentId as string,
-            ...(ranges.length > 0 ? { ranges } : {}),
-            purpose,
-          });
-        } else {
-          completed.set(key, {
-            kind: "chat_message",
-            messageId: reference.messageId as string,
-            purpose,
-          });
-        }
-      }
-      const entries = [...completed.values()];
-      return { text: "", toolCalls: [call(coordinates, "emit_internal_manifest", { entries })] };
+      const queries = structuredQueriesFor(input.question);
+      const plan = InternalQueryPlanSchema.parse({ action: "search", queries });
+      return {
+        text: "",
+        toolCalls: [call(coordinates, "emit_internal_query_plan", plan)],
+      };
+    }
+    case "internal_query_review": {
+      const input = strictStructuredUser(
+        request,
+        structuredReviewInputSchema,
+        coordinates.agentRole,
+        "emit_internal_query_review",
+        z.toJSONSchema(QueryReviewProviderSchema),
+      );
+      assertStructuredReviewEnvelope(input);
+      const hasEvidence =
+        input.results.length > 0 &&
+        input.coverage.some((row) => row.status === "applicable" && row.hitCount > 0);
+      const forceNoEvidence =
+        /\[(?:no[-_ ]evidence|no_supporting_evidence)\]/iu.test(input.question) ||
+        /\bno evidence\b/iu.test(input.question);
+      const forceReplacement =
+        /\[(?:replace|replacement)\]/iu.test(input.question) ||
+        /\b(?:missed concept|replace the plan)\b/iu.test(input.question);
+      const review = QueryReviewSchema.parse(
+        forceNoEvidence || !hasEvidence
+          ? { action: "no_evidence", reason: "no_supporting_evidence" }
+          : forceReplacement
+            ? {
+                action: "replace",
+                reason: "missed_concept",
+                queries: structuredQueriesFor(input.question),
+              }
+            : { action: "accept", reason: "sufficient_coverage" },
+      );
+      return {
+        text: "",
+        toolCalls: [call(coordinates, "emit_internal_query_review", review)],
+      };
     }
     case "web_research": {
       const searches = toolResults(request, "web_search");
@@ -776,19 +1158,72 @@ const outputFor = (
         ],
       };
     }
-    case "context_reducer": {
-      const candidates = Array.isArray(user.candidates) ? user.candidates : [];
+    case "context_manifest": {
+      const input = strictStructuredUser(
+        request,
+        InitialCompactionProviderInputSchema,
+        coordinates.agentRole,
+        "emit_context_manifest",
+        z.toJSONSchema(InitialContextManifestSchema),
+      );
+      const manifest = initialCompactionManifestFor(input);
       return {
         text: "",
-        toolCalls: [
-          call(coordinates, "emit_context_plan", {
-            decisions: candidates.map((candidate) => ({
-              id: String(asRecord(candidate).id ?? ""),
-              action: "keep",
-              reason: "retain deterministic evidence",
-            })),
-          }),
-        ],
+        toolCalls: [call(coordinates, "emit_context_manifest", manifest)],
+      };
+    }
+    case "context_fallback_manifest": {
+      const input = strictStructuredUser(
+        request,
+        FallbackCompactionProviderInputSchema,
+        coordinates.agentRole,
+        "emit_fallback_context_manifest",
+        z.toJSONSchema(FallbackContextManifestSchema),
+      );
+      const manifest = fallbackCompactionManifestFor(input);
+      return {
+        text: "",
+        toolCalls: [call(coordinates, "emit_fallback_context_manifest", manifest)],
+      };
+    }
+    case "context_source_tool":
+    case "context_compact_group":
+    case "context_fallback_group": {
+      if (
+        coordinates.agentRole === "context_source_tool" ||
+        request.tools?.some((tool) => tool.name === "search_source_passages")
+      ) {
+        const users = request.messages.filter((message) => message.role === "user");
+        if (users.length !== 1) {
+          throw new AiRuntimeError(
+            "invalid_workflow_output",
+            `${coordinates.agentRole} requires exactly one user request`,
+            { taskRetryable: false },
+          );
+        }
+        let input: z.infer<typeof SourceToolCompactionProviderInputSchema>;
+        try {
+          input = SourceToolCompactionProviderInputSchema.parse(JSON.parse(users[0]!.content));
+        } catch (error) {
+          throw new AiRuntimeError(
+            "invalid_workflow_output",
+            `${coordinates.agentRole} request does not match its strict source-tool schema: ${error instanceof Error ? error.message : String(error)}`,
+            { taskRetryable: false },
+          );
+        }
+        return sourceToolOutputFor(request, input, coordinates);
+      }
+      const input = strictStructuredUser(
+        request,
+        z.lazy(() => NormalCompactionProviderInputSchema),
+        coordinates.agentRole,
+        "emit_compaction_result",
+        z.toJSONSchema(GroupCompactionResultSchema),
+      );
+      const result = groupCompactionResultFor(input);
+      return {
+        text: "",
+        toolCalls: [call(coordinates, "emit_compaction_result", result)],
       };
     }
     case "topic_answer": {
@@ -920,12 +1355,7 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
       proofRequest,
       (text) => model.countTextTokens(text),
     );
-    const sourceExposureProofBindings = measuredSourceExposureProofBindings.filter(
-      (candidate, index, bindings) =>
-        bindings.findIndex(
-          (other) => JSON.stringify(other.marker) === JSON.stringify(candidate.marker),
-        ) === index,
-    );
+    const sourceExposureProofBindings = measuredSourceExposureProofBindings;
     const sourceExposureProofSha256Hexes = sourceExposureProofBindings
       .map(({ providerSerializationProofSha256Hex }) => providerSerializationProofSha256Hex)
       .sort();

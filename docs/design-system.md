@@ -171,7 +171,7 @@ Reusable chat transcript primitives for client AI conversations.
 - `ChatBubble` — renders user and assistant message bubbles with citations
 - `ChatRunOutcome` — renders queued/running state or the durable localized failed-run code beneath its user message, with resubmit only when `retryable` is true
 - `VirtualizedChatTranscript` — renders long chat histories with TanStack Virtual, variable-height measurement, overscan, and optional scroll-to-latest behavior
-- `ChatSourcesRead` — renders the separate direct/topic answer-context source list for an assistant message; it never receives selector previews, reducer inspections, synthesis packets, or omitted candidates
+- `ChatSourcesRead` — renders the separate direct/topic answer-context source list for an assistant message; it never receives selector previews, compaction-group/source-tool inputs, synthesis packets, or omitted candidates
 - `ChatWebSearchToggle` — explicit per-message web-search choice driven by the shared effective-policy union, with its typed localized disabled reason
 - Message data stays owned by the consuming app; reusable transcript primitives accept a discriminated message union: user messages carry `{ id, author: "user", content, run }` with the durable public run outcome, while assistant messages carry `{ id, author: "assistant", content, citations, sourcesRead }`. They do not know about Smithers tasks, fanout topic packets, or raw context plans.
 - Citation renderers support document, earlier-chat, saved-memory, and web source kinds. Earlier-chat citations target a transcript message, memory citations open the exact owner-only revision view in the memories panel, and document/web citations use authorized or canonical links.

@@ -433,6 +433,16 @@ const conversationMatchesLedgerEntry = (
   );
 };
 
+const characterRangesEqual = (
+  left: readonly { readonly charStart: number; readonly charEnd: number }[],
+  right: readonly { readonly charStart: number; readonly charEnd: number }[],
+): boolean =>
+  left.length === right.length &&
+  left.every(
+    (range, index) =>
+      range.charStart === right[index]?.charStart && range.charEnd === right[index]?.charEnd,
+  );
+
 const sourceMatchesCandidate = (
   candidate: CandidateValue,
   source: SourceRecordValue | undefined,
@@ -447,7 +457,7 @@ const sourceMatchesCandidate = (
         source.locator.documentId === candidate.documentId &&
         source.locator.snapshotId === candidate.snapshotId &&
         source.locator.contentHash === candidate.contentHash &&
-        JSON.stringify(source.locator.ranges) === JSON.stringify(candidate.ranges) &&
+        characterRangesEqual(source.locator.ranges, candidate.ranges) &&
         (candidate.publisherIssueId === undefined ||
           ("publisherIssueId" in source.locator &&
             source.locator.publisherIssueId === candidate.publisherIssueId &&
@@ -489,7 +499,7 @@ const candidateMatchesLedgerEntry = (
   const candidateRanges =
     candidate.kind === "document" ? candidate.ranges : [{ charStart: 0, charEnd: text.length }];
   const rangesMatch =
-    JSON.stringify(candidateRanges) === JSON.stringify(ledgerEntry.baseRanges) ||
+    characterRangesEqual(candidateRanges, ledgerEntry.baseRanges) ||
     (allowNarrowedDocumentRanges &&
       candidate.kind === "document" &&
       candidateRanges.every((range) =>
@@ -1295,6 +1305,9 @@ export function buildAiChatWorkflow(
         const priorResult = compactCollection?.envelopes.find(
           (envelope) => envelope.groupId === group.groupId,
         );
+        const tightenCandidateIds = fallbackPlan?.manifest.decisions
+          .filter((decision) => decision.action === "tighten" && decision.groupId === group.groupId)
+          .map((decision) => decision.candidateId);
         return (
           <Task
             key={taskId}
@@ -1315,6 +1328,7 @@ export function buildAiChatWorkflow(
                   taskId,
                   "fallback",
                   priorResult,
+                  tightenCandidateIds,
                 ),
               };
             }}

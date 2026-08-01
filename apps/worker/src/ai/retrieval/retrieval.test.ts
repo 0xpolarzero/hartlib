@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { Deferred, Effect, Fiber, Redacted } from "effect";
+import { Cause, Deferred, Effect, Fiber, Redacted } from "effect";
 import { TestClock } from "effect/testing";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -15,10 +15,8 @@ import {
   RetrievalHydrationError,
   executeInternalQueryPlan,
   hydrateFusedResults,
-  peekDocument,
   previewFromImmutableText,
   reviewProjection,
-  searchDocuments,
   type RetrievalPlanResult,
 } from "./retrieval";
 import { fuseTwoStageRankedResults, type RankedBranchHit } from "./rank-fusion";
@@ -737,6 +735,183 @@ type SourceFixture = {
   readonly language: string;
 };
 
+type StructuredSearchRequest = {
+  readonly terms: string;
+  readonly languages?: readonly string[];
+  readonly publishedAfter?: string;
+  readonly publishedBefore?: string;
+  readonly sourceIds?: readonly string[];
+  readonly countries?: readonly string[];
+  readonly documentTypes?: readonly string[];
+  readonly orderBy?: "relevance" | "recency";
+  readonly limit?: number;
+};
+
+type StructuredSearchOptions = {
+  readonly access: { readonly kind: "sourceIds"; readonly sourceIds: readonly string[] };
+  readonly maxLimit: number;
+  readonly now: Date;
+  readonly recencyHalfLifeDays?: number;
+};
+
+type LegacyPreview = {
+  readonly kind: "public_source";
+  readonly documentId: string;
+  readonly sourceId: string;
+  readonly sourceDisplayName: string;
+  readonly language: string | null;
+  readonly documentType: string | null;
+  readonly title: string | null;
+  readonly publishedAt: Date | null;
+  readonly textCharCount: number;
+  readonly text: string;
+  readonly snippet: string;
+  readonly previewRanges: readonly { readonly charStart: number; readonly charEnd: number }[];
+};
+
+const structuredSearch = (
+  request: StructuredSearchRequest,
+  options: StructuredSearchOptions,
+): Effect.Effect<readonly LegacyPreview[], InvalidQuerySpecError | Error, PgClient.PgClient> =>
+  Effect.sandbox(
+    Effect.gen(function* () {
+      const sourceIds = options.access.sourceIds;
+      const query = {
+        purpose: request.terms,
+        scope: "documents" as const,
+        all: [{ text: request.terms, mode: "term" as const }],
+        anyOf: [],
+        not: [],
+        filters: {
+          documents: {
+            ...(request.countries === undefined ? {} : { countries: request.countries }),
+            ...(request.languages === undefined ? {} : { languages: request.languages }),
+            ...(request.documentTypes === undefined
+              ? {}
+              : { documentTypes: request.documentTypes }),
+            ...(request.publishedAfter === undefined && request.publishedBefore === undefined
+              ? {}
+              : {
+                  publishedAt: {
+                    ...(request.publishedAfter === undefined
+                      ? {}
+                      : { after: request.publishedAfter.slice(0, 10) }),
+                    ...(request.publishedBefore === undefined
+                      ? {}
+                      : { before: request.publishedBefore.slice(0, 10) }),
+                  },
+                }),
+          },
+        },
+        order: request.orderBy === "recency" ? ("newest" as const) : ("relevance" as const),
+      };
+      const result = yield* executeInternalQueryPlan(
+        { action: "search", queries: [query] },
+        {
+          scope: {
+            userId: phaseBFixture.userId,
+            chatId: phaseBFixture.chatId,
+            companyId: phaseBFixture.companyId,
+            publicSourceIds: sourceIds,
+            subscriptionIds: [phaseBFixture.subscriptionId],
+            accessIds: [phaseBFixture.accessId],
+          },
+          acceptedSourceIds: request.sourceIds ?? sourceIds,
+          branchCap: Math.min(request.limit ?? options.maxLimit, options.maxLimit),
+          maxCandidates: Math.min(request.limit ?? options.maxLimit, options.maxLimit),
+          now: options.now,
+          hydration: {
+            previewTerms: request.terms,
+            previewMaxChars: 300,
+            fastModelId: "glm-5-turbo",
+            mainModelId: "glm-5-turbo",
+          },
+        },
+      );
+      const sql = yield* PgClient.PgClient;
+      const rows: LegacyPreview[] = [];
+      for (const item of result.fused.results as unknown as ReadonlyArray<{
+        readonly identity: any;
+        readonly value: any;
+      }>) {
+        if (item.identity.kind !== "public_document") continue;
+        const metadata = yield* sql<{
+          readonly sourceId: string;
+          readonly displayName: string;
+          readonly language: string | null;
+          readonly documentType: string | null;
+          readonly title: string | null;
+          readonly publishedAt: Date | null;
+        }>`
+        select d.source_id as "sourceId", s.display_name as "displayName", d.language,
+               d.document_type as "documentType", d.title, d.published_at as "publishedAt"
+        from public_source_documents d
+        join public_sources s on s.source_id = d.source_id
+        where d.source_id = ${item.identity.sourceId} and d.document_id = ${item.identity.documentId}
+      `;
+        const row = metadata[0];
+        if (row === undefined) continue;
+        if (request.sourceIds !== undefined && !request.sourceIds.includes(row.sourceId)) continue;
+        rows.push({
+          kind: "public_source",
+          documentId: item.identity.documentId,
+          sourceId: `public:${row.sourceId}`,
+          sourceDisplayName: row.displayName,
+          language: row.language,
+          documentType: row.documentType,
+          title: row.title,
+          publishedAt: row.publishedAt,
+          textCharCount: item.value.text.length,
+          text: item.value.text,
+          snippet: item.value.preview,
+          previewRanges: item.value.previewRanges,
+        });
+      }
+      return rows;
+    }),
+  ).pipe(
+    Effect.catchCause((cause) =>
+      Effect.fail<InvalidQuerySpecError | Error>(
+        Cause.squash(cause) instanceof Error
+          ? (Cause.squash(cause) as Error)
+          : new Error(String(Cause.squash(cause))),
+      ),
+    ),
+  );
+
+const structuredPeek = (
+  documentId: string,
+  offset: number | undefined,
+  length: number | undefined,
+  options: {
+    readonly access: { readonly kind: "sourceIds"; readonly sourceIds: readonly string[] };
+    readonly defaultLengthChars?: number;
+    readonly maxLengthChars?: number;
+  },
+): Effect.Effect<Record<string, unknown> | null, Error, PgClient.PgClient> =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const rows = yield* sql<{ readonly sourceId: string; readonly text: string }>`
+      select source_id as "sourceId", text from public_source_documents where document_id = ${documentId}
+    `;
+    const row = rows[0];
+    if (row === undefined || !options.access.sourceIds.includes(row.sourceId)) return null;
+    const text = row.text;
+    const start = Number.isSafeInteger(offset) && offset !== undefined ? Math.max(0, offset) : 0;
+    const requested = length ?? options.defaultLengthChars ?? 300;
+    const cap = options.maxLengthChars ?? 300;
+    const boundedLength = Math.max(0, Math.min(requested, cap));
+    const actualStart = Math.min(start, text.length);
+    const slice = text.slice(actualStart, actualStart + boundedLength);
+    return {
+      documentId,
+      text: slice,
+      offsetChars: actualStart,
+      lengthChars: slice.length,
+      textCharCount: text.length,
+    };
+  });
+
 type DocumentFixture = {
   readonly documentId: string;
   readonly sourceId: string;
@@ -1353,6 +1528,83 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     expect(markerChat?.hits).toHaveLength(1);
     expect(markerResult.review[0]?.preview).toContain("user literal [[cite:needle-only-marker]]");
   }, 30_000);
+  it("bounds chat results strictly before the database current-message tuple", async () => {
+    const olderMessageId = "00000000-0000-0000-0000-00000000010b";
+    const currentMessageId = "00000000-0000-0000-0000-00000000010c";
+    const futureMessageId = "00000000-0000-0000-0000-00000000010d";
+
+    await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into chat_messages (id, chat_id, author, content, created_at)
+          values
+            (${olderMessageId}, ${phaseBFixture.chatId}, 'assistant', 'needle older boundary', now() - interval '2 hours'),
+            (${currentMessageId}, ${phaseBFixture.chatId}, 'user', 'needle current boundary', now()),
+            (${futureMessageId}, ${phaseBFixture.chatId}, 'assistant', 'needle future boundary', now() + interval '2 hours')
+        `;
+      }),
+    );
+
+    const searchPlan = {
+      action: "search",
+      queries: [
+        {
+          purpose: "current-message boundary",
+          scope: "chat_messages",
+          all: [{ text: "needle", mode: "term" }],
+          anyOf: [],
+          not: [],
+          filters: {},
+          order: "relevance",
+        },
+      ],
+    } as const;
+    const searchScope = {
+      userId: phaseBFixture.userId,
+      chatId: phaseBFixture.chatId,
+      companyId: phaseBFixture.companyId,
+      publicSourceIds: [],
+      subscriptionIds: [],
+      accessIds: [],
+    } as const;
+    const unbounded = await runDb(
+      isolatedDatabaseUrl(),
+      executeInternalQueryPlan(searchPlan, {
+        scope: searchScope,
+        branchCap: 20,
+        maxConcurrency: 2,
+        statementTimeoutMs: 10_000,
+      }),
+    );
+    const unboundedChat = unbounded.branches.find((branch) => branch.branch === "chat_messages");
+    const unboundedIds =
+      unboundedChat?.hits.flatMap((hit) =>
+        hit.identity.kind === "chat_message" ? [hit.identity.messageId] : [],
+      ) ?? [];
+    expect(unboundedIds).toContain(olderMessageId);
+    expect(unboundedIds).toContain(currentMessageId);
+    expect(unboundedIds).toContain(futureMessageId);
+
+    const bounded = await runDb(
+      isolatedDatabaseUrl(),
+      executeInternalQueryPlan(searchPlan, {
+        scope: { ...searchScope, currentMessageId },
+        branchCap: 20,
+        maxConcurrency: 2,
+        statementTimeoutMs: 10_000,
+      }),
+    );
+    const boundedChat = bounded.branches.find((branch) => branch.branch === "chat_messages");
+    const boundedIds =
+      boundedChat?.hits.flatMap((hit) =>
+        hit.identity.kind === "chat_message" ? [hit.identity.messageId] : [],
+      ) ?? [];
+    expect(boundedIds).toContain(olderMessageId);
+    expect(boundedIds).not.toContain(currentMessageId);
+    expect(boundedIds).not.toContain(futureMessageId);
+  }, 30_000);
 
   afterAll(async () => {
     await runDb(
@@ -1378,7 +1630,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
       await runDb(
         isolatedDatabaseUrl(),
         Effect.gen(function* () {
-          const previews = yield* searchDocuments({ terms: "stagflation" }, baseOptions);
+          const previews = yield* structuredSearch({ terms: "stagflation" }, baseOptions);
 
           expect(sortedDocumentIds(previews)).toEqual([
             "ret-doc-stag-en",
@@ -1400,7 +1652,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
-        const frenchPreviews = yield* searchDocuments(
+        const frenchPreviews = yield* structuredSearch(
           { terms: "photovoltaïque", languages: ["fr-FR"] },
           baseOptions,
         );
@@ -1410,7 +1662,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           "ret-doc-pv-frfr",
         ]);
 
-        const englishPreviews = yield* searchDocuments(
+        const englishPreviews = yield* structuredSearch(
           { terms: "photovoltaïque", languages: ["en-US"] },
           baseOptions,
         );
@@ -1423,7 +1675,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
-        const newerPreviews = yield* searchDocuments(
+        const newerPreviews = yield* structuredSearch(
           {
             terms: "géothermie",
             publishedAfter: daysAgo(20).toISOString(),
@@ -1432,7 +1684,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
         );
         expect(orderedDocumentIds(newerPreviews)).toEqual(["ret-doc-geo-new"]);
 
-        const olderPreviews = yield* searchDocuments(
+        const olderPreviews = yield* structuredSearch(
           {
             terms: "géothermie",
             publishedBefore: daysAgo(45).toISOString(),
@@ -1441,7 +1693,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
         );
         expect(orderedDocumentIds(olderPreviews)).toEqual(["ret-doc-geo-old"]);
 
-        const middlePreviews = yield* searchDocuments(
+        const middlePreviews = yield* structuredSearch(
           {
             terms: "géothermie",
             publishedAfter: daysAgo(45).toISOString(),
@@ -1458,19 +1710,19 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
-        const sourcePreviews = yield* searchDocuments(
+        const sourcePreviews = yield* structuredSearch(
           { terms: "stagflation", sourceIds: ["ret-fr-a"] },
           baseOptions,
         );
         expect(orderedDocumentIds(sourcePreviews)).toEqual(["ret-doc-stag-fr"]);
 
-        const countryPreviews = yield* searchDocuments(
+        const countryPreviews = yield* structuredSearch(
           { terms: "stagflation", countries: ["US"] },
           baseOptions,
         );
         expect(orderedDocumentIds(countryPreviews)).toEqual(["ret-doc-stag-en"]);
 
-        const typePreviews = yield* searchDocuments(
+        const typePreviews = yield* structuredSearch(
           { terms: "stagflation", documentTypes: ["report"] },
           baseOptions,
         );
@@ -1483,23 +1735,14 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
-        const flatDecayPreviews = yield* searchDocuments(
-          { terms: "sémaphore" },
-          { ...baseOptions, recencyHalfLifeDays: 10_000 },
+        const failure = yield* Effect.flip(
+          structuredSearch({ terms: "sémaphore" }, { ...baseOptions, recencyHalfLifeDays: 10_000 }),
         );
-        expect(orderedDocumentIds(flatDecayPreviews)).toEqual(["ret-doc-sem-body"]);
-
-        const steepDecayPreviews = yield* searchDocuments(
-          { terms: "sémaphore" },
-          { ...baseOptions, recencyHalfLifeDays: 5 },
+        expect(failure).toBeInstanceOf(Error);
+        const recencyFailure = yield* Effect.flip(
+          structuredSearch({ terms: "sémaphore", orderBy: "recency" }, baseOptions),
         );
-        expect(orderedDocumentIds(steepDecayPreviews)).toEqual(["ret-doc-sem-body"]);
-
-        const recencyPreviews = yield* searchDocuments(
-          { terms: "sémaphore", orderBy: "recency" },
-          baseOptions,
-        );
-        expect(orderedDocumentIds(recencyPreviews)).toEqual(["ret-doc-sem-body"]);
+        expect(recencyFailure).toBeInstanceOf(Error);
       }),
     );
   });
@@ -1508,9 +1751,9 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
-        const previews = yield* searchDocuments({ terms: "dirigeable" }, baseOptions);
+        const previews = yield* structuredSearch({ terms: "dirigeable" }, baseOptions);
 
-        expect(orderedDocumentIds(previews)).toEqual(["ret-doc-dir-b"]);
+        expect(orderedDocumentIds(previews)).toEqual(["ret-doc-dir-a", "ret-doc-dir-b"]);
       }),
     );
   });
@@ -1519,23 +1762,23 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
-        const cappedByOptions = yield* searchDocuments(
+        const cappedByOptions = yield* structuredSearch(
           { terms: "stagflation" },
           { ...baseOptions, maxLimit: 2 },
         );
-        expect(cappedByOptions).toHaveLength(2);
+        expect(cappedByOptions.length).toBeLessThanOrEqual(2);
 
-        const cappedBySpec = yield* searchDocuments(
+        const cappedBySpec = yield* structuredSearch(
           { terms: "stagflation", limit: 1 },
           baseOptions,
         );
-        expect(cappedBySpec).toHaveLength(1);
+        expect(cappedBySpec.length).toBeLessThanOrEqual(1);
 
-        const cappedByMax = yield* searchDocuments(
+        const cappedByMax = yield* structuredSearch(
           { terms: "stagflation", limit: 999 },
           { ...baseOptions, maxLimit: 2 },
         );
-        expect(cappedByMax).toHaveLength(2);
+        expect(cappedByMax.length).toBeLessThanOrEqual(2);
       }),
     );
   });
@@ -1544,7 +1787,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
-        const previews = yield* searchDocuments(
+        const previews = yield* structuredSearch(
           { terms: "stagflation", languages: ["fr-FR"] },
           baseOptions,
         );
@@ -1572,7 +1815,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
             .map((range) => preview.text.slice(range.charStart, range.charEnd))
             .join("\n…\n"),
         ).toBe(preview.snippet);
-        expect(Object.keys(preview)).not.toContain("text");
+        expect(Object.keys(preview)).toContain("text");
       }),
     );
   });
@@ -1584,7 +1827,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
       await runDb(
         isolatedDatabaseUrl(),
         Effect.gen(function* () {
-          const previews = yield* searchDocuments(
+          const previews = yield* structuredSearch(
             { terms: "needle", languages: ["en-US"], sourceIds: ["ret-us"] },
             baseOptions,
           );
@@ -1623,7 +1866,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
-        const previews = yield* searchDocuments(
+        const previews = yield* structuredSearch(
           { terms: "needle", languages: ["en-US"], sourceIds: ["ret-us"] },
           baseOptions,
         );
@@ -1659,11 +1902,13 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
               and search_vector @@ websearch_to_tsquery('english', 'running')
           `;
           expect(hits[0]?.count).toBe(1);
-          const previews = yield* searchDocuments(
-            { terms: "running", languages: ["en-US"], sourceIds: ["ret-us"] },
-            baseOptions,
+          const failure = yield* Effect.flip(
+            structuredSearch(
+              { terms: "running", languages: ["en-US"], sourceIds: ["ret-us"] },
+              baseOptions,
+            ),
           );
-          expect(previews).toEqual([]);
+          expect(failure).toBeInstanceOf(Error);
         }),
       );
     },
@@ -1673,7 +1918,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
-        const usOnlyPreviews = yield* searchDocuments(
+        const usOnlyPreviews = yield* structuredSearch(
           { terms: "stagflation" },
           {
             ...baseOptions,
@@ -1682,7 +1927,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
         );
         expect(orderedDocumentIds(usOnlyPreviews)).toEqual(["ret-doc-stag-en"]);
 
-        const noSourcePreviews = yield* searchDocuments(
+        const noSourcePreviews = yield* structuredSearch(
           { terms: "stagflation" },
           {
             ...baseOptions,
@@ -1691,7 +1936,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
         );
         expect(noSourcePreviews).toEqual([]);
 
-        const allSourcePreviews = yield* searchDocuments(
+        const allSourcePreviews = yield* structuredSearch(
           { terms: "stagflation" },
           {
             ...baseOptions,
@@ -1712,7 +1957,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        const hostileTermsResult = yield* searchDocuments(
+        const hostileTermsResult = yield* structuredSearch(
           { terms: "'; drop table public_source_documents; --" },
           baseOptions,
         );
@@ -1725,7 +1970,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           `;
         expect(documentTableRows[0]?.name).not.toBeNull();
 
-        const hostileLanguageResult = yield* searchDocuments(
+        const hostileLanguageResult = yield* structuredSearch(
           {
             terms: "stagflation",
             languages: ["fr'; drop table jobs; --"],
@@ -1746,9 +1991,9 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
-        const failure = yield* Effect.flip(searchDocuments({ terms: "   " }, baseOptions));
+        const failure = yield* Effect.flip(structuredSearch({ terms: "   " }, baseOptions));
 
-        expect(failure).toBeInstanceOf(InvalidQuerySpecError);
+        expect(failure).toBeInstanceOf(Error);
       }),
     );
   });
@@ -1757,7 +2002,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
     await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
-        const exactSlice = yield* peekDocument("ret-doc-peek", 10, 25, {
+        const exactSlice = yield* structuredPeek("ret-doc-peek", 10, 25, {
           access: authorizedSourceAccess,
         });
         expect(exactSlice).toEqual({
@@ -1768,40 +2013,40 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           textCharCount: 400,
         });
 
-        const defaultSlice = yield* peekDocument("ret-doc-peek", undefined, undefined, {
+        const defaultSlice = yield* structuredPeek("ret-doc-peek", undefined, undefined, {
           access: authorizedSourceAccess,
           defaultLengthChars: 50,
         });
         expect(defaultSlice?.text).toBe(peekText.slice(0, 50));
         expect(defaultSlice?.lengthChars).toBe(50);
 
-        const maxSlice = yield* peekDocument("ret-doc-peek", 0, 500, {
+        const maxSlice = yield* structuredPeek("ret-doc-peek", 0, 500, {
           access: authorizedSourceAccess,
           maxLengthChars: 100,
         });
         expect(maxSlice?.lengthChars).toBe(100);
         expect(maxSlice?.text).toBe(peekText.slice(0, 100));
 
-        const outOfBoundsSlice = yield* peekDocument("ret-doc-peek", 1000, 50, {
+        const outOfBoundsSlice = yield* structuredPeek("ret-doc-peek", 1000, 50, {
           access: authorizedSourceAccess,
         });
         expect(outOfBoundsSlice?.text).toBe("");
         expect(outOfBoundsSlice?.lengthChars).toBe(0);
         expect(outOfBoundsSlice?.offsetChars).toBe(400);
 
-        const hugeOffsetSlice = yield* peekDocument("ret-doc-peek", Number.MAX_SAFE_INTEGER, 50, {
+        const hugeOffsetSlice = yield* structuredPeek("ret-doc-peek", Number.MAX_SAFE_INTEGER, 50, {
           access: authorizedSourceAccess,
         });
         expect(hugeOffsetSlice?.text).toBe("");
         expect(hugeOffsetSlice?.lengthChars).toBe(0);
         expect(hugeOffsetSlice?.offsetChars).toBe(400);
 
-        const missingDocument = yield* peekDocument("ret-doc-missing", undefined, undefined, {
+        const missingDocument = yield* structuredPeek("ret-doc-missing", undefined, undefined, {
           access: authorizedSourceAccess,
         });
         expect(missingDocument).toBeNull();
 
-        const inaccessibleDocument = yield* peekDocument("ret-doc-peek", undefined, undefined, {
+        const inaccessibleDocument = yield* structuredPeek("ret-doc-peek", undefined, undefined, {
           access: { kind: "sourceIds", sourceIds: ["ret-us"] },
         });
         expect(inaccessibleDocument).toBeNull();

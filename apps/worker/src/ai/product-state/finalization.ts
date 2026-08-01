@@ -28,6 +28,7 @@ import {
   webQuoteHash,
   stripHistoricalCitationTags,
 } from "../runtime/canonicalization";
+import { isUtf16Boundary, isWellFormedUtf16 } from "../workflow/types";
 import { resolveRegisteredModel } from "../runtime/model-registry";
 import { MAX_COMPACTION_GROUPS, parseCompactionGroupTaskId } from "../context/compaction-runtime";
 import { PublicProvenanceSchema } from "../runtime/source-schemas";
@@ -42,6 +43,8 @@ import type {
 } from "../runtime/types";
 import { parseCurrentTurnCitations } from "./citations";
 import { appendAiRunEventInTransaction } from "./events";
+import { BranchCoverageSchema, StructuredRetrievalTraceSchema } from "../retrieval/query-spec";
+import { ReviewModelFusedResultMetadataSchema } from "../retrieval/rank-fusion";
 import {
   applyMemoryProposalsInTransaction,
   type AppliedMemoryChanges,
@@ -569,10 +572,18 @@ const StructuredRetrievalReviewPreviewPayloadSchema = z
     agentRole: z.literal("internal_retrieval"),
     slot: z.enum(["initial", "replacement"]),
     providerInputSha256Hex: z.string().regex(/^[a-f0-9]{64}$/u),
+    results: z.array(ReviewModelFusedResultMetadataSchema),
+    coverage: z.array(BranchCoverageSchema).min(1),
+    truncation: z
+      .object({
+        branch: z.boolean(),
+        candidates: z.boolean(),
+        hydration: z.boolean(),
+      })
+      .strict(),
     records: z.array(StructuredRetrievalPreviewRecordSchema),
   })
   .strict();
-
 const ProviderSerializationProofBindingSchema = z
   .object({
     messageIndex: z.number().int().nonnegative(),
@@ -612,7 +623,7 @@ const validateDurableObservability = (
   run: RunRow,
   answer: AnswerLaneResult,
   finalizationCoordinates: FinalizeAiRunInput["coordinates"],
-): Effect.Effect<void, SqlError | Error, PgClient.PgClient> =>
+): Effect.Effect<boolean, SqlError | Error, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const runId = run.id;
@@ -639,7 +650,6 @@ const validateDurableObservability = (
       ) as topology
     `;
     const evaluationTopology = evaluationRows[0]?.topology ?? null;
-    const isEvaluationRun = evaluationTopology !== null;
     const isGeneralPlannerEvaluationRun = evaluationTopology === "general_planner";
     const selectorStateRows = yield* sql<{
       readonly memoryMode: string;
@@ -662,6 +672,7 @@ const validateDurableObservability = (
       "turn_plan",
       "retrieval_manifest",
       "retrieval_no_call_seal",
+      "structured_retrieval_trace",
       "structured_retrieval_review_preview",
       "candidate_rejected",
       "provider_request_measurement",
@@ -757,6 +768,11 @@ const validateDurableObservability = (
         ? [["evaluation-general-planner", "evaluation_general_planner"] as const]
         : [["plan-turn", "plan_turn"] as const]),
     ]);
+    if (isGeneralPlannerEvaluationRun && parsedPlan.data.mode === "fanout") {
+      for (const topic of parsedPlan.data.topics) {
+        allowedProviderTaskRoles.set(`topic-${topic.topicId}-answer`, "topic_answer");
+      }
+    }
     const compactionPrefixes: readonly string[] =
       parsedPlan.data.mode === "single"
         ? ["single"]
@@ -938,6 +954,56 @@ const validateDurableObservability = (
       }
     }
 
+    const structuredRetrievalTraceRows = observationRows.filter(
+      (observation) => observation.kind === "structured_retrieval_trace",
+    );
+    const internalRetrievalOwnerSet = new Set(
+      expectedRetrievalOwners.filter((owner) => expectedRetrievalRoles.get(owner) === "internal"),
+    );
+    const traceCoordinatesByOwner = new Map<string, number>();
+    for (const row of structuredRetrievalTraceRows) {
+      const parsedTrace = StructuredRetrievalTraceSchema.safeParse(row.payload);
+      if (!parsedTrace.success || !internalRetrievalOwnerSet.has(row.emittingTask)) {
+        return yield* Effect.fail(
+          new Error("structured retrieval trace has a foreign owner or invalid payload"),
+        );
+      }
+      const expectedObservationKey = [
+        row.emittingTask,
+        row.loopIteration,
+        row.attempt,
+        "structured_retrieval_trace",
+        "result",
+      ].join(":");
+      if (row.observationKey !== expectedObservationKey) {
+        return yield* Effect.fail(new Error("structured retrieval trace coordinate is not exact"));
+      }
+      if (
+        !retrievalRows.some(
+          (retrieval) =>
+            retrieval.emittingTask === row.emittingTask &&
+            retrieval.loopIteration === row.loopIteration &&
+            retrieval.attempt === row.attempt,
+        )
+      ) {
+        return yield* Effect.fail(
+          new Error("structured retrieval trace does not match a retrieval manifest"),
+        );
+      }
+      const coordinate = `${row.emittingTask}:${row.loopIteration}:${row.attempt}`;
+      traceCoordinatesByOwner.set(coordinate, (traceCoordinatesByOwner.get(coordinate) ?? 0) + 1);
+    }
+    for (const owner of internalRetrievalOwnerSet) {
+      const latestManifest = terminalRetrievalRows.get(owner);
+      if (latestManifest === undefined) continue;
+      const coordinate = `${owner}:${latestManifest.loopIteration}:${latestManifest.attempt}`;
+      if (traceCoordinatesByOwner.get(coordinate) !== 1) {
+        return yield* Effect.fail(
+          new Error("selected internal retrieval manifest lacks exactly one trace"),
+        );
+      }
+    }
+
     const reviewPreviewRows = observationRows.filter(
       (observation) => observation.kind === "structured_retrieval_review_preview",
     );
@@ -1029,13 +1095,18 @@ const validateDurableObservability = (
       text: string,
       ranges: readonly { readonly charStart: number; readonly charEnd: number }[],
     ): string => {
+      if (!isWellFormedUtf16(text)) {
+        throw new Error("structured retrieval review preview source is not well-formed UTF-16");
+      }
       for (const range of ranges) {
         if (
           !Number.isSafeInteger(range.charStart) ||
           !Number.isSafeInteger(range.charEnd) ||
           range.charStart < 0 ||
           range.charEnd <= range.charStart ||
-          range.charEnd > text.length
+          range.charEnd > text.length ||
+          !isUtf16Boundary(text, range.charStart) ||
+          !isUtf16Boundary(text, range.charEnd)
         ) {
           throw new Error("structured retrieval review preview range is outside immutable source");
         }
@@ -1148,6 +1219,37 @@ const validateDurableObservability = (
       }
       reviewPreviewCoordinates.add(coordinate);
       reviewPreviewSlots.add(slotKey);
+      if (parsed.data.results.length !== parsed.data.records.length) {
+        return yield* Effect.fail(
+          new Error("structured retrieval review preview result metadata cardinality differs"),
+        );
+      }
+      for (const [index, result] of parsed.data.results.entries()) {
+        const record = parsed.data.records[index]!;
+        if (result.resultId !== `r${index + 1}`) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview result metadata order differs"),
+          );
+        }
+        const expectedKind = record.identity.kind === "chat_message" ? "chat_message" : "document";
+        if (result.kind !== expectedKind) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview result metadata kind differs"),
+          );
+        }
+        if (canonicalJson(result.branchCoverage) !== canonicalJson(parsed.data.coverage)) {
+          return yield* Effect.fail(
+            new Error(
+              "structured retrieval review preview result metadata branch coverage differs",
+            ),
+          );
+        }
+        if (canonicalJson(result.truncationFlags) !== canonicalJson(parsed.data.truncation)) {
+          return yield* Effect.fail(
+            new Error("structured retrieval review preview result metadata truncation differs"),
+          );
+        }
+      }
       const recordCoordinates = new Set<string>();
       for (const record of parsed.data.records) {
         const { recordDigestSha256Hex, ...recordWithoutDigest } = record;
@@ -1248,6 +1350,10 @@ const validateDurableObservability = (
       readonly documentSourceId: string | null;
       readonly documentId: string | null;
       readonly publisherIssueId: string | null;
+      readonly chatContentHash: string | null;
+      readonly chatRanges:
+        | readonly { readonly charStart: number; readonly charEnd: number }[]
+        | null;
       readonly publisherDocumentId: string | null;
       readonly documentRanges:
         | readonly { readonly charStart: number; readonly charEnd: number }[]
@@ -1265,6 +1371,8 @@ const validateDurableObservability = (
              publisher_issue_id::text as "publisherIssueId",
              publisher_document_id::text as "publisherDocumentId",
              document_ranges as "documentRanges",
+             chat_content_hash as "chatContentHash",
+             chat_ranges as "chatRanges",
              publisher_extraction_id::text as "publisherExtractionId"
       from ai_source_exposures where run_id = ${runId}
     `;
@@ -1284,6 +1392,11 @@ const validateDurableObservability = (
           (exposure.exposureStage === "internal_search_preview" ||
             exposure.exposureStage === "internal_chat_search_preview"),
       );
+      if (previewExposures.length !== preview.records.length) {
+        return yield* Effect.fail(
+          new Error("structured retrieval review preview exposures are not a complete list"),
+        );
+      }
       for (const record of preview.records) {
         const matches = previewExposures.filter((exposure) => {
           if (record.identity.kind === "chat_message") {
@@ -1293,7 +1406,10 @@ const validateDurableObservability = (
                 chatMessageEvidenceIdentity(record.identity.messageId) &&
               exposure.contentItemIdentity === record.identity.messageId &&
               exposure.exposureStage === "internal_chat_search_preview" &&
-              exposure.visibleTokenCount >= 0
+              exposure.visibleTokenCount >= 0 &&
+              exposure.chatContentHash === record.contentHash &&
+              exposure.chatRanges !== null &&
+              rangesEqual(exposure.chatRanges, record.previewRanges)
             );
           }
           const expectedLogical =
@@ -1563,8 +1679,45 @@ const validateDurableObservability = (
         "documentRanges",
         "publisherExtractionId",
       ] as const;
-      if (sourceKind === "document") {
+      const chatReconstructionFields = ["chatMessageId", "chatContentHash", "chatRanges"] as const;
+      const hasChatReconstruction = chatReconstructionFields.some((field) =>
+        Object.hasOwn(row.payload, field),
+      );
+      if (sourceKind === "chat_message") {
+        const chatRanges = row.payload.chatRanges;
+        let canonicalChatRanges = false;
+        if (Array.isArray(chatRanges)) {
+          try {
+            const typedRanges = chatRanges as readonly {
+              readonly charStart: number;
+              readonly charEnd: number;
+            }[];
+            const normalizedRanges = normalizeCharacterRanges(
+              typedRanges,
+              Math.max(0, ...typedRanges.map((range) => range.charEnd)),
+            );
+            canonicalChatRanges =
+              normalizedRanges.length > 0 && rangesEqual(normalizedRanges, typedRanges);
+          } catch {
+            canonicalChatRanges = false;
+          }
+        }
         if (
+          row.payload.chatMessageId !== exposure.contentItemIdentity ||
+          typeof row.payload.chatContentHash !== "string" ||
+          !/^[a-f0-9]{64}$/u.test(row.payload.chatContentHash) ||
+          exposure.chatContentHash === null ||
+          row.payload.chatContentHash !== exposure.chatContentHash ||
+          exposure.chatRanges === null ||
+          !canonicalChatRanges ||
+          canonicalJson(chatRanges) !== canonicalJson(exposure.chatRanges) ||
+          reconstructionFields.some((field) => Object.hasOwn(row.payload, field))
+        ) {
+          return yield* Effect.fail(new Error("chat exposure attestation reconstruction differs"));
+        }
+      } else if (sourceKind === "document") {
+        if (
+          hasChatReconstruction ||
           row.payload.documentSourceId !== exposure.documentSourceId ||
           row.payload.documentId !== exposure.documentId ||
           row.payload.snapshotId !== exposure.snapshotId ||
@@ -1576,9 +1729,12 @@ const validateDurableObservability = (
             new Error("document exposure attestation reconstruction differs"),
           );
         }
-      } else if (reconstructionFields.some((field) => Object.hasOwn(row.payload, field))) {
+      } else if (
+        reconstructionFields.some((field) => Object.hasOwn(row.payload, field)) ||
+        hasChatReconstruction
+      ) {
         return yield* Effect.fail(
-          new Error("non-document exposure attestation carries document reconstruction"),
+          new Error("non-document exposure attestation carries source reconstruction"),
         );
       }
       attestedExposureKeys.add(exposureKey);
@@ -1616,15 +1772,14 @@ const validateDurableObservability = (
     const required = new Set<string>(["turn_plan"]);
     required.add("memory_extraction_result");
     if (answer.status === "ok" && answer.mode !== "clarification") {
-      for (const kind of [
-        "turn_plan",
-        "retrieval_manifest",
-        "context_measurement",
-        "context_serialized",
-      ]) {
-        required.add(kind);
+      required.add("retrieval_manifest");
+      if (!isGeneralPlannerEvaluationRun) {
+        required.add("context_measurement");
+        required.add("context_serialized");
       }
-      if (answer.mode === "synthesis") required.add("topic_packet");
+      if (answer.mode === "synthesis" && !isGeneralPlannerEvaluationRun) {
+        required.add("topic_packet");
+      }
     }
     for (const kind of required) {
       if (!kinds.has(kind)) return yield* Effect.fail(new Error(`missing ${kind} observation`));
@@ -1632,29 +1787,29 @@ const validateDurableObservability = (
     const serializedContextRows = observationRows.filter(
       (observation) => observation.kind === "context_serialized",
     );
+    if (isGeneralPlannerEvaluationRun) {
+      const contextRows = observationRows.filter(
+        (observation) =>
+          observation.kind === "context_measurement" || observation.kind === "context_serialized",
+      );
+      if (contextRows.length > 0) {
+        return yield* Effect.fail(
+          new Error("general-planner evaluation cannot carry context rows"),
+        );
+      }
+    }
     if (answer.status === "ok") {
       const allowedContextOwners =
         answer.mode === "clarification"
           ? new Set<string>()
-          : isEvaluationRun
-            ? isGeneralPlannerEvaluationRun
-              ? new Set(["evaluation-general-planner"])
-              : answer.mode === "single"
-                ? new Set(["single-answer"])
-                : new Set([
-                    "fanout-synthesis",
-                    "topic-t1-answer",
-                    "topic-t2-answer",
-                    "topic-t3-answer",
-                  ])
-            : answer.mode === "single"
-              ? new Set(["single-answer"])
-              : new Set([
-                  "fanout-synthesis",
-                  "topic-t1-answer",
-                  "topic-t2-answer",
-                  "topic-t3-answer",
-                ]);
+          : answer.mode === "single"
+            ? new Set(["single-answer"])
+            : new Set([
+                "fanout-synthesis",
+                "topic-t1-answer",
+                "topic-t2-answer",
+                "topic-t3-answer",
+              ]);
       if (serializedContextRows.some((row) => !allowedContextOwners.has(row.emittingTask))) {
         return yield* Effect.fail(new Error("context serialization has a foreign owner"));
       }
@@ -2630,18 +2785,13 @@ const validateDurableObservability = (
       }
       return null;
     };
-    if (answer.status === "ok" && answer.mode !== "clarification") {
-      const evaluationTopology = terminalPlan.emittingTask === "evaluation-general-planner";
-      const expectedContextTask = evaluationTopology
-        ? "evaluation-general-planner"
-        : answer.mode === "single"
-          ? "single-answer"
-          : "fanout-synthesis";
-      const expectedSerializedConsumer = evaluationTopology
-        ? answer.mode === "synthesis"
-          ? "fanout-synthesis"
-          : "single-answer"
-        : expectedContextTask;
+    if (
+      answer.status === "ok" &&
+      answer.mode !== "clarification" &&
+      !isGeneralPlannerEvaluationRun
+    ) {
+      const expectedContextTask = answer.mode === "single" ? "single-answer" : "fanout-synthesis";
+      const expectedSerializedConsumer = expectedContextTask;
       const contextRows = observationRows.filter(
         (observation) =>
           observation.kind === "context_serialized" &&
@@ -2813,7 +2963,6 @@ const validateDurableObservability = (
           const source = expected.source;
           const use = expected.use;
           if (
-            ledgerSource.candidateId !== candidateIdentity(source) ||
             ledgerSource.sourceKey !== source.sourceKey ||
             ledgerSource.kind !== source.locator.kind ||
             ledgerSource.label !== (source.label || null) ||
@@ -3084,7 +3233,6 @@ const validateDurableObservability = (
           if (packetRow.emittingTask !== `topic-${parsedPacket.data.topicId}-answer`) {
             return "topic packet observation has a foreign owner";
           }
-          const retainedTopic = packetTopicIds.includes(parsedPacket.data.topicId);
           const topicContextRow = orderedByAttempt(
             observationRows.filter(
               (observation) =>
@@ -3108,17 +3256,6 @@ const validateDurableObservability = (
           ) {
             return "topic packet context source keys differ from its topic ledger";
           }
-          const visibleTopicKeys = retainedTopic
-            ? answer.sourceMap
-                .filter((source) =>
-                  source.uses.some(
-                    (use) =>
-                      use.consumerTaskId === `topic-${parsedPacket.data.topicId}-answer` &&
-                      use.topicId === parsedPacket.data.topicId,
-                  ),
-                )
-                .map((source) => source.sourceKey)
-            : undefined;
           const packetSourceKeys = parsedPacket.data.sourceKeys;
           let packetSourceSubsetIndex = 0;
           const packetSourceKeysAreOrderedSubset = packetSourceKeys.every((sourceKey) => {
@@ -3127,10 +3264,7 @@ const validateDurableObservability = (
             packetSourceSubsetIndex = nextIndex + 1;
             return true;
           });
-          if (
-            !packetSourceKeysAreOrderedSubset ||
-            (retainedTopic && JSON.stringify(packetSourceKeys) !== JSON.stringify(visibleTopicKeys))
-          ) {
+          if (!packetSourceKeysAreOrderedSubset) {
             return "topic packet source keys differ from its topic context";
           }
           const expectedPacket =
@@ -3342,26 +3476,29 @@ const validateDurableObservability = (
           : null;
       };
       const row = orderedByAttempt(contextRows).at(-1)!;
-      const serializedFields = evaluationTopology
-        ? new Set(["consumerTaskId", "sourceKeys"])
-        : new Set([
-            "consumerTaskId",
-            "sourceKeys",
-            "restrictedContextLedger",
-            "terminalUsageCoordinate",
-            ...(answer.mode === "synthesis" ? [] : ["topicId"]),
-          ]);
+      const serializedFields = new Set([
+        "consumerTaskId",
+        "sourceKeys",
+        "restrictedContextLedger",
+        "terminalUsageCoordinate",
+        ...(answer.mode === "synthesis" ? [] : ["topicId"]),
+      ]);
       if (Object.keys(row.payload).some((field) => !serializedFields.has(field))) {
         return yield* Effect.fail(
           new Error("context serialization payload contains an unknown field"),
         );
       }
       const expectedSources = expectedSourcesFor(expectedContextTask, undefined);
-      const sourceExpectations =
-        evaluationTopology || answer.mode !== "synthesis"
-          ? [evaluationTopology ? answer.sourceMap.map((source) => ({ source })) : expectedSources]
-          : [expectedSources, answer.sourceMap.map((source) => ({ source }))];
-      if (!sourceExpectations.some((sources) => sourceKeysMatch(row, sources))) {
+      if (
+        !(
+          sourceKeysMatch(row, expectedSources) ||
+          (answer.mode === "synthesis" &&
+            sourceKeysMatch(
+              row,
+              answer.sourceMap.map((source) => ({ source })),
+            ))
+        )
+      ) {
         return yield* Effect.fail(
           new Error("context serialization source keys differ from the saved answer source map"),
         );
@@ -3373,18 +3510,16 @@ const validateDurableObservability = (
         if (row.payload.topicId !== undefined) {
           return yield* Effect.fail(new Error("single context serialization has a topic owner"));
         }
-        if (!evaluationTopology) {
-          const ledgerError = contextLedgerError(
-            row,
-            expectedContextTask,
-            undefined,
-            parsedPlan.data.question,
-            selectedTurnIds,
-            expectedSources,
-          );
-          if (ledgerError !== null) return yield* Effect.fail(new Error(ledgerError));
-        }
-      } else if (!evaluationTopology) {
+        const ledgerError = contextLedgerError(
+          row,
+          expectedContextTask,
+          undefined,
+          parsedPlan.data.question,
+          selectedTurnIds,
+          expectedSources,
+        );
+        if (ledgerError !== null) return yield* Effect.fail(new Error(ledgerError));
+      } else {
         if (row.payload.topicId !== undefined) {
           return yield* Effect.fail(new Error("synthesis context serialization has a topic owner"));
         }
@@ -3467,38 +3602,7 @@ const validateDurableObservability = (
         }
       }
 
-      if (evaluationTopology) {
-        const evaluationUsage = usageRows
-          .filter(
-            (usage) =>
-              usage.taskId === expectedContextTask &&
-              usage.loopIteration === row.loopIteration &&
-              usage.attempt === row.attempt,
-          )
-          .sort((left, right) => left.providerRequestIndex - right.providerRequestIndex)
-          .at(-1);
-        if (evaluationUsage === undefined) {
-          return yield* Effect.fail(new Error("evaluation context lacks its provider usage"));
-        }
-        const evaluationUsageKey = [
-          evaluationUsage.taskId,
-          evaluationUsage.loopIteration,
-          evaluationUsage.attempt,
-          evaluationUsage.providerRequestIndex,
-        ].join(":");
-        if (
-          latestMeasurementKeyFor(
-            evaluationUsage.taskId,
-            evaluationUsage.loopIteration,
-            evaluationUsage.attempt,
-          ) !== evaluationUsageKey
-        ) {
-          return yield* Effect.fail(
-            new Error("evaluation context does not own the latest provider measurement"),
-          );
-        }
-        terminalUsageKeys.add(evaluationUsageKey);
-      } else if (answer.mode === "synthesis") {
+      if (answer.mode === "synthesis") {
         const key = terminalContextUsageKey(row, expectedContextTask);
         if (key === null) {
           return yield* Effect.fail(
@@ -3669,6 +3773,7 @@ const validateDurableObservability = (
         return yield* Effect.fail(new Error(`terminal measurement lacks matching usage: ${key}`));
       }
     }
+    return isGeneralPlannerEvaluationRun;
   });
 
 const loadRunForUpdate = (
@@ -4498,8 +4603,23 @@ export const assertFinalSourceMap = (
       }
       orders.add(use.contextOrder);
       consumerOrders.set(use.consumerTaskId, orders);
-      if (source.locator.kind !== "document" && use.ranges.length !== 0) {
-        throw new Error(`non-document source has ranges: ${source.sourceKey}`);
+      if (source.locator.kind === "chat_message") {
+        let normalizedRanges: readonly { readonly charStart: number; readonly charEnd: number }[];
+        try {
+          normalizedRanges = normalizeCharacterRanges(
+            use.ranges,
+            Math.max(0, ...use.ranges.map((range) => range.charEnd)),
+          );
+        } catch {
+          throw new Error(
+            `chat source use ranges are outside immutable UTF-16 text: ${source.sourceKey}`,
+          );
+        }
+        if (normalizedRanges.length === 0 || !rangesEqual(normalizedRanges, use.ranges)) {
+          throw new Error(
+            `chat source use ranges are not normalized and non-empty: ${source.sourceKey}`,
+          );
+        }
       }
       if (source.locator.kind === "document") {
         const locator = source.locator;
@@ -4552,9 +4672,9 @@ export const assertFinalSourceMap = (
 
   // Each consumer's source ledger is a zero-based contiguous sequence.  A
   // uniqueness check alone admits gaps (for example [0, 2]), which cannot
-  // reproduce the exact terminal context order on chat replay.
+  // identify a deterministic context order.
   for (const [consumerTaskId, orders] of consumerOrders) {
-    const ordered = [...orders].sort((left, right) => left - right);
+    const ordered = [...orders].sort((a, b) => a - b);
     for (let index = 0; index < ordered.length; index += 1) {
       if (ordered[index] !== index) {
         throw new Error(`non-contiguous context order for consumer ${consumerTaskId}`);
@@ -4564,9 +4684,11 @@ export const assertFinalSourceMap = (
 };
 
 const persistAssistantSources = (
+  runId: string,
   assistantMessageId: string,
   sourceMap: readonly FinalSourceRecord[],
   acceptanceScope: RunAcceptanceScope,
+  isGeneralPlannerEvaluationRun: boolean,
 ): Effect.Effect<void, SqlError | Error, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
@@ -4575,6 +4697,262 @@ const persistAssistantSources = (
       const messageId = source.locator.kind === "chat_message" ? source.locator.messageId : null;
       const memoryRevisionId =
         source.locator.kind === "memory" ? source.locator.memoryRevisionId : null;
+      if (source.locator.kind === "chat_message") {
+        const messageRows = yield* sql<{
+          readonly author: string;
+          readonly content: string;
+        }>`
+          select message.author, message.content
+          from chat_messages message
+          join chat_messages assistant
+            on assistant.id = ${assistantMessageId}::uuid
+           and assistant.author = 'assistant'
+           and assistant.chat_id = (select chat_id from ai_runs where id = ${runId}::uuid)
+          where message.id = ${source.locator.messageId}::uuid
+            and message.chat_id = assistant.chat_id
+            and (
+              message.created_at < assistant.created_at
+              or (
+                message.created_at = assistant.created_at
+                and message.id < assistant.id
+              )
+            )
+          for update of message
+        `;
+        const message = messageRows[0];
+        if (message === undefined) {
+          return yield* Effect.fail(
+            new Error("chat source message is missing, foreign, or not a strict predecessor"),
+          );
+        }
+        const sanitizedContent =
+          message.author === "assistant"
+            ? stripHistoricalCitationTags(message.content)
+            : message.content;
+        if (!isWellFormedUtf16(sanitizedContent)) {
+          return yield* Effect.fail(new Error("chat source message is not well-formed UTF-16"));
+        }
+        const contentHash = createHash("sha256").update(sanitizedContent, "utf8").digest("hex");
+        for (const use of source.uses) {
+          let normalizedRanges: readonly {
+            readonly charStart: number;
+            readonly charEnd: number;
+          }[];
+          try {
+            normalizedRanges = normalizeCharacterRanges(use.ranges, sanitizedContent.length);
+          } catch {
+            return yield* Effect.fail(new Error("chat source use range exceeds sanitized message"));
+          }
+          if (
+            normalizedRanges.length === 0 ||
+            !rangesEqual(normalizedRanges, use.ranges) ||
+            normalizedRanges.some(
+              (range) =>
+                !isUtf16Boundary(sanitizedContent, range.charStart) ||
+                !isUtf16Boundary(sanitizedContent, range.charEnd),
+            )
+          ) {
+            return yield* Effect.fail(
+              new Error("chat source use ranges are not canonical UTF-16 boundaries"),
+            );
+          }
+          const selectedText = normalizedRanges
+            .map((range) => sanitizedContent.slice(range.charStart, range.charEnd))
+            .join("\n…\n");
+          const coordinateRows = isGeneralPlannerEvaluationRun
+            ? yield* sql<{
+                readonly taskId: string;
+                readonly loopIteration: number;
+                readonly attempt: number;
+                readonly providerRequestIndex: number;
+              }>`
+                select measurements.emitting_task as "taskId",
+                       measurements.loop_iteration as "loopIteration",
+                       measurements.attempt,
+                       (measurements.payload->>'providerRequestIndex')::int
+                         as "providerRequestIndex"
+                from ai_observations measurements
+                where measurements.run_id = ${runId}::uuid
+                  and measurements.kind = 'provider_request_measurement'
+                  and measurements.emitting_task = 'evaluation-general-planner'
+                  and measurements.payload->>'agentRole' = 'evaluation_general_planner'
+                  and exists (
+                    select 1
+                    from ai_run_usage usage
+                    where usage.run_id = measurements.run_id
+                      and usage.task_id = measurements.emitting_task
+                      and usage.loop_iteration = measurements.loop_iteration
+                      and usage.attempt = measurements.attempt
+                      and usage.provider_request_index =
+                        (measurements.payload->>'providerRequestIndex')::int
+                  )
+                order by measurements.loop_iteration desc,
+                         measurements.attempt desc,
+                         (measurements.payload->>'providerRequestIndex')::int desc
+                limit 1
+              `
+            : yield* sql<{
+                readonly taskId: string;
+                readonly loopIteration: number;
+                readonly attempt: number;
+                readonly providerRequestIndex: number;
+              }>`
+                select payload->'terminalUsageCoordinate'->>'taskId' as "taskId",
+                       (payload->'terminalUsageCoordinate'->>'loopIteration')::int as "loopIteration",
+                       (payload->'terminalUsageCoordinate'->>'attempt')::int as attempt,
+                       (payload->'terminalUsageCoordinate'->>'providerRequestIndex')::int
+                         as "providerRequestIndex"
+                from ai_observations
+                where run_id = ${runId}::uuid
+                  and kind = 'context_serialized'
+                  and emitting_task = ${use.consumerTaskId}
+                  and payload->'terminalUsageCoordinate'->>'taskId' = ${use.consumerTaskId}
+                order by loop_iteration desc, attempt desc
+                limit 1
+              `;
+          const coordinate = coordinateRows[0];
+          if (
+            coordinate === undefined ||
+            !Number.isSafeInteger(coordinate.loopIteration) ||
+            coordinate.loopIteration < 0 ||
+            !Number.isSafeInteger(coordinate.attempt) ||
+            coordinate.attempt < 0 ||
+            !Number.isSafeInteger(coordinate.providerRequestIndex) ||
+            coordinate.providerRequestIndex < 0
+          ) {
+            return yield* Effect.fail(
+              new Error("chat source use lacks its exact terminal provider coordinate"),
+            );
+          }
+          const exposureRows = isGeneralPlannerEvaluationRun
+            ? yield* sql<{
+                readonly contentItemIdentity: string;
+                readonly visibleTokenCount: number;
+                readonly chatContentHash: string | null;
+                readonly chatRanges:
+                  | readonly { readonly charStart: number; readonly charEnd: number }[]
+                  | null;
+              }>`
+                select content_item_identity as "contentItemIdentity",
+                       visible_token_count as "visibleTokenCount",
+                       chat_content_hash as "chatContentHash",
+                       chat_ranges as "chatRanges"
+                from ai_source_exposures
+                where run_id = ${runId}::uuid
+                  and task_id = 'evaluation-general-planner'
+                  and loop_iteration = ${coordinate.loopIteration}
+                  and attempt = ${coordinate.attempt}
+                  and provider_request_index = ${coordinate.providerRequestIndex}
+                  and source_kind = 'chat_message'
+                  and logical_source_identity =
+                    ${chatMessageEvidenceIdentity(source.locator.messageId)}
+                  and regexp_replace(content_item_identity, '#proof=[0-9a-f]{64}$', '') =
+                    ${source.locator.messageId}
+                  and exposure_stage = 'evaluation_general_planner_inspect'
+              `
+            : yield* sql<{
+                readonly contentItemIdentity: string;
+                readonly visibleTokenCount: number;
+                readonly chatContentHash: string | null;
+                readonly chatRanges:
+                  | readonly { readonly charStart: number; readonly charEnd: number }[]
+                  | null;
+              }>`
+                select content_item_identity as "contentItemIdentity",
+                       visible_token_count as "visibleTokenCount",
+                       chat_content_hash as "chatContentHash",
+                       chat_ranges as "chatRanges"
+                from ai_source_exposures
+                where run_id = ${runId}::uuid
+                  and task_id = ${coordinate.taskId}
+                  and loop_iteration = ${coordinate.loopIteration}
+                  and attempt = ${coordinate.attempt}
+                  and provider_request_index = ${coordinate.providerRequestIndex}
+                  and source_kind = 'chat_message'
+                  and logical_source_identity =
+                    ${chatMessageEvidenceIdentity(source.locator.messageId)}
+                  and regexp_replace(content_item_identity, '#proof=[0-9a-f]{64}$', '') =
+                    ${source.locator.messageId}
+                  and exposure_stage = 'answer_serialized'
+              `;
+          if (exposureRows.length !== 1) {
+            return yield* Effect.fail(
+              new Error("chat source use lacks one exact answer exposure coordinate"),
+            );
+          }
+          const exposure = exposureRows[0]!;
+          const proof = sourceExposureStorageProof(exposure.contentItemIdentity);
+          if (
+            !/^[a-f0-9]{64}$/u.test(contentHash) ||
+            exposure.chatContentHash !== contentHash ||
+            !/^[a-f0-9]{64}$/u.test(exposure.chatContentHash ?? "") ||
+            exposure.chatRanges === null ||
+            !rangesEqual(exposure.chatRanges, normalizedRanges) ||
+            exposure.visibleTokenCount !==
+              resolveRegisteredModel(acceptanceScope.mainModelId).countTextTokens(selectedText)
+          ) {
+            return yield* Effect.fail(
+              new Error("chat source use differs from its exact sanitized answer exposure"),
+            );
+          }
+          if (proof === null) {
+            return yield* Effect.fail(new Error("chat source use lacks its provider proof"));
+          }
+          const measurementRows = yield* sql<{
+            readonly requestSha256Hex: string | null;
+            readonly sourceExposureProofSha256Hexes: unknown;
+          }>`
+            select payload->>'requestSha256Hex' as "requestSha256Hex",
+                   payload->'sourceExposureProofSha256Hexes' as "sourceExposureProofSha256Hexes"
+            from ai_observations
+            where run_id = ${runId}::uuid
+              and emitting_task = ${coordinate.taskId}
+              and loop_iteration = ${coordinate.loopIteration}
+              and attempt = ${coordinate.attempt}
+              and kind = 'provider_request_measurement'
+              and (payload->>'providerRequestIndex')::int = ${coordinate.providerRequestIndex}
+          `;
+          const sourceExposureStage = isGeneralPlannerEvaluationRun
+            ? "evaluation_general_planner_inspect"
+            : "answer_serialized";
+          const attestationRows = yield* sql<{
+            readonly requestSha256Hex: string | null;
+            readonly providerSerializationProofSha256Hex: string | null;
+          }>`
+            select payload->>'providerRequestSha256Hex' as "requestSha256Hex",
+                   payload->>'providerSerializationProofSha256Hex'
+                     as "providerSerializationProofSha256Hex"
+            from ai_observations
+            where run_id = ${runId}::uuid
+              and emitting_task = ${coordinate.taskId}
+              and loop_iteration = ${coordinate.loopIteration}
+              and attempt = ${coordinate.attempt}
+              and kind = 'source_exposure_attestation'
+              and (payload->>'providerRequestIndex')::int = ${coordinate.providerRequestIndex}
+              and payload->>'sourceKind' = 'chat_message'
+              and payload->>'logicalSourceIdentity' =
+                ${chatMessageEvidenceIdentity(source.locator.messageId)}
+              and payload->>'contentItemIdentity' = ${source.locator.messageId}
+              and payload->>'exposureStage' = ${sourceExposureStage}
+          `;
+          const measurement = measurementRows[0];
+          const attestation = attestationRows[0];
+          if (
+            measurementRows.length !== 1 ||
+            attestationRows.length !== 1 ||
+            measurement === undefined ||
+            attestation === undefined ||
+            !Array.isArray(measurement.sourceExposureProofSha256Hexes) ||
+            !measurement.sourceExposureProofSha256Hexes.includes(proof) ||
+            attestation.providerSerializationProofSha256Hex !== proof ||
+            attestation.requestSha256Hex !== measurement.requestSha256Hex
+          ) {
+            return yield* Effect.fail(
+              new Error("chat source use lacks its exact terminal provider proof"),
+            );
+          }
+        }
+      }
       let publisherExtractionId: string | null = null;
       if (source.locator.kind === "document") {
         const publisherIssueId = source.locator.publisherIssueId;
@@ -4874,7 +5252,11 @@ export const finalizeAiRun = (
         // those terminal rows before the replay branch and before any other
         // finalization work can treat the row as idempotent.
         yield* validateTerminalProductLedger(run, input.answer, memoryArtifact);
-        yield* validateDurableObservability(run, input.answer, input.coordinates);
+        const isGeneralPlannerEvaluationRun = yield* validateDurableObservability(
+          run,
+          input.answer,
+          input.coordinates,
+        );
 
         const extractionSha256Hex = memoryExtractionSha256Hex(memoryArtifact.result);
         if (extractionSha256Hex !== memoryArtifact.producer.extractionSha256Hex) {
@@ -5160,7 +5542,13 @@ export const finalizeAiRun = (
           set assistant_message_id = ${assistantMessageId}
           where id = ${run.id}
         `;
-        yield* persistAssistantSources(assistantMessageId, answer.sourceMap, acceptanceScope);
+        yield* persistAssistantSources(
+          run.id,
+          assistantMessageId,
+          answer.sourceMap,
+          acceptanceScope,
+          isGeneralPlannerEvaluationRun,
+        );
         yield* persistCitationObservations(
           run,
           assistantMessageId,

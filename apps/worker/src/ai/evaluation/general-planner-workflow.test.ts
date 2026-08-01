@@ -7,7 +7,7 @@ import { resolveRegisteredModel } from "../runtime/model-registry";
 import type { PiCompletion } from "../runtime/pi-boundary";
 import type { ProviderRequest } from "../runtime/provider-request";
 import { namespacedDocumentEvidenceIdentity, sha256Base64Url } from "../runtime/canonicalization";
-import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v3";
+import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v4";
 import {
   aiEvaluationGeneralPlannerSchemas,
   executeGeneralPlannerProviderTurn,

@@ -187,16 +187,6 @@ export interface CandidateRejection {
   readonly reason: CandidateRejectionReason;
 }
 
-export type ContextDecision =
-  | { readonly id: string; readonly action: "keep"; readonly reason: string }
-  | {
-      readonly id: string;
-      readonly action: "range";
-      readonly ranges: readonly CharacterRange[];
-      readonly reason: string;
-    }
-  | { readonly id: string; readonly action: "omit"; readonly reason: string };
-
 export interface PublicProvenance {
   readonly sourceName?: string | undefined;
   readonly issueTitle?: string | undefined;

@@ -321,9 +321,9 @@ Users can ask about a topic, entity, trend, or event across selected subscriptio
 
 Answers must cite the issue documents they use.
 
-The answer model has no search or read tools. `plan-turn` first selects valid original turns, resolves references, and returns `clarify`, `single`, or `fanout`. After that valid result, internal retriever A, memory selector B, eligible web researcher W, and memory extraction run in their selected parallel lanes. A clarification schedules no retrieval or answer request. Brief code authorizes, deduplicates, renders, and exact-counts their outputs before any direct/topic answer or synthesis call.
+The answer model has no search or read tools. `plan-turn` first selects valid original turns, resolves references, and returns `clarify`, `single`, or `fanout`. After that valid result, the internal lane emits one structured query batch; Brief compiles it, searches each allowed store in parallel, fuses the ranks, and allows one result-aware review. The memory selector, eligible web researcher, and memory extraction run in their selected parallel lanes. A clarification schedules no retrieval or answer request. Brief code authorizes, deduplicates, renders, and exact-counts every output before any direct/topic answer or synthesis call.
 
-Fanout is chosen before retrieval when topics can be researched independently and safely recombined. Only the final synthesis is shown to the user. Oversized single/topic prompts use an explicit keep/range/omit context plan; code never silently truncates context.
+Fanout is chosen before retrieval when topics can be researched independently and safely recombined. Only the final synthesis is shown to the user. Oversized single/topic prompts use one explicit keep/compact/omit plan, bounded parallel passage selection, exact fit measurement, and at most one monotone fallback; code never silently truncates context.
 
 Web research is controlled by the client company.
 
@@ -401,9 +401,9 @@ Archive search does not use credits.
 
 ## AI Sources And Citations
 
-Internal retriever A has controlled tools to search and inspect issue/public documents and older messages in the same chat. Web researcher W has controlled tools to search and fetch allowed web pages. The direct answer, topic-answer, and synthesis agents have no tools.
+Internal retriever A emits one structured query batch and, when the first results need it, one bounded result-aware review. Brief compiles each query, runs authorized SQL and rank fusion, hydrates the final candidates, and proves each preview in code. Web researcher W has controlled tools to search and fetch allowed web pages. Compaction agents can select only opaque passage IDs from their assigned candidates. The direct answer, topic-answer, and synthesis agents have no tools.
 
-Retrieval results carry typed provenance. Agents emit references or selected quotations; Brief code performs authorization, content fetching, and turn-local source-key assignment.
+Retrieval results carry typed provenance. Brief code performs authorization, source identity checks, content fetching, rank fusion, and turn-local source-key assignment. Models emit only query choices, review decisions, opaque passage selections, web quotations, and final citations.
 
 The turn starts with one server-derived immutable acceptance scope; no broad
 source list enters provider input. Model-visible internal references contain only
@@ -446,7 +446,7 @@ The UI also shows a separate sources-read view.
 
 The sources-read view lists the deduplicated document, older-chat, memory, and web evidence serialized into the direct answer context or a fanout topic-answer context.
 
-Database matches, selector previews, reducer inspections, and explicitly omitted candidates are not sources read. They are tracked separately as AI exposures for operations and publisher aggregate metrics.
+Database matches, selector previews, compaction-group/source-tool inputs, and explicitly omitted candidates are not sources read. They are tracked separately as AI exposures for operations and publisher aggregate metrics.
 
 The sources-read view is separate from inline answer citations.
 

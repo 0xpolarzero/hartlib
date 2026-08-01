@@ -107,8 +107,7 @@ const migrate = Effect.gen(function* () {
 
 const pgLayer = () =>
   PgClient.layer({ url: Redacted.make(isolatedUrl()), applicationName: "brief-platform-api-test" });
-const demoCookie = (userId: string) =>
-  `${DEMO_COOKIE_NAME}=${userId}`;
+const demoCookie = (userId: string) => `${DEMO_COOKIE_NAME}=${userId}`;
 const configLayer = ConfigProvider.layer(
   ConfigProvider.fromEnv({
     env: {
@@ -2020,9 +2019,12 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       }),
     );
     const denied = await Effect.runPromise(
-      routeRequest(routes, request("GET", `/v1/exports/${createdBody.export.id}/download`, { headers: { cookie: demoCookie("not-the-requester") } })).pipe(
-        Effect.provide(otherUserLayer),
-      ),
+      routeRequest(
+        routes,
+        request("GET", `/v1/exports/${createdBody.export.id}/download`, {
+          headers: { cookie: demoCookie("not-the-requester") },
+        }),
+      ).pipe(Effect.provide(otherUserLayer)),
     );
     expect(denied.status).toBe(404);
     expect(signedInputs).toHaveLength(1);

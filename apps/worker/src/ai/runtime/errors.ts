@@ -1,13 +1,10 @@
 import { z } from "zod";
 
-import { captureCause } from "../../diagnostic-cause";
-
 export const AI_RUN_ERROR_CODES = [
   "plan_turn_failed",
   "internal_retrieval_failed",
   "memory_selector_failed",
   "web_research_failed",
-  "context_reducer_failed",
   "context_compaction_failed",
   "answer_failed",
   "topic_answer_failed",
@@ -27,28 +24,11 @@ export const AI_RUN_ERROR_CODES = [
 
 export type AiRunErrorCode = (typeof AI_RUN_ERROR_CODES)[number];
 
-export type AiAgentRole =
-  | "plan_turn"
-  | "internal_retrieval"
-  | "memory_selector"
-  | "web_research"
-  | "context_reducer"
-  | "context_manifest"
-  | "context_compact_group"
-  | "context_fallback_manifest"
-  | "context_fallback_group"
-  | "context_source_tool"
-  | "direct_answer"
-  | "topic_answer"
-  | "synthesis"
-  | "memory_extractor";
-
 const retryability = {
   plan_turn_failed: true,
   internal_retrieval_failed: true,
   memory_selector_failed: true,
   web_research_failed: true,
-  context_reducer_failed: true,
   context_compaction_failed: true,
   answer_failed: true,
   topic_answer_failed: true,
@@ -72,7 +52,7 @@ export const isAiRunErrorCode = (value: string): value is AiRunErrorCode =>
 export const isRetryableAiRunError = (code: AiRunErrorCode): boolean => retryability[code];
 
 export const aiRunErrorCodeForRole = (role: string): AiRunErrorCode => {
-  switch (role as AiAgentRole) {
+  switch (role) {
     case "plan_turn":
       return "plan_turn_failed";
     case "internal_retrieval":
@@ -81,8 +61,6 @@ export const aiRunErrorCodeForRole = (role: string): AiRunErrorCode => {
       return "memory_selector_failed";
     case "web_research":
       return "web_research_failed";
-    case "context_reducer":
-      return "context_reducer_failed";
     case "context_manifest":
     case "context_compact_group":
     case "context_fallback_manifest":
@@ -277,7 +255,6 @@ export const toAiRuntimeError = (
     options.retryable ??
     (providerStatus === undefined ? undefined : retryableStatus(providerStatus));
   const taskRetryable = options.taskRetryable ?? inferredRetryable;
-  captureCause("ai_runtime_boundary", error);
   return new AiRuntimeError(fallbackCode, "runtime boundary failed", {
     ...(providerStatus === undefined ? {} : { providerStatus }),
     ...(inferredRetryable === undefined

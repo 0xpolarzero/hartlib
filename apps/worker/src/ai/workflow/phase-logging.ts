@@ -1,5 +1,4 @@
 import { MemoryConflictError } from "../product-state/memory";
-import { captureCause } from "../../diagnostic-cause";
 import { type AiRunActivityEvent, activityCodeForPhase, activityStageForCode } from "@brief/shared";
 import {
   AiRuntimeError,
@@ -81,7 +80,7 @@ export interface AiPhaseLogEntry {
     | "continue"
     | "clarify"
     | "ready"
-    | "needs_reduction"
+    | "needs_compaction"
     | "ok"
     | "partial"
     | "answered"
@@ -109,9 +108,11 @@ const contextPreparationPhases: Record<string, true> = {
   context_compaction_final_measure: true,
   context_compaction_select: true,
 };
-
-const publicCodeForPhase = (phase: string): AiRunActivityEvent["code"] | undefined =>
-  contextPreparationPhases[phase] === true ? "context_preparation" : activityCodeForPhase(phase);
+const publicCodeForPhase = (phase: string): AiRunActivityEvent["code"] | undefined => {
+  return contextPreparationPhases[phase] === true
+    ? "context_preparation"
+    : activityCodeForPhase(phase);
+};
 
 export const publicActivityFromPhase = (
   entry: AiPhaseLogEntry,
@@ -156,22 +157,60 @@ export const publicActivityFromPhase = (
 
 /**
  * Runtime allow-list used at the final console boundary. Unknown properties are
- * deliberately discarded so accidental prompt, question, source, memory, claim,
- * delta, or provider-error fields cannot enter local structured logs.
+ * deliberately discarded so accidental prompts, questions, source, memory,
+ * candidate, group, query, provider, or execution-coordinate fields cannot enter
+ * local structured logs.
  */
-export const safeAiPhaseLogFields = (entry: AiPhaseLogEntry): AiPhaseLogEntry => ({
+export type AiSafePhaseLogFields = Pick<
+  AiPhaseLogEntry,
+  | "phase"
+  | "status"
+  | "attempt"
+  | "durationMs"
+  | "inputTokens"
+  | "outputTokens"
+  | "totalTokens"
+  | "requestedOutputTokens"
+  | "usableInputTokens"
+  | "afterInputTokens"
+  | "itemCount"
+  | "sourceCount"
+  | "topicCount"
+  | "conversationCount"
+  | "memoryCount"
+  | "consumerCount"
+  | "queryCount"
+  | "branchCount"
+  | "applicableBranchCount"
+  | "hitCount"
+  | "candidateCount"
+  | "groupCount"
+  | "passageCount"
+  | "decisionCount"
+  | "selectedCount"
+  | "omittedCount"
+  | "keepCount"
+  | "compactCount"
+  | "omitCount"
+  | "retainCount"
+  | "tightenCount"
+  | "renderedTokenCount"
+  | "overByTokens"
+  | "capApplied"
+  | "fallbackRan"
+  | "repairUsed"
+  | "action"
+  | "failureStage"
+  | "retryable"
+  | "errorCode"
+  | "outcome"
+>;
+
+export const safeAiPhaseLogFields = (entry: AiPhaseLogEntry): AiSafePhaseLogFields => ({
   phase: entry.phase,
   status: entry.status,
-  runId: entry.runId,
-  ...(entry.taskId === undefined ? {} : { taskId: entry.taskId }),
-  ...(entry.topicId === undefined ? {} : { topicId: entry.topicId }),
-  ...(entry.model === undefined ? {} : { model: entry.model }),
-  ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
   ...(entry.attempt === undefined ? {} : { attempt: entry.attempt }),
-  ...(entry.loopIteration === undefined ? {} : { loopIteration: entry.loopIteration }),
-  ...(entry.providerRequestIndex === undefined
-    ? {}
-    : { providerRequestIndex: entry.providerRequestIndex }),
+  ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
   ...(entry.inputTokens === undefined ? {} : { inputTokens: entry.inputTokens }),
   ...(entry.outputTokens === undefined ? {} : { outputTokens: entry.outputTokens }),
   ...(entry.totalTokens === undefined ? {} : { totalTokens: entry.totalTokens }),
@@ -212,8 +251,8 @@ export const safeAiPhaseLogFields = (entry: AiPhaseLogEntry): AiPhaseLogEntry =>
   ...(entry.repairUsed === undefined ? {} : { repairUsed: entry.repairUsed }),
   ...(entry.action === undefined ? {} : { action: entry.action }),
   ...(entry.failureStage === undefined ? {} : { failureStage: entry.failureStage }),
-  ...(entry.errorCode === undefined ? {} : { errorCode: entry.errorCode }),
   ...(entry.retryable === undefined ? {} : { retryable: entry.retryable }),
+  ...(entry.errorCode === undefined ? {} : { errorCode: entry.errorCode }),
   ...(entry.outcome === undefined ? {} : { outcome: entry.outcome }),
 });
 
@@ -568,7 +607,7 @@ const phaseOutcome = (value: unknown): PhaseOutcome | undefined => {
     case "continue":
     case "clarify":
     case "ready":
-    case "needs_reduction":
+    case "needs_compaction":
     case "ok":
     case "partial":
     case "answered":
@@ -622,6 +661,26 @@ const resultFields = (value: unknown): Partial<AiPhaseLogEntry> => {
     Object.keys(fallbackManifestValue).length === 0 ? result : fallbackManifestValue;
   const context = record(result.context);
   const fused = record(result.fused);
+  const queryPlan = record(result.queryPlan);
+  const coverage = Array.isArray(fused.coverage) ? fused.coverage : undefined;
+  const queryCountFromPlan = Array.isArray(queryPlan.queries)
+    ? queryPlan.queries.length
+    : undefined;
+  const branchCountFromCoverage = coverage?.length;
+  const applicableBranchCountFromCoverage = coverage?.filter(
+    (branch) => record(branch).status === "applicable",
+  ).length;
+  const hitCountFromCoverage = coverage?.reduce(
+    (count, branch) => count + (safeNumber(record(branch).hitCount) ?? 0),
+    0,
+  );
+  const candidateCountBeforeCap = safeNumber(fused.candidateCountBeforeCap);
+  const fusedCandidateCount = Array.isArray(fused.results) ? fused.results.length : undefined;
+  const truncation = record(fused.truncation);
+  const fusionCapApplied =
+    safeBoolean(truncation.branch) === true ||
+    safeBoolean(truncation.candidates) === true ||
+    safeBoolean(truncation.hydration) === true;
   const outcome =
     phaseOutcome(result.status) ??
     phaseOutcome(result.mode) ??
@@ -671,13 +730,16 @@ const resultFields = (value: unknown): Partial<AiPhaseLogEntry> => {
   const usableInputTokens = numberFrom("usableInputTokens");
   const overByTokens = numberFrom("overByTokens");
   const afterInputTokens = numberFrom("afterInputTokens");
-  const action = phaseAction(result.action);
+  const action =
+    phaseAction(result.action) ??
+    phaseAction(record(result.review).action) ??
+    phaseAction(record(result.queryReview).action);
   const failureCode = result.failureCode ?? result.code;
   const failureStage = phaseFailureStage(failureCode);
   const resultError =
     typeof failureCode === "string" && isAiRunErrorCode(failureCode) ? failureCode : undefined;
   const resultRetryable = safeBoolean(result.retryable);
-  const capApplied = safeBoolean(result.capApplied);
+  const capApplied = safeBoolean(result.capApplied) ?? (fusionCapApplied ? true : undefined);
   const fallbackRan = safeBoolean(result.fallbackRan);
   const repairUsed = safeBoolean(result.repairUsed);
   return {
@@ -690,19 +752,32 @@ const resultFields = (value: unknown): Partial<AiPhaseLogEntry> => {
       : {}),
     ...(Array.isArray(result.memories) ? { memoryCount: result.memories.length } : {}),
     ...(Array.isArray(result.consumers) ? { consumerCount: result.consumers.length } : {}),
-    ...(safeNumber(result.queryCount) === undefined
+    ...((safeNumber(result.queryCount) ?? queryCountFromPlan) === undefined
       ? {}
-      : { queryCount: safeNumber(result.queryCount) }),
-    ...(safeNumber(result.branchCount) === undefined
+      : { queryCount: safeNumber(result.queryCount) ?? queryCountFromPlan }),
+    ...((safeNumber(result.branchCount) ?? branchCountFromCoverage) === undefined
       ? {}
-      : { branchCount: safeNumber(result.branchCount) }),
-    ...(safeNumber(result.applicableBranchCount) === undefined
+      : { branchCount: safeNumber(result.branchCount) ?? branchCountFromCoverage }),
+    ...((safeNumber(result.applicableBranchCount) ?? applicableBranchCountFromCoverage) ===
+    undefined
       ? {}
-      : { applicableBranchCount: safeNumber(result.applicableBranchCount) }),
-    ...(safeNumber(result.hitCount) === undefined ? {} : { hitCount: safeNumber(result.hitCount) }),
-    ...(safeNumber(result.candidateCount) === undefined && decisions === undefined
+      : {
+          applicableBranchCount:
+            safeNumber(result.applicableBranchCount) ?? applicableBranchCountFromCoverage,
+        }),
+    ...((safeNumber(result.hitCount) ?? hitCountFromCoverage) === undefined
       ? {}
-      : { candidateCount: safeNumber(result.candidateCount) ?? decisions?.length }),
+      : { hitCount: safeNumber(result.hitCount) ?? hitCountFromCoverage }),
+    ...((safeNumber(result.candidateCount) ?? candidateCountBeforeCap ?? fusedCandidateCount) ===
+      undefined && decisions === undefined
+      ? {}
+      : {
+          candidateCount:
+            safeNumber(result.candidateCount) ??
+            candidateCountBeforeCap ??
+            fusedCandidateCount ??
+            decisions?.length,
+        }),
     ...(safeNumber(result.groupCount) === undefined && groups === undefined
       ? {}
       : { groupCount: safeNumber(result.groupCount) ?? groups?.length }),
@@ -760,7 +835,6 @@ const resultErrorCode = (value: unknown, fallback: AiRunErrorCode): AiRunErrorCo
 
 const durableOperationFailure = (error: unknown, fallback: AiRunErrorCode): Error => {
   if (isAbortError(error) || isAiRuntimeError(error)) return error;
-  captureCause("workflow_operation", error);
   if (
     error instanceof MemoryConflictError ||
     (error instanceof Error && error.name === "MemoryConflictError")

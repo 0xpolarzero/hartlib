@@ -8,6 +8,7 @@ import {
   safeAiPhaseLogFields,
   withAiPhaseLogging,
   type AiPhaseLogEntry,
+  type AiSafePhaseLogFields,
 } from "./phase-logging";
 
 describe("AI phase structured logging", () => {
@@ -15,7 +16,7 @@ describe("AI phase structured logging", () => {
     const secretQuestion = "SECRET resolved question";
     const secretSource = "SECRET source body";
     const secretAnswer = "SECRET answer delta";
-    const entries: AiPhaseLogEntry[] = [];
+    const entries: AiSafePhaseLogFields[] = [];
     const load = { aiRunId: "run-1" };
     const operations = {
       retrieveStructuredInternal: async () => ({
@@ -67,16 +68,11 @@ describe("AI phase structured logging", () => {
         expect.objectContaining({
           phase: "internal_retrieval",
           status: "succeeded",
-          runId: "run-1",
-          taskId: "topic-t2-retrieve-internal",
-          topicId: "t2",
-          model: "glm-5-turbo",
           itemCount: 1,
         }),
         expect.objectContaining({
           phase: "direct_answer_call",
           status: "succeeded",
-          model: "glm-5-turbo",
           sourceCount: 0,
           outcome: "ok",
         }),
@@ -98,18 +94,29 @@ describe("AI phase structured logging", () => {
       status: "failed",
       runId: "run-2",
       taskId: "single-answer",
+      attempt: 2,
       errorCode: "answer_failed",
-      ...({ rawUserText: secret, error: secret, delta: secret } as object),
+      ...({
+        rawUserText: secret,
+        error: secret,
+        delta: secret,
+        sourceId: "source-1",
+        messageId: "message-1",
+        query: "private query",
+        candidateId: "c001",
+        groupId: "g001",
+        sql: "SELECT private",
+        contentHash: "hash",
+      } as object),
     });
     expect(safe).toEqual({
       phase: "provider_call",
       status: "failed",
-      runId: "run-2",
-      taskId: "single-answer",
       errorCode: "answer_failed",
+      attempt: 2,
     });
 
-    const entries: AiPhaseLogEntry[] = [];
+    const entries: AiSafePhaseLogFields[] = [];
     const operations = {
       retrieveStructuredInternal: async () => {
         throw new Error(secret);
@@ -232,6 +239,59 @@ describe("AI phase structured logging", () => {
     });
   });
 
+  it("records bounded query and review metrics without private IDs", async () => {
+    const entries: AiSafePhaseLogFields[] = [];
+    const operations = {
+      retrieveStructuredInternal: async () => ({
+        queryPlan: {
+          action: "search",
+          queries: [{ purpose: "PRIVATE query" }, { purpose: "PRIVATE query 2" }],
+        },
+        action: "accept",
+        fused: {
+          results: [{ resultId: "r001", preview: "PRIVATE preview" }],
+          coverage: [
+            { status: "applicable", hitCount: 4 },
+            { status: "applicable", hitCount: 3 },
+            { status: "not_applicable", hitCount: 0 },
+          ],
+          candidateCountBeforeCap: 5,
+          truncation: { branch: false, candidates: true, hydration: false },
+        },
+        sourceId: "source-1",
+        candidateId: "c001",
+      }),
+    } as unknown as CanonicalWorkflowOperations;
+    const wrapped = withAiPhaseLogging(operations, {
+      logger: (entry) => {
+        entries.push(safeAiPhaseLogFields(entry));
+      },
+      fastModel: "glm-5-turbo",
+      mainModel: "glm-5-turbo",
+    });
+
+    await wrapped.retrieveStructuredInternal(
+      { aiRunId: "run-private" } as never,
+      "PRIVATE question",
+      "single-query-review",
+    );
+
+    expect(entries.at(-1)).toMatchObject({
+      phase: "internal_retrieval",
+      status: "succeeded",
+      queryCount: 2,
+      branchCount: 3,
+      applicableBranchCount: 2,
+      hitCount: 7,
+      candidateCount: 5,
+      capApplied: true,
+      action: "accept",
+    });
+    expect(JSON.stringify(entries)).not.toMatch(
+      /PRIVATE|source-1|r001|c001|run-private|single-query-review/iu,
+    );
+  });
+
   it("applies memory and web activity guards from operation arguments", async () => {
     const activities: Array<{ readonly code: string; readonly status: string }> = [];
     const operations = {
@@ -271,9 +331,9 @@ describe("AI phase structured logging", () => {
 
   it("traces every production compaction step with safe lifecycle metadata", async () => {
     const secret = "SECRET compaction query and source";
-    const entries: AiPhaseLogEntry[] = [];
     const activities: Array<{ readonly code: string; readonly status: string }> = [];
     const load = { aiRunId: "run-compaction" };
+    const entries: AiSafePhaseLogFields[] = [];
     const definitions = [
       {
         name: "createCompactionGroups",
@@ -402,7 +462,6 @@ describe("AI phase structured logging", () => {
       await invoke(wrapped, definition.name, definition.args);
       const rows = entries.filter((entry) => entry.phase === definition.phase);
       expect(rows.map((entry) => entry.status)).toEqual(["started", "succeeded"]);
-      expect(rows.every((entry) => entry.runId === "run-compaction")).toBe(true);
     }
     await invoke(wrapped, "compactContextGroup", [
       load,
@@ -437,7 +496,7 @@ describe("AI phase structured logging", () => {
       definitions.length * 2 + 4,
     );
 
-    const failedEntries: AiPhaseLogEntry[] = [];
+    const failedEntries: AiSafePhaseLogFields[] = [];
     const failingOperations = Object.fromEntries(
       definitions.map(({ name }) => [
         name,

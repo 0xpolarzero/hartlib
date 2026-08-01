@@ -3,7 +3,11 @@ import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { makeRunAcceptanceScope } from "@brief/shared";
-import { canonicalSha256Hex, revalidateEvaluationV3Evidence } from "../ai/evaluation/pipeline";
+import {
+  canonicalSha256Hex,
+  readAndRevalidateEvaluationV3Artifact,
+  revalidateEvaluationV3Evidence,
+} from "../ai/evaluation/pipeline";
 
 import { runMigrations } from "./migrate";
 
@@ -13144,6 +13148,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql`delete from ai_runs where finished_at is null and failed_at is null`;
+          yield* sql.unsafe(`
+            create table if not exists _smithers_runs (run_id text primary key);
+            create table brief_0072_smithers_dependent (
+              run_id text primary key references _smithers_runs(run_id)
+            );
+            delete from brief_0072_smithers_dependent;
+            delete from _smithers_runs;
+          `).raw;
         }),
       );
       const twoUseIds = {
@@ -13375,6 +13387,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             readonly constraintDefinition: string;
             readonly twoUseRanges: unknown;
             readonly twoUseEvidence: unknown;
+            readonly dependentTable: string | null;
+            readonly smithersRuns: string | null;
           }>`
             select
               (
@@ -13429,7 +13443,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 from ai_observations
                 where run_id = ${twoUseIds.run}
                   and observation_key = 'two-use-evidence'
-              ) as "twoUseEvidence"
+              ) as "twoUseEvidence",
+              (select to_regclass('public.brief_0072_smithers_dependent')::text) as "dependentTable",
+              (select to_regclass('public._smithers_runs')::text) as "smithersRuns"
           `;
         }),
       );
@@ -13479,8 +13495,92 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             { sourceId: twoUseSourceKey, consumerTaskId: "consumer-a", ranges: twoUseRangesA },
             { sourceId: twoUseSourceKey, consumerTaskId: "consumer-b", ranges: twoUseRangesB },
           ],
+          dependentTable: null,
+          smithersRuns: null,
         },
       ]);
+    },
+  );
+
+  it(
+    "refuses populated FK-dependent Smithers tables before writes",
+    { timeout: 60_000 },
+    async () => {
+      const body = await Bun.file(
+        new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
+      ).text();
+      const testUrl = isolatedDatabaseUrl();
+      const [existingSmithersRuns] = await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly relation: string | null }>`
+            select to_regclass('public._smithers_runs')::text as relation
+          `;
+        }),
+      );
+      const hadSmithersRuns = existingSmithersRuns?.relation !== null;
+      try {
+        await runDb(
+          testUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(`
+            create table if not exists _smithers_runs (run_id text primary key);
+            create table brief_0072_smithers_dependent (
+              dependent_id text primary key,
+              run_id text
+            );
+            insert into brief_0072_smithers_dependent (dependent_id, run_id)
+              values ('retained-dependent-row', null);
+            alter table brief_0072_smithers_dependent
+              add constraint brief_0072_smithers_dependent_run_fk
+              foreign key (run_id) references _smithers_runs(run_id);
+          `).raw;
+          }),
+        );
+        const failure = await runDb(
+          testUrl,
+          Effect.exit(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              yield* sql.unsafe(body).raw;
+            }),
+          ),
+        );
+        expect(failure._tag).toBe("Failure");
+        expect(errorText(failure)).toContain(
+          "drained Smithers output table brief_0072_smithers_dependent",
+        );
+        const retained = await runDb(
+          testUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            return yield* sql<{
+              readonly dependentRows: number;
+              readonly migrationTable: string | null;
+            }>`
+            select
+              (select count(*)::int from brief_0072_smithers_dependent) as "dependentRows",
+              to_regclass('public.brief_0072_smithers_dependent')::text as "migrationTable"
+          `;
+          }),
+        );
+        expect(retained).toEqual([
+          { dependentRows: 1, migrationTable: "brief_0072_smithers_dependent" },
+        ]);
+      } finally {
+        await runDb(
+          testUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe("drop table if exists brief_0072_smithers_dependent").raw;
+            if (!hadSmithersRuns) {
+              yield* sql.unsafe("drop table if exists _smithers_runs").raw;
+            }
+          }),
+        );
+      }
     },
   );
 
@@ -13591,8 +13691,37 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         testUrl,
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          yield* sql.unsafe("create table if not exists ai_chat_context (run_id text primary key)");
-          yield* sql`insert into ai_chat_context (run_id) values ('ai-chat:0072-old-output')`;
+          yield* sql.unsafe("create table if not exists input (run_id text primary key)");
+          yield* sql`insert into input (run_id) values ('ai-chat:0072-input')`;
+        }),
+      );
+      const inputFailure = await runDb(
+        testUrl,
+        Effect.exit(
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(body).raw;
+          }),
+        ),
+      );
+      expect(inputFailure._tag).toBe("Failure");
+      expect(errorText(inputFailure)).toContain("drained Smithers input");
+      await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe("drop table input");
+        }),
+      );
+
+      await runDb(
+        testUrl,
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          yield* sql.unsafe(
+            "create table if not exists ai_chat_future_output (run_id text primary key)",
+          );
+          yield* sql`insert into ai_chat_future_output (run_id) values ('ai-chat:0072-old-output')`;
         }),
       );
       const outputFailure = await runDb(
@@ -13605,12 +13734,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         ),
       );
       expect(outputFailure._tag).toBe("Failure");
-      expect(errorText(outputFailure)).toContain("drained Smithers output table ai_chat_context");
+      expect(errorText(outputFailure)).toContain(
+        "drained Smithers output table ai_chat_future_output",
+      );
       await runDb(
         testUrl,
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          yield* sql.unsafe("drop table ai_chat_context");
+          yield* sql.unsafe("drop table ai_chat_future_output");
         }),
       );
     },
@@ -13631,7 +13762,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           yield* sql`delete from ai_runs where finished_at is null and failed_at is null`;
         }),
       );
-      const cases = ["malformed", "foreign", "missing"] as const;
+      const cases = ["malformed", "foreign", "missing", "identity"] as const;
 
       for (const kind of cases) {
         const ids = {
@@ -13645,7 +13776,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           foreignMessage: crypto.randomUUID(),
           run: crypto.randomUUID(),
         };
-        const citationSuffix = kind === "malformed" ? "M" : kind === "foreign" ? "F" : "X";
+        const citationSuffix =
+          kind === "malformed" ? "M" : kind === "foreign" ? "F" : kind === "identity" ? "I" : "X";
         const citationNamespace = `cn_${"B".repeat(21)}${citationSuffix}`;
         const sourceKey = `k_${citationNamespace}_1`;
         const content = "Answer 😀 [[cite:old]] tail";
@@ -13705,6 +13837,22 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                   ${sourceMessageId}, ${sql.json({})}, ${sourceIdentityDigest[0]!.digest}
                 )
               `;
+              if (kind === "identity") {
+                yield* sql.unsafe(
+                  "drop trigger assistant_message_sources_identity_immutable on assistant_message_sources",
+                );
+                yield* sql`
+                  update assistant_message_sources
+                  set source_identity_digest = ${"0".repeat(64)}
+                  where assistant_message_id = ${ids.assistantMessage}
+                    and source_key = ${sourceKey}
+                `;
+                yield* sql.unsafe(`
+                  create trigger assistant_message_sources_identity_immutable
+                  before insert or update or delete on assistant_message_sources
+                  for each row execute function enforce_assistant_message_source_identity_immutable()
+                `);
+              }
             } else {
               const locator = { kind: "chat_message", messageId: crypto.randomUUID() };
               const sourceIdentityDigest = yield* sql<{ readonly digest: string }>`
@@ -13784,7 +13932,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         );
         expect(blocked._tag).toBe("Failure");
         expect(errorText(blocked)).toMatch(
-          /chat source|source has no exact owner|source-use identity digest is invalid|locator and message_id disagree/u,
+          /chat source|source has no exact owner|source-use identity digest is invalid|source identity digest is invalid|locator and message_id disagree/u,
         );
 
         const unchanged = await runDb(
@@ -13829,6 +13977,54 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       const v3CaseId = "v3-chat-case";
       const v3SourceId = `chat_message:${sourceMessageId}`;
       const scope = makeRunAcceptanceScope({ userId, chatId, companyId, memoryMode: "disabled" });
+      const v3AnnotationPayload = { claims: [], reportedGapIds: [] };
+      const v3ExecutionOutput = {
+        artifactVersion: 3,
+        goldenSetVersion: 3,
+        caseId: v3CaseId,
+        topology: "general_planner",
+        capture: {
+          origin: "real_provider_turn",
+          runId: conversionRunId,
+          provider: "zai",
+          modelIds: ["glm-5-turbo"],
+          startedAt: "2026-01-01T00:00:00.000Z",
+          finishedAt: "2026-01-01T00:00:01.000Z",
+          attestation: {
+            sessionId,
+            topology: "general_planner",
+            runEvidenceSha256Hex: "c".repeat(64),
+            annotationsSha256Hex: sha256Hex(stableJson(v3AnnotationPayload)),
+            evaluationConfigSha256Hex: "b".repeat(64),
+            providerEndpointIdentity: "tinyfish_search_official:https://api.search.tinyfish.ai",
+          },
+        },
+        promptMeasurements: [
+          {
+            requestId: "v3-migration-test",
+            requestSha256Hex: "d".repeat(64),
+            localInputTokens: 0,
+            providerInputTokens: 0,
+            gatePassed: true,
+          },
+        ],
+        answer: {
+          claims: [],
+          reportedGapIds: [],
+          citationSourceIds: [],
+          rawCitationTagCount: 0,
+          citationDefectCount: 0,
+        },
+        memoryProposals: [],
+        pulledSourceIds: [],
+        serializedSourceIds: [],
+        serializedContextTokens: 0,
+        sourceAudit: [],
+        timing: { timeToFirstTokenMs: 0, timeToTerminalMs: 1 },
+        usage: { providerRequestCount: 1, inputTokens: 0, outputTokens: 0, totalTokens: 1 },
+        planTurn: { mode: "single", question: "v3 migration test", relevantTurnIds: [] },
+      };
+      const v3ExecutionOutputDigest = sha256Hex(stableJson(v3ExecutionOutput));
 
       await runDb(
         adminDatabaseUrl(),
@@ -13850,7 +14046,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 status, completed_at
               ) values (
                 ${sessionId}, 3, 3, ${"a".repeat(64)}, ${"b".repeat(64)},
-                'zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4',
+                'tinyfish_search_official:https://api.search.tinyfish.ai',
                 'complete', now()
               )
             `;
@@ -13942,8 +14138,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                     },
                   ],
                 })},
-                ${sql.json({ selectedSources: [{ sourceId: v3SourceId, ranges: [] }] })},
-                ${"e".repeat(64)}, ${"f".repeat(64)}, 'succeeded', now(), now()
+                ${sql.json(v3ExecutionOutput)},
+                ${v3ExecutionOutputDigest}, ${"f".repeat(64)}, 'succeeded', now(), now()
               )
             `;
             yield* sql.unsafe("alter table ai_evaluation_case_runs enable trigger user");
@@ -13955,7 +14151,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               ) values (
                 ${sessionId}, ${v3CaseId}, 'general_planner', ${conversionRunId},
                 ${"f".repeat(64)}, ${"a".repeat(64)},
-                ${sql.json({ claims: [], reportedGapIds: [] })}, ${"b".repeat(64)}
+                ${sql.json(v3AnnotationPayload)}, ${sha256Hex(stableJson(v3AnnotationPayload))}
               )
             `;
             yield* sql.unsafe("alter table ai_evaluation_annotations enable trigger user");
@@ -14037,7 +14233,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           }),
         );
         expect(convertedCase).toHaveLength(1);
-        expect(convertedCase[0]?.selectedRanges).toEqual([{ charStart: 0, charEnd: 11 }]);
+        expect(convertedCase[0]?.selectedRanges).toBeNull();
         expect(convertedCase[0]?.contextRanges).toEqual([{ charStart: 0, charEnd: 11 }]);
         expect(convertedCase[0]?.ledgerRanges).toEqual([{ charStart: 0, charEnd: 11 }]);
         expect(convertedCase[0]?.runEvidence).toMatch(/^[0-9a-f]{64}$/u);
@@ -14096,11 +14292,109 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             },
           ]),
         );
+        const retainedV3Artifact = await readAndRevalidateEvaluationV3Artifact(
+          targetUrl,
+          sessionId,
+          v3CaseId,
+          "general_planner",
+        );
+        expect(retainedV3Artifact.artifactVersion).toBe(3);
+        expect(retainedV3Artifact.goldenSetVersion).toBe(3);
+        expect(retainedV3Artifact.caseId).toBe(v3CaseId);
+        expect(retainedV3Artifact.topology).toBe("general_planner");
+        expect(retainedV3Artifact.capture.runId).toBe(conversionRunId);
+
+        const originalCaseDigest = revalidatedV3.storedCaseDigest;
+        await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(
+              "alter table ai_evaluation_case_runs disable trigger ai_evaluation_case_runs_protect",
+            );
+            yield* sql`
+              update ai_evaluation_case_runs
+              set run_evidence_sha256_hex = ${"0".repeat(64)}
+              where session_id = ${sessionId}
+                and case_id = ${v3CaseId}
+                and topology = 'general_planner'
+            `;
+            yield* sql.unsafe(
+              "alter table ai_evaluation_case_runs enable trigger ai_evaluation_case_runs_protect",
+            );
+          }),
+        );
+        await expect(
+          readAndRevalidateEvaluationV3Artifact(targetUrl, sessionId, v3CaseId, "general_planner"),
+        ).rejects.toThrow(/digest|evidence/u);
+        await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(
+              "alter table ai_evaluation_case_runs disable trigger ai_evaluation_case_runs_protect",
+            );
+            yield* sql`
+              update ai_evaluation_case_runs
+              set run_evidence_sha256_hex = ${originalCaseDigest}
+              where session_id = ${sessionId}
+                and case_id = ${v3CaseId}
+                and topology = 'general_planner'
+            `;
+            yield* sql.unsafe(
+              "alter table ai_evaluation_case_runs enable trigger ai_evaluation_case_runs_protect",
+            );
+          }),
+        );
+
+        const originalAnnotationDigest = revalidatedV3.storedAnnotationDigest;
+        await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(
+              "alter table ai_evaluation_annotations disable trigger ai_evaluation_annotations_immutable",
+            );
+            yield* sql`
+              update ai_evaluation_annotations
+              set annotations_sha256_hex = ${"1".repeat(64)}
+              where session_id = ${sessionId}
+                and case_id = ${v3CaseId}
+                and topology = 'general_planner'
+            `;
+            yield* sql.unsafe(
+              "alter table ai_evaluation_annotations enable trigger ai_evaluation_annotations_immutable",
+            );
+          }),
+        );
+        await expect(
+          readAndRevalidateEvaluationV3Artifact(targetUrl, sessionId, v3CaseId, "general_planner"),
+        ).rejects.toThrow(/annotation|digest/u);
+        await runDb(
+          targetUrl,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            yield* sql.unsafe(
+              "alter table ai_evaluation_annotations disable trigger ai_evaluation_annotations_immutable",
+            );
+            yield* sql`
+              update ai_evaluation_annotations
+              set annotations_sha256_hex = ${originalAnnotationDigest}
+              where session_id = ${sessionId}
+                and case_id = ${v3CaseId}
+                and topology = 'general_planner'
+            `;
+            yield* sql.unsafe(
+              "alter table ai_evaluation_annotations enable trigger ai_evaluation_annotations_immutable",
+            );
+          }),
+        );
         const rangeCases = [
           [
             { charStart: 0, charEnd: 1 },
             { charStart: 2, charEnd: 3 },
           ],
+          [{ charStart: 3, charEnd: 4 }],
           [],
           [{ charStart: 0, charEnd: 12 }],
           [

@@ -34,19 +34,15 @@ export const WORKER_NUMERIC_SETTING_HARD_MAXIMA = {
   AI_CONVERSATION_RECENT_TURNS: 200,
   AI_TOPIC_RESEARCH_MAX_CONCURRENCY: 32,
   AI_TOPIC_ANSWER_MAX_CONCURRENCY: 32,
-  AI_RETRIEVAL_MAX_TURNS: 16,
-  AI_INTERNAL_MAX_SEARCHES: 64,
-  AI_INTERNAL_MAX_INSPECTIONS: 64,
   AI_WEB_MAX_SEARCHES: 32,
   AI_WEB_MAX_FETCHES: 64,
-  AI_MEMORY_DIRECT_MAX_ITEMS: 10_000,
   AI_MEMORY_TOOL_RESULT_MAX_ITEMS: 500,
   AI_FAST_TASK_TIMEOUT_MS: 1_200_000,
   AI_ANSWER_TIMEOUT_MS: 900_000,
   AI_STREAM_POLL_MS: 10_000,
   AI_STREAM_KEEPALIVE_MS: 300_000,
 } as const;
-/** Phase B retrieval work bounds. Kept separate from the legacy cutover keys. */
+/** Structured retrieval query, branch, hydration, and concurrency work bounds. */
 export const RETRIEVAL_NUMERIC_SETTING_HARD_MAXIMA = {
   AI_RETRIEVAL_MAX_QUERIES: 64,
   AI_RETRIEVAL_MAX_BRANCH_ROWS: 256,
@@ -462,14 +458,9 @@ const WorkerEnvironment = Schema.Struct({
   AI_FANOUT_MAX_TOPICS: Schema.optional(Schema.Number),
   AI_TOPIC_RESEARCH_MAX_CONCURRENCY: NumberWithDefault(6),
   AI_TOPIC_ANSWER_MAX_CONCURRENCY: NumberWithDefault(3),
-  AI_RETRIEVAL_MAX_TURNS: NumberWithDefault(8),
-  AI_INTERNAL_MAX_SEARCHES: NumberWithDefault(8),
-  AI_INTERNAL_MAX_INSPECTIONS: NumberWithDefault(8),
   AI_WEB_MAX_SEARCHES: NumberWithDefault(4),
   AI_WEB_MAX_FETCHES: NumberWithDefault(8),
   AI_WEB_MAX_DOMAIN_FILTERS: NumberWithDefault(AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT),
-  AI_CONTEXT_REDUCTION_MAX_ITERATIONS: Schema.optional(Schema.Number),
-  AI_MEMORY_DIRECT_MAX_ITEMS: NumberWithDefault(200),
   AI_MEMORY_TOOL_RESULT_MAX_ITEMS: NumberWithDefault(50),
   AI_FAST_TASK_TIMEOUT_MS: NumberWithDefault(1_200_000),
   AI_ANSWER_TIMEOUT_MS: NumberWithDefault(120_000),
@@ -521,14 +512,9 @@ export interface WorkerConfig {
   readonly aiFanoutMaxTopics: 3;
   readonly aiTopicResearchMaxConcurrency: number;
   readonly aiTopicAnswerMaxConcurrency: number;
-  readonly aiRetrievalMaxTurns: number;
-  readonly aiInternalMaxSearches: number;
-  readonly aiInternalMaxInspections: number;
   readonly aiWebMaxSearches: number;
   readonly aiWebMaxFetches: number;
   readonly aiWebMaxDomainFilters: number;
-  readonly aiContextReductionMaxIterations: 2;
-  readonly aiMemoryDirectMaxItems: number;
   readonly aiMemoryToolResultMaxItems: number;
   readonly aiFastTaskTimeoutMs: number;
   readonly aiAnswerTimeoutMs: number;
@@ -559,12 +545,8 @@ export const loadWorkerConfig: Effect.Effect<WorkerConfig, Config.ConfigError | 
       ["AI_CONVERSATION_RECENT_TURNS", raw.AI_CONVERSATION_RECENT_TURNS],
       ["AI_TOPIC_RESEARCH_MAX_CONCURRENCY", raw.AI_TOPIC_RESEARCH_MAX_CONCURRENCY],
       ["AI_TOPIC_ANSWER_MAX_CONCURRENCY", raw.AI_TOPIC_ANSWER_MAX_CONCURRENCY],
-      ["AI_RETRIEVAL_MAX_TURNS", raw.AI_RETRIEVAL_MAX_TURNS],
-      ["AI_INTERNAL_MAX_SEARCHES", raw.AI_INTERNAL_MAX_SEARCHES],
-      ["AI_INTERNAL_MAX_INSPECTIONS", raw.AI_INTERNAL_MAX_INSPECTIONS],
       ["AI_WEB_MAX_SEARCHES", raw.AI_WEB_MAX_SEARCHES],
       ["AI_WEB_MAX_FETCHES", raw.AI_WEB_MAX_FETCHES],
-      ["AI_MEMORY_DIRECT_MAX_ITEMS", raw.AI_MEMORY_DIRECT_MAX_ITEMS],
       ["AI_MEMORY_TOOL_RESULT_MAX_ITEMS", raw.AI_MEMORY_TOOL_RESULT_MAX_ITEMS],
       ["AI_FAST_TASK_TIMEOUT_MS", raw.AI_FAST_TASK_TIMEOUT_MS],
       ["AI_ANSWER_TIMEOUT_MS", raw.AI_ANSWER_TIMEOUT_MS],
@@ -634,12 +616,6 @@ export const loadWorkerConfig: Effect.Effect<WorkerConfig, Config.ConfigError | 
     if (raw.AI_FANOUT_MAX_TOPICS !== undefined && raw.AI_FANOUT_MAX_TOPICS !== 3) {
       return yield* Effect.fail(new Error("AI_FANOUT_MAX_TOPICS is fixed at 3"));
     }
-    if (
-      raw.AI_CONTEXT_REDUCTION_MAX_ITERATIONS !== undefined &&
-      raw.AI_CONTEXT_REDUCTION_MAX_ITERATIONS !== 2
-    ) {
-      return yield* Effect.fail(new Error("AI_CONTEXT_REDUCTION_MAX_ITERATIONS is fixed at 2"));
-    }
     const rawAiBaseUrl = raw.AI_BASE_URL.trim();
     const aiBaseUrl = yield* parseCredentialFreeHttpsBaseUrl(
       "AI_BASE_URL",
@@ -683,14 +659,9 @@ export const loadWorkerConfig: Effect.Effect<WorkerConfig, Config.ConfigError | 
       aiFanoutMaxTopics: 3,
       aiTopicResearchMaxConcurrency: raw.AI_TOPIC_RESEARCH_MAX_CONCURRENCY,
       aiTopicAnswerMaxConcurrency: raw.AI_TOPIC_ANSWER_MAX_CONCURRENCY,
-      aiRetrievalMaxTurns: raw.AI_RETRIEVAL_MAX_TURNS,
-      aiInternalMaxSearches: raw.AI_INTERNAL_MAX_SEARCHES,
-      aiInternalMaxInspections: raw.AI_INTERNAL_MAX_INSPECTIONS,
       aiWebMaxSearches: raw.AI_WEB_MAX_SEARCHES,
       aiWebMaxFetches: raw.AI_WEB_MAX_FETCHES,
       aiWebMaxDomainFilters: raw.AI_WEB_MAX_DOMAIN_FILTERS,
-      aiContextReductionMaxIterations: 2,
-      aiMemoryDirectMaxItems: raw.AI_MEMORY_DIRECT_MAX_ITEMS,
       aiMemoryToolResultMaxItems: raw.AI_MEMORY_TOOL_RESULT_MAX_ITEMS,
       aiFastTaskTimeoutMs: raw.AI_FAST_TASK_TIMEOUT_MS,
       aiAnswerTimeoutMs: raw.AI_ANSWER_TIMEOUT_MS,

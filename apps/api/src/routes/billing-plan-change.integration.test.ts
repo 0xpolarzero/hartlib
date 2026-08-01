@@ -42,8 +42,7 @@ const pgLayer = () =>
     applicationName: "billing-plan-change-route-test",
   });
 
-const demoCookie = (userId: string) =>
-  `${DEMO_COOKIE_NAME}=${userId}`;
+const demoCookie = (userId: string) => `${DEMO_COOKIE_NAME}=${userId}`;
 
 const config = (_userId: string) =>
   ConfigProvider.layer(
@@ -69,7 +68,11 @@ const call = (gateway: BillingStripeGateway, userId: string, body: unknown) =>
       makeBillingRoutes(pgLayer(), gateway),
       new Request(`https://brief.test/v1/client-companies/${companyId}/billing/plan-change`, {
         method: "POST",
-        headers: { cookie: demoCookie(userId), "content-type": "application/json", "x-request-id": crypto.randomUUID() },
+        headers: {
+          cookie: demoCookie(userId),
+          "content-type": "application/json",
+          "x-request-id": crypto.randomUUID(),
+        },
         body: JSON.stringify(body),
       }),
     ).pipe(Effect.provide(config(userId))),
@@ -86,7 +89,11 @@ const callCheckout = (
       makeBillingRoutes(pgLayer(), gateway),
       new Request(`https://brief.test/v1/client-companies/${companyId}/billing/checkout`, {
         method: "POST",
-        headers: { cookie: demoCookie(userId), "content-type": "application/json", "x-request-id": auditRequestId },
+        headers: {
+          cookie: demoCookie(userId),
+          "content-type": "application/json",
+          "x-request-id": auditRequestId,
+        },
         body: JSON.stringify(body),
       }),
     ).pipe(Effect.provide(config(userId))),

@@ -60,6 +60,7 @@ import {
   topicRequestsWebEvidence,
   type WebResearchBoundary,
 } from "./operations";
+import { StructuredRetrievalTraceSchema } from "../retrieval/query-spec";
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const databaseName = `brief_ai_operations_test_${process.pid}_${crypto
@@ -492,6 +493,17 @@ const durableNoCallReasonForFixtureTask = (
     }),
   );
 
+const chatReconstructionFor = (
+  messageId: string,
+  text: string,
+  ranges: readonly { readonly charStart: number; readonly charEnd: number }[] = [
+    { charStart: 0, charEnd: text.length },
+  ],
+) => ({
+  messageId,
+  contentHash: createHash("sha256").update(text, "utf8").digest("hex"),
+  ranges,
+});
 const seedAnswerSerializedExposures = async (
   fixture: Pick<Fixture, "runId">,
   taskId: string,
@@ -582,6 +594,7 @@ const seedAnswerSerializedExposures = async (
       exposureStage: "provider_input",
       visibleTokenCount: model.countTextTokens(visibleText),
       visibleText,
+      chatReconstruction: chatReconstructionFor(contentItemIdentity, visibleText),
     });
   };
   for (const [key, idKey] of [
@@ -611,10 +624,29 @@ const seedAnswerSerializedExposures = async (
     }
   }
   proofs.push(
-    ...sourceMarkers.map((marker, index) => ({
-      ...marker,
-      visibleText: candidateText(context.candidates[index]!),
-    })),
+    ...sourceMarkers.map((marker, index) => {
+      const source = context.sourceMap[index];
+      const candidate = context.candidates[index];
+      if (source === undefined || candidate === undefined) {
+        throw new Error("answer source lacks its candidate");
+      }
+      const use = source.uses.find(
+        (entry) => entry.consumerTaskId === consumerTaskId && entry.topicId === context.topicId,
+      );
+      return {
+        ...marker,
+        visibleText: candidateText(candidate),
+        ...(marker.sourceKind === "chat_message"
+          ? {
+              chatReconstruction: chatReconstructionFor(
+                marker.contentItemIdentity,
+                candidateText(candidate),
+                use?.ranges,
+              ),
+            }
+          : {}),
+      };
+    }),
   );
   const bindingRows = providerRequestSourceExposureProofBindings(
     { ...context.request, sourceExposureProofs: proofs },
@@ -700,6 +732,11 @@ const seedAnswerSerializedExposures = async (
               exposureStage: "answer_serialized",
               visibleTokenCount: marker.visibleTokenCount,
               providerSerializationProofBinding: binding,
+              chatReconstruction: chatReconstructionFor(
+                locator.messageId,
+                candidateText(context.candidates[sourceIndex]!),
+                use.ranges,
+              ),
             },
           ];
         case "memory":
@@ -908,22 +945,26 @@ const providerRoleForTask = (taskId: string): string =>
     "single-retrieve-internal": "internal_retrieval",
     "single-select-memories": "memory_selector",
     "single-retrieve-web": "web_research",
-    "single-reduce-plan": "context_reducer",
+    "single-compact-plan": "context_manifest",
+    "single-fallback-plan": "context_fallback_manifest",
     "single-answer": "direct_answer",
     "topic-t1-retrieve-internal": "internal_retrieval",
     "topic-t1-select-memories": "memory_selector",
     "topic-t1-retrieve-web": "web_research",
-    "topic-t1-reduce-plan": "context_reducer",
+    "topic-t1-compact-plan": "context_manifest",
+    "topic-t1-fallback-plan": "context_fallback_manifest",
     "topic-t1-answer": "topic_answer",
     "topic-t2-retrieve-internal": "internal_retrieval",
     "topic-t2-select-memories": "memory_selector",
     "topic-t2-retrieve-web": "web_research",
-    "topic-t2-reduce-plan": "context_reducer",
+    "topic-t2-compact-plan": "context_manifest",
+    "topic-t2-fallback-plan": "context_fallback_manifest",
     "topic-t2-answer": "topic_answer",
     "topic-t3-retrieve-internal": "internal_retrieval",
     "topic-t3-select-memories": "memory_selector",
     "topic-t3-retrieve-web": "web_research",
-    "topic-t3-reduce-plan": "context_reducer",
+    "topic-t3-compact-plan": "context_manifest",
+    "topic-t3-fallback-plan": "context_fallback_manifest",
     "topic-t3-answer": "topic_answer",
     "fanout-synthesis": "synthesis",
   })[taskId] ?? taskId;
@@ -1370,13 +1411,9 @@ const phaseBOperationConfig: CanonicalAiConfig = {
   aiFastOutputMaxTokens: 4096,
   aiConversationRecentTurns: 12,
   aiFanoutMaxTopics: 3,
-  aiRetrievalMaxTurns: 4,
-  aiInternalMaxSearches: 4,
-  aiInternalMaxInspections: 4,
   aiWebMaxSearches: 2,
   aiWebMaxFetches: 2,
   aiWebMaxDomainFilters: 8,
-  aiContextReductionMaxIterations: 2,
   aiMemoryToolResultMaxItems: 20,
   webResearchProvider: "",
   aiRetrievalMaxQueries: 24,
@@ -1405,10 +1442,11 @@ const prepareOversizedCompaction = async (
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        for (const content of chatContents) {
+        for (const [index, content] of chatContents.entries()) {
           yield* sql`
-            insert into chat_messages (chat_id, author, content)
-            select chat_id, 'assistant', ${content}
+            insert into chat_messages (chat_id, author, content, created_at)
+            select chat_id, 'assistant', ${content},
+                   now() - interval '1 hour' - (${index} * interval '1 minute')
             from ai_runs
             where id = ${fixture.runId}
           `;
@@ -1569,6 +1607,25 @@ class IntegrationAgentClient extends CanonicalAgentClient {
     if (input.outputToolName === "emit_internal_query_review") {
       await invokeStructuredProviderHook(input);
       return input.validate({ action: "accept", reason: "sufficient_coverage" });
+    }
+    return super.structured(input);
+  }
+}
+class StructuredNoEvidenceAgent extends IntegrationAgentClient {
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName === "emit_internal_query_review") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({ action: "no_evidence", reason: "no_supporting_evidence" });
+    }
+    return super.structured(input);
+  }
+}
+
+class StructuredSkipAgent extends IntegrationAgentClient {
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName === "emit_internal_query_plan") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({ action: "skip", reason: "not needed" });
     }
     return super.structured(input);
   }
@@ -2765,6 +2822,24 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       }),
     );
     expect(persistedPreviews.map((row) => row.providerRequestIndex)).toEqual([1]);
+    const traces = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly payload: Record<string, unknown> }>`
+          select payload
+          from ai_observations
+          where run_id = ${fixture.runId}
+            and kind = 'structured_retrieval_trace'
+        `;
+      }),
+    );
+    expect(traces).toHaveLength(1);
+    expect(StructuredRetrievalTraceSchema.parse(traces[0]!.payload)).toMatchObject({
+      outcome: "accepted",
+      initialPlan: { action: "search" },
+      review: { action: "accept", reason: "sufficient_coverage" },
+      replacementPlan: null,
+    });
   }, 120_000);
   it("replaces a structured review without duplicating discovered evidence", async () => {
     const fixture = await runDb(
@@ -2797,7 +2872,81 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       JSON.stringify(exposure.identity),
     );
     expect(identities ?? []).toHaveLength(1);
+    const traces = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly payload: Record<string, unknown> }>`
+          select payload
+          from ai_observations
+          where run_id = ${fixture.runId}
+            and kind = 'structured_retrieval_trace'
+        `;
+      }),
+    );
+    expect(traces).toHaveLength(1);
+    expect(StructuredRetrievalTraceSchema.parse(traces[0]!.payload)).toMatchObject({
+      outcome: "replaced",
+      initialPlan: { action: "search" },
+      review: { action: "replace" },
+      replacementPlan: {
+        action: "search",
+        queries: [{ all: [{ text: "expectations", mode: "term" }] }],
+      },
+    });
   });
+  it("records exact no-evidence and skip retrieval traces", async () => {
+    const cases = [
+      {
+        suffix: "trace-no-evidence",
+        taskId: "trace-no-evidence-retrieve",
+        agent: new StructuredNoEvidenceAgent(),
+        expected: {
+          outcome: "no_evidence",
+          initialPlan: { action: "search" },
+          review: { action: "no_evidence", reason: "no_supporting_evidence" },
+          replacementPlan: null,
+        },
+      },
+      {
+        suffix: "trace-skip",
+        taskId: "trace-skip-retrieve",
+        agent: new StructuredSkipAgent(),
+        expected: {
+          outcome: "skipped",
+          initialPlan: { action: "skip" },
+          review: null,
+          replacementPlan: null,
+        },
+      },
+    ] as const;
+    for (const testCase of cases) {
+      const fixture = await runDb(createFixtureWithCanonicalText(testCase.suffix));
+      const operations = new CanonicalWorkflowOperations(
+        databaseUrlFor(databaseName),
+        phaseBOperationConfig,
+        testCase.agent,
+      );
+      const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+      await inTask(testCase.taskId, () =>
+        operations.retrieveStructuredInternal(load, "trace terminal outcome", testCase.taskId, []),
+      );
+      const traces = await runDb(
+        Effect.gen(function* () {
+          const sql = yield* PgClient.PgClient;
+          return yield* sql<{ readonly payload: Record<string, unknown> }>`
+            select payload
+            from ai_observations
+            where run_id = ${fixture.runId}
+              and kind = 'structured_retrieval_trace'
+          `;
+        }),
+      );
+      expect(traces).toHaveLength(1);
+      expect(StructuredRetrievalTraceSchema.parse(traces[0]!.payload)).toMatchObject(
+        testCase.expected,
+      );
+    }
+  }, 120_000);
 
   it("recovers malformed structured plan and review outputs on task retry", async () => {
     const fixture = await runDb(createFixture);
@@ -2841,13 +2990,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
         providerServiceId: "openai_compatible_custom",
@@ -2885,13 +3030,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -2961,13 +3102,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiFastOutputMaxTokens: 4096,
       aiConversationRecentTurns: 12,
       aiFanoutMaxTopics: 3,
-      aiRetrievalMaxTurns: 4,
-      aiInternalMaxSearches: 4,
-      aiInternalMaxInspections: 4,
       aiWebMaxSearches: 2,
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
-      aiContextReductionMaxIterations: 2,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "" as const,
     } satisfies CanonicalAiConfig;
@@ -3063,13 +3200,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -3150,13 +3283,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -3240,13 +3369,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -3324,13 +3449,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -3418,13 +3539,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -3643,13 +3760,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiFastOutputMaxTokens: 4096,
       aiConversationRecentTurns: 12,
       aiFanoutMaxTopics: 3,
-      aiRetrievalMaxTurns: 4,
-      aiInternalMaxSearches: 4,
-      aiInternalMaxInspections: 4,
       aiWebMaxSearches: 2,
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
-      aiContextReductionMaxIterations: 2,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "",
     };
@@ -3687,13 +3800,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -3863,13 +3972,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiFastOutputMaxTokens: 4096,
       aiConversationRecentTurns: 12,
       aiFanoutMaxTopics: 3,
-      aiRetrievalMaxTurns: 4,
-      aiInternalMaxSearches: 4,
-      aiInternalMaxInspections: 4,
       aiWebMaxSearches: 2,
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
-      aiContextReductionMaxIterations: 2,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "" as const,
     };
@@ -4006,13 +4111,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiFastOutputMaxTokens: 700,
       aiConversationRecentTurns: 12,
       aiFanoutMaxTopics: 3,
-      aiRetrievalMaxTurns: 8,
-      aiInternalMaxSearches: 8,
-      aiInternalMaxInspections: 4,
       aiWebMaxSearches: 2,
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
-      aiContextReductionMaxIterations: 2,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "",
     };
@@ -4125,13 +4226,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -4616,13 +4713,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -4870,6 +4963,34 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
             observation_key, kind, payload
           )
           select ${fixture.runId}, chat_id, 'single-retrieve-internal', 0, 0,
+                 'single-retrieve-internal:0:0:structured_retrieval_trace:result',
+                 'structured_retrieval_trace',
+                 ${sql.json({
+                   initialPlan: {
+                     action: "search",
+                     queries: [
+                       {
+                         purpose: "fixture",
+                         all: [{ text: "fixture", mode: "term" }],
+                         anyOf: [],
+                         not: [],
+                         filters: {},
+                         order: "relevance",
+                       },
+                     ],
+                   },
+                   review: { action: "accept", reason: "sufficient_coverage" },
+                   replacementPlan: null,
+                   outcome: "accepted",
+                 })}
+          from ai_runs where id = ${fixture.runId}
+        `;
+        yield* sql`
+          insert into ai_observations (
+            run_id, chat_id, emitting_task, loop_iteration, attempt,
+            observation_key, kind, payload
+          )
+          select ${fixture.runId}, chat_id, 'single-retrieve-internal', 0, 0,
                  'single-retrieve-internal:0:0:structured_retrieval_review_preview:initial',
                  'structured_retrieval_review_preview',
                  ${sql.json({
@@ -4880,6 +5001,35 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
                    agentRole: "internal_retrieval",
                    slot: "initial",
                    providerInputSha256Hex: "c".repeat(64),
+                   results: [],
+                   coverage: [
+                     {
+                       queryOrdinal: 1,
+                       branch: "public_documents",
+                       status: "applicable",
+                       hitCount: 0,
+                       truncated: false,
+                       cap: 25,
+                     },
+                     {
+                       queryOrdinal: 1,
+                       branch: "publisher_documents",
+                       status: "applicable",
+                       hitCount: 0,
+                       truncated: false,
+                       cap: 25,
+                     },
+                     {
+                       queryOrdinal: 1,
+                       branch: "chat_messages",
+                       status: "not_applicable",
+                       reason: "scope_documents",
+                       hitCount: 0,
+                       truncated: false,
+                       cap: 25,
+                     },
+                   ],
+                   truncation: { branch: false, candidates: false, hydration: false },
                    records: [],
                  })}
           from ai_runs where id = ${fixture.runId}
@@ -5002,13 +5152,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiFastOutputMaxTokens: 4096,
       aiConversationRecentTurns: 12,
       aiFanoutMaxTopics: 3,
-      aiRetrievalMaxTurns: 4,
-      aiInternalMaxSearches: 4,
-      aiInternalMaxInspections: 4,
       aiWebMaxSearches: 2,
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
-      aiContextReductionMaxIterations: 2,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "tinyfish" as const,
     } satisfies CanonicalAiConfig;
@@ -5453,13 +5599,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "tinyfish",
       },
@@ -5519,13 +5661,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "tinyfish",
       },
@@ -5576,13 +5714,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           aiFastOutputMaxTokens: 4096,
           aiConversationRecentTurns: 12,
           aiFanoutMaxTopics: 3,
-          aiRetrievalMaxTurns: 4,
-          aiInternalMaxSearches: 4,
-          aiInternalMaxInspections: 4,
           aiWebMaxSearches: 2,
           aiWebMaxFetches: 2,
           aiWebMaxDomainFilters: 8,
-          aiContextReductionMaxIterations: 2,
           aiMemoryToolResultMaxItems: 20,
           webResearchProvider: "tinyfish",
         },
@@ -5636,13 +5770,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "tinyfish",
       },
@@ -5693,13 +5823,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiFastOutputMaxTokens: 4096,
       aiConversationRecentTurns: 12,
       aiFanoutMaxTopics: 3,
-      aiRetrievalMaxTurns: 4,
-      aiInternalMaxSearches: 4,
-      aiInternalMaxInspections: 4,
       aiWebMaxSearches: 2,
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
-      aiContextReductionMaxIterations: 2,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "tinyfish" as const,
     } satisfies CanonicalAiConfig;
@@ -5742,13 +5868,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiFastOutputMaxTokens: 4096,
       aiConversationRecentTurns: 12,
       aiFanoutMaxTopics: 3,
-      aiRetrievalMaxTurns: 4,
-      aiInternalMaxSearches: 4,
-      aiInternalMaxInspections: 4,
       aiWebMaxSearches: 2,
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
-      aiContextReductionMaxIterations: 2,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "tinyfish" as const,
     } satisfies CanonicalAiConfig;
@@ -5971,13 +6093,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       aiFastOutputMaxTokens: 4096,
       aiConversationRecentTurns: 12,
       aiFanoutMaxTopics: 3,
-      aiRetrievalMaxTurns: 4,
-      aiInternalMaxSearches: 4,
-      aiInternalMaxInspections: 4,
       aiWebMaxSearches: 2,
       aiWebMaxFetches: 2,
       aiWebMaxDomainFilters: 8,
-      aiContextReductionMaxIterations: 2,
       aiMemoryToolResultMaxItems: 20,
       webResearchProvider: "" as const,
     } satisfies CanonicalAiConfig;
@@ -6049,13 +6167,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },
@@ -6070,6 +6184,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         [],
       ),
     );
+    const expectedPreview = references?.previewExposures[0];
     expect(references).toMatchObject({
       previewExposures: expect.arrayContaining([
         expect.objectContaining({
@@ -6078,7 +6193,6 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         }),
       ]),
     });
-    const expectedPreview = references?.previewExposures[0];
     if (expectedPreview === undefined || expectedPreview.identity.kind === "chat_message") {
       throw new Error("structured retrieval did not return a document preview");
     }
@@ -7064,13 +7178,9 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         aiFastOutputMaxTokens: 4096,
         aiConversationRecentTurns: 12,
         aiFanoutMaxTopics: 3,
-        aiRetrievalMaxTurns: 4,
-        aiInternalMaxSearches: 4,
-        aiInternalMaxInspections: 4,
         aiWebMaxSearches: 2,
         aiWebMaxFetches: 2,
         aiWebMaxDomainFilters: 8,
-        aiContextReductionMaxIterations: 2,
         aiMemoryToolResultMaxItems: 20,
         webResearchProvider: "",
       },

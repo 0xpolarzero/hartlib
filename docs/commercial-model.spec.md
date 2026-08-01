@@ -107,7 +107,7 @@ Usage is prepaid through monthly credits and additional credits.
 
 Credits are an internal cost-control unit.
 
-Internal cost accounting records every model request made by plan-turn, internal retrieval, memory selection, web research, context reduction, direct/topic answers, synthesis, and memory extraction. Tool-loop work and its individual provider requests are counted separately. Every web search and fetch operation is also recorded separately, including empty and failed operations, without retaining its query or URL in usage rows.
+Internal cost accounting records every model request made by plan-turn, internal retrieval, memory selection, web research, context compaction, direct/topic answers, synthesis, and memory extraction. Tool-loop work and its individual provider requests are counted separately. Every web search and fetch operation is also recorded separately, including empty and failed operations, without retaining its query or URL in usage rows.
 
 Customer credits remain one turn-level product abstraction. Credit calculation can use aggregate tokens in, tokens out, cached/reasoning tokens, web search/fetch usage, tool usage, and fanout topic count without exposing the internal agent graph to the customer.
 

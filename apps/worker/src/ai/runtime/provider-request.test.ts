@@ -72,7 +72,19 @@ const reviewRequest = (
 const proofFor = (
   marker: ProviderVisibleSourceExposureMarker,
   visibleText: string,
-): CodeOwnedSourceExposureProof => ({ ...marker, visibleText });
+): CodeOwnedSourceExposureProof => ({
+  ...marker,
+  visibleText,
+  ...(marker.sourceKind === "chat_message"
+    ? {
+        chatReconstruction: {
+          messageId: marker.contentItemIdentity,
+          contentHash: sha256(visibleText),
+          ranges: [{ charStart: 0, charEnd: visibleText.length }],
+        },
+      }
+    : {}),
+});
 
 const compactionChatProof = (
   text: string,
@@ -107,6 +119,11 @@ const compactionChatProof = (
     charStart: 0,
     charEnd: text.length,
     visibleByteCount,
+    chatReconstruction: {
+      messageId,
+      contentHash: immutableContentHash,
+      ranges: [{ charStart: 0, charEnd: text.length }],
+    },
     immutableContentHash,
     immutableSourceIdentityCommitment,
     immutableSourceCommitment: providerVisibleSourceExposureCommitment(
@@ -250,6 +267,39 @@ describe("provider-visible source exposure proofs", () => {
     const request = reviewRequest([{ kind: "document", preview: text }], [proofFor(marker, text)]);
     expect(providerRequestSourceExposureProofs(request, countTextTokens)).toHaveLength(1);
     expect(providerRequestSourceExposureProofBindings(request, countTextTokens)).toHaveLength(1);
+  });
+
+  it("binds mixed document and chat review previews to their kind-specific stages", () => {
+    const documentText = "document review preview";
+    const chatText = "chat review preview";
+    const documentProof = proofFor(documentMarker(documentText), documentText);
+    const chatMarkerForReview = {
+      ...chatMarker("review-message-1", chatText),
+      exposureStage: "internal_chat_search_preview" as const,
+    };
+    const chatProof = proofFor(chatMarkerForReview, chatText);
+    const request = reviewRequest(
+      [
+        { kind: "document", preview: documentText },
+        { kind: "chat_message", preview: chatText },
+      ],
+      [documentProof, chatProof],
+    );
+    expect(providerRequestSourceExposureProofs(request, countTextTokens)).toHaveLength(2);
+    expect(providerRequestSourceExposureProofBindings(request, countTextTokens)).toHaveLength(2);
+    expect(() => providerRequestSourceExposureProofs(request, countTextTokens)).not.toThrow();
+    expect(() =>
+      providerRequestSourceExposureProofs(
+        {
+          ...request,
+          sourceExposureProofs: [
+            documentProof,
+            { ...chatProof, exposureStage: "internal_search_preview" },
+          ],
+        },
+        countTextTokens,
+      ),
+    ).toThrow(/stage|exact normalized source field/u);
   });
 
   it("rejects a missing proof", () => {
@@ -1112,6 +1162,11 @@ describe("provider-visible source exposure proofs", () => {
       exposureStage: "answer_serialized",
       visibleTokenCount: countTextTokens(text),
       visibleText: text,
+      chatReconstruction: {
+        messageId: "answer-message",
+        contentHash: sha256(text),
+        ranges: [{ charStart: 0, charEnd: text.length }],
+      },
     };
     const request: ProviderRequest = {
       requestClass: "main",
@@ -1431,6 +1486,18 @@ describe("provider-visible source exposure proofs", () => {
         assistantMessageId: "assistant-1",
         assistantContent: "assistant evidence",
       },
+      __briefSourceIdentity: [
+        {
+          messageId: "user-1",
+          contentHash: sha256("user evidence"),
+          ranges: [{ charStart: 0, charEnd: "user evidence".length }],
+        },
+        {
+          messageId: "assistant-1",
+          contentHash: sha256("assistant evidence"),
+          ranges: [{ charStart: 0, charEnd: "assistant evidence".length }],
+        },
+      ],
       __briefSourceExposures: [
         {
           sourceKind: "chat_message",
@@ -1563,6 +1630,76 @@ describe("provider-visible source exposure proofs", () => {
         countTextTokens,
       ),
     ).toThrow(/passages only/u);
+  });
+  it("binds chat source-tool passage ranges to their exact reconstruction range", () => {
+    const text = "chat source passage";
+    const range = { charStart: 0, charEnd: text.length };
+    const call: ProviderToolCall = {
+      id: "chat-read-1",
+      name: "read_source_passages",
+      arguments: { candidateId: "c1", passageIds: ["p1"] },
+    };
+    const messageId = "chat-source-message";
+    const result = {
+      found: true,
+      complete: true,
+      truncated: false,
+      cursor: null,
+      passages: [{ passageId: "p1", text }],
+      __briefSourceExposures: [
+        {
+          sourceKind: "chat_message" as const,
+          logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
+          contentItemIdentity: messageId,
+          exposureStage: "context_compaction_input" as const,
+          visibleTokenCount: countTextTokens(text),
+        },
+      ],
+      __briefSourceIdentity: [
+        {
+          candidateId: "c1",
+          passageId: "p1",
+          ...range,
+          visibleByteCount: new TextEncoder().encode(text).byteLength,
+          chatReconstruction: {
+            messageId,
+            contentHash: sha256(text),
+            ranges: [range],
+          },
+        },
+      ],
+    };
+    const proofs = providerSourceExposureProofFromToolResult(
+      call.name,
+      result,
+      call,
+      countTextTokens,
+    );
+    expect(
+      providerRequestSourceExposureProofs(
+        requestWithToolExchanges([{ call, result: redactProviderToolResult(result) }], proofs),
+        countTextTokens,
+      ),
+    ).toHaveLength(1);
+    const proof = proofs[0]!;
+    const reconstruction = proof.chatReconstruction!;
+    expect(() =>
+      providerRequestSourceExposureProofs(
+        requestWithToolExchanges(
+          [{ call, result: redactProviderToolResult(result) }],
+          [
+            {
+              ...proof,
+              chatReconstruction: {
+                ...reconstruction,
+                ranges: [{ charStart: 1, charEnd: text.length + 1 }],
+              },
+            },
+          ],
+        ),
+        countTextTokens,
+      ),
+    ).toThrow(/reconstruction range|exact passage range/u);
   });
   it("keeps repeated passage proofs one-to-one across source-tool results", () => {
     const calls: readonly ProviderToolCall[] = [
@@ -1777,7 +1914,7 @@ describe("provider-visible source exposure proofs", () => {
         ]),
         countTextTokens,
       ),
-    ).toThrow(/identity|commitment|compaction/u);
+    ).toThrow(/identity|commitment|compaction|reconstruction/u);
   });
   it("binds group passage ranges into ordered provider descriptors", () => {
     const text = "group passage";

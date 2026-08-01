@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT,
   AI_WEB_MAX_DOMAIN_FILTERS_HARD_MAX,
+  AiRunActivityFailureCode,
   AiRunEvent,
+  activityCodeForAiRunError,
   activityCodeForPhase,
   EffectiveWebPolicy,
   GetChatResponse,
@@ -180,7 +182,7 @@ describe("canonical chat schemas", () => {
     const contextReady = {
       type: "context_ready",
       mode: "single",
-      reductionRan: false,
+      compactionRan: false,
       sourcesRead: [
         {
           sourceKey: "k_nonce_1",
@@ -233,6 +235,31 @@ describe("canonical chat schemas", () => {
     expect(decode(activity)).toEqual(activity);
     expect(() => decode({ ...activity, rawQuery: "private query" })).toThrow();
     expect(() => decode({ ...activity, code: "provider_internal_operation" })).toThrow();
+  });
+
+  it("projects retrieval and compaction failures to preparation or evidence activities", () => {
+    const decode = Schema.decodeUnknownSync(AiRunActivityFailureCode);
+    expect(decode("context_compaction_failed")).toBe("context_compaction_failed");
+    expect(activityCodeForAiRunError("context_plan_unfit")).toBe("context_preparation");
+    expect(activityCodeForAiRunError("internal_retrieval_failed")).toBe("internal_sources");
+    expect(activityCodeForPhase("context_compaction_plan")).toBe("context_preparation");
+    expect(activityCodeForPhase("context_compaction_fallback_measure")).toBe("context_preparation");
+    expect(() => decode("provider_internal_operation")).toThrow();
+  });
+
+  it("does not expose chat message ranges in public source records", () => {
+    const decode = Schema.decodeUnknownSync(PublicSourceRecord);
+    const chatSource = {
+      sourceKey: "k_nonce_chat",
+      label: null,
+      tokenCount: 10,
+      topicIds: [],
+      kind: "chat_message",
+      messageId: "message-1",
+      ranges: [],
+    } as const;
+    expect(decode(chatSource)).toEqual(chatSource);
+    expect(() => decode({ ...chatSource, ranges: [{ charStart: 0, charEnd: 3 }] })).toThrow();
   });
 
   it("does not expose low-level provider calls as answer progress", () => {

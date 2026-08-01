@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CandidateLedger, CandidateLedgerEntry } from "../workflow/types";
 import {
+  MAX_COMPACTION_CONCURRENCY,
   MAX_COMPACTION_GROUPS,
   compactionGroupTaskId,
   parseCompactionGroupTaskId,
@@ -177,6 +178,21 @@ describe("compaction runtime", () => {
     expect(sourceCalls).toEqual(["c1"]);
     expect(repairs).toBe(1);
     expect(result.repairUsed).toBe(true);
+  });
+
+  it("rejects a concurrency bound above the code-owned maximum", async () => {
+    const input = {
+      ...basePassInput([{ groupId: "g1", candidateIds: ["c1"] }]),
+      concurrency: MAX_COMPACTION_CONCURRENCY + 1,
+    };
+    await expect(
+      Effect.runPromise(
+        runCompactionPass(
+          input,
+          passDeps(() => Effect.fail(new Error("group must not start"))),
+        ),
+      ),
+    ).rejects.toThrow(/concurrency exceeds/u);
   });
 
   it("propagates Effect cancellation to in-flight group callbacks", async () => {

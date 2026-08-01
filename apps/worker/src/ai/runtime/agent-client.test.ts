@@ -1,4 +1,3 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import * as SmithersTaskRuntimeModule from "@smithers-orchestrator/driver/task-runtime";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -32,37 +31,6 @@ const completion = (toolCalls: PiCompletion["toolCalls"]): PiCompletion => ({
   usage,
   stopReason: "toolUse",
 });
-const piToolCompletion = (toolCalls: PiCompletion["toolCalls"]): AssistantMessage => ({
-  role: "assistant",
-  content: toolCalls.map((call) => ({
-    type: "toolCall",
-    id: call.id,
-    name: call.name,
-    arguments: call.arguments,
-  })),
-  api: "openai-completions",
-  provider: "zai",
-  model: "glm-5-turbo",
-  usage: {
-    input: 1,
-    output: 1,
-    cacheRead: 0,
-    cacheWrite: 0,
-    reasoning: 0,
-    totalTokens: 2,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  },
-  stopReason: "toolUse",
-  timestamp: 0,
-});
-const exactBoundaryOptions = {
-  apiKey: "test",
-  baseUrl: "https://example.invalid/v4",
-  fastLimits: { inputTokens: 100_000, outputTokens: 16_384 },
-  mainLimits: { inputTokens: 100_000, outputTokens: 16_384 },
-  fastTimeoutMs: 30_000,
-  answerTimeoutMs: 120_000,
-};
 const withTaskRuntime = (
   SmithersTaskRuntimeModule as unknown as {
     readonly withTaskRuntime: <Value>(
@@ -176,6 +144,11 @@ describe("canonical agent tool loop", () => {
                     charStart,
                     charEnd,
                     visibleByteCount,
+                    chatReconstruction: {
+                      messageId: `source-chat-${passageId}`,
+                      contentHash: createHash("sha256").update(text, "utf8").digest("hex"),
+                      ranges: [{ charStart, charEnd }],
+                    },
                   },
           };
         };
@@ -362,6 +335,11 @@ describe("canonical agent tool loop", () => {
           charStart: 0,
           charEnd: passage.text.length,
           visibleByteCount: new TextEncoder().encode(passage.text).byteLength,
+          chatReconstruction: {
+            messageId: "source-chat-p1",
+            contentHash: createHash("sha256").update(passage.text, "utf8").digest("hex"),
+            ranges: [{ charStart: 0, charEnd: passage.text.length }],
+          },
         },
       ],
     };
@@ -981,7 +959,19 @@ describe("canonical agent tool loop", () => {
             },
             execute: async () => ({
               complete: true,
-              matches: [{ kind: "chat_message", text: "visible" }],
+              matches: [
+                {
+                  kind: "chat_message",
+                  text: "visible",
+                  __briefSourceIdentity: {
+                    chatReconstruction: {
+                      messageId: "public-message",
+                      contentHash: createHash("sha256").update("visible", "utf8").digest("hex"),
+                      ranges: [{ charStart: 0, charEnd: "visible".length }],
+                    },
+                  },
+                },
+              ],
               __briefSourceExposures: [
                 {
                   sourceKind: "chat_message",
@@ -1027,9 +1017,16 @@ describe("canonical agent tool loop", () => {
         exposureStage: "evaluation_general_planner_search",
         visibleTokenCount: 1,
         visibleText: "visible",
-        immutableContentHash: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+        immutableContentHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
         immutableSourceIdentityCommitment: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
         immutableSourceCommitment: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
+        chatReconstruction: {
+          messageId: "public-message",
+          contentHash: createHash("sha256").update("visible", "utf8").digest("hex"),
+          ranges: [{ charStart: 0, charEnd: "visible".length }],
+        },
+        sourceToolCallId: "call-1",
+        sourceResultIndex: 0,
       }),
     ]);
   });
@@ -1183,6 +1180,11 @@ describe("canonical agent tool loop", () => {
                     exposureStage: "provider_input",
                     visibleTokenCount: countTextTokens(content),
                   })),
+                  __briefSourceIdentity: visibleMessages.map(({ messageId, content }) => ({
+                    messageId,
+                    contentHash: createHash("sha256").update(content, "utf8").digest("hex"),
+                    ranges: [{ charStart: 0, charEnd: content.length }],
+                  })),
                 };
               },
             },
@@ -1196,7 +1198,7 @@ describe("canonical agent tool loop", () => {
           maximumTurns: 2,
           requestedOutputTokens: 128,
           reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reduction" },
+          coordinates: { taskId: "a", attempt: 0, agentRole: "context_source_tool" },
         }),
       ),
     ).resolves.toEqual({ ok: true });
@@ -1687,7 +1689,7 @@ describe("canonical agent tool loop", () => {
           reserveFinalTurnForTerminal: true,
           requestedOutputTokens: 64,
           reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reducer" },
+          coordinates: { taskId: "a", attempt: 0, agentRole: "context_source_tool" },
         }),
       ),
     ).resolves.toEqual({ ok: true });
@@ -1730,157 +1732,10 @@ describe("canonical agent tool loop", () => {
           maximumTurns: 1,
           requestedOutputTokens: 64,
           reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reducer" },
+          coordinates: { taskId: "a", attempt: 0, agentRole: "context_source_tool" },
         }),
       ),
-    ).rejects.toMatchObject({ code: "context_reducer_failed" });
-  });
-
-  it("requires reducer measurement to occupy its own provider turn", async () => {
-    const complete = vi.fn(async () =>
-      completion([
-        { id: "measure-1", name: "measure_plan", arguments: {} },
-        { id: "inspect-1", name: "inspect", arguments: {} },
-      ]),
-    );
-    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
-
-    await expect(
-      inTask(() =>
-        client.toolLoop({
-          requestClass: "fast",
-          model: "glm-5-turbo",
-          system: "system",
-          user: "user",
-          tools: [
-            {
-              definition: { name: "measure_plan", description: "Measure", parameters: {} },
-              execute: async () => ({ complete: true, resolved: true }),
-            },
-            {
-              definition: { name: "inspect", description: "Inspect", parameters: {} },
-              execute: async () => ({ complete: true }),
-            },
-            {
-              definition: { name: "emit_context_plan", description: "Emit", parameters: {} },
-              execute: async () => ({ complete: true }),
-            },
-          ],
-          terminalToolName: "emit_context_plan",
-          exclusiveToolNames: ["measure_plan", "emit_context_plan"],
-          validateTerminal: (value) => value,
-          maximumTurns: 2,
-          requestedOutputTokens: 64,
-          reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reducer" },
-        }),
-      ),
-    ).rejects.toMatchObject({ code: "context_reducer_failed" });
-  });
-
-  it("preflights every complete call array before executing an exclusive measurement", async () => {
-    const complete = vi.fn(async () =>
-      completion([
-        { id: "measure-1", name: "measure_plan", arguments: {} },
-        { id: "measure-2", name: "measure_plan", arguments: {} },
-      ]),
-    );
-    const measure = vi.fn(async () => ({ complete: true, resolved: true }));
-    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
-
-    await expect(
-      inTask(() =>
-        client.toolLoop({
-          requestClass: "fast",
-          model: "glm-5-turbo",
-          system: "system",
-          user: "user",
-          tools: [
-            {
-              definition: { name: "measure_plan", description: "Measure", parameters: {} },
-              execute: measure,
-            },
-            {
-              definition: { name: "emit_context_plan", description: "Emit", parameters: {} },
-              execute: async () => ({ complete: true }),
-            },
-          ],
-          terminalToolName: "emit_context_plan",
-          exclusiveToolNames: ["measure_plan", "emit_context_plan"],
-          validateTerminal: (value) => value,
-          maximumTurns: 2,
-          requestedOutputTokens: 64,
-          reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reducer" },
-        }),
-      ),
-    ).rejects.toMatchObject({ code: "context_reducer_failed" });
-    expect(measure).not.toHaveBeenCalled();
-  });
-
-  it("recovers an opted-in reducer phase conflict without executing mixed calls", async () => {
-    let turn = 0;
-    let measured = false;
-    const complete = vi.fn(async () => {
-      const result =
-        turn === 0
-          ? completion([
-              { id: "inspect-mixed", name: "inspect", arguments: {} },
-              { id: "measure-mixed", name: "measure_plan", arguments: {} },
-            ])
-          : turn === 1
-            ? completion([{ id: "measure-only", name: "measure_plan", arguments: {} }])
-            : completion([{ id: "terminal", name: "emit_context_plan", arguments: {} }]);
-      turn += 1;
-      return result;
-    });
-    const inspect = vi.fn(async () => ({ complete: true }));
-    const measure = vi.fn(async () => {
-      measured = true;
-      return { complete: true, resolved: true };
-    });
-    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
-
-    await expect(
-      inTask(() =>
-        client.toolLoop({
-          requestClass: "fast",
-          model: "glm-5-turbo",
-          system: "system",
-          user: "user",
-          tools: [
-            {
-              definition: { name: "measure_plan", description: "Measure", parameters: {} },
-              execute: measure,
-            },
-            {
-              definition: { name: "inspect", description: "Inspect", parameters: {} },
-              execute: inspect,
-            },
-            {
-              definition: {
-                name: "emit_context_plan",
-                description: "Emit",
-                parameters: {},
-              },
-              execute: async () => ({ complete: true }),
-            },
-          ],
-          terminalOnlyForTurn: () => measured,
-          terminalToolName: "emit_context_plan",
-          exclusiveToolNames: ["measure_plan", "emit_context_plan"],
-          recoverConflictingToolCalls: (toolNames) => ({ rejectedTools: toolNames }),
-          validateTerminal: (value) => value,
-          maximumTurns: 4,
-          requestedOutputTokens: 64,
-          reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reducer" },
-        }),
-      ),
-    ).resolves.toEqual({});
-    expect(inspect).not.toHaveBeenCalled();
-    expect(measure).toHaveBeenCalledTimes(1);
-    expect(complete).toHaveBeenCalledTimes(3);
+    ).rejects.toMatchObject({ code: "context_compaction_failed" });
   });
 
   it("preflights malformed sibling arguments before executing any tool", async () => {
@@ -1922,10 +1777,10 @@ describe("canonical agent tool loop", () => {
           maximumTurns: 12,
           requestedOutputTokens: 64,
           reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
+          coordinates: { taskId: "a", attempt: 0, agentRole: "context_source_tool" },
         }),
       ),
-    ).rejects.toMatchObject({ code: "internal_retrieval_failed" });
+    ).rejects.toMatchObject({ code: "context_compaction_failed" });
     expect(first).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledTimes(1);
   });
@@ -1979,7 +1834,7 @@ describe("canonical agent tool loop", () => {
           maximumTurns: 3,
           requestedOutputTokens: 64,
           reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reducer" },
+          coordinates: { taskId: "a", attempt: 0, agentRole: "context_source_tool" },
         }),
       ),
     ).resolves.toEqual({ ok: true });
@@ -2134,62 +1989,6 @@ describe("canonical agent tool loop", () => {
     );
   });
 
-  it.each(["search_within_candidate", "inspect_candidate"] as const)(
-    "keeps malformed %s recovery admissible at the exact Pi boundary",
-    async (toolName) => {
-      const execute = vi.fn(async () => ({ complete: true }));
-      const complete = vi
-        .fn()
-        .mockResolvedValueOnce(
-          piToolCompletion([{ id: "malformed-1", name: toolName, arguments: { stale: true } }]),
-        )
-        .mockResolvedValueOnce(
-          piToolCompletion([{ id: "terminal-1", name: "emit_terminal", arguments: { ok: true } }]),
-        );
-      const boundary = new ExactPiBoundary({
-        ...exactBoundaryOptions,
-        complete: complete as never,
-      });
-      const client = new CanonicalAgentClient(boundary);
-
-      await expect(
-        inTask(() =>
-          client.toolLoop({
-            requestClass: "fast",
-            model: "glm-5-turbo",
-            system: "system",
-            user: "user",
-            tools: [
-              {
-                definition: { name: toolName, description: "Search", parameters: {} },
-                parseArguments: () => {
-                  throw new Error("stale argument");
-                },
-                execute,
-              },
-              {
-                definition: {
-                  name: "emit_terminal",
-                  description: "Emit",
-                  parameters: {},
-                },
-                execute: async () => ({ complete: true }),
-              },
-            ],
-            terminalToolName: "emit_terminal",
-            validateTerminal: (value) => value,
-            maximumTurns: 2,
-            requestedOutputTokens: 64,
-            reasoning: "medium",
-            coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
-          }),
-        ),
-      ).resolves.toEqual({ ok: true });
-      expect(execute).not.toHaveBeenCalled();
-      expect(complete).toHaveBeenCalledTimes(2);
-    },
-  );
-
   it("strictly parses stale disabled siblings before executing visible calls", async () => {
     const complete = vi.fn(async () =>
       completion([
@@ -2288,94 +2087,6 @@ describe("canonical agent tool loop", () => {
     ).rejects.toMatchObject({ code: "internal_retrieval_failed" });
     expect(first).not.toHaveBeenCalled();
     expect(second).not.toHaveBeenCalled();
-  });
-
-  it("suppresses every later non-disabled sibling after an incomplete result", async () => {
-    const complete = vi
-      .fn()
-      .mockResolvedValueOnce(
-        completion([
-          {
-            id: "search-1",
-            name: "search_within_candidate",
-            arguments: { query: "solar" },
-          },
-          {
-            id: "search-sibling",
-            name: "search_within_candidate",
-            arguments: { query: "storage" },
-          },
-        ]),
-      )
-      .mockResolvedValueOnce(
-        completion([
-          {
-            id: "search-2",
-            name: "search_within_candidate",
-            arguments: { query: "solar", cursor: 2 },
-          },
-        ]),
-      )
-      .mockResolvedValueOnce(
-        completion([{ id: "emit-1", name: "emit", arguments: { ids: ["document-a"] } }]),
-      );
-    const search = vi
-      .fn()
-      .mockResolvedValueOnce({
-        complete: false,
-        truncated: true,
-        cursor: 2,
-        matchPreviews: [],
-      })
-      .mockResolvedValueOnce({
-        complete: true,
-        truncated: false,
-        cursor: null,
-        matchPreviews: [],
-      });
-    const inspect = vi.fn(async () => ({ complete: true, found: true }));
-    const client = new CanonicalAgentClient({ complete } as unknown as ExactPiBoundary);
-
-    await expect(
-      inTask(() =>
-        client.toolLoop({
-          requestClass: "fast",
-          model: "glm-5-turbo",
-          system: "system",
-          user: "user",
-          tools: [
-            {
-              definition: {
-                name: "search_within_candidate",
-                description: "Search",
-                parameters: {},
-              },
-              execute: search,
-            },
-            {
-              definition: { name: "inspect", description: "Inspect", parameters: {} },
-              execute: inspect,
-            },
-            {
-              definition: { name: "emit", description: "Emit", parameters: {} },
-              execute: async () => ({ complete: true }),
-            },
-          ],
-          terminalToolName: "emit",
-          validateTerminal: (value) => value as { readonly ids: readonly string[] },
-          maximumTurns: 3,
-          requestedOutputTokens: 64,
-          reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "internal_retrieval" },
-        }),
-      ),
-    ).resolves.toEqual({ ids: ["document-a"] });
-    expect(search).toHaveBeenCalledTimes(2);
-    expect(inspect).not.toHaveBeenCalled();
-    expect(complete.mock.calls[1]?.[0].messages.at(-1)?.content).toContain(
-      '"continuationRequired":true',
-    );
-    expect(complete.mock.calls[1]?.[0].messages.at(-1)?.content).toContain('"matchPreviews":[]');
   });
 
   it("does not consume a continuation obligation created earlier in the same response", async () => {
@@ -2771,7 +2482,7 @@ describe("canonical agent tool loop", () => {
           maximumTurns: 3,
           requestedOutputTokens: 64,
           reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reducer" },
+          coordinates: { taskId: "a", attempt: 0, agentRole: "context_source_tool" },
         }),
       ),
     ).resolves.toEqual({ ids: ["doc"] });
@@ -2895,7 +2606,7 @@ describe("canonical agent tool loop", () => {
           maximumTurns: 3,
           requestedOutputTokens: 64,
           reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reducer" },
+          coordinates: { taskId: "a", attempt: 0, agentRole: "context_source_tool" },
         }),
       ),
     ).resolves.toEqual({ ids: ["candidate"] });
@@ -3085,10 +2796,10 @@ describe("canonical agent tool loop", () => {
           maximumTurns: 2,
           requestedOutputTokens: 64,
           reasoning: "medium",
-          coordinates: { taskId: "a", attempt: 0, agentRole: "context_reducer" },
+          coordinates: { taskId: "a", attempt: 0, agentRole: "context_source_tool" },
         }),
       ),
-    ).rejects.toMatchObject({ code: "context_reducer_failed" });
+    ).rejects.toMatchObject({ code: "context_compaction_failed" });
     expect(inspect).toHaveBeenCalledTimes(1);
   });
 
@@ -3222,7 +2933,7 @@ describe("canonical agent tool loop", () => {
         maximumTurns: 1,
         requestedOutputTokens: 64,
         reasoning: "medium",
-        coordinates: { taskId: "a", attempt: 0, agentRole: "context_reducer" },
+        coordinates: { taskId: "a", attempt: 0, agentRole: "direct_answer" },
       }),
     );
 
@@ -3233,7 +2944,7 @@ describe("canonical agent tool loop", () => {
         coordinates: {
           taskId: "a",
           attempt: 1,
-          agentRole: "context_reducer",
+          agentRole: "direct_answer",
           loopIteration: 0,
           providerRequestIndex: 0,
         },

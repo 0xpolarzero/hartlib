@@ -6,6 +6,7 @@ import {
   FusedResultSetSchema,
   RankedBranchResultSchema,
   ReviewModelFusedResultSchema,
+  ReviewModelFusedResultMetadataSchema,
   canonicalIdentityKey,
   compareBytewise,
   fuseRankedResults,
@@ -817,17 +818,27 @@ describe("pure rank fusion", () => {
       notApplicable(1, "chat_messages"),
     ]);
     const views = toReviewModelFusedResults(fused);
+    const { preview: _preview, ...metadataInput } = views[0]!;
+    const metadata = ReviewModelFusedResultMetadataSchema.parse(metadataInput);
+    expect(Object.keys(metadata).sort()).toEqual(
+      [
+        "branchCoverage",
+        "date",
+        "kind",
+        "label",
+        "matchedQueryOrdinals",
+        "normalizedFusedScore",
+        "resultId",
+        "tokenCount",
+        "truncationFlags",
+      ].sort(),
+    );
+    expect("preview" in metadata).toBe(false);
+    expect(() =>
+      ReviewModelFusedResultMetadataSchema.parse({ ...metadata, preview: "private" }),
+    ).toThrow();
     expect(ReviewModelFusedResultSchema.parse(views[0])).toBeDefined();
     expect(views[0]?.branchCoverage).toEqual([
-      {
-        queryOrdinal: 1,
-        branch: "chat_messages",
-        status: "not_applicable",
-        reason: "scope_documents",
-        hitCount: 0,
-        truncated: false,
-        cap: 4,
-      },
       {
         queryOrdinal: 1,
         branch: "public_documents",
@@ -841,6 +852,15 @@ describe("pure rank fusion", () => {
         branch: "publisher_documents",
         status: "not_applicable",
         reason: "unsupported_country_filter",
+        hitCount: 0,
+        truncated: false,
+        cap: 4,
+      },
+      {
+        queryOrdinal: 1,
+        branch: "chat_messages",
+        status: "not_applicable",
+        reason: "scope_documents",
         hitCount: 0,
         truncated: false,
         cap: 4,

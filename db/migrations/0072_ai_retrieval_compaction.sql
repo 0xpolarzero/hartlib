@@ -4,10 +4,10 @@
 -- bytewise-sorted list, and performs every refusal and retained-row preflight
 -- before this file makes a schema or data change.
 
-
 do $$
 declare
   relation_name text;
+  affected_relation_names text[];
   row_count bigint;
   run_count bigint;
   row_data record;
@@ -21,6 +21,10 @@ declare
   marker_end integer;
   sanitizer_remainder text;
   sanitized_length integer;
+  utf16_consumed bigint;
+  codepoint integer;
+  range_start_boundary boolean;
+  range_end_boundary boolean;
   source_run_count bigint;
   base_message_id text;
   lock_names text[] := array[
@@ -44,22 +48,58 @@ declare
     'ai_chat_memory', 'ai_chat_plan', 'ai_chat_plan_turn',
     'ai_chat_preflight', 'ai_chat_preflight2', 'ai_chat_reduction_plan',
     'ai_chat_resolution', 'ai_chat_selectors', 'ai_chat_structured_internal',
-    'ai_chat_topic_result', 'ai_chat_web', 'ai_evaluation_general_planner'
+    'ai_chat_topic_result', 'ai_chat_web', 'input',
+    'ai_evaluation_general_planner'
   ];
 begin
   perform pg_advisory_xact_lock(
     hashtextextended('brief:ai-chat:smithers-schema', 0)
   );
 
-  -- This is the documented bytewise-sorted lock list.  Missing Smithers
-  -- tables are safe because the advisory fence prevents their producer from
-  -- creating one until this transaction commits.
-  for relation_name in
-    select name from unnest(lock_names) as names(name) order by name collate "C"
+  -- Discover every currently present Smithers output relation in addition to
+  -- the explicit product relations. This keeps the fence and the later drop
+  -- set closed over the live catalog rather than a guessed output list.
+  lock_names := ARRAY(
+    SELECT name
+    FROM (
+      SELECT unnest(lock_names) AS name
+      UNION
+      SELECT classes.relname
+      FROM pg_class classes
+      JOIN pg_namespace namespaces ON namespaces.oid = classes.relnamespace
+      WHERE namespaces.nspname = 'public'
+        AND classes.relkind IN ('r', 'p')
+        AND (
+          classes.relname LIKE 'ai_chat_%'
+          OR classes.relname IN ('_smithers_runs', 'input', 'ai_evaluation_general_planner')
+          OR classes.oid IN (
+            SELECT dependents.conrelid
+            FROM pg_constraint dependents
+            JOIN pg_class referenced ON referenced.oid = dependents.confrelid
+            JOIN pg_namespace referenced_namespace ON referenced_namespace.oid = referenced.relnamespace
+            WHERE dependents.contype = 'f'
+              AND referenced_namespace.nspname = 'public'
+              AND referenced.relname = '_smithers_runs'
+          )
+        )
+    ) discovered
+    ORDER BY name COLLATE "C"
+  );
+
+  -- Derive the actual relation set, sort it bytewise, report it, and then
+  -- lock it. Missing relations are safe because the producer fence prevents
+  -- their writers from creating them until this transaction commits.
+  select coalesce(array_agg(name order by name collate "C"), array[]::text[])
+    into affected_relation_names
+  from unnest(lock_names) as names(name)
+  where to_regclass(format('public.%I', name)) is not null;
+
+  raise notice 'AI retrieval/compaction affected relations: %',
+    array_to_string(affected_relation_names, ', ');
+
+  foreach relation_name in array affected_relation_names
   loop
-    if to_regclass(format('public.%I', relation_name)) is not null then
-      execute format('lock table public.%I in access exclusive mode', relation_name);
-    end if;
+    execute format('lock table public.%I in access exclusive mode', relation_name);
   end loop;
 
   if to_regclass('public.ai_runs') is not null then
@@ -82,14 +122,42 @@ begin
     end if;
   end if;
 
-  -- Every output relation is disposable, but none may be discarded while it
-  -- contains state.  Count all names, including old names absent from the
-  -- current workflow, before the first DROP below.
+  if to_regclass('public.input') is not null then
+    execute 'select count(*) from public.input' into row_count;
+    if row_count <> 0 then
+      raise exception
+        'AI retrieval/compaction migration requires drained Smithers input (% rows remain)',
+        row_count using errcode = '55000';
+    end if;
+  end if;
+
+  -- Every output relation and every Smithers relation that depends on the
+  -- producer run table is disposable, but none may be discarded while it
+  -- contains state. Count every name before the first DROP below.
   for relation_name in
     select name from unnest(lock_names) as names(name)
-    where name <> '_smithers_runs'
-      and name like 'ai_chat_%'
+    where (
+      name like 'ai_chat_%'
       or name = 'ai_evaluation_general_planner'
+      or name like '_smithers_%'
+      or name in (
+        select classes.relname
+        from pg_class classes
+        join pg_namespace namespaces on namespaces.oid = classes.relnamespace
+        where namespaces.nspname = 'public'
+          and classes.relkind in ('r', 'p')
+          and classes.oid in (
+            select dependents.conrelid
+            from pg_constraint dependents
+            join pg_class referenced on referenced.oid = dependents.confrelid
+            join pg_namespace referenced_namespace on referenced_namespace.oid = referenced.relnamespace
+            where dependents.contype = 'f'
+              and referenced_namespace.nspname = 'public'
+              and referenced.relname = '_smithers_runs'
+          )
+      )
+    )
+      and name <> '_smithers_runs'
     order by name collate "C"
   loop
     if to_regclass(format('public.%I', relation_name)) is not null then
@@ -131,6 +199,12 @@ begin
       sources.kind as source_kind,
       sources.message_id as source_message_id,
       sources.locator as source_locator,
+      sources.snapshot_id as source_snapshot_id,
+      sources.publisher_extraction_id as source_publisher_extraction_id,
+      sources.memory_revision_id as source_memory_revision_id,
+      sources.display_label as source_display_label,
+      sources.public_provenance as source_public_provenance,
+      sources.source_identity_digest,
       assistants.author as assistant_author,
       assistants.chat_id as assistant_chat_id,
       assistants.content as assistant_content,
@@ -163,10 +237,25 @@ begin
         'AI retrieval/compaction preflight row assistant_message_source_uses/%/%/%: source-use identity digest is invalid',
         row_data.assistant_message_id, row_data.source_key, row_data.consumer_task_id;
     end if;
-
     if row_data.source_kind is null then
       raise exception
         'AI retrieval/compaction preflight row assistant_message_source_uses/%/%/%: source has no exact owner',
+        row_data.assistant_message_id, row_data.source_key, row_data.consumer_task_id;
+    end if;
+    if row_data.source_identity_digest is null
+       or row_data.source_identity_digest is distinct from
+          assistant_message_source_identity_digest(
+            row_data.assistant_message_id, row_data.source_key,
+            row_data.source_kind, row_data.source_locator,
+            row_data.source_snapshot_id,
+            row_data.source_publisher_extraction_id,
+            row_data.source_message_id,
+            row_data.source_memory_revision_id,
+            row_data.source_display_label,
+            row_data.source_public_provenance
+          ) then
+      raise exception
+        'AI retrieval/compaction preflight row assistant_message_source_uses/%/%/%: source identity digest is invalid',
         row_data.assistant_message_id, row_data.source_key, row_data.consumer_task_id;
     end if;
     if row_data.source_kind <> 'chat_message' then
@@ -274,9 +363,27 @@ begin
       end if;
       range_start := brief_ai_safe_bigint(range_data.item->>'charStart');
       range_end := brief_ai_safe_bigint(range_data.item->>'charEnd');
+      range_start_boundary := range_start = 0;
+      range_end_boundary := range_end = 0;
+      if range_start is not null and range_end is not null then
+        range_start_boundary := range_start_boundary or range_start = sanitized_length;
+        range_end_boundary := range_end_boundary or range_end = sanitized_length;
+        utf16_consumed := 0;
+        cursor_position := 1;
+        while cursor_position <= char_length(sanitized_content)
+          and utf16_consumed < greatest(range_start, range_end) loop
+          codepoint := ascii(substring(sanitized_content from cursor_position for 1));
+          utf16_consumed := utf16_consumed + case when codepoint > 65535 then 2 else 1 end;
+          if utf16_consumed = range_start then range_start_boundary := true; end if;
+          if utf16_consumed = range_end then range_end_boundary := true; end if;
+          cursor_position := cursor_position + 1;
+        end loop;
+      end if;
       if range_start is null or range_end is null
          or range_start < 0 or range_end <= range_start
          or range_end > sanitized_length
+         or not range_start_boundary
+         or not range_end_boundary
          or (previous_end is not null and range_start <= previous_end) then
         raise exception
           'AI retrieval/compaction preflight row assistant_message_source_uses/%/%/%: chat range is outside sanitized UTF-16 text or overlaps a prior range',
@@ -293,6 +400,39 @@ begin
   end loop;
 end
 $$;
+
+create or replace function brief_ai_utf16_boundary(input text, p_offset bigint)
+returns boolean
+language plpgsql
+immutable
+strict
+parallel safe
+as $$
+declare
+  position integer;
+  consumed bigint := 0;
+  codepoint integer;
+begin
+  if p_offset < 0 or p_offset > brief_ai_utf16_length(input) then
+    return false;
+  end if;
+  if p_offset = 0 or p_offset = brief_ai_utf16_length(input) then
+    return true;
+  end if;
+  for position in 1..char_length(input) loop
+    codepoint := ascii(substring(input from position for 1));
+    consumed := consumed + case when codepoint > 65535 then 2 else 1 end;
+    if consumed = p_offset then
+      return true;
+    end if;
+    if consumed > p_offset then
+      return false;
+    end if;
+  end loop;
+  return false;
+end
+$$;
+
 -- The permanent sanitizer is created only after the fence and all retained
 -- source rows have passed the local literal-scan preflight above.
 create or replace function brief_ai_strip_historical_citation_tags(input text)
@@ -489,6 +629,8 @@ begin
     if start_value is null or end_value is null or start_value < 0
        or end_value <= start_value
        or end_value > brief_ai_utf16_length(sanitized)
+       or not brief_ai_utf16_boundary(sanitized, start_value)
+       or not brief_ai_utf16_boundary(sanitized, end_value)
        or (previous_end is not null and start_value <= previous_end) then
       raise exception 'chat source exposure ranges exceed citation-sanitized UTF-16 text'
         using errcode = '23514', constraint = 'ai_source_exposures_chat_reconstruction_consistent';
@@ -647,6 +789,8 @@ begin
     if start_value is null or end_value is null
        or start_value < 0 or end_value <= start_value
        or end_value > text_length
+       or not brief_ai_utf16_boundary(sanitized, start_value)
+       or not brief_ai_utf16_boundary(sanitized, end_value)
        or (previous_end is not null and start_value <= previous_end) then
       raise exception 'chat source-use range is outside sanitized UTF-16 source text';
     end if;
@@ -1204,22 +1348,28 @@ declare
   relation_name text;
 begin
   for relation_name in
-    select name from unnest(array[
-      '_smithers_runs', 'ai_chat_allocation', 'ai_chat_answer',
-      'ai_chat_assembly', 'ai_chat_compaction_collect', 'ai_chat_compaction_group',
-      'ai_chat_compaction_plan', 'ai_chat_context', 'ai_chat_fallback_plan',
-      'ai_chat_fanout_collect', 'ai_chat_fanout_contexts', 'ai_chat_fanout_sources',
-      'ai_chat_finalize', 'ai_chat_hydrate', 'ai_chat_hydrate2',
-      'ai_chat_internal', 'ai_chat_load_turn', 'ai_chat_memories',
-      'ai_chat_memory', 'ai_chat_plan', 'ai_chat_plan_turn',
-      'ai_chat_preflight', 'ai_chat_preflight2', 'ai_chat_reduction_plan',
-      'ai_chat_resolution', 'ai_chat_selectors', 'ai_chat_structured_internal',
-      'ai_chat_topic_result', 'ai_chat_web', 'ai_evaluation_general_planner'
-    ]) as names(name) order by name collate "C"
+    select classes.relname
+    from pg_class classes
+    join pg_namespace namespaces on namespaces.oid = classes.relnamespace
+    where namespaces.nspname = 'public'
+      and classes.relkind in ('r', 'p')
+      and classes.relname <> 'input'
+      and (
+        classes.relname like 'ai_chat_%'
+        or classes.relname in ('_smithers_runs', 'input', 'ai_evaluation_general_planner')
+        or classes.oid in (
+          select dependents.conrelid
+          from pg_constraint dependents
+          join pg_class referenced on referenced.oid = dependents.confrelid
+          join pg_namespace referenced_namespace on referenced_namespace.oid = referenced.relnamespace
+          where dependents.contype = 'f'
+            and referenced_namespace.nspname = 'public'
+            and referenced.relname = '_smithers_runs'
+        )
+      )
+    order by (classes.relname = '_smithers_runs')::int, classes.relname collate "C"
   loop
-    if to_regclass(format('public.%I', relation_name)) is not null then
-      execute format('drop table public.%I', relation_name);
-    end if;
+    execute format('drop table public.%I', relation_name);
   end loop;
 end
 $$;

@@ -7,7 +7,6 @@ import {
   type AiProviderServiceId,
   type RunAcceptanceScope,
   type AiRunEvent as PublicAiRunEvent,
-  type PublicContextConsumer,
 } from "@brief/shared";
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Schema } from "effect";
@@ -33,7 +32,6 @@ import {
   parseCurrentTurnCitations,
   runAiProductState,
 } from "../product-state/repository";
-import { insertAiRunUsage } from "../product-state/observability";
 import {
   createSmithersStorage,
   runSmithersWorkflow,
@@ -57,16 +55,12 @@ import {
   type DocumentEvidenceNamespace,
 } from "../runtime/canonicalization";
 import {
-  measureProviderRequest,
   resolveRegisteredModel,
   ZAI_CODING_PLAN_BASE_URL,
   ZAI_CODING_PLAN_PROVIDER_ENDPOINT_IDENTITY,
   ZAI_CODING_PLAN_PROVIDER_SERVICE_ID,
 } from "../runtime/model-registry";
-import {
-  providerRequestSha256Hex,
-  providerVisibleSourceExposureProofSha256Hex,
-} from "../runtime/provider-request";
+import { providerVisibleSourceExposureProofSha256Hex } from "../runtime/provider-request";
 import { publicSourceRecordFromFinalSource } from "../runtime/public-source";
 import { PublicProvenanceSchema } from "../runtime/source-schemas";
 import type {
@@ -80,10 +74,20 @@ import {
   TINYFISH_SEARCH_ENDPOINT,
   TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY,
 } from "../web/tinyfish-search";
+import { parseCompactionGroupTaskId } from "../context/compaction-runtime";
+import { BranchCoverageSchema, StructuredRetrievalTraceSchema } from "../retrieval/query-spec";
+import {
+  FusionTruncationSchema,
+  ReviewModelFusedResultMetadataSchema,
+} from "../retrieval/rank-fusion";
 import { aiChatSchemas } from "../workflow/ai-chat";
+import {
+  PREVIEW_RANGE_SEPARATOR,
+  canonicalIdentityKey,
+  CanonicalIdentitySchema,
+} from "../workflow/types";
 import { deleteSmithersRowsForRunWithSchemas } from "../workflow/smithers-cleanup";
-import { topicRequestsWebEvidence } from "../workflow/operations";
-import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v3";
+import { CanonicalGoldenEvaluationSet } from "./fixtures/golden-set.v4";
 import {
   aiEvaluationGeneralPlannerSchemas,
   buildGeneralPlannerEvaluationWorkflow,
@@ -92,9 +96,13 @@ import {
   type GeneralPlannerProviderOutput,
 } from "./general-planner-workflow";
 import {
+  CompactionCaptureSchema,
+  ContextSummaryRowSchema,
   EvaluationHumanAnnotationsSchema,
   GeneralPlannerEvaluationResultsSchema,
+  RetrievalCaptureSchema,
   SpecializedEvaluationResultsSchema,
+  TerminalEvidenceCaptureSchema,
   type EvaluationHumanAnnotations,
   type EvaluationRange,
   type GeneralPlannerEvaluationResult,
@@ -102,15 +110,19 @@ import {
   type SpecializedEvaluationResult,
 } from "./schema";
 import {
-  attestExactPlanTurnRequest,
-  attestExactProductionContext,
+  EvaluationHumanAnnotationsSchema as EvaluationHumanAnnotationsV3Schema,
+  EvaluationResultV3Schema,
+  EvaluationSeedManifestV3Schema,
+  type EvaluationResultV3,
+} from "./schema.v3";
+import {
   canonicalEvaluationUsableInputTokens,
-  exactProductionContextRequest,
+  attestExactPlanTurnRequest,
+  type ExactProductionConversationBinding,
   measureCanonicalEvaluationRequestTokens,
-  measureExactProductionContextMarginals,
-  type ExactProductionContextInput,
+  terminalRequestEvidenceSha256Hex,
+  type TerminalRequestEvidenceProjection,
 } from "./runner";
-
 export type EvaluationTopology = "specialized" | "general_planner";
 
 const EffectiveWebPolicySchema: z.ZodType<EffectiveWebPolicy> = z.discriminatedUnion("enabled", [
@@ -191,16 +203,15 @@ export const CanonicalEvaluationExecutionConfig = Object.freeze({
   aiFanoutMaxTopics: 3,
   aiTopicResearchMaxConcurrency: 6,
   aiTopicAnswerMaxConcurrency: 3,
-  // Ordinary retrieval remains bounded at eight provider turns; internal
-  // retrieval locally raises its bound to preserve complete inspections.
-  aiRetrievalMaxTurns: 8,
-  aiInternalMaxSearches: 8,
-  aiInternalMaxInspections: 8,
+  aiRetrievalMaxQueries: 24,
+  aiRetrievalMaxBranchRows: 25,
+  aiRetrievalMaxCandidates: 64,
+  aiRetrievalMaxHydratedBytes: 2_000_000,
+  aiRetrievalMaxConcurrency: 4,
+  aiRetrievalQueryTimeoutMs: 30_000,
   aiWebMaxSearches: 4,
   aiWebMaxFetches: 8,
   aiWebMaxDomainFilters: 8,
-  aiContextReductionMaxIterations: 2,
-  aiMemoryDirectMaxItems: 200,
   aiMemoryToolResultMaxItems: 50,
   aiFastTaskTimeoutMs: 1_200_000,
   aiAnswerTimeoutMs: 120_000,
@@ -225,14 +236,15 @@ const canonicalEvaluationConfigDescriptor = (config: WorkerConfig) => ({
   aiFanoutMaxTopics: config.aiFanoutMaxTopics,
   aiTopicResearchMaxConcurrency: config.aiTopicResearchMaxConcurrency,
   aiTopicAnswerMaxConcurrency: config.aiTopicAnswerMaxConcurrency,
-  aiRetrievalMaxTurns: config.aiRetrievalMaxTurns,
-  aiInternalMaxSearches: config.aiInternalMaxSearches,
-  aiInternalMaxInspections: config.aiInternalMaxInspections,
+  aiRetrievalMaxQueries: config.aiRetrievalMaxQueries,
+  aiRetrievalMaxBranchRows: config.aiRetrievalMaxBranchRows,
+  aiRetrievalMaxCandidates: config.aiRetrievalMaxCandidates,
+  aiRetrievalMaxHydratedBytes: config.aiRetrievalMaxHydratedBytes,
+  aiRetrievalMaxConcurrency: config.aiRetrievalMaxConcurrency,
+  aiRetrievalQueryTimeoutMs: config.aiRetrievalQueryTimeoutMs,
   aiWebMaxSearches: config.aiWebMaxSearches,
   aiWebMaxFetches: config.aiWebMaxFetches,
   aiWebMaxDomainFilters: config.aiWebMaxDomainFilters,
-  aiContextReductionMaxIterations: config.aiContextReductionMaxIterations,
-  aiMemoryDirectMaxItems: config.aiMemoryDirectMaxItems,
   aiMemoryToolResultMaxItems: config.aiMemoryToolResultMaxItems,
   aiFastTaskTimeoutMs: config.aiFastTaskTimeoutMs,
   aiAnswerTimeoutMs: config.aiAnswerTimeoutMs,
@@ -289,23 +301,6 @@ const storedDocumentText = (content: string): string =>
 const BindingRangeSchema = z
   .object({ charStart: z.number().int().nonnegative(), charEnd: z.number().int().positive() })
   .strict();
-
-const DurableContextDecisionSchema = z.discriminatedUnion("action", [
-  z
-    .object({ id: z.string().min(1), action: z.literal("keep"), reason: z.string().min(1) })
-    .strict(),
-  z
-    .object({
-      id: z.string().min(1),
-      action: z.literal("range"),
-      ranges: z.array(BindingRangeSchema).min(1),
-      reason: z.string().min(1),
-    })
-    .strict(),
-  z
-    .object({ id: z.string().min(1), action: z.literal("omit"), reason: z.string().min(1) })
-    .strict(),
-]);
 
 const RestrictedConversationBindingSchema = z.discriminatedUnion("kind", [
   z
@@ -575,6 +570,53 @@ const TerminalContextSerializedPayloadSchema = z
     terminalUsageCoordinate: TerminalUsageCoordinateSchema,
   })
   .strict();
+const ContextMeasurementPayloadSchema = z
+  .object({
+    consumerTaskId: z.string().min(1),
+    topicId: z.enum(["t1", "t2", "t3"]).optional(),
+    mandatoryInputTokens: z.number().int().nonnegative(),
+    discretionaryInputTokens: z.number().int().nonnegative(),
+    totalInputTokens: z.number().int().nonnegative(),
+    requestedOutputTokens: z.number().int().positive(),
+    usableInputTokens: z.number().int().positive(),
+    contextWindow: z.number().int().positive(),
+    status: z.enum(["ready", "needs_compaction", "failed"]),
+    compactionRan: z.boolean(),
+    compactionFeedback: z.array(z.string()),
+    restrictedContextLedger: RestrictedContextLedgerSchema,
+  })
+  .strict();
+
+const StructuredRetrievalReviewPreviewPayloadSchema = z
+  .object({
+    taskId: z.string().min(1),
+    loopIteration: z.number().int().nonnegative(),
+    attempt: z.number().int().nonnegative(),
+    providerRequestIndex: z.number().int().nonnegative(),
+    agentRole: z.literal("internal_retrieval"),
+    slot: z.enum(["initial", "replacement"]),
+    providerInputSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
+    results: z.array(ReviewModelFusedResultMetadataSchema),
+    coverage: z.array(BranchCoverageSchema),
+    truncation: FusionTruncationSchema,
+    records: z.array(
+      z
+        .object({
+          identity: CanonicalIdentitySchema,
+          snapshotId: z.string().min(1),
+          contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
+          publisherExtractionId: z.string().min(1).optional(),
+          previewRanges: z.array(BindingRangeSchema),
+          previewByteLength: z.number().int().nonnegative(),
+          previewSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
+          fastTokenCount: z.number().int().nonnegative(),
+          mainTokenCount: z.number().int().nonnegative(),
+          recordDigestSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 
 const EvaluationSourceBindingSchema = z
   .discriminatedUnion("kind", [
@@ -650,8 +692,8 @@ const EvaluationSourceBindingSchema = z
 
 export const EvaluationSeedManifestSchema = z
   .object({
-    artifactVersion: z.literal(3),
-    goldenSetVersion: z.literal(3),
+    artifactVersion: z.literal(4),
+    goldenSetVersion: z.literal(4),
     sessionId: z.string().uuid(),
     caseId: z.string(),
     topology: z.enum(["specialized", "general_planner"]),
@@ -745,8 +787,8 @@ export const EvaluationCaseAnnotationSchema = z
 
 export const EvaluationAnnotationFileSchema = z
   .object({
-    artifactVersion: z.literal(3),
-    goldenSetVersion: z.literal(3),
+    artifactVersion: z.literal(4),
+    goldenSetVersion: z.literal(4),
     sessionId: z.string().uuid(),
     annotations: z.array(EvaluationCaseAnnotationSchema),
   })
@@ -1034,6 +1076,11 @@ const DurableRunEvidenceSchema = z
             .regex(/^[0-9a-f]{64}$/u)
             .nullable(),
           documentRanges: z.array(BindingRangeSchema).nullable(),
+          chatContentHash: z
+            .string()
+            .regex(/^[0-9a-f]{64}$/u)
+            .nullable(),
+          chatRanges: z.array(BindingRangeSchema).nullable(),
           publisherExtractionId: z.uuid().nullable(),
           createdAt: z.iso.datetime(),
         })
@@ -1128,7 +1175,7 @@ export const withEvaluationSessionExecutionLease = <Value>(
   sessionId: string,
   execute: () => Promise<Value>,
 ): Promise<Value> => {
-  const lockIdentity = `brief:ai-evaluation:v3:${sessionId}`;
+  const lockIdentity = `brief:ai-evaluation:v4:${sessionId}`;
   return db(
     connectionString,
     Effect.scoped(
@@ -1165,7 +1212,7 @@ const manifestIdentity = (
   sessionId: string,
   fixture: GoldenEvaluationCase,
   topology: EvaluationTopology,
-): string => `ai-evaluation:v3:${sessionId}:${topology}:${fixture.id}`;
+): string => `ai-evaluation:v4:${sessionId}:${topology}:${fixture.id}`;
 
 const buildSeedManifest = (
   sessionId: string,
@@ -1173,7 +1220,7 @@ const buildSeedManifest = (
   topology: EvaluationTopology,
 ): EvaluationSeedManifest => {
   const identity = manifestIdentity(sessionId, fixture, topology);
-  const evaluationSourceId = `eval-v3-${sha256Hex(`${identity}:source`).slice(0, 32)}`;
+  const evaluationSourceId = `eval-v4-${sha256Hex(`${identity}:source`).slice(0, 32)}`;
   const turnBindings = fixture.conversation.map((turn, index) => ({
     turnId: turn.turnId,
     aiRunId: deterministicUuid(`${identity}:turn:${index}:run`),
@@ -1183,7 +1230,7 @@ const buildSeedManifest = (
   const byTurn = new Map(turnBindings.map((binding) => [binding.turnId, binding] as const));
   const sourceBindings = fixture.evidence.map((source, index) => {
     if (source.kind === "document") {
-      const documentId = `eval-v3-${sha256Hex(`${identity}:document:${index}`).slice(0, 40)}`;
+      const documentId = `eval-v4-${sha256Hex(`${identity}:document:${index}`).slice(0, 40)}`;
       const publisher = source.sourceId.startsWith("publisher:");
       const sourceNamespace = publisher
         ? {
@@ -1239,12 +1286,12 @@ const buildSeedManifest = (
     };
   });
   return EvaluationSeedManifestSchema.parse({
-    artifactVersion: 3,
-    goldenSetVersion: 3,
+    artifactVersion: 4,
+    goldenSetVersion: 4,
     sessionId,
     caseId: fixture.id,
     topology,
-    userId: `eval-v3-${sha256Hex(`${identity}:user`).slice(0, 32)}`,
+    userId: `eval-v4-${sha256Hex(`${identity}:user`).slice(0, 32)}`,
     companyId: deterministicUuid(`${identity}:company`),
     chatId: deterministicUuid(`${identity}:chat`),
     userMessageId: deterministicUuid(`${identity}:current:user`),
@@ -1263,7 +1310,7 @@ const seedOneCase = (
 ): Promise<EvaluationSeedManifest> => {
   const manifest = buildSeedManifest(sessionId, fixture, topology);
   const sourceById = new Map(fixture.evidence.map((source) => [source.sourceId, source] as const));
-  const sourceId = `eval-v3-${sha256Hex(`${manifestIdentity(sessionId, fixture, topology)}:source`).slice(0, 32)}`;
+  const sourceId = `eval-v4-${sha256Hex(`${manifestIdentity(sessionId, fixture, topology)}:source`).slice(0, 32)}`;
   return db(
     connectionString,
     Effect.gen(function* () {
@@ -1558,7 +1605,7 @@ export const createEvaluationSession = async (
       yield* sql`
         insert into ai_evaluation_sessions (
           id, artifact_version, golden_set_version, fixture_sha256_hex
-        ) values (${sessionId}, 3, 3, ${CanonicalGoldenFixtureSha256Hex})
+        ) values (${sessionId}, 4, 4, ${CanonicalGoldenFixtureSha256Hex})
         on conflict (id) do nothing
       `;
       const rows = yield* sql<{
@@ -1573,8 +1620,8 @@ export const createEvaluationSession = async (
       const row = rows[0];
       if (
         row?.fixtureSha256Hex !== CanonicalGoldenFixtureSha256Hex ||
-        row.artifactVersion !== 3 ||
-        row.goldenSetVersion !== 3
+        row.artifactVersion !== 4 ||
+        row.goldenSetVersion !== 4
       ) {
         return yield* Effect.fail(new Error("evaluation session fixture/version mismatch"));
       }
@@ -1914,7 +1961,7 @@ const persistBaselineOutput = async (
   connectionString: string,
   row: CaseRunRow,
   output: GeneralPlannerProviderOutput,
-  providerServiceId: AiProviderServiceId,
+  _providerServiceId: AiProviderServiceId,
 ): Promise<void> => {
   GeneralPlannerProviderOutputSchema.parse(output);
   const smithersRunId = `ai-evaluation-general-planner:${row.sessionId}:${row.caseId}`;
@@ -1927,7 +1974,6 @@ const persistBaselineOutput = async (
       : output.planTurn.mode === "fanout"
         ? ("synthesis" as const)
         : ("single" as const);
-  const answerTaskId = output.planTurn.mode === "fanout" ? "fanout-synthesis" : "single-answer";
   const sourceKeys = new Map(
     output.selectedSources.map((selection, index) => [
       selection.sourceId,
@@ -2053,123 +2099,6 @@ const persistBaselineOutput = async (
           kind: "retrieval_manifest",
           payload: { selectorRole: "general_planner", references: output.selectedSources },
         });
-        yield* insertAiObservation({
-          runId: row.aiRunId,
-          chatId: manifest.chatId,
-          emittingTask: "evaluation-general-planner",
-          loopIteration: producer.loopIteration,
-          attempt: producer.attempt,
-          observationKey: "evaluation-general-planner:context-measurement",
-          kind: "context_measurement",
-          payload: {
-            consumerTaskId: answerTaskId,
-            totalInputTokens: measureCanonicalEvaluationRequestTokens(
-              fixture,
-              output.selectedSources.map((selection) => ({ ...selection })),
-            ),
-            status: "ready",
-            reductionRan: false,
-          },
-        });
-        yield* insertAiObservation({
-          runId: row.aiRunId,
-          chatId: manifest.chatId,
-          emittingTask: "evaluation-general-planner",
-          loopIteration: producer.loopIteration,
-          attempt: producer.attempt,
-          observationKey: "evaluation-general-planner:context-serialized",
-          kind: "context_serialized",
-          payload: {
-            consumerTaskId: answerTaskId,
-            sourceKeys: sourceMap.map((source) => source.sourceKey),
-          },
-        });
-        if (output.planTurn.mode === "fanout") {
-          for (const topic of output.planTurn.topics) {
-            const topicRequest = exactProductionContextRequest(fixture, {
-              requestKind: "topic",
-              topicId: topic.topicId,
-              question: topic.question,
-              selectedConversation: [],
-              gaps: [],
-              sources: [],
-              requestedOutputTokens: CanonicalEvaluationExecutionConfig.aiMainOutputMaxTokens,
-            });
-            const topicMeasurement = measureProviderRequest(
-              topicRequest,
-              resolveRegisteredModel(topicRequest.model),
-              {
-                inputTokens: CanonicalEvaluationExecutionConfig.aiMainInputMaxTokens,
-                outputTokens: CanonicalEvaluationExecutionConfig.aiMainOutputMaxTokens,
-              },
-            );
-            const topicTaskId = `topic-${topic.topicId}-answer`;
-            yield* insertAiObservation({
-              runId: row.aiRunId,
-              chatId: manifest.chatId,
-              emittingTask: topicTaskId,
-              loopIteration: producer.loopIteration,
-              attempt: producer.attempt,
-              observationKey: `evaluation-general-planner:provider-request:${topic.topicId}`,
-              kind: "provider_request_measurement",
-              payload: {
-                providerRequestIndex: 0,
-                agentRole: "topic_answer",
-                modelId: topicMeasurement.modelId,
-                requestSha256Hex: providerRequestSha256Hex(topicRequest),
-                sourceExposureProofSha256Hexes: [],
-                sourceExposureProofBindings: [],
-                inputTokens: topicMeasurement.inputTokens,
-                requestedOutputTokens: topicMeasurement.requestedOutputTokens,
-                usableInputTokens: topicMeasurement.usableInputTokens,
-                contextWindow: topicMeasurement.contextWindow,
-                passed: topicMeasurement.passed,
-              },
-            });
-            yield* insertAiRunUsage({
-              runId: row.aiRunId,
-              taskId: topicTaskId,
-              loopIteration: producer.loopIteration,
-              attempt: producer.attempt,
-              providerRequestIndex: 0,
-              agentRole: "topic_answer",
-              modelId: topicMeasurement.modelId,
-              providerServiceId,
-              usage: {
-                inputTokens: topicMeasurement.inputTokens,
-                outputTokens: 2,
-                cachedTokens: 0,
-                reasoningTokens: 0,
-                totalTokens: topicMeasurement.inputTokens + 2,
-                stopReason: "toolUse",
-              },
-            });
-            yield* insertAiObservation({
-              runId: row.aiRunId,
-              chatId: manifest.chatId,
-              emittingTask: topicTaskId,
-              loopIteration: producer.loopIteration,
-              attempt: producer.attempt,
-              observationKey: `evaluation-general-planner:topic-packet:${topic.topicId}`,
-              kind: "topic_packet",
-              payload: {
-                topicId: topic.topicId,
-                status: "answered",
-                sourceKeys: [],
-                claimCount: 0,
-                gapCount: 0,
-                packetSha256Hex: sha256Hex(
-                  canonicalJson({
-                    topicId: topic.topicId,
-                    status: "answered",
-                    claims: [],
-                    gaps: [],
-                  }),
-                ),
-              },
-            });
-          }
-        }
       }
       yield* appendAiRunEvent({
         runId: row.aiRunId,
@@ -2177,7 +2106,7 @@ const persistBaselineOutput = async (
         event: {
           type: "context_ready",
           mode: answerMode,
-          reductionRan: false,
+          compactionRan: false,
           sourcesRead:
             output.planTurn.mode === "clarify"
               ? []
@@ -2273,7 +2202,7 @@ const loadBaselineSmithersOutput = (
     connectionString,
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
-      const rows = yield* sql<{ readonly value: string }>`
+      const rows = yield* sql<{ readonly value: unknown }>`
         select value from ai_evaluation_general_planner
         where run_id = ${smithersRunId}
           and node_id = 'evaluation-general-planner'
@@ -2282,7 +2211,9 @@ const loadBaselineSmithersOutput = (
       const value = rows[0]?.value;
       if (value === undefined)
         return yield* Effect.fail(new Error("baseline Smithers output missing"));
-      return GeneralPlannerProviderOutputSchema.parse(JSON.parse(value) as unknown);
+      return GeneralPlannerProviderOutputSchema.parse(
+        typeof value === "string" ? (JSON.parse(value) as unknown) : value,
+      );
     }),
   );
 
@@ -2405,7 +2336,11 @@ const executeBaseline = async (
                     throw new Error("baseline exposed an unbound golden source");
                   }
                   const logicalSourceIdentity =
-                    binding.kind === "document" ? documentBindingIdentity(binding) : sourceId;
+                    binding.kind === "document"
+                      ? documentBindingIdentity(binding)
+                      : binding.kind === "chat_message"
+                        ? chatMessageEvidenceIdentity(binding.messageId)
+                        : sourceId;
                   return {
                     logicalSourceIdentity,
                     contentItemIdentity:
@@ -2413,7 +2348,9 @@ const executeBaseline = async (
                         ? `${logicalSourceIdentity}:${binding.snapshotId}:${sha256Base64Url(
                             JSON.stringify([{ charStart, charEnd }]),
                           )}`
-                        : `${logicalSourceIdentity}:${charStart}:${charEnd}:${sha256Hex(visibleText)}`,
+                        : binding.kind === "chat_message"
+                          ? binding.messageId
+                          : `${logicalSourceIdentity}:${charStart}:${charEnd}:${sha256Hex(visibleText)}`,
                     ...(binding.kind === "document" ? { documentId: binding.documentId } : {}),
                   };
                 },
@@ -2426,16 +2363,35 @@ const executeBaseline = async (
                   if (binding === undefined || binding.kind !== sourceKind) {
                     throw new Error("baseline exposed an unbound golden source");
                   }
-                  if (binding.kind !== "document") return undefined;
-                  return {
-                    snapshotId: binding.snapshotId,
-                    contentHash: binding.contentHash,
-                    ...(binding.publisherExtractionId === null
-                      ? {}
-                      : { publisherExtractionId: binding.publisherExtractionId }),
-                    source: binding.source,
-                    ranges: [{ charStart, charEnd }],
-                  };
+                  if (binding.kind === "document") {
+                    return {
+                      snapshotId: binding.snapshotId,
+                      contentHash: binding.contentHash,
+                      ...(binding.publisherExtractionId === null
+                        ? {}
+                        : { publisherExtractionId: binding.publisherExtractionId }),
+                      source: binding.source,
+                      ranges: [{ charStart, charEnd }],
+                    };
+                  }
+                  if (binding.kind === "chat_message") {
+                    const source = fixtureFor(row.caseId).evidence.find(
+                      (candidate) => candidate.sourceId === sourceId,
+                    );
+                    if (source?.kind !== "chat_message") {
+                      throw new Error("baseline chat sidecar source is not chat evidence");
+                    }
+                    const sanitizedContent = stripHistoricalCitationTags(source.content);
+                    return {
+                      messageId: binding.messageId,
+                      contentHash: sha256Hex(sanitizedContent),
+                      ranges: normalizeCharacterRanges(
+                        [{ charStart, charEnd }],
+                        sanitizedContent.length,
+                      ),
+                    };
+                  }
+                  return undefined;
                 },
                 onProviderRequest: async (exposures, _request, coordinates) => {
                   const fixture = fixtureFor(caseId);
@@ -2461,16 +2417,22 @@ const executeBaseline = async (
                           `baseline document source ${source.sourceId} resolved to ${binding.kind} binding`,
                         );
                       }
+                      const sourceContent =
+                        source.kind === "chat_message"
+                          ? stripHistoricalCitationTags(source.content)
+                          : source.content;
                       const visibleText =
                         source.kind === "document"
                           ? storedDocuments
                               .get(exposure.sourceId)!
                               .text.slice(exposure.charStart, exposure.charEnd)
-                          : source.content.slice(exposure.charStart, exposure.charEnd);
+                          : sourceContent.slice(exposure.charStart, exposure.charEnd);
                       const logicalSourceIdentity =
                         binding.kind === "document"
                           ? documentBindingIdentity(binding)
-                          : source.sourceId;
+                          : binding.kind === "chat_message"
+                            ? chatMessageEvidenceIdentity(binding.messageId)
+                            : source.sourceId;
                       await db(
                         connectionString,
                         insertAiSourceExposure({
@@ -2492,7 +2454,9 @@ const executeBaseline = async (
                                     },
                                   ]),
                                 )}`
-                              : `${logicalSourceIdentity}:${exposure.charStart}:${exposure.charEnd}:${sha256Hex(visibleText)}`,
+                              : binding.kind === "chat_message"
+                                ? binding.messageId
+                                : `${logicalSourceIdentity}:${exposure.charStart}:${exposure.charEnd}:${sha256Hex(visibleText)}`,
                           exposureStage: `evaluation_general_planner_${exposure.stage}`,
                           visibleTokenCount:
                             resolveRegisteredModel("glm-5-turbo").countTextTokens(visibleText),
@@ -2511,7 +2475,23 @@ const executeBaseline = async (
                                   ],
                                 },
                               }
-                            : {}),
+                            : source.kind === "chat_message" && binding.kind === "chat_message"
+                              ? {
+                                  chatReconstruction: {
+                                    messageId: binding.messageId,
+                                    contentHash: sha256Hex(sourceContent),
+                                    ranges: normalizeCharacterRanges(
+                                      [
+                                        {
+                                          charStart: exposure.charStart,
+                                          charEnd: exposure.charEnd,
+                                        },
+                                      ],
+                                      sourceContent.length,
+                                    ),
+                                  },
+                                }
+                              : {}),
                         }),
                       );
                     }),
@@ -2869,6 +2849,9 @@ const loadDurableRunEvidence = (
         readonly snapshotId: string | null;
         readonly documentContentHash: string | null;
         readonly documentRanges: EvaluationRange[] | null;
+        readonly chatContentHash: string | null;
+        readonly chatRanges: EvaluationRange[] | null;
+        readonly publisherExtractionId: string | null;
         readonly createdAt: Date;
       }>`
         select id::text, task_id as "taskId", loop_iteration as "loopIteration", attempt,
@@ -2883,6 +2866,8 @@ const loadDurableRunEvidence = (
                snapshot_id as "snapshotId",
                content_hash as "documentContentHash",
                document_ranges as "documentRanges",
+               chat_content_hash as "chatContentHash",
+               chat_ranges as "chatRanges",
                publisher_extraction_id::text as "publisherExtractionId",
                created_at as "createdAt"
         from ai_source_exposures where run_id = ${aiRunId}
@@ -3075,12 +3060,323 @@ const loadDurableRunEvidence = (
           deletedAt: memory.deletedAt === null ? null : memory.deletedAt.toISOString(),
           provenanceOnlyAt:
             memory.provenanceOnlyAt === null ? null : memory.provenanceOnlyAt.toISOString(),
+
           createdAt: memory.createdAt.toISOString(),
           updatedAt: memory.updatedAt.toISOString(),
         })),
       });
     }),
   );
+export interface RevalidatedEvaluationV3Evidence {
+  readonly artifactVersion: 3;
+  readonly goldenSetVersion: 3;
+  readonly sessionId: string;
+  readonly caseId: string;
+  readonly topology: EvaluationTopology;
+  readonly aiRunId: string;
+  readonly caseDigest: string;
+  readonly storedCaseDigest: string;
+  readonly caseDigestMatches: boolean;
+  readonly annotationDigest: string;
+  readonly storedAnnotationDigest: string;
+  readonly annotationDigestMatches: boolean;
+  readonly annotationRunEvidenceDigest: string;
+  readonly annotationRunEvidenceMatches: boolean;
+  readonly sourceUseDigest: string;
+  readonly sourceUseRanges: readonly {
+    readonly sourceKey: string;
+    readonly consumerTaskId: string;
+    readonly ranges: readonly EvaluationRange[];
+  }[];
+}
+
+/**
+ * Revalidates retained v3 evidence under the post-cutover database shape.
+ *
+ * This is intentionally read-only. The digest envelope mirrors migration 0072's
+ * historical v3 seal exactly: v3 evidence did not include the v4 chat proof
+ * sidecars, so those nullable columns are excluded before hashing.
+ */
+export const revalidateEvaluationV3Evidence = async (
+  connectionString: string,
+  sessionId: string,
+  caseId: string,
+  topology: EvaluationTopology,
+): Promise<RevalidatedEvaluationV3Evidence> => {
+  const row = await db(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{
+        readonly artifactVersion: number;
+        readonly goldenSetVersion: number;
+        readonly sessionStatus: string;
+        readonly fixtureSha256Hex: string;
+        readonly aiRunId: string;
+        readonly seedManifest: unknown;
+        readonly executionOutput: unknown | null;
+        readonly executionOutputSha256Hex: string | null;
+        readonly runEvidenceSha256Hex: string | null;
+      }>`
+        select sessions.artifact_version as "artifactVersion",
+               sessions.golden_set_version as "goldenSetVersion",
+               sessions.status as "sessionStatus",
+               sessions.fixture_sha256_hex as "fixtureSha256Hex",
+               cases.ai_run_id::text as "aiRunId",
+               cases.seed_manifest as "seedManifest",
+               cases.execution_output as "executionOutput",
+               cases.execution_output_sha256_hex as "executionOutputSha256Hex",
+               cases.run_evidence_sha256_hex as "runEvidenceSha256Hex"
+        from ai_evaluation_sessions sessions
+        join ai_evaluation_case_runs cases on cases.session_id = sessions.id
+        where sessions.id = ${sessionId}
+          and cases.case_id = ${caseId}
+          and cases.topology = ${topology}
+      `;
+      const value = rows[0];
+      if (value === undefined) {
+        return yield* Effect.fail(new Error(`${topology}/${caseId} v3 evaluation case is missing`));
+      }
+      return value;
+    }),
+  );
+  if (row.artifactVersion !== 3 || row.goldenSetVersion !== 3) {
+    throw new Error(`${topology}/${caseId} is not a retained v3 evaluation case`);
+  }
+  if (row.sessionStatus !== "awaiting_annotations" && row.sessionStatus !== "complete") {
+    throw new Error(`${topology}/${caseId} v3 evaluation session is not terminal`);
+  }
+  if (row.runEvidenceSha256Hex === null) {
+    throw new Error(`${topology}/${caseId} v3 case has no terminal evidence digest`);
+  }
+  const manifest = EvaluationSeedManifestV3Schema.parse(row.seedManifest);
+  if (
+    manifest.sessionId !== sessionId ||
+    manifest.caseId !== caseId ||
+    manifest.topology !== topology ||
+    manifest.aiRunId !== row.aiRunId
+  ) {
+    throw new Error(`${topology}/${caseId} v3 seed identity does not match its case row`);
+  }
+
+  const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
+  const historicalEvidence = {
+    ...evidence,
+    sourceExposures: evidence.sourceExposures.map((exposure) => {
+      const {
+        chatContentHash: _chatContentHash,
+        chatRanges: _chatRanges,
+        ...v3Exposure
+      } = exposure;
+      return v3Exposure;
+    }),
+  };
+  const caseDigest = canonicalSha256Hex({
+    topology,
+    evaluationConfigSha256Hex:
+      (
+        await db(
+          connectionString,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            const rows = yield* sql<{
+              readonly evaluationConfigSha256Hex: string | null;
+              readonly providerEndpointIdentity: string | null;
+            }>`
+            select execution_config_sha256_hex as "evaluationConfigSha256Hex",
+                   provider_endpoint_identity as "providerEndpointIdentity"
+            from ai_evaluation_sessions where id = ${sessionId}
+          `;
+            return rows[0];
+          }),
+        )
+      )?.evaluationConfigSha256Hex ?? null,
+    providerEndpointIdentity:
+      (
+        await db(
+          connectionString,
+          Effect.gen(function* () {
+            const sql = yield* PgClient.PgClient;
+            const rows = yield* sql<{ readonly providerEndpointIdentity: string | null }>`
+            select provider_endpoint_identity as "providerEndpointIdentity"
+            from ai_evaluation_sessions where id = ${sessionId}
+          `;
+            return rows[0];
+          }),
+        )
+      )?.providerEndpointIdentity ?? null,
+    durableRun: historicalEvidence,
+    executionOutputSha256Hex: row.executionOutputSha256Hex,
+  });
+  if (row.executionOutput !== null || row.executionOutputSha256Hex !== null) {
+    if (
+      row.executionOutput === null ||
+      row.executionOutputSha256Hex === null ||
+      canonicalSha256Hex(row.executionOutput) !== row.executionOutputSha256Hex
+    ) {
+      throw new Error(`${topology}/${caseId} v3 execution output digest mismatch`);
+    }
+  }
+
+  const annotation = await db(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{
+        readonly aiRunId: string;
+        readonly annotations: unknown;
+        readonly annotationsSha256Hex: string;
+        readonly runEvidenceSha256Hex: string;
+      }>`
+        select ai_run_id::text as "aiRunId",
+               annotations, annotations_sha256_hex as "annotationsSha256Hex",
+               run_evidence_sha256_hex as "runEvidenceSha256Hex"
+        from ai_evaluation_annotations
+        where session_id = ${sessionId} and case_id = ${caseId} and topology = ${topology}
+      `;
+      const value = rows[0];
+      if (value === undefined) {
+        return yield* Effect.fail(new Error(`${topology}/${caseId} v3 annotations are missing`));
+      }
+      return value;
+    }),
+  );
+  if (annotation.aiRunId !== row.aiRunId) {
+    throw new Error(`${topology}/${caseId} v3 annotation run binding mismatch`);
+  }
+  const annotations = EvaluationHumanAnnotationsV3Schema.parse(annotation.annotations);
+  const annotationDigest = canonicalSha256Hex(annotations);
+  if (annotationDigest !== annotation.annotationsSha256Hex) {
+    throw new Error(`${topology}/${caseId} v3 annotation digest mismatch`);
+  }
+  if (annotation.runEvidenceSha256Hex !== row.runEvidenceSha256Hex) {
+    throw new Error(`${topology}/${caseId} v3 annotation evidence binding mismatch`);
+  }
+
+  const sourceUseRanges = await db(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      return yield* sql<{
+        readonly sourceKey: string;
+        readonly consumerTaskId: string;
+        readonly ranges: EvaluationRange[];
+      }>`
+        select uses.source_key as "sourceKey",
+               uses.consumer_task_id as "consumerTaskId",
+               uses.ranges
+        from assistant_message_source_uses uses
+        join ai_runs runs on runs.assistant_message_id = uses.assistant_message_id
+        where runs.id = ${row.aiRunId}
+        order by uses.source_key, uses.consumer_task_id
+      `;
+    }),
+  );
+  const normalizedSourceUseRanges = sourceUseRanges.map((entry) => ({
+    sourceKey: entry.sourceKey,
+    consumerTaskId: entry.consumerTaskId,
+    ranges: entry.ranges,
+  }));
+  return {
+    artifactVersion: 3,
+    goldenSetVersion: 3,
+    sessionId,
+    caseId,
+    topology,
+    aiRunId: row.aiRunId,
+    caseDigest,
+    storedCaseDigest: row.runEvidenceSha256Hex,
+    caseDigestMatches: caseDigest === row.runEvidenceSha256Hex,
+    annotationDigest,
+    storedAnnotationDigest: annotation.annotationsSha256Hex,
+    annotationDigestMatches: annotationDigest === annotation.annotationsSha256Hex,
+    annotationRunEvidenceDigest: annotation.runEvidenceSha256Hex,
+    annotationRunEvidenceMatches: annotation.runEvidenceSha256Hex === caseDigest,
+    sourceUseDigest: canonicalSha256Hex(normalizedSourceUseRanges),
+    sourceUseRanges: normalizedSourceUseRanges,
+  };
+};
+
+/**
+ * Reads one retained v3 artifact after revalidating its durable evidence.
+ * New sessions, captures, and seed paths never call this function.
+ */
+export const readAndRevalidateEvaluationV3Artifact = async (
+  connectionString: string,
+  sessionId: string,
+  caseId: string,
+  topology: EvaluationTopology,
+): Promise<EvaluationResultV3> => {
+  const revalidated = await revalidateEvaluationV3Evidence(
+    connectionString,
+    sessionId,
+    caseId,
+    topology,
+  );
+  if (
+    !revalidated.caseDigestMatches ||
+    !revalidated.annotationDigestMatches ||
+    !revalidated.annotationRunEvidenceMatches
+  ) {
+    throw new Error(`${topology}/${caseId} retained v3 digest attestation mismatch`);
+  }
+  const stored = await db(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{
+        readonly executionOutput: unknown | null;
+        readonly evaluationConfigSha256Hex: string | null;
+        readonly providerEndpointIdentity: string | null;
+      }>`
+        select cases.execution_output as "executionOutput",
+               sessions.execution_config_sha256_hex as "evaluationConfigSha256Hex",
+               sessions.provider_endpoint_identity as "providerEndpointIdentity"
+        from ai_evaluation_case_runs cases
+        join ai_evaluation_sessions sessions on sessions.id = cases.session_id
+        where cases.session_id = ${sessionId}
+          and cases.case_id = ${caseId}
+          and cases.topology = ${topology}
+      `;
+      return rows[0];
+    }),
+  );
+  if (stored === undefined) {
+    throw new Error(`${topology}/${caseId} retained v3 case disappeared during read`);
+  }
+  const parsed = EvaluationResultV3Schema.safeParse(stored.executionOutput);
+  if (!parsed.success) {
+    throw new Error(
+      `${topology}/${caseId} retained v3 artifact is not a captured evaluation result`,
+    );
+  }
+  const artifact = parsed.data;
+  if (
+    artifact.artifactVersion !== 3 ||
+    artifact.goldenSetVersion !== 3 ||
+    artifact.caseId !== caseId ||
+    artifact.topology !== topology ||
+    artifact.capture.origin !== "real_provider_turn"
+  ) {
+    throw new Error(`${topology}/${caseId} retained v3 artifact identity mismatch`);
+  }
+  const attestation = artifact.capture.attestation;
+  if (
+    attestation.sessionId !== sessionId ||
+    attestation.topology !== topology ||
+    artifact.capture.runId !== revalidated.aiRunId ||
+    attestation.annotationsSha256Hex !== revalidated.storedAnnotationDigest ||
+    attestation.evaluationConfigSha256Hex !== stored.evaluationConfigSha256Hex ||
+    attestation.providerEndpointIdentity !== stored.providerEndpointIdentity
+  ) {
+    throw new Error(`${topology}/${caseId} retained v3 artifact binding mismatch`);
+  }
+  // The stored case digest includes execution_output_sha256_hex, while this
+  // attestation is embedded in execution_output. Comparing them would require
+  // an impossible SHA fixed point; row and annotation run-evidence bindings
+  // above are the historical v3 seal.
+  return artifact;
+};
 
 const usageCoordinateOrder = (
   left: DurableRunEvidence["usage"][number],
@@ -3333,11 +3629,158 @@ const attestCitationEvidence = (row: CaseRunRow, evidence: DurableRunEvidence): 
   }
 };
 
+const canonicalResolutionAndPlan = (
+  row: CaseRunRow,
+  evidence: DurableRunEvidence,
+  manifest: EvaluationSeedManifest,
+): {
+  readonly resolution: z.infer<typeof DurablePlanTurnResultSchema>;
+  readonly plan: z.infer<typeof DurablePlanTurnResultSchema> | null;
+} => {
+  const owner = row.topology === "general_planner" ? "evaluation-general-planner" : "plan-turn";
+  const observations = evidence.observations
+    .filter((observation) => observation.kind === "turn_plan")
+    .sort(observationOrder);
+  if (
+    observations.length === 0 ||
+    observations.some((observation) => observation.emittingTask !== owner)
+  ) {
+    throw new Error(`${row.topology}/${row.caseId} turn-plan ownership is invalid`);
+  }
+  const terminal = observations.at(-1)!;
+  if (
+    observations.filter(
+      (observation) =>
+        observation.loopIteration === terminal.loopIteration &&
+        observation.attempt === terminal.attempt,
+    ).length !== 1
+  ) {
+    throw new Error(`${row.topology}/${row.caseId} has duplicate terminal turn-plan output`);
+  }
+  for (const observation of observations) {
+    providerUsageForObservation(row, evidence, observation, {
+      allowNoUsage: row.topology === "specialized" && manifest.turnBindings.length === 0,
+    });
+  }
+  const terminalPlanUsage = terminalProviderUsage(row, evidence, terminal, {
+    allowNoUsage: row.topology === "specialized" && manifest.turnBindings.length === 0,
+  });
+  if (row.topology === "specialized" && manifest.turnBindings.length > 0) {
+    const fixture = fixtureFor(row.caseId);
+    const selectedConversation: ExactProductionConversationBinding[] = fixture.conversation
+      .slice(-12)
+      .map((entry) => {
+        const binding = manifest.turnBindings.find(
+          (candidate) => candidate.turnId === entry.turnId,
+        );
+        if (binding === undefined) {
+          throw new Error(
+            `${row.topology}/${row.caseId} clarification lacks exact plan-turn provider usage`,
+          );
+        }
+        return {
+          kind: "complete" as const,
+          fixtureTurnId: entry.turnId,
+          turnId: binding.aiRunId,
+          userMessageId: binding.userMessageId,
+          assistantMessageId: binding.assistantMessageId,
+        };
+      });
+    const createdAt = new Date(evidence.run.createdAt);
+    const currentDate = Number.isNaN(createdAt.getTime())
+      ? undefined
+      : createdAt.toISOString().slice(0, 10);
+    const expected =
+      currentDate === undefined
+        ? undefined
+        : attestExactPlanTurnRequest(fixture, selectedConversation, currentDate);
+    const planMeasurement =
+      terminalPlanUsage === null
+        ? undefined
+        : providerMeasurementsForTask(evidence, "plan-turn").find(
+            (candidate) => usageCoordinateKey(candidate) === usageCoordinateKey(terminalPlanUsage),
+          );
+    const measurement = planMeasurement?.payload;
+    if (
+      expected === undefined ||
+      terminalPlanUsage === null ||
+      planMeasurement === undefined ||
+      measurement === undefined ||
+      !measurement.passed ||
+      planMeasurement.providerRequestIndex !== 0 ||
+      measurement.requestSha256Hex !== expected.requestSha256Hex ||
+      measurement.inputTokens !== expected.inputTokens ||
+      measurement.usableInputTokens !== expected.usableInputTokens ||
+      measurement.requestedOutputTokens !== 2048
+    ) {
+      throw new Error(
+        `${row.topology}/${row.caseId} clarification lacks exact plan-turn provider usage`,
+      );
+    }
+  }
+  const resolution =
+    row.topology === "general_planner"
+      ? (() => {
+          const output = GeneralPlannerProviderOutputSchema.parse(row.executionOutput);
+          const turnIds = new Map(
+            manifest.turnBindings.map((binding) => [binding.turnId, binding.aiRunId] as const),
+          );
+          return output.planTurn.mode === "clarify"
+            ? output.planTurn
+            : output.planTurn.mode === "single"
+              ? {
+                  mode: "single" as const,
+                  question: output.planTurn.question,
+                  relevantTurnIds: output.planTurn.relevantTurnIds.map((turnId) => {
+                    const aiRunId = turnIds.get(turnId);
+                    if (aiRunId === undefined) {
+                      throw new Error(
+                        `${row.topology}/${row.caseId} plan-turn selects a foreign turn`,
+                      );
+                    }
+                    return aiRunId;
+                  }),
+                }
+              : {
+                  mode: "fanout" as const,
+                  question: output.planTurn.question,
+                  topics: output.planTurn.topics.map((topic) => ({
+                    topicId: topic.topicId,
+                    question: topic.question,
+                    relevantTurnIds: topic.relevantTurnIds.map((turnId) => {
+                      const aiRunId = turnIds.get(turnId);
+                      if (aiRunId === undefined) {
+                        throw new Error(
+                          `${row.topology}/${row.caseId} plan-turn selects a foreign turn`,
+                        );
+                      }
+                      return aiRunId;
+                    }),
+                  })),
+                };
+        })()
+      : DurablePlanTurnResultSchema.parse(terminal.payload);
+  const selectedTurnIds =
+    resolution.mode === "clarify"
+      ? []
+      : resolution.mode === "single"
+        ? resolution.relevantTurnIds
+        : resolution.topics.flatMap((topic) => topic.relevantTurnIds);
+  const allowedTurns = new Set(manifest.turnBindings.map((binding) => binding.aiRunId));
+  if (
+    new Set(selectedTurnIds).size !== selectedTurnIds.length ||
+    selectedTurnIds.some((turnId) => !allowedTurns.has(turnId))
+  ) {
+    throw new Error(`${row.topology}/${row.caseId} plan-turn selects a foreign turn`);
+  }
+  return { resolution, plan: resolution.mode === "clarify" ? null : resolution };
+};
+
 const attestEventEvidence = (
   row: CaseRunRow,
   evidence: DurableRunEvidence,
   manifest: EvaluationSeedManifest,
-  fixture: GoldenEvaluationCase,
+  _fixture: GoldenEvaluationCase,
 ): void => {
   const events = evidence.events;
   if (
@@ -3358,8 +3801,7 @@ const attestEventEvidence = (
     first.emittedByTask !== null ||
     terminal.event.type !== "done" ||
     terminal.emissionKey !== "terminal" ||
-    terminal.emittedByTask !== "finalize" ||
-    terminal.event.assistantMessageId !== evidence.assistantMessage.id
+    terminal.emittedByTask !== "finalize"
   ) {
     throw new Error(`${row.topology}/${row.caseId} has invalid terminal event ownership`);
   }
@@ -3453,12 +3895,6 @@ const attestEventEvidence = (
   ) {
     throw new Error(`${row.topology}/${row.caseId} aggregate usage event is not exact`);
   }
-  const contextEvents = events.filter((entry) => entry.event.type === "context_ready");
-  const contextEvent = contextEvents[0];
-  if (contextEvents.length !== 1 || contextEvent?.event.type !== "context_ready") {
-    throw new Error(`${row.topology}/${row.caseId} lacks one exact context event`);
-  }
-  const expectedContext = expectedTerminalContextEvidence(row, evidence, manifest, fixture);
   const routing = canonicalResolutionAndPlan(row, evidence, manifest);
   const routedMode =
     routing.resolution.mode === "clarify"
@@ -3466,21 +3902,12 @@ const attestEventEvidence = (
       : routing.plan?.mode === "fanout"
         ? "synthesis"
         : "single";
-  if (
-    expectedContext.mode !== routedMode ||
-    contextEvent.event.mode !== expectedContext.mode ||
-    contextEvent.event.reductionRan !== expectedContext.reductionRan ||
-    canonicalJson(contextEvent.event.sourcesRead) !== canonicalJson(expectedContext.sourcesRead) ||
-    canonicalJson(contextEvent.event.consumers) !== canonicalJson(expectedContext.consumers)
-  ) {
-    throw new Error(`${row.topology}/${row.caseId} context event payload is not exact`);
-  }
   const expectedAnswerOwner =
     row.topology === "general_planner"
       ? "evaluation-general-planner"
-      : expectedContext.mode === "clarification"
+      : routedMode === "clarification"
         ? "clarification-result"
-        : expectedContext.mode === "synthesis"
+        : routedMode === "synthesis"
           ? "fanout-synthesis"
           : "single-answer";
   const topicPacketObservations = evidence.observations.filter(
@@ -3689,7 +4116,7 @@ const attestEventEvidence = (
     if (
       entry.event.type !== "answer_started" ||
       entry.emittedByTask !== expectedAnswerOwner ||
-      entry.event.mode !== expectedContext.mode ||
+      entry.event.mode !== routedMode ||
       !Number.isSafeInteger(entry.event.attempt) ||
       entry.event.attempt < 0 ||
       entry.emissionKey !== `answer_started:${expectedAnswerOwner}:${entry.event.attempt}` ||
@@ -3798,21 +4225,6 @@ const attestRelationalEvidence = (
   ) {
     throw new Error(`${row.topology}/${row.caseId} durable observability scope is invalid`);
   }
-  const serializedLabelsByKey = new Map<string, string | null>();
-  for (const observation of evidence.observations) {
-    if (observation.kind !== "context_serialized") continue;
-    const parsed = RestrictedContextLedgerSchema.safeParse(
-      observation.payload.restrictedContextLedger,
-    );
-    if (!parsed.success || parsed.data.requestKind === "synthesis") continue;
-    for (const source of parsed.data.sources) {
-      const existing = serializedLabelsByKey.get(source.sourceKey);
-      if (existing !== undefined && existing !== source.label) {
-        throw new Error(`${row.topology}/${row.caseId} has conflicting durable source labels`);
-      }
-      serializedLabelsByKey.set(source.sourceKey, source.label);
-    }
-  }
   const sourceIdsByKey = new Map<string, string>();
   const reconstructedLocatorByKey = new Map<string, Record<string, unknown>>();
   for (const source of evidence.sources) {
@@ -3821,7 +4233,6 @@ const attestRelationalEvidence = (
       (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
     );
     const golden = fixture.evidence.find((candidate) => candidate.sourceId === sourceId);
-    const terminalLabel = serializedLabelsByKey.get(source.sourceKey);
     const expectedLabel =
       row.topology === "general_planner"
         ? sourceId
@@ -3920,8 +4331,6 @@ const attestRelationalEvidence = (
       sourceId === undefined ||
       binding === undefined ||
       golden === undefined ||
-      expectedLabel === undefined ||
-      (row.topology === "specialized" && terminalLabel !== expectedLabel) ||
       source.displayLabel !== expectedLabel ||
       source.publisherExtractionId !==
         (binding.kind === "document" && binding.source.kind === "publisher"
@@ -4041,6 +4450,175 @@ const attestRelationalEvidence = (
   }
 };
 
+const attestRetrievalManifestEvidence = (
+  row: CaseRunRow,
+  evidence: DurableRunEvidence,
+  manifest: EvaluationSeedManifest,
+  _storedDocuments: StoredEvaluationDocuments,
+): void => {
+  const routing = canonicalResolutionAndPlan(row, evidence, manifest);
+  const manifests = evidence.observations
+    .filter((observation) => observation.kind === "retrieval_manifest")
+    .sort(observationOrder);
+  if (row.topology === "general_planner") {
+    const expected = GeneralPlannerProviderOutputSchema.parse(row.executionOutput);
+    if (expected.planTurn.mode === "clarify") {
+      if (manifests.length !== 0) {
+        throw new Error(`${row.topology}/${row.caseId} clarification has retrieval manifests`);
+      }
+      return;
+    }
+    if (manifests.length !== 1 || manifests[0]!.emittingTask !== "evaluation-general-planner") {
+      throw new Error(
+        `${row.topology}/${row.caseId} baseline retrieval manifest ownership is invalid`,
+      );
+    }
+    const payload = z
+      .object({ selectorRole: z.literal("general_planner"), references: z.array(z.unknown()) })
+      .strict()
+      .parse(manifests[0]!.payload);
+    if (canonicalJson(payload.references) !== canonicalJson(expected.selectedSources)) {
+      throw new Error(
+        `${row.topology}/${row.caseId} baseline retrieval manifest differs from output`,
+      );
+    }
+    providerUsageForObservation(row, evidence, manifests[0]!);
+    const sourceIds = payload.references.map((reference) =>
+      mapBaselineReferenceToGolden(
+        manifest,
+        z.record(z.string(), z.unknown()).parse(reference),
+        _storedDocuments,
+      ),
+    );
+    if (sourceIds.some((sourceId) => sourceId === undefined)) {
+      throw new Error(
+        `${row.topology}/${row.caseId} baseline retrieval manifest has an unknown source`,
+      );
+    }
+    if (new Set(sourceIds).size !== sourceIds.length) {
+      throw new Error(
+        `${row.topology}/${row.caseId} baseline retrieval manifest has duplicate sources`,
+      );
+    }
+    return;
+  }
+  if (routing.resolution.mode === "clarify") {
+    if (manifests.length !== 0) {
+      throw new Error(`${row.topology}/${row.caseId} clarification has retrieval manifests`);
+    }
+    return;
+  }
+  const prefixes =
+    routing.resolution.mode === "fanout"
+      ? routing.resolution.topics.map((topic) => `topic-${topic.topicId}`)
+      : ["single"];
+  const expectedTasks = new Set(
+    prefixes.flatMap((prefix) => [
+      `${prefix}-retrieve-internal`,
+      `${prefix}-select-memories`,
+      `${prefix}-retrieve-web`,
+    ]),
+  );
+  if (manifests.some((observation) => !expectedTasks.has(observation.emittingTask))) {
+    throw new Error(`${row.topology}/${row.caseId} retrieval manifest has a foreign owner`);
+  }
+  const previewIdentities = new Set(
+    evidence.observations
+      .filter((observation) => observation.kind === "structured_retrieval_review_preview")
+      .flatMap((observation) => {
+        const payload = StructuredRetrievalReviewPreviewPayloadSchema.parse(observation.payload);
+        return payload.records.map((record) => record.identity);
+      }),
+  );
+  for (const taskId of expectedTasks) {
+    const owned = manifests.filter((observation) => observation.emittingTask === taskId);
+    if (owned.length === 0) {
+      throw new Error(`${row.topology}/${row.caseId}/${taskId} lacks a retrieval manifest`);
+    }
+    const terminal = owned.at(-1)!;
+    const terminalCoordinateCount = owned.filter(
+      (observation) =>
+        observation.loopIteration === terminal.loopIteration &&
+        observation.attempt === terminal.attempt,
+    ).length;
+    if (terminalCoordinateCount !== 1) {
+      throw new Error(`${row.topology}/${row.caseId}/${taskId} has duplicate terminal manifests`);
+    }
+    const payload = DurableRetrievalManifestPayloadSchema.parse(terminal.payload);
+    if (payload.selectorRole !== expectedSelectorRoleForTask(taskId)) {
+      throw new Error(`${row.topology}/${row.caseId}/${taskId} has a role-mismatched manifest`);
+    }
+    const noCall = payload.noCallReason !== undefined;
+    terminalProviderUsage(row, evidence, terminal, { allowNoUsage: noCall });
+    const sourceIds = payload.references.map((reference) => {
+      const sourceId = mapReferenceToGolden(manifest, reference);
+      if (sourceId === undefined) {
+        throw new Error(`${row.topology}/${row.caseId}/${taskId} has an unknown source reference`);
+      }
+      return sourceId;
+    });
+    const referenceProofKeys = payload.references.map((reference) => {
+      const parsed =
+        DurableInternalManifestReferenceSchema.safeParse(reference).data ??
+        DurableMemoryManifestReferenceSchema.safeParse(reference).data ??
+        DurableWebManifestReferenceSchema.safeParse(reference).data;
+      if (parsed === undefined) {
+        throw new Error(`${row.topology}/${row.caseId}/${taskId} has an invalid source reference`);
+      }
+      const { purpose: _purpose, ...proof } = parsed as Record<string, unknown>;
+      return canonicalJson(proof);
+    });
+    if (new Set(referenceProofKeys).size !== referenceProofKeys.length) {
+      throw new Error(`${row.topology}/${row.caseId}/${taskId} has duplicate source references`);
+    }
+    const referencesBySourceId = new Map<string, number[]>();
+    for (const [index, sourceId] of sourceIds.entries()) {
+      referencesBySourceId.set(sourceId, [...(referencesBySourceId.get(sourceId) ?? []), index]);
+    }
+    if (
+      [...referencesBySourceId.values()].some(
+        (indexes) =>
+          indexes.length > 1 &&
+          (payload.selectorRole !== "web" ||
+            indexes.some(
+              (index) =>
+                !DurableWebManifestReferenceSchema.safeParse(payload.references[index]).success,
+            )),
+      )
+    ) {
+      throw new Error(`${row.topology}/${row.caseId}/${taskId} has duplicate source references`);
+    }
+    if (payload.selectorRole === "internal" && !noCall) {
+      for (const sourceId of sourceIds) {
+        const binding = manifest.sourceBindings.find(
+          (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
+        );
+        if (binding?.kind !== "document" && binding?.kind !== "chat_message") {
+          throw new Error(`${row.topology}/${row.caseId}/${taskId} has an invalid internal source`);
+        }
+        const previewBound =
+          binding.kind === "document"
+            ? [...previewIdentities].some(
+                (identity) =>
+                  (identity.kind === "public_document" || identity.kind === "publisher_document") &&
+                  identity.documentId === binding.documentId &&
+                  identity.snapshotId === binding.snapshotId &&
+                  identity.contentHash === binding.contentHash,
+              )
+            : [...previewIdentities].some(
+                (identity) =>
+                  identity.kind === "chat_message" && identity.messageId === binding.messageId,
+              );
+        if (previewIdentities.size > 0 && !previewBound) {
+          throw new Error(
+            `${row.topology}/${row.caseId}/${taskId} manifest source lacks final retrieval preview proof`,
+          );
+        }
+      }
+    }
+  }
+};
+
 const attestAcceptedRunSnapshot = (
   row: CaseRunRow,
   evidence: DurableRunEvidence,
@@ -4083,6 +4661,9 @@ const attestAcceptedRunSnapshot = (
   attestDurableUsageChronology(row, evidence);
   deriveTrustedPromptMeasurements(row.topology, row.caseId, evidence.usage, evidence.observations);
   attestExactSourceExposureRows(manifest, evidence, storedDocuments);
+  for (const exposure of evidence.sourceExposures) {
+    liveWebQuoteForExposure(manifest, evidence, exposure);
+  }
   attestEventEvidence(row, evidence, manifest, fixture);
   attestRetrievalManifestEvidence(row, evidence, manifest, storedDocuments);
   attestRelationalEvidence(row, evidence, manifest, fixture, storedDocuments);
@@ -4092,8 +4673,10 @@ const evaluationRunEvidenceDigest = (
   row: CaseRunRow,
   evidence: DurableRunEvidence,
   storedDocuments: StoredEvaluationDocuments,
+  contextRows: readonly z.infer<typeof ContextSummaryRowSchema>[],
 ): string => {
   attestAcceptedRunSnapshot(row, evidence, storedDocuments);
+  attestCapturedContextRows(row, evidence, contextRows);
   if (
     row.evaluationConfigSha256Hex === null ||
     row.providerEndpointIdentity !== TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY
@@ -4120,6 +4703,7 @@ const evaluationRunEvidenceDigest = (
     evaluationConfigSha256Hex: row.evaluationConfigSha256Hex,
     providerEndpointIdentity: row.providerEndpointIdentity,
     durableRun: evidence,
+    contextOutputs: contextRows,
     executionOutputSha256Hex: row.executionOutputSha256Hex,
   });
 };
@@ -4164,13 +4748,24 @@ const finalizeCaseEvidence = async (connectionString: string, row: CaseRunRow): 
   await assertEvaluationTenantAvailable(connectionString, manifest);
   const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
   const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
+  const smithersOutputs =
+    row.topology === "specialized"
+      ? await loadEvaluationSmithersOutputs(
+          connectionString,
+          deriveAiChatSmithersRunId(row.aiRunId),
+        )
+      : undefined;
+  const contextRows =
+    smithersOutputs === undefined
+      ? []
+      : contextSummaryRowsFromSmithersOutputs(smithersOutputs.context);
   if (
     evidence.usage.length === 0 ||
     evidence.usage.some((usage) => usage.providerServiceId !== ZAI_CODING_PLAN_PROVIDER_SERVICE_ID)
   ) {
     throw new Error(`${row.topology}/${row.caseId} is not exclusively backed by real Z.AI usage`);
   }
-  const digest = evaluationRunEvidenceDigest(row, evidence, storedDocuments);
+  const digest = evaluationRunEvidenceDigest(row, evidence, storedDocuments, contextRows);
   const transitioned = await db(
     connectionString,
     Effect.gen(function* () {
@@ -4211,12 +4806,14 @@ export const attestEvaluationCaseFromDurableRun = async (
     if (row.status === "succeeded" && row.runEvidenceSha256Hex !== null) {
       const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
       await assertEvaluationTenantAvailable(connectionString, manifest);
+      const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
       const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
-      const current = evaluationRunEvidenceDigest(
-        row,
-        await loadDurableRunEvidence(connectionString, row.aiRunId),
-        storedDocuments,
+      const smithersOutputs = await loadEvaluationSmithersOutputs(
+        connectionString,
+        deriveAiChatSmithersRunId(row.aiRunId),
       );
+      const contextRows = contextSummaryRowsFromSmithersOutputs(smithersOutputs.context);
+      const current = evaluationRunEvidenceDigest(row, evidence, storedDocuments, contextRows);
       if (current !== row.runEvidenceSha256Hex) {
         throw new Error(`${topology}/${caseId} durable evidence changed after attestation`);
       }
@@ -4771,7 +5368,18 @@ const bindEvaluationCaseAnnotationRow = async (
   const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
   const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
   const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
-  const currentDigest = evaluationRunEvidenceDigest(row, evidence, storedDocuments);
+  const smithersOutputs =
+    row.topology === "specialized"
+      ? await loadEvaluationSmithersOutputs(
+          connectionString,
+          deriveAiChatSmithersRunId(row.aiRunId),
+        )
+      : undefined;
+  const contextRows =
+    smithersOutputs === undefined
+      ? []
+      : contextSummaryRowsFromSmithersOutputs(smithersOutputs.context);
+  const currentDigest = evaluationRunEvidenceDigest(row, evidence, storedDocuments, contextRows);
   if (currentDigest !== row.runEvidenceSha256Hex) {
     throw new Error(`${annotation.topology}/${annotation.caseId} durable evidence changed`);
   }
@@ -4980,15 +5588,34 @@ const mapBaselineReferenceToGolden = (
     (candidate) => evaluationBindingGoldenSourceId(candidate) === parsed.data.sourceId,
   );
   if (fixtureSource === undefined || binding === undefined) return undefined;
-  if (fixtureSource.kind !== "document" && parsed.data.ranges.length !== 0) return undefined;
+  if (
+    fixtureSource.kind !== "document" &&
+    fixtureSource.kind !== "chat_message" &&
+    parsed.data.ranges.length !== 0
+  ) {
+    return undefined;
+  }
+  const sanitizedChatContent =
+    fixtureSource.kind === "chat_message"
+      ? stripHistoricalCitationTags(fixtureSource.content)
+      : null;
+  const sanitizedChatLength = sanitizedChatContent?.length ?? 0;
   try {
     const normalized = normalizeCharacterRanges(
       parsed.data.ranges,
       fixtureSource.kind === "document"
         ? (storedDocuments.get(parsed.data.sourceId)?.text.length ?? 0)
-        : fixtureSource.content.length,
+        : (sanitizedChatContent ?? fixtureSource.content).length,
     );
     if (canonicalJson(normalized) !== canonicalJson(parsed.data.ranges)) return undefined;
+    if (
+      fixtureSource.kind === "chat_message" &&
+      (sanitizedChatLength === 0 ||
+        canonicalJson(normalized) !==
+          canonicalJson([{ charStart: 0, charEnd: sanitizedChatLength }]))
+    ) {
+      return undefined;
+    }
   } catch {
     return undefined;
   }
@@ -5137,8 +5764,76 @@ const SourceExposureAttestationSchema = z
       .regex(/^[0-9a-f]{64}$/u)
       .optional(),
     documentRanges: z.array(BindingRangeSchema).optional(),
+    chatMessageId: z.string().trim().min(1).optional(),
+    chatContentHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/u)
+      .optional(),
+    chatRanges: z.array(BindingRangeSchema).min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((payload, context) => {
+    const hasChatFields =
+      payload.chatMessageId !== undefined ||
+      payload.chatContentHash !== undefined ||
+      payload.chatRanges !== undefined;
+    const hasDocumentFields =
+      payload.documentSourceId !== undefined ||
+      payload.documentId !== undefined ||
+      payload.snapshotId !== undefined ||
+      payload.documentContentHash !== undefined ||
+      payload.documentRanges !== undefined;
+    if (payload.sourceKind === "chat_message") {
+      if (
+        payload.chatMessageId === undefined ||
+        payload.chatContentHash === undefined ||
+        payload.chatRanges === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["chatMessageId"],
+          message: "chat source exposure requires exact reconstruction fields",
+        });
+      } else {
+        if (payload.chatMessageId !== payload.contentItemIdentity) {
+          context.addIssue({
+            code: "custom",
+            path: ["chatMessageId"],
+            message: "chat message identity must match content item identity",
+          });
+        }
+        if (payload.logicalSourceIdentity !== chatMessageEvidenceIdentity(payload.chatMessageId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["logicalSourceIdentity"],
+            message: "chat source exposure identity is not canonical",
+          });
+        }
+      }
+      if (hasDocumentFields) {
+        context.addIssue({
+          code: "custom",
+          path: ["documentId"],
+          message: "chat source exposure cannot carry document reconstruction fields",
+        });
+      }
+    } else {
+      if (hasChatFields) {
+        context.addIssue({
+          code: "custom",
+          path: ["chatMessageId"],
+          message: "non-chat source exposure cannot carry chat reconstruction fields",
+        });
+      }
+      if (payload.sourceKind === "document" && payload.documentRanges === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["documentRanges"],
+          message: "document source exposure requires document reconstruction fields",
+        });
+      }
+    }
+  });
 
 const ProviderRequestMeasurementSchema = z
   .object({
@@ -5192,6 +5887,9 @@ const exposureCoordinateKey = (exposure: DurableRunEvidence["sourceExposures"][n
     exposure.contentItemIdentity,
   ]);
 
+const baseExposureContentItemIdentity = (contentItemIdentity: string): string =>
+  contentItemIdentity.replace(/#proof=[0-9a-f]{64}$/u, "");
+
 const reconstructDocumentExposureText = (
   manifest: EvaluationSeedManifest,
   exposure: DurableRunEvidence["sourceExposures"][number],
@@ -5199,6 +5897,7 @@ const reconstructDocumentExposureText = (
   source: { readonly kind: string; readonly content: string },
   storedDocuments: StoredEvaluationDocuments,
 ): string => {
+  const contentItemIdentity = baseExposureContentItemIdentity(exposure.contentItemIdentity);
   if (source.kind !== "document") {
     throw new Error(`${manifest.caseId} document exposure mapped to a non-document source`);
   }
@@ -5259,7 +5958,7 @@ const reconstructDocumentExposureText = (
   if (exposure.logicalSourceIdentity !== documentBindingIdentity(binding)) {
     throw new Error(`${manifest.caseId} document exposure namespace is invalid`);
   }
-  if (exposure.contentItemIdentity !== expectedIdentity) {
+  if (contentItemIdentity !== expectedIdentity) {
     throw new Error(`${manifest.caseId} document exposure range identity is invalid`);
   }
   return ranges.map((range) => documentText.slice(range.charStart, range.charEnd)).join("\n…\n");
@@ -5270,19 +5969,18 @@ const liveWebQuoteForExposure = (
   evidence: DurableRunEvidence,
   exposure: DurableRunEvidence["sourceExposures"][number],
 ): string | undefined => {
+  const contentItemIdentity = baseExposureContentItemIdentity(exposure.contentItemIdentity);
   if (
     exposure.sourceKind !== "web" ||
     (exposure.exposureStage !== "answer_serialized" &&
-      exposure.exposureStage !== "context_candidate_inspection")
+      exposure.exposureStage !== "context_compaction_input")
   ) {
     return undefined;
   }
   const liveIdentity = /^web:(https:\/\/.+):([A-Za-z0-9_-]{43})$/u.exec(
     exposure.logicalSourceIdentity,
   );
-  const transientIdentity = /^((?:https:\/\/).+):([A-Za-z0-9_-]{43})$/u.exec(
-    exposure.contentItemIdentity,
-  );
+  const transientIdentity = /^((?:https:\/\/).+):([A-Za-z0-9_-]{43})$/u.exec(contentItemIdentity);
   const url = liveIdentity?.[1] ?? transientIdentity?.[1];
   const quoteHash = liveIdentity?.[2] ?? transientIdentity?.[2];
   if (url === undefined || quoteHash === undefined) return undefined;
@@ -5311,10 +6009,8 @@ const eligibleNonSelectedConversationMessageId = (
   evidence: DurableRunEvidence,
   exposure: DurableRunEvidence["sourceExposures"][number],
 ): string | undefined => {
-  if (
-    exposure.sourceKind !== "chat_message" ||
-    exposure.contentItemIdentity === manifest.userMessageId
-  )
+  const contentItemIdentity = baseExposureContentItemIdentity(exposure.contentItemIdentity);
+  if (exposure.sourceKind !== "chat_message" || contentItemIdentity === manifest.userMessageId)
     return undefined;
   const resolutionObservation = evidence.observations
     .filter((observation) => observation.kind === "turn_plan")
@@ -5335,7 +6031,7 @@ const eligibleNonSelectedConversationMessageId = (
     .flatMap((turn) => [turn.userMessageId, turn.assistantMessageId])
     .find(
       (messageId) =>
-        messageId === exposure.contentItemIdentity &&
+        messageId === contentItemIdentity &&
         chatMessageEvidenceIdentity(messageId) === exposure.logicalSourceIdentity,
     );
 };
@@ -5347,11 +6043,24 @@ const expectedExposureVisibleTokenCount = (
   modelId: string,
   storedDocuments: StoredEvaluationDocuments,
 ): number | null => {
+  const contentItemIdentity = baseExposureContentItemIdentity(exposure.contentItemIdentity);
+  if (
+    exposure.sourceKind === "chat_message" &&
+    (exposure.exposureStage === "internal_search_preview" ||
+      exposure.exposureStage === "internal_chat_search_preview" ||
+      exposure.exposureStage === "internal_inspection") &&
+    eligibleNonSelectedConversationMessageId(manifest, evidence, exposure) === undefined
+  ) {
+    throw new Error(`${manifest.caseId} has an invalid non-selected conversation exposure`);
+  }
   // Search previews intentionally commit only their marker proof: the
   // body-free snippet identity is not reversible after the provider turn.
   // Inspection identities, however, are bound to exact durable ranges (or a
   // whole non-document item) and must be reconstructed and recounted here.
-  if (exposure.exposureStage === "internal_search_preview") {
+  if (
+    exposure.exposureStage === "internal_search_preview" ||
+    exposure.exposureStage === "internal_chat_search_preview"
+  ) {
     return null;
   }
   const model = resolveRegisteredModel(modelId);
@@ -5368,7 +6077,7 @@ const expectedExposureVisibleTokenCount = (
           : [{ id: entry.assistantMessageId, content: entry.assistantContent }]),
       ]),
     ];
-    const message = messages.find((candidate) => candidate.id === exposure.contentItemIdentity);
+    const message = messages.find((candidate) => candidate.id === contentItemIdentity);
     if (message === undefined) {
       throw new Error(`${manifest.caseId} provider-input exposure has unknown message content`);
     }
@@ -5399,7 +6108,7 @@ const expectedExposureVisibleTokenCount = (
           ? []
           : [{ id: entry.assistantMessageId, content: entry.assistantContent }]),
       ])
-      .find((candidate) => candidate.id === exposure.contentItemIdentity);
+      .find((candidate) => candidate.id === contentItemIdentity);
     if (message === undefined) {
       throw new Error(`${manifest.caseId} conversation inspection lacks durable content`);
     }
@@ -5425,7 +6134,7 @@ const expectedExposureVisibleTokenCount = (
         source.ranges.map(({ charStart, charEnd }) => ({ charStart, charEnd })),
       );
       const expectedContentItemIdentity = `${documentBindingIdentity(binding)}:${binding.snapshotId}:${sha256Base64Url(rangeIdentity)}`;
-      if (exposure.contentItemIdentity === expectedContentItemIdentity) {
+      if (contentItemIdentity === expectedContentItemIdentity) {
         visibleText = reconstructDocumentExposureText(
           manifest,
           exposure,
@@ -5434,7 +6143,7 @@ const expectedExposureVisibleTokenCount = (
           storedDocuments,
         );
       } else {
-        const match = /^(.*):([0-9]+):([0-9]+):([0-9a-f]{64})$/u.exec(exposure.contentItemIdentity);
+        const match = /^(.*):([0-9]+):([0-9]+):([0-9a-f]{64})$/u.exec(contentItemIdentity);
         if (match === null || match[1] !== documentBindingIdentity(binding)) {
           throw new Error(`${manifest.caseId} baseline exposure range is invalid`);
         }
@@ -5447,26 +6156,48 @@ const expectedExposureVisibleTokenCount = (
           !exactBaselineExposureMatches(
             documentBindingIdentity(binding),
             documentText,
-            exposure.contentItemIdentity,
+            contentItemIdentity,
           )
         ) {
           throw new Error(`${manifest.caseId} baseline document text/hash drift`);
         }
         visibleText = documentText.slice(start, end);
       }
+    } else if (binding?.kind === "chat_message") {
+      const sanitizedContent = stripHistoricalCitationTags(source.content);
+      if (
+        exposure.logicalSourceIdentity !== chatMessageEvidenceIdentity(binding.messageId) ||
+        contentItemIdentity !== binding.messageId ||
+        exposure.chatContentHash !== sha256Hex(sanitizedContent) ||
+        exposure.chatRanges === null
+      ) {
+        throw new Error(`${manifest.caseId} baseline chat exposure identity is invalid`);
+      }
+      let ranges: readonly EvaluationRange[];
+      try {
+        ranges = normalizeCharacterRanges(exposure.chatRanges, sanitizedContent.length);
+      } catch (error) {
+        throw new Error(
+          `${manifest.caseId} baseline chat exposure ranges are invalid: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      if (canonicalJson(ranges) !== canonicalJson(exposure.chatRanges)) {
+        throw new Error(`${manifest.caseId} baseline chat exposure ranges are not normalized`);
+      }
+      visibleText = ranges
+        .map((range) => sanitizedContent.slice(range.charStart, range.charEnd))
+        .join("\n…\n");
     } else {
-      const match = /^(.*):([0-9]+):([0-9]+):([0-9a-f]{64})$/u.exec(exposure.contentItemIdentity);
+      const match = /^(.*):([0-9]+):([0-9]+):([0-9a-f]{64})$/u.exec(contentItemIdentity);
       const expectedIdentity =
         binding === undefined ? undefined : evaluationBindingGoldenSourceId(binding);
       if (
         match === null ||
         expectedIdentity === undefined ||
         match[1] !== expectedIdentity ||
-        !exactBaselineExposureMatches(
-          expectedIdentity,
-          source.content,
-          exposure.contentItemIdentity,
-        )
+        !exactBaselineExposureMatches(expectedIdentity, source.content, contentItemIdentity)
       ) {
         throw new Error(`${manifest.caseId} baseline exposure range is invalid`);
       }
@@ -5476,7 +6207,7 @@ const expectedExposureVisibleTokenCount = (
     }
   } else if (
     exposure.exposureStage === "internal_inspection" ||
-    exposure.exposureStage === "context_candidate_inspection"
+    exposure.exposureStage === "context_compaction_input"
   ) {
     visibleText =
       source.kind === "document"
@@ -5549,18 +6280,36 @@ const attestExactSourceExposureRows = (
       observation.attempt,
       payload.providerRequestIndex,
       payload.exposureStage,
-      payload.contentItemIdentity,
+      `${payload.contentItemIdentity}#proof=${payload.providerSerializationProofSha256Hex}`,
     ]);
     if (indexed.has(key)) {
       throw new Error(`${manifest.caseId} has duplicate source-exposure attestations`);
     }
     indexed.set(key, observation);
   }
-  if (indexed.size !== evidence.sourceExposures.length) {
+  const attestationRequiredExposures = evidence.sourceExposures.filter(
+    (exposure) => exposure.sourceKind !== "web",
+  );
+  if (indexed.size !== attestationRequiredExposures.length) {
     throw new Error(`${manifest.caseId} lacks one attestation per source exposure`);
   }
   const expectedProofsByRequest = new Map<string, Set<string>>();
   for (const exposure of evidence.sourceExposures) {
+    if (exposure.sourceKind === "web") {
+      const storageProof = /#proof=([0-9a-f]{64})$/u.exec(exposure.contentItemIdentity)?.[1];
+      if (storageProof !== undefined) {
+        const requestKey = providerCoordinateKey(
+          exposure.taskId,
+          exposure.loopIteration,
+          exposure.attempt,
+          exposure.providerRequestIndex,
+        );
+        const proofs = expectedProofsByRequest.get(requestKey) ?? new Set<string>();
+        proofs.add(storageProof);
+        expectedProofsByRequest.set(requestKey, proofs);
+      }
+      continue;
+    }
     const observation = indexed.get(exposureCoordinateKey(exposure));
     if (observation === undefined) {
       throw new Error(`${manifest.caseId} source exposure lacks its durable attestation`);
@@ -5604,6 +6353,19 @@ const attestExactSourceExposureRows = (
       contentHash: exposure.documentContentHash,
       ranges: exposure.documentRanges,
     };
+    const attestedChatMetadata = {
+      messageId: payload.chatMessageId ?? null,
+      contentHash: payload.chatContentHash ?? null,
+      ranges: payload.chatRanges ?? null,
+    };
+    const durableChatMetadata =
+      exposure.sourceKind === "chat_message"
+        ? {
+            messageId: baseExposureContentItemIdentity(exposure.contentItemIdentity),
+            contentHash: exposure.chatContentHash,
+            ranges: exposure.chatRanges,
+          }
+        : { messageId: null, contentHash: null, ranges: null };
     if (
       payload.providerRequestIndex !== exposure.providerRequestIndex ||
       requestAttestation === undefined ||
@@ -5611,12 +6373,14 @@ const attestExactSourceExposureRows = (
       payload.providerSerializationProofSha256Hex !== exactProof ||
       payload.sourceKind !== exposure.sourceKind ||
       payload.logicalSourceIdentity !== exposure.logicalSourceIdentity ||
-      payload.contentItemIdentity !== exposure.contentItemIdentity ||
+      payload.contentItemIdentity !==
+        baseExposureContentItemIdentity(exposure.contentItemIdentity) ||
       payload.exposureStage !== exposure.exposureStage ||
       payload.visibleTokenCount !== exposure.visibleTokenCount ||
       (expectedVisibleTokenCount !== null &&
         exposure.visibleTokenCount !== expectedVisibleTokenCount) ||
-      canonicalJson(attestedDocumentMetadata) !== canonicalJson(durableDocumentMetadata)
+      canonicalJson(attestedDocumentMetadata) !== canonicalJson(durableDocumentMetadata) ||
+      canonicalJson(attestedChatMetadata) !== canonicalJson(durableChatMetadata)
     ) {
       throw new Error(
         `${manifest.caseId} source exposure differs from its provider-request-bound attestation`,
@@ -5626,14 +6390,14 @@ const attestExactSourceExposureRows = (
       exposure.exposureStage === "answer_serialized" ||
       exposure.exposureStage === "provider_input" ||
       exposure.exposureStage === "internal_search_preview" ||
+      exposure.exposureStage === "internal_chat_search_preview" ||
       exposure.exposureStage === "internal_inspection" ||
-      exposure.exposureStage === "context_candidate_inspection" ||
+      exposure.exposureStage === "context_compaction_input" ||
       exposure.exposureStage === "memory_tool_result" ||
       exposure.exposureStage === "web_search_preview" ||
       exposure.exposureStage === "web_fetch" ||
       exposure.exposureStage === "evaluation_general_planner_search" ||
-      exposure.exposureStage === "evaluation_general_planner_inspect" ||
-      isCanonicalSpecializedReducerTask(exposure.taskId)
+      exposure.exposureStage === "evaluation_general_planner_inspect"
     ) {
       const expected = expectedProofsByRequest.get(requestKey) ?? new Set<string>();
       expected.add(exactProof);
@@ -5644,13 +6408,6 @@ const attestExactSourceExposureRows = (
     const actual = [...new Set(requestAttestation.sourceProofs)].sort();
     const expected = [...(expectedProofsByRequest.get(requestKey) ?? new Set<string>())].sort();
     if (canonicalJson(actual) !== canonicalJson(expected)) {
-      console.error(
-        "evaluation source proof mismatch",
-        manifest.caseId,
-        requestKey,
-        actual,
-        expected,
-      );
       throw new Error(
         `${manifest.caseId} provider request has a missing or unbound source-serialization proof`,
       );
@@ -5715,6 +6472,14 @@ const validDocumentRangeIdentities = (
   );
 };
 
+const canonicalCompactionPrefixes = ["single", "topic-t1", "topic-t2", "topic-t3"] as const;
+
+const isCanonicalCompactionTask = (taskId: string): boolean =>
+  /^(?:single|topic-t[1-3])-(?:compact|fallback)-(?:plan|collect|measure)$/u.test(taskId) ||
+  parseCompactionGroupTaskId(taskId, canonicalCompactionPrefixes) !== undefined;
+
+const compactionExposureTaskKinds = ["document", "chat_message", "memory", "web"] as const;
+
 const assertExposureStageTask = (
   manifest: EvaluationSeedManifest,
   exposure: DurableRunEvidence["sourceExposures"][number],
@@ -5731,8 +6496,6 @@ const assertExposureStageTask = (
         "memory-extract",
         "single-retrieve-internal",
         ...topicTasks("retrieve-internal"),
-        "single-reduce-plan",
-        ...topicTasks("reduce-plan"),
         "single-answer",
         ...topicTasks("answer"),
         "fanout-synthesis",
@@ -5763,10 +6526,6 @@ const assertExposureStageTask = (
       tasks: ["single-answer", ...topicTasks("answer")],
       kinds: ["document", "chat_message", "memory", "web"],
     },
-    context_candidate_inspection: {
-      tasks: ["single-reduce-plan", ...topicTasks("reduce-plan")],
-      kinds: ["document", "chat_message", "memory", "web"],
-    },
     evaluation_general_planner_search: {
       tasks: ["evaluation-general-planner"],
       kinds: ["document", "chat_message", "memory", "web"],
@@ -5775,12 +6534,24 @@ const assertExposureStageTask = (
       tasks: ["evaluation-general-planner"],
       kinds: ["document", "chat_message", "memory", "web"],
     },
+    internal_chat_search_preview: {
+      tasks: ["single-retrieve-internal", ...topicTasks("retrieve-internal")],
+      kinds: ["chat_message"],
+    },
+    context_compaction_input: {
+      tasks: [],
+      kinds: [...compactionExposureTaskKinds],
+    },
   };
   const rule = rules[exposure.exposureStage];
+  const compactionTask =
+    isCanonicalCompactionTask(exposure.taskId) &&
+    (exposure.exposureStage === "provider_input" ||
+      exposure.exposureStage === "context_compaction_input");
   const valid =
     rule !== undefined &&
-    rule.tasks.includes(exposure.taskId) &&
-    rule.kinds.includes(exposure.sourceKind);
+    rule.kinds.includes(exposure.sourceKind) &&
+    (rule.tasks.includes(exposure.taskId) || compactionTask);
   if (!valid) {
     throw new Error(
       `${manifest.caseId} has a stage-incompatible ${exposure.taskId}/${exposure.exposureStage} exposure`,
@@ -5813,6 +6584,10 @@ const mapExposureToGolden = (
   exposure: DurableRunEvidence["sourceExposures"][number],
   storedDocuments: StoredEvaluationDocuments,
 ): string | null => {
+  exposure = {
+    ...exposure,
+    contentItemIdentity: baseExposureContentItemIdentity(exposure.contentItemIdentity),
+  };
   assertExposureStageTask(manifest, exposure);
   if (exposure.sourceKind === "chat_message" && exposure.exposureStage === "provider_input") {
     const allowedMessageIds = new Set([
@@ -5841,7 +6616,9 @@ const mapExposureToGolden = (
       const expectedIdentity =
         binding.kind === "document"
           ? documentBindingIdentity(binding)
-          : evaluationBindingGoldenSourceId(binding);
+          : binding.kind === "chat_message"
+            ? chatMessageEvidenceIdentity(binding.messageId)
+            : evaluationBindingGoldenSourceId(binding);
       if (exposure.logicalSourceIdentity === expectedIdentity) return true;
     }
     if (binding.kind === "document") {
@@ -5886,7 +6663,9 @@ const mapExposureToGolden = (
       const expectedIdentity =
         binding.kind === "document"
           ? documentBindingIdentity(binding)
-          : evaluationBindingGoldenSourceId(binding);
+          : binding.kind === "chat_message"
+            ? chatMessageEvidenceIdentity(binding.messageId)
+            : evaluationBindingGoldenSourceId(binding);
       exact =
         binding.kind === "document"
           ? (() => {
@@ -5896,11 +6675,13 @@ const mapExposureToGolden = (
               const expectedContentItemIdentity = `${expectedIdentity}:${binding.snapshotId}:${sha256Base64Url(rangeIdentity)}`;
               return exposure.contentItemIdentity === expectedContentItemIdentity;
             })()
-          : exactBaselineExposureMatches(
-              expectedIdentity,
-              source.content,
-              exposure.contentItemIdentity,
-            );
+          : binding.kind === "chat_message"
+            ? exposure.contentItemIdentity === binding.messageId
+            : exactBaselineExposureMatches(
+                expectedIdentity,
+                source.content,
+                exposure.contentItemIdentity,
+              );
     } else if (binding.kind === "document") {
       const immutablePrefix = `${documentBindingIdentity(binding)}:${binding.snapshotId}:`;
       const digest = exposure.contentItemIdentity.slice(immutablePrefix.length);
@@ -5914,8 +6695,9 @@ const mapExposureToGolden = (
               exposure.contentItemIdentity,
             )
           : stage === "internal_search_preview" ||
+            stage === "internal_chat_search_preview" ||
             stage === "internal_inspection" ||
-            stage === "context_candidate_inspection");
+            stage === "context_compaction_input");
     } else if (binding.kind === "chat_message") {
       exact = exposure.contentItemIdentity === binding.messageId;
     } else if (binding.kind === "memory") {
@@ -5939,7 +6721,7 @@ const mapExposureToGolden = (
       exact =
         (stage === "web_search_preview" && sameAllowedDomain && hasTransientBodyIdentity) ||
         (stage === "web_fetch" && sameAllowedDomain && hasTransientBodyIdentity) ||
-        ((stage === "answer_serialized" || stage === "context_candidate_inspection") &&
+        ((stage === "answer_serialized" || stage === "context_compaction_input") &&
           /^web:https:\/\/.*:[A-Za-z0-9_-]{43}$/u.test(exposure.logicalSourceIdentity) &&
           serializedQuoteHash ===
             exposure.logicalSourceIdentity.slice(
@@ -5957,6 +6739,7 @@ const mapExposureToGolden = (
   if (
     exposure.sourceKind === "chat_message" &&
     (exposure.exposureStage === "internal_search_preview" ||
+      exposure.exposureStage === "internal_chat_search_preview" ||
       exposure.exposureStage === "internal_inspection")
   ) {
     const messageId = eligibleNonSelectedConversationMessageId(manifest, evidence, exposure);
@@ -5973,7 +6756,7 @@ const mapExposureToGolden = (
       const expectedContentItemIdentity = `${url}:${liveIdentity[2]}`;
       if (
         (exposure.exposureStage === "answer_serialized" ||
-          exposure.exposureStage === "context_candidate_inspection") &&
+          exposure.exposureStage === "context_compaction_input") &&
         exposure.contentItemIdentity === expectedContentItemIdentity
       ) {
         return null;
@@ -6159,19 +6942,9 @@ const sourceAudit = async (
   );
 };
 
-interface TrustedPromptMeasurement {
-  readonly requestId: string;
-  readonly requestSha256Hex: string;
-  readonly localInputTokens: number;
-  readonly providerInputTokens: number;
-  readonly gatePassed: boolean;
-}
-
 const ProviderAuthoredOutputObservationKinds = new Set([
   "turn_plan",
   "retrieval_manifest",
-  "context_reducer_terminal",
-  "context_decision",
   "topic_packet",
   "memory_extraction_result",
 ]);
@@ -6235,7 +7008,7 @@ export const deriveTrustedPromptMeasurements = (
     const payload = ProviderRequestMeasurementSchema.parse(measurement.payload);
     if (
       payload.passed !== true ||
-      payload.agentRole !== expectedAgentRoleForTask(topology, measurement.emittingTask) ||
+      !providerAgentRoleAllowedForTask(topology, measurement.emittingTask, payload.agentRole) ||
       payload.modelId !== expectedModelForTask(measurement.emittingTask)
     ) {
       throw new Error(`${topology}/${caseId} has an invalid exact provider measurement`);
@@ -6329,11 +7102,1044 @@ export const deriveTrustedPromptMeasurements = (
   return result;
 };
 
+interface EvaluationSmithersOutputRow {
+  readonly nodeId: string;
+  readonly iteration: number;
+  readonly value: unknown;
+}
+interface EvaluationSmithersRawOutputRow {
+  readonly nodeId: string;
+  readonly iteration: unknown;
+  readonly value: unknown;
+}
+
+const decodeEvaluationSmithersOutputRows = (
+  rows: readonly EvaluationSmithersRawOutputRow[],
+): readonly EvaluationSmithersOutputRow[] =>
+  rows.map((row) => {
+    const iteration =
+      typeof row.iteration === "number"
+        ? row.iteration
+        : typeof row.iteration === "string" && /^\d+$/u.test(row.iteration)
+          ? Number(row.iteration)
+          : Number.NaN;
+    if (!Number.isSafeInteger(iteration) || iteration < 0) {
+      throw new Error(`${row.nodeId} has an invalid Smithers output iteration`);
+    }
+    if (typeof row.value !== "string") return { ...row, iteration };
+    try {
+      return { ...row, iteration, value: JSON.parse(row.value) as unknown };
+    } catch {
+      throw new Error(`${row.nodeId}/${iteration} has invalid Smithers output JSON`);
+    }
+  });
+
+interface EvaluationSmithersOutputs {
+  readonly structuredInternal: readonly EvaluationSmithersOutputRow[];
+  readonly compactionPlan: readonly EvaluationSmithersOutputRow[];
+  readonly compactionGroup: readonly EvaluationSmithersOutputRow[];
+  readonly compactionCollect: readonly EvaluationSmithersOutputRow[];
+  readonly fallbackPlan: readonly EvaluationSmithersOutputRow[];
+  readonly context: readonly EvaluationSmithersOutputRow[];
+}
+
+const loadEvaluationSmithersOutputs = async (
+  connectionString: string,
+  smithersRunId: string,
+): Promise<EvaluationSmithersOutputs> => {
+  const rows = async (
+    table:
+      | "structuredInternal"
+      | "compactionPlan"
+      | "compactionGroup"
+      | "compactionCollect"
+      | "fallbackPlan"
+      | "context",
+  ): Promise<readonly EvaluationSmithersOutputRow[]> =>
+    db(
+      connectionString,
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        if (table === "structuredInternal") {
+          return yield* sql<EvaluationSmithersRawOutputRow>`
+            select node_id as "nodeId", iteration, value
+            from ai_chat_structured_internal
+            where run_id = ${smithersRunId}
+            order by iteration, node_id
+          `;
+        }
+        if (table === "compactionPlan") {
+          return yield* sql<EvaluationSmithersRawOutputRow>`
+            select node_id as "nodeId", iteration, value
+            from ai_chat_compaction_plan
+            where run_id = ${smithersRunId}
+            order by iteration, node_id
+          `;
+        }
+        if (table === "compactionGroup") {
+          return yield* sql<EvaluationSmithersRawOutputRow>`
+            select node_id as "nodeId", iteration, value
+            from ai_chat_compaction_group
+            where run_id = ${smithersRunId}
+            order by iteration, node_id
+          `;
+        }
+        if (table === "compactionCollect") {
+          return yield* sql<EvaluationSmithersRawOutputRow>`
+            select node_id as "nodeId", iteration, value
+            from ai_chat_compaction_collect
+            where run_id = ${smithersRunId}
+            order by iteration, node_id
+          `;
+        }
+        if (table === "fallbackPlan") {
+          return yield* sql<EvaluationSmithersRawOutputRow>`
+            select node_id as "nodeId", iteration, value
+            from ai_chat_fallback_plan
+            where run_id = ${smithersRunId}
+            order by iteration, node_id
+          `;
+        }
+        return yield* sql<EvaluationSmithersRawOutputRow>`
+          select node_id as "nodeId", iteration, value
+          from ai_chat_context
+          where run_id = ${smithersRunId}
+          order by iteration, node_id
+        `;
+      }),
+    ).then(decodeEvaluationSmithersOutputRows);
+  const [
+    structuredInternal,
+    compactionPlan,
+    compactionGroup,
+    compactionCollect,
+    fallbackPlan,
+    context,
+  ] = await Promise.all([
+    rows("structuredInternal"),
+    rows("compactionPlan"),
+    rows("compactionGroup"),
+    rows("compactionCollect"),
+    rows("fallbackPlan"),
+    rows("context"),
+  ]);
+  return {
+    structuredInternal,
+    compactionPlan,
+    compactionGroup,
+    compactionCollect,
+    fallbackPlan,
+    context,
+  };
+};
+
+const ContextOutputNodePattern =
+  /^(?:single|topic-t[1-3]|fanout-synthesis)-(?:measure|context-select|answer-route|compact-measure|fallback-measure)$/u;
+const CapturedContextOutputNodePattern =
+  /^(?:single-measure|topic-t[1-3]-measure|fanout-synthesis-measure|(?:single|topic-t[1-3]|fanout-synthesis)-(?:compact|fallback)-measure)$/u;
+
+const contextSummaryRowsFromSmithersOutputs = (
+  rows: readonly EvaluationSmithersOutputRow[],
+): readonly z.infer<typeof ContextSummaryRowSchema>[] => {
+  const foreign = rows.find((row) => !ContextOutputNodePattern.test(row.nodeId));
+  if (foreign !== undefined) {
+    throw new Error(`foreign context Smithers node ${foreign.nodeId}`);
+  }
+  const contextRows = rows
+    .filter((row) => CapturedContextOutputNodePattern.test(row.nodeId))
+    .map((row) => {
+      const value = aiChatSchemas.aiChatContext.parse(row.value).value;
+      const candidateLedger = value.candidateLedger.candidates.map((candidate) => ({
+        candidateId: candidate.candidateId,
+        kind: candidate.kind,
+        identity: candidate.identity,
+        identityKey: canonicalIdentityKey(candidate.identity),
+        provenance: candidate.provenance,
+        baseRanges: candidate.baseRanges,
+        previewRanges: candidate.previewRanges,
+        previewSha256Hex: createHash("sha256").update(candidate.preview).digest("hex"),
+        renderedTokenCount: candidate.renderedTokenCount,
+        ...(candidate.chatRole === undefined ? {} : { chatRole: candidate.chatRole }),
+      }));
+      const stage = row.nodeId.endsWith("-fallback-measure")
+        ? ("after_fallback" as const)
+        : row.nodeId.endsWith("-compact-measure")
+          ? ("after_initial" as const)
+          : ("initial" as const);
+      const consumerTaskId = row.nodeId.startsWith("fanout-synthesis")
+        ? "fanout-synthesis"
+        : row.nodeId.startsWith("topic-")
+          ? `topic-${row.nodeId.split("-")[1]}-answer`
+          : "single-answer";
+      return {
+        outputCoordinate: { nodeId: row.nodeId, iteration: row.iteration },
+        stage,
+        ...(value.topicId === undefined ? {} : { topicId: value.topicId }),
+        consumerTaskId,
+        inputTokens: value.inputTokens,
+        status: value.status,
+        usableInputTokens: value.usableInputTokens,
+        compactionRan: value.compactionRan,
+        candidateLedger,
+        selectedCandidateIds: value.candidates
+          .filter((candidate) => candidate.kind !== "topic_packet")
+          .map((candidate) => candidate.id),
+        sourceKeys: value.sourceMap.map((source) => source.sourceKey),
+        ...(value.failureCode === undefined ? {} : { failureCode: value.failureCode }),
+      };
+    });
+  return z.array(ContextSummaryRowSchema).parse(contextRows);
+};
+
+const attestCapturedContextRows = (
+  row: CaseRunRow,
+  evidence: DurableRunEvidence,
+  contextRows: readonly z.infer<typeof ContextSummaryRowSchema>[],
+): void => {
+  const measurements = evidence.observations
+    .filter((observation) => observation.kind === "context_measurement")
+    .map((observation) => ({
+      observation,
+      payload: ContextMeasurementPayloadSchema.parse(observation.payload),
+    }));
+  for (const context of contextRows) {
+    const candidates = measurements
+      .filter(
+        ({ observation, payload }) =>
+          observation.emittingTask === context.outputCoordinate.nodeId &&
+          observation.loopIteration === context.outputCoordinate.iteration &&
+          payload.consumerTaskId === context.consumerTaskId &&
+          payload.topicId === context.topicId,
+      )
+      .sort((left, right) => left.observation.attempt - right.observation.attempt);
+    const measurement = candidates.at(-1);
+    if (measurement === undefined) {
+      throw new Error(
+        `${row.topology}/${row.caseId} context output lacks exact measurement coordinate`,
+      );
+    }
+    const ledger = measurement.payload.restrictedContextLedger;
+    const expectedSourceKeys =
+      ledger.requestKind === "synthesis" ? [] : ledger.sources.map((source) => source.sourceKey);
+    const expectedCandidateIds =
+      ledger.requestKind === "synthesis" ? [] : ledger.sources.map((source) => source.candidateId);
+    const expectedKind =
+      context.consumerTaskId === "single-answer"
+        ? "direct"
+        : context.consumerTaskId === "fanout-synthesis"
+          ? "synthesis"
+          : "topic";
+    const candidateBindings =
+      ledger.requestKind === "synthesis"
+        ? []
+        : ledger.sources.map((source) => {
+            const candidate = context.candidateLedger.find(
+              (entry) => entry.candidateId === source.candidateId,
+            );
+            return (
+              candidate !== undefined &&
+              candidate.kind === source.kind &&
+              candidate.provenance.label === source.label &&
+              candidate.provenance.purpose === source.purpose
+            );
+          });
+    if (
+      ledger.requestKind !== expectedKind ||
+      context.inputTokens !== measurement.payload.totalInputTokens ||
+      context.usableInputTokens !== measurement.payload.usableInputTokens ||
+      context.status !== measurement.payload.status ||
+      context.compactionRan !== measurement.payload.compactionRan ||
+      canonicalJson(context.sourceKeys) !== canonicalJson(expectedSourceKeys) ||
+      canonicalJson(context.selectedCandidateIds) !== canonicalJson(expectedCandidateIds) ||
+      candidateBindings.some((bound) => !bound)
+    ) {
+      throw new Error(`${row.topology}/${row.caseId} context output payload is not exact`);
+    }
+  }
+};
+
+const captureV4Artifacts = async (
+  evidence: DurableRunEvidence,
+  serializedSources: readonly FinalSourceRecord[],
+  fixture: GoldenEvaluationCase,
+  manifest: EvaluationSeedManifest,
+  storedDocuments: StoredEvaluationDocuments,
+  smithersOutputs: EvaluationSmithersOutputs | undefined,
+  captureRow: CaseRunRow,
+) => {
+  if (smithersOutputs !== undefined) {
+    const hasDurableRetrievalEvidence = evidence.observations.some(
+      (observation) => observation.kind === "structured_retrieval_trace",
+    );
+    const hasDurableContextEvidence = evidence.observations.some(
+      (observation) => observation.kind === "context_measurement",
+    );
+    if (hasDurableRetrievalEvidence && smithersOutputs.structuredInternal.length === 0) {
+      throw new Error(
+        `${captureRow.topology}/${captureRow.caseId} durable structured retrieval capture is missing`,
+      );
+    }
+    if (hasDurableContextEvidence && smithersOutputs.context.length === 0) {
+      throw new Error(
+        `${captureRow.topology}/${captureRow.caseId} durable context capture is missing`,
+      );
+    }
+    const durableContextMeasurements = evidence.observations
+      .filter((observation) => observation.kind === "context_measurement")
+      .map((observation) => ContextMeasurementPayloadSchema.parse(observation.payload));
+    if (
+      durableContextMeasurements.some((measurement) => measurement.compactionRan) &&
+      smithersOutputs.compactionPlan.length === 0
+    ) {
+      throw new Error(
+        `${captureRow.topology}/${captureRow.caseId} durable compaction plan capture is missing`,
+      );
+    }
+    if (
+      evidence.observations.some(
+        (observation) =>
+          observation.kind === "context_measurement" &&
+          (observation.emittingTask.endsWith("-fallback-measure") ||
+            observation.emittingTask === "fanout-synthesis-fallback-measure"),
+      ) &&
+      smithersOutputs.fallbackPlan.length === 0
+    ) {
+      throw new Error(
+        `${captureRow.topology}/${captureRow.caseId} durable fallback plan capture is missing`,
+      );
+    }
+    const checks: readonly [readonly EvaluationSmithersOutputRow[], RegExp, string][] = [
+      [
+        smithersOutputs.structuredInternal,
+        /^(?:single|topic-t[1-3])-retrieve-internal$/u,
+        "structured retrieval",
+      ],
+      [
+        smithersOutputs.compactionPlan,
+        /^(?:single|topic-t[1-3]|fanout-synthesis)-(?:compact|fallback)-plan$/u,
+        "compaction plan",
+      ],
+      [
+        smithersOutputs.fallbackPlan,
+        /^(?:single|topic-t[1-3]|fanout-synthesis)-fallback-plan$/u,
+        "fallback plan",
+      ],
+      [
+        smithersOutputs.compactionGroup,
+        /^(?:single|topic-t[1-3]|fanout-synthesis)-(?:compact|fallback)-g[0-9]{3}$/u,
+        "compaction group",
+      ],
+      [
+        smithersOutputs.compactionCollect,
+        /^(?:single|topic-t[1-3]|fanout-synthesis)-(?:compact|fallback)-collect$/u,
+        "compaction collect",
+      ],
+      [
+        smithersOutputs.context,
+        /^(?:single|topic-t[1-3]|fanout-synthesis)-(?:measure|context-select|answer-route|compact-measure|fallback-measure)$/u,
+        "context",
+      ],
+    ];
+    for (const [rows, pattern, label] of checks) {
+      const foreign = rows.find((row) => !pattern.test(row.nodeId));
+      if (foreign !== undefined)
+        throw new Error(`foreign ${label} Smithers node ${foreign.nodeId}`);
+    }
+    const prefixes = ["single", "topic-t1", "topic-t2", "topic-t3", "fanout-synthesis"];
+    const foreignGroup = smithersOutputs.compactionGroup.find(
+      (row) => parseCompactionGroupTaskId(row.nodeId, prefixes) === undefined,
+    );
+    if (foreignGroup !== undefined) {
+      throw new Error(`foreign compaction group Smithers node ${foreignGroup.nodeId}`);
+    }
+  }
+  const usageFor = (
+    taskId: string,
+    iteration: number,
+    role: string,
+    last = false,
+  ): DurableRunEvidence["usage"][number] => {
+    const matches = evidence.usage.filter(
+      (usage) =>
+        usage.taskId === taskId && usage.loopIteration === iteration && usage.agentRole === role,
+    );
+    const maxAttempt = Math.max(...matches.map((usage) => usage.attempt), -1);
+    const attemptMatches = matches
+      .filter((usage) => usage.attempt === maxAttempt)
+      .sort((left, right) => left.providerRequestIndex - right.providerRequestIndex);
+    const usage = last ? attemptMatches.at(-1) : attemptMatches[0];
+    if (usage === undefined) throw new Error(`${taskId}/${iteration} lacks ${role} usage`);
+    return usage;
+  };
+  const measurementFor = (coordinate: {
+    readonly taskId: string;
+    readonly loopIteration: number;
+    readonly attempt: number;
+    readonly providerRequestIndex: number;
+  }) => {
+    const observation = evidence.observations.find(
+      (row) =>
+        row.kind === "provider_request_measurement" &&
+        row.emittingTask === coordinate.taskId &&
+        row.loopIteration === coordinate.loopIteration &&
+        row.attempt === coordinate.attempt &&
+        ProviderRequestMeasurementSchema.safeParse(row.payload).success &&
+        ProviderRequestMeasurementSchema.parse(row.payload).providerRequestIndex ===
+          coordinate.providerRequestIndex,
+    );
+    if (observation === undefined) {
+      throw new Error(
+        `${coordinate.taskId}/${coordinate.loopIteration}/${coordinate.attempt}/${coordinate.providerRequestIndex} lacks provider measurement`,
+      );
+    }
+    return ProviderRequestMeasurementSchema.parse(observation.payload);
+  };
+  const providerCoordinateFor = (
+    outputRow: EvaluationSmithersOutputRow,
+    role: string,
+    last = false,
+  ) => {
+    const usage = usageFor(outputRow.nodeId, outputRow.iteration, role, last);
+    const coordinate = {
+      taskId: outputRow.nodeId,
+      loopIteration: outputRow.iteration,
+      attempt: usage.attempt,
+      providerRequestIndex: usage.providerRequestIndex,
+    };
+    const terminal = terminalProviderUsage(captureRow, evidence, {
+      emittingTask: coordinate.taskId,
+      loopIteration: coordinate.loopIteration,
+      attempt: coordinate.attempt,
+    });
+    if (terminal === null || usageCoordinateKey(terminal) !== usageCoordinateKey(coordinate)) {
+      throw new Error(
+        `${captureRow.topology}/${captureRow.caseId}/${coordinate.taskId} output is not bound to its latest provider execution`,
+      );
+    }
+    return coordinate;
+  };
+  const compactionProviderCoordinateFor = (
+    row: EvaluationSmithersOutputRow,
+    phase: "initial" | "fallback",
+  ) => {
+    const allowedRoles =
+      phase === "initial"
+        ? new Set(["context_compact_group", "context_source_tool"])
+        : new Set(["context_fallback_group", "context_source_tool"]);
+    const matches = evidence.usage.filter(
+      (usage) =>
+        usage.taskId === row.nodeId &&
+        usage.loopIteration === row.iteration &&
+        allowedRoles.has(usage.agentRole),
+    );
+    const maxAttempt = Math.max(...matches.map((usage) => usage.attempt), -1);
+    const attemptMatches = matches
+      .filter((usage) => usage.attempt === maxAttempt)
+      .sort((left, right) => left.providerRequestIndex - right.providerRequestIndex);
+    const usage = attemptMatches.at(-1);
+    if (usage === undefined) {
+      throw new Error(`${row.nodeId}/${row.iteration} lacks compaction group usage`);
+    }
+    const coordinate = {
+      taskId: row.nodeId,
+      loopIteration: row.iteration,
+      attempt: usage.attempt,
+      providerRequestIndex: usage.providerRequestIndex,
+    };
+    const terminal = terminalProviderUsage(captureRow, evidence, {
+      emittingTask: coordinate.taskId,
+      loopIteration: coordinate.loopIteration,
+      attempt: coordinate.attempt,
+    });
+    if (terminal === null || usageCoordinateKey(terminal) !== usageCoordinateKey(coordinate)) {
+      throw new Error(
+        `${captureRow.topology}/${captureRow.caseId}/${coordinate.taskId} output is not bound to its latest provider execution`,
+      );
+    }
+    return coordinate;
+  };
+  const outputCoordinateFor = (row: EvaluationSmithersOutputRow) => ({
+    nodeId: row.nodeId,
+    iteration: row.iteration,
+  });
+  const structuredRows = (smithersOutputs?.structuredInternal ?? [])
+    .filter((row) => /^(?:single|topic-t[1-3])-retrieve-internal$/u.test(row.nodeId))
+    .sort(
+      (left, right) => left.iteration - right.iteration || left.nodeId.localeCompare(right.nodeId),
+    )
+    .map((row) => ({
+      row,
+      value: aiChatSchemas.aiChatStructuredInternal.parse(row.value).value,
+    }));
+  type StructuredValue = Exclude<
+    z.infer<typeof aiChatSchemas.aiChatStructuredInternal>["value"],
+    null
+  >;
+  type StructuredResult = StructuredValue["fused"]["results"][number];
+  type StructuredPreview = StructuredValue["previewExposures"][number];
+  const structuredFor = (taskId: string, iteration: number) =>
+    structuredRows
+      .filter((item) => item.row.nodeId === taskId && item.row.iteration === iteration)
+      .at(-1);
+  const traceObservations = evidence.observations.filter(
+    (row) => row.kind === "structured_retrieval_trace",
+  );
+  const tracesByCoordinate = new Map<
+    string,
+    {
+      readonly coordinate: {
+        readonly taskId: string;
+        readonly loopIteration: number;
+        readonly attempt: number;
+      };
+      readonly trace: z.infer<typeof StructuredRetrievalTraceSchema>;
+    }
+  >();
+  for (const observation of traceObservations) {
+    const parsedTrace = StructuredRetrievalTraceSchema.parse(observation.payload);
+    const hasFinalUsage = evidence.usage.some(
+      (usage) =>
+        usage.taskId === observation.emittingTask &&
+        usage.loopIteration === observation.loopIteration &&
+        usage.attempt === observation.attempt &&
+        usage.agentRole === "internal_retrieval",
+    );
+    if (parsedTrace.outcome !== "skipped" && !hasFinalUsage) continue;
+    const trace = {
+      coordinate: {
+        taskId: observation.emittingTask,
+        loopIteration: observation.loopIteration,
+        attempt: observation.attempt,
+      },
+      trace: parsedTrace,
+    };
+    const key = `${trace.coordinate.taskId}:${trace.coordinate.loopIteration}`;
+    const current = tracesByCoordinate.get(key);
+    if (current === undefined || trace.coordinate.attempt > current.coordinate.attempt) {
+      tracesByCoordinate.set(key, trace);
+    }
+  }
+  const traces = [...tracesByCoordinate.values()];
+  const candidateFromResult = (result: StructuredResult, preview: StructuredPreview) => ({
+    resultId: result.resultId,
+    identity: result.identity,
+    identityKey: result.identityKey,
+    score: result.score,
+    rrfK: result.rrfK,
+    bestRank: result.bestRank,
+    matchedQueryOrdinals: result.matchedQueryOrdinals,
+    provenance: result.provenance,
+    preview: result.value.preview,
+    previewRanges: preview.previewRanges,
+    previewSha256Hex: createHash("sha256")
+      .update(
+        preview.previewBytes instanceof Uint8Array
+          ? preview.previewBytes
+          : Uint8Array.from(preview.previewBytes),
+      )
+      .digest("hex"),
+    fullTokenCount: result.value.fullTokenCount,
+    fastTokenCount: result.value.fastTokenCount,
+    mainTokenCount: result.value.mainTokenCount,
+    contentHash: result.value.contentHash,
+    snapshotId: result.value.snapshotId,
+  });
+  const resultRows = traces.map((traceRow) => {
+    const item = structuredFor(traceRow.coordinate.taskId, traceRow.coordinate.loopIteration);
+    if (item === undefined) {
+      throw new Error(
+        `${traceRow.coordinate.taskId}/${traceRow.coordinate.loopIteration} lacks structured retrieval output`,
+      );
+    }
+    if (item.value === null) {
+      return {
+        outputCoordinate: {
+          nodeId: traceRow.coordinate.taskId,
+          iteration: traceRow.coordinate.loopIteration,
+        },
+        ownerCoordinate: traceRow.coordinate,
+        result: null,
+      };
+    }
+    const previewByIdentity = new Map(
+      item.value.previewExposures.map((preview) => [canonicalJson(preview.identity), preview]),
+    );
+    return {
+      outputCoordinate: outputCoordinateFor(item.row),
+      ownerCoordinate: traceRow.coordinate,
+      result: {
+        plan: item.value.queryPlan,
+        branchCoverage: item.value.fused.coverage,
+        truncation: item.value.fused.truncation,
+        candidates: item.value.fused.results.map((result) => {
+          const preview = previewByIdentity.get(canonicalJson(result.identity));
+          if (preview === undefined) {
+            throw new Error(`${result.resultId} lacks durable retrieval preview`);
+          }
+          return candidateFromResult(result, preview);
+        }),
+      },
+    };
+  });
+  const previewPayloads = evidence.observations
+    .filter((row) => row.kind === "structured_retrieval_review_preview")
+    .map((row) => StructuredRetrievalReviewPreviewPayloadSchema.parse(row.payload))
+    .filter((payload) =>
+      traces.some(
+        (trace) =>
+          trace.coordinate.taskId === payload.taskId &&
+          trace.coordinate.loopIteration === payload.loopIteration &&
+          trace.coordinate.attempt === payload.attempt,
+      ),
+    );
+  const reconstructPreview = (
+    record: (typeof previewPayloads)[number]["records"][number],
+  ): string => {
+    const identity = record.identity;
+    const matchingBindings = manifest.sourceBindings.filter((binding) => {
+      if (identity.kind === "public_document") {
+        return (
+          binding.kind === "document" &&
+          binding.source.kind === "public" &&
+          binding.sourceId === identity.sourceId &&
+          binding.documentId === identity.documentId &&
+          binding.snapshotId === identity.snapshotId &&
+          binding.contentHash === identity.contentHash
+        );
+      }
+      if (identity.kind === "publisher_document") {
+        return (
+          binding.kind === "document" &&
+          binding.source.kind === "publisher" &&
+          binding.source.sourceId === identity.subscriptionId &&
+          binding.source.issueId === identity.issueId &&
+          binding.source.documentId === identity.documentId &&
+          binding.documentId === identity.documentId &&
+          binding.snapshotId === identity.snapshotId &&
+          binding.publisherExtractionId === identity.publisherExtractionId &&
+          binding.contentHash === identity.contentHash
+        );
+      }
+      if (identity.kind === "chat_message") {
+        return binding.kind === "chat_message" && binding.messageId === identity.messageId;
+      }
+      if (identity.kind === "memory") {
+        return (
+          binding.kind === "memory" &&
+          binding.memoryId === identity.memoryId &&
+          binding.memoryRevisionId === identity.memoryRevisionId
+        );
+      }
+      if (identity.kind === "web") {
+        return binding.kind === "web" && binding.url === identity.canonicalUrl;
+      }
+      return false;
+    });
+    if (matchingBindings.length !== 1) {
+      throw new Error("preview identity does not resolve to exactly one manifest binding");
+    }
+    const binding = matchingBindings[0]!;
+    let text: string | undefined;
+    if (binding.kind === "document") {
+      const stored = storedDocuments.get(binding.goldenSourceId);
+      if (
+        stored === undefined ||
+        stored.snapshotId !== record.snapshotId ||
+        stored.contentHash !== record.contentHash ||
+        stored.documentId !==
+          (identity.kind === "public_document" || identity.kind === "publisher_document"
+            ? identity.documentId
+            : "") ||
+        (record.identity.kind === "publisher_document" &&
+          record.publisherExtractionId !== binding.publisherExtractionId)
+      ) {
+        throw new Error("preview document identity differs from current stored binding");
+      }
+      text = stored.text;
+    } else {
+      const sourceMatches = fixture.evidence.filter(
+        (candidate) => candidate.sourceId === binding.sourceId,
+      );
+      if (sourceMatches.length !== 1) throw new Error("preview fixture source is not unique");
+      const source = sourceMatches[0]!;
+      const expectedKind =
+        identity.kind === "chat_message"
+          ? "chat_message"
+          : identity.kind === "memory"
+            ? "memory"
+            : "web";
+      if (source.kind !== expectedKind)
+        throw new Error("preview source kind differs from identity");
+      if (identity.kind === "chat_message") {
+        if (
+          sha256Hex(stripHistoricalCitationTags(source.content)) !== identity.sanitizedContentHash
+        ) {
+          throw new Error("chat preview sanitized content hash mismatch");
+        }
+      } else if (identity.kind === "web") {
+        if (webQuoteHash(source.content) !== identity.quoteHash) {
+          throw new Error("web preview quote hash mismatch");
+        }
+      }
+      text = source.content;
+    }
+    if (text === undefined) throw new Error("preview source is not reconstructible");
+    const sanitized = identity.kind === "chat_message" ? stripHistoricalCitationTags(text) : text;
+    let previousEnd = 0;
+    for (const range of record.previewRanges) {
+      if (
+        range.charStart < previousEnd ||
+        range.charStart < 0 ||
+        range.charEnd <= range.charStart ||
+        range.charEnd > sanitized.length
+      ) {
+        throw new Error("preview ranges are not ordered and bounded");
+      }
+      previousEnd = range.charEnd;
+    }
+    const preview = record.previewRanges
+      .map((range) => sanitized.slice(range.charStart, range.charEnd))
+      .join(PREVIEW_RANGE_SEPARATOR);
+    const bytes = new TextEncoder().encode(preview);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const model = resolveRegisteredModel("glm-5-turbo");
+    if (
+      bytes.byteLength !== record.previewByteLength ||
+      digest !== record.previewSha256Hex ||
+      model.countTextTokens(preview) !== record.fastTokenCount ||
+      model.countTextTokens(preview) !== record.mainTokenCount
+    ) {
+      throw new Error("preview attestation measures do not match reconstructed text");
+    }
+    return preview;
+  };
+  const materializeReviewResults = (payload: (typeof previewPayloads)[number]) =>
+    payload.results.map((metadata, index) => ({
+      ...metadata,
+      preview: reconstructPreview(
+        payload.records[index] ??
+          (() => {
+            throw new Error("review result lacks durable preview record");
+          })(),
+      ),
+    }));
+  const reviews = traces.flatMap((traceRow) => {
+    if (traceRow.trace.review === null) return [];
+    const item = structuredFor(traceRow.coordinate.taskId, traceRow.coordinate.loopIteration);
+    if (item === undefined) {
+      throw new Error(
+        `${traceRow.coordinate.taskId}/${traceRow.coordinate.loopIteration} lacks review output`,
+      );
+    }
+    const slot = "initial" as const;
+    const payload = previewPayloads.find(
+      (candidate) =>
+        candidate.taskId === traceRow.coordinate.taskId &&
+        candidate.loopIteration === traceRow.coordinate.loopIteration &&
+        candidate.slot === slot,
+    );
+    if (payload === undefined) throw new Error("review lacks persisted preview payload");
+    const provider = providerCoordinateFor(item.row, "internal_retrieval", true);
+    if (
+      payload.attempt !== provider.attempt ||
+      payload.providerRequestIndex !== provider.providerRequestIndex
+    ) {
+      throw new Error("review preview coordinate does not match durable provider usage");
+    }
+    return [
+      {
+        coordinate: provider,
+        inputSha256Hex: payload.providerInputSha256Hex,
+        decision: traceRow.trace.review,
+        results: materializeReviewResults(payload),
+        branchCoverage: payload.coverage,
+        truncation: payload.truncation,
+      },
+    ];
+  });
+  const previews = previewPayloads.map((payload) => ({
+    coordinate: {
+      taskId: payload.taskId,
+      loopIteration: payload.loopIteration,
+      attempt: payload.attempt,
+      providerRequestIndex: payload.providerRequestIndex,
+    },
+    agentRole: "internal_retrieval" as const,
+    slot: payload.slot,
+    requestSha256Hex: payload.providerInputSha256Hex,
+    results: payload.results,
+    coverage: payload.coverage,
+    truncation: payload.truncation,
+    records: payload.records,
+  }));
+  const retrieval = RetrievalCaptureSchema.parse({
+    traces,
+    reviews,
+    finalResults: resultRows,
+    previews,
+  });
+
+  const planRows = [
+    ...(smithersOutputs?.compactionPlan ?? [])
+      .filter((row) => row.nodeId.endsWith("-compact-plan"))
+      .map((row) => ({ row, phase: "initial" as const })),
+    ...(smithersOutputs?.fallbackPlan ?? [])
+      .filter((row) => row.nodeId.endsWith("-fallback-plan"))
+      .map((row) => ({ row, phase: "fallback" as const })),
+  ];
+  const plans = planRows.map(({ row, phase }) => {
+    const parsed =
+      phase === "initial"
+        ? aiChatSchemas.aiChatCompactionPlan.parse(row.value).value
+        : aiChatSchemas.aiChatFallbackPlan.parse(row.value).value;
+    const providerCoordinate = providerCoordinateFor(
+      row,
+      phase === "initial" ? "context_manifest" : "context_fallback_manifest",
+    );
+    return {
+      phase,
+      outputCoordinate: outputCoordinateFor(row),
+      providerCoordinate,
+      manifest: parsed.manifest,
+      groups: parsed.groups,
+    };
+  });
+  const groups = (smithersOutputs?.compactionGroup ?? [])
+    .filter(
+      (row) =>
+        parseCompactionGroupTaskId(row.nodeId, [
+          "single",
+          "topic-t1",
+          "topic-t2",
+          "topic-t3",
+          "fanout-synthesis",
+        ]) !== undefined,
+    )
+    .map((row) => {
+      const envelope = aiChatSchemas.aiChatCompactionGroup.parse(row.value).value;
+      const phase = row.nodeId.includes("-fallback-")
+        ? ("fallback" as const)
+        : ("initial" as const);
+      const providerCoordinate = compactionProviderCoordinateFor(row, phase);
+      return {
+        phase,
+        outputCoordinate: outputCoordinateFor(row),
+        providerCoordinate,
+        envelope,
+      };
+    });
+  const collects = (smithersOutputs?.compactionCollect ?? [])
+    .filter((row) => /(?:compact|fallback)-collect$/u.test(row.nodeId))
+    .map((row) => {
+      const pass = aiChatSchemas.aiChatCompactionCollect.parse(row.value).value;
+      return {
+        outputCoordinate: outputCoordinateFor(row),
+        phase: pass.phase === "compact" ? ("initial" as const) : ("fallback" as const),
+        groups: pass.groups,
+        taskIds: pass.taskIds,
+        envelopes: pass.envelopes,
+        selections: pass.selections,
+        repairUsed: pass.repairUsed,
+      };
+    });
+  const contextRows = (smithersOutputs?.context ?? [])
+    .filter((row) =>
+      /^(?:single-measure|topic-t[1-3]-measure|fanout-synthesis-measure|(?:single|topic-t[1-3]|fanout-synthesis)-(?:compact|fallback)-measure)$/u.test(
+        row.nodeId,
+      ),
+    )
+    .map((row) => {
+      const value = aiChatSchemas.aiChatContext.parse(row.value).value;
+      const ledgerCandidates = value.candidateLedger.candidates.map((candidate) => ({
+        candidateId: candidate.candidateId,
+        kind: candidate.kind,
+        identity: candidate.identity,
+        identityKey: canonicalIdentityKey(candidate.identity),
+        provenance: candidate.provenance,
+        baseRanges: candidate.baseRanges,
+        previewRanges: candidate.previewRanges,
+        previewSha256Hex: createHash("sha256").update(candidate.preview).digest("hex"),
+        renderedTokenCount: candidate.renderedTokenCount,
+        ...(candidate.chatRole === undefined ? {} : { chatRole: candidate.chatRole }),
+      }));
+      const stage = row.nodeId.endsWith("-fallback-measure")
+        ? ("after_fallback" as const)
+        : row.nodeId.endsWith("-compact-measure")
+          ? ("after_initial" as const)
+          : ("initial" as const);
+      const consumerTaskId = row.nodeId.startsWith("fanout-synthesis")
+        ? "fanout-synthesis"
+        : row.nodeId.startsWith("topic-")
+          ? `topic-${row.nodeId.split("-")[1]}-answer`
+          : "single-answer";
+      return {
+        outputCoordinate: outputCoordinateFor(row),
+        stage,
+        ...(value.topicId === undefined ? {} : { topicId: value.topicId }),
+        consumerTaskId,
+        inputTokens: value.inputTokens,
+        status: value.status,
+        usableInputTokens: value.usableInputTokens,
+        compactionRan: value.compactionRan,
+        candidateLedger: ledgerCandidates,
+        selectedCandidateIds: value.candidates
+          .filter((candidate) => candidate.kind !== "topic_packet")
+          .map((candidate) => candidate.id),
+        sourceKeys: value.sourceMap.map((source) => source.sourceKey),
+        ...(value.failureCode === undefined ? {} : { failureCode: value.failureCode }),
+      };
+    });
+  const measurements = evidence.observations
+    .filter((row) => row.kind === "context_measurement")
+    .map((row) => {
+      const payload = ContextMeasurementPayloadSchema.parse(row.payload);
+      return {
+        coordinate: {
+          taskId: row.emittingTask,
+          loopIteration: row.loopIteration,
+          attempt: row.attempt,
+        },
+        ...(payload.topicId === undefined ? {} : { topicId: payload.topicId }),
+        ...payload,
+      };
+    });
+  const compaction = CompactionCaptureSchema.parse({
+    plans,
+    groups,
+    collects,
+    contexts: contextRows,
+    measurements,
+  });
+
+  const sourceByKey = new Map(serializedSources.map((source) => [source.sourceKey, source]));
+  const terminalRequests = evidence.observations
+    .filter((row) => row.kind === "context_serialized")
+    .map((row) => {
+      const payload = TerminalContextSerializedPayloadSchema.parse(row.payload);
+      const coordinate = payload.terminalUsageCoordinate;
+      const measurement = measurementFor(coordinate);
+      const usage = evidence.usage.find(
+        (candidate) =>
+          candidate.taskId === coordinate.taskId &&
+          candidate.loopIteration === coordinate.loopIteration &&
+          candidate.attempt === coordinate.attempt &&
+          candidate.providerRequestIndex === coordinate.providerRequestIndex,
+      );
+      if (usage === undefined) return undefined;
+      if (payload.restrictedContextLedger.requestSha256Hex !== measurement.requestSha256Hex) {
+        throw new Error(`${payload.consumerTaskId} terminal request digest differs from ledger`);
+      }
+      const ledger = payload.restrictedContextLedger;
+      if (
+        ledger.modelId !== measurement.modelId ||
+        ledger.inputTokens !== measurement.inputTokens ||
+        ledger.requestedOutputTokens !== measurement.requestedOutputTokens ||
+        ledger.usableInputTokens !== measurement.usableInputTokens ||
+        usage.modelId !== measurement.modelId
+      ) {
+        throw new Error(`${payload.consumerTaskId} terminal ledger differs from measurement`);
+      }
+      if (
+        ledger.requestKind !== "synthesis" &&
+        JSON.stringify(payload.sourceKeys) !==
+          JSON.stringify(ledger.sources.map((source) => source.sourceKey))
+      ) {
+        throw new Error(`${payload.consumerTaskId} terminal source order differs from ledger`);
+      }
+      const sourceMap =
+        payload.restrictedContextLedger.requestKind === "synthesis"
+          ? payload.sourceKeys.map((sourceKey) => {
+              const durable = sourceByKey.get(sourceKey);
+              if (durable === undefined || durable.locator === undefined) {
+                throw new Error(`${sourceKey} synthesis source lacks durable locator`);
+              }
+              const kind = durable.locator.kind;
+              if (!["document", "chat_message", "memory", "web"].includes(kind)) {
+                throw new Error(`${sourceKey} synthesis source kind is unsupported`);
+              }
+              const ranges = kind === "document" ? durable.uses.flatMap((use) => use.ranges) : [];
+              if (kind === "document" && ranges.length === 0) {
+                throw new Error(`${sourceKey} synthesis document source lacks durable ranges`);
+              }
+              return {
+                sourceKey,
+                kind,
+                label: durable.label ?? null,
+                ranges:
+                  kind === "document"
+                    ? normalizeCharacterRanges(
+                        ranges,
+                        Math.max(...ranges.map((range) => range.charEnd), 0),
+                      )
+                    : [],
+                ...(kind === "document" ? { contentHash: durable.locator.contentHash } : {}),
+                ...(kind === "web" ? { contentHash: durable.locator.quoteHash } : {}),
+                sourceIdentityDigest: createHash("sha256")
+                  .update(canonicalJson(durable.locator))
+                  .digest("hex"),
+              };
+            })
+          : payload.restrictedContextLedger.sources.map((source) => {
+              const durable = sourceByKey.get(source.sourceKey);
+              if (durable === undefined || durable.locator === undefined) {
+                throw new Error(`${source.sourceKey} direct source lacks durable locator`);
+              }
+              if (durable.locator.kind !== source.kind) {
+                throw new Error(`${source.sourceKey} direct source kind differs from locator`);
+              }
+              return {
+                sourceKey: source.sourceKey,
+                candidateId: source.candidateId,
+                kind: source.kind,
+                label: source.label,
+                ranges: source.ranges,
+                ...(durable.locator.kind === "document"
+                  ? { contentHash: durable.locator.contentHash }
+                  : durable.locator.kind === "web"
+                    ? { contentHash: durable.locator.quoteHash }
+                    : {}),
+                sourceIdentityDigest: createHash("sha256")
+                  .update(canonicalJson(durable.locator))
+                  .digest("hex"),
+              };
+            });
+      const proofDigests = [
+        ...new Set([
+          ...measurement.sourceExposureProofSha256Hexes,
+          ...(payload.restrictedContextLedger.requestKind === "synthesis"
+            ? payload.restrictedContextLedger.packets.map((packet) => packet.packetSha256Hex)
+            : []),
+        ]),
+      ];
+      const request = {
+        coordinate,
+        requestKind: payload.restrictedContextLedger.requestKind,
+        consumerTaskId: payload.consumerTaskId,
+        ...(payload.topicId === undefined ? {} : { topicId: payload.topicId }),
+        requestSha256Hex: measurement.requestSha256Hex,
+        localInputTokens: payload.restrictedContextLedger.inputTokens,
+        providerInputTokens: usage.inputTokens + usage.cachedTokens,
+        requestedOutputTokens: measurement.requestedOutputTokens,
+        usableInputTokens: measurement.usableInputTokens,
+        sourceMap,
+        proofDigests,
+      } satisfies TerminalRequestEvidenceProjection;
+      return {
+        ...request,
+        evidenceSha256Hex: terminalRequestEvidenceSha256Hex(request),
+      };
+    })
+    .filter((request): request is NonNullable<typeof request> => request !== undefined);
+  const terminalEvidence = TerminalEvidenceCaptureSchema.parse({ requests: terminalRequests });
+  return { retrieval, compaction, terminalEvidence };
+};
+
 const commonCapturedResult = async (
   connectionString: string,
   row: CaseRunRow,
   annotations: EvaluationHumanAnnotations,
   annotationsSha256Hex: string,
+  capturedContextRows?: readonly z.infer<typeof ContextSummaryRowSchema>[],
 ) => {
   const fixture = fixtureFor(row.caseId);
   const manifest = EvaluationSeedManifestSchema.parse(row.seedManifest);
@@ -6341,9 +8147,18 @@ const commonCapturedResult = async (
   const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
   const storedDocuments = await loadStoredEvaluationDocuments(connectionString, manifest);
   const measurementFixture = fixtureWithStoredDocumentText(fixture, storedDocuments);
-  const currentDigest = evaluationRunEvidenceDigest(row, evidence, storedDocuments);
-  if (row.runEvidenceSha256Hex !== currentDigest)
-    throw new Error(`${row.topology}/${row.caseId} evidence attestation mismatch`);
+  const smithersOutputs =
+    row.topology === "specialized" && capturedContextRows === undefined
+      ? await loadEvaluationSmithersOutputs(
+          connectionString,
+          deriveAiChatSmithersRunId(row.aiRunId),
+        )
+      : undefined;
+  const contextRows =
+    capturedContextRows ??
+    (smithersOutputs === undefined
+      ? []
+      : contextSummaryRowsFromSmithersOutputs(smithersOutputs.context));
   if (
     evidence.usage.some((usage) => usage.providerServiceId !== ZAI_CODING_PLAN_PROVIDER_SERVICE_ID)
   ) {
@@ -6449,18 +8264,6 @@ const commonCapturedResult = async (
           : ranges,
     };
   });
-  const serializedContextTokens = measureCanonicalEvaluationRequestTokens(
-    measurementFixture,
-    row.topology === "general_planner"
-      ? canonicalSerializedSourceIds.map((sourceId) => ({
-          sourceId,
-          ranges:
-            fixture.labels.acceptableRanges[sourceId] ??
-            fixture.evidence.find((source) => source.sourceId === sourceId)?.ranges ??
-            [],
-        }))
-      : selections,
-  );
   const memorySourceById = new Map(
     manifest.sourceBindings.flatMap((binding) =>
       binding.kind === "memory" ? [[binding.memoryId, binding] as const] : [],
@@ -6496,6 +8299,59 @@ const commonCapturedResult = async (
     }),
     { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
   );
+  const artifacts = await captureV4Artifacts(
+    evidence,
+    serializedSources,
+    measurementFixture,
+    manifest,
+    storedDocuments,
+    smithersOutputs,
+    row,
+  );
+  if (row.topology === "specialized") {
+    attestCapturedRetrievalArtifact(row, evidence, artifacts.retrieval);
+  }
+  const currentDigest = evaluationRunEvidenceDigest(row, evidence, storedDocuments, contextRows);
+  if (row.runEvidenceSha256Hex !== currentDigest)
+    throw new Error(`${row.topology}/${row.caseId} evidence attestation mismatch`);
+  const serializedContextTokens =
+    row.topology === "general_planner"
+      ? (() => {
+          const usage = evidence.usage
+            .filter((candidate) => candidate.taskId === "evaluation-general-planner")
+            .sort(
+              (left, right) =>
+                left.loopIteration - right.loopIteration ||
+                left.attempt - right.attempt ||
+                left.providerRequestIndex - right.providerRequestIndex,
+            )
+            .at(-1);
+          if (usage === undefined) return 0;
+          return (
+            promptMeasurements.find(
+              (measurement) =>
+                measurement.requestId ===
+                [usage.taskId, usage.loopIteration, usage.attempt, usage.providerRequestIndex].join(
+                  ":",
+                ),
+            )?.localInputTokens ?? 0
+          );
+        })()
+      : (artifacts.terminalEvidence.requests
+          .filter(
+            (request) => request.requestKind === "direct" || request.requestKind === "synthesis",
+          )
+          .sort((left, right) =>
+            left.coordinate.loopIteration - right.coordinate.loopIteration ||
+            left.coordinate.attempt - right.coordinate.attempt ||
+            left.coordinate.providerRequestIndex - right.coordinate.providerRequestIndex ||
+            left.requestKind === right.requestKind
+              ? 0
+              : left.requestKind === "synthesis"
+                ? 1
+                : -1,
+          )
+          .at(-1)?.localInputTokens ?? 0);
   return {
     fixture,
     manifest,
@@ -6503,8 +8359,8 @@ const commonCapturedResult = async (
     selections,
     storedDocuments,
     common: {
-      artifactVersion: 3 as const,
-      goldenSetVersion: 3 as const,
+      artifactVersion: 4 as const,
+      goldenSetVersion: 4 as const,
       caseId: row.caseId,
       capture: {
         origin: "real_provider_turn" as const,
@@ -6548,6 +8404,9 @@ const commonCapturedResult = async (
         ),
       },
       usage: { providerRequestCount: evidence.usage.length, ...aggregate },
+      retrieval: artifacts.retrieval,
+      compaction: artifacts.compaction,
+      terminalEvidence: artifacts.terminalEvidence,
     },
   };
 };
@@ -6611,187 +8470,6 @@ const observationOrder = (
   Date.parse(left.createdAt) - Date.parse(right.createdAt) ||
   left.observationKey.localeCompare(right.observationKey);
 
-const latestObservation = (evidence: DurableRunEvidence, kind: string, emittingTask: string) =>
-  evidence.observations
-    .filter((observation) => observation.kind === kind && observation.emittingTask === emittingTask)
-    .sort(observationOrder)
-    .at(-1);
-
-const productionCandidateSourceIds = (
-  fixture: GoldenEvaluationCase,
-  manifest: EvaluationSeedManifest,
-  evidence: DurableRunEvidence,
-): ReadonlyMap<string, string> => {
-  const sourceById = new Map(fixture.evidence.map((source) => [source.sourceId, source] as const));
-  const entries = manifest.sourceBindings.flatMap((binding) => {
-    const source = sourceById.get(evaluationBindingGoldenSourceId(binding));
-    if (source === undefined) throw new Error(`${manifest.caseId} has an unknown source binding`);
-    const candidateId =
-      binding.kind === "document"
-        ? documentBindingIdentity(binding)
-        : binding.kind === "chat_message"
-          ? chatMessageEvidenceIdentity(binding.messageId)
-          : binding.kind === "memory"
-            ? memoryEvidenceIdentity(binding.memoryId)
-            : webEvidenceIdentity(binding.url, source.content);
-    const liveWebCandidateIds =
-      binding.kind !== "web"
-        ? []
-        : evidence.sources.flatMap((candidate) => {
-            const locator = DurableWebSourceLocatorSchema.safeParse(candidate.locator);
-            return locator.success && locator.data.domain === binding.domain
-              ? [webEvidenceIdentity(locator.data.url, locator.data.quote)]
-              : [];
-          });
-    return [
-      [candidateId, evaluationBindingGoldenSourceId(binding)] as const,
-      ...liveWebCandidateIds.map(
-        (liveCandidateId) => [liveCandidateId, evaluationBindingGoldenSourceId(binding)] as const,
-      ),
-    ];
-  });
-  const byCandidateId = new Map<string, string>();
-  for (const [candidateId, sourceId] of entries) {
-    const existingSourceId = byCandidateId.get(candidateId);
-    if (existingSourceId !== undefined && existingSourceId !== sourceId) {
-      throw new Error(`${manifest.caseId} production candidate identities collide`);
-    }
-    byCandidateId.set(candidateId, sourceId);
-  }
-  return byCandidateId;
-};
-
-const translateRestrictedConversation = (
-  fixture: GoldenEvaluationCase,
-  manifest: EvaluationSeedManifest,
-  entries: readonly z.infer<typeof RestrictedConversationBindingSchema>[],
-) => {
-  const turnByRunId = new Map(
-    manifest.turnBindings.map((binding) => [binding.aiRunId, binding] as const),
-  );
-  const translated = entries.map((entry) => {
-    const binding = turnByRunId.get(entry.turnId);
-    if (
-      binding === undefined ||
-      binding.userMessageId !== entry.userMessageId ||
-      (entry.kind === "complete" && binding.assistantMessageId !== entry.assistantMessageId)
-    ) {
-      throw new Error(`${fixture.id} production conversation binding differs from the seeded turn`);
-    }
-    return entry.kind === "complete"
-      ? {
-          kind: "complete" as const,
-          fixtureTurnId: binding.turnId,
-          turnId: entry.turnId,
-          userMessageId: entry.userMessageId,
-          assistantMessageId: entry.assistantMessageId,
-        }
-      : {
-          kind: "failed" as const,
-          fixtureTurnId: binding.turnId,
-          turnId: entry.turnId,
-          userMessageId: entry.userMessageId,
-          errorCode: entry.errorCode,
-          retryable: entry.retryable,
-        };
-  });
-  if (new Set(translated.map((entry) => entry.turnId)).size !== translated.length) {
-    throw new Error(`${fixture.id} production conversation contains duplicate turns`);
-  }
-  return translated;
-};
-
-const translateAndAttestRestrictedLedger = (
-  fixture: GoldenEvaluationCase,
-  manifest: EvaluationSeedManifest,
-  evidence: DurableRunEvidence,
-  raw: unknown,
-) => {
-  const ledger = RestrictedContextLedgerSchema.parse(raw);
-  const selectedConversation = translateRestrictedConversation(
-    fixture,
-    manifest,
-    ledger.selectedConversation,
-  );
-  const sourceIdByCandidateId = productionCandidateSourceIds(fixture, manifest, evidence);
-  const fixtureSourceById = new Map(
-    fixture.evidence.map((source) => [source.sourceId, source] as const),
-  );
-  const sources =
-    ledger.requestKind === "synthesis"
-      ? []
-      : ledger.sources.map((source) => {
-          const sourceId = sourceIdByCandidateId.get(source.candidateId);
-          const fixtureSource =
-            sourceId === undefined ? undefined : fixtureSourceById.get(sourceId);
-          if (sourceId === undefined || fixtureSource?.kind !== source.kind) {
-            throw new Error(`${fixture.id} production ledger contains an unknown candidate`);
-          }
-          const liveLocator =
-            source.kind === "web"
-              ? evidence.sources
-                  .map((candidate) => DurableWebSourceLocatorSchema.safeParse(candidate.locator))
-                  .find(
-                    (candidate) =>
-                      candidate.success &&
-                      webEvidenceIdentity(candidate.data.url, candidate.data.quote) ===
-                        source.candidateId,
-                  )
-              : undefined;
-          const contentOverride =
-            liveLocator?.success === true ? liveLocator.data.quote : undefined;
-          return {
-            ...source,
-            sourceId,
-            ...(contentOverride === undefined ? {} : { contentOverride }),
-          };
-        });
-  if (
-    new Set(sources.map((source) => source.candidateId)).size !== sources.length ||
-    new Set(sources.map((source) => source.sourceKey)).size !== sources.length ||
-    new Set(selectedConversation.map((entry) => entry.turnId)).size !== selectedConversation.length
-  ) {
-    throw new Error(`${fixture.id} production ledger contains duplicate context identities`);
-  }
-  if (ledger.requestKind === "synthesis") {
-    if (
-      ledger.usableInputTokens !== canonicalEvaluationUsableInputTokens() ||
-      new Set(ledger.packets.map((packet) => packet.topicId)).size !== ledger.packets.length
-    ) {
-      throw new Error(`${fixture.id} synthesis ledger has invalid bounds or packet identities`);
-    }
-    return { ...ledger, selectedConversation };
-  }
-  const exactInput: ExactProductionContextInput =
-    ledger.requestKind === "topic"
-      ? {
-          requestKind: "topic",
-          topicId: ledger.topicId,
-          question: ledger.question,
-          selectedConversation,
-          gaps: ledger.gaps,
-          sources,
-          requestedOutputTokens: ledger.requestedOutputTokens,
-        }
-      : {
-          requestKind: "direct",
-          question: ledger.question,
-          selectedConversation,
-          gaps: ledger.gaps,
-          sources,
-          requestedOutputTokens: ledger.requestedOutputTokens,
-        };
-  const exact = attestExactProductionContext(fixture, exactInput);
-  if (
-    ledger.inputTokens !== exact.inputTokens ||
-    ledger.requestSha256Hex !== exact.requestSha256Hex ||
-    ledger.usableInputTokens !== canonicalEvaluationUsableInputTokens()
-  ) {
-    throw new Error(`${fixture.id} restricted production ledger differs from its exact request`);
-  }
-  return { ...ledger, selectedConversation, sources };
-};
-
 const usageCoordinateKey = (coordinate: {
   readonly taskId: string;
   readonly loopIteration: number;
@@ -6853,30 +8531,23 @@ const providerMeasurementsForTask = (
 const isSuccessfulProviderStopReason = (stopReason: string): boolean =>
   stopReason === "stop" || stopReason === "length" || stopReason === "toolUse";
 
-const providerPromptTokens = (usage: DurableRunEvidence["usage"][number]): number =>
-  usage.inputTokens + usage.cachedTokens;
-
 const specializedProviderAgentRoles = new Map<string, string>([
   ["plan-turn", "plan_turn"],
   ["single-retrieve-internal", "internal_retrieval"],
   ["single-select-memories", "memory_selector"],
   ["single-retrieve-web", "web_research"],
-  ["single-reduce-plan", "context_reducer"],
   ["single-answer", "direct_answer"],
   ["topic-t1-retrieve-internal", "internal_retrieval"],
   ["topic-t1-select-memories", "memory_selector"],
   ["topic-t1-retrieve-web", "web_research"],
-  ["topic-t1-reduce-plan", "context_reducer"],
   ["topic-t1-answer", "topic_answer"],
   ["topic-t2-retrieve-internal", "internal_retrieval"],
   ["topic-t2-select-memories", "memory_selector"],
   ["topic-t2-retrieve-web", "web_research"],
-  ["topic-t2-reduce-plan", "context_reducer"],
   ["topic-t2-answer", "topic_answer"],
   ["topic-t3-retrieve-internal", "internal_retrieval"],
   ["topic-t3-select-memories", "memory_selector"],
   ["topic-t3-retrieve-web", "web_research"],
-  ["topic-t3-reduce-plan", "context_reducer"],
   ["topic-t3-answer", "topic_answer"],
   ["fanout-synthesis", "synthesis"],
   ["memory-extract", "memory_extractor"],
@@ -6899,13 +8570,6 @@ const specializedTopicAnswerTasks = new Set([
   "topic-t3-answer",
 ]);
 
-const specializedReducerTasks = new Set([
-  "single-reduce-plan",
-  "topic-t1-reduce-plan",
-  "topic-t2-reduce-plan",
-  "topic-t3-reduce-plan",
-]);
-
 const specializedSelectorRoles = new Map<string, "internal" | "memory" | "web">([
   ["single-retrieve-internal", "internal"],
   ["single-select-memories", "memory"],
@@ -6924,9 +8588,6 @@ const specializedSelectorRoles = new Map<string, "internal" | "memory" | "web">(
 const isCanonicalSpecializedTopicAnswerTask = (taskId: string): boolean =>
   specializedTopicAnswerTasks.has(taskId);
 
-const isCanonicalSpecializedReducerTask = (taskId: string): boolean =>
-  specializedReducerTasks.has(taskId);
-
 const expectedSelectorRoleForTask = (taskId: string): "internal" | "memory" | "web" => {
   const role = specializedSelectorRoles.get(taskId);
   if (role === undefined) throw new Error(`unknown canonical selector task ${taskId}`);
@@ -6935,9 +8596,25 @@ const expectedSelectorRoleForTask = (taskId: string): "internal" | "memory" | "w
 
 const expectedAgentRoleForTask = (topology: EvaluationTopology, taskId: string): string => {
   const role = providerAgentRolesByTopology[topology].get(taskId);
-  if (role === undefined) throw new Error(`unknown canonical provider task ${topology}/${taskId}`);
-  return role;
+  if (role !== undefined) return role;
+  if (topology === "specialized" && isCanonicalCompactionTask(taskId)) {
+    if (taskId.endsWith("-compact-plan")) return "context_manifest";
+    if (taskId.endsWith("-fallback-plan")) return "context_fallback_manifest";
+    const group = parseCompactionGroupTaskId(taskId, canonicalCompactionPrefixes);
+    if (group?.phase === "fallback") return "context_fallback_group";
+    if (group?.phase === "compact") return "context_compact_group";
+  }
+  throw new Error(`unknown canonical provider task ${topology}/${taskId}`);
 };
+const providerAgentRoleAllowedForTask = (
+  topology: EvaluationTopology,
+  taskId: string,
+  role: string,
+): boolean =>
+  role === expectedAgentRoleForTask(topology, taskId) ||
+  (topology === "specialized" &&
+    isCanonicalCompactionTask(taskId) &&
+    role === "context_source_tool");
 
 const expectedModelForTask = (_taskId: string): "glm-5-turbo" => "glm-5-turbo";
 
@@ -6979,7 +8656,7 @@ const providerUsageForObservation = (
   const measurement = measurements[0];
   const latestMeasurement = executionMeasurements.at(-1);
   if (
-    terminal.agentRole !== expectedAgentRoleForTask(row.topology, observation.emittingTask) ||
+    !providerAgentRoleAllowedForTask(row.topology, observation.emittingTask, terminal.agentRole) ||
     terminal.modelId !== expectedModelForTask(observation.emittingTask) ||
     terminal.providerServiceId !== ZAI_CODING_PLAN_PROVIDER_SERVICE_ID ||
     !isSuccessfulProviderStopReason(terminal.stopReason) ||
@@ -7034,1471 +8711,21 @@ const terminalProviderUsage = (
   return bound;
 };
 
-const externalToolUsageForObservation = (
-  row: CaseRunRow,
-  evidence: DurableRunEvidence,
-  observation: Pick<
-    DurableRunEvidence["observations"][number],
-    "emittingTask" | "loopIteration" | "attempt"
-  >,
-  required: boolean,
-): readonly DurableRunEvidence["externalToolUsage"][number][] => {
-  const executionUsage = evidence.externalToolUsage.filter(
-    (usage) =>
-      usage.taskId === observation.emittingTask &&
-      usage.loopIteration === observation.loopIteration &&
-      usage.attempt === observation.attempt,
-  );
-  if (executionUsage.length === 0) {
-    if (!required) return [];
-    throw new Error(
-      `${row.topology}/${row.caseId}/${observation.emittingTask} lacks terminal external-tool usage`,
-    );
-  }
-  if (executionUsage.some((usage) => usage.status === "failed")) {
-    throw new Error(
-      `${row.topology}/${row.caseId}/${observation.emittingTask} output is not bound to its latest external-tool execution`,
-    );
-  }
-  return executionUsage;
-};
-
-const terminalExternalToolUsage = (
-  row: CaseRunRow,
-  evidence: DurableRunEvidence,
-  observation: Pick<
-    DurableRunEvidence["observations"][number],
-    "emittingTask" | "loopIteration" | "attempt"
-  >,
-  required: boolean,
-): readonly DurableRunEvidence["externalToolUsage"][number][] => {
-  const bound = externalToolUsageForObservation(row, evidence, observation, required);
-  if (bound.length === 0) return bound;
-  const latest = evidence.externalToolUsage
-    .filter((usage) => usage.taskId === observation.emittingTask)
-    .at(-1)!;
-  if (
-    latest.loopIteration !== observation.loopIteration ||
-    latest.attempt !== observation.attempt
-  ) {
-    throw new Error(
-      `${row.topology}/${row.caseId}/${observation.emittingTask} output is not the latest external-tool execution`,
-    );
-  }
-  return bound;
-};
-
-const ContextReducerTerminalSchema = z
-  .object({
-    terminalUsageCoordinate: TerminalUsageCoordinateSchema,
-    modelId: z.literal("glm-5-turbo"),
-    requestSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
-    providerInputTokens: z.number().int().nonnegative(),
-    totalTokens: z.number().int().nonnegative(),
-    stopReason: z.string().min(1),
-  })
-  .strict();
-
-const terminalProductionLedger = (
-  fixture: GoldenEvaluationCase,
-  manifest: EvaluationSeedManifest,
-  evidence: DurableRunEvidence,
-  promptMeasurements: readonly TrustedPromptMeasurement[],
-  taskId: string,
-) => {
-  const observations = evidence.observations
-    .filter(
-      (candidate) => candidate.kind === "context_serialized" && candidate.emittingTask === taskId,
-    )
-    .sort(observationOrder);
-  const observation = observations.at(-1);
-  if (observation === undefined) throw new Error(`${fixture.id}/${taskId} lacks a terminal ledger`);
-  if (
-    observations.filter(
-      (candidate) =>
-        candidate.loopIteration === observation.loopIteration &&
-        candidate.attempt === observation.attempt,
-    ).length !== 1
-  ) {
-    throw new Error(`${fixture.id}/${taskId} has duplicate terminal serialized outputs`);
-  }
-  for (const candidate of observations) {
-    const candidatePayload = TerminalContextSerializedPayloadSchema.parse(candidate.payload);
-    const executionUsage = evidence.usage
-      .filter(
-        (usage) =>
-          usage.taskId === taskId &&
-          usage.loopIteration === candidate.loopIteration &&
-          usage.attempt === candidate.attempt,
-      )
-      .at(-1);
-    const executionMeasurement = providerMeasurementsForTask(evidence, taskId)
-      .filter(
-        (measurement) =>
-          measurement.loopIteration === candidate.loopIteration &&
-          measurement.attempt === candidate.attempt,
-      )
-      .at(-1);
-    if (executionUsage === undefined) {
-      // A provider call may time out after passing the exact gate and before
-      // returning usage. deriveTrustedPromptMeasurements already admits that
-      // one terminal measurement-only failure shape; the serialized context
-      // produced before that call must follow the same bounded rule.
-      if (
-        candidatePayload.consumerTaskId !== taskId ||
-        candidatePayload.terminalUsageCoordinate.taskId !== taskId ||
-        candidatePayload.terminalUsageCoordinate.loopIteration !== candidate.loopIteration ||
-        candidatePayload.terminalUsageCoordinate.attempt !== candidate.attempt ||
-        executionMeasurement === undefined ||
-        usageCoordinateKey(executionMeasurement) !==
-          usageCoordinateKey(candidatePayload.terminalUsageCoordinate)
-      ) {
-        throw new Error(`${fixture.id}/${taskId} has an unbound serialized retry output`);
-      }
-      continue;
-    }
-    if (
-      candidatePayload.consumerTaskId !== taskId ||
-      candidatePayload.terminalUsageCoordinate.taskId !== taskId ||
-      candidatePayload.terminalUsageCoordinate.loopIteration !== candidate.loopIteration ||
-      candidatePayload.terminalUsageCoordinate.attempt !== candidate.attempt ||
-      executionUsage === undefined ||
-      executionMeasurement === undefined ||
-      usageCoordinateKey(executionUsage) !==
-        usageCoordinateKey(candidatePayload.terminalUsageCoordinate) ||
-      usageCoordinateKey(executionMeasurement) !==
-        usageCoordinateKey(candidatePayload.terminalUsageCoordinate) ||
-      executionUsage.agentRole !== expectedAgentRoleForTask("specialized", taskId) ||
-      executionUsage.modelId !== expectedModelForTask(taskId) ||
-      executionUsage.providerServiceId !== ZAI_CODING_PLAN_PROVIDER_SERVICE_ID ||
-      !isSuccessfulProviderStopReason(executionUsage.stopReason) ||
-      !promptMeasurements.some(
-        (measurement) => measurement.requestId === usageCoordinateKey(executionUsage),
-      )
-    ) {
-      throw new Error(`${fixture.id}/${taskId} has an unbound serialized retry output`);
-    }
-  }
-  const payload = TerminalContextSerializedPayloadSchema.parse(observation.payload);
-  const coordinate = payload.terminalUsageCoordinate;
-  if (
-    coordinate.taskId !== taskId ||
-    coordinate.loopIteration !== observation.loopIteration ||
-    coordinate.attempt !== observation.attempt
-  ) {
-    throw new Error(`${fixture.id}/${taskId} terminal ledger has foreign usage coordinates`);
-  }
-  const usage = evidence.usage.find(
-    (candidate) => usageCoordinateKey(candidate) === usageCoordinateKey(coordinate),
-  );
-  const latestUsage = evidence.usage.filter((candidate) => candidate.taskId === taskId).at(-1);
-  const latestMeasurement = providerMeasurementsForTask(evidence, taskId).at(-1);
-  const measurement = promptMeasurements.find(
-    (candidate) => candidate.requestId === usageCoordinateKey(coordinate),
-  );
-  const ledger = translateAndAttestRestrictedLedger(
-    fixture,
-    manifest,
-    evidence,
-    payload.restrictedContextLedger,
-  );
-  if (
-    usage === undefined ||
-    latestUsage === undefined ||
-    latestMeasurement === undefined ||
-    usageCoordinateKey(latestUsage) !== usageCoordinateKey(coordinate) ||
-    usageCoordinateKey(latestMeasurement) !== usageCoordinateKey(coordinate) ||
-    usage.agentRole !== expectedAgentRoleForTask("specialized", taskId) ||
-    usage.providerServiceId !== ZAI_CODING_PLAN_PROVIDER_SERVICE_ID ||
-    !isSuccessfulProviderStopReason(usage.stopReason) ||
-    usage.modelId !== ledger.modelId ||
-    providerPromptTokens(usage) !== ledger.inputTokens ||
-    measurement?.requestSha256Hex !== ledger.requestSha256Hex ||
-    measurement?.localInputTokens !== ledger.inputTokens ||
-    measurement.providerInputTokens !== ledger.inputTokens ||
-    !measurement.gatePassed
-  ) {
-    throw new Error(`${fixture.id}/${taskId} terminal ledger lacks exact real-provider usage`);
-  }
-  return {
-    ledger,
-    terminalUsageCoordinate: coordinate,
-    providerInputTokens: providerPromptTokens(usage),
-  };
-};
-
-const exactInputForTranslatedLedger = (
-  ledger: Exclude<
-    ReturnType<typeof translateAndAttestRestrictedLedger>,
-    { readonly requestKind: "synthesis" }
-  >,
-): Exclude<ExactProductionContextInput, { readonly requestKind: "synthesis" }> =>
-  ledger.requestKind === "topic"
-    ? {
-        requestKind: "topic",
-        topicId: ledger.topicId,
-        question: ledger.question,
-        selectedConversation: ledger.selectedConversation,
-        gaps: ledger.gaps,
-        sources: ledger.sources,
-        requestedOutputTokens: ledger.requestedOutputTokens,
-      }
-    : {
-        requestKind: "direct",
-        question: ledger.question,
-        selectedConversation: ledger.selectedConversation,
-        gaps: ledger.gaps,
-        sources: ledger.sources,
-        requestedOutputTokens: ledger.requestedOutputTokens,
-      };
-
-const compareExactSourceUses = (
-  row: CaseRunRow,
-  evidence: DurableRunEvidence,
-  expected: readonly Omit<DurableRunEvidence["sourceUses"][number], "createdAt">[],
-): void => {
-  const order = (
-    left: { readonly sourceKey: string; readonly consumerTaskId: string },
-    right: {
-      readonly sourceKey: string;
-      readonly consumerTaskId: string;
-    },
-  ) =>
-    compareSourceKeys(left.sourceKey, right.sourceKey) ||
-    left.consumerTaskId.localeCompare(right.consumerTaskId);
-  const actual = evidence.sourceUses.map(({ createdAt: _createdAt, ...use }) => use).sort(order);
-  if (canonicalJson(actual) !== canonicalJson([...expected].sort(order))) {
-    throw new Error(`${row.topology}/${row.caseId} durable source uses are not exact`);
-  }
-};
-
-const expectedTerminalContextEvidence = (
-  row: CaseRunRow,
-  evidence: DurableRunEvidence,
-  manifest: EvaluationSeedManifest,
-  fixture: GoldenEvaluationCase,
-): {
-  readonly mode: "clarification" | "single" | "synthesis";
-  readonly reductionRan: boolean;
-  readonly sourcesRead: readonly ReturnType<typeof publicSourceRecordFromFinalSource>[];
-  readonly consumers: readonly PublicContextConsumer[];
-} => {
-  const durableSourceMap = durableFinalSourceMapFromEvidence(evidence);
-  if (row.topology === "general_planner") {
-    const output = GeneralPlannerProviderOutputSchema.parse(row.executionOutput);
-    if (output.planTurn.mode === "clarify") {
-      compareExactSourceUses(row, evidence, []);
-      if (durableSourceMap.length !== 0) {
-        throw new Error(`${row.topology}/${row.caseId} clarification has durable sources`);
-      }
-      return { mode: "clarification", reductionRan: false, sourcesRead: [], consumers: [] };
-    }
-    const model = resolveRegisteredModel("glm-5-turbo");
-    const expectedUses = output.selectedSources.map((selection, index) => {
-      const source = fixture.evidence.find(
-        (candidate) => candidate.sourceId === selection.sourceId,
-      );
-      const rawDurableSource = evidence.sources.find(
-        (candidate) => mapDurableSource(manifest, candidate) === selection.sourceId,
-      );
-      const durableSource = durableSourceMap.find(
-        (candidate) => candidate.sourceKey === rawDurableSource?.sourceKey,
-      );
-      if (source === undefined || durableSource === undefined) {
-        throw new Error(`${row.topology}/${row.caseId} baseline source order is incomplete`);
-      }
-      const selectedText =
-        source.kind === "document" && selection.ranges.length > 0
-          ? selection.ranges
-              .map((range) => source.content.slice(range.charStart, range.charEnd))
-              .join("\n…\n")
-          : source.kind === "memory"
-            ? source.content.trim()
-            : source.content;
-      return {
-        sourceKey: durableSource.sourceKey,
-        consumerTaskId: output.planTurn.mode === "fanout" ? "fanout-synthesis" : "single-answer",
-        topicId: null,
-        renderedTokenCount: model.countTextTokens(selectedText),
-        contextOrder: index,
-        ranges: selection.ranges,
-      };
-    });
-    compareExactSourceUses(row, evidence, expectedUses);
-    return {
-      mode: output.planTurn.mode === "fanout" ? "synthesis" : "single",
-      reductionRan: false,
-      sourcesRead: durableSourceMap.map(publicSourceRecordFromFinalSource),
-      consumers: [
-        {
-          consumer: output.planTurn.mode === "fanout" ? "synthesis" : "direct",
-          inputTokens: measureCanonicalEvaluationRequestTokens(fixture, output.selectedSources),
-          requestedOutputTokens: CanonicalEvaluationExecutionConfig.aiMainOutputMaxTokens,
-          usableInputTokens: canonicalEvaluationUsableInputTokens(),
-        },
-      ],
-    };
-  }
-
-  const promptMeasurements = deriveTrustedPromptMeasurements(
-    row.topology,
-    row.caseId,
-    evidence.usage,
-    evidence.observations,
-  );
-  const serializedTasks = new Set(
-    evidence.observations
-      .filter((observation) => observation.kind === "context_serialized")
-      .map((observation) => observation.emittingTask),
-  );
-  const hasSingle = serializedTasks.has("single-answer");
-  const hasSynthesis = serializedTasks.has("fanout-synthesis");
-  if (hasSingle && hasSynthesis) {
-    throw new Error(`${row.topology}/${row.caseId} has conflicting terminal context routes`);
-  }
-  if (!hasSingle && !hasSynthesis) {
-    compareExactSourceUses(row, evidence, []);
-    if (durableSourceMap.length !== 0) {
-      throw new Error(`${row.topology}/${row.caseId} clarification has durable sources`);
-    }
-    return { mode: "clarification", reductionRan: false, sourcesRead: [], consumers: [] };
-  }
-  const expectedUses: Array<Omit<DurableRunEvidence["sourceUses"][number], "createdAt">> = [];
-  const consumers: PublicContextConsumer[] = [];
-  if (hasSingle) {
-    const terminal = terminalProductionLedger(
-      fixture,
-      manifest,
-      evidence,
-      promptMeasurements,
-      "single-answer",
-    );
-    if (terminal.ledger.requestKind !== "direct") {
-      throw new Error(`${row.topology}/${row.caseId} single route has a non-direct ledger`);
-    }
-    const exact = measureExactProductionContextMarginals(
-      fixture,
-      exactInputForTranslatedLedger(terminal.ledger),
-    );
-    terminal.ledger.sources.forEach((source, index) => {
-      expectedUses.push({
-        sourceKey: source.sourceKey,
-        consumerTaskId: "single-answer",
-        topicId: null,
-        renderedTokenCount: exact.sourceTokenCounts[index] ?? -1,
-        contextOrder: index,
-        ranges: source.ranges,
-      });
-    });
-    compareExactSourceUses(row, evidence, expectedUses);
-    const initial = initialProductionLedger(fixture, manifest, evidence, "single-measure");
-    return {
-      mode: "single",
-      reductionRan: initial.ledger.inputTokens > initial.ledger.usableInputTokens,
-      sourcesRead: durableSourceMap.map(publicSourceRecordFromFinalSource),
-      consumers: [
-        {
-          consumer: "direct",
-          inputTokens: terminal.ledger.inputTokens,
-          requestedOutputTokens: terminal.ledger.requestedOutputTokens,
-          usableInputTokens: terminal.ledger.usableInputTokens,
-        },
-      ],
-    };
-  }
-  const topicTasks = [...serializedTasks].filter(isCanonicalSpecializedTopicAnswerTask).sort();
-  const expectedTopicTasks = (["t1", "t2", "t3"] as const)
-    .slice(0, topicTasks.length)
-    .map((topicId) => `topic-${topicId}-answer`);
-  if (
-    topicTasks.length < 2 ||
-    topicTasks.length > 3 ||
-    canonicalJson(topicTasks) !== canonicalJson(expectedTopicTasks)
-  ) {
-    throw new Error(`${row.topology}/${row.caseId} fanout topic ledger set is invalid`);
-  }
-  for (const taskId of topicTasks) {
-    const terminal = terminalProductionLedger(
-      fixture,
-      manifest,
-      evidence,
-      promptMeasurements,
-      taskId,
-    );
-    if (terminal.ledger.requestKind !== "topic") {
-      throw new Error(`${row.topology}/${row.caseId}/${taskId} lacks a topic ledger`);
-    }
-    const topicLedger = terminal.ledger;
-    const exact = measureExactProductionContextMarginals(
-      fixture,
-      exactInputForTranslatedLedger(topicLedger),
-    );
-    topicLedger.sources.forEach((source, index) => {
-      expectedUses.push({
-        sourceKey: source.sourceKey,
-        consumerTaskId: taskId,
-        topicId: topicLedger.topicId,
-        renderedTokenCount: exact.sourceTokenCounts[index] ?? -1,
-        contextOrder: index,
-        ranges: source.ranges,
-      });
-    });
-    consumers.push({
-      consumer: "topic",
-      topicId: topicLedger.topicId,
-      inputTokens: topicLedger.inputTokens,
-      requestedOutputTokens: topicLedger.requestedOutputTokens,
-      usableInputTokens: topicLedger.usableInputTokens,
-    });
-  }
-  const synthesis = terminalProductionLedger(
-    fixture,
-    manifest,
-    evidence,
-    promptMeasurements,
-    "fanout-synthesis",
-  );
-  if (synthesis.ledger.requestKind !== "synthesis") {
-    throw new Error(`${row.topology}/${row.caseId} lacks a synthesis ledger`);
-  }
-  consumers.push({
-    consumer: "synthesis",
-    inputTokens: synthesis.ledger.inputTokens,
-    requestedOutputTokens: synthesis.ledger.requestedOutputTokens,
-    usableInputTokens: synthesis.ledger.usableInputTokens,
-  });
-  compareExactSourceUses(row, evidence, expectedUses);
-  return {
-    mode: "synthesis",
-    reductionRan: false,
-    sourcesRead: durableSourceMap.map(publicSourceRecordFromFinalSource),
-    consumers,
-  };
-};
-
-const terminalOwnedObservation = (
-  row: CaseRunRow,
-  evidence: DurableRunEvidence,
-  kind: "turn_plan",
-  expectedOwner: string,
-) => {
-  const observations = evidence.observations
-    .filter((observation) => observation.kind === kind)
-    .sort(observationOrder);
-  if (
-    observations.length === 0 ||
-    observations.some((observation) => observation.emittingTask !== expectedOwner)
-  ) {
-    throw new Error(`${row.topology}/${row.caseId} ${kind} ownership is invalid`);
-  }
-  const terminal = observations.at(-1)!;
-  if (
-    observations.filter(
-      (observation) =>
-        observation.loopIteration === terminal.loopIteration &&
-        observation.attempt === terminal.attempt,
-    ).length !== 1
-  ) {
-    throw new Error(`${row.topology}/${row.caseId} has duplicate terminal ${kind} output`);
-  }
-  return terminal;
-};
-
-const canonicalResolutionAndPlan = (
-  row: CaseRunRow,
-  evidence: DurableRunEvidence,
-  manifest: EvaluationSeedManifest,
-): {
-  readonly resolution: z.infer<typeof DurablePlanTurnResultSchema>;
-  readonly plan: z.infer<typeof DurablePlanTurnResultSchema> | null;
-} => {
-  const resolutionOwner =
-    row.topology === "general_planner" ? "evaluation-general-planner" : "plan-turn";
-  const resolutionObservation = terminalOwnedObservation(
-    row,
-    evidence,
-    "turn_plan",
-    resolutionOwner,
-  );
-  for (const observation of evidence.observations.filter(
-    (observation) => observation.kind === "turn_plan",
-  )) {
-    providerUsageForObservation(row, evidence, observation, {
-      allowNoUsage: row.topology === "specialized" && manifest.turnBindings.length === 0,
-    });
-  }
-  terminalProviderUsage(row, evidence, resolutionObservation, {
-    allowNoUsage: row.topology === "specialized" && manifest.turnBindings.length === 0,
-  });
-  const resolution =
-    row.topology === "general_planner"
-      ? (() => {
-          const output = GeneralPlannerProviderOutputSchema.parse(row.executionOutput);
-          const turnIds = new Map(
-            manifest.turnBindings.map((binding) => [binding.turnId, binding.aiRunId] as const),
-          );
-          return output.planTurn.mode === "clarify"
-            ? output.planTurn
-            : output.planTurn.mode === "single"
-              ? {
-                  mode: "single" as const,
-                  question: output.planTurn.question,
-                  relevantTurnIds: output.planTurn.relevantTurnIds.map((turnId) => {
-                    const aiRunId = turnIds.get(turnId);
-                    if (aiRunId === undefined) {
-                      throw new Error(
-                        `${row.topology}/${row.caseId} plan-turn selects a foreign turn`,
-                      );
-                    }
-                    return aiRunId;
-                  }),
-                }
-              : {
-                  mode: "fanout" as const,
-                  question: output.planTurn.question,
-                  topics: output.planTurn.topics.map((topic) => ({
-                    topicId: topic.topicId,
-                    question: topic.question,
-                    relevantTurnIds: topic.relevantTurnIds.map((turnId) => {
-                      const aiRunId = turnIds.get(turnId);
-                      if (aiRunId === undefined) {
-                        throw new Error(
-                          `${row.topology}/${row.caseId} plan-turn selects a foreign turn`,
-                        );
-                      }
-                      return aiRunId;
-                    }),
-                  })),
-                };
-        })()
-      : DurablePlanTurnResultSchema.parse(resolutionObservation.payload);
-  const selectedTurnIds =
-    resolution.mode === "clarify"
-      ? []
-      : resolution.mode === "single"
-        ? resolution.relevantTurnIds
-        : resolution.topics.flatMap((topic) => topic.relevantTurnIds);
-  const allowedTurns = new Set(manifest.turnBindings.map((binding) => binding.aiRunId));
-  if (
-    new Set(selectedTurnIds).size !== selectedTurnIds.length ||
-    selectedTurnIds.some((turnId) => !allowedTurns.has(turnId))
-  ) {
-    throw new Error(`${row.topology}/${row.caseId} plan-turn selects a foreign turn`);
-  }
-  return { resolution, plan: resolution.mode === "clarify" ? null : resolution };
-};
-
-interface AttestedTerminalManifest {
-  readonly taskId: string;
-  readonly selectorRole: "internal" | "memory" | "web";
-  readonly observation: DurableRunEvidence["observations"][number];
-  readonly references: readonly {
-    readonly sourceId: string;
-    readonly candidateId: string;
-    readonly ranges: readonly EvaluationRange[];
-  }[];
-}
-
-const terminalRetrievalManifests = (
-  row: CaseRunRow,
-  evidence: DurableRunEvidence,
-  manifest: EvaluationSeedManifest,
-  storedDocuments: StoredEvaluationDocuments,
-): readonly AttestedTerminalManifest[] => {
-  if (row.topology !== "specialized") return [];
-  const routing = canonicalResolutionAndPlan(row, evidence, manifest);
-  const manifests = evidence.observations.filter(
-    (observation) => observation.kind === "retrieval_manifest",
-  );
-  if (routing.resolution.mode === "clarify") {
-    if (manifests.length !== 0) {
-      throw new Error(`${row.topology}/${row.caseId} clarification has retrieval manifests`);
-    }
-    return [];
-  }
-  const fixture = fixtureFor(row.caseId);
-  const contexts =
-    routing.plan?.mode === "fanout"
-      ? routing.plan.topics.map((topic) => ({
-          prefix: `topic-${topic.topicId}`,
-          ledger: initialProductionLedger(
-            fixture,
-            manifest,
-            evidence,
-            `topic-${topic.topicId}-measure`,
-          ).ledger,
-        }))
-      : [
-          {
-            prefix: "single",
-            ledger: initialProductionLedger(fixture, manifest, evidence, "single-measure").ledger,
-          },
-        ];
-  const expectedTasks = new Set(
-    contexts.flatMap(({ prefix }) => [
-      `${prefix}-retrieve-internal`,
-      `${prefix}-select-memories`,
-      `${prefix}-retrieve-web`,
-    ]),
-  );
-  if (manifests.some((observation) => !expectedTasks.has(observation.emittingTask))) {
-    throw new Error(`${row.topology}/${row.caseId} retrieval manifest has a foreign owner`);
-  }
-  const result: AttestedTerminalManifest[] = [];
-  for (const { prefix, ledger } of contexts) {
-    if (ledger.requestKind === "synthesis") {
-      throw new Error(`${row.topology}/${row.caseId} retrieval context cannot be synthesis`);
-    }
-    for (const taskId of [
-      `${prefix}-retrieve-internal`,
-      `${prefix}-select-memories`,
-      `${prefix}-retrieve-web`,
-    ]) {
-      const owned = manifests
-        .filter((observation) => observation.emittingTask === taskId)
-        .sort(observationOrder);
-      const terminal = owned.at(-1);
-      if (terminal === undefined) {
-        throw new Error(`${row.topology}/${row.caseId}/${taskId} lacks a retrieval manifest`);
-      }
-      if (
-        owned.filter(
-          (observation) =>
-            observation.loopIteration === terminal.loopIteration &&
-            observation.attempt === terminal.attempt,
-        ).length !== 1
-      ) {
-        throw new Error(`${row.topology}/${row.caseId}/${taskId} has duplicate terminal manifests`);
-      }
-      const payload = DurableRetrievalManifestPayloadSchema.parse(terminal.payload);
-      const role = expectedSelectorRoleForTask(taskId);
-      if (payload.selectorRole !== role) {
-        throw new Error(`${row.topology}/${row.caseId}/${taskId} has a role-mismatched manifest`);
-      }
-      const providerRequired =
-        role === "internal" ||
-        (role === "memory" &&
-          manifest.sourceBindings.some((binding) => binding.kind === "memory")) ||
-        (role === "web" &&
-          fixture.webRequested &&
-          fixture.webPolicyEnabled &&
-          (taskId.startsWith("topic-")
-            ? topicRequestsWebEvidence(
-                routing.plan?.mode === "fanout"
-                  ? (routing.plan.topics.find(
-                      (topic) => `topic-${topic.topicId}-retrieve-web` === taskId,
-                    )?.question ?? "")
-                  : "",
-              )
-            : true));
-      if (!providerRequired && owned.length !== 1) {
-        throw new Error(
-          `${row.topology}/${row.caseId}/${taskId} deterministic manifest is not unique`,
-        );
-      }
-      for (const observation of owned) {
-        providerUsageForObservation(row, evidence, observation, {
-          allowNoUsage: !providerRequired,
-        });
-        if (role === "web") {
-          externalToolUsageForObservation(row, evidence, observation, providerRequired);
-        }
-      }
-      const terminalUsage = terminalProviderUsage(row, evidence, terminal, {
-        allowNoUsage: !providerRequired,
-      });
-      const externalUsage =
-        role === "web"
-          ? terminalExternalToolUsage(row, evidence, terminal, providerRequired)
-          : ([] as const);
-      const selector = role === "internal" ? "A" : role === "memory" ? "B" : "W";
-      const expected = providerRequired
-        ? ledger.sources.filter((source) => {
-            return (
-              fixture.evidence.find((candidate) => candidate.sourceId === source.sourceId)
-                ?.selector === selector
-            );
-          })
-        : [];
-      const actual = payload.references.map((reference) => {
-        const sourceId = mapReferenceToGolden(manifest, reference);
-        const source = expected.find((candidate) => candidate.sourceId === sourceId);
-        const binding = manifest.sourceBindings.find(
-          (candidate) => evaluationBindingGoldenSourceId(candidate) === sourceId,
-        );
-        if (sourceId === undefined || source === undefined || binding === undefined) {
-          throw new Error(`${row.topology}/${row.caseId}/${taskId} has an unbound manifest item`);
-        }
-        const resolvedSourceId = sourceId;
-        const fixtureSource = fixture.evidence.find(
-          (candidate) => candidate.sourceId === resolvedSourceId,
-        )!;
-        let ranges: readonly EvaluationRange[] = [];
-        let candidateId: string;
-        let exact = false;
-        if (binding.kind === "document") {
-          const documentReference = DurableInternalManifestReferenceSchema.parse(reference);
-          if (documentReference.kind !== "document") {
-            throw new Error(`${row.topology}/${row.caseId}/${taskId} has a kind-mismatched item`);
-          }
-          const storedDocument = storedDocuments.get(resolvedSourceId);
-          if (storedDocument === undefined) {
-            throw new Error(
-              `${row.topology}/${row.caseId}/${taskId} lacks current stored document text`,
-            );
-          }
-          ranges = normalizeCharacterRanges(
-            documentReference.ranges === undefined || documentReference.ranges.length === 0
-              ? [
-                  {
-                    charStart: 0,
-                    charEnd: storedDocument.text.length,
-                  },
-                ]
-              : documentReference.ranges,
-            storedDocument.text.length,
-          );
-          candidateId = documentBindingIdentity(binding);
-          exact =
-            documentReference.documentId === binding.documentId &&
-            documentReference.snapshotId === binding.snapshotId &&
-            canonicalJson(documentReference.source) === canonicalJson(binding.source) &&
-            documentReference.purpose === source.purpose &&
-            canonicalJson(ranges) === canonicalJson(source.ranges);
-        } else if (binding.kind === "chat_message") {
-          const chatReference = DurableInternalManifestReferenceSchema.parse(reference);
-          candidateId = chatMessageEvidenceIdentity(binding.messageId);
-          exact =
-            chatReference.kind === "chat_message" &&
-            chatReference.messageId === binding.messageId &&
-            chatReference.purpose === source.purpose;
-        } else if (binding.kind === "memory") {
-          const memoryReference = DurableMemoryManifestReferenceSchema.parse(reference);
-          candidateId = memoryEvidenceIdentity(binding.memoryId);
-          exact =
-            memoryReference.memoryId === binding.memoryId &&
-            memoryReference.memoryRevisionId === binding.memoryRevisionId &&
-            source.purpose === "relevant saved memory";
-        } else if (binding.kind === "web" && fixtureSource.kind === "web") {
-          const webReference = DurableWebManifestReferenceSchema.parse(reference);
-          candidateId = webEvidenceIdentity(binding.url, webReference.quote);
-          let referenceHost: string | undefined;
-          try {
-            referenceHost = new URL(webReference.url).hostname;
-          } catch {
-            referenceHost = undefined;
-          }
-          exact =
-            referenceHost === binding.domain &&
-            webReference.domain === binding.domain &&
-            webReference.quote.trim().length > 0 &&
-            (webReference.publishedAt === undefined ||
-              Number.isFinite(Date.parse(webReference.publishedAt))) &&
-            Number.isFinite(Date.parse(webReference.capturedAt)) &&
-            webReference.purpose.trim().length > 0;
-        } else {
-          throw new Error(`${row.topology}/${row.caseId}/${taskId} has a kind-mismatched item`);
-        }
-        if (!exact) {
-          throw new Error(`${row.topology}/${row.caseId}/${taskId} manifest semantics differ`);
-        }
-        const requiredExposureStages =
-          role === "internal"
-            ? ["internal_search_preview", "internal_inspection"]
-            : role === "memory"
-              ? ["memory_tool_result"]
-              : ["web_fetch"];
-        const exposureMatches = evidence.sourceExposures.some(
-          (exposure) =>
-            exposure.taskId === terminal.emittingTask &&
-            exposure.loopIteration === terminal.loopIteration &&
-            exposure.attempt === terminal.attempt &&
-            exposure.providerRequestIndex === terminalUsage?.providerRequestIndex &&
-            requiredExposureStages.includes(exposure.exposureStage) &&
-            mapExposureToGolden(manifest, evidence, exposure, storedDocuments) === sourceId,
-        );
-        if (!exposureMatches) {
-          throw new Error(
-            `${row.topology}/${row.caseId}/${taskId}/${sourceId} lacks its exact manifest exposure`,
-          );
-        }
-        return { sourceId: source.sourceId, candidateId, ranges };
-      });
-      const actualSourceIds = actual.map((reference) => reference.sourceId);
-      const expectedSourceIds = expected.map((source) => source.sourceId);
-      const sourceIdsMatch =
-        role === "web"
-          ? canonicalJson([...new Set(actualSourceIds)]) === canonicalJson(expectedSourceIds)
-          : canonicalJson(actualSourceIds) === canonicalJson(expectedSourceIds);
-      if (
-        (role !== "web" && new Set(actualSourceIds).size !== actual.length) ||
-        !sourceIdsMatch ||
-        (role === "web" &&
-          payload.references.length > 0 &&
-          (!externalUsage.some((usage) => usage.operation === "web_search") ||
-            externalUsage.filter((usage) => usage.operation === "web_fetch").length <
-              payload.references.length))
-      ) {
-        throw new Error(`${row.topology}/${row.caseId}/${taskId} manifest cardinality differs`);
-      }
-      if (role === "internal" && fixture.dimensions.includes("oversized_evidence")) {
-        const canonicalDocuments = fixture.evidence.filter(
-          (source) => source.selector === "A" && source.kind === "document",
-        );
-        const canonicalSourceIds = canonicalDocuments.map((source) => source.sourceId).sort();
-        if (
-          canonicalDocuments.length !== 6 ||
-          actual.length !== 6 ||
-          canonicalJson(actual.map((reference) => reference.sourceId).sort()) !==
-            canonicalJson(canonicalSourceIds) ||
-          terminalUsage === null
-        ) {
-          throw new Error(
-            `${row.topology}/${row.caseId}/${taskId} oversized A identity set differs`,
-          );
-        }
-        const terminalExposures = evidence.sourceExposures.filter(
-          (exposure) =>
-            exposure.taskId === terminal.emittingTask &&
-            exposure.loopIteration === terminal.loopIteration &&
-            exposure.attempt === terminal.attempt &&
-            exposure.providerRequestIndex === terminalUsage.providerRequestIndex,
-        );
-        const exactStageRows = (stage: "internal_search_preview" | "internal_inspection") =>
-          terminalExposures.filter((exposure) => exposure.exposureStage === stage);
-        const previewSourceIds = [
-          ...new Set(
-            exactStageRows("internal_search_preview").map((exposure) =>
-              mapExposureToGolden(manifest, evidence, exposure, storedDocuments),
-            ),
-          ),
-        ].sort();
-        if (
-          previewSourceIds.length !== 6 ||
-          canonicalJson(previewSourceIds) !== canonicalJson(canonicalSourceIds)
-        ) {
-          throw new Error(
-            `${row.topology}/${row.caseId}/${taskId} oversized A preview exposure set is not exact`,
-          );
-        }
-        const inspectionRows = exactStageRows("internal_inspection");
-        const expectedInspectionPrefixes = new Map(
-          canonicalDocuments.map((source) => {
-            const binding = manifest.sourceBindings.find(
-              (
-                candidate,
-              ): candidate is Extract<
-                EvaluationSeedManifest["sourceBindings"][number],
-                { readonly kind: "document" }
-              > =>
-                candidate.kind === "document" &&
-                evaluationBindingGoldenSourceId(candidate) === source.sourceId,
-            );
-            if (binding === undefined) {
-              throw new Error(
-                `${row.topology}/${row.caseId}/${taskId} oversized document binding is missing`,
-              );
-            }
-            // Oversized documents force the provider to inspect a narrower range
-            // than the full document; the exact range is provider-determined, so
-            // the gate verifies the namespace+version prefix and a valid hash
-            // suffix rather than the golden set's full-range identity.
-            return [
-              source.sourceId,
-              `${documentBindingIdentity(binding)}:${binding.snapshotId}:`,
-            ] as const;
-          }),
-        );
-        const inspectionSourceIds = inspectionRows.map((exposure) =>
-          mapExposureToGolden(manifest, evidence, exposure, storedDocuments),
-        );
-        if (
-          inspectionRows.length !== 6 ||
-          new Set(inspectionRows.map((exposure) => exposure.contentItemIdentity)).size !== 6 ||
-          canonicalJson([...inspectionSourceIds].sort()) !== canonicalJson(canonicalSourceIds) ||
-          inspectionRows.some((exposure, index) => {
-            const expectedPrefix = expectedInspectionPrefixes.get(inspectionSourceIds[index]!);
-            return (
-              expectedPrefix === undefined ||
-              !exposure.contentItemIdentity.startsWith(expectedPrefix) ||
-              !/^[A-Za-z0-9_-]{43}$/u.test(
-                exposure.contentItemIdentity.slice(expectedPrefix.length),
-              )
-            );
-          })
-        ) {
-          throw new Error(
-            `${row.topology}/${row.caseId}/${taskId} oversized inspection identity set differs`,
-          );
-        }
-      }
-      result.push({ taskId, selectorRole: role, observation: terminal, references: actual });
-    }
-  }
-  return result;
-};
-
-const attestRetrievalManifestEvidence = (
-  row: CaseRunRow,
-  evidence: DurableRunEvidence,
-  manifest: EvaluationSeedManifest,
-  storedDocuments: StoredEvaluationDocuments,
-): void => {
-  terminalRetrievalManifests(row, evidence, manifest, storedDocuments);
-};
-
-const initialProductionLedger = (
-  fixture: GoldenEvaluationCase,
-  manifest: EvaluationSeedManifest,
-  evidence: DurableRunEvidence,
-  taskId: string,
-) => {
-  const observation = latestObservation(evidence, "context_measurement", taskId);
-  if (observation === undefined)
-    throw new Error(`${fixture.id}/${taskId} lacks its initial ledger`);
-  const payload = z
-    .object({
-      totalInputTokens: z.number().int().nonnegative(),
-      usableInputTokens: z.number().int().positive(),
-      requestedOutputTokens: z.number().int().positive(),
-      status: z.enum(["ready", "needs_reduction", "failed"]),
-      reductionRan: z.boolean(),
-      restrictedContextLedger: RestrictedContextLedgerSchema,
-    })
-    .passthrough()
-    .parse(observation.payload);
-  const ledger = translateAndAttestRestrictedLedger(
-    fixture,
-    manifest,
-    evidence,
-    payload.restrictedContextLedger,
-  );
-  if (
-    payload.totalInputTokens !== ledger.inputTokens ||
-    payload.usableInputTokens !== ledger.usableInputTokens ||
-    payload.requestedOutputTokens !== ledger.requestedOutputTokens ||
-    payload.reductionRan
-  ) {
-    throw new Error(`${fixture.id}/${taskId} initial measurement differs from its ledger`);
-  }
-  return { ledger, status: payload.status };
-};
-
-const reducedProductionLedger = (
-  fixture: GoldenEvaluationCase,
-  manifest: EvaluationSeedManifest,
-  evidence: DurableRunEvidence,
-  taskId: string,
-) => {
-  const observation = latestObservation(evidence, "context_measurement", taskId);
-  if (observation === undefined)
-    throw new Error(`${fixture.id}/${taskId} lacks its reduced ledger`);
-  const payload = z
-    .object({
-      totalInputTokens: z.number().int().nonnegative(),
-      usableInputTokens: z.number().int().positive(),
-      requestedOutputTokens: z.number().int().positive(),
-      status: z.enum(["ready", "needs_reduction", "failed"]),
-      reductionRan: z.boolean(),
-      restrictedContextLedger: RestrictedContextLedgerSchema,
-    })
-    .passthrough()
-    .parse(observation.payload);
-  const ledger = translateAndAttestRestrictedLedger(
-    fixture,
-    manifest,
-    evidence,
-    payload.restrictedContextLedger,
-  );
-  if (
-    payload.totalInputTokens !== ledger.inputTokens ||
-    payload.usableInputTokens !== ledger.usableInputTokens ||
-    payload.requestedOutputTokens !== ledger.requestedOutputTokens ||
-    !payload.reductionRan ||
-    payload.status !== "ready" ||
-    ledger.inputTokens > ledger.usableInputTokens
-  ) {
-    throw new Error(`${fixture.id}/${taskId} reduced measurement differs from its ready ledger`);
-  }
-  return ledger;
-};
-
-const productionReduction = (
-  fixture: GoldenEvaluationCase,
-  manifest: EvaluationSeedManifest,
-  evidence: DurableRunEvidence,
-  promptMeasurements: readonly TrustedPromptMeasurement[],
-  taskId: string,
-  initial: ReturnType<typeof translateAndAttestRestrictedLedger>,
-  terminal: ReturnType<typeof translateAndAttestRestrictedLedger>,
-) => {
-  if (initial.requestKind === "synthesis" || terminal.requestKind === "synthesis") {
-    throw new Error(`${fixture.id}/${taskId} synthesis cannot carry an O decision`);
-  }
-  const observations = evidence.observations
-    .filter(
-      (observation) =>
-        observation.kind === "context_decision" && observation.emittingTask === taskId,
-    )
-    .sort(observationOrder);
-  const reducerTaskId = taskId.replace(/reduce-measure$/u, "reduce-plan");
-  const terminalObservation = observations.at(-1);
-  if (terminalObservation === undefined || terminalObservation.payload.valid !== true) {
-    throw new Error(`${fixture.id}/${taskId} lacks a valid terminal O decision`);
-  }
-  const reducerTerminalObservations = evidence.observations
-    .filter(
-      (observation) =>
-        observation.kind === "context_reducer_terminal" &&
-        observation.emittingTask === reducerTaskId,
-    )
-    .sort(observationOrder);
-  for (const observation of reducerTerminalObservations) {
-    const artifact = ContextReducerTerminalSchema.parse(observation.payload);
-    const bound = evidence.usage
-      .filter(
-        (usage) =>
-          usage.taskId === reducerTaskId &&
-          usage.loopIteration === observation.loopIteration &&
-          usage.attempt === observation.attempt,
-      )
-      .at(-1);
-    const boundMeasurement = providerMeasurementsForTask(evidence, reducerTaskId)
-      .filter(
-        (measurement) =>
-          measurement.loopIteration === observation.loopIteration &&
-          measurement.attempt === observation.attempt,
-      )
-      .at(-1);
-    if (
-      bound === undefined ||
-      boundMeasurement === undefined ||
-      bound.agentRole !== "context_reducer" ||
-      bound.modelId !== "glm-5-turbo" ||
-      bound.providerServiceId !== ZAI_CODING_PLAN_PROVIDER_SERVICE_ID ||
-      !isSuccessfulProviderStopReason(bound.stopReason) ||
-      artifact.terminalUsageCoordinate.taskId !== reducerTaskId ||
-      artifact.terminalUsageCoordinate.loopIteration !== observation.loopIteration ||
-      artifact.terminalUsageCoordinate.attempt !== observation.attempt ||
-      usageCoordinateKey(artifact.terminalUsageCoordinate) !== usageCoordinateKey(bound) ||
-      usageCoordinateKey(artifact.terminalUsageCoordinate) !== usageCoordinateKey(boundMeasurement)
-    ) {
-      throw new Error(`${fixture.id}/${reducerTaskId} has an unbound reducer retry output`);
-    }
-  }
-  const reducerTerminalObservation = reducerTerminalObservations.at(-1);
-  const reducerTerminal = ContextReducerTerminalSchema.parse(reducerTerminalObservation?.payload);
-  const coordinate = reducerTerminal.terminalUsageCoordinate;
-  const reducerUsage = evidence.usage.filter((usage) => usage.taskId === reducerTaskId);
-  const terminalUsage = reducerUsage.at(-1);
-  const latestReducerMeasurement = providerMeasurementsForTask(evidence, reducerTaskId).at(-1);
-  const exactUsage = evidence.usage.find(
-    (usage) => usageCoordinateKey(usage) === usageCoordinateKey(coordinate),
-  );
-  const measurementObservation = evidence.observations.find((observation) => {
-    if (observation.kind !== "provider_request_measurement") return false;
-    const parsed = ProviderRequestMeasurementSchema.safeParse(observation.payload);
-    return (
-      parsed.success &&
-      usageCoordinateKey({
-        taskId: observation.emittingTask,
-        loopIteration: observation.loopIteration,
-        attempt: observation.attempt,
-        providerRequestIndex: parsed.data.providerRequestIndex,
-      }) === usageCoordinateKey(coordinate)
-    );
-  });
-  const requestMeasurement = ProviderRequestMeasurementSchema.parse(
-    measurementObservation?.payload,
-  );
-  const trustedMeasurement = promptMeasurements.find(
-    (measurement) => measurement.requestId === usageCoordinateKey(coordinate),
-  );
-  if (
-    reducerTerminalObservation === undefined ||
-    coordinate.taskId !== reducerTaskId ||
-    reducerTerminalObservation.loopIteration !== coordinate.loopIteration ||
-    reducerTerminalObservation.attempt !== coordinate.attempt ||
-    terminalObservation.loopIteration !== coordinate.loopIteration ||
-    exactUsage === undefined ||
-    terminalUsage === undefined ||
-    latestReducerMeasurement === undefined ||
-    usageCoordinateKey(terminalUsage) !== usageCoordinateKey(coordinate) ||
-    usageCoordinateKey(latestReducerMeasurement) !== usageCoordinateKey(coordinate) ||
-    exactUsage.agentRole !== "context_reducer" ||
-    exactUsage.providerServiceId !== ZAI_CODING_PLAN_PROVIDER_SERVICE_ID ||
-    exactUsage.modelId !== "glm-5-turbo" ||
-    !isSuccessfulProviderStopReason(exactUsage.stopReason) ||
-    reducerTerminal.modelId !== exactUsage.modelId ||
-    reducerTerminal.requestSha256Hex !== requestMeasurement.requestSha256Hex ||
-    requestMeasurement.modelId !== exactUsage.modelId ||
-    requestMeasurement.agentRole !== exactUsage.agentRole ||
-    !requestMeasurement.passed ||
-    requestMeasurement.inputTokens !== providerPromptTokens(exactUsage) ||
-    reducerTerminal.providerInputTokens !== providerPromptTokens(exactUsage) ||
-    reducerTerminal.totalTokens !== exactUsage.totalTokens ||
-    reducerTerminal.stopReason !== exactUsage.stopReason ||
-    trustedMeasurement?.requestSha256Hex !== reducerTerminal.requestSha256Hex ||
-    trustedMeasurement?.localInputTokens !== providerPromptTokens(exactUsage) ||
-    trustedMeasurement.providerInputTokens !== providerPromptTokens(exactUsage) ||
-    !trustedMeasurement.gatePassed
-  ) {
-    throw new Error(`${fixture.id}/${taskId} lacks exact terminal context-reducer usage`);
-  }
-  const parsed = z.array(DurableContextDecisionSchema).parse(terminalObservation.payload.decisions);
-  type InitialCandidate =
-    | {
-        readonly kind: "conversation";
-        readonly value: (typeof initial.selectedConversation)[number];
-      }
-    | { readonly kind: "source"; readonly value: (typeof initial.sources)[number] };
-  const initialCandidates = new Map<string, InitialCandidate>();
-  for (const entry of initial.selectedConversation) {
-    initialCandidates.set(`conversation_entry:${entry.turnId}`, {
-      kind: "conversation",
-      value: entry,
-    });
-  }
-  for (const source of initial.sources) {
-    initialCandidates.set(source.candidateId, { kind: "source", value: source });
-  }
-  const terminalConversation = new Map(
-    terminal.selectedConversation.map((entry) => [`conversation_entry:${entry.turnId}`, entry]),
-  );
-  const terminalSources = new Map(
-    terminal.sources.map((source) => [source.candidateId, source] as const),
-  );
-  if (
-    initialCandidates.size !== initial.selectedConversation.length + initial.sources.length ||
-    parsed.length !== initialCandidates.size ||
-    new Set(parsed.map((decision) => decision.id)).size !== parsed.length ||
-    parsed.some((decision) => !initialCandidates.has(decision.id))
-  ) {
-    throw new Error(`${fixture.id}/${taskId} O decision is not complete for the exact ledger`);
-  }
-  for (const decision of parsed) {
-    const candidate = initialCandidates.get(decision.id)!;
-    if (candidate.kind === "conversation") {
-      if (decision.action === "range") {
-        throw new Error(`${fixture.id}/${taskId} ranges a conversation candidate`);
-      }
-      const kept = terminalConversation.has(decision.id);
-      if (kept !== (decision.action === "keep")) {
-        throw new Error(`${fixture.id}/${taskId} conversation O decision differs from terminal`);
-      }
-      continue;
-    }
-    const selected = terminalSources.get(decision.id);
-    if (decision.action === "omit") {
-      if (selected !== undefined)
-        throw new Error(`${fixture.id}/${taskId} serialized an O omission`);
-    } else if (selected === undefined) {
-      throw new Error(`${fixture.id}/${taskId} omitted an O keep`);
-    } else {
-      const expectedRanges = decision.action === "range" ? decision.ranges : candidate.value.ranges;
-      if (
-        selected.sourceKey !== candidate.value.sourceKey ||
-        selected.sourceId !== candidate.value.sourceId ||
-        selected.purpose !== candidate.value.purpose ||
-        selected.label !== candidate.value.label ||
-        canonicalJson(selected.ranges) !== canonicalJson(expectedRanges)
-      ) {
-        throw new Error(`${fixture.id}/${taskId} terminal source differs from its O decision`);
-      }
-    }
-  }
-  const iterations = new Set(observations.map((observation) => observation.loopIteration)).size;
-  if (iterations < 1 || iterations > 2) {
-    throw new Error(`${fixture.id}/${taskId} O did not converge in one or two iterations`);
-  }
-  return {
-    iterations,
-    decisions: parsed.map((decision) => ({
-      candidateId: decision.id,
-      action: decision.action,
-      ranges: decision.action === "range" ? decision.ranges : [],
-    })),
-  };
-};
-
-const captureProductionTopology = (
-  fixture: GoldenEvaluationCase,
-  manifest: EvaluationSeedManifest,
-  evidence: DurableRunEvidence,
-  promptMeasurements: readonly TrustedPromptMeasurement[],
-  resolutionMode: "single" | "clarify" | "fanout",
-  planTurn:
-    | { readonly mode: "clarify"; readonly question: string }
-    | {
-        readonly mode: "single";
-        readonly question: string;
-        readonly relevantTurnIds: readonly string[];
-      }
-    | {
-        readonly mode: "fanout";
-        readonly question: string;
-        readonly topics: readonly {
-          readonly topicId: "t1" | "t2" | "t3";
-          readonly question: string;
-          readonly relevantTurnIds: readonly string[];
-        }[];
-      },
-) => {
-  if (resolutionMode === "clarify") {
-    const observation = latestObservation(evidence, "turn_plan", "plan-turn");
-    const durablePlan = DurablePlanTurnResultSchema.parse(observation?.payload);
-    if (durablePlan.mode !== "clarify") {
-      throw new Error("clarification route lacks a clarify plan-turn result");
-    }
-    const latestResolverUsage = evidence.usage
-      .filter((candidate) => candidate.taskId === "plan-turn")
-      .at(-1);
-    const latestResolverMeasurement = providerMeasurementsForTask(evidence, "plan-turn").at(-1);
-    const providerMeasurement = latestResolverMeasurement;
-    const usage = latestResolverUsage;
-    const conversation = evidence.conversationInventory.map((entry) => {
-      const binding = manifest.turnBindings.find((candidate) => candidate.aiRunId === entry.turnId);
-      const golden = fixture.conversation.find((candidate) => candidate.turnId === binding?.turnId);
-      if (binding === undefined || golden === undefined || entry.assistantMessageId === null) {
-        throw new Error("plan-turn conversation inventory is not exact");
-      }
-      return {
-        kind: "complete" as const,
-        fixtureTurnId: binding.turnId,
-        turnId: binding.aiRunId,
-        userMessageId: binding.userMessageId,
-        assistantMessageId: entry.assistantMessageId,
-      };
-    });
-    const currentDate = evidence.run.createdAt.slice(0, 10);
-    const exact = attestExactPlanTurnRequest(fixture, conversation, currentDate);
-    const terminalUsageCoordinate =
-      latestResolverUsage === undefined
-        ? { taskId: "plan-turn", loopIteration: 0, attempt: 0, providerRequestIndex: 0 }
-        : {
-            taskId: latestResolverUsage.taskId,
-            loopIteration: latestResolverUsage.loopIteration,
-            attempt: latestResolverUsage.attempt,
-            providerRequestIndex: latestResolverUsage.providerRequestIndex,
-          };
-    if (providerMeasurement === undefined || usage === undefined) {
-      throw new Error(`${fixture.id} clarification lacks exact plan-turn provider usage`);
-    }
-    if (
-      observation === undefined ||
-      usage.agentRole !== "plan_turn" ||
-      usage.providerServiceId !== ZAI_CODING_PLAN_PROVIDER_SERVICE_ID ||
-      !isSuccessfulProviderStopReason(usage.stopReason) ||
-      providerMeasurement.payload.requestSha256Hex !== exact.requestSha256Hex ||
-      providerMeasurement.payload.modelId !== usage.modelId ||
-      providerMeasurement.payload.agentRole !== usage.agentRole ||
-      providerMeasurement.payload.inputTokens !== exact.inputTokens ||
-      providerMeasurement.payload.usableInputTokens !== exact.usableInputTokens ||
-      providerMeasurement.payload.requestedOutputTokens !== 2_048 ||
-      !providerMeasurement.payload.passed ||
-      !promptMeasurements.some(
-        (measurement) =>
-          measurement.requestId === usageCoordinateKey(usage) &&
-          measurement.requestSha256Hex === providerMeasurement.payload.requestSha256Hex &&
-          measurement.localInputTokens === providerMeasurement.payload.inputTokens &&
-          measurement.providerInputTokens === providerMeasurement.payload.inputTokens &&
-          measurement.gatePassed,
-      )
-    ) {
-      throw new Error(`${fixture.id} clarification lacks exact plan-turn provider usage`);
-    }
-    return {
-      mode: "clarification" as const,
-      planTurnRequest: {
-        modelId: usage.modelId,
-        requestSha256Hex: providerMeasurement.payload.requestSha256Hex,
-        inputTokens: providerMeasurement.payload.inputTokens,
-        usableInputTokens: providerMeasurement.payload.usableInputTokens,
-        requestedOutputTokens: providerMeasurement.payload.requestedOutputTokens,
-        currentUserMessageId: manifest.userMessageId,
-        currentDate,
-        conversation,
-        terminalUsageCoordinate,
-      },
-      providerInputTokens: providerPromptTokens(usage),
-    };
-  }
-  if (resolutionMode === "single" && planTurn.mode === "single") {
-    const initial = initialProductionLedger(fixture, manifest, evidence, "single-measure");
-    const terminal = terminalProductionLedger(
-      fixture,
-      manifest,
-      evidence,
-      promptMeasurements,
-      "single-answer",
-    );
-    if (initial.ledger.requestKind !== "direct" || terminal.ledger.requestKind !== "direct") {
-      throw new Error(`${fixture.id} single path has a non-direct production ledger`);
-    }
-    const reductionTaskId = "single-reduce-measure";
-    const reduced = initial.ledger.inputTokens > initial.ledger.usableInputTokens;
-    if (reduced !== (initial.status === "needs_reduction")) {
-      throw new Error(`${fixture.id} single production ledger has an invalid initial route`);
-    }
-    if (!reduced) {
-      if (
-        evidence.observations.some(
-          (observation) =>
-            observation.emittingTask === reductionTaskId &&
-            (observation.kind === "context_decision" || observation.kind === "context_measurement"),
-        ) ||
-        canonicalJson(initial.ledger) !== canonicalJson(terminal.ledger)
-      ) {
-        throw new Error(`${fixture.id} fitting single path changed or ran O before answering`);
-      }
-      return { mode: "single_fit" as const, initial: initial.ledger, terminal };
-    }
-    const reducedLedger = reducedProductionLedger(fixture, manifest, evidence, reductionTaskId);
-    if (
-      reducedLedger.requestKind !== "direct" ||
-      canonicalJson(reducedLedger) !== canonicalJson(terminal.ledger)
-    ) {
-      throw new Error(`${fixture.id} reduced single ledger differs from its terminal request`);
-    }
-    const reduction = productionReduction(
-      fixture,
-      manifest,
-      evidence,
-      promptMeasurements,
-      reductionTaskId,
-      initial.ledger,
-      terminal.ledger,
-    );
-    return {
-      mode: "single_reduced" as const,
-      initial: initial.ledger,
-      terminal,
-      ...reduction,
-    };
-  }
-  if (planTurn.mode !== "fanout") {
-    throw new Error(`${fixture.id} fanout route lacks a fanout plan-turn result`);
-  }
-  const topicIds = planTurn.topics.map((topic) => topic.topicId);
-  const topics = topicIds.map((topicId) => {
-    const initialTaskId = `topic-${topicId}-measure`;
-    const answerTaskId = `topic-${topicId}-answer`;
-    const reductionTaskId = `topic-${topicId}-reduce-measure`;
-    const initial = initialProductionLedger(fixture, manifest, evidence, initialTaskId);
-    const terminal = terminalProductionLedger(
-      fixture,
-      manifest,
-      evidence,
-      promptMeasurements,
-      answerTaskId,
-    );
-    if (
-      initial.ledger.requestKind !== "topic" ||
-      terminal.ledger.requestKind !== "topic" ||
-      initial.ledger.topicId !== topicId ||
-      terminal.ledger.topicId !== topicId
-    ) {
-      throw new Error(`${fixture.id}/${topicId} has a route-mismatched topic ledger`);
-    }
-    const reduced = initial.ledger.inputTokens > initial.ledger.usableInputTokens;
-    if (reduced !== (initial.status === "needs_reduction")) {
-      throw new Error(`${fixture.id}/${topicId} has an invalid initial topic route`);
-    }
-    if (!reduced) {
-      if (
-        evidence.observations.some(
-          (observation) =>
-            observation.emittingTask === reductionTaskId &&
-            (observation.kind === "context_decision" || observation.kind === "context_measurement"),
-        ) ||
-        canonicalJson(initial.ledger) !== canonicalJson(terminal.ledger)
-      ) {
-        throw new Error(`${fixture.id}/${topicId} fitting topic changed or ran O`);
-      }
-      return {
-        topicId,
-        reduced: false,
-        iterations: 0,
-        decisions: [],
-        initial: initial.ledger,
-        terminal,
-      };
-    }
-    const reducedLedger = reducedProductionLedger(fixture, manifest, evidence, reductionTaskId);
-    if (
-      reducedLedger.requestKind !== "topic" ||
-      reducedLedger.topicId !== topicId ||
-      canonicalJson(reducedLedger) !== canonicalJson(terminal.ledger)
-    ) {
-      throw new Error(`${fixture.id}/${topicId} reduced topic differs from its terminal request`);
-    }
-    return {
-      topicId,
-      reduced: true,
-      ...productionReduction(
-        fixture,
-        manifest,
-        evidence,
-        promptMeasurements,
-        reductionTaskId,
-        initial.ledger,
-        terminal.ledger,
-      ),
-      initial: initial.ledger,
-      terminal,
-    };
-  });
-  const synthesis = terminalProductionLedger(
-    fixture,
-    manifest,
-    evidence,
-    promptMeasurements,
-    "fanout-synthesis",
-  );
-  if (
-    synthesis.ledger.requestKind !== "synthesis" ||
-    canonicalJson(synthesis.ledger.packets.map((packet) => packet.topicId)) !==
-      canonicalJson(topicIds)
-  ) {
-    throw new Error(`${fixture.id} fanout synthesis ledger does not match its topic routes`);
-  }
-  for (const packet of synthesis.ledger.packets) {
-    const observation = latestObservation(
-      evidence,
-      "topic_packet",
-      `topic-${packet.topicId}-answer`,
-    );
-    const durablePacket = z
-      .object({
-        topicId: z.literal(packet.topicId),
-        status: z.enum(["answered", "partial"]),
-        claimCount: z.number().int().nonnegative(),
-        gapCount: z.number().int().nonnegative(),
-        packetSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
-      })
-      .passthrough()
-      .parse(observation?.payload);
-    if (
-      packet.status !== durablePacket.status ||
-      packet.claimCount !== durablePacket.claimCount ||
-      packet.gapCount !== durablePacket.gapCount ||
-      packet.packetSha256Hex !== durablePacket.packetSha256Hex
-    ) {
-      throw new Error(`${fixture.id}/${packet.topicId} synthesis packet hash is not durable`);
-    }
-  }
-  return { mode: "fanout" as const, topics, synthesis };
-};
-
 const captureSpecialized = async (
   connectionString: string,
   row: CaseRunRow,
   annotations: EvaluationHumanAnnotations,
   annotationDigest: string,
+  capturedContextRows?: readonly z.infer<typeof ContextSummaryRowSchema>[],
 ): Promise<SpecializedEvaluationResult> => {
-  const captured = await commonCapturedResult(connectionString, row, annotations, annotationDigest);
-  const { fixture, manifest, evidence, selections } = captured;
-  const measurementFixture = fixtureWithStoredDocumentText(fixture, captured.storedDocuments);
+  const captured = await commonCapturedResult(
+    connectionString,
+    row,
+    annotations,
+    annotationDigest,
+    capturedContextRows,
+  );
+  const { fixture, manifest, evidence, storedDocuments } = captured;
   const routing = canonicalResolutionAndPlan(row, evidence, manifest);
   const turnMap = new Map(
     manifest.turnBindings.map((binding) => [binding.aiRunId, binding.turnId]),
@@ -8521,126 +8748,20 @@ const captureSpecialized = async (
               relevantTurnIds: topic.relevantTurnIds.map((id) => turnMap.get(id) ?? id),
             })),
           };
+  const pulledSourceIds = exposedGoldenSourceIds(manifest, evidence, storedDocuments);
   const selectorSelections = { A: [] as string[], B: [] as string[], W: [] as string[] };
-  const pulledSelections = new Map<
-    string,
-    {
-      readonly ranges: readonly EvaluationRange[];
-      readonly candidateId: string;
-    }
-  >();
-  const manifests = terminalRetrievalManifests(row, evidence, manifest, captured.storedDocuments);
-  for (const terminalManifest of manifests) {
-    for (const { sourceId, candidateId, ranges } of terminalManifest.references) {
-      const prior = pulledSelections.get(sourceId);
-      if (
-        prior !== undefined &&
-        (prior.candidateId !== candidateId || canonicalJson(prior.ranges) !== canonicalJson(ranges))
-      ) {
-        if (terminalManifest.selectorRole !== "web") {
-          throw new Error(`${row.caseId}/${sourceId} has divergent durable selector references`);
-        }
-        // Production web retrieval can return multiple excerpts from the same
-        // canonical domain. The durable candidate identity includes each
-        // provider quote, while the scored artifact has one canonical source
-        // selection; retain one identity and merge any ranges for that source.
-        pulledSelections.set(sourceId, {
-          ranges: [...prior.ranges, ...ranges],
-          candidateId: prior.candidateId,
-        });
-      } else {
-        pulledSelections.set(sourceId, { ranges, candidateId });
-      }
-      if (terminalManifest.selectorRole === "memory") selectorSelections.B.push(sourceId);
-      else if (terminalManifest.selectorRole === "web") selectorSelections.W.push(sourceId);
-      else selectorSelections.A.push(sourceId);
-    }
-  }
-  for (const key of ["A", "B", "W"] as const)
-    selectorSelections[key] = [...new Set(selectorSelections[key])];
-  const candidateSourceIds = [...pulledSelections.keys()];
-  const pulledSourceIds = exposedGoldenSourceIds(manifest, evidence, captured.storedDocuments);
-  const semanticRanges = (sourceId: string, ranges: readonly EvaluationRange[]) => {
+  for (const sourceId of pulledSourceIds) {
     const source = fixture.evidence.find((candidate) => candidate.sourceId === sourceId);
-    if (source?.kind !== "document" || ranges.length === 0) return ranges;
-    const documentLength =
-      captured.storedDocuments.get(sourceId)?.text.length ??
-      (() => {
-        throw new Error(`${row.topology}/${row.caseId} document lacks current stored text`);
-      })();
-    return normalizeCharacterRanges(
-      ranges
-        .map((range) => ({
-          charStart: range.charStart,
-          charEnd: Math.min(range.charEnd, documentLength),
-        }))
-        .filter((range) => range.charEnd > range.charStart),
-      documentLength,
-    );
-  };
-  const candidateSelections = candidateSourceIds.map((sourceId) => ({
-    sourceId,
-    ranges: semanticRanges(sourceId, pulledSelections.get(sourceId)!.ranges),
-  }));
-  const candidateTokens = measureCanonicalEvaluationRequestTokens(
-    measurementFixture,
-    candidateSelections,
-  );
-  const serializedTokens = measureCanonicalEvaluationRequestTokens(measurementFixture, selections);
-  const productionContext = captureProductionTopology(
-    measurementFixture,
-    manifest,
-    evidence,
-    captured.common.promptMeasurements,
-    planTurn.mode,
-    planTurn,
-  );
-  const reductionRequired =
-    productionContext.mode === "single_reduced" ||
-    (productionContext.mode === "fanout" &&
-      productionContext.topics.some((topic) => topic.reduced));
-  const reductionIterations =
-    productionContext.mode === "single_reduced"
-      ? productionContext.iterations
-      : productionContext.mode === "fanout"
-        ? Math.max(0, ...productionContext.topics.map((topic) => topic.iterations))
-        : 0;
-  const sourceIdByCandidateId = new Map(
-    candidateSourceIds.map((sourceId) => [pulledSelections.get(sourceId)!.candidateId, sourceId]),
-  );
-  const decisions =
-    productionContext.mode === "single_reduced"
-      ? productionContext.decisions.flatMap((decision) => {
-          const sourceId = sourceIdByCandidateId.get(decision.candidateId);
-          return sourceId === undefined
-            ? []
-            : [
-                {
-                  sourceId,
-                  action: decision.action,
-                  ranges: semanticRanges(sourceId, decision.ranges),
-                },
-              ];
-        })
-      : [];
+    if (source?.kind === "memory") selectorSelections.B.push(sourceId);
+    else if (source?.kind === "web") selectorSelections.W.push(sourceId);
+    else selectorSelections.A.push(sourceId);
+  }
   return SpecializedEvaluationResultsSchema.element.parse({
     ...captured.common,
     topology: "specialized",
     pulledSourceIds,
     planTurn,
     selectorSelections,
-    reduction: {
-      required: reductionRequired,
-      iterations: reductionIterations,
-      candidateTokens,
-      serializedTokens,
-      usableInputTokens: canonicalEvaluationUsableInputTokens(),
-      candidateSourceIds,
-      candidateSelections,
-      decisions,
-      selections,
-    },
-    productionContext,
   });
 };
 
@@ -8649,8 +8770,15 @@ const captureBaseline = async (
   row: CaseRunRow,
   annotations: EvaluationHumanAnnotations,
   annotationDigest: string,
+  capturedContextRows?: readonly z.infer<typeof ContextSummaryRowSchema>[],
 ): Promise<GeneralPlannerEvaluationResult> => {
-  const captured = await commonCapturedResult(connectionString, row, annotations, annotationDigest);
+  const captured = await commonCapturedResult(
+    connectionString,
+    row,
+    annotations,
+    annotationDigest,
+    capturedContextRows,
+  );
   const output = GeneralPlannerProviderOutputSchema.parse(row.executionOutput);
   return GeneralPlannerEvaluationResultsSchema.element.parse({
     ...captured.common,
@@ -8747,26 +8875,198 @@ export const captureEvaluationSession = async (
   return suite;
 };
 
+const attestCapturedRetrievalArtifact = (
+  row: CaseRunRow,
+  evidence: DurableRunEvidence,
+  retrieval: SpecializedEvaluationResult["retrieval"],
+): void => {
+  const traceByCoordinate = new Map<
+    string,
+    {
+      readonly coordinate: {
+        readonly taskId: string;
+        readonly loopIteration: number;
+        readonly attempt: number;
+      };
+      readonly trace: z.infer<typeof StructuredRetrievalTraceSchema>;
+    }
+  >();
+  for (const observation of evidence.observations) {
+    if (observation.kind !== "structured_retrieval_trace") continue;
+    const trace = StructuredRetrievalTraceSchema.parse(observation.payload);
+    const hasFinalUsage = evidence.usage.some(
+      (usage) =>
+        usage.taskId === observation.emittingTask &&
+        usage.loopIteration === observation.loopIteration &&
+        usage.attempt === observation.attempt &&
+        usage.agentRole === "internal_retrieval",
+    );
+    if (trace.outcome !== "skipped" && !hasFinalUsage) continue;
+    const key = `${observation.emittingTask}:${observation.loopIteration}`;
+    const current = traceByCoordinate.get(key);
+    if (current === undefined || observation.attempt > current.coordinate.attempt) {
+      traceByCoordinate.set(key, {
+        coordinate: {
+          taskId: observation.emittingTask,
+          loopIteration: observation.loopIteration,
+          attempt: observation.attempt,
+        },
+        trace,
+      });
+    }
+  }
+  const expectedTraces = [...traceByCoordinate.values()].sort(
+    (left, right) =>
+      left.coordinate.taskId.localeCompare(right.coordinate.taskId) ||
+      left.coordinate.loopIteration - right.coordinate.loopIteration,
+  );
+  const actualTraces = [...retrieval.traces].sort(
+    (left, right) =>
+      left.coordinate.taskId.localeCompare(right.coordinate.taskId) ||
+      left.coordinate.loopIteration - right.coordinate.loopIteration,
+  );
+  if (canonicalJson(actualTraces) !== canonicalJson(expectedTraces)) {
+    throw new Error(`${row.topology}/${row.caseId} captured structured retrieval trace differs`);
+  }
+
+  const traceKeys = new Set(
+    expectedTraces.map(
+      ({ coordinate }) => `${coordinate.taskId}:${coordinate.loopIteration}:${coordinate.attempt}`,
+    ),
+  );
+  const expectedPreviews = evidence.observations
+    .filter((observation) => observation.kind === "structured_retrieval_review_preview")
+    .map((observation) => {
+      const payload = StructuredRetrievalReviewPreviewPayloadSchema.parse(observation.payload);
+      return {
+        coordinate: {
+          taskId: payload.taskId,
+          loopIteration: payload.loopIteration,
+          attempt: payload.attempt,
+          providerRequestIndex: payload.providerRequestIndex,
+        },
+        agentRole: "internal_retrieval" as const,
+        slot: payload.slot,
+        requestSha256Hex: payload.providerInputSha256Hex,
+        results: payload.results,
+        coverage: payload.coverage,
+        truncation: payload.truncation,
+        records: payload.records,
+      };
+    })
+    .filter((preview) =>
+      traceKeys.has(
+        `${preview.coordinate.taskId}:${preview.coordinate.loopIteration}:${preview.coordinate.attempt}`,
+      ),
+    )
+    .sort(
+      (left, right) =>
+        left.coordinate.taskId.localeCompare(right.coordinate.taskId) ||
+        left.coordinate.loopIteration - right.coordinate.loopIteration ||
+        left.coordinate.attempt - right.coordinate.attempt ||
+        left.coordinate.providerRequestIndex - right.coordinate.providerRequestIndex ||
+        left.slot.localeCompare(right.slot),
+    );
+  const actualPreviews = [...retrieval.previews].sort(
+    (left, right) =>
+      left.coordinate.taskId.localeCompare(right.coordinate.taskId) ||
+      left.coordinate.loopIteration - right.coordinate.loopIteration ||
+      left.coordinate.attempt - right.coordinate.attempt ||
+      left.coordinate.providerRequestIndex - right.coordinate.providerRequestIndex ||
+      left.slot.localeCompare(right.slot),
+  );
+  if (canonicalJson(actualPreviews) !== canonicalJson(expectedPreviews)) {
+    throw new Error(`${row.topology}/${row.caseId} captured structured retrieval preview differs`);
+  }
+  for (const review of retrieval.reviews) {
+    const preview = retrieval.previews.find(
+      (candidate) =>
+        candidate.coordinate.taskId === review.coordinate.taskId &&
+        candidate.coordinate.loopIteration === review.coordinate.loopIteration &&
+        candidate.coordinate.attempt === review.coordinate.attempt &&
+        candidate.slot === "initial",
+    );
+    const trace = retrieval.traces.find(
+      (candidate) =>
+        candidate.coordinate.taskId === review.coordinate.taskId &&
+        candidate.coordinate.loopIteration === review.coordinate.loopIteration &&
+        candidate.coordinate.attempt === review.coordinate.attempt,
+    );
+    if (preview === undefined || trace?.trace.review === null || trace === undefined) {
+      throw new Error(
+        `${row.topology}/${row.caseId} captured structured review lacks durable owner`,
+      );
+    }
+    const metadata = review.results.map(({ preview: _preview, ...result }) => result);
+    if (
+      review.inputSha256Hex !== preview.requestSha256Hex ||
+      canonicalJson(review.decision) !== canonicalJson(trace.trace.review) ||
+      canonicalJson(metadata) !== canonicalJson(preview.results)
+    ) {
+      throw new Error(`${row.topology}/${row.caseId} captured structured review differs`);
+    }
+  }
+};
+
 export const revalidateCapturedArtifacts = async (
   connectionString: string,
   sessionId: string,
   specializedInput: unknown,
   baselineInput: unknown,
 ): Promise<CapturedEvaluationSuite> => {
-  const trusted = await captureEvaluationSession(connectionString, sessionId);
+  try {
+    SpecializedEvaluationResultsSchema.parse(specializedInput);
+  } catch {
+    throw new Error("raw specialized artifact does not exactly match its durable trusted capture");
+  }
+  try {
+    GeneralPlannerEvaluationResultsSchema.parse(baselineInput);
+  } catch {
+    throw new Error("raw baseline artifact does not exactly match its durable trusted capture");
+  }
+
+  const session = await loadEvaluationSession(connectionString, sessionId);
+  if (session.status !== "complete") {
+    throw new Error(`evaluation session cannot be revalidated from ${session.status}`);
+  }
+  const rows = await loadCaseRuns(connectionString, sessionId);
+
+  const capturedSpecialized: SpecializedEvaluationResult[] = [];
+  for (const fixture of CanonicalGoldenEvaluationSet.cases) {
+    const row = rows.find(
+      (candidate) => candidate.caseId === fixture.id && candidate.topology === "specialized",
+    );
+    if (row === undefined) throw new Error(`specialized/${fixture.id} evaluation case is missing`);
+    capturedSpecialized.push(
+      (await captureEvaluationCase(
+        connectionString,
+        sessionId,
+        fixture.id,
+        "specialized",
+      )) as SpecializedEvaluationResult,
+    );
+  }
+
+  const capturedBaseline: GeneralPlannerEvaluationResult[] = [];
+  for (const fixture of CanonicalGoldenEvaluationSet.cases) {
+    capturedBaseline.push(
+      (await captureEvaluationCase(
+        connectionString,
+        sessionId,
+        fixture.id,
+        "general_planner",
+      )) as GeneralPlannerEvaluationResult,
+    );
+  }
+  const trusted: CapturedEvaluationSuite = {
+    specialized: SpecializedEvaluationResultsSchema.parse(capturedSpecialized),
+    baseline: GeneralPlannerEvaluationResultsSchema.parse(capturedBaseline),
+  };
   if (canonicalJson(specializedInput) !== canonicalJson(trusted.specialized)) {
     throw new Error("raw specialized artifact does not exactly match its durable trusted capture");
   }
   if (canonicalJson(baselineInput) !== canonicalJson(trusted.baseline)) {
     throw new Error("raw baseline artifact does not exactly match its durable trusted capture");
-  }
-  const specialized = SpecializedEvaluationResultsSchema.parse(specializedInput);
-  const baseline = GeneralPlannerEvaluationResultsSchema.parse(baselineInput);
-  if (canonicalJson(specialized) !== canonicalJson(trusted.specialized)) {
-    throw new Error("specialized artifact does not exactly match its durable trusted capture");
-  }
-  if (canonicalJson(baseline) !== canonicalJson(trusted.baseline)) {
-    throw new Error("baseline artifact does not exactly match its durable trusted capture");
   }
   return trusted;
 };

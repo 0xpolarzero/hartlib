@@ -47,7 +47,13 @@ export function isWellFormedUtf16(value: string): boolean {
 }
 
 export const PassageViewSchema = z.strictObject({
-  passageId: z.string().regex(/^p[1-9][0-9]*$/u),
+  passageId: z
+    .string()
+    .regex(/^p[1-9][0-9]*$/u)
+    .refine(
+      (value) => Number.isSafeInteger(Number(value.slice(1))),
+      "passage ordinal is too large",
+    ),
   text: z.string().refine(isWellFormedUtf16, "passage text must be well-formed UTF-16"),
 });
 
@@ -63,11 +69,17 @@ export const PassageRangeSchema = z
   });
 
 export const PassageSchema = z.strictObject({
-  passageId: z.string().regex(/^p[1-9][0-9]*$/u),
+  passageId: z
+    .string()
+    .regex(/^p[1-9][0-9]*$/u)
+    .refine(
+      (value) => Number.isSafeInteger(Number(value.slice(1))),
+      "passage ordinal is too large",
+    ),
   kind: z.enum(["paragraph", "sentence"]),
-  ordinal: z.number().int().finite().positive(),
-  paragraphOrdinal: z.number().int().finite().positive(),
-  sentenceOrdinal: z.number().int().finite().positive().nullable(),
+  ordinal: z.number().int().finite().safe().positive(),
+  paragraphOrdinal: z.number().int().finite().safe().positive(),
+  sentenceOrdinal: z.number().int().finite().safe().positive().nullable(),
   range: PassageRangeSchema,
   text: z.string().refine(isWellFormedUtf16, "passage text must be well-formed UTF-16"),
   tokenCount: z.number().int().finite().safe().min(0),
@@ -171,15 +183,14 @@ export const splitRangeByUtf8Bytes = (
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new Error("byte cap must be a positive safe integer");
   }
-  const encoder = new TextEncoder();
   const ranges: SourceRange[] = [];
   let start = normalized.charStart;
   let bytes = 0;
   for (let index = normalized.charStart; index < normalized.charEnd; ) {
     const codePoint = text.codePointAt(index);
     if (codePoint === undefined) throw new Error("range ended before a Unicode scalar");
-    const scalar = String.fromCodePoint(codePoint);
-    const scalarBytes = encoder.encode(scalar).byteLength;
+    const scalarBytes =
+      codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
     if (scalarBytes > maxBytes) throw new Error("one Unicode scalar exceeds the byte cap");
     if (bytes > 0 && bytes + scalarBytes > maxBytes) {
       ranges.push({ charStart: start, charEnd: index });
@@ -187,7 +198,7 @@ export const splitRangeByUtf8Bytes = (
       bytes = 0;
     }
     bytes += scalarBytes;
-    index += scalar.length;
+    index += codePoint > 0xffff ? 2 : 1;
   }
   if (start < normalized.charEnd) ranges.push({ charStart: start, charEnd: normalized.charEnd });
   return ranges;
@@ -268,56 +279,76 @@ const splitRangeByTokenCount = (
 ): readonly SourceRange[] => {
   const normalized = normalizeRange(text, range);
   const ranges: SourceRange[] = [];
-  const scalarEnds: number[] = [normalized.charStart];
-  for (let index = normalized.charStart; index < normalized.charEnd; ) {
+  const scalarLengthAt = (index: number): number => {
     const codePoint = text.codePointAt(index);
     if (codePoint === undefined) throw new Error("passage ended before a Unicode scalar");
-    index += String.fromCodePoint(codePoint).length;
-    scalarEnds.push(index);
-  }
+    return codePoint > 0xffff ? 2 : 1;
+  };
+  const scalarCountBetween = (start: number, end: number): number => {
+    let count = 0;
+    for (let index = start; index < end; ) {
+      index += scalarLengthAt(index);
+      count += 1;
+    }
+    return count;
+  };
+  const advanceByScalars = (start: number, count: number): number => {
+    let index = start;
+    for (let scalar = 0; scalar < count; scalar += 1) {
+      index += scalarLengthAt(index);
+    }
+    return index;
+  };
+  const countChecked = (value: string): number => {
+    const count = countTokens(value);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error("token counter must return a non-negative safe integer");
+    }
+    return count;
+  };
 
-  let startScalar = 0;
-  const lastScalar = scalarEnds.length - 1;
-  while (startScalar < lastScalar) {
-    const start = scalarEnds[startScalar]!;
-    const countPrefix = (endScalar: number): number => {
-      const count = countTokens(text.slice(start, scalarEnds[endScalar]!));
-      if (!Number.isSafeInteger(count) || count < 0) {
-        throw new Error("token counter must return a non-negative safe integer");
+  let start = normalized.charStart;
+  let remainingScalars = scalarCountBetween(start, normalized.charEnd);
+  while (remainingScalars > 0) {
+    const remainingTokenCount = countChecked(text.slice(start, normalized.charEnd));
+    if (remainingTokenCount <= maxTokens) {
+      ranges.push({ charStart: start, charEnd: normalized.charEnd });
+      break;
+    }
+
+    const estimatedScalars = Math.min(
+      remainingScalars,
+      Math.max(1, Math.floor((remainingScalars * maxTokens) / remainingTokenCount)),
+    );
+    const countPrefix = (scalarCount: number): number =>
+      countChecked(text.slice(start, advanceByScalars(start, scalarCount)));
+    let acceptedScalars = estimatedScalars;
+    let acceptedCount = countPrefix(acceptedScalars);
+    if (acceptedCount > maxTokens) {
+      let low = 0;
+      let high = estimatedScalars;
+      let lowCount = 0;
+      while (high - low > 1) {
+        const middle = low + Math.floor((high - low) / 2);
+        const middleCount = countPrefix(middle);
+        if (middleCount <= maxTokens) {
+          low = middle;
+          lowCount = middleCount;
+        } else {
+          high = middle;
+        }
       }
-      return count;
-    };
-
-    let accepted = 0;
-    let probe = 1;
-    while (probe <= lastScalar - startScalar) {
-      const count = countPrefix(startScalar + probe);
-      if (count > maxTokens) break;
-      accepted = probe;
-      if (probe === lastScalar - startScalar) break;
-      probe = Math.min(lastScalar - startScalar, probe * 2);
+      acceptedScalars = low;
+      acceptedCount = lowCount;
     }
-    if (accepted === 0) throw new Error("one Unicode scalar exceeds the token cap");
-
-    let low = accepted;
-    let high = Math.min(probe, lastScalar - startScalar);
-    if (high === low && low < lastScalar - startScalar) {
-      high = low + 1;
-    }
-    while (high - low > 1) {
-      const middle = low + Math.floor((high - low) / 2);
-      if (countPrefix(startScalar + middle) <= maxTokens) low = middle;
-      else high = middle;
-    }
-
-    const endScalar = startScalar + low;
-    const end = scalarEnds[endScalar]!;
-    const finalCount = countPrefix(endScalar);
-    if (finalCount > maxTokens) {
+    if (acceptedScalars === 0) throw new Error("one Unicode scalar exceeds the token cap");
+    if (acceptedCount > maxTokens) {
       throw new Error("token-bounded passage exceeds its exact token cap");
     }
+    const end = advanceByScalars(start, acceptedScalars);
     ranges.push({ charStart: start, charEnd: end });
-    startScalar = endScalar;
+    start = end;
+    remainingScalars -= acceptedScalars;
   }
   return ranges;
 };

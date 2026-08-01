@@ -14,7 +14,7 @@ describe("mapApiMessagesToTranscript", () => {
         run: {
           id: "r1",
           status: "failed",
-          errorCode: "context_plan_unfit",
+          errorCode: "context_compaction_failed",
           retryable: true,
           failedAt: "2026-07-09T05:00:01.000Z",
         },
@@ -63,7 +63,7 @@ describe("mapApiMessagesToTranscript", () => {
         run: {
           id: "r1",
           status: "failed",
-          errorCode: "context_plan_unfit",
+          errorCode: "context_compaction_failed",
           retryable: true,
           failedAt: "2026-07-09T05:00:01.000Z",
         },

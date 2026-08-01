@@ -269,14 +269,20 @@ const assertCanonicalAiChatSmithersRunIdEffect = (
     catch: (error) => error,
   });
 
-const isResumeMetadataMismatch = (error: unknown): boolean => {
-  const message = error instanceof Error ? error.message : String(error);
-  const code =
-    typeof error === "object" && error !== null && "code" in error
-      ? String((error as { readonly code?: unknown }).code)
-      : "";
-
-  return code === resumeMetadataMismatchCode || message.includes(resumeMetadataMismatchCode);
+const isResumeMetadataMismatch = (error: unknown, seen = new Set<unknown>()): boolean => {
+  if (typeof error !== "object" || error === null || seen.has(error)) return false;
+  seen.add(error);
+  try {
+    if ("code" in error && error.code === resumeMetadataMismatchCode) {
+      return true;
+    }
+    if ("cause" in error) {
+      return isResumeMetadataMismatch(error.cause, seen);
+    }
+  } catch {
+    return false;
+  }
+  return false;
 };
 
 const runJsonLog = (effect: Effect.Effect<void>): Promise<void> =>
@@ -299,6 +305,8 @@ const runResultError = (result: unknown): unknown =>
 const makeDurableAiActivityLogger =
   (connectionString: string): AiActivityLogger =>
   async (event: AiRunActivityEvent, entry) => {
+    const signal = currentTaskAbortSignal();
+    throwIfAborted(signal);
     const attempt = event.attempt ?? 1;
     const topic = event.topicId ?? "all";
     const task = entry.taskId ?? "ai-chat";
@@ -310,7 +318,9 @@ const makeDurableAiActivityLogger =
         event,
         emittedByTask: task,
       }),
+      signal === undefined ? undefined : { signal },
     );
+    throwIfAborted(signal);
   };
 
 const topicFromTaskId = (taskId: string): "t1" | "t2" | "t3" | undefined => {

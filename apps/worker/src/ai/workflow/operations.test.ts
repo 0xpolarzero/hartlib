@@ -538,11 +538,9 @@ const config = (mainInputTokens: number): CanonicalAiConfig => ({
   aiFastOutputMaxTokens: 4096,
   aiConversationRecentTurns: 12,
   aiFanoutMaxTopics: 3,
-  aiRetrievalMaxTurns: 4,
   aiWebMaxSearches: 2,
   aiWebMaxFetches: 2,
   aiWebMaxDomainFilters: 8,
-  aiContextReductionMaxIterations: 2,
   aiMemoryToolResultMaxItems: 20,
   webResearchProvider: "" as const,
   providerServiceId: "zai_coding_plan_official",
@@ -849,6 +847,117 @@ describe("complete candidate ledger", () => {
     expect(Object.isFrozen(assembly.candidateLedger)).toBe(true);
   });
 
+  it("keeps hydrated document text in the fit-first measured and sent request", async () => {
+    const fullText = "review preview is not the answer; full authorized document text";
+    const reviewPreview = "review preview";
+    const identity = {
+      kind: "public_document" as const,
+      sourceId: "source-1",
+      documentId: "document-1",
+      snapshotId: "snapshot-1",
+      contentHash: "a".repeat(64),
+    };
+    const structured = structuredForIdentities([identity]);
+    (structured.fused.results[0] as any).value = {
+      kind: "document",
+      label: "Document",
+      date: null,
+      sourceName: "Source",
+      text: fullText,
+      preview: reviewPreview,
+      previewRanges: [{ charStart: 0, charEnd: reviewPreview.length }],
+      snapshotId: identity.snapshotId,
+      contentHash: identity.contentHash,
+      mainTokenCount: 1,
+    };
+    const transported: unknown[] = [];
+    const agents = {
+      stream: async (request: unknown) => {
+        transported.push(request);
+        return {
+          text: "grounded answer",
+          toolCalls: [],
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 2,
+            stopReason: "stop",
+          },
+          stopReason: "stop",
+        };
+      },
+    } as unknown as CanonicalAgentClient;
+    const operations = new CanonicalWorkflowOperations(
+      "postgres://unused",
+      config(100_000),
+      agents,
+    );
+    stubPriorTurns(operations);
+    const turn = load("");
+    (operations as any).db = async () => [
+      {
+        sourceName: "Source",
+        documentTitle: "Document",
+        citationUrl: "https://example.test/document-1",
+        publishedAt: null,
+      },
+    ];
+    const assembly = await operations.assembleContext(
+      turn,
+      "What is authorized?",
+      {
+        structuredInternal: structured,
+        memories: [],
+        memorySelection: "enabled",
+        web: [],
+        webSelection: "enabled",
+      },
+      "single-assemble",
+      "single-answer",
+    );
+    const withTaskRuntime = (
+      SmithersTaskRuntimeModule as unknown as {
+        readonly withTaskRuntime: <Value>(runtime: unknown, execute: () => Value) => Value;
+      }
+    ).withTaskRuntime;
+    const runtime = {
+      runId: `ai-chat:${turn.aiRunId}`,
+      stepId: "single-measure",
+      attempt: 0,
+      iteration: 0,
+      signal: new AbortController().signal,
+      db: {},
+      heartbeat: () => undefined,
+      lastHeartbeat: null,
+    };
+    const measured = await withTaskRuntime(runtime, () =>
+      operations.measureAssembly(turn, assembly, "single-measure"),
+    );
+    const ledgerEntry = measured.candidateLedger.candidates[0];
+    expect(ledgerEntry).toMatchObject({
+      kind: "document",
+      text: fullText,
+      baseRanges: [{ charStart: 0, charEnd: fullText.length }],
+    });
+    expect(measured.status).toBe("ready");
+    const measuredUser = measured.request.messages.find((message) => message.role === "user");
+    if (measuredUser === undefined) throw new Error("measured request has no user message");
+    expect(JSON.parse(measuredUser.content).evidence).toContain(fullText);
+
+    await withTaskRuntime({ ...runtime, stepId: "single-answer", attempt: 1 }, () =>
+      operations.answerDirect(turn, measured, "single-answer"),
+    );
+    expect(transported).toHaveLength(1);
+    const withoutProofs = (request: any) => {
+      const { sourceExposureProofs: _proofs, ...rest } = request;
+      return rest;
+    };
+    expect(withoutProofs(transported[0])).toEqual(withoutProofs(measured.request));
+    expect(JSON.parse((transported[0] as any).messages[1].content).evidence).toContain(fullText);
+  });
+
   it("accepts bounded source search arguments for one candidate", () => {
     expect(
       SearchSourcePassagesArgumentsSchema.parse({ candidateId: "c1", query: "alpha", cursor: "0" }),
@@ -1083,6 +1192,74 @@ describe("fanout synthesis allocation", () => {
     expect(value.sourceMap).toEqual([]);
     expect(value.citationSourceMap).toEqual([]);
     expect(Object.isFrozen(value.candidateLedger)).toBe(true);
+  });
+
+  it("uses exact synthesis prefix marginals and excludes history and packets from mandatory input", async () => {
+    const operations = new CanonicalWorkflowOperations(
+      "postgres://unused",
+      config(100_000),
+      {} as CanonicalAgentClient,
+    );
+    const historyText = "selected synthesis history";
+    stubPriorTurns(operations, historyText);
+    const turn = load(historyText);
+    const selectedConversation = [
+      {
+        turnId: "turn-1",
+        userMessageId: "message-user-1",
+        userContent: historyText,
+        assistantMessageId: "message-assistant-1",
+        assistantContent: historyText,
+      },
+    ];
+    const allocation = await operations.allocateFanout(turn, plan(["turn-1"]));
+    const contexts = [
+      { ...topicContext("t1", allocation.packetOutputTokens), selectedConversation },
+      { ...topicContext("t2", allocation.packetOutputTokens), selectedConversation },
+    ];
+    const packets = [
+      {
+        topicId: "t1" as const,
+        status: "partial" as const,
+        claims: [],
+        gaps: ["first gap"],
+      },
+      {
+        topicId: "t2" as const,
+        status: "partial" as const,
+        claims: [],
+        gaps: ["second gap"],
+      },
+    ];
+    const value = await operations.synthesisContext(turn, packets, [], contexts, allocation);
+    const model = resolveRegisteredModel(turn.acceptanceScope.mainModelId);
+    const totalInputTokens = model.countRequestTokens(value.request);
+    const mandatoryInputTokens = model.countRequestTokens(
+      operations.rebuildSynthesisRequest(turn, [], [], value.request.requestedOutputTokens),
+    );
+    const ledgerCosts = value.candidateLedger.candidates.map(
+      (candidate) => candidate.renderedTokenCount,
+    );
+    expect(ledgerCosts.every((count) => count >= 0)).toBe(true);
+    expect(ledgerCosts.reduce((total, count) => total + count, 0)).toBe(
+      totalInputTokens - mandatoryInputTokens,
+    );
+    expect(
+      value.candidateLedger.candidates.filter(
+        (candidate) => candidate.kind === "conversation_entry",
+      ),
+    ).toHaveLength(1);
+    expect(
+      value.candidateLedger.candidates.filter((candidate) => candidate.kind === "topic_packet"),
+    ).toHaveLength(2);
+
+    const measurement = (operations as any).contextMeasurementPayload(
+      value,
+      "fanout-synthesis",
+      "synthesis",
+    );
+    expect(measurement.mandatoryInputTokens).toBe(mandatoryInputTokens);
+    expect(measurement.discretionaryInputTokens).toBe(totalInputTokens - mandatoryInputTokens);
   });
 
   it("retains the strict synthesis ledger when exact packet input needs compaction", async () => {

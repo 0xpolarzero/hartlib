@@ -37,8 +37,8 @@ import {
   mergeGroupCompactionResults,
   mergeCompactionSelections,
   validateFallbackContextManifest,
+  validateFallbackGroupCompactionResult,
   validateGroupResultEnvelope,
-  validateTightenedGroupCompactionResult,
   CompactionContractError,
   validateInitialContextManifest,
   type CompactionGroup,
@@ -168,6 +168,7 @@ import {
 import { WebBoundaryError } from "../web/errors";
 import { TINYFISH_SEARCH_DOMAIN_FILTER_HARD_MAX } from "../web/tinyfish-search";
 import {
+  CANDIDATE_CONTRACT_LIMITS,
   CandidateLedgerSchema,
   candidateLocalId,
   canonicalIdentityKey,
@@ -186,12 +187,15 @@ import {
   InternalQuerySchema as StructuredQuerySchema,
   QueryReviewProviderSchema,
   QueryReviewSchema,
+  StructuredRetrievalTraceSchema,
   type InternalQueryPlan,
-  type InternalQueryPlanValue,
   type InternalQueryValue,
+  type InternalQueryPlanValue,
   type QueryReviewValue,
+  type StructuredRetrievalTraceValue,
 } from "../retrieval/query-spec";
 import {
+  ReviewModelFusedResultMetadataSchema,
   ReviewModelFusedResultSchema,
   type ReviewModelFusedResult,
 } from "../retrieval/rank-fusion";
@@ -201,6 +205,9 @@ import type {
 } from "../retrieval/compile-query-spec";
 
 export type { LoadedTurn } from "./types";
+
+const COMPACTION_PLANNER_TOTAL_PREVIEW_UTF8_BYTES = 64 * 1024;
+const MAX_RETRIEVAL_TOOL_TURNS = 8;
 
 export interface QueryReviewProviderInput {
   readonly question: string;
@@ -219,6 +226,12 @@ export interface QueryReviewExposure {
   /** Private proof envelope; never passed to the review provider. */
   readonly privateProof: readonly RetrievalPreviewExposure[];
 }
+const reviewResultMetadata = (
+  result: ReviewModelFusedResult,
+): z.infer<typeof ReviewModelFusedResultMetadataSchema> => {
+  const { preview: _preview, ...metadata } = ReviewModelFusedResultSchema.parse(result);
+  return ReviewModelFusedResultMetadataSchema.parse(metadata);
+};
 
 const proofFromReviewResult = (
   result: ReviewModelFusedResult,
@@ -269,6 +282,15 @@ const proofFromReviewResult = (
           ? "internal_chat_search_preview"
           : "internal_search_preview",
       visibleTokenCount: countTextTokens(result.preview),
+      ...(identity.kind === "chat_message"
+        ? {
+            chatReconstruction: {
+              messageId: identity.messageId,
+              contentHash: exposure.contentHash,
+              ranges: exposure.previewRanges,
+            },
+          }
+        : {}),
     },
     result.preview,
     {
@@ -300,6 +322,9 @@ const structuredRetrievalReviewPreviewPayload = (
   agentRole: "internal_retrieval",
   slot,
   providerInputSha256Hex: coordinates.providerRequestSha256Hex,
+  results: exposure.providerInput.results.map(reviewResultMetadata),
+  coverage: exposure.providerInput.coverage,
+  truncation: exposure.providerInput.truncation,
   records: exposure.privateProof.map((proof) => {
     const record = {
       identity: proof.identity,
@@ -435,7 +460,6 @@ export type CanonicalAiConfig = Pick<
   | "aiFastOutputMaxTokens"
   | "aiConversationRecentTurns"
   | "aiFanoutMaxTopics"
-  | "aiRetrievalMaxTurns"
   | "aiWebMaxSearches"
   | "aiWebMaxFetches"
   | "aiWebMaxDomainFilters"
@@ -698,6 +722,7 @@ const providerVisibleExposureMarker = (exposure: {
   readonly contentItemIdentity: string;
   readonly stage: string;
   readonly visibleTokenCount: number;
+  readonly chatReconstruction?: CodeOwnedSourceExposureProof["chatReconstruction"];
 }) => ({
   sourceKind: exposure.sourceKind,
   logicalSourceIdentity: exposure.logicalSourceIdentity,
@@ -716,6 +741,9 @@ const codeOwnedExposureProof = (
 ): CodeOwnedSourceExposureProof => ({
   ...providerVisibleExposureMarker(exposure),
   visibleText,
+  ...(exposure.chatReconstruction === undefined
+    ? {}
+    : { chatReconstruction: exposure.chatReconstruction }),
   ...(binding === undefined ? {} : binding),
 });
 
@@ -890,6 +918,12 @@ const candidateText = (candidate: AnswerCandidate, chatRanges?: readonly SourceR
   return candidate.ranges
     .map((range) => candidate.text.slice(range.charStart, range.charEnd))
     .join("\n…\n");
+};
+const ledgerChatMessageId = (candidate: CandidateLedgerEntry): string => {
+  if (candidate.kind !== "chat_message" || candidate.identity.kind !== "chat_message") {
+    throw new Error("chat candidate lacks its canonical message identity");
+  }
+  return candidate.identity.messageId;
 };
 
 const canonicalValue = (value: unknown): unknown => {
@@ -1254,7 +1288,7 @@ export class CanonicalWorkflowOperations {
         if (requestKind === "synthesis" && Array.isArray(parsed.packets)) {
           return {
             ...message,
-            content: JSON.stringify({ ...parsed, packets: [] }),
+            content: JSON.stringify({ ...parsed, selectedConversation: [], packets: [] }),
           };
         }
         if (!("evidence" in parsed)) return message;
@@ -1267,11 +1301,15 @@ export class CanonicalWorkflowOperations {
       }
     });
     const mandatoryInputTokens = model.countRequestTokens({ ...request, messages });
+    const discretionaryInputTokens = state.inputTokens - mandatoryInputTokens;
+    if (discretionaryInputTokens < 0) {
+      throw new Error("context token accounting is inconsistent");
+    }
     return {
       consumerTaskId,
       ...(state.topicId === undefined ? {} : { topicId: state.topicId }),
       mandatoryInputTokens,
-      discretionaryInputTokens: Math.max(0, state.inputTokens - mandatoryInputTokens),
+      discretionaryInputTokens,
       totalInputTokens: state.inputTokens,
       requestedOutputTokens: state.request.requestedOutputTokens,
       usableInputTokens: state.usableInputTokens,
@@ -1578,6 +1616,54 @@ export class CanonicalWorkflowOperations {
         : "result" in reviewed
           ? reviewed.result
           : reviewed;
+    const traceCandidate: unknown =
+      plan.action === "skip"
+        ? {
+            initialPlan: plan,
+            review: null,
+            replacementPlan: null,
+            outcome: "skipped",
+          }
+        : reviewed !== null && "action" in reviewed && reviewed.action === "accept"
+          ? {
+              initialPlan: plan,
+              review: reviewed.review,
+              replacementPlan: null,
+              outcome: "accepted",
+            }
+          : reviewed !== null && "action" in reviewed && reviewed.action === "replace"
+            ? {
+                initialPlan: plan,
+                review: reviewed.review,
+                replacementPlan: {
+                  action: "search",
+                  queries: reviewed.review.queries,
+                },
+                outcome: "replaced",
+              }
+            : reviewed !== null && "action" in reviewed && reviewed.action === "no_evidence"
+              ? {
+                  initialPlan: plan,
+                  review: reviewed.review,
+                  replacementPlan: null,
+                  outcome: "no_evidence",
+                }
+              : (() => {
+                  throw new Error(
+                    "structured retrieval completed without a terminal review outcome",
+                  );
+                })();
+    const structuredRetrievalTrace = StructuredRetrievalTraceSchema.parse(
+      traceCandidate,
+    ) as StructuredRetrievalTraceValue;
+    await this.observe(
+      load,
+      taskId,
+      "structured_retrieval_trace",
+      structuredRetrievalTrace,
+      await this.taskExecutionCoordinates(load.aiRunId, taskId),
+    );
+
     const references =
       reviewedResult?.previewExposures.map((exposure, index) => {
         const identity = exposure.identity;
@@ -2093,11 +2179,11 @@ export class CanonicalWorkflowOperations {
         currentUserMessage: load.userMessage,
         activeMemoryCount: acceptedMemories.length,
         toolBounds: {
-          maximumTurns: this.config.aiRetrievalMaxTurns,
+          maximumTurns: MAX_RETRIEVAL_TOOL_TURNS,
           maximumResultItems: this.config.aiMemoryToolResultMaxItems,
         },
       }),
-      maximumTurns: this.config.aiRetrievalMaxTurns,
+      maximumTurns: MAX_RETRIEVAL_TOOL_TURNS,
       requestedOutputTokens: this.config.aiFastOutputMaxTokens,
       reasoning: "medium",
       coordinates: { taskId, attempt: execution.attempt, agentRole: "memory_extractor" },
@@ -2449,6 +2535,9 @@ export class CanonicalWorkflowOperations {
               ...(binding === undefined
                 ? {}
                 : { providerSerializationProofBinding: binding.binding }),
+              ...(marker.chatReconstruction === undefined
+                ? {}
+                : { chatReconstruction: marker.chatReconstruction }),
             }),
           ),
         ];
@@ -2559,6 +2648,11 @@ export class CanonicalWorkflowOperations {
               contentItemIdentity: identity.messageId,
               exposureStage,
               visibleTokenCount,
+              chatReconstruction: {
+                messageId: identity.messageId,
+                contentHash: exposure.contentHash,
+                ranges: exposure.previewRanges,
+              },
               ...(binding === undefined
                 ? {}
                 : { providerSerializationProofBinding: binding.binding }),
@@ -2627,6 +2721,11 @@ export class CanonicalWorkflowOperations {
           logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
           contentItemIdentity: messageId,
           stage: "provider_input",
+          chatReconstruction: {
+            messageId,
+            contentHash: createHash("sha256").update(content, "utf8").digest("hex"),
+            ranges: [{ charStart: 0, charEnd: content.length }],
+          },
           visibleTokenCount: this.visibleTokenCount(content, modelId),
         },
         content,
@@ -2646,7 +2745,10 @@ export class CanonicalWorkflowOperations {
         load.acceptanceScope.mainModelId,
       ),
       ...context.candidates
-        .filter((candidate) => candidate.kind !== "topic_packet")
+        .filter(
+          (candidate): candidate is Exclude<AnswerCandidate, TopicPacketCandidate> =>
+            candidate.kind !== "topic_packet",
+        )
         .map((candidate) => {
           const chatRanges =
             candidate.kind === "chat_message"
@@ -2674,12 +2776,7 @@ export class CanonicalWorkflowOperations {
                   sha256Base64Url(JSON.stringify(candidate.ranges)),
                 )
               : candidate.kind === "chat_message"
-                ? `${candidate.messageId}:${sha256Base64Url(
-                    stableJson({
-                      contentHash: sha256Base64Url(candidate.text),
-                      ranges: chatRanges,
-                    }),
-                  )}`
+                ? candidate.messageId
                 : candidate.kind === "memory"
                   ? candidate.memoryRevisionId
                   : `${candidate.url}:${candidate.quoteHash}`;
@@ -2689,6 +2786,17 @@ export class CanonicalWorkflowOperations {
               logicalSourceIdentity,
               contentItemIdentity,
               stage: "answer_serialized",
+              ...(candidate.kind === "chat_message"
+                ? {
+                    chatReconstruction: {
+                      messageId: candidate.messageId,
+                      contentHash: createHash("sha256")
+                        .update(candidate.text, "utf8")
+                        .digest("hex"),
+                      ranges: chatRanges,
+                    },
+                  }
+                : {}),
               visibleTokenCount: this.visibleTokenCount(text, load.acceptanceScope.mainModelId),
             },
             text,
@@ -2696,14 +2804,9 @@ export class CanonicalWorkflowOperations {
           return candidate.kind === "chat_message"
             ? {
                 ...proof,
-                immutableContentHash: sha256Base64Url(candidate.text),
-                immutableSourceCommitment: sha256Base64Url(
-                  stableJson({ messageId: candidate.messageId, ranges: chatRanges }),
-                ),
-                orderedSourceDescriptor: stableJson({
-                  messageId: candidate.messageId,
-                  ranges: chatRanges,
-                }),
+                immutableContentHash: createHash("sha256")
+                  .update(candidate.text, "utf8")
+                  .digest("hex"),
               }
             : proof;
         }),
@@ -2743,10 +2846,18 @@ export class CanonicalWorkflowOperations {
     );
     await Promise.all(
       context.candidates
-        .filter((candidate) => candidate.kind !== "topic_packet")
+        .filter(
+          (candidate): candidate is Exclude<AnswerCandidate, TopicPacketCandidate> =>
+            candidate.kind !== "topic_packet",
+        )
         .map((candidate) => {
-          const content = candidateText(candidate);
-          const sourceKind = candidate.kind;
+          const chatRanges =
+            candidate.kind === "chat_message"
+              ? ((context.chatSourceRanges ?? []).find(
+                  (item) => item.messageId === candidate.messageId,
+                )?.ranges ?? [])
+              : [];
+          const content = candidateText(candidate, chatRanges);
           const logicalSourceIdentity =
             candidate.kind === "document"
               ? documentCandidateIdentity(candidate)
@@ -2780,10 +2891,10 @@ export class CanonicalWorkflowOperations {
               runId: load.aiRunId,
               taskId: execution.taskId,
               loopIteration: execution.loopIteration,
+              sourceKind: candidate.kind,
               attempt: execution.attempt,
               providerRequestIndex: execution.providerRequestIndex,
               providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
-              sourceKind,
               logicalSourceIdentity,
               ...(candidate.kind === "document" && candidate.publisherIssueId !== undefined
                 ? {
@@ -2797,6 +2908,17 @@ export class CanonicalWorkflowOperations {
               ...(binding === undefined
                 ? {}
                 : { providerSerializationProofBinding: binding.binding }),
+              ...(candidate.kind === "chat_message"
+                ? {
+                    chatReconstruction: {
+                      messageId: candidate.messageId,
+                      contentHash: createHash("sha256")
+                        .update(candidate.text, "utf8")
+                        .digest("hex"),
+                      ranges: chatRanges,
+                    },
+                  }
+                : {}),
               ...(candidate.kind === "document"
                 ? {
                     documentReconstruction: {
@@ -2898,7 +3020,7 @@ export class CanonicalWorkflowOperations {
         question,
         activeMemoryCount: acceptedMemories.length,
         toolBounds: {
-          maximumTurns: this.config.aiRetrievalMaxTurns,
+          maximumTurns: MAX_RETRIEVAL_TOOL_TURNS,
           maximumResultItems: this.config.aiMemoryToolResultMaxItems,
         },
       }),
@@ -2916,7 +3038,7 @@ export class CanonicalWorkflowOperations {
       ),
       terminalToolName: "emit_memory_manifest",
       validateTerminal: (value) => MemoryManifestOutputSchema.parse(value).entries,
-      maximumTurns: this.config.aiRetrievalMaxTurns,
+      maximumTurns: MAX_RETRIEVAL_TOOL_TURNS,
       requestedOutputTokens: this.config.aiFastOutputMaxTokens,
       reasoning: "medium",
       coordinates: { taskId, attempt: execution.attempt, agentRole: "memory_selector" },
@@ -3033,7 +3155,7 @@ export class CanonicalWorkflowOperations {
         market: load.market,
         policy: webPolicy,
         toolBounds: {
-          maximumTurns: this.config.aiRetrievalMaxTurns,
+          maximumTurns: MAX_RETRIEVAL_TOOL_TURNS,
           maximumSearches: this.config.aiWebMaxSearches,
           maximumFetches: this.config.aiWebMaxFetches,
           // The accepted scope owns the allowlist. The deployment setting is
@@ -3042,7 +3164,7 @@ export class CanonicalWorkflowOperations {
           maximumDomainFiltersPerSearch: TINYFISH_SEARCH_DOMAIN_FILTER_HARD_MAX,
         },
       }),
-      maximumTurns: this.config.aiRetrievalMaxTurns,
+      maximumTurns: MAX_RETRIEVAL_TOOL_TURNS,
       requestedOutputTokens: this.config.aiFastOutputMaxTokens,
       reasoning: "medium",
       coordinates: { taskId, attempt: execution.attempt, agentRole: "web_research" },
@@ -3698,7 +3820,7 @@ export class CanonicalWorkflowOperations {
     return {
       kind: "web",
       canonicalUrl: candidate.url,
-      quoteHash: createHash("sha256").update(candidate.quote).digest("hex"),
+      quoteHash: webQuoteHash(candidate.quote),
       capturedAt: candidate.capturedAt,
     };
   }
@@ -3739,39 +3861,24 @@ export class CanonicalWorkflowOperations {
     maximumBytes = 16 * 1024,
   ): { readonly ranges: readonly SourceRange[]; readonly preview: string } {
     const separatorBytes = new TextEncoder().encode("\n…\n").byteLength;
-    const utf8Bytes = (start: number, end: number): number => {
-      let bytes = 0;
-      for (let index = start; index < end; ) {
-        const codePoint = text.codePointAt(index);
-        if (codePoint === undefined) break;
-        bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
-        index += codePoint > 0xffff ? 2 : 1;
-      }
-      return bytes;
-    };
     const selected: SourceRange[] = [];
     let bytes = 0;
     for (const range of ranges) {
       const budget = maximumBytes - bytes - (selected.length === 0 ? 0 : separatorBytes);
-      const boundaries = [range.charStart];
+      let boundedEnd = range.charStart;
+      let segmentBytes = 0;
       for (let index = range.charStart; index < range.charEnd; ) {
         const codePoint = text.codePointAt(index);
         if (codePoint === undefined) break;
-        index += codePoint > 0xffff ? 2 : 1;
-        boundaries.push(index);
+        const scalarBytes =
+          codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+        if (segmentBytes + scalarBytes > budget) break;
+        segmentBytes += scalarBytes;
+        const scalarLength = codePoint > 0xffff ? 2 : 1;
+        boundedEnd = index + scalarLength;
+        index = boundedEnd;
       }
-      let low = 0;
-      let high = boundaries.length - 1;
-      while (low < high) {
-        const middle = Math.ceil((low + high) / 2);
-        const end = boundaries[middle]!;
-        if (utf8Bytes(range.charStart, end) <= budget) low = middle;
-        else high = middle - 1;
-      }
-      const boundedEnd = boundaries[low]!;
       if (boundedEnd <= range.charStart) break;
-      const segmentBytes = utf8Bytes(range.charStart, boundedEnd);
-      if (segmentBytes > budget) break;
       selected.push({ charStart: range.charStart, charEnd: boundedEnd });
       bytes += segmentBytes + (selected.length === 1 ? 0 : separatorBytes);
       if (bytes >= maximumBytes) break;
@@ -3853,7 +3960,11 @@ export class CanonicalWorkflowOperations {
         };
       });
     const fits = (maximumPreviewBytes: number): boolean => {
-      const payload = build(project(maximumPreviewBytes));
+      // A zero-byte probe must contain only the mandatory planner fields. In
+      // particular, do not force one scalar from each conversation field into
+      // this probe: that would make the mandatory-size check depend on an
+      // arbitrary preview fallback rather than the actual zero-preview gate.
+      const payload = build(maximumPreviewBytes === 0 ? [] : project(maximumPreviewBytes));
       const request = structuredRequestInput(
         payload.system,
         payload.user,
@@ -3866,19 +3977,14 @@ export class CanonicalWorkflowOperations {
       return model.countRequestTokens(request) <= usableInputTokens;
     };
     if (!fits(0)) throw controlledRuntimeFailure("context_mandatory_too_large");
-    let low = 0;
-    let high = 16 * 1024;
-    let best = 0;
-    while (low <= high) {
-      const middle = Math.floor((low + high) / 2);
-      if (fits(middle)) {
-        best = middle;
-        low = middle + 1;
-      } else {
-        high = middle - 1;
-      }
+    let budget = Math.min(
+      CANDIDATE_CONTRACT_LIMITS.maxPreviewUtf8Bytes,
+      Math.floor(COMPACTION_PLANNER_TOTAL_PREVIEW_UTF8_BYTES / Math.max(1, entries.length)),
+    );
+    while (budget > 0 && !fits(budget)) {
+      budget = Math.floor(budget / 2);
     }
-    const fittedEntries = project(best);
+    const fittedEntries = project(budget);
     return { entries: fittedEntries, payload: build(fittedEntries) };
   }
 
@@ -4230,10 +4336,7 @@ export class CanonicalWorkflowOperations {
           } as AnswerCandidate);
           continue;
         }
-        const ranges =
-          value.previewRanges.length > 0
-            ? [...value.previewRanges]
-            : [{ charStart: 0, charEnd: value.text.length }];
+        const ranges = [{ charStart: 0, charEnd: value.text.length }];
         if (value.text.length === 0) {
           rejections.push({
             candidateId: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
@@ -4982,7 +5085,7 @@ export class CanonicalWorkflowOperations {
             : entry.identity.kind === "public_document" ||
                 entry.identity.kind === "publisher_document"
               ? entry.identity.contentHash
-              : sha256Base64Url(entry.text);
+              : createHash("sha256").update(entry.text, "utf8").digest("hex");
         const immutableSourceIdentityCommitment = sha256Base64Url(logicalSourceIdentity);
         const marker = codeOwnedExposureProof(
           {
@@ -5022,6 +5125,15 @@ export class CanonicalWorkflowOperations {
                 documentReconstruction: this.compactionDocumentReconstruction(entry, [
                   passage.range,
                 ]),
+              }
+            : {}),
+          ...(entry.identity.kind === "chat_message"
+            ? {
+                chatReconstruction: {
+                  messageId: entry.identity.messageId,
+                  contentHash: immutableContentHash,
+                  ranges: [passage.range],
+                },
               }
             : {}),
           ...(entry.identity.kind === "publisher_document"
@@ -5185,6 +5297,11 @@ export class CanonicalWorkflowOperations {
             charEnd,
             visibleByteCount,
             immutableContentHash,
+            chatReconstruction: {
+              messageId,
+              contentHash: immutableContentHash,
+              ranges: [{ charStart, charEnd }],
+            },
             immutableSourceIdentityCommitment,
             immutableSourceCommitment: providerVisibleSourceExposureCommitment(
               marker,
@@ -5244,7 +5361,7 @@ export class CanonicalWorkflowOperations {
           : entry.identity.kind === "public_document" ||
               entry.identity.kind === "publisher_document"
             ? entry.identity.contentHash
-            : sha256Base64Url(entry.text);
+            : createHash("sha256").update(entry.text, "utf8").digest("hex");
       const immutableSourceIdentityCommitment = sha256Base64Url(logicalSourceIdentity);
       const compactionBinding = stableJson({
         sourceKind,
@@ -5274,6 +5391,15 @@ export class CanonicalWorkflowOperations {
               }
             : {}),
           immutableContentHash,
+          ...(entry.identity.kind === "chat_message"
+            ? {
+                chatReconstruction: {
+                  messageId: entry.identity.messageId,
+                  contentHash: immutableContentHash,
+                  ranges,
+                },
+              }
+            : {}),
           immutableSourceIdentityCommitment,
           immutableSourceCommitment: providerVisibleSourceExposureCommitment(
             marker,
@@ -5369,6 +5495,9 @@ export class CanonicalWorkflowOperations {
             exposureStage: proof.exposureStage,
             visibleTokenCount: proof.visibleTokenCount,
             providerSerializationProofBinding: binding.binding,
+            ...(codeProof.chatReconstruction === undefined
+              ? {}
+              : { chatReconstruction: codeProof.chatReconstruction }),
             ...(codeProof.documentReconstruction === undefined
               ? {}
               : {
@@ -5436,16 +5565,21 @@ export class CanonicalWorkflowOperations {
       {
         readonly inputTokens: number;
         readonly usableInputTokens: number;
-        readonly minimumSelectablePassageCost: number;
+        readonly selectablePassageCost: number;
       }
     >();
     const ledger = state.candidateLedger;
     for (const declared of manifest.groups) {
-      const candidateIds = manifest.decisions
-        .filter(
-          (decision) => decision.action === "compact" && decision.groupId === declared.groupId,
-        )
-        .map((decision) => decision.candidateId);
+      const declaredCandidateIds = new Set(
+        manifest.decisions
+          .filter(
+            (decision) => decision.action === "compact" && decision.groupId === declared.groupId,
+          )
+          .map((decision) => decision.candidateId),
+      );
+      const candidateIds = ledger.candidates
+        .map((candidate) => candidate.candidateId)
+        .filter((candidateId) => declaredCandidateIds.has(candidateId));
       const candidates = candidateIds.map((candidateId) =>
         this.compactionProviderCandidate(
           this.compactionLedgerEntry(state, candidateId),
@@ -5478,27 +5612,54 @@ export class CanonicalWorkflowOperations {
         this.config.aiFastInputMaxTokens,
         model.contextWindow - request.requestedOutputTokens,
       );
-      const minimumSelectablePassageCost = Math.min(
-        ...candidateIds.map((candidateId) => {
-          const entry = this.compactionLedgerEntry(state, candidateId);
-          const index = buildCandidatePassageIndex(entry, {
-            ...passageOptions,
-            authorizedRanges: entry.baseRanges,
-          });
-          return Math.min(
-            ...index.passages.map((passage) =>
-              costOptions.countRenderedTokens(
-                [{ candidateId, text: passage.text, passageIds: [], ranges: [] }],
-                candidateIds,
-              ),
-            ),
+      let selectablePassageCost: number | undefined;
+      for (const candidate of candidates) {
+        const entry = this.compactionLedgerEntry(state, candidate.candidateId);
+        const passageIndex = buildCandidatePassageIndex(entry, {
+          ...passageOptions,
+          authorizedRanges: entry.baseRanges,
+        });
+        for (const passage of candidate.passages) {
+          const sourcePassage = passageIndex.passages.find(
+            (item) => item.passageId === passage.passageId,
           );
-        }),
-      );
+          if (sourcePassage === undefined) {
+            throw new CompactionContractError(
+              `group ${declared.groupId} has an unknown selectable passage`,
+            );
+          }
+          const cost = costOptions.countRenderedTokens(
+            [
+              {
+                candidateId: candidate.candidateId,
+                text: passage.text,
+                passageIds: [passage.passageId],
+                ranges: [sourcePassage.range],
+              },
+            ],
+            candidateIds,
+          );
+          if (!Number.isSafeInteger(cost) || cost < 0) {
+            throw new CompactionContractError(
+              `group ${declared.groupId} selectable passage cost is invalid`,
+            );
+          }
+          if (cost <= declared.renderedTokenBudget) {
+            selectablePassageCost = cost;
+            break;
+          }
+        }
+        if (selectablePassageCost !== undefined) break;
+      }
+      if (selectablePassageCost === undefined) {
+        throw new CompactionContractError(
+          `group ${declared.groupId} budget is below its smallest selectable passage cost`,
+        );
+      }
       groupMeasurements.set(declared.groupId, {
         inputTokens: model.countRequestTokens(request),
         usableInputTokens,
-        minimumSelectablePassageCost,
+        selectablePassageCost,
       });
     }
     const sourceToolEligibleCandidateIds = manifest.decisions
@@ -5529,8 +5690,6 @@ export class CanonicalWorkflowOperations {
     return createPureCompactionGroups(manifest, ledger, {
       sourceToolEligibleCandidateIds,
       remainingAnswerTokens: state.usableInputTokens - measurement.mandatoryInputTokens,
-      passageOptions,
-      costOptions,
       groupMeasurements,
     });
   }
@@ -5584,24 +5743,17 @@ export class CanonicalWorkflowOperations {
         ),
     );
     const payload = planner.payload;
-    const passageOptions = this.compactionPassageOptions(load);
     const taskEvidence = await this.compactionTaskEvidence(load.aiRunId, taskId);
     this.assertCompactionTaskNotConsumed(taskEvidence);
     const repairAlreadyUsed =
       this.compactionRepairTaskIds.has(taskId) || taskEvidence.repairConsumed;
-    const costOptions = this.compactionCostOptions(load, state);
     const requestUser = payload.user;
     const output = await this.agents.structured<InitialContextManifest>({
       requestClass: "fast",
       model: load.acceptanceScope.fastModelId,
       ...payload,
       validate: (value) => {
-        const validated = validateInitialContextManifest(
-          value,
-          state.candidateLedger,
-          passageOptions,
-          costOptions,
-        );
+        const validated = validateInitialContextManifest(value, state.candidateLedger);
         this.assertSynthesisPacketManifest(state, validated, false);
         this.compactionGroupsForManifest(load, state, validated, taskId);
         return validated;
@@ -5634,12 +5786,7 @@ export class CanonicalWorkflowOperations {
     manifest: InitialContextManifest,
     taskId: string,
   ): Promise<readonly CompactionGroup[]> {
-    const validated = validateInitialContextManifest(
-      manifest,
-      state.candidateLedger,
-      this.compactionPassageOptions(load),
-      this.compactionCostOptions(load, state),
-    );
+    const validated = validateInitialContextManifest(manifest, state.candidateLedger);
     this.assertSynthesisPacketManifest(state, validated, false);
     return this.compactionGroupsForManifest(load, state, validated, taskId);
   }
@@ -5650,6 +5797,7 @@ export class CanonicalWorkflowOperations {
     taskId: string,
     phase: CompactionPhase,
     priorResult?: GroupResultEnvelope,
+    tightenCandidateIds?: readonly string[],
   ): Promise<GroupResultEnvelope> {
     const execution = await this.taskExecutionCoordinates(load.aiRunId, taskId);
     const taskEvidence = await this.compactionTaskEvidence(load.aiRunId, taskId);
@@ -5726,11 +5874,12 @@ export class CanonicalWorkflowOperations {
       const result =
         priorResult === undefined
           ? parsed
-          : validateTightenedGroupCompactionResult(
+          : validateFallbackGroupCompactionResult(
               parsed,
               group,
               state.candidateLedger,
               priorResult.result,
+              tightenCandidateIds ?? [],
               passageOptions,
             );
       return GroupResultEnvelopeSchema.parse(
@@ -5783,6 +5932,7 @@ export class CanonicalWorkflowOperations {
     taskId: string,
     phase: CompactionPhase,
     priorResult?: GroupResultEnvelope,
+    tightenCandidateIds?: readonly string[],
   ): Promise<GroupResultEnvelope> {
     if (group.candidateIds.length !== 1) {
       throw new Error("source-tool compaction requires one candidate");
@@ -5793,7 +5943,7 @@ export class CanonicalWorkflowOperations {
     }
     const sourceKind: "document" | "chat_message" = candidate.kind;
     const toolBounds = {
-      maximumTurns: Math.max(4, Math.min(this.config.aiRetrievalMaxTurns, 8)),
+      maximumTurns: DEFAULT_SOURCE_COMPACTION_TOOL_BOUNDS.maximumTurns,
       maximumResults: DEFAULT_SOURCE_COMPACTION_TOOL_BOUNDS.maximumResults,
       maximumBytes: DEFAULT_SOURCE_COMPACTION_TOOL_BOUNDS.maximumBytes,
     } as const;
@@ -5889,6 +6039,23 @@ export class CanonicalWorkflowOperations {
     const privateIdentityForPassage = (passage: PassageView) => {
       const sourcePassage = index.passages.find((item) => item.passageId === passage.passageId);
       if (sourcePassage === undefined) throw new Error("unknown source-tool passage");
+      if (candidate.kind === "chat_message") {
+        if (candidate.identity.kind !== "chat_message") {
+          throw new Error("chat candidate lacks its canonical message identity");
+        }
+        return {
+          candidateId: candidate.candidateId,
+          passageId: passage.passageId,
+          charStart: sourcePassage.range.charStart,
+          charEnd: sourcePassage.range.charEnd,
+          visibleByteCount: new TextEncoder().encode(passage.text).byteLength,
+          chatReconstruction: {
+            messageId: ledgerChatMessageId(candidate),
+            contentHash: candidate.identity.sanitizedContentHash,
+            ranges: [sourcePassage.range],
+          },
+        };
+      }
       if (candidate.kind === "document") {
         const identity = candidate.identity;
         if (identity.kind === "public_document") {
@@ -6023,7 +6190,18 @@ export class CanonicalWorkflowOperations {
     };
     const payload = buildGroupCompactionRequest(load, runtimeRequest);
     const validate = (value: unknown): GroupResultEnvelope => {
-      const result = GroupCompactionResultSchema.parse(value);
+      const parsed = GroupCompactionResultSchema.parse(value);
+      const result =
+        priorResult === undefined
+          ? parsed
+          : validateFallbackGroupCompactionResult(
+              parsed,
+              group,
+              state.candidateLedger,
+              priorResult.result,
+              tightenCandidateIds ?? [],
+              passageOptions,
+            );
       for (const decision of result.decisions) {
         if (
           decision.action === "select" &&
@@ -6104,11 +6282,28 @@ export class CanonicalWorkflowOperations {
     taskId: string,
     phase: CompactionPhase = "compact",
     priorResult?: GroupResultEnvelope,
+    tightenCandidateIds?: readonly string[],
   ): Promise<GroupResultEnvelope> {
     return this.withCompactionRunPermit(load.aiRunId, () =>
       group.mode === "source_tool"
-        ? this.sourceToolCompactionGroup(load, state, group, taskId, phase, priorResult)
-        : this.normalCompactionGroup(load, state, group, taskId, phase, priorResult),
+        ? this.sourceToolCompactionGroup(
+            load,
+            state,
+            group,
+            taskId,
+            phase,
+            priorResult,
+            tightenCandidateIds,
+          )
+        : this.normalCompactionGroup(
+            load,
+            state,
+            group,
+            taskId,
+            phase,
+            priorResult,
+            tightenCandidateIds,
+          ),
     );
   }
 
@@ -6343,7 +6538,9 @@ export class CanonicalWorkflowOperations {
       state.candidateLedger,
       firstPass.envelopes,
       {
-        sourceToolEligibleCandidateIds: [...eligible],
+        sourceToolEligibleCandidateIds: [...eligible].filter((candidateId) =>
+          provisional.some((group) => group.candidateIds.includes(candidateId)),
+        ),
         passageOptions,
         costOptions,
       },
@@ -6657,7 +6854,15 @@ export class CanonicalWorkflowOperations {
           throw new Error("fallback result does not cover its exact first-pass membership");
         }
         if (fallbackDecision.action === "retain") {
-          if (JSON.stringify(nextDecision) !== JSON.stringify(firstDecision)) {
+          if (
+            nextDecision.action !== firstDecision.action ||
+            (nextDecision.action === "select" &&
+              (firstDecision.action !== "select" ||
+                nextDecision.passageIds.length !== firstDecision.passageIds.length ||
+                nextDecision.passageIds.some(
+                  (passageId) => !firstDecision.passageIds.includes(passageId),
+                )))
+          ) {
             throw new Error("fallback retain changed a first-pass result envelope");
           }
           continue;
@@ -6872,7 +7077,7 @@ export class CanonicalWorkflowOperations {
         event: {
           type: "context_ready",
           mode,
-          reductionRan: context.compactionRan,
+          compactionRan: context.compactionRan,
           sourcesRead: context.sourceMap.map(publicSourceRecordFromFinalSource),
           consumers: context.consumers.map((consumer) => ({ ...consumer })),
         },
@@ -6899,7 +7104,7 @@ export class CanonicalWorkflowOperations {
         event: {
           type: "context_ready",
           mode: "clarification",
-          reductionRan: false,
+          compactionRan: false,
           sourcesRead: [],
           consumers: [],
         },
@@ -7145,17 +7350,52 @@ export class CanonicalWorkflowOperations {
       load.acceptanceScope.mainModelId,
       selectedConversation,
     );
+    const mandatoryRequest = this.rebuildSynthesisRequest(
+      load,
+      [],
+      [],
+      this.config.aiMainOutputMaxTokens,
+    );
+    const mandatoryInputTokens = model.countRequestTokens(mandatoryRequest);
+    let previousPrefixTokens = mandatoryInputTokens;
+    const historyTokenCounts = selectedConversation.map((_entry, index) => {
+      const prefixTokens = model.countRequestTokens(
+        this.rebuildSynthesisRequest(
+          load,
+          selectedConversation.slice(0, index + 1),
+          [],
+          this.config.aiMainOutputMaxTokens,
+        ),
+      );
+      const marginal = prefixTokens - previousPrefixTokens;
+      if (marginal < 0) {
+        throw new Error("synthesis history token accounting is inconsistent");
+      }
+      previousPrefixTokens = prefixTokens;
+      return marginal;
+    });
+    const measuredHistoryLedger = this.updateCandidateLedgerTokenCounts(
+      historyLedger,
+      [],
+      [],
+      historyTokenCounts,
+    );
     const packetCandidates: readonly TopicPacketCandidate[] = canonicalPackets.map(
       (packet, index) => {
         const text = JSON.stringify(canonicalValue(packet));
-        const requestWithoutPacket = this.rebuildSynthesisRequest(
-          load,
-          selectedConversation,
-          canonicalPackets.filter((_candidate, candidateIndex) => candidateIndex !== index),
-          this.config.aiMainOutputMaxTokens,
+        const prefixTokens = model.countRequestTokens(
+          this.rebuildSynthesisRequest(
+            load,
+            selectedConversation,
+            canonicalPackets.slice(0, index + 1),
+            this.config.aiMainOutputMaxTokens,
+          ),
         );
-        const renderedTokenCount =
-          model.countRequestTokens(request) - model.countRequestTokens(requestWithoutPacket);
+        const renderedTokenCount = prefixTokens - previousPrefixTokens;
+        if (renderedTokenCount < 0) {
+          throw new Error("synthesis packet token accounting is inconsistent");
+        }
+        previousPrefixTokens = prefixTokens;
         return {
           id: candidateLocalId(selectedConversation.length + index + 1),
           kind: "topic_packet",
@@ -7169,6 +7409,17 @@ export class CanonicalWorkflowOperations {
         };
       },
     );
+    const discretionaryTokenCounts = [
+      ...historyTokenCounts,
+      ...packetCandidates.map((candidate) => candidate.renderedTokenCount),
+    ];
+    if (
+      previousPrefixTokens !== inputTokens ||
+      discretionaryTokenCounts.reduce((total, count) => total + count, 0) !==
+        inputTokens - mandatoryInputTokens
+    ) {
+      throw new Error("synthesis discretionary token accounting is inconsistent");
+    }
     const packetLedgerEntries = packetCandidates.map((candidate): CandidateLedgerEntry => {
       const baseRanges = [{ charStart: 0, charEnd: candidate.text.length }];
       const bounded = this.boundedCandidatePreview(candidate.text, baseRanges);
@@ -7194,7 +7445,7 @@ export class CanonicalWorkflowOperations {
     });
     const candidateLedger = this.freezeCandidateLedger(
       CandidateLedgerSchema.parse({
-        candidates: [...historyLedger.candidates, ...packetLedgerEntries],
+        candidates: [...measuredHistoryLedger.candidates, ...packetLedgerEntries],
       }) as CandidateLedger,
     );
     const synthesisConsumer: PublicContextConsumer = {

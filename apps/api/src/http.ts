@@ -143,10 +143,7 @@ const operationalFailure = (request: Request, cause?: unknown) =>
     // A disconnected client cannot receive an error body. Returning an empty
     // local response avoids writing to the aborted Bun socket while keeping
     // the failure boundary fail-closed.
-    if (
-      request.signal.aborted ||
-      (isCause(cause) && Cause.hasInterruptsOnly(cause))
-    ) {
+    if (request.signal.aborted || (isCause(cause) && Cause.hasInterruptsOnly(cause))) {
       return new Response(null, { status: 499 });
     }
 

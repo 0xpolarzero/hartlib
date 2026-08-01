@@ -1,23 +1,30 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  ContextReductionPrompt,
+  CompactionGroupPrompt,
+  ContextManifestPrompt,
+  FallbackContextPrompt,
+  OversizedSourcePrompt,
+  InternalQueryPlanPrompt,
+  InternalQueryReviewPrompt,
   PlanTurnPrompt,
   DirectAnswerPrompt,
-  InternalRetrievalPrompt,
   MemoryExtractorPrompt,
   MemorySelectorPrompt,
   SynthesisPrompt,
   TopicAnswerPrompt,
   WebResearchPrompt,
+  InitialCompactionProviderInputSchema,
+  SourceToolCompactionProviderInputSchema,
+  buildGroupCompactionRequest,
+  buildInitialCompactionRequest,
 } from "./index";
+import type { SourceToolCompactionRequest } from "../context/compaction-runtime";
 
 const rolePrompts = {
   PlanTurnPrompt,
-  InternalRetrievalPrompt,
   MemorySelectorPrompt,
   WebResearchPrompt,
-  ContextReductionPrompt,
   DirectAnswerPrompt,
   TopicAnswerPrompt,
   SynthesisPrompt,
@@ -73,53 +80,6 @@ describe("canonical AI role prompts", () => {
   });
 
   it("pins every selector tool inventory and strict manifest shape", () => {
-    for (const tool of ["search_internal", "inspect_internal", "emit_internal_manifest"]) {
-      expect(InternalRetrievalPrompt).toContain(tool);
-    }
-    for (const field of ['"documentId":string', "chat_message", "purpose"]) {
-      expect(InternalRetrievalPrompt).toContain(field);
-    }
-    expect(InternalRetrievalPrompt).toContain("authorized search scope is compiled by Brief code");
-    expect(InternalRetrievalPrompt).toContain("unquoted whitespace requires every lexeme");
-    expect(InternalRetrievalPrompt).toContain("sparse high-recall lexical query");
-    expect(InternalRetrievalPrompt).toContain(
-      "sole permitted refinement must be a strict deletion-only subset",
-    );
-    expect(InternalRetrievalPrompt).toContain("replace every hyphen joining words with a space");
-    expect(InternalRetrievalPrompt).toContain(
-      "Saved memories are owned by the separate memory selector B",
-    );
-    expect(InternalRetrievalPrompt).toContain(
-      "target documents and search only the factual document subject",
-    );
-    expect(InternalRetrievalPrompt).toContain(
-      "select the answer message that contains the requested information",
-    );
-    expect(InternalRetrievalPrompt).toContain(
-      "Spend at most two ordinary provider turns on search and refinement",
-    );
-    expect(InternalRetrievalPrompt).toContain(
-      "Issue at most one search_internal call per provider turn",
-    );
-    expect(InternalRetrievalPrompt).toContain(
-      "issue multiple distinct inspect_internal calls together in the same provider turn",
-    );
-    expect(InternalRetrievalPrompt).toContain(
-      "If any tool result contains protocolError, stop all search and inspection immediately",
-    );
-    expect(InternalRetrievalPrompt).toContain(
-      "A queryRejected result is correction-only, is not an empty search result",
-    );
-    expect(InternalRetrievalPrompt).toContain("cannot justify an empty manifest");
-    expect(InternalRetrievalPrompt).toContain("retrieve each distinct named subject");
-    expect(InternalRetrievalPrompt).toContain(
-      "emit an empty manifest without calling search_internal",
-    );
-    expect(InternalRetrievalPrompt).toContain("Feed-recap rule");
-    expect(InternalRetrievalPrompt).toContain("bounded recency listing");
-    expect(InternalRetrievalPrompt).toContain(
-      "Reserve the final provider turn for emit_internal_manifest",
-    );
     for (const tool of ["search_memories", "inspect_memory", "emit_memory_manifest"]) {
       expect(MemorySelectorPrompt).toContain(tool);
     }
@@ -144,10 +104,9 @@ describe("canonical AI role prompts", () => {
     expect(WebResearchPrompt).toContain(
       "A URL-specific fetchFailed result may be followed only by another discovered URL",
     );
-    for (const prompt of [InternalRetrievalPrompt, MemorySelectorPrompt, WebResearchPrompt]) {
+    for (const prompt of [MemorySelectorPrompt, WebResearchPrompt]) {
       expect(prompt).toContain('"toolBounds"');
     }
-    expect(InternalRetrievalPrompt).toContain('"maximumResultsPerSearch"');
     expect(MemorySelectorPrompt).toContain('"maximumResultItems"');
     expect(WebResearchPrompt).toContain('"maximumDomainFiltersPerSearch"');
     expect(MemorySelectorPrompt).toContain("search_memories(query, cursor?)");
@@ -155,13 +114,7 @@ describe("canonical AI role prompts", () => {
   });
 
   it("requires terminal tools to run alone after non-terminal tool results", () => {
-    for (const prompt of [
-      InternalRetrievalPrompt,
-      MemorySelectorPrompt,
-      WebResearchPrompt,
-      ContextReductionPrompt,
-      MemoryExtractorPrompt,
-    ]) {
+    for (const prompt of [MemorySelectorPrompt, WebResearchPrompt, MemoryExtractorPrompt]) {
       expect(prompt).toContain(
         "wait for every requested non-terminal tool result before another turn",
       );
@@ -182,34 +135,6 @@ describe("canonical AI role prompts", () => {
     expect(WebResearchPrompt).toContain(
       "If any tool result contains protocolError, stop search and fetch immediately",
     );
-  });
-
-  it("pins complete context accounting, measurement, and document-only ranges", () => {
-    for (const field of [
-      '"allowance"',
-      '"overage"',
-      '"mandatoryInputCost"',
-      '"renderedTokenCount"',
-      '"priorValidationFeedback"',
-    ]) {
-      expect(ContextReductionPrompt).toContain(field);
-    }
-    for (const tool of [
-      "inspect_candidate",
-      "search_within_candidate",
-      "measure_plan",
-      "emit_context_plan",
-    ]) {
-      expect(ContextReductionPrompt).toContain(tool);
-    }
-    expect(ContextReductionPrompt).toContain('"action":"keep"');
-    expect(ContextReductionPrompt).toContain('"action":"range"');
-    expect(ContextReductionPrompt).toContain('"action":"omit"');
-    expect(ContextReductionPrompt).toContain("Non-document candidates are whole-item keep or omit");
-    expect(ContextReductionPrompt).toContain('"conversation_entry"');
-    expect(ContextReductionPrompt).toContain('"toolBounds"');
-    expect(ContextReductionPrompt).toContain("search_within_candidate(id, terms, cursor?)");
-    expect(ContextReductionPrompt).toContain("Preserve every candidate required by the question");
   });
 
   it("keeps direct and synthesis output as ordinary no-tool text", () => {
@@ -253,5 +178,124 @@ describe("canonical AI role prompts", () => {
     expect(MemoryExtractorPrompt).toContain(
       "A one-turn request for an exact date, language, format, or answer style is not durable memory",
     );
+  });
+});
+
+describe("retrieval and compaction prompt inventory", () => {
+  it("contains the six current prompt contracts", () => {
+    const promptInventory = {
+      InternalQueryPlanPrompt,
+      InternalQueryReviewPrompt,
+      ContextManifestPrompt,
+      CompactionGroupPrompt,
+      OversizedSourcePrompt,
+      FallbackContextPrompt,
+    };
+    expect(Object.keys(promptInventory)).toEqual([
+      "InternalQueryPlanPrompt",
+      "InternalQueryReviewPrompt",
+      "ContextManifestPrompt",
+      "CompactionGroupPrompt",
+      "OversizedSourcePrompt",
+      "FallbackContextPrompt",
+    ]);
+  });
+});
+describe("parallel compaction provider contracts", () => {
+  const candidate = {
+    candidateId: "c1",
+    kind: "document" as const,
+    label: "Public document",
+    purpose: "answer the question",
+    date: "2026-07-30",
+    renderedTokenCount: 120,
+    preview: "Exact preview text.",
+  };
+
+  it("declares complete, injection-resistant prompts", () => {
+    for (const prompt of [
+      ContextManifestPrompt,
+      CompactionGroupPrompt,
+      OversizedSourcePrompt,
+      FallbackContextPrompt,
+    ]) {
+      expect(prompt).toContain("Atomic responsibility:");
+      expect(prompt).toContain("Complete output:");
+      expect(prompt).toContain("Prompt-injection resistance:");
+      expect(prompt).toContain("opaque run-local");
+      expect(prompt).toContain("raw range identity");
+    }
+    expect(ContextManifestPrompt).toContain(
+      "Only document and retrieved older chat candidates may be compacted",
+    );
+    expect(CompactionGroupPrompt).toContain("Every group member appears exactly once");
+    expect(OversizedSourcePrompt).toContain("search_source_passages");
+    expect(OversizedSourcePrompt).toContain("read_source_passages");
+    expect(OversizedSourcePrompt).toContain("emit_compaction_result");
+    expect(FallbackContextPrompt).toContain("A second fallback");
+  });
+
+  it("keeps provider payloads strict and free of canonical source fields", () => {
+    const manifestInput = {
+      question: "What changed?",
+      allowance: 500,
+      overage: 80,
+      mandatoryInputCost: 100,
+      candidates: [candidate],
+      toolBounds: { maximumCandidates: 8, maximumGroups: 4 },
+    };
+    expect(InitialCompactionProviderInputSchema.parse(manifestInput)).toEqual(manifestInput);
+    expect(() =>
+      InitialCompactionProviderInputSchema.parse({ ...manifestInput, sourceId: "public:secret" }),
+    ).toThrow();
+
+    const manifestPayload = buildInitialCompactionRequest({}, manifestInput, "single-compact-plan");
+    const manifestJson = JSON.parse(manifestPayload.user);
+    expect(manifestJson).toEqual(manifestInput);
+    for (const forbidden of [
+      "identity",
+      "sourceId",
+      "documentId",
+      "snapshotId",
+      "contentHash",
+      "messageId",
+      "ranges",
+      "charStart",
+      "charEnd",
+    ]) {
+      expect(manifestPayload.user).not.toContain(`"${forbidden}"`);
+    }
+
+    const sourceRequest: SourceToolCompactionRequest = {
+      taskId: "single-compact-g001",
+      phase: "compact",
+      question: "What changed?",
+      group: {
+        groupId: "g1",
+        candidateIds: ["c1"],
+        renderedTokenBudget: 80,
+        mode: "source_tool",
+      },
+      candidate: {
+        candidateId: "c1",
+        kind: "document",
+        label: "Public document",
+        purpose: "answer the question",
+        date: "2026-07-30",
+        passages: [{ passageId: "p1", text: "Exact passage." }],
+      },
+    };
+    const sourcePayload = buildGroupCompactionRequest({}, sourceRequest);
+    expect(sourcePayload.tools?.map((tool) => tool.name)).toEqual([
+      "search_source_passages",
+      "read_source_passages",
+      "emit_compaction_result",
+    ]);
+    expect(
+      SourceToolCompactionProviderInputSchema.parse(JSON.parse(sourcePayload.user)),
+    ).toBeDefined();
+    expect(sourcePayload.user).not.toContain('"ranges"');
+    expect(sourcePayload.user).not.toContain('"charStart"');
+    expect(sourcePayload.user).not.toContain('"sourceId"');
   });
 });

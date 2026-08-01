@@ -1444,7 +1444,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
       {
         type: "context_ready",
         mode: "single",
-        reductionRan: false,
+        compactionRan: false,
         sourcesRead: [],
         consumers: [
           {

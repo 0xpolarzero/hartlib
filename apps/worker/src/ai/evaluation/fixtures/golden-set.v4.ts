@@ -75,7 +75,7 @@ const longConversation = Array.from({ length: 13 }, (_, index) => ({
 }));
 
 const canonicalGoldenEvaluationSet = {
-  version: 3,
+  version: 4,
   cases: [
     {
       id: "first-message-document-fr",
@@ -386,7 +386,7 @@ const canonicalGoldenEvaluationSet = {
       },
     },
     {
-      id: "oversized-document-requires-reduction",
+      id: "oversized-document-requires-compaction",
       dimensions: [
         "oversized_evidence",
         "document_retrieval",
@@ -594,6 +594,6 @@ const canonicalGoldenEvaluationSet = {
 } as const;
 
 export const CanonicalGoldenEvaluationSet = GoldenEvaluationSetSchema.parse({
-  version: 3,
+  version: 4,
   cases: canonicalGoldenEvaluationSet.cases,
 });

@@ -140,7 +140,7 @@
   "chat.failure.agent_context_budget_exceeded": "The research transcript became too large. Narrow the request and try again.",
   "chat.failure.context_mandatory_too_large": "The question and required context are too large. Shorten the question and try again.",
   "chat.failure.context_plan_unfit": "The selected evidence could not fit safely. Narrow the request and try again.",
-  "chat.failure.context_reducer_failed": "The context reduction step failed. Try again later.",
+  "chat.failure.context_compaction_failed": "The context could not be prepared. Try again later.",
   "chat.failure.context_assembly_failed": "The context could not be assembled safely. Try again later.",
   "chat.failure.context_budget_mismatch": "The provider rejected a request that passed the local token gate. Try again later.",
   "chat.failure.synthesis_budget_mismatch": "The topic packets could not fit in synthesis. Narrow the request and try again.",

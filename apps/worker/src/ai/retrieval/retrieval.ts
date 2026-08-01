@@ -6,8 +6,6 @@ import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import {
   InvalidQuerySpecError,
-  buildSourceAccessClause,
-  compileQuerySpec,
   compilePhysicalQueryBranches,
   sanitizedChatContentSql,
   type CompiledPhysicalQuery,
@@ -15,17 +13,10 @@ import {
   type AcceptedRetrievalScope,
 } from "./compile-query-spec";
 import {
-  DEFAULT_PEEK_LENGTH_CHARS,
-  MAX_PEEK_LENGTH_CHARS,
-  SNIPPET_MAX_CHARS,
   InternalQueryPlanSchema,
   normalizeInternalQuery,
-  type DocumentPeek,
-  type DocumentPreview,
   type InternalQuery,
   type InternalQueryPlan,
-  type QuerySpec,
-  type SourceAccess,
 } from "./query-spec";
 import {
   fuseTwoStageRankedResults,
@@ -49,28 +40,6 @@ import {
   normalizeAndCaseFold,
   type ExactTextRange,
 } from "./exact-text";
-
-export interface SearchDocumentsOptions {
-  readonly access: SourceAccess;
-  readonly maxLimit: number;
-  readonly recencyHalfLifeDays: number;
-  readonly now?: Date | undefined;
-  readonly snippetMaxChars?: number | undefined;
-}
-
-interface SearchRow {
-  readonly sourceId: string;
-  readonly documentId: string;
-  readonly snapshotId: string;
-  readonly contentHash: string;
-  readonly text: string;
-  readonly title: string;
-  readonly sourceDisplayName: string;
-  readonly publishedAt: Date | null;
-  readonly language: string;
-  readonly documentType: string;
-  readonly textCharCount: number;
-}
 
 export type PreviewRange = ExactTextRange;
 
@@ -152,129 +121,6 @@ export const previewFromImmutableText = (
   const snippet = ranges.map((range) => text.slice(range.charStart, range.charEnd)).join("\n…\n");
   return { snippet, ranges };
 };
-
-export const searchDocuments = (
-  spec: QuerySpec,
-  options: SearchDocumentsOptions,
-): Effect.Effect<readonly DocumentPreview[], SqlError | InvalidQuerySpecError, PgClient.PgClient> =>
-  Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
-    const fragment = yield* Effect.try({
-      try: () =>
-        compileQuerySpec(spec, {
-          access: options.access,
-          maxLimit: options.maxLimit,
-          recencyHalfLifeDays: options.recencyHalfLifeDays,
-          now: options.now ?? new Date(),
-          snippetMaxChars: options.snippetMaxChars,
-        }),
-      catch: (error) => {
-        if (error instanceof InvalidQuerySpecError) {
-          return error;
-        }
-        return new InvalidQuerySpecError(error instanceof Error ? error.message : String(error));
-      },
-    });
-    const rows = yield* sql<SearchRow>`${fragment}`;
-    const snippetMaxChars = options.snippetMaxChars ?? 300;
-    return rows.flatMap((row) => {
-      const exactPreview = previewFromImmutableText(row.text, spec.terms, snippetMaxChars);
-      if (exactPreview === null) return [];
-      const { snippet, ranges: mappedRanges } = exactPreview;
-      const result = {
-        kind: "public_source" as const,
-        sourceId: `public:${row.sourceId}`,
-        documentId: row.documentId,
-        snapshotId: row.snapshotId,
-        contentHash: row.contentHash,
-        title: row.title,
-        sourceDisplayName: row.sourceDisplayName,
-        publishedAt: row.publishedAt,
-        language: row.language,
-        documentType: row.documentType,
-        textCharCount: row.text.length,
-        snippet,
-      } as DocumentPreview;
-      Object.defineProperties(result, {
-        text: { value: row.text, enumerable: false },
-        previewRanges: {
-          value: mappedRanges,
-          enumerable: false,
-        },
-      });
-      return [result];
-    });
-  });
-
-export interface PeekDocumentOptions {
-  readonly access: SourceAccess;
-  readonly defaultLengthChars?: number | undefined;
-  readonly maxLengthChars?: number | undefined;
-}
-
-export const MAX_PEEK_OFFSET_CHARS = 2_000_000_000;
-
-export const clampPeekBounds = (
-  offsetChars: number | undefined,
-  lengthChars: number | undefined,
-  defaultLengthChars: number,
-  maxLengthChars: number,
-): { readonly offset: number; readonly length: number } => {
-  const offset =
-    offsetChars === undefined || !Number.isFinite(offsetChars)
-      ? 0
-      : Math.min(Math.max(Math.floor(offsetChars), 0), MAX_PEEK_OFFSET_CHARS);
-  const rawLength =
-    lengthChars === undefined || !Number.isFinite(lengthChars)
-      ? defaultLengthChars
-      : Math.floor(lengthChars);
-  return {
-    offset,
-    length: Math.min(Math.max(rawLength, 0), maxLengthChars),
-  };
-};
-
-interface PeekRow {
-  readonly slice: string;
-  readonly textCharCount: number;
-}
-
-export const peekDocument = (
-  documentId: string,
-  offsetChars: number | undefined,
-  lengthChars: number | undefined,
-  options: PeekDocumentOptions,
-): Effect.Effect<DocumentPeek | null, SqlError, PgClient.PgClient> =>
-  Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
-    const defaultLengthChars = options.defaultLengthChars ?? DEFAULT_PEEK_LENGTH_CHARS;
-    const maxLengthChars = options.maxLengthChars ?? MAX_PEEK_LENGTH_CHARS;
-    const { offset, length } = clampPeekBounds(
-      offsetChars,
-      lengthChars,
-      defaultLengthChars,
-      maxLengthChars,
-    );
-    const accessFragment = buildSourceAccessClause(options.access);
-    const rows = yield* sql<PeekRow>`select
-        substring(d.text from (least(${offset}, d.text_char_count) + 1)::int for ${length}::int) as slice,
-  d.text_char_count as "textCharCount"
-from public_source_documents d
-join public_sources s on s.source_id = d.source_id
-where d.document_id = ${documentId}
-  and ${accessFragment}`;
-    const row = rows[0];
-    if (row === undefined) {
-      return null;
-    }
-    return {
-      documentId,
-      text: row.slice,
-      offsetChars: Math.min(offset, row.textCharCount),
-      lengthChars: row.slice.length,
-      textCharCount: row.textCharCount,
-    };
-  });
 
 /* ------------------------------------------------------------------------- *
  * Phase B search service
@@ -496,9 +342,14 @@ export const executePhysicalQueryBranches = (
   options: PhysicalSearchOptions,
 ): Effect.Effect<readonly PhysicalBranchResult[], SqlError | Error, PgClient.PgClient> =>
   Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
-    const normalized = normalizeInternalQuery(query);
     const queryOrdinal = options.queryOrdinal ?? 1;
+    if (!Number.isSafeInteger(queryOrdinal) || queryOrdinal < 1) {
+      return yield* Effect.fail(
+        new InvalidQuerySpecError("queryOrdinal must be a positive integer"),
+      );
+    }
+    const normalized = normalizeInternalQuery(query);
+    const sql = yield* PgClient.PgClient;
     const branches = compilePhysicalQueryBranches(normalized, options);
     const concurrency = options.maxConcurrency ?? 4;
     if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
@@ -533,8 +384,6 @@ export const executePhysicalQueryBranches = (
     const timed = execute.pipe(Effect.timeout(Duration.millis(Math.max(1, deadline - startedAt))));
     return yield* timed;
   });
-
-export const executeQueryBranches = executePhysicalQueryBranches;
 
 export interface HydratedText {
   readonly text: string;
@@ -626,7 +475,7 @@ export const hydrateFusedResults = (
 ): FusedResultSet<HydratedReviewValue> => {
   const fastModel = resolveRuntimeModel(options.fastModelId ?? RUNTIME_MODEL_ID);
   const mainModel = resolveRuntimeModel(options.mainModelId ?? RUNTIME_MODEL_ID);
-  const maxChars = options.previewMaxChars ?? SNIPPET_MAX_CHARS;
+  const maxChars = options.previewMaxChars ?? 300;
   let hydratedBytes = 0;
   const results = [] as Array<(typeof fused.results)[number] & { value: HydratedReviewValue }>;
   for (const result of fused.results) {

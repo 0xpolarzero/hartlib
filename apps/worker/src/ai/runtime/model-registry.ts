@@ -103,6 +103,25 @@ const exactTurboTokenizer = new tokenizers.PreTrainedTokenizer(
   readPinnedJson(tokenizerAssetUrl, expectedTurboTokenizerSha256),
   readPinnedJson(turboTokenizerConfigAssetUrl, expectedTurboTokenizerConfigSha256),
 );
+const TOKEN_COUNT_CACHE_LIMIT = 256;
+type Tokenizer = InstanceType<typeof tokenizers.PreTrainedTokenizer>;
+const createTokenCount = (tokenizer: Tokenizer): ((text: string) => number) => {
+  const cache = new Map<string, number>();
+  return (text: string): number => {
+    const key = `${Buffer.byteLength(text, "utf8")}:${createHash("sha256").update(text).digest("hex")}`;
+    const cached = cache.get(key);
+    if (cached !== undefined) return cached;
+    const count = tokenizer.encode(text, { add_special_tokens: false }).length;
+    if (cache.size >= TOKEN_COUNT_CACHE_LIMIT) {
+      const oldest = cache.keys().next().value;
+      if (typeof oldest === "string") cache.delete(oldest);
+    }
+    cache.set(key, count);
+    return count;
+  };
+};
+const countGlm52TextTokens = createTokenCount(exactTokenizer);
+const countGlmTurboTextTokens = createTokenCount(exactTurboTokenizer);
 
 const templateReasoningOptions = (
   request: ProviderRequest,
@@ -135,10 +154,9 @@ const turboProviderAccountingOverhead = (request: ProviderRequest): number =>
   normalizeProviderRequest(request).messages.at(-1)?.role === "assistant" ? 1 : 0;
 
 const exactCount = (request: ProviderRequest, modelId: RegisteredModel["id"]): number => {
-  const templateTokens = (modelId === "glm-5.2" ? exactTokenizer : exactTurboTokenizer).encode(
-    renderOfficialGlmProviderRequest(request, modelId),
-    { add_special_tokens: false },
-  ).length;
+  const template = renderOfficialGlmProviderRequest(request, modelId);
+  const templateTokens =
+    modelId === "glm-5.2" ? countGlm52TextTokens(template) : countGlmTurboTextTokens(template);
   // Z.AI Turbo's prompt usage is four tokens lower per function definition
   // than the pinned local template rendering. It also adds one out-of-template
   // token only for a trailing assistant continuation. Historical tool-call
@@ -171,7 +189,7 @@ const registry = new Map<string, RegisteredModel>([
       tokenizerIdentity,
       chatTemplateIdentity,
       providerTemplateVerified: true,
-      countTextTokens: (text) => exactTokenizer.encode(text, { add_special_tokens: false }).length,
+      countTextTokens: countGlm52TextTokens,
       countRequestTokens: (request) => exactCount(request, "glm-5.2"),
     },
   ],
@@ -186,8 +204,7 @@ const registry = new Map<string, RegisteredModel>([
       tokenizerIdentity: turboTokenizerIdentity,
       chatTemplateIdentity: turboChatTemplateIdentity,
       providerTemplateVerified: true,
-      countTextTokens: (text) =>
-        exactTurboTokenizer.encode(text, { add_special_tokens: false }).length,
+      countTextTokens: countGlmTurboTextTokens,
       countRequestTokens: (request) => exactCount(request, "glm-5-turbo"),
     },
   ],
@@ -279,7 +296,7 @@ export function measureProviderRequest(
   }
   const usableInput = usableInputTokens(model, limits, request.requestedOutputTokens);
   const inputTokens = model.countRequestTokens(request);
-  return {
+  const measurement = {
     modelId: model.id,
     inputTokens,
     requestedOutputTokens: request.requestedOutputTokens,
@@ -287,6 +304,7 @@ export function measureProviderRequest(
     contextWindow: model.contextWindow,
     passed: inputTokens <= usableInput,
   } satisfies ProviderRequestMeasurement;
+  return measurement;
 }
 
 export const exactProviderRequestGate = (

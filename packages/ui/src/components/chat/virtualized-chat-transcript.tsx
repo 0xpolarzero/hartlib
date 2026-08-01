@@ -47,7 +47,7 @@ const localizedFailureCodes = new Set([
   "agent_context_budget_exceeded",
   "context_mandatory_too_large",
   "context_plan_unfit",
-  "context_reducer_failed",
+  "context_compaction_failed",
   "context_assembly_failed",
   "context_budget_mismatch",
   "synthesis_budget_mismatch",

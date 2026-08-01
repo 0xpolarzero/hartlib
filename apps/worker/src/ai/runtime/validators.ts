@@ -1,9 +1,7 @@
 import { z } from "zod";
 
-import { normalizeCharacterRanges, type TopicId } from "./canonicalization";
+import { type TopicId } from "./canonicalization";
 import type {
-  AnswerCandidate,
-  ContextDecision,
   PlanTurnResult,
   MemoryExtractionResult,
   MemoryProposal,
@@ -104,21 +102,6 @@ export const validatePlanTurn = (
   };
 };
 
-const ContextDecisionSchema = z.discriminatedUnion("action", [
-  z.object({ id: nonEmpty, action: z.literal("keep"), reason: nonEmpty }).strict(),
-  z
-    .object({
-      id: nonEmpty,
-      action: z.literal("range"),
-      ranges: z
-        .array(z.object({ charStart: z.number().int(), charEnd: z.number().int() }).strict())
-        .min(1),
-      reason: nonEmpty,
-    })
-    .strict(),
-  z.object({ id: nonEmpty, action: z.literal("omit"), reason: nonEmpty }).strict(),
-]);
-
 const TopicPacketSchema = z
   .object({
     topicId: z.enum(["t1", "t2", "t3"]),
@@ -127,57 +110,6 @@ const TopicPacketSchema = z
     gaps: z.array(z.string()),
   })
   .strict();
-
-export const validateContextDecisions = (
-  value: unknown,
-  candidates: readonly {
-    readonly id: string;
-    readonly kind: AnswerCandidate["kind"] | "conversation_entry";
-    readonly text?: string | undefined;
-  }[],
-): readonly ContextDecision[] => {
-  const parsed = z.array(ContextDecisionSchema).safeParse(value);
-  if (!parsed.success)
-    throw new AgentOutputValidationError("context_reducer", parseIssues(parsed.error));
-  const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
-  const decisionIds = parsed.data.map((decision) => decision.id);
-  const issues: string[] = [];
-  if (!unique(decisionIds)) issues.push("each candidate must be decided exactly once");
-  if (decisionIds.length !== candidates.length)
-    issues.push("decision count does not match candidate count");
-  for (const candidate of candidates) {
-    if (!decisionIds.includes(candidate.id))
-      issues.push(`candidate ${candidate.id} is unaccounted for`);
-  }
-
-  const normalized = parsed.data.map((decision): ContextDecision => {
-    const candidate = candidateById.get(decision.id);
-    if (candidate === undefined) {
-      issues.push(`decision ${decision.id} does not identify a candidate`);
-      return decision;
-    }
-    if (decision.action !== "range") return decision;
-    if (candidate.kind !== "document") {
-      issues.push(`range is not valid for ${candidate.kind} candidate ${candidate.id}`);
-      return decision;
-    }
-    if (candidate.text === undefined) {
-      issues.push(`document candidate ${candidate.id} has no immutable text`);
-      return decision;
-    }
-    try {
-      return {
-        ...decision,
-        ranges: normalizeCharacterRanges(decision.ranges, candidate.text.length),
-      };
-    } catch (error) {
-      issues.push(error instanceof Error ? error.message : String(error));
-      return decision;
-    }
-  });
-  if (issues.length > 0) throw new AgentOutputValidationError("context_reducer", issues);
-  return normalized;
-};
 
 export const validateTopicPacket = (
   packet: TopicPacket,

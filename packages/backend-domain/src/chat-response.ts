@@ -411,6 +411,105 @@ const rangesExactlyEqual = (
       range.charEnd === candidate.charEnd
     );
   });
+const isWellFormedUtf16 = (value: string): boolean => {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const isUtf16Boundary = (text: string, offset: number): boolean =>
+  offset === 0 ||
+  offset === text.length ||
+  !(
+    text.charCodeAt(offset - 1) >= 0xd800 &&
+    text.charCodeAt(offset - 1) <= 0xdbff &&
+    text.charCodeAt(offset) >= 0xdc00 &&
+    text.charCodeAt(offset) <= 0xdfff
+  );
+
+const stripHistoricalCitationTags = (value: string): string => {
+  let cursor = 0;
+  let sanitized = "";
+  while (true) {
+    const start = value.indexOf("[[cite:", cursor);
+    if (start < 0) return sanitized + value.slice(cursor);
+    sanitized += value.slice(cursor, start);
+    const end = value.indexOf("]]", start + 7);
+    if (end < 0) return sanitized;
+    cursor = end + 2;
+  }
+};
+
+type ChatMessageRange = { readonly charStart: number; readonly charEnd: number };
+
+const chatMessageUseRanges = (value: unknown, text: string): readonly ChatMessageRange[] => {
+  if (!Array.isArray(value) || value.length === 0 || !isWellFormedUtf16(text)) {
+    throw new Error("invalid persisted chat message source ranges");
+  }
+  const ranges = value.map((entry) => {
+    const range = strictRecord(entry, "chat message source range");
+    assertExactKeys(range, ["charStart", "charEnd"], "chat message source range");
+    if (
+      typeof range.charStart !== "number" ||
+      !Number.isSafeInteger(range.charStart) ||
+      range.charStart < 0 ||
+      typeof range.charEnd !== "number" ||
+      !Number.isSafeInteger(range.charEnd) ||
+      range.charEnd <= range.charStart ||
+      range.charEnd > text.length ||
+      !isUtf16Boundary(text, range.charStart) ||
+      !isUtf16Boundary(text, range.charEnd)
+    ) {
+      throw new Error("invalid persisted chat message source range");
+    }
+    return { charStart: range.charStart, charEnd: range.charEnd };
+  });
+  for (let index = 1; index < ranges.length; index += 1) {
+    const previous = ranges[index - 1]!;
+    const range = ranges[index]!;
+    if (range.charStart <= previous.charEnd) {
+      throw new Error("invalid persisted chat message source ranges");
+    }
+  }
+  return ranges;
+};
+
+const compareMessageRows = (left: MessageRow, right: MessageRow): number =>
+  left.created_at.getTime() - right.created_at.getTime() || left.id.localeCompare(right.id, "en");
+
+const chatMessageUseRangesForSource = (
+  row: SourceRow,
+  locator: Record<string, unknown>,
+  uses: readonly SourceUseRow[],
+  messages: readonly MessageRow[],
+): void => {
+  const messageId = requiredString(locator, "messageId");
+  if (row.message_id !== messageId) {
+    throw new Error("persisted chat message source identity mismatch");
+  }
+  const sourceMessage = messages.find((message) => message.id === messageId);
+  const assistantMessage = messages.find((message) => message.id === row.assistant_message_id);
+  if (
+    sourceMessage === undefined ||
+    assistantMessage === undefined ||
+    compareMessageRows(sourceMessage, assistantMessage) >= 0
+  ) {
+    throw new Error("persisted chat message source is missing or not earlier");
+  }
+  const sourceText =
+    sourceMessage.author === "assistant"
+      ? stripHistoricalCitationTags(sourceMessage.content)
+      : sourceMessage.content;
+  for (const use of uses) chatMessageUseRanges(use.ranges, sourceText);
+};
 
 const nonDocumentUseRanges = (uses: readonly SourceUseRow[]): void => {
   for (const use of uses) {
@@ -495,7 +594,11 @@ const validateConsumerContextOrders = (uses: readonly SourceUseRow[]): void => {
 
 const topicOrder = { t1: 1, t2: 2, t3: 3 } as const;
 
-const publicSourceFromRow = (row: SourceRow, uses: readonly SourceUseRow[]): PublicSourceRecord => {
+const publicSourceFromRow = (
+  row: SourceRow,
+  uses: readonly SourceUseRow[],
+  messages: readonly MessageRow[],
+): PublicSourceRecord => {
   sourceOrdinalFromKey(row.source_key);
   assertRunCitationNamespace(row);
   const locator = strictRecord(row.locator, "source locator");
@@ -584,7 +687,7 @@ const publicSourceFromRow = (row: SourceRow, uses: readonly SourceUseRow[]): Pub
       if (Object.keys(provenance).length !== 0) {
         throw new Error("invalid persisted chat message provenance");
       }
-      nonDocumentUseRanges(uses);
+      chatMessageUseRangesForSource(row, locator, uses, messages);
       return {
         ...base,
         kind: "chat_message",
@@ -771,7 +874,7 @@ export const chatMessagesResponseFromRows = (
     const uses = [
       ...usesByIdentity.get(`${sourceRow.assistant_message_id}\u0000${sourceRow.source_key}`)!,
     ].sort((left, right) => left.context_order - right.context_order);
-    const source = publicSourceFromRow(sourceRow, uses);
+    const source = publicSourceFromRow(sourceRow, uses, messages);
     assertSourceIdentityDigest(sourceRow);
     const rows = sourcesByAssistantMessage.get(sourceRow.assistant_message_id) ?? [];
     rows.push(source);

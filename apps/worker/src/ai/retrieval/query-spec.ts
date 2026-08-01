@@ -1,63 +1,6 @@
 import { z } from "zod";
 
-export type SearchOrderBy = "relevance" | "recency";
-
-export interface QuerySpec {
-  readonly terms?: string | undefined;
-  readonly sourceIds?: readonly string[] | undefined;
-  readonly countries?: readonly string[] | undefined;
-  readonly languages?: readonly string[] | undefined;
-  readonly documentTypes?: readonly string[] | undefined;
-  readonly publishedAfter?: string | undefined;
-  readonly publishedBefore?: string | undefined;
-  readonly orderBy?: SearchOrderBy | undefined;
-  readonly limit?: number | undefined;
-}
-
-export type SourceAccess = {
-  /** Immutable source IDs captured by the accepted run or a current catalog read. */
-  readonly kind: "sourceIds";
-  readonly sourceIds: readonly string[];
-};
-
-export interface DocumentPreview {
-  readonly kind: "public_source" | "publisher";
-  readonly sourceId: string;
-  readonly documentId: string;
-  readonly snapshotId: string;
-  readonly contentHash: string;
-  readonly publisherExtractionId?: string | undefined;
-  /** Full immutable text stays server-side; only an exact source slice preview enters tool output. */
-  readonly text: string;
-  /** Exact UTF-16 spans of the original text that contributed to the preview. */
-  readonly previewRanges: readonly { readonly charStart: number; readonly charEnd: number }[];
-  readonly issueId?: string | undefined;
-  readonly title: string;
-  readonly sourceDisplayName: string;
-  readonly publishedAt: Date | null;
-  readonly language: string;
-  readonly documentType: string;
-  readonly textCharCount: number;
-  readonly snippet: string;
-}
-
-export interface DocumentPeek {
-  readonly documentId: string;
-  readonly text: string;
-  readonly offsetChars: number;
-  readonly lengthChars: number;
-  readonly textCharCount: number;
-}
-
-export const SNIPPET_MAX_CHARS = 300;
-export const DEFAULT_PEEK_LENGTH_CHARS = 2000;
-export const MAX_PEEK_LENGTH_CHARS = 8000;
-
-/*
- * Phase A contracts. The old QuerySpec above remains the input used by the
- * later compiler phase; these names describe the replacement contract without
- * changing that compiler's public surface yet.
- */
+/* Phase B structured retrieval contracts. */
 
 export type QueryScope = "documents" | "chat_messages";
 export type QueryAtomMode = "term" | "phrase";
@@ -200,6 +143,20 @@ const boundedText = (maxBytes: number) =>
     .refine(isWellFormedUtf16, "text must contain well-formed UTF-16")
     .refine((value) => utf8Encoder.encode(value).byteLength <= maxBytes, "text is too large");
 
+/** Structural provider fields. Semantic normalization and cross-field checks stay below. */
+const providerText = (maxBytes: number, minimum = 1) => z.string().min(minimum).max(maxBytes);
+
+const providerDate = z
+  .string()
+  .max(MAX_HIT_DATE_BYTES)
+  .transform((value) => value.trim())
+  .pipe(z.iso.date());
+
+const providerDateInterval = z.strictObject({
+  after: providerDate.optional(),
+  before: providerDate.optional(),
+});
+
 const localResultId = z
   .string()
   .regex(/^r[1-9][0-9]*$/u)
@@ -248,9 +205,13 @@ export const QueryAtomSchema = z.strictObject({
   mode: z.enum(["term", "phrase"]),
 });
 
-const queryAtoms = z.array(QueryAtomSchema).max(MAX_QUERY_ARRAY_VALUE);
+const ProviderQueryAtomSchema = z.strictObject({
+  text: providerText(MAX_ATOM_BYTES),
+  mode: z.enum(["term", "phrase"]),
+});
+
 const anyOfAtoms = z
-  .array(queryAtoms)
+  .array(z.array(QueryAtomSchema).max(MAX_QUERY_ARRAY_VALUE).min(1))
   .max(MAX_QUERY_ARRAY_VALUE)
   .superRefine((groups, context) => {
     for (const [index, group] of groups.entries()) {
@@ -264,86 +225,131 @@ const anyOfAtoms = z
     }
   });
 
-const QueryFiltersSchema = z.strictObject({
+const nonEmptyProviderQueryAtoms = z
+  .array(ProviderQueryAtomSchema)
+  .max(MAX_QUERY_ARRAY_VALUE)
+  .min(1);
+const providerAnyOfAtoms = z.array(nonEmptyProviderQueryAtoms).max(MAX_QUERY_ARRAY_VALUE);
+
+const authorsSchema = z
+  .array(z.enum(["user", "assistant"]))
+  .max(2)
+  .meta({ uniqueItems: true })
+  .superRefine((values, context) => {
+    if (new Set(values).size !== values.length) {
+      context.addIssue({ code: "custom", message: "authors must be unique" });
+    }
+  });
+
+const queryFiltersShape = <TList extends z.ZodType, TInterval extends z.ZodType>(
+  list: TList,
+  interval: TInterval,
+) => ({
   documents: z
     .strictObject({
-      sourceNames: normalizedList.optional(),
-      countries: normalizedList.optional(),
-      languages: normalizedList.optional(),
-      documentTypes: normalizedList.optional(),
-      publishedAt: dateInterval.optional(),
+      sourceNames: list.optional(),
+      countries: list.optional(),
+      languages: list.optional(),
+      documentTypes: list.optional(),
+      publishedAt: interval.optional(),
     })
     .optional(),
   chatMessages: z
     .strictObject({
-      authors: z
-        .array(z.enum(["user", "assistant"]))
-        .max(2)
-        .superRefine((values, context) => {
-          if (new Set(values).size !== values.length) {
-            context.addIssue({ code: "custom", message: "authors must be unique" });
-          }
-        })
-        .optional(),
-      sentAt: dateInterval.optional(),
+      authors: authorsSchema.optional(),
+      sentAt: interval.optional(),
     })
     .optional(),
 });
 
-export const InternalQuerySchema = z
-  .strictObject({
-    purpose: normalizedText(MAX_PURPOSE_BYTES),
+const makeQueryFiltersSchema = <TList extends z.ZodType, TInterval extends z.ZodType>(
+  list: TList,
+  interval: TInterval,
+) => z.strictObject(queryFiltersShape(list, interval));
+
+const QueryFiltersSchema = makeQueryFiltersSchema(normalizedList, dateInterval);
+
+const makeQueryShape = <
+  TPurpose extends z.ZodType,
+  TAtom extends z.ZodType,
+  TAnyOf extends z.ZodType,
+  TFilters extends z.ZodType,
+>(input: {
+  readonly purpose: TPurpose;
+  readonly atom: TAtom;
+  readonly anyOf: TAnyOf;
+  readonly filters: TFilters;
+}) =>
+  z.strictObject({
+    purpose: input.purpose,
     scope: z.enum(["documents", "chat_messages"]).optional(),
-    all: queryAtoms,
-    anyOf: anyOfAtoms,
-    not: queryAtoms,
-    filters: QueryFiltersSchema,
+    all: z.array(input.atom).max(MAX_QUERY_ARRAY_VALUE),
+    anyOf: input.anyOf,
+    not: z.array(input.atom).max(MAX_QUERY_ARRAY_VALUE),
+    filters: input.filters,
     order: z.enum(["relevance", "newest", "oldest"]),
-  })
-  .superRefine((query, context) => {
-    const atoms = [...query.all, ...query.anyOf.flat(), ...query.not];
-    if (atoms.length > MAX_TOTAL_ATOMS) {
-      context.addIssue({ code: "custom", path: ["all"], message: "query has too many atoms" });
-    }
-    const atomKeys = atoms.map((atom) => atom.text);
-    if (new Set(atomKeys).size !== atomKeys.length) {
-      context.addIssue({
-        code: "custom",
-        message: "query atoms must be unique after normalization",
-      });
-    }
-    if (query.all.length === 0 && query.anyOf.length === 0) {
-      const hasFilterValue = (value: object | undefined): boolean => {
-        if (value === undefined) return false;
-        return Object.values(value).some((entry) => {
-          if (Array.isArray(entry)) return entry.length > 0;
-          if (typeof entry !== "object" || entry === null) return entry !== undefined;
-          return Object.values(entry).some((bound) => bound !== undefined);
-        });
-      };
-      const hasDocumentFilter = hasFilterValue(query.filters.documents);
-      const hasChatFilter = hasFilterValue(query.filters.chatMessages);
-      const hasIndexedFilter =
-        query.scope === "documents"
-          ? hasDocumentFilter
-          : query.scope === "chat_messages"
-            ? hasChatFilter
-            : hasDocumentFilter && hasChatFilter;
-      if (!hasIndexedFilter) {
-        context.addIssue({
-          code: "custom",
-          message: "negative-only query needs a positive indexed filter",
-        });
-      }
-    }
   });
 
+export const InternalQuerySchema = makeQueryShape({
+  purpose: normalizedText(MAX_PURPOSE_BYTES),
+  atom: QueryAtomSchema,
+  anyOf: anyOfAtoms,
+  filters: QueryFiltersSchema,
+}).superRefine((query, context) => {
+  const atoms = [...query.all, ...query.anyOf.flat(), ...query.not];
+  if (atoms.length > MAX_TOTAL_ATOMS) {
+    context.addIssue({ code: "custom", path: ["all"], message: "query has too many atoms" });
+  }
+  const atomKeys = atoms.map((atom) => atom.text);
+  if (new Set(atomKeys).size !== atomKeys.length) {
+    context.addIssue({
+      code: "custom",
+      message: "query atoms must be unique after normalization",
+    });
+  }
+  if (query.all.length === 0 && query.anyOf.length === 0) {
+    const hasFilterValue = (value: object | undefined): boolean => {
+      if (value === undefined) return false;
+      return Object.values(value).some((entry) => {
+        if (Array.isArray(entry)) return entry.length > 0;
+        if (typeof entry !== "object" || entry === null) return entry !== undefined;
+        return Object.values(entry).some((bound) => bound !== undefined);
+      });
+    };
+    const hasDocumentFilter = hasFilterValue(query.filters.documents);
+    const hasChatFilter = hasFilterValue(query.filters.chatMessages);
+    const hasIndexedFilter =
+      query.scope === "documents"
+        ? hasDocumentFilter
+        : query.scope === "chat_messages"
+          ? hasChatFilter
+          : hasDocumentFilter && hasChatFilter;
+    if (!hasIndexedFilter) {
+      context.addIssue({
+        code: "custom",
+        message: "negative-only query needs a positive indexed filter",
+      });
+    }
+  }
+});
+
+/** Exact provider-facing shape; canonical parsing performs all normalization below. */
+const ProviderQueryFiltersSchema = makeQueryFiltersSchema(
+  z.array(providerText(MAX_ATOM_BYTES)).max(MAX_QUERY_ARRAY_VALUE),
+  providerDateInterval,
+);
+
+export const InternalQueryProviderSchema = makeQueryShape({
+  purpose: providerText(MAX_PURPOSE_BYTES),
+  atom: ProviderQueryAtomSchema,
+  anyOf: providerAnyOfAtoms,
+  filters: ProviderQueryFiltersSchema,
+});
+
+type QueryBatchEntry = z.output<typeof InternalQuerySchema>;
+
 const validateQueryBatch = (
-  queries: readonly {
-    readonly all: readonly unknown[];
-    readonly anyOf: readonly (readonly unknown[])[];
-    readonly not: readonly unknown[];
-  }[],
+  queries: readonly QueryBatchEntry[],
   serialized: unknown,
   context: z.RefinementCtx,
 ): void => {
@@ -362,15 +368,15 @@ const validateQueryBatch = (
       message: "query batch has too many atoms",
     });
   }
-  const queryKeys = queries.map((query) =>
+  const queryKeys = queries.map(({ purpose, scope, all, anyOf, not, filters, order }) =>
     JSON.stringify({
-      purpose: (query as { readonly purpose?: unknown }).purpose,
-      scope: (query as { readonly scope?: unknown }).scope ?? null,
-      all: query.all,
-      anyOf: query.anyOf,
-      not: query.not,
-      filters: (query as { readonly filters?: unknown }).filters,
-      order: (query as { readonly order?: unknown }).order,
+      purpose,
+      scope: scope ?? null,
+      all,
+      anyOf,
+      not,
+      filters,
+      order,
     }),
   );
   if (new Set(queryKeys).size !== queryKeys.length) {
@@ -404,6 +410,76 @@ export const QueryReviewSchema = z.discriminatedUnion("action", [
     .superRefine((review, context) => {
       validateQueryBatch(review.queries, review, context);
     }),
+  z.strictObject({ action: z.literal("no_evidence"), reason: z.literal("no_supporting_evidence") }),
+]);
+export const StructuredRetrievalTraceSchema = z
+  .strictObject({
+    initialPlan: InternalQueryPlanSchema,
+    review: QueryReviewSchema.nullable(),
+    replacementPlan: InternalQueryPlanSchema.nullable(),
+    outcome: z.enum(["skipped", "accepted", "replaced", "no_evidence"]),
+  })
+  .superRefine((trace, context) => {
+    const addConsistencyIssue = (message: string): void => {
+      context.addIssue({ code: "custom", message });
+    };
+    if (trace.outcome === "skipped") {
+      if (
+        trace.initialPlan.action !== "skip" ||
+        trace.review !== null ||
+        trace.replacementPlan !== null
+      ) {
+        addConsistencyIssue("skipped trace must contain only a skip plan");
+      }
+      return;
+    }
+    if (trace.initialPlan.action !== "search") {
+      addConsistencyIssue("non-skipped trace must contain an initial search plan");
+    }
+    if (trace.outcome === "accepted") {
+      if (trace.review?.action !== "accept" || trace.replacementPlan !== null) {
+        addConsistencyIssue("accepted trace must contain an accept review and no replacement");
+      }
+      return;
+    }
+    if (trace.outcome === "no_evidence") {
+      if (trace.review?.action !== "no_evidence" || trace.replacementPlan !== null) {
+        addConsistencyIssue(
+          "no-evidence trace must contain a no-evidence review and no replacement",
+        );
+      }
+      return;
+    }
+    if (
+      trace.review?.action !== "replace" ||
+      trace.replacementPlan?.action !== "search" ||
+      trace.initialPlan.action !== "search"
+    ) {
+      addConsistencyIssue("replaced trace must contain complete search plans and a replace review");
+      return;
+    }
+    if (JSON.stringify(trace.review.queries) !== JSON.stringify(trace.replacementPlan.queries)) {
+      addConsistencyIssue("replacement plan must exactly match the review queries");
+    }
+  });
+
+export type StructuredRetrievalTraceValue = z.infer<typeof StructuredRetrievalTraceSchema>;
+
+export const InternalQueryPlanProviderSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("skip"), reason: providerText(MAX_PURPOSE_BYTES) }),
+  z.strictObject({
+    action: z.literal("search"),
+    queries: z.array(InternalQueryProviderSchema).min(1).max(MAX_QUERY_COUNT),
+  }),
+]);
+
+export const QueryReviewProviderSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("accept"), reason: z.literal("sufficient_coverage") }),
+  z.strictObject({
+    action: z.literal("replace"),
+    reason: z.enum(["missed_concept", "narrow_filter", "wrong_language", "unsupported_branch"]),
+    queries: z.array(InternalQueryProviderSchema).min(1).max(MAX_QUERY_COUNT),
+  }),
   z.strictObject({ action: z.literal("no_evidence"), reason: z.literal("no_supporting_evidence") }),
 ]);
 
@@ -528,9 +604,6 @@ export type InternalQueryValue = z.infer<typeof InternalQuerySchema>;
 export type InternalQueryPlanValue = z.infer<typeof InternalQueryPlanSchema>;
 export type QueryReviewValue = z.infer<typeof QueryReviewSchema>;
 
-export const QuerySchema = InternalQuerySchema;
-export const QueryPlanSchema = InternalQueryPlanSchema;
-
 /**
  * The compiler consumes this normalized, code-owned representation.  It is
  * deliberately separate from the provider schema: provider values are
@@ -562,7 +635,6 @@ type QueryInternalNormalized = Omit<InternalQueryValue, "filters"> & {
       | undefined;
   };
 };
-
 const normalizeUniqueStrings = (values: readonly string[] | undefined): readonly string[] =>
   values === undefined
     ? []
@@ -629,6 +701,3 @@ export const normalizeInternalQuery = (value: unknown): NormalizedInternalQuery 
     order: parsed.order,
   };
 };
-
-export type QueryPlanValue = InternalQueryPlanValue;
-export type QueryReviewValueStrict = QueryReviewValue;

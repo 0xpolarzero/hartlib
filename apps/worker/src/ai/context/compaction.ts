@@ -89,7 +89,7 @@ export interface CompactionGroupMeasurement {
   /** Fast-model input allowance for the normal compactor request. */
   readonly usableInputTokens: number;
   /** Exact answer-source cost of the smallest selectable passage. */
-  readonly minimumSelectablePassageCost: number;
+  readonly selectablePassageCost: number;
 }
 
 export type CompactionGroupMeasurements =
@@ -414,30 +414,37 @@ const renderedPassageCost = (
   return assertMeasuredCount(count, `passage ${passageId} rendered token count`);
 };
 
-const minimumSelectablePassageCost = (
-  candidate: CandidateLedgerEntry,
+const selectablePassageCost = (
+  groupId: string,
+  candidates: readonly CandidateLedgerEntry[],
   passageOptions: PassageIndexOptions,
   costOptions: CompactionCostOptions | undefined,
   replacedCandidateIds: readonly string[],
+  groupBudget: number,
 ): number => {
-  const index = buildCandidatePassageIndex(candidate, passageOptions);
-  const costs = index.passages.map((passage) =>
-    renderedPassageCost(
-      candidate.candidateId,
-      passage.passageId,
-      passage.text,
-      passage.range,
-      passageOptions,
-      costOptions,
-      replacedCandidateIds,
-    ),
-  );
-  if (costs.length === 0) {
-    throw new CompactionContractError(
-      `candidate ${candidate.candidateId} has no selectable authorized passages`,
-    );
+  let hasPassage = false;
+  for (const candidate of candidates) {
+    const index = buildCandidatePassageIndex(candidate, passageOptions);
+    for (const passage of index.passages) {
+      hasPassage = true;
+      const cost = renderedPassageCost(
+        candidate.candidateId,
+        passage.passageId,
+        passage.text,
+        passage.range,
+        passageOptions,
+        costOptions,
+        replacedCandidateIds,
+      );
+      if (cost <= groupBudget) return cost;
+    }
   }
-  return Math.min(...costs);
+  if (!hasPassage) {
+    throw new CompactionContractError(`group ${groupId} has no selectable authorized passages`);
+  }
+  throw new CompactionContractError(
+    `group ${groupId} budget is below its smallest selectable passage cost`,
+  );
 };
 
 const groupMembersInLedgerOrder = (
@@ -518,32 +525,25 @@ export const validateInitialContextManifest = (
     }
     const measured = asGroupMeasurement(costOptions?.groupMeasurements, group.groupId);
     if (measured !== undefined) {
-      assertMeasuredCount(measured.minimumSelectablePassageCost, "minimum selectable passage cost");
-      if (group.renderedTokenBudget < measured.minimumSelectablePassageCost) {
+      assertMeasuredCount(measured.selectablePassageCost, "selectable passage cost");
+      if (group.renderedTokenBudget < measured.selectablePassageCost) {
         throw new CompactionContractError(
           `group ${group.groupId} budget is below its measured smallest passage cost`,
         );
       }
     }
     if (passageOptions !== undefined) {
-      const minimumCost = Math.min(
-        ...members.map((decision) =>
-          minimumSelectablePassageCost(
-            candidates.get(decision.candidateId)!,
-            passageOptions,
-            costOptions,
-            members.map((member) => member.candidateId),
-          ),
-        ),
+      const minimumCost = selectablePassageCost(
+        group.groupId,
+        members.map((member) => candidates.get(member.candidateId)!),
+        passageOptions,
+        costOptions,
+        members.map((member) => member.candidateId),
+        group.renderedTokenBudget,
       );
-      if (group.renderedTokenBudget < minimumCost) {
+      if (measured !== undefined && measured.selectablePassageCost !== minimumCost) {
         throw new CompactionContractError(
-          `group ${group.groupId} budget is below its smallest selectable passage cost`,
-        );
-      }
-      if (measured !== undefined && measured.minimumSelectablePassageCost !== minimumCost) {
-        throw new CompactionContractError(
-          `group ${group.groupId} minimum passage cost is not exact`,
+          `group ${group.groupId} selectable passage cost is not exact`,
         );
       }
     }
@@ -612,23 +612,6 @@ export const createCompactionGroups = (
       throw new CompactionContractError(
         `group ${group.groupId} budget must be below its whole cost`,
       );
-    if (options.passageOptions !== undefined) {
-      const minimumCost = Math.min(
-        ...candidateIds.map((candidateId) =>
-          minimumSelectablePassageCost(
-            candidates.get(candidateId)!,
-            options.passageOptions!,
-            costOptions,
-            candidateIds,
-          ),
-        ),
-      );
-      if (group.renderedTokenBudget < minimumCost) {
-        throw new CompactionContractError(
-          `group ${group.groupId} budget is below its smallest selectable passage cost`,
-        );
-      }
-    }
     const measured = asGroupMeasurement(costOptions?.groupMeasurements, group.groupId);
     if (measured !== undefined && mode === "normal") {
       const inputTokens = assertMeasuredCount(
@@ -795,7 +778,11 @@ export const validateTightenedGroupCompactionResult = (
         `tightening cannot restore omitted candidate ${decision.candidateId}`,
       );
     }
-    if (decision.action === "omit") continue;
+    if (decision.action !== "select") {
+      throw new CompactionContractError(
+        `tightening ${decision.candidateId} must retain a selected prior result`,
+      );
+    }
     const priorIds = new Set(prior.passageIds);
     const nextIds = new Set(decision.passageIds);
     if (
@@ -804,6 +791,73 @@ export const validateTightenedGroupCompactionResult = (
     ) {
       throw new CompactionContractError(
         `tightening ${decision.candidateId} must select a strict prior subset`,
+      );
+    }
+  }
+  return result;
+};
+
+export const validateFallbackGroupCompactionResult = (
+  value: unknown,
+  group: CompactionGroup,
+  ledger: LedgerInput,
+  priorResult: GroupCompactionResult,
+  tightenCandidateIds: readonly string[],
+  passageOptions: PassageIndexOptions,
+): GroupCompactionResult => {
+  const result = validateGroupCompactionResult(value, group, ledger, passageOptions);
+  const parsedPrior = parseOrThrow(
+    GroupCompactionResultSchema,
+    priorResult,
+    "prior group compaction result",
+  );
+  const priorByCandidate = new Map(
+    parsedPrior.decisions.map((decision) => [decision.candidateId, decision]),
+  );
+  const tightenIds = new Set(tightenCandidateIds);
+  for (const decision of result.decisions) {
+    const prior = priorByCandidate.get(decision.candidateId);
+    if (prior === undefined) {
+      throw new CompactionContractError(
+        `fallback result names an unknown prior candidate ${decision.candidateId}`,
+      );
+    }
+    if (tightenIds.has(decision.candidateId)) {
+      if (prior.action !== "select") {
+        throw new CompactionContractError(
+          `tightening cannot restore omitted candidate ${decision.candidateId}`,
+        );
+      }
+      if (decision.action !== "select") {
+        throw new CompactionContractError(
+          `tightening ${decision.candidateId} must retain a selected prior result`,
+        );
+      }
+      const priorIds = new Set(prior.passageIds);
+      const nextIds = new Set(decision.passageIds);
+      if (
+        nextIds.size >= priorIds.size ||
+        [...nextIds].some((passageId) => !priorIds.has(passageId))
+      ) {
+        throw new CompactionContractError(
+          `tightening ${decision.candidateId} must select a strict prior subset`,
+        );
+      }
+      continue;
+    }
+    if (decision.action !== prior.action) {
+      throw new CompactionContractError(
+        `retained candidate ${decision.candidateId} changed its first-pass result`,
+      );
+    }
+    if (
+      decision.action === "select" &&
+      prior.action === "select" &&
+      (decision.passageIds.length !== prior.passageIds.length ||
+        decision.passageIds.some((passageId) => !prior.passageIds.includes(passageId)))
+    ) {
+      throw new CompactionContractError(
+        `retained candidate ${decision.candidateId} changed its first-pass result`,
       );
     }
   }
@@ -864,6 +918,11 @@ export const validateFallbackContextManifest = (
   costOptions?: CompactionCostOptions,
 ): FallbackContextManifest => {
   const fallback = parseOrThrow(FallbackContextManifestSchema, value, "fallback context manifest");
+  if (fallback.groups.length > MAX_COMPACTION_GROUPS) {
+    throw new CompactionContractError(
+      `fallback context manifest has more than ${MAX_COMPACTION_GROUPS} groups`,
+    );
+  }
   const validatedInitial = validateInitialContextManifest(
     initial,
     ledger,
@@ -1076,21 +1135,14 @@ export const validateFallbackContextManifest = (
       );
     }
     if (passageOptions !== undefined) {
-      const minimumCost = Math.min(
-        ...members.map((decision) =>
-          minimumSelectablePassageCost(
-            candidates.get(decision.candidateId)!,
-            passageOptions,
-            costOptions,
-            members.map((member) => member.candidateId),
-          ),
-        ),
+      selectablePassageCost(
+        group.groupId,
+        members.map((member) => candidates.get(member.candidateId)!),
+        passageOptions,
+        costOptions,
+        members.map((member) => member.candidateId),
+        group.renderedTokenBudget,
       );
-      if (group.renderedTokenBudget < minimumCost) {
-        throw new CompactionContractError(
-          `new fallback group ${group.groupId} budget is below its smallest selectable passage cost`,
-        );
-      }
     }
   }
   return fallback;
@@ -1122,10 +1174,21 @@ export const createFallbackCompactionGroups = (
   );
   const entries = ledgerEntries(ledger);
   const eligible = new Set(options.sourceToolEligibleCandidateIds ?? []);
+  if (eligible.size !== (options.sourceToolEligibleCandidateIds ?? []).length) {
+    throw new CompactionContractError("source-tool eligibility IDs must be unique");
+  }
   const initialByGroup = new Set(validatedInitial.groups.map((group) => group.groupId));
   const firstByGroup = new Map(firstResults.map((result) => [result.groupId, result] as const));
   const groups = validatedFallback.groups.flatMap((group) => {
     const previous = firstByGroup.get(group.groupId);
+    if (
+      previous !== undefined &&
+      !validatedFallback.decisions.some(
+        (decision) => decision.action === "tighten" && decision.groupId === group.groupId,
+      )
+    ) {
+      return [];
+    }
     const candidateIds =
       previous === undefined
         ? validatedFallback.decisions
@@ -1161,6 +1224,18 @@ export const createFallbackCompactionGroups = (
       },
     ];
   });
+  for (const candidateId of eligible) {
+    const candidate = entries.find((entry) => entry.candidateId === candidateId);
+    const groupsForCandidate = groups.filter((group) => group.candidateIds.includes(candidateId));
+    if (
+      candidate === undefined ||
+      (candidate.kind !== "document" && candidate.kind !== "chat_message") ||
+      groupsForCandidate.length !== 1 ||
+      groupsForCandidate[0]!.candidateIds.length !== 1
+    ) {
+      throw new CompactionContractError(`invalid source-tool eligibility for ${candidateId}`);
+    }
+  }
   return groups.sort((left, right) => {
     const leftOrdinal = entries.findIndex((candidate) =>
       left.candidateIds.includes(candidate.candidateId),
@@ -1188,7 +1263,9 @@ export const mergeGroupCompactionResults = (
         !Number.isSafeInteger(group.renderedTokenBudget) ||
         group.renderedTokenBudget < 1 ||
         group.candidateIds.length === 0 ||
-        new Set(group.candidateIds).size !== group.candidateIds.length,
+        new Set(group.candidateIds).size !== group.candidateIds.length ||
+        (group.mode !== "normal" && group.mode !== "source_tool") ||
+        (group.mode === "source_tool" && group.candidateIds.length !== 1),
     )
   ) {
     throw new CompactionContractError("expected compaction groups are invalid");

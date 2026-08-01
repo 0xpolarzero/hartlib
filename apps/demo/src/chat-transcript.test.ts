@@ -59,19 +59,19 @@ describe("buildTranscriptMessages", () => {
       activities: [
         {
           type: "activity",
-          stage: "evidence",
-          code: "internal_sources",
+          stage: "preparing",
+          code: "context_preparation",
           status: "failed",
         },
       ],
-      error: { code: "internal_retrieval_failed", retryable: true },
+      error: { code: "context_compaction_failed", retryable: true },
     });
     const assistant = messages[0];
     expect(assistant?.author).toBe("assistant");
     if (assistant?.author !== "assistant") throw new Error("expected assistant");
     expect(assistant.content).toBe("");
     expect(assistant.activityFailure).toEqual({
-      code: "internal_retrieval_failed",
+      code: "context_compaction_failed",
       retryable: true,
     });
   });

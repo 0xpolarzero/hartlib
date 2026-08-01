@@ -33,9 +33,13 @@ export const makeDemoSessionRoutes = (): readonly Route[] => [
         const setCookie = `${DEMO_COOKIE_NAME}=${session.cookieValue}; ${demoSessionCookieAttributes(
           config.nodeEnv === "production",
         )}`;
-        return jsonFromSchema(DemoSessionResponse, { ok: true }, {
-          headers: { "set-cookie": setCookie },
-        });
+        return jsonFromSchema(
+          DemoSessionResponse,
+          { ok: true },
+          {
+            headers: { "set-cookie": setCookie },
+          },
+        );
       }),
   },
 ];

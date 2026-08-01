@@ -846,7 +846,10 @@ describe("routeRequest", () => {
     };
 
     const response = await Effect.runPromise(
-      routeRequest([guarded], new Request("http://brief.test/aborted", { signal: controller.signal })),
+      routeRequest(
+        [guarded],
+        new Request("http://brief.test/aborted", { signal: controller.signal }),
+      ),
     );
     expect(response.status).toBe(499);
     expect(await response.text()).toBe("");

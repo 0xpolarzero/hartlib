@@ -141,8 +141,7 @@ describe("chat reset reducer", () => {
 
 describe("chat reset controller", () => {
   it("restores the captured nested route when reset fails", async () => {
-    const nestedRoute =
-      "/fr-FR/client/sources/source-public-fr/issue/issue-public-fr-2026-01";
+    const nestedRoute = "/fr-FR/client/sources/source-public-fr/issue/issue-public-fr-2026-01";
     const visitedRoutes: string[] = [];
     const nestedSnapshot = {
       ...snapshot(),

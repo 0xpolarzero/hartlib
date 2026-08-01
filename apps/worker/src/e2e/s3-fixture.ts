@@ -483,16 +483,19 @@ export const makeS3Fixture = (
         }
         const contentType = url.searchParams.get("response-content-type") ?? object.contentType;
         const contentDisposition = url.searchParams.get("response-content-disposition");
-        const headers = responseHeaders({
-          "accept-ranges": "bytes",
-          "cache-control": "private, no-store",
-          "content-length": String(object.body.byteLength),
-          "content-type": contentType,
-          etag: object.etag,
-          "x-brief-e2e-authorization-received": request.headers.has("authorization")
-            ? "present"
-            : "absent",
-        }, request.headers.get("origin"));
+        const headers = responseHeaders(
+          {
+            "accept-ranges": "bytes",
+            "cache-control": "private, no-store",
+            "content-length": String(object.body.byteLength),
+            "content-type": contentType,
+            etag: object.etag,
+            "x-brief-e2e-authorization-received": request.headers.has("authorization")
+              ? "present"
+              : "absent",
+          },
+          request.headers.get("origin"),
+        );
         for (const [name, value] of Object.entries(object.metadata)) {
           headers.set(`x-amz-meta-${name}`, value);
         }

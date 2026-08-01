@@ -34,9 +34,7 @@ export const createDemoSession = (): {
  * Validate a cookie value and return its visitor id, or `null` when the value
  * is absent or not a cookie-safe slug.
  */
-export const verifyDemoSessionCookie = (
-  cookieValue: string | null | undefined,
-): string | null => {
+export const verifyDemoSessionCookie = (cookieValue: string | null | undefined): string | null => {
   if (cookieValue === null || cookieValue === undefined || cookieValue === "") return null;
   return isVisitorId(cookieValue) ? cookieValue : null;
 };
@@ -65,12 +63,6 @@ export const demoSessionCookieAttributes = (
   secure: boolean,
   maxAgeSeconds = 60 * 60 * 24 * 30,
 ): string =>
-  [
-    `HttpOnly`,
-    `SameSite=Lax`,
-    `Path=/`,
-    `Max-Age=${maxAgeSeconds}`,
-    secure ? "Secure" : null,
-  ]
+  [`HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age=${maxAgeSeconds}`, secure ? "Secure" : null]
     .filter((value): value is string => value !== null)
     .join("; ");

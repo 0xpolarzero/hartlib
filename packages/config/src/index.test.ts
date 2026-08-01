@@ -38,12 +38,8 @@ const boundedWorkerNumericSettings = [
   ["AI_CONVERSATION_RECENT_TURNS", 200],
   ["AI_TOPIC_RESEARCH_MAX_CONCURRENCY", 32],
   ["AI_TOPIC_ANSWER_MAX_CONCURRENCY", 32],
-  ["AI_RETRIEVAL_MAX_TURNS", 16],
-  ["AI_INTERNAL_MAX_SEARCHES", 64],
-  ["AI_INTERNAL_MAX_INSPECTIONS", 64],
   ["AI_WEB_MAX_SEARCHES", 32],
   ["AI_WEB_MAX_FETCHES", 64],
-  ["AI_MEMORY_DIRECT_MAX_ITEMS", 10_000],
   ["AI_MEMORY_TOOL_RESULT_MAX_ITEMS", 500],
   ["AI_FAST_TASK_TIMEOUT_MS", 1_200_000],
   ["AI_ANSWER_TIMEOUT_MS", 900_000],
@@ -239,14 +235,9 @@ describe("central server configuration", () => {
       aiFanoutMaxTopics: 3,
       aiTopicResearchMaxConcurrency: 6,
       aiTopicAnswerMaxConcurrency: 3,
-      aiRetrievalMaxTurns: 8,
-      aiInternalMaxSearches: 8,
-      aiInternalMaxInspections: 8,
       aiWebMaxSearches: 4,
       aiWebMaxFetches: 8,
       aiWebMaxDomainFilters: AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT,
-      aiContextReductionMaxIterations: 2,
-      aiMemoryDirectMaxItems: 200,
       aiMemoryToolResultMaxItems: 50,
       aiFastTaskTimeoutMs: 1_200_000,
       aiAnswerTimeoutMs: 120_000,
@@ -305,9 +296,6 @@ describe("central server configuration", () => {
     await expect(
       Effect.runPromise(loadWorkerConfigFrom({ AI_FANOUT_MAX_TOPICS: "2" })),
     ).rejects.toThrow("AI_FANOUT_MAX_TOPICS is fixed at 3");
-    await expect(
-      Effect.runPromise(loadWorkerConfigFrom({ AI_CONTEXT_REDUCTION_MAX_ITERATIONS: "3" })),
-    ).rejects.toThrow("AI_CONTEXT_REDUCTION_MAX_ITERATIONS is fixed at 2");
   });
 
   it.each(boundedWorkerNumericSettings)(

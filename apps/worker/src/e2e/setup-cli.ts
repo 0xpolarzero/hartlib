@@ -968,7 +968,7 @@ const seedPrunedStreamRun = Effect.gen(function* () {
       (${runId}, 2, 'context_ready', ${sql.json({
         type: "context_ready",
         mode: "single",
-        reductionRan: false,
+        compactionRan: false,
         sourcesRead: [],
         consumers: [],
       })}),

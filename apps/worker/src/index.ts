@@ -2,7 +2,6 @@ import { BunRuntime } from "@effect/platform-bun";
 import { Effect } from "effect";
 import { assertWorkerAiProviderPosture, loadWorkerConfig } from "./config";
 import { JsonLoggerLayer, serviceLogFields } from "./logging";
-import { setRuntimeCauseSink } from "./diagnostic-cause";
 import { JobRepositoryPgLayer } from "./jobs/repository";
 import { runWorker } from "./jobs/runner";
 import { runMaintenanceScheduler } from "./jobs/maintenance";
@@ -19,21 +18,6 @@ import { aiChatSchemas } from "./ai/workflow/ai-chat";
 const program = Effect.gen(function* () {
   const config = yield* loadWorkerConfig;
   initializeWorkerTelemetry(config.sentryDsn, config.nodeEnv);
-  // Local-only diagnostic channel: emits the full cause (name+message+stack+code)
-  // of any error before the runtime/provenance boundary normalizes it. The
-  // boundary itself is unchanged; this only enriches the local dev console log
-  // so failures can be traced from a log dump. Dev-only by design.
-  if (config.nodeEnv === "development") {
-    setRuntimeCauseSink((record) => {
-      void Effect.runPromise(
-        Effect.logError("runtime cause").pipe(
-          Effect.annotateLogs({ component: "diagnostic", ...record }),
-          Effect.provide(JsonLoggerLayer),
-          Effect.annotateLogs(serviceLogFields),
-        ),
-      ).catch(() => undefined);
-    });
-  }
   yield* Effect.try({
     try: () => assertWorkerAiProviderPosture(config),
     catch: (error) => (error instanceof Error ? error : new Error(String(error))),
