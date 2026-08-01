@@ -24,7 +24,7 @@ const serveDocs = (
   next: (err?: unknown) => void,
 ): void => {
   const pathname = (req.url ?? "/").split("?", 1)[0];
-  if (pathname !== "/docs") {
+  if (req.method !== "GET" || pathname !== "/docs") {
     next();
     return;
   }

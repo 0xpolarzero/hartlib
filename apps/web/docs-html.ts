@@ -220,9 +220,10 @@ export const DOCS_HTML: string = `<!doctype html>
   │                  │                                   ◄──── claim job (SKIP LOCKED)
   │                  │                                   │  bind smithers_run_id   │
   │                  │                                   │  run ai-chat workflow   │
-  │                  │                  │  append run_started, context_ready,      │
-  │                  │                  │  answer_started, text_delta*, usage*,    │
-  │                  │                  │  memory_updated, usage(run), done|error  │
+  │                  │                  │  append run_started, activity*,          │
+  │                  │                  │  context_ready, answer_started,         │
+  │                  │                  │  text_delta*, usage*, memory_updated,  │
+  │                  │                  │  usage(run), done|error                 │
   │                  │  poll events    │                 │                         │
   │  ◄───────────────│  SSE frames     │ (every poll checks current viewer access) │
   │  … id:N event:text_delta data:{"delta":"…"}                         │         │
@@ -231,9 +232,10 @@ export const DOCS_HTML: string = `<!doctype html>
 </code></pre>
   <p>
     The single correlation key across the whole flow is <code>run.id</code>. It
-    appears in the <code>streamPath</code>, in every SSE frame (as the owning
-    row of each event), in the worker's job payload, and in the persisted
-    assistant message. There is no server-side session.
+    identifies the stream path, worker job, persisted event rows, and assistant
+    message. SSE frames carry the event sequence in <code>id</code> and the
+    event payload in <code>data</code>; the run id is implicit in the stream
+    path and event row. There is no server-side session.
   </p>
 
   <h2 id="send">Step 1 — Send a message</h2>
@@ -251,13 +253,17 @@ export const DOCS_HTML: string = `<!doctype html>
 </code></pre>
   <p>
     The handler runs <code>createUserMessageAndRun</code> in a single
-    transaction. The transaction acquires its transaction-scoped advisory
-    locks <em>in this order</em> — <code>brief:user-memory:&lt;userId&gt;</code>
-    first, then (for demo chats) <code>brief:demo-chat:&lt;userId&gt;</code>
-    during provisioning, then <code>brief:client-members:&lt;companyId&gt;</code>,
-    then <code>brief:ai-chat:&lt;chatId&gt;</code> — runs all the gating checks,
-    and only then writes rows. Production chats take three locks; demo chats
-    take four, with the demo-chat lock provisioning the row before the gates.
+    transaction. It first takes the Smithers schema-fence lock
+    <code>brief:ai-chat:smithers-schema</code>, then the
+    <code>brief:user-memory:&lt;userId&gt;</code> lock. Demo requests then take
+    <code>brief:demo-chat:&lt;userId&gt;</code> while provisioning. For an
+    explicit chat, the lookup locks its row <code>FOR UPDATE</code>; after the
+    lookup the transaction takes <code>brief:client-members:&lt;companyId&gt;</code>
+    and then <code>brief:ai-chat:&lt;chatId&gt;</code>. Explicit production
+    acceptance uses four advisory locks plus the chat-row lock. Demo acceptance
+    uses five advisory locks — the four common lanes plus
+    <code>brief:demo-chat:&lt;userId&gt;</code> — and no explicit chat-row lookup.
+    It runs all gating checks and only then writes rows.
   </p>
   <p>Inside the transaction, in order:</p>
   <ol>
@@ -393,23 +399,16 @@ export const DOCS_HTML: string = `<!doctype html>
   </p>
   <p>The graph is:</p>
   <pre><code>Sequence
-├─ load-turn                markAiRunStarted  →  emits run_started
-├─ Parallel turn-lanes
+├─ load-turn                validate the saved scope; emit run_started
+├─ plan-turn                fast structured plan: clarify | single | fanout
+├─ Parallel(turn-lanes)
 │  ├─ memory-extract        background memory revision extraction
-│  └─ AnswerLane (Sequence)
-│     ├─ resolve-conversation   clarify | continue
-│     ├─ Branch
-│     │  ├─ clarify            ask a disambiguation question
-│     │  └─ Sequence
-│     │     ├─ plan-execution          single | fanout
-│     │     ├─ normalize-execution-plan
-│     │     └─ Branch
-│     │        ├─ single  Parallel(retrieve-internal | select-memories | retrieve-web)
-│     │        │          → assemble → measure → [reduce loop] → freeze
-│     │        │          → answerDirect  (streamed)
-│     │        └─ fanout  per-topic retrieve → topic-answer → synthesize (streamed)
-│     └─ answer-select        assertFinalSourceMap on ok
-└─ finalize                 finalizeAiRun  →  emits memory_updated, usage(run), done | error
+│  └─ AnswerLane
+│     ├─ clarification       ask one disambiguation question
+│     ├─ single              retrieve context and answer directly
+│     ├─ fanout              answer each topic, then synthesize
+│     └─ answer-select       validate the final source map
+└─ finalize                 commit the assistant message or terminal error
 </code></pre>
   <h3>Answer modes</h3>
   <p>
@@ -422,8 +421,11 @@ export const DOCS_HTML: string = `<!doctype html>
     <li><strong><code>synthesis</code></strong> — the planner splits the turn into two or three topics; each topic gets its own retrieval and answer; a final synthesis pass merges them.</li>
   </ul>
   <p>
-    On the very first turn of a chat, <code>resolve-conversation</code>
-    short-circuits to <code>continue</code> without an LLM call.
+    Every turn, including the first, runs <code>plan-turn</code>, a fast
+    structured model call. It returns <code>clarify</code>,
+    <code>single</code>, or <code>fanout</code>. For <code>clarify</code>, the
+    plan already contains the question; the clarify task emits it without an
+    answer request.
   </p>
   <h3>Retrieval</h3>
   <ul>
@@ -459,10 +461,9 @@ export const DOCS_HTML: string = `<!doctype html>
     <code>ai_runs.finished_at</code>. In order, inside one transaction:
   </p>
   <ol>
-    <li>Take the run row <code>FOR UPDATE</code> under the same execution-scope advisory locks used at enqueue, and verify <code>smithers_run_id</code> still matches.</li>
-    <li>Short-circuit if the run is already terminal (idempotent replay).</li>
-    <li>If the answer cites publisher documents, acquire each cited issue's restriction lane (<code>brief:publisher-issue:&lt;issueId&gt;</code>) in sorted order.</li>
-    <li>Validate the durable observation trail — every provider request that contributed tokens must have a matching <code>provider_request_measurement</code>; the memory extraction artifact digest must match its producer observation.</li>
+    <li>Take the user-memory advisory lane, lock the chat row <code>FOR SHARE</code>, take the membership and chat-execution advisory lanes, then lock the run row <code>FOR UPDATE</code>; verify <code>smithers_run_id</code> still matches.</li>
+    <li>If the answer succeeds, acquire each cited issue's restriction lane (<code>brief:publisher-issue:&lt;issueId&gt;</code>) in sorted order.</li>
+    <li>Validate the terminal product ledger and durable observation trail, including the memory-extraction artifact and producer usage proofs. An already-terminal replay returns only after these checks pass; otherwise finalization continues.</li>
     <li><strong>Validate the saved scope and exact evidence.</strong> Brief checks the immutable acceptance scope plus exact document, version, hash, locator, range, memory-revision, quotation, usage, and provider identities. These source-integrity checks prove that saved evidence is unchanged; they do not reauthorize current access. Ordinary setting changes do not turn an accepted answer into a failure. Account deletion, purge, retention, legal or security restriction, and exact identity mismatch remain exceptional denials.</li>
     <li>Apply memory proposals after scope and integrity validation. Emit <code>memory_updated</code>.</li>
     <li>Aggregate all per-request model and web usage; emit one run-scope <code>usage</code> event.</li>
@@ -478,7 +479,7 @@ export const DOCS_HTML: string = `<!doctype html>
   </p>
 
   <h2 id="http">HTTP surface</h2>
-  <p>All routes require an authenticated identity; 401 bodies are <code>{ "error": "unauthorized" }</code>.</p>
+  <p>All API routes below require an authenticated identity; 401 bodies are <code>{ "error": "unauthorized" }</code>.</p>
   <table>
     <thead><tr><th>Method &amp; path</th><th>Scope</th><th>Request</th><th>Success</th><th>Notable errors</th></tr></thead>
     <tbody>
@@ -559,9 +560,15 @@ export const DOCS_HTML: string = `<!doctype html>
         <td><span class="badge">no</span></td>
       </tr>
       <tr>
+        <td><code>activity</code></td>
+        <td><code>stage</code>, <code>code</code>, <code>status</code>, optional <code>topicId</code>, <code>attempt</code>, <code>durationMs</code>, <code>sourceCount</code>, <code>resultCount</code>, <code>reason</code></td>
+        <td>Progress for code-owned phases and topic work. The worker may emit updates, retries, skips, and failures; clients keep the latest item for each code/topic key.</td>
+        <td><span class="badge">no</span></td>
+      </tr>
+      <tr>
         <td><code>context_ready</code></td>
         <td><code>mode</code>, <code>compactionRan</code>, <code>sourcesRead[]</code>, <code>consumers[]</code></td>
-        <td>Emitted before the answer phase. For <code>single</code>/<code>synthesis</code> the context is frozen and about to be sent to the model; for <code>clarification</code> the question has already been produced and no answer request follows that event. <code>mode ∈ {clarification, single, synthesis}</code>; <code>consumers</code> describes per-consumer token budgets.</td>
+        <td>Emitted immediately before <code>answer_started</code>. For <code>single</code>/<code>synthesis</code> the context is frozen and about to be sent to the model. For <code>clarification</code>, <code>answer_started</code> follows, then the clarify path emits one <code>text_delta</code> containing the question and makes no answer-model request. <code>mode ∈ {clarification, single, synthesis}</code>; <code>consumers</code> describes per-consumer token budgets.</td>
         <td><span class="badge">no</span></td>
       </tr>
       <tr>
@@ -579,7 +586,7 @@ export const DOCS_HTML: string = `<!doctype html>
       <tr>
         <td><code>memory_updated</code></td>
         <td><code>created</code>, <code>updated</code>, <code>discarded</code></td>
-        <td>Emitted at finalize after memory proposals are applied, on both the success path and the controlled answer-failure path inside the same transaction (handler-side failures that bypass <code>finalizeAiRun</code> emit only <code>usage</code> and <code>error</code>). The memory extractor runs regardless of chat memory mode, so counts reflect whatever proposals the extractor produced and the applier accepted.</td>
+        <td>Emitted at finalize after memory proposals are applied, on both the success path and the controlled answer-failure path inside the same transaction. A handler-side failure that bypasses finalization emits a failed <code>activity</code> before the terminal <code>error</code>, but does not emit <code>memory_updated</code>. The memory extractor runs regardless of chat memory mode, so counts reflect whatever proposals the extractor produced and the applier accepted.</td>
         <td><span class="badge">no</span></td>
       </tr>
       <tr>
@@ -590,7 +597,7 @@ export const DOCS_HTML: string = `<!doctype html>
       </tr>
       <tr>
         <td><code>usage</code> <span class="badge">web / request</span></td>
-        <td><code>scope:"request"</code>, <code>kind ∈ {web_search, web_fetch}</code>, <code>attempt</code>, <code>status</code>, <code>resultCount</code>, <code>responseBytes</code>, <code>billedUnits | null</code></td>
+        <td><code>scope:"request"</code>, <code>kind ∈ {web_search, web_fetch}</code>, <code>attempt</code>, <code>status</code>, <code>resultCount</code>, <code>responseBytes</code>, <code>billedUnits | null</code>, <code>durationMs</code></td>
         <td>Once per web search or fetch call.</td>
         <td><span class="badge">no</span></td>
       </tr>
@@ -622,10 +629,13 @@ export const DOCS_HTML: string = `<!doctype html>
     signal: request-scope events interleave throughout the run.
   </p>
   <p>
-    Typical ordering: <code>run_started</code> → <code>context_ready</code> →
-    <code>answer_started</code> → <code>text_delta</code>×N (with
+    Typical ordering: <code>run_started</code> → <code>activity</code>* →
+    <code>context_ready</code> → <code>answer_started</code> →
+    <code>text_delta</code>×N (with <code>activity</code> and request
     <code>usage</code> interleaved) → <code>memory_updated</code> →
-    <code>usage</code> (run) → <code>done</code> | <code>error</code>.
+    run-scope <code>usage</code> → <code>done</code> | <code>error</code>.
+    Activity can occur at any phase; a terminal failure emits a failed activity
+    before <code>error</code>.
   </p>
 
   <h2 id="sse">SSE framing</h2>
@@ -673,24 +683,23 @@ data: {"type":"text_delta","delta":"Q3 "}
     (producer) and the API (consumer). On <em>every</em> poll — not just the
     handshake — the API runs a single SQL query that returns the next batch of
     events <em>and</em> checks that the authenticated viewer may still see the
-    chat and its stream. This viewer check is separate from the run's frozen
-    source scope: it may end the viewer's stream access, but it never
-    reauthorizes saved sources, memory revisions, provider settings, or web
-    policy. The query folds together:
+    chat and its stream. This viewer check may end stream access, but it does
+    not reauthorize the run's saved sources, memory revisions, provider
+    settings, web policy, or evidence.
   </p>
   <ul>
-    <li><strong>Identity &amp; membership</strong> — caller and chat creator exist and are not soft-deleted; an active membership links caller to chat's company; organization id matches.</li>
-    <li><strong>Accepted source scope</strong> — the run's immutable source and access IDs, exact memory revisions, provider values, web state, and domain allowlist remain the only inputs for retrieval and finalization. Current grants, source settings, memory heads, provider settings, and web policy do not replace them.</li>
-    <li><strong>Exact evidence integrity</strong> — every saved document, version, hash, range, memory revision, and web quotation must match its immutable stored identity. A mismatch fails closed; it is not a current-access recheck.</li>
-    <li><strong>Historical publication delivery</strong> — a client-company viewer needs an unrevoked current company membership and the exact delivery-recipient record captured at delivery. Membership revocation denies that viewer without changing the historical row. Ordinary subscription, grant, source-setting, or policy changes neither revoke a delivered issue for a current historical recipient nor grant it to a new viewer; publisher-owned views use the current publisher lane, and account deletion, purge, retention, legal, and security restrictions remain explicit denials.</li>
-    <li><strong>Ownership or sharing</strong> — caller is the chat owner, or the chat is shared with memory disabled.</li>
+    <li><strong>Viewer and membership</strong> — the authenticated viewer exists and is not soft-deleted; an active membership links the viewer to the chat's company; the organization id matches when present.</li>
+    <li><strong>Chat visibility</strong> — the viewer owns the chat, or the chat has <code>shared_at</code> set.</li>
+    <li><strong>Current records</strong> — the run, chat, and company are present; the chat is not soft-deleted; and the company is not recovering or purged.</li>
   </ul>
   <p>
-    The query also computes <code>terminal</code> (from
-    <code>ai_runs.finished_at</code> / <code>failed_at</code>) and
-    <code>replayableTerminal</code> (a <code>done</code> or <code>error</code>
-    event exists with <code>seq &gt; afterSeq</code>). The combination drives
-    the handshake outcomes in Step 2.
+    The saved scope and evidence checks use the immutable acceptance scope
+    during workflow execution and finalization. The query also computes
+    <code>terminal</code> (from <code>ai_runs.finished_at</code> /
+    <code>failed_at</code>) and <code>replayableTerminal</code> (a
+    <code>done</code> or <code>error</code> event exists with
+    <code>seq &gt; afterSeq</code>). The combination drives the handshake
+    outcomes in Step 2.
   </p>
 
   <h2 id="tables">Database tables</h2>
@@ -725,16 +734,22 @@ data: {"type":"text_delta","delta":"Q3 "}
     <li>The workflow is resume-capable: Smithers rehydrates completed tasks from durable storage and only re-runs what is incomplete.</li>
   </ul>
   <h3>Lock discipline</h3>
-  <p>Transaction-scoped <code>pg_advisory_xact_lock</code> keys, acquired in a fixed order to avoid deadlocks:</p>
+  <p>Acceptance advisory locks follow a fixed order:</p>
   <ul>
-    <li><code>brief:user-memory:&lt;userId&gt;</code> — enqueue path.</li>
+    <li><code>brief:ai-chat:smithers-schema</code> — enqueue/cutover fence.</li>
+    <li><code>brief:user-memory:&lt;userId&gt;</code> — enqueue and finalization memory lane.</li>
     <li><code>brief:demo-chat:&lt;userId&gt;</code> — demo chat provisioning.</li>
     <li><code>brief:client-members:&lt;companyId&gt;</code> — membership stability.</li>
-    <li><code>brief:ai-chat:&lt;chatId&gt;</code> — per-chat serialization (backs the one-active-run invariant).</li>
-    <li><code>brief:publisher-issue:&lt;issueId&gt;</code> — per-issue restriction lane, acquired in sorted order during finalization when the answer cites publisher documents.</li>
-    <li><code>brief:jobs:claim</code> — single-writer job claim.</li>
+    <li><code>brief:ai-chat:&lt;chatId&gt;</code> — per-chat serialization.</li>
+    <li><code>brief:publisher-issue:&lt;issueId&gt;</code> — finalization-only restriction lane, acquired in sorted order.</li>
+    <li><code>brief:jobs:claim</code> — independent single-writer job-claim lane.</li>
   </ul>
-  <p>Run-row <code>FOR UPDATE</code> is taken in a uniform order to avoid the FK KEY-SHARE → FOR UPDATE deadlock.</p>
+  <p>
+    Explicit-chat enqueue also locks the chat row <code>FOR UPDATE</code> before
+    the membership and chat locks. Finalization reads the chat
+    <code>FOR SHARE</code> and takes the run row <code>FOR UPDATE</code> in its
+    canonical order, avoiding the FK KEY-SHARE → FOR UPDATE deadlock.
+  </p>
   <h3>One active run</h3>
   <p>
     Enforced structurally by two partial unique indexes — one active run per
@@ -747,7 +762,7 @@ data: {"type":"text_delta","delta":"Q3 "}
   <ul>
     <li><strong>Queue layer</strong> — <code>ai_chat_run</code> is always retryable; a crashed worker's lease is reaped and the row returns to <code>retrying</code> with exponential backoff.</li>
     <li><strong>Workflow layer</strong> — every task has bounded retries with a shared retry policy; compaction runs only after an exact overage, uses bounded parallel groups, and allows one monotone fallback; tool loops are turn-capped and force a terminal tool on the final turn.</li>
-    <li><strong>Terminal boundary</strong> — only <code>finalizeAiRun</code> / <code>failAiRun</code> may set <code>finished_at</code> / <code>failed_at</code> and emit <code>done</code> / <code>error</code>; both are guarded by <code>smithers_run_id</code> match and execution-scope invariants.</li>
+    <li><strong>Terminal boundary</strong> — normal worker completion uses <code>finalizeAiRun</code> / <code>failAiRun</code> to set terminal fields and emit <code>done</code> / <code>error</code>, guarded by <code>smithers_run_id</code> and execution-scope invariants. Archive/reset is an explicit exception: it can mark an active predecessor run failed with <code>chat_archived</code> without appending a replayable <code>error</code> event.</li>
   </ul>
   <h3>Web policy lifecycle</h3>
   <p>
