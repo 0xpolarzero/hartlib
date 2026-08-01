@@ -3,7 +3,8 @@ import { PgClient } from "@effect/sql-pg";
 import { Effect } from "effect";
 import { loadDatabaseResetConfig } from "@brief/config";
 
-import { DatabaseMigrationLayer, runMigrations } from "./migrate";
+import { runMigrations } from "@brief/database/migrations";
+import { DatabaseMigrationLayer } from "./migrate";
 
 export const assertResetAllowed = Effect.gen(function* () {
   const { nodeEnv, allowProductionReset } = yield* loadDatabaseResetConfig;

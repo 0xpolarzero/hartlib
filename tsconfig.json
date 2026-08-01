@@ -4,6 +4,7 @@
     { "path": "./packages/docs" },
     { "path": "./packages/api-client" },
     { "path": "./packages/backend-domain" },
+    { "path": "./packages/database" },
     { "path": "./packages/i18n" },
     { "path": "./packages/config" },
     { "path": "./packages/demo-data" },

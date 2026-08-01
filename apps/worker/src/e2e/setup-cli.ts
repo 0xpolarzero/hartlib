@@ -8,7 +8,7 @@ import { makePgPublicSourceIngestionRepository } from "../source-ingestion/pg-re
 import { PublicSourceIngestionRepository } from "../source-ingestion/repository";
 
 import { e2eStreamGateLockKey, isE2eStreamGateId } from "../ai/e2e/stream-gate";
-import { runMigrations } from "../db/migrate";
+import { runMigrations } from "@brief/database/migrations";
 import {
   makeE2ePublicSourceAdapters,
   type E2ePublicSourceCorpusItem,

@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import { Effect, Layer, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { runMigrations } from "../db/migrate";
+import { runMigrations } from "@brief/database/migrations";
 import type { JobKind, JobRecord } from "../jobs/types";
 import {
   makeInMemoryPlatformFileStore,

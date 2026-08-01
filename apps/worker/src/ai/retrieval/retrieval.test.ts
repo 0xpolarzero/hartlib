@@ -4,7 +4,7 @@ import { TestClock } from "effect/testing";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { runMigrations } from "../../db/migrate";
+import { runMigrations } from "@brief/database/migrations";
 import { InvalidQuerySpecError } from "./compile-query-spec";
 import {
   findNormalizedSubstringRanges,

@@ -23,6 +23,7 @@
         "@aws-sdk/s3-request-presigner": "3.1075.0",
         "@brief/backend-domain": "workspace:*",
         "@brief/config": "workspace:*",
+        "@brief/database": "workspace:*",
         "@brief/shared": "workspace:*",
         "@brief/workspace": "workspace:*",
         "@clerk/backend": "3.8.4",
@@ -109,6 +110,7 @@
       "dependencies": {
         "@aws-sdk/client-s3": "3.1075.0",
         "@brief/config": "workspace:*",
+        "@brief/database": "workspace:*",
         "@brief/i18n": "workspace:*",
         "@brief/shared": "workspace:*",
         "@brief/source-ingestion": "workspace:*",
@@ -145,6 +147,7 @@
     "packages/backend-domain": {
       "name": "@brief/backend-domain",
       "dependencies": {
+        "@brief/database": "workspace:*",
         "@brief/shared": "workspace:*",
         "@brief/workspace": "workspace:*",
         "@clerk/backend": "3.8.4",
@@ -162,6 +165,18 @@
         "effect": "4.0.0-beta.92",
       },
       "devDependencies": {
+        "typescript": "6.0.3",
+        "vitest": "4.1.9",
+      },
+    },
+    "packages/database": {
+      "name": "@brief/database",
+      "dependencies": {
+        "@effect/sql-pg": "4.0.0-beta.92",
+        "effect": "4.0.0-beta.92",
+      },
+      "devDependencies": {
+        "@types/bun": "1.3.14",
         "typescript": "6.0.3",
         "vitest": "4.1.9",
       },
@@ -370,6 +385,8 @@
     "@brief/backend-domain": ["@brief/backend-domain@workspace:packages/backend-domain"],
 
     "@brief/config": ["@brief/config@workspace:packages/config"],
+
+    "@brief/database": ["@brief/database@workspace:packages/database"],
 
     "@brief/demo": ["@brief/demo@workspace:apps/demo"],
 

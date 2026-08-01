@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { makeRunAcceptanceScope } from "@brief/shared/chat";
 
 import { purgeUserMemoryTombstones } from "../ai/product-state/retention";
-import { runMigrations } from "../db/migrate";
+import { runMigrations } from "@brief/database/migrations";
 import type { JobRecord } from "../jobs/types";
 import {
   ExportObjectStoreService,

@@ -8,7 +8,7 @@ import {
 } from "@brief/source-ingestion";
 import { makeRunAcceptanceScope } from "@brief/shared";
 
-import { runMigrations } from "../db/migrate";
+import { runMigrations } from "@brief/database/migrations";
 import type { WorkerConfig } from "../config";
 import { WebBoundaryError, type WebOperationAccounting } from "../ai/web";
 import type { JobRecord, JobResult } from "./types";

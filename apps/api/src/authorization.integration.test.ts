@@ -1,4 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
+import { runMigrations } from "@brief/database/migrations";
 import { createExportRequest } from "@brief/backend-domain/exports";
 import { createUserMessageAndRun } from "@brief/backend-domain/chat-runtime";
 import {
@@ -40,7 +41,6 @@ import { makePlatformSupportRoutes } from "./domain/platform-support";
 import { makePublisherDocumentContentRoute } from "./domain/publisher-documents";
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const migrationsUrl = new URL("../../../db/migrations/", import.meta.url);
 const isolatedDatabaseName = `brief_authorization_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 const databaseUrlFor = (name: string): string => {
@@ -63,15 +63,6 @@ const runDb = <A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
   );
 
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
-
-const runMigrations = Effect.gen(function* () {
-  const sql = yield* PgClient.PgClient;
-  const files = [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })].sort();
-  for (const file of files) {
-    const body = yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text());
-    yield* sql.unsafe(body).raw;
-  }
-});
 
 const identity = (
   userId: string,

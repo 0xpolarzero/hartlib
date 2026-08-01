@@ -1,5 +1,6 @@
 import type { WebhookEvent } from "@clerk/backend/webhooks";
 import { PgClient } from "@effect/sql-pg";
+import { runMigrations } from "@brief/database/migrations";
 import { ConfigProvider, Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,7 +45,6 @@ import {
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const isBun = typeof process.versions.bun === "string";
-const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
 const databaseName = `brief_workspace_platform_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 const publisherCompanyId = "10000000-0000-4000-8000-000000000001";
 const clientCompanyId = "20000000-0000-4000-8000-000000000002";
@@ -142,14 +142,6 @@ const call = (
     routeRequest(routes, request).pipe(Effect.provide(config(userId, options?.config))),
   );
 };
-
-const migrate = Effect.gen(function* () {
-  const sql = yield* PgClient.PgClient;
-  for (const file of [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })].sort()) {
-    yield* sql.unsafe(yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text()))
-      .raw;
-  }
-});
 
 const seed = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
@@ -267,7 +259,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
       }),
       "postgres",
     );
-    await runDb(migrate);
+    await runDb(runMigrations);
   }, 120_000);
 
   afterAll(async () => {

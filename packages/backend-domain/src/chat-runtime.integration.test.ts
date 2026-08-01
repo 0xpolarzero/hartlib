@@ -1,6 +1,7 @@
 /// <reference types="bun" />
 
 import { PgClient } from "@effect/sql-pg";
+import { runMigrations } from "@brief/database/migrations";
 import {
   createUserMessageAndRun,
   ensureDemoChat,
@@ -10,7 +11,6 @@ import { resetProductChat } from "@brief/backend-domain/product-chats";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const migrationsUrl = new URL("../../../db/migrations/", import.meta.url);
 const isBun = typeof process.versions.bun === "string";
 const sourceDatabaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const databaseName = `brief_demo_feed_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
@@ -73,21 +73,6 @@ const waitForDatabaseLock = async (applicationName: string): Promise<void> => {
   throw new Error(`${applicationName} did not wait for a database lock`);
 };
 
-const migrate = Effect.gen(function* () {
-  const sql = yield* PgClient.PgClient;
-  const files = [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })].sort();
-  yield* sql`
-    create table if not exists schema_migrations (
-      name text primary key, applied_at timestamptz not null default now()
-    )
-  `;
-  for (const file of files) {
-    const body = yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text());
-    yield* sql.unsafe(body).raw;
-    yield* sql`insert into schema_migrations (name) values (${file})`;
-  }
-});
-
 describe.skipIf(!isBun || sourceDatabaseUrl === undefined)(
   "demo chat runtime discovery and archive fences",
   () => {
@@ -99,7 +84,7 @@ describe.skipIf(!isBun || sourceDatabaseUrl === undefined)(
           yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`).withoutTransform;
         }),
       );
-      await runDb(isolatedUrl(), migrate);
+      await runDb(isolatedUrl(), runMigrations);
       // Seed one real public source plus one canonical evaluation fixture of
       // each discriminating shape (eval-* id and evaluation.invalid URL).
       await runDb(

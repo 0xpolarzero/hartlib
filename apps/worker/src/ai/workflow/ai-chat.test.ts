@@ -6,7 +6,7 @@ import { SmithersDb } from "smithers-orchestrator";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { runMigrations } from "../../db/migrate";
+import { runMigrations } from "@brief/database/migrations";
 import type { CanonicalAgentClient } from "../runtime/agent-client";
 import { AiRuntimeError } from "../runtime/errors";
 import type {

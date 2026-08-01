@@ -22,6 +22,7 @@
     "test": "vitest run --root ../.. packages/backend-domain/src"
   },
   "dependencies": {
+    "@brief/database": "workspace:*",
     "@brief/shared": "workspace:*",
     "@brief/workspace": "workspace:*",
     "@clerk/backend": "3.8.4",

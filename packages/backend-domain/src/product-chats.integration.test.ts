@@ -1,4 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
+import { runMigrations } from "@brief/database/migrations";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -12,7 +13,6 @@ import {
 } from "./product-chats";
 
 const sourceDatabaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const migrationsUrl = new URL("../../../db/migrations/", import.meta.url);
 const databaseName = `brief_product_chats_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 const withDatabase = (name: string): string => {
@@ -48,26 +48,6 @@ const runAdmin = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise
       ),
     ),
   );
-
-const migrate = Effect.gen(function* () {
-  const sql = yield* PgClient.PgClient;
-  const files = [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })].sort();
-  yield* sql`
-    create table if not exists schema_migrations (
-      name text primary key,
-      applied_at timestamptz not null default now()
-    )
-  `;
-  for (const file of files) {
-    const applied = yield* sql<{ readonly name: string }>`
-      select name from schema_migrations where name = ${file}
-    `;
-    if (applied.length > 0) continue;
-    const body = yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text());
-    yield* sql.unsafe(body).raw;
-    yield* sql`insert into schema_migrations (name) values (${file})`;
-  }
-});
 
 type Fixture = {
   readonly companyId: string;
@@ -189,16 +169,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)(
           yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`).raw;
         }),
       );
-      await Effect.runPromise(
-        migrate.pipe(
-          Effect.provide(
-            PgClient.layer({
-              url: Redacted.make(isolatedUrl()),
-              applicationName: "brief-product-chats-migrate",
-            }),
-          ),
-        ),
-      );
+      await runDb(runMigrations, "brief-product-chats-migrate");
     });
 
     afterAll(async () => {

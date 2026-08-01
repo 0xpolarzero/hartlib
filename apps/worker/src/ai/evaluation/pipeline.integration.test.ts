@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import type { WorkerConfig } from "../../config";
-import { runMigrations } from "../../db/migrate";
+import { runMigrations } from "@brief/database/migrations";
 import { handleAiChatRunJob, providerServiceIdForConfig } from "../../jobs/handlers";
 import type { JobRecord } from "../../jobs/types";
 import {

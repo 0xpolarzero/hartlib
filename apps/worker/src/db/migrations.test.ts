@@ -9,7 +9,7 @@ import {
   revalidateEvaluationV3Evidence,
 } from "../ai/evaluation/pipeline";
 
-import { runMigrations } from "./migrate";
+import { runMigrations } from "@brief/database/migrations";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
@@ -46,6 +46,10 @@ type RegconfigRow = {
 };
 
 type NamedRow = {
+  name: string;
+};
+type MigrationRow = {
+  migration_id: number;
   name: string;
 };
 
@@ -177,8 +181,9 @@ function applyMigrationsThrough(lastMigration: string) {
 
     yield* sql`
       create table if not exists schema_migrations (
-        name text primary key,
-        applied_at timestamptz not null default now()
+        migration_id integer primary key,
+        created_at timestamptz not null default now(),
+        name text not null
       )
     `;
 
@@ -190,8 +195,8 @@ function applyMigrationsThrough(lastMigration: string) {
           const body = yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text());
           yield* sql.unsafe(body).raw;
           yield* sql`
-            insert into schema_migrations (name)
-            values (${file})
+            insert into schema_migrations (migration_id, name)
+            values (${Number(file.slice(0, file.indexOf("_")))}, ${file})
           `;
         }
       }),
@@ -316,6 +321,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       const expectedMigrations = [
         ...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname }),
       ].sort();
+      const expectedMigrationIds = expectedMigrations.map((migration) =>
+        Number(migration.slice(0, migration.indexOf("_"))),
+      );
       const result = await runDb(
         testUrl,
         Effect.gen(function* () {
@@ -371,10 +379,10 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               and table_name = 'user_memories'
               and column_name = 'evidence_quote'
           `;
-          const migrationsBefore = yield* sql<NamedRow>`
-            select name
+          const migrationsBefore = yield* sql<MigrationRow>`
+            select migration_id, name
             from schema_migrations
-            order by name
+            order by migration_id
           `;
 
           yield* runMigrations;
@@ -387,10 +395,10 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               and column_name = 'evidence_quote'
           `;
 
-          const migrationsAfter = yield* sql<NamedRow>`
-            select name
+          const migrationsAfter = yield* sql<MigrationRow>`
+            select migration_id, name
             from schema_migrations
-            order by name
+            order by migration_id
           `;
 
           return {
@@ -401,7 +409,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             searchVectorColumnCount: searchVectorColumns.length,
             initialMemoryEvidenceColumnCount: initialMemoryEvidenceColumns.length,
             memoryEvidenceColumnCountAfter: memoryEvidenceColumnsAfter.length,
+            migrationIdsBefore: migrationsBefore.map((migration) => migration.migration_id),
             migrationsBefore: migrationsBefore.map((migration) => migration.name),
+            migrationIdsAfter: migrationsAfter.map((migration) => migration.migration_id),
             migrationsAfter: migrationsAfter.map((migration) => migration.name),
           };
         }),
@@ -428,12 +438,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       expect(result.initialMemoryEvidenceColumnCount).toBe(0);
       expect(result.memoryEvidenceColumnCountAfter).toBe(0);
       expect(result.migrationsBefore).toEqual(expectedMigrations);
+      expect(result.migrationIdsBefore).toEqual(expectedMigrationIds);
       expect(result.migrationsBefore).toContain("0008_ai_chat_runtime.sql");
       expect(result.migrationsBefore).toContain("0009_document_search.sql");
       expect(result.migrationsBefore).toContain("0010_user_memory_revision_run_set_null.sql");
       expect(result.migrationsBefore).toContain("0014_simplify_user_memories.sql");
       expect(result.migrationsBefore).toContain("0015_canonical_ai_runtime_product_state.sql");
       expect(result.migrationsAfter).toEqual(expectedMigrations);
+      expect(result.migrationIdsAfter).toEqual(expectedMigrationIds);
     },
   );
 
@@ -9754,8 +9766,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               Effect.gen(function* () {
                 yield* sql.unsafe(migrationBody).raw;
                 yield* sql`
-                  insert into schema_migrations (name)
-                  values ('0047_export_request_legal_hold_scopes.sql')
+                  insert into schema_migrations (migration_id, name)
+                  values (47, '0047_export_request_legal_hold_scopes.sql')
                 `;
               }),
             );
@@ -10695,8 +10707,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             );
             yield* sql.unsafe(body).raw;
             yield* sql`
-              insert into schema_migrations (name)
-              values ('0013_chats_unique_user.sql')
+              insert into schema_migrations (migration_id, name)
+              values (13, '0013_chats_unique_user.sql')
             `;
           }),
         );
@@ -10741,7 +10753,10 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 Bun.file(new URL(file, migrationsUrl)).text(),
               );
               yield* sql.unsafe(body).raw;
-              yield* sql`insert into schema_migrations (name) values (${file})`;
+              yield* sql`
+                insert into schema_migrations (migration_id, name)
+                values (${Number(file.slice(0, file.indexOf("_")))}, ${file})
+              `;
             }
           }),
         );
@@ -10786,8 +10801,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             const sql = yield* PgClient.PgClient;
             yield* sql.unsafe(cutoverMigration).raw;
             yield* sql`
-              insert into schema_migrations (name)
-              values ('0064_ai_chat_runtime_cutover.sql')
+              insert into schema_migrations (migration_id, name)
+              values (64, '0064_ai_chat_runtime_cutover.sql')
             `;
           }),
         );

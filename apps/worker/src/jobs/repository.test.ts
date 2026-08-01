@@ -1,12 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { describe, expect, it, vi } from "vitest";
+import { runMigrations } from "@brief/database/migrations";
 import { TrustedJobFailure } from "./failure";
 import { makePgJobRepository } from "./repository";
 import type { JobRecord } from "./types";
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
 
 const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> => {
   if (!databaseUrl) {
@@ -27,36 +27,9 @@ const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A>
 
 const resetDatabase = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
-  const files = [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })].sort();
 
-  yield* sql`
-      create table if not exists schema_migrations (
-        name text primary key,
-        applied_at timestamptz not null default now()
-      )
-    `;
-  yield* sql.withTransaction(
-    Effect.gen(function* () {
-      yield* sql`select pg_advisory_xact_lock(hashtext('brief:schema_migrations'))`;
-      const appliedRows = yield* sql<{ readonly name: string }>`
-          select name from schema_migrations
-        `;
-      const applied = new Set(appliedRows.map((row) => row.name));
+  yield* runMigrations;
 
-      for (const file of files) {
-        if (applied.has(file)) {
-          continue;
-        }
-
-        const body = yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text());
-        yield* sql.unsafe(body).raw;
-        yield* sql`
-            insert into schema_migrations (name)
-            values (${file})
-          `;
-      }
-    }),
-  );
   // Later canonical platform tables retain job provenance through foreign keys.
   // Test isolation intentionally resets that whole dependent graph.
   yield* sql`truncate table jobs restart identity cascade`;

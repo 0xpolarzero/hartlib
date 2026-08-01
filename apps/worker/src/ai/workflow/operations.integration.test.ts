@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { makeRunAcceptanceScope } from "@brief/shared";
 
-import { runMigrations } from "../../db/migrate";
+import { runMigrations } from "@brief/database/migrations";
 import {
   CanonicalAgentClient,
   type StructuredCallInput,

@@ -1,17 +1,16 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   sha256Hex,
   type IngestedSourceItem,
   type PublicSourceDefinition,
 } from "@brief/source-ingestion";
+import { runMigrations } from "@brief/database/migrations";
 import { makePgPublicSourceIngestionRepository } from "./pg-repository";
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
 
 const source = {
   id: "service_public",
@@ -45,38 +44,9 @@ const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A>
 
 const resetDatabase = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
-  const files = readdirSync(migrationsUrl.pathname)
-    .filter((file) => file.endsWith(".sql"))
-    .sort();
 
-  yield* sql`
-      create table if not exists schema_migrations (
-        name text primary key,
-        applied_at timestamptz not null default now()
-      )
-    `;
-  yield* sql.withTransaction(
-    Effect.gen(function* () {
-      yield* sql`select pg_advisory_xact_lock(hashtext('brief:schema_migrations'))`;
-      const appliedRows = yield* sql<{ readonly name: string }>`
-          select name from schema_migrations
-        `;
-      const applied = new Set(appliedRows.map((row) => row.name));
+  yield* runMigrations;
 
-      for (const file of files) {
-        if (applied.has(file)) {
-          continue;
-        }
-
-        const body = readFileSync(new URL(file, migrationsUrl), "utf8");
-        yield* sql.unsafe(body).raw;
-        yield* sql`
-            insert into schema_migrations (name)
-            values (${file})
-          `;
-      }
-    }),
-  );
   yield* sql`
       truncate table
         public_source_ingestion_runs,

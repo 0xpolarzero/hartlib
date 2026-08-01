@@ -1,4 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
+import { runMigrations } from "@brief/database/migrations";
 import {
   deleteUserMemory,
   listUserMemories,
@@ -15,7 +16,6 @@ import { DEMO_COOKIE_NAME } from "../demo-session";
 import { makeChatRoutes, type AiRunEventPoller } from "../domain/chat";
 import { makeMemoryRoutes } from "../domain/memories";
 
-const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
 const isBun = typeof process.versions.bun === "string";
 
 const demoCookie = `${DEMO_COOKIE_NAME}=demo-user`;
@@ -137,21 +137,6 @@ const waitForDatabaseBlocker = async (
 const pgLayer = () =>
   PgClient.layer({ url: Redacted.make(isolatedUrl()), applicationName: "brief-api-contract-test" });
 
-const migrate = Effect.gen(function* () {
-  const sql = yield* PgClient.PgClient;
-  const files = [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })].sort();
-  yield* sql`
-    create table if not exists schema_migrations (
-      name text primary key,
-      applied_at timestamptz not null default now()
-    )
-  `;
-  for (const file of files) {
-    const body = yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text());
-    yield* sql.unsafe(body).raw;
-    yield* sql`insert into schema_migrations (name) values (${file})`;
-  }
-});
 const configLayer = ConfigProvider.layer(
   ConfigProvider.fromEnv({
     env: {
@@ -300,7 +285,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`).withoutTransform;
       }),
     );
-    await runDb(isolatedUrl(), migrate);
+    await runDb(isolatedUrl(), runMigrations);
   });
 
   afterAll(async () => {

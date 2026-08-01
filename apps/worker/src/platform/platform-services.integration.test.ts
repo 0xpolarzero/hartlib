@@ -9,7 +9,7 @@ import {
 import { makeRunAcceptanceScope } from "@brief/shared/chat";
 import { SERVER_NUMERIC_SETTING_HARD_MAXIMA } from "@brief/config";
 
-import { runMigrations } from "../db/migrate";
+import { runMigrations } from "@brief/database/migrations";
 import type { ExportObjectStore, NotificationEmailAdapter } from "./adapters";
 import { consumeCredits, processStripeWebhookEvent } from "./billing";
 import {

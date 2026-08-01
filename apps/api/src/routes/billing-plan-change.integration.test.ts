@@ -1,5 +1,6 @@
 import type { WebhookEvent } from "@clerk/backend/webhooks";
 import { PgClient } from "@effect/sql-pg";
+import { runMigrations } from "@brief/database/migrations";
 import { ConfigProvider, Effect, Redacted } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -13,7 +14,6 @@ import { makeBillingRoutes, type BillingStripeGateway } from "../domain/billing"
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const isBun = typeof process.versions.bun === "string";
-const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
 const databaseName = `brief_billing_plan_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 const companyId = "20000000-0000-4000-8000-000000000002";
 const periodEnd = "2026-08-01T00:00:00.000Z";
@@ -177,14 +177,6 @@ const gateway = (
   changeMonthlyPlan,
 });
 
-const migrate = Effect.gen(function* () {
-  const sql = yield* PgClient.PgClient;
-  for (const file of [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })].sort()) {
-    yield* sql.unsafe(yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text()))
-      .raw;
-  }
-});
-
 const seed = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
   yield* sql`
@@ -268,7 +260,7 @@ describe.skipIf(!isBun || !databaseUrl)("monthly AI plan-change route", () => {
       }),
       "postgres",
     );
-    await runDb(migrate);
+    await runDb(runMigrations);
   }, 120_000);
 
   afterAll(async () => {

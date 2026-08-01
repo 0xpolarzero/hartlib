@@ -13,6 +13,7 @@
     "@aws-sdk/s3-request-presigner": "3.1075.0",
     "@brief/backend-domain": "workspace:*",
     "@brief/config": "workspace:*",
+    "@brief/database": "workspace:*",
     "@brief/shared": "workspace:*",
     "@brief/workspace": "workspace:*",
     "@clerk/backend": "3.8.4",

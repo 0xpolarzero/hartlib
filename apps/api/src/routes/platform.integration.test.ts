@@ -1,5 +1,6 @@
 import type { WebhookEvent } from "@clerk/backend/webhooks";
 import { PgClient } from "@effect/sql-pg";
+import { runMigrations } from "@brief/database/migrations";
 import { ConfigProvider, Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,7 +24,6 @@ import { makeStripeWebhookRoute, type StripeWebhookVerifier } from "../domain/st
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const databaseName = `brief_platform_api_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
-const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
 const companyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const publisherId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const subscriptionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -88,22 +88,6 @@ const waitForDatabaseLock = async (applicationName: string): Promise<void> => {
   }
   throw new Error(`${applicationName} did not wait for a database lock`);
 };
-
-const migrate = Effect.gen(function* () {
-  const sql = yield* PgClient.PgClient;
-  const files = [...new Bun.Glob("*.sql").scanSync({ cwd: migrationsUrl.pathname })].sort();
-  yield* sql`
-    create table if not exists schema_migrations (
-      name text primary key,
-      applied_at timestamptz not null default now()
-    )
-  `;
-  for (const file of files) {
-    const body = yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text());
-    yield* sql.unsafe(body).raw;
-    yield* sql`insert into schema_migrations (name) values (${file})`;
-  }
-});
 
 const pgLayer = () =>
   PgClient.layer({ url: Redacted.make(isolatedUrl()), applicationName: "brief-platform-api-test" });
@@ -227,7 +211,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
         yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`).withoutTransform;
       }),
     );
-    await runDb(isolatedUrl(), migrate);
+    await runDb(isolatedUrl(), runMigrations);
   }, 120_000);
 
   afterAll(async () => {
