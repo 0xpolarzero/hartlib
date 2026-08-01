@@ -86,6 +86,108 @@ export const DOCS_HTML: string = `<!doctype html>
     line-height: 1.5;
   }
   pre code { background: none; padding: 0; }
+  .lifecycle {
+    display: grid;
+    gap: 16px;
+    margin: 1rem 0 1.4rem;
+  }
+  .lifecycle-caption {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.92rem;
+  }
+  .lifecycle-rail {
+    border: 1px solid var(--rule);
+    border-top: 3px solid var(--accent);
+    border-radius: 12px;
+    padding: 14px;
+    background: var(--code-bg);
+  }
+  .lifecycle-rail.output { border-top-color: var(--ok); }
+  .lifecycle-rail-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+    color: var(--muted);
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .lifecycle-rail-title strong {
+    color: var(--fg);
+    font-size: 0.98rem;
+    letter-spacing: normal;
+    text-transform: none;
+  }
+  .lifecycle-track {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 8px;
+    align-items: stretch;
+  }
+  .lifecycle-card {
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    background: var(--bg);
+    box-shadow: 0 3px 10px rgba(20, 30, 60, 0.08);
+  }
+  .lifecycle-step {
+    display: inline-grid;
+    width: 24px;
+    height: 24px;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.76rem;
+    font-weight: 700;
+  }
+  .lifecycle-rail.output .lifecycle-step { background: var(--ok); }
+  .lifecycle-card h3 {
+    margin: 10px 0 4px;
+    font-size: 1rem;
+  }
+  .lifecycle-card p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.88rem;
+  }
+  .lifecycle-card code {
+    display: block;
+    margin-top: 10px;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+  .lifecycle-arrow {
+    display: grid;
+    min-width: 20px;
+    place-items: center;
+    color: var(--accent);
+    font-size: 1.45rem;
+    font-weight: 600;
+  }
+  .lifecycle-rail.output .lifecycle-arrow { color: var(--ok); }
+  @media (max-width: 760px) {
+    .lifecycle-rail-title {
+      display: block;
+    }
+    .lifecycle-rail-title span {
+      display: block;
+      margin-top: 4px;
+    }
+    .lifecycle-track {
+      grid-template-columns: 1fr;
+    }
+    .lifecycle-arrow {
+      min-height: 18px;
+      transform: rotate(90deg);
+    }
+  }
   .lede { font-size: 1.1rem; color: var(--muted); margin: 0 0 1.4rem; }
   .meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 2rem; }
   table {
@@ -198,38 +300,82 @@ export const DOCS_HTML: string = `<!doctype html>
   </div>
 
   <h2 id="lifecycle">Lifecycle at a glance</h2>
-  <pre><code>Client            API (Bun)                         Postgres                 Worker (Bun)
-  │                  │                                  │                         │
-  │ POST /chats/:id/messages                                          │
-  │ ────────────────►│                  │                 │                         │
-  │                  │  advisory locks  │                 │                         │
-  │                  │  authz + credits │                 │                         │
-  │                  │  web policy      │                 │                         │
-  │                  │  conflict check  │                 │                         │
-  │                  │  ───────────────►│ BEGIN           │                         │
-  │                  │                  │ insert chat_messages (user)              │
-  │                  │                  │ insert ai_runs (immutable accepted scope) │
-  │                  │                  │ insert jobs ('ai_chat_run')   COMMIT     │
-  │  ◄───────────────│  202 Accepted   │                 │                         │
-  │      run.id + streamPath                                           │
-  │                  │                                                            │
-  │ GET /ai-runs/:runId/stream                                        │
-  │ ────────────────►│  authz handshake│                 │                         │
-  │  ◄───────────────│  200 text/event-stream (poll loop)│                         │
-  │                  │                                                            │
-  │                  │                                   ◄──── claim job (SKIP LOCKED)
-  │                  │                                   │  bind smithers_run_id   │
-  │                  │                                   │  run ai-chat workflow   │
-  │                  │                  │  append run_started, activity*,          │
-  │                  │                  │  context_ready, answer_started,         │
-  │                  │                  │  text_delta*, usage*, memory_updated,  │
-  │                  │                  │  usage(run), done|error                 │
-  │                  │  poll events    │                 │                         │
-  │  ◄───────────────│  SSE frames     │ (every poll checks current viewer access) │
-  │  … id:N event:text_delta data:{"delta":"…"}                         │         │
-  │  ◄───────────────│  id:M event:done data:{"assistantMessageId":"…"}           │
-  │                  │ close stream                                                    │
-</code></pre>
+  <figure class="lifecycle" aria-labelledby="lifecycle-caption">
+    <figcaption class="lifecycle-caption" id="lifecycle-caption">
+      Two paths share one <code>run.id</code>: one creates the run, and one carries
+      durable events back to the client.
+    </figcaption>
+    <div class="lifecycle-rail">
+      <div class="lifecycle-rail-title">
+        <strong>Start a turn</strong>
+        <span>client → API → database → worker</span>
+      </div>
+      <div class="lifecycle-track">
+        <div class="lifecycle-card">
+          <span class="lifecycle-step">1</span>
+          <h3>Send the question</h3>
+          <p>The client sends the message and requested web state.</p>
+          <code>POST /v1/chats/:chatId/messages</code>
+        </div>
+        <div class="lifecycle-arrow" aria-hidden="true">→</div>
+        <div class="lifecycle-card">
+          <span class="lifecycle-step">2</span>
+          <h3>Validate the turn</h3>
+          <p>The API checks access, credits, policy, and active-run conflicts.</p>
+          <code>access · credits · policy · conflict</code>
+        </div>
+        <div class="lifecycle-arrow" aria-hidden="true">→</div>
+        <div class="lifecycle-card">
+          <span class="lifecycle-step">3</span>
+          <h3>Persist and accept</h3>
+          <p>Postgres commits the message, run scope, and queue job; the API returns <code>202 Accepted</code> with <code>run.id</code> and <code>streamPath</code>.</p>
+          <code>chat_messages · ai_runs · jobs</code>
+        </div>
+        <div class="lifecycle-arrow" aria-hidden="true">→</div>
+        <div class="lifecycle-card">
+          <span class="lifecycle-step">4</span>
+          <h3>Run the workflow</h3>
+          <p>A worker claims the job and starts the durable <code>ai-chat</code> workflow.</p>
+          <code>SKIP LOCKED · smithers_run_id</code>
+        </div>
+      </div>
+    </div>
+    <div class="lifecycle-rail output">
+      <div class="lifecycle-rail-title">
+        <strong>Stream the answer</strong>
+        <span>worker → database → API → client</span>
+      </div>
+      <div class="lifecycle-track">
+        <div class="lifecycle-card">
+          <span class="lifecycle-step">1</span>
+          <h3>Append events</h3>
+          <p>The worker records progress, answer text, usage, and the terminal result.</p>
+          <code>run_started · activity · done | error</code>
+        </div>
+        <div class="lifecycle-arrow" aria-hidden="true">→</div>
+        <div class="lifecycle-card">
+          <span class="lifecycle-step">2</span>
+          <h3>Keep the ledger</h3>
+          <p>Postgres stores ordered, replayable events for this run.</p>
+          <code>ai_run_events · seq</code>
+        </div>
+        <div class="lifecycle-arrow" aria-hidden="true">→</div>
+        <div class="lifecycle-card">
+          <span class="lifecycle-step">3</span>
+          <h3>Poll and authorize</h3>
+          <p>The API checks current viewer access on every poll.</p>
+          <code>GET /v1/ai-runs/:runId/stream</code>
+        </div>
+        <div class="lifecycle-arrow" aria-hidden="true">→</div>
+        <div class="lifecycle-card">
+          <span class="lifecycle-step">4</span>
+          <h3>Render the stream</h3>
+          <p>The client applies each event in sequence and closes on <code>done</code> or <code>error</code>.</p>
+          <code>id: seq · data: event</code>
+        </div>
+      </div>
+    </div>
+  </figure>
   <p>
     The single correlation key across the whole flow is <code>run.id</code>. It
     identifies the stream path, worker job, persisted event rows, and assistant
