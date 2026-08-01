@@ -271,7 +271,7 @@ export function DocsDocument() {
     const previousLang = document.documentElement.lang;
     document.title = "Brief — How chat works";
     document.documentElement.lang = "en";
-    void import("../docs-html").then(({ DOCS_HTML }) => {
+    void import("@brief/docs").then(({ DOCS_HTML }) => {
       if (active) setDocsHtml(DOCS_HTML);
     });
     return () => {

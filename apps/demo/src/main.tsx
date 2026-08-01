@@ -95,6 +95,8 @@ import { buildTranscriptMessages } from "./chat-transcript";
 import { DemoPublications, readStoredOr } from "./demo-state";
 import "./styles.css";
 import { loadDemoBrowserConfig } from "./config";
+import { DocsDocument } from "./docs-document";
+import { isDocsPath } from "./docs-path";
 import {
   currentMarketPublicContent,
   emptyPublicContent,
@@ -107,7 +109,8 @@ import {
   type ChatResetSnapshot,
 } from "./chat-reset";
 
-const publicApiBaseUrl = loadDemoBrowserConfig(import.meta.env).apiBaseUrl;
+const docsPath = isDocsPath(window.location.pathname);
+const publicApiBaseUrl = docsPath ? "" : loadDemoBrowserConfig(import.meta.env).apiBaseUrl;
 const demoSessionUrl = `${publicApiBaseUrl}/v1/demo/session`;
 
 // Every demo request carries the per-browser session cookie. The first call
@@ -1960,6 +1963,9 @@ function DemoShell() {
   );
 }
 
-if (!isDemoPdfPath(window.location.pathname)) {
+if (docsPath) {
+  document.documentElement.lang = "en";
+  createRoot(document.getElementById("root")!).render(<DocsDocument />);
+} else if (!isDemoPdfPath(window.location.pathname)) {
   createRoot(document.getElementById("root")!).render(<DemoShell />);
 }

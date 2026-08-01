@@ -54,7 +54,7 @@ const dispatch = (method: string, url: string) => {
   };
 };
 
-describe("/docs reference", () => {
+describe("demo /docs reference", () => {
   it("serves the canonical document only for GET /docs", () => {
     const result = dispatch("GET", "/docs?from=test");
 
@@ -64,7 +64,7 @@ describe("/docs reference", () => {
     expect(result.body).toBe(DOCS_HTML);
   });
 
-  it("passes other methods and paths to the normal web stack", () => {
+  it("passes other methods and paths to the normal demo stack", () => {
     for (const [method, url] of [
       ["POST", "/docs"],
       ["HEAD", "/docs"],

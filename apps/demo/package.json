@@ -13,6 +13,7 @@
     "@brief/api-client": "workspace:*",
     "@brief/config": "workspace:*",
     "@brief/demo-data": "workspace:*",
+    "@brief/docs": "workspace:*",
     "@brief/i18n": "workspace:*",
     "@brief/shared": "workspace:*",
     "@brief/source-ingestion": "workspace:*",

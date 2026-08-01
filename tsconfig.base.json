@@ -17,6 +17,8 @@
       "@brief/api-client/*": ["packages/api-client/src/*"],
       "@brief/config": ["packages/config/src/index.ts"],
       "@brief/config/*": ["packages/config/src/*"],
+      "@brief/docs": ["packages/docs/src/index.ts"],
+      "@brief/docs/*": ["packages/docs/src/*"],
       "@brief/demo-data": ["packages/demo-data/src/index.ts"],
       "@brief/source-ingestion": ["packages/source-ingestion/src/index.ts"],
       "@brief/workspace": ["packages/workspace/src/index.ts"],

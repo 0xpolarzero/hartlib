@@ -16,6 +16,7 @@
       "@brief/api-client/*": ["../../packages/api-client/src/*"],
       "@brief/config": ["../../packages/config/src/index.ts"],
       "@brief/config/*": ["../../packages/config/src/*"],
+      "@brief/docs": ["../../packages/docs/src/index.ts"],
       "@brief/i18n": ["../../packages/i18n/src/index.ts"],
       "@brief/shared": ["../../packages/shared/src/index.ts"],
       "@brief/ui": ["../../packages/ui/src/index.ts"],
@@ -23,10 +24,10 @@
     }
   },
   "include": [
-    "docs-html.ts",
     "src",
     "../../packages/api-client/src",
     "../../packages/config/src",
+    "../../packages/docs/src",
     "../../packages/i18n/src",
     "../../packages/shared/src",
     "../../packages/ui/src"

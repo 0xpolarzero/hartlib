@@ -8,16 +8,6 @@ const DOCS_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const DOCS_CACHE = "public, max-age=300, stale-while-revalidate=600";
 
-/**
- * Serves the static, English-only chat reference at exactly `GET /docs`, before
- * the SPA fallback runs. This keeps the page outside the TanStack Router locale
- * layout (no `/$locale` prefix, no fr/en switch) and returns it with a strict
- * Content-Security-Policy.
- *
- * Applies to `vite dev` and `vite preview`. Production builds also emit
- * `docs/index.html`; the web bootstrap renders the same document when a static
- * host rewrites the extensionless path to the application shell.
- */
 const serveDocs = (
   req: IncomingMessage,
   res: ServerResponse,

@@ -312,14 +312,15 @@ complete replacement array, and `no_evidence` returns a typed empty result;
 there is no patch, retry review, or initial-result fallback.
 
 The exact public route is `GET /docs` without authentication. Development and
-preview serve the standalone English HTML directly; production emits
-`docs/index.html`; a static-host shell fallback serves the same bytes without
-auth or observability bootstrap. `GET /docs/` may render those same bytes only
-through the shell fallback and must not redirect or add a locale. A localized
-path such as `/en-US/docs` is not a docs route and must not render the
-standalone page. Client navigation to `/docs` keeps the same document. The
-page names the graph, final fields, SSE events, access checks, retry rules, and
-cleanup behavior defined here.
+preview servers for both frontend builds serve the standalone English HTML
+directly; production web and demo builds emit `docs/index.html`; each
+frontend bootstrap renders the same bytes without auth or observability
+bootstrap when a static host rewrites `/docs` or `/docs/` to the application
+shell. `GET /docs/` may render those same bytes only through the shell fallback
+and must not redirect or add a locale. A localized path such as `/en-US/docs`
+is not a docs route and must not render the standalone page. Client navigation
+to `/docs` keeps the same document. The page names the graph, final fields, SSE
+events, access checks, retry rules, and cleanup behavior defined here.
 
 ## Runtime Stack
 

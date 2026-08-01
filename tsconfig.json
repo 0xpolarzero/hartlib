@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/docs" },
     { "path": "./packages/api-client" },
     { "path": "./packages/backend-domain" },
     { "path": "./packages/i18n" },

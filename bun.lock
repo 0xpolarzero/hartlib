@@ -45,6 +45,7 @@
         "@brief/api-client": "workspace:*",
         "@brief/config": "workspace:*",
         "@brief/demo-data": "workspace:*",
+        "@brief/docs": "workspace:*",
         "@brief/i18n": "workspace:*",
         "@brief/shared": "workspace:*",
         "@brief/source-ingestion": "workspace:*",
@@ -71,6 +72,7 @@
       "dependencies": {
         "@brief/api-client": "workspace:*",
         "@brief/config": "workspace:*",
+        "@brief/docs": "workspace:*",
         "@brief/i18n": "workspace:*",
         "@brief/shared": "workspace:*",
         "@brief/ui": "workspace:*",
@@ -170,6 +172,13 @@
         "@brief/shared": "workspace:*",
         "@brief/source-ingestion": "workspace:*",
       },
+      "devDependencies": {
+        "typescript": "6.0.3",
+        "vitest": "4.1.9",
+      },
+    },
+    "packages/docs": {
+      "name": "@brief/docs",
       "devDependencies": {
         "typescript": "6.0.3",
         "vitest": "4.1.9",
@@ -365,6 +374,8 @@
     "@brief/demo": ["@brief/demo@workspace:apps/demo"],
 
     "@brief/demo-data": ["@brief/demo-data@workspace:packages/demo-data"],
+
+    "@brief/docs": ["@brief/docs@workspace:packages/docs"],
 
     "@brief/i18n": ["@brief/i18n@workspace:packages/i18n"],
 
