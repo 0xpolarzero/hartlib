@@ -1152,6 +1152,9 @@ are append-only at the database boundary; identical proof replay is idempotent,
 while a retry or later tool turn creates a separate detailed row.
 
 Content-item identity is document-version ID plus exact range/snippet hash for document previews, message ID for whole chat messages, memory-revision ID for whole memories, and final URL plus normalized snippet/quotation hash for web content. The identity stays in the internal sidecar and durable exposure row, never in provider-visible content. Therefore 20 distinct snippets shown to A are 20 exposed items even if A selects only three. Run-level exposed-item metrics deduplicate repeat visibility as `count distinct (runId, sourceKind, contentItemIdentity)`.
+For non-web exposures, the durable row also keeps the exact provider-field proof
+as storage-only occurrence data. The attestation keeps the canonical content-item
+identity; finalization requires the durable row and attestation to agree.
 
 The immutable exposure identity in a code-owned sidecar is the tuple of source
 kind, logical source identity, content-item identity, and exposure stage. If a

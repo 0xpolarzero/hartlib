@@ -262,8 +262,9 @@ const strictStructuredUser = <T>(
   }
 };
 
-const structuredTermsFor = (question: string): readonly string[] => {
+const structuredTermsFor = (question: string, locale?: string): readonly string[] => {
   const normalized = question.toLocaleLowerCase("en-US").normalize("NFC");
+  const french = locale?.toLocaleLowerCase("en-US").startsWith("fr") === true;
   const preferred = [
     ["solar", "solaire", "solaires", "solaire"],
     ["storage", "stockage", "stockages"],
@@ -271,18 +272,20 @@ const structuredTermsFor = (question: string): readonly string[] => {
     ["curtailment", "curtailment"],
     ["market", "marché", "price", "prix"],
   ] as const;
-  const terms = preferred.flatMap(([canonical, ...aliases]) =>
-    [canonical, ...aliases].some((alias) => normalized.includes(alias)) ? [canonical] : [],
-  );
+  const terms = preferred.flatMap(([canonical, ...aliases]) => {
+    const matched = [canonical, ...aliases].find((alias) => normalized.includes(alias));
+    if (matched === undefined) return [];
+    return [french ? (aliases[0] ?? canonical) : matched];
+  });
   if (terms.length > 0) return [...new Set(terms)];
   const words = normalized.match(/[\p{L}\p{N}]{3,}/gu) ?? [];
   const ignored = new Set(["the", "and", "for", "what", "does", "this", "that", "avec"]);
   return [words.find((word) => !ignored.has(word)) ?? "brief"];
 };
 
-const structuredQueriesFor = (question: string) => {
+const structuredQueriesFor = (question: string, locale?: string) => {
   const purpose = question.trim().normalize("NFC").slice(0, 4_000);
-  return structuredTermsFor(question).map((term) => ({
+  return structuredTermsFor(question, locale).map((term) => ({
     purpose: `${purpose} (${term})`.slice(0, 4_096),
     all: [{ text: term, mode: "term" as const }],
     anyOf: [],
@@ -792,12 +795,12 @@ const outputFor = (
                 topics: [
                   {
                     topicId: "t1" as const,
-                    question: "What does the first deterministic topic cover?",
+                    question: "What do the solar connection sources report?",
                     relevantTurnIds: [],
                   },
                   {
                     topicId: "t2" as const,
-                    question: "What does the second deterministic topic cover?",
+                    question: "What do the storage operation sources report?",
                     relevantTurnIds: [],
                   },
                   ...(currentMessage.includes("solar connections") &&
@@ -1082,7 +1085,7 @@ const outputFor = (
         "emit_internal_query_plan",
         z.toJSONSchema(InternalQueryPlanProviderSchema),
       );
-      const queries = structuredQueriesFor(input.question);
+      const queries = structuredQueriesFor(input.question, input.locale);
       const plan = InternalQueryPlanSchema.parse({ action: "search", queries });
       return {
         text: "",

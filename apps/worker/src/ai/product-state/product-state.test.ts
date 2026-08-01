@@ -2165,11 +2165,16 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     };
     expect(await runDb(insertAiSourceExposure(exposure))).toBe(true);
     expect(await runDb(insertAiSourceExposure(exposure))).toBe(false);
-    expect(
-      await runDb(
-        insertAiSourceExposure({ ...exposure, contentItemIdentity: "version:1:range:b" }),
-      ),
-    ).toBe(true);
+    const secondExposure = {
+      ...exposure,
+      contentItemIdentity: "version:1:range:b",
+      providerSerializationProofBinding: {
+        ...exposure.providerSerializationProofBinding,
+        sourceOrdinal: 1,
+        serializedField: "messages[0].content.replay[1]",
+      },
+    };
+    expect(await runDb(insertAiSourceExposure(secondExposure))).toBe(true);
 
     const aggregate = await runDb(deriveAggregateAiRunUsage(fixture.runId));
     expect(aggregate.model).toEqual({
@@ -2372,6 +2377,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     ).rejects.toThrow("document exposure reconstruction is required");
     for (const divergent of [
       { ...exposure, sourceKind: "memory" as const, documentReconstruction: undefined },
+      { ...exposure, contentItemIdentity: "version:replay:range:other" },
+      { ...exposure, exposureStage: "answer_serialized" },
       { ...exposure, logicalSourceIdentity: "document:other" },
       { ...exposure, publisherIssueId: "issue:other" },
       { ...exposure, publisherDocumentId: "document:other" },
@@ -3428,7 +3435,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     ).rejects.toThrow(/latest provider measurement/u);
   });
 
-  it("finalizes a location-bound sidecar exposure with its measurement", async () => {
+  it("finalizes a sidecar exposure without a caller binding", async () => {
     const fixture = await runDb(createFixture("location-bound-sidecar"));
     const visibleText = `Question ${"location-bound-sidecar"}`;
     const marker: CodeOwnedSourceExposureProof = {
@@ -3484,7 +3491,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         providerRequestIndex: 0,
         providerRequestSha256Hex: providerRequestSha256Hex(request),
         ...marker,
-        providerSerializationProofBinding: requestBinding.binding,
       }),
     );
     const memory = await runDb(
@@ -3643,6 +3649,50 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       }),
     );
     expect(attestationBinding?.sourceOrdinal).toBe(0);
+    const storedSourceIdentities = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly contentItemIdentity: string }>`
+          select content_item_identity as "contentItemIdentity"
+          from ai_source_exposures
+          where run_id = ${fixture.runId}
+            and task_id = 'repeated-marker-task'
+          order by content_item_identity
+        `;
+      }),
+    );
+    expect(storedSourceIdentities.map(({ contentItemIdentity }) => contentItemIdentity)).toEqual(
+      proofs.map((proof) => `${fixture.userMessageId}#proof=${proof}`).sort(),
+    );
+    await expect(
+      runDb(
+        insertAiSourceExposure({
+          runId: fixture.runId,
+          taskId: "repeated-marker-task",
+          loopIteration: 0,
+          attempt: 0,
+          providerRequestIndex: 0,
+          providerRequestSha256Hex: requestSha256Hex,
+          ...markers[0]!,
+          providerSerializationProofBinding: bindings.find(
+            (binding) => binding.binding.sourceOrdinal === 0,
+          )!.binding,
+        }),
+      ),
+    ).resolves.toBe(false);
+    const replayedSourceIdentities = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly contentItemIdentity: string }>`
+          select content_item_identity as "contentItemIdentity"
+          from ai_source_exposures
+          where run_id = ${fixture.runId}
+            and task_id = 'repeated-marker-task'
+          order by content_item_identity
+        `;
+      }),
+    );
+    expect(replayedSourceIdentities).toEqual(storedSourceIdentities);
   });
 
   it("finalizes valid retry and crash-resume histories from the terminal attempt", async () => {

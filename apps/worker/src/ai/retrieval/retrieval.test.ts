@@ -19,6 +19,7 @@ import {
   reviewProjection,
   type RetrievalPlanResult,
 } from "./retrieval";
+import { resolveRuntimeModel } from "../runtime/model-registry";
 import { fuseTwoStageRankedResults, type RankedBranchHit } from "./rank-fusion";
 
 const isBun = typeof process.versions.bun === "string";
@@ -205,8 +206,15 @@ describe("Phase B hydration and provider projection", () => {
       },
       () => ({ text: content, snapshotId: "snapshot", contentHash: sha256(content) }),
     );
-    expect(hydrated.results[0]?.value.fullTokenCount).toBeGreaterThan(0);
-    expect(hydrated.results[0]?.value.preview).toBe("stable");
+    const hydratedValue = hydrated.results[0]?.value;
+    expect(hydratedValue?.fullTokenCount).toBeGreaterThan(0);
+    expect(hydratedValue?.preview).toBe("stable");
+    expect(hydratedValue?.fastTokenCount).toBe(
+      resolveRuntimeModel("glm-5-turbo").countTextTokens("stable"),
+    );
+    expect(hydratedValue?.mainTokenCount).toBe(
+      resolveRuntimeModel("glm-5-turbo").countTextTokens("stable"),
+    );
     const view = reviewProjection(hydrated)[0]!;
     expect(Object.keys(view).sort()).toEqual(
       [

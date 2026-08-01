@@ -506,8 +506,8 @@ export const hydrateFusedResults = (
     }
     hydratedBytes += bytes;
     const fullTokenCount = fastModel.countTextTokens(proof.text);
-    const fastTokenCount = fastModel.countTextTokens(proof.text);
-    const mainTokenCount = mainModel.countTextTokens(proof.text);
+    const fastTokenCount = fastModel.countTextTokens(preview.snippet);
+    const mainTokenCount = mainModel.countTextTokens(preview.snippet);
     const value: HydratedReviewValue = {
       ...result.value,
       kind: result.identity.kind === "chat_message" ? "chat_message" : "document",
