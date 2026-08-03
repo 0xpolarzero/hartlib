@@ -1,9 +1,6 @@
 import { type AgentLike } from "smithers-orchestrator";
 import { CodexAgent as SmithersCodexAgent } from "smithers-orchestrator";
 
-export { ClaudeCodeAgent } from "./agents/claude-code";
-export { CodexAgent } from "./agents/codex";
-
 const providers = {
   read: new SmithersCodexAgent({
     model: "gpt-5.6-luna",
