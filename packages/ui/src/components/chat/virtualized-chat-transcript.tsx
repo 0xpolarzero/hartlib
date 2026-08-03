@@ -1,12 +1,14 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Bot, ChevronDown, ChevronRight, Globe2, Users } from "lucide-react";
+import { ArrowDown, Bot, ChevronDown, ChevronRight, Globe2, Users } from "lucide-react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { FormattedMessage, useIntl } from "@brief/i18n";
 import type {
   AiRunActivityEvent,
+  AiRunActivityStage,
   EffectiveWebPolicy,
+  PublicContextConsumer,
   PublicCitationRecord,
   PublicSourceRecord,
   UserMessageRunOutcome,
@@ -34,6 +36,7 @@ export type ChatTranscriptMessage =
       readonly citations: readonly PublicCitationRecord[];
       readonly sourcesRead: readonly PublicSourceRecord[];
       readonly activities?: readonly AiRunActivityEvent[];
+      readonly diagnostics?: ChatRunDiagnostics;
       readonly activityFailure?: { readonly code: string; readonly retryable: boolean } | null;
       readonly streaming?: boolean;
     };
@@ -41,6 +44,20 @@ export type ChatTranscriptMessage =
 export type ChatTranscriptAuthorLabels = {
   readonly assistant: string;
   readonly client: string;
+};
+
+export type ChatRunDiagnostics = {
+  readonly activityHistory?: readonly AiRunActivityEvent[];
+  readonly context?: {
+    readonly compactionRan: boolean;
+    readonly consumers: readonly PublicContextConsumer[];
+  } | null;
+  readonly memoryUpdated?: {
+    readonly created: number;
+    readonly updated: number;
+    readonly discarded: number;
+  } | null;
+  readonly sequence?: number;
 };
 
 const localizedFailureCodes = new Set([
@@ -57,6 +74,63 @@ const localizedFailureCodes = new Set([
 
 export const chatFailureMessageId = (code: string): string =>
   localizedFailureCodes.has(code) ? `chat.failure.${code}` : "chat.failure.generic";
+
+const progressStages: readonly AiRunActivityStage[] = [
+  "understanding",
+  "evidence",
+  "preparing",
+  "writing",
+  "finishing",
+];
+
+export const chatProgressStages = (
+  activities: readonly AiRunActivityEvent[],
+): readonly {
+  readonly stage: AiRunActivityStage;
+  readonly status: AiRunActivityEvent["status"];
+}[] =>
+  progressStages.flatMap((stage) => {
+    const items = activities.filter((activity) => activity.stage === stage);
+    if (items.length === 0) return [];
+    const status = items.some((item) => item.status === "running")
+      ? "running"
+      : items.some((item) => item.status === "retrying")
+        ? "retrying"
+        : items.some((item) => item.status === "failed")
+          ? "failed"
+          : items.every((item) => item.status === "skipped")
+            ? "skipped"
+            : items.every((item) => item.status === "complete" || item.status === "skipped")
+              ? "complete"
+              : "waiting";
+    return [{ stage, status }];
+  });
+
+const chatProgressStatusGlyph = (status: AiRunActivityEvent["status"]): string => {
+  switch (status) {
+    case "complete":
+      return "✓";
+    case "retrying":
+      return "↻";
+    case "failed":
+      return "×";
+    case "skipped":
+      return "—";
+    case "waiting":
+      return "○";
+    case "running":
+      return "•";
+  }
+};
+
+export const isChatTranscriptNearBottom = (
+  metrics: {
+    readonly scrollHeight: number;
+    readonly scrollTop: number;
+    readonly clientHeight: number;
+  },
+  threshold = 48,
+): boolean => metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= threshold;
 
 const sourceLabel = (source: PublicCitationRecord | PublicSourceRecord): string => {
   if (source.label !== null) return source.label;
@@ -165,7 +239,23 @@ export function ChatBubble({
     ? parsed.segments
     : [{ type: "text" as const, text: message.content }];
   const [documentOpenFailed, setDocumentOpenFailed] = useState(false);
-  const [progressDetailsOpen, setProgressDetailsOpen] = useState(() => message.content === "");
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const progressStagesForMessage = useMemo(() => chatProgressStages(activities), [activities]);
+  const diagnostics = isAssistant ? (message.diagnostics ?? {}) : {};
+  const activityHistory = diagnostics.activityHistory ?? activities;
+  const retryCount = activityHistory.filter((activity) => activity.status === "retrying").length;
+  const maxAttempt = activityHistory.reduce(
+    (maximum, activity) => Math.max(maximum, activity.attempt ?? 0),
+    0,
+  );
+  const contextInputTokens =
+    diagnostics.context?.consumers.reduce((total, consumer) => total + consumer.inputTokens, 0) ??
+    0;
+  const contextUsableTokens =
+    diagnostics.context?.consumers.reduce(
+      (total, consumer) => total + consumer.usableInputTokens,
+      0,
+    ) ?? 0;
 
   const handleSourceClick = (
     source: PublicCitationRecord | PublicSourceRecord,
@@ -254,34 +344,115 @@ export function ChatBubble({
                 }
               />
             </div>
+            {progressStagesForMessage.length > 0 ? (
+              <ol
+                className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px]"
+                data-testid="chat-progress-stage-rail"
+                aria-label={intl.formatMessage({ id: "chat.progress.rail" })}
+              >
+                {progressStagesForMessage.map(({ stage, status }) => (
+                  <li
+                    key={stage}
+                    className={cn(
+                      "inline-flex items-center gap-1",
+                      status === "running"
+                        ? "animate-pulse text-accent"
+                        : status === "retrying"
+                          ? "text-warning"
+                          : status === "failed"
+                            ? "text-danger"
+                            : "text-muted",
+                    )}
+                    data-status={status}
+                  >
+                    <span aria-hidden="true">{chatProgressStatusGlyph(status)}</span>
+                    <FormattedMessage id={`chat.progress.stage.${stage}`} />
+                    <span className="sr-only">
+                      <FormattedMessage id={`chat.progress.status.${status}`} />
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
             <details
               className="mt-2"
-              open={progressDetailsOpen}
-              onToggle={(event) => setProgressDetailsOpen(event.currentTarget.open)}
+              open={diagnosticsOpen}
+              onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}
+              data-testid="chat-progress-diagnostics"
             >
               <summary className="cursor-pointer font-mono text-[11px] text-accent">
-                <FormattedMessage id="chat.progress.details" />
+                <FormattedMessage id="chat.progress.diagnostics" />
               </summary>
-              <ol className="mt-2 space-y-1.5" data-testid="chat-progress-activities">
-                {activities.map((activity) => (
-                  <li
-                    key={`${activity.code}:${activity.topicId ?? "all"}`}
-                    className="flex items-center justify-between gap-3 font-mono text-[11px]"
-                  >
-                    <span className="text-muted">
-                      <FormattedMessage id={`chat.progress.code.${activity.code}`} />
-                      {activity.topicId === undefined ? null : ` · ${activity.topicId}`}
-                    </span>
-                    <span className="text-ink">
+              <div
+                className="mt-2 space-y-2 font-mono text-[11px]"
+                data-testid="chat-progress-details"
+              >
+                <p className="text-muted">
+                  <FormattedMessage
+                    id="chat.progress.sources"
+                    values={{ read: message.sourcesRead.length, cited: citations.length }}
+                  />
+                </p>
+                <p className="text-muted">
+                  <FormattedMessage
+                    id="chat.progress.retries"
+                    values={{ count: retryCount, attempt: maxAttempt }}
+                  />
+                </p>
+                {diagnostics.context === null || diagnostics.context === undefined ? null : (
+                  <p className="text-muted">
+                    <FormattedMessage
+                      id="chat.progress.context"
+                      values={{
+                        compaction: diagnostics.context.compactionRan
+                          ? intl.formatMessage({ id: "chat.progress.context.compacted" })
+                          : intl.formatMessage({ id: "chat.progress.context.fit" }),
+                        consumers: diagnostics.context.consumers.length,
+                        inputTokens: contextInputTokens,
+                        usableTokens: contextUsableTokens,
+                      }}
+                    />
+                  </p>
+                )}
+                {diagnostics.memoryUpdated === null ||
+                diagnostics.memoryUpdated === undefined ? null : (
+                  <p className="text-muted">
+                    <FormattedMessage
+                      id="chat.progress.memory"
+                      values={{
+                        created: diagnostics.memoryUpdated.created,
+                        updated: diagnostics.memoryUpdated.updated,
+                        discarded: diagnostics.memoryUpdated.discarded,
+                      }}
+                    />
+                  </p>
+                )}
+                {diagnostics.sequence === undefined ? null : (
+                  <p className="text-muted">
+                    <FormattedMessage
+                      id="chat.progress.sse"
+                      values={{ sequence: diagnostics.sequence }}
+                    />
+                  </p>
+                )}
+                <ol
+                  className="space-y-1.5 border-l border-rule pl-2"
+                  data-testid="chat-progress-activities"
+                >
+                  {activityHistory.map((activity, index) => (
+                    <li key={`${activity.code}:${activity.topicId ?? "all"}:${index}`}>
+                      <span className="text-muted">
+                        <FormattedMessage id={`chat.progress.code.${activity.code}`} />
+                      </span>{" "}
                       <FormattedMessage id={`chat.progress.status.${activity.status}`} />
                       {activity.attempt === undefined ? null : ` · ${activity.attempt}`}
                       {activity.durationMs === undefined ? null : ` · ${activity.durationMs}ms`}
                       {activity.sourceCount === undefined ? null : ` · ${activity.sourceCount}`}
                       {activity.resultCount === undefined ? null : ` · ${activity.resultCount}`}
-                    </span>
-                  </li>
-                ))}
-              </ol>
+                    </li>
+                  ))}
+                </ol>
+              </div>
             </details>
           </>
         ) : null}
@@ -487,6 +658,8 @@ export function VirtualizedChatTranscript({
   readonly scrollToLatest?: boolean;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
+  const [nearBottom, setNearBottom] = useState(true);
   const virtualizer = useVirtualizer({
     count: messages.length,
     getScrollElement: () => parentRef.current,
@@ -497,45 +670,93 @@ export function VirtualizedChatTranscript({
   useLayoutEffect(() => {
     if (!scrollToLatest || messages.length === 0) return;
     const scrollElement = parentRef.current;
-    if (!scrollElement) return;
+    if (!scrollElement || !nearBottomRef.current) return;
+    let followUpFrame: number | undefined;
     const frame = window.requestAnimationFrame(() => {
-      scrollElement.scrollTop = scrollElement.scrollHeight;
+      if (!nearBottomRef.current) return;
       virtualizer.scrollToIndex(messages.length - 1, { align: "end" });
+      followUpFrame = window.requestAnimationFrame(() => {
+        if (nearBottomRef.current) scrollElement.scrollTop = scrollElement.scrollHeight;
+      });
     });
-    return () => window.cancelAnimationFrame(frame);
-  }, [messages.length, scrollToLatest, virtualizer]);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (followUpFrame !== undefined) window.cancelAnimationFrame(followUpFrame);
+    };
+  }, [messages, scrollToLatest, virtualizer]);
+
+  const updateBottomState = () => {
+    const scrollElement = parentRef.current;
+    if (!scrollElement) return;
+    const next = isChatTranscriptNearBottom({
+      scrollHeight: scrollElement.scrollHeight,
+      scrollTop: scrollElement.scrollTop,
+      clientHeight: scrollElement.clientHeight,
+    });
+    nearBottomRef.current = next;
+    setNearBottom(next);
+  };
+
+  const jumpToLatest = () => {
+    const scrollElement = parentRef.current;
+    if (!scrollElement || messages.length === 0) return;
+    nearBottomRef.current = true;
+    setNearBottom(true);
+    virtualizer.scrollToIndex(messages.length - 1, { align: "end" });
+    window.requestAnimationFrame(() => {
+      scrollElement.scrollTop = scrollElement.scrollHeight;
+    });
+  };
 
   return (
     <div
-      ref={parentRef}
-      className={cn("rounded-sm border border-rule bg-canvas", className)}
-      style={{ height, overflowY: "auto" }}
-      data-testid="chat-transcript"
+      className={cn("relative", className)}
+      style={{ height }}
+      data-testid="chat-transcript-shell"
     >
-      <div className="relative" style={{ height: `${virtualizer.getTotalSize()}px` }}>
-        {virtualizer.getVirtualItems().map((virtualItem) => {
-          const message = messages[virtualItem.index];
-          if (!message) return null;
-          return (
-            <div
-              key={message.id}
-              ref={virtualizer.measureElement}
-              data-index={virtualItem.index}
-              className="absolute left-0 top-0 w-full px-3 py-2"
-              style={{ transform: `translateY(${virtualItem.start}px)` }}
-            >
-              <ChatBubble
-                message={message}
-                authorLabels={authorLabels}
-                {...(onResubmit === undefined ? {} : { onResubmit })}
-                {...(onOpenAuthenticatedDocument === undefined
-                  ? {}
-                  : { onOpenAuthenticatedDocument })}
-              />
-            </div>
-          );
-        })}
+      <div
+        ref={parentRef}
+        className="h-full rounded-sm border border-rule bg-canvas"
+        style={{ overflowY: "auto" }}
+        onScroll={updateBottomState}
+        data-testid="chat-transcript"
+      >
+        <div className="relative" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+          {virtualizer.getVirtualItems().map((virtualItem) => {
+            const message = messages[virtualItem.index];
+            if (!message) return null;
+            return (
+              <div
+                key={message.id}
+                ref={virtualizer.measureElement}
+                data-index={virtualItem.index}
+                className="absolute left-0 top-0 w-full px-3 py-2"
+                style={{ transform: `translateY(${virtualItem.start}px)` }}
+              >
+                <ChatBubble
+                  message={message}
+                  authorLabels={authorLabels}
+                  {...(onResubmit === undefined ? {} : { onResubmit })}
+                  {...(onOpenAuthenticatedDocument === undefined
+                    ? {}
+                    : { onOpenAuthenticatedDocument })}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
+      {!nearBottom && scrollToLatest ? (
+        <button
+          type="button"
+          className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-sm border border-accent/40 bg-paper px-2 py-1 font-mono text-[11px] text-accent shadow-sm"
+          onClick={jumpToLatest}
+          data-testid="chat-jump-to-latest"
+        >
+          <ArrowDown className="size-3" aria-hidden="true" />
+          <FormattedMessage id="chat.jumpToLatest" />
+        </button>
+      ) : null}
     </div>
   );
 }

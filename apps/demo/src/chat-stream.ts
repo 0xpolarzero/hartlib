@@ -1,5 +1,6 @@
 import {
-  aiRunActivityKey,
+  failActiveAiRunActivity,
+  projectAiRunActivity,
   type ActiveAiRunConflict,
   type AiRunEvent,
   type GetChatResponse,
@@ -117,6 +118,11 @@ export type ChatStreamState = {
   readonly mode: "clarification" | "single" | "synthesis" | null;
   readonly sourcesRead: readonly PublicSourceRecord[];
   readonly activities: readonly Extract<AiRunEvent, { readonly type: "activity" }>[];
+  readonly activityHistory: readonly Extract<AiRunEvent, { readonly type: "activity" }>[];
+  readonly context: {
+    readonly compactionRan: boolean;
+    readonly consumers: Extract<AiRunEvent, { readonly type: "context_ready" }>["consumers"];
+  } | null;
   readonly memoryUpdated: {
     readonly created: number;
     readonly updated: number;
@@ -133,6 +139,8 @@ export const initialChatStreamState: ChatStreamState = {
   mode: null,
   sourcesRead: [],
   activities: [],
+  activityHistory: [],
+  context: null,
   memoryUpdated: null,
   error: null,
 };
@@ -207,6 +215,9 @@ export const restoreChatStreamState = (
     attempt: persisted.draft.attempt,
     sourcesRead: persisted.draft.sourcesRead,
     activities: persisted.draft.activities,
+    activityHistory: persisted.draft.activityHistory,
+    context: persisted.draft.context,
+    memoryUpdated: persisted.draft.memoryUpdated,
     error: terminalFailure,
   };
 };
@@ -223,17 +234,15 @@ export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput)
     case "run_started":
       return { ...base, phase: "preparing", error: null };
     case "activity": {
-      const key = aiRunActivityKey(input.event.code, input.event.topicId);
-      const activities = [...state.activities];
-      const index = activities.findIndex(
-        (activity) => aiRunActivityKey(activity.code, activity.topicId) === key,
+      const projection = projectAiRunActivity(
+        { activities: state.activities, history: state.activityHistory },
+        input.event,
       );
-      if (index === -1) activities.push(input.event);
-      else activities[index] = input.event;
       return {
         ...base,
         phase: state.phase === "idle" ? "preparing" : state.phase,
-        activities,
+        activities: projection.activities,
+        activityHistory: projection.history,
         error: null,
       };
     }
@@ -243,6 +252,7 @@ export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput)
         phase: "preparing",
         mode: input.event.mode,
         sourcesRead: input.event.sourcesRead,
+        context: { compactionRan: input.event.compactionRan, consumers: input.event.consumers },
       };
     case "answer_started":
       return {
@@ -273,20 +283,17 @@ export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput)
     case "done":
       return { ...base, phase: "done" };
     case "error": {
-      const activities = [...state.activities];
-      for (let index = activities.length - 1; index >= 0; index -= 1) {
-        const activity = activities[index];
-        if (activity?.status === "running" || activity?.status === "retrying") {
-          activities[index] = { ...activity, status: "failed" };
-          break;
-        }
-      }
+      const projection = failActiveAiRunActivity({
+        activities: state.activities,
+        history: state.activityHistory,
+      });
       return {
         ...base,
         phase: "error",
         assistantText: "",
         sourcesRead: [],
-        activities,
+        activities: projection.activities,
+        activityHistory: projection.history,
         error: { code: input.event.code, retryable: input.event.retryable },
       };
     }

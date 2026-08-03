@@ -64,7 +64,7 @@ describe("product chat stream resume state", () => {
   it("persists and restores the exact cursor with its provisional transcript", () => {
     const storage = memoryStorage();
     persistRunStreamState(storage, {
-      version: 2,
+      version: 4,
       runId: "run-1",
       lastSeq: 12,
       draft: {
@@ -73,6 +73,9 @@ describe("product chat stream resume state", () => {
         attempt: 1,
         sourcesRead: [],
         activities: [],
+        activityHistory: [],
+        context: null,
+        memoryUpdated: null,
         terminalFailure: null,
       },
     });
@@ -157,6 +160,15 @@ describe("product chat stream resume state", () => {
     expect(replay.applied).toBe(false);
     expect(complete.draft?.activities).toHaveLength(1);
     expect(complete.draft?.activities[0]).toMatchObject({ status: "complete", attempt: 2 });
+  });
+  it("retains the safe memory write outcome for diagnostics", () => {
+    const reduced = reduceRunStreamEvent("run-1", 0, emptyStreamDraft("run-1"), 1, {
+      type: "memory_updated",
+      created: 1,
+      updated: 2,
+      discarded: 0,
+    });
+    expect(reduced.draft?.memoryUpdated).toEqual({ created: 1, updated: 2, discarded: 0 });
   });
 
   it("marks terminal events and caps persistent exponential reconnects", () => {

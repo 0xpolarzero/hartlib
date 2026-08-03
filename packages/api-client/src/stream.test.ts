@@ -138,7 +138,7 @@ describe("reload and generic storage codecs", () => {
       setItem: (key: string, value: string) => values.set(key, value),
     };
     persistRunStreamState(storage, {
-      version: 2,
+      version: 4,
       runId: "run-1",
       lastSeq: 7,
       draft: {
@@ -147,6 +147,9 @@ describe("reload and generic storage codecs", () => {
         attempt: 2,
         sourcesRead: [],
         activities: [],
+        activityHistory: [],
+        context: null,
+        memoryUpdated: null,
         terminalFailure: null,
       },
     });

@@ -39,6 +39,16 @@ describe("buildTranscriptMessages", () => {
         },
       ],
       error: null,
+      activityHistory: [
+        {
+          type: "activity",
+          stage: "evidence",
+          code: "internal_sources",
+          status: "running",
+        },
+      ],
+      context: { compactionRan: false, consumers: [] },
+      seq: 4,
     });
     const assistant = messages[0];
     expect(assistant?.author).toBe("assistant");
@@ -50,6 +60,7 @@ describe("buildTranscriptMessages", () => {
     expect(assistant.sourcesRead).toEqual(sources);
     expect(assistant.streaming).toBe(true);
     expect(assistant.activities).toMatchObject([{ code: "internal_sources", status: "complete" }]);
+    expect(assistant.diagnostics).toMatchObject({ sequence: 4, context: { compactionRan: false } });
   });
 
   it("keeps the failed activity card after a terminal error", () => {

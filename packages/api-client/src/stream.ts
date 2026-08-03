@@ -1,6 +1,7 @@
 import {
   AiRunActivityEvent,
   AiRunEvent,
+  PublicContextConsumer,
   PublicSourceRecord,
   type AiRunActivityEvent as AiRunActivityEventValue,
   type AiRunEvent as AiRunEventValue,
@@ -133,11 +134,21 @@ export interface StreamDraftState {
   readonly attempt: number;
   readonly sourcesRead: readonly Schema.Schema.Type<typeof PublicSourceRecord>[];
   readonly activities: readonly AiRunActivityEventValue[];
+  readonly activityHistory: readonly AiRunActivityEventValue[];
+  readonly context: {
+    readonly compactionRan: boolean;
+    readonly consumers: readonly Schema.Schema.Type<typeof PublicContextConsumer>[];
+  } | null;
+  readonly memoryUpdated: {
+    readonly created: number;
+    readonly updated: number;
+    readonly discarded: number;
+  } | null;
   readonly terminalFailure: { readonly code: string; readonly retryable: boolean } | null;
 }
 
 export interface PersistedRunStreamState {
-  readonly version: 2;
+  readonly version: 4;
   readonly runId: string;
   readonly lastSeq: number;
   readonly draft: StreamDraftState;
@@ -153,10 +164,24 @@ const StreamDraft = Schema.Struct({
   attempt: NonNegativeInteger,
   sourcesRead: Schema.Array(PublicSourceRecord),
   activities: Schema.Array(AiRunActivityEvent),
+  activityHistory: Schema.Array(AiRunActivityEvent),
+  context: Schema.NullOr(
+    Schema.Struct({
+      compactionRan: Schema.Boolean,
+      consumers: Schema.Array(PublicContextConsumer),
+    }),
+  ),
+  memoryUpdated: Schema.NullOr(
+    Schema.Struct({
+      created: NonNegativeInteger,
+      updated: NonNegativeInteger,
+      discarded: NonNegativeInteger,
+    }),
+  ),
   terminalFailure: Schema.NullOr(Schema.Struct({ code: Schema.String, retryable: Schema.Boolean })),
 });
 const PersistedRunStream = Schema.Struct({
-  version: Schema.Literal(2),
+  version: Schema.Literal(4),
   runId: Schema.String,
   lastSeq: NonNegativeInteger,
   draft: StreamDraft,

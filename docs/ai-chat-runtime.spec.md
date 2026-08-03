@@ -1836,16 +1836,22 @@ remains the last event. Activity never carries prompts, search queries, source
 snippets, memory content, opaque source or snapshot IDs, provider logs, stack
 traces, or raw provider errors.
 
-The browser stores the latest activity item for each code/topic key beside the
-last SSE sequence in session storage schema version 2. It ignores repeated or
-out-of-order sequences, applies replayed transitions in sequence order, and
-never adds a second row for a retry. `run_started` creates an empty assistant
-progress card. The card uses an accessible live status and an expandable
-activity list. It stays compact once answer text streams. `done` replaces it
-with the saved assistant message. `error` keeps the safe failed activity card
-on the current route while the user message keeps its localized failure and
-resubmit controls. A new request or route change clears that failed local
-activity state.
+The browser stores the latest activity item for each code/topic key, a
+deduplicated ordered transition history, and the last SSE sequence in session
+storage schema version 4. It ignores repeated or out-of-order sequences,
+applies replayed transitions in sequence order, and never adds a second row for
+the same retry transition. `run_started` creates an empty assistant progress
+card. The card shows a compact stage rail and an accessible live status while
+work runs. An explicit diagnostics disclosure opts into the transition
+history and safe counts, attempts, durations, source-read/cited summary,
+context fit or compaction, memory-write outcome, retry, finalization, and SSE
+cursor details. These details never include prompts, queries, source text or
+ranges, provider payloads, Smithers state, or restricted content. The disclosure
+is closed by default and remains replayable without duplicating transitions.
+`done` replaces the card with the saved assistant message. `error` keeps the
+safe failed activity card on the current route while the user message keeps its
+localized failure and resubmit controls. A new request or route change clears
+that failed local activity state.
 
 ## Demo API
 
@@ -2050,6 +2056,11 @@ The composer exposes an explicit web-search toggle. It is disabled with the loca
 The transcript shows only the final clarification, direct answer, or synthesis. It does not expose topic packets.
 
 While streaming, the current assistant draft is visibly pending. It becomes a normal transcript message only after `done` and refresh from persisted history. On `error`, the draft is removed and the durable failed run outcome renders on its user message; no failed assistant draft enters persisted message history.
+
+The shared transcript keeps the active run anchored to the bottom only while
+the viewer remains within a small bottom threshold. Streamed text and activity
+growth never pull a viewer back after they scroll up. An accessible “Jump to
+latest” control appears when the viewer is away from the bottom.
 
 Each assistant message has:
 

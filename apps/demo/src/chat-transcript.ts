@@ -8,7 +8,8 @@ export function buildTranscriptMessages(
   messages: readonly ChatTranscriptMessage[],
   activeRunId: string | null,
   phase: ChatStreamPhase,
-  stream: Pick<ChatStreamState, "assistantText" | "sourcesRead" | "activities" | "error">,
+  stream: Pick<ChatStreamState, "assistantText" | "sourcesRead" | "activities" | "error"> &
+    Partial<Pick<ChatStreamState, "activityHistory" | "context" | "memoryUpdated" | "seq">>,
 ): readonly ChatTranscriptMessage[] {
   if (activeRunId === null || !provisionalPhase(phase)) return messages;
 
@@ -21,6 +22,12 @@ export function buildTranscriptMessages(
       citations: citationRecordsFromText(stream.assistantText, stream.sourcesRead),
       sourcesRead: stream.sourcesRead,
       activities: stream.activities,
+      diagnostics: {
+        activityHistory: stream.activityHistory ?? stream.activities,
+        context: stream.context ?? null,
+        memoryUpdated: stream.memoryUpdated ?? null,
+        ...(stream.seq === undefined ? {} : { sequence: stream.seq }),
+      },
       activityFailure: stream.error,
       streaming: true,
     },

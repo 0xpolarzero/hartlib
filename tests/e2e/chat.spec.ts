@@ -164,6 +164,60 @@ test.describe("deterministic canonical runtime", () => {
     await expect(page.getByTestId("chat-message-user")).toHaveCount(1);
     await expect(page.getByTestId("chat-message-assistant")).toHaveCount(1);
   });
+  test("keeps jump-to-latest visible after scrolling away from the live edge", async ({ page }) => {
+    const transcript = page.getByTestId("chat-transcript");
+    const shell = page.getByTestId("chat-transcript-shell");
+    await expect(shell).toBeVisible();
+
+    await sendAndWait(page, "Build enough transcript height for the scroll check. ".repeat(30));
+    await shell.evaluate((element) => {
+      element.style.height = "160px";
+    });
+    await expect
+      .poll(() => transcript.evaluate((element) => element.scrollHeight > element.clientHeight))
+      .toBe(true);
+
+    const awayFromBottom = await transcript.evaluate((element) => {
+      const maxScrollTop = element.scrollHeight - element.clientHeight;
+      element.scrollTop = Math.floor(maxScrollTop / 2);
+      element.dispatchEvent(new Event("scroll", { bubbles: true }));
+      return {
+        remaining: element.scrollHeight - element.scrollTop - element.clientHeight,
+        scrollTop: element.scrollTop,
+      };
+    });
+    expect(awayFromBottom.scrollTop).toBeGreaterThan(0);
+    expect(awayFromBottom.remaining).toBeGreaterThan(48);
+    const jumpToLatest = page.getByTestId("chat-jump-to-latest");
+    await expect(jumpToLatest).toBeVisible();
+
+    const geometry = await page.evaluate(() => {
+      const shellElement = document.querySelector<HTMLElement>(
+        '[data-testid="chat-transcript-shell"]',
+      );
+      const button = document.querySelector<HTMLElement>('[data-testid="chat-jump-to-latest"]');
+      if (!shellElement || !button) throw new Error("chat jump overlay is missing");
+      const shellRect = shellElement.getBoundingClientRect();
+      const buttonRect = button.getBoundingClientRect();
+      return {
+        buttonBottom: buttonRect.bottom,
+        buttonTop: buttonRect.top,
+        shellBottom: shellRect.bottom,
+        shellTop: shellRect.top,
+      };
+    });
+    expect(geometry.buttonTop).toBeGreaterThanOrEqual(geometry.shellTop);
+    expect(geometry.buttonBottom).toBeLessThanOrEqual(geometry.shellBottom);
+
+    await jumpToLatest.click();
+    await expect
+      .poll(() =>
+        transcript.evaluate(
+          (element) => element.scrollHeight - element.scrollTop - element.clientHeight,
+        ),
+      )
+      .toBeLessThanOrEqual(1);
+  });
 
   test("single direct answer persists citations and the exact public sources-read shape", async ({
     page,

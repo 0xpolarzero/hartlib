@@ -174,7 +174,7 @@ describe("reduceChatStream", () => {
   it("restores provisional deltas and their exact replay cursor after reload", () => {
     expect(
       restoreChatStreamState({
-        version: 2,
+        version: 4,
         runId: "run-1",
         lastSeq: 9,
         draft: {
@@ -190,6 +190,16 @@ describe("reduceChatStream", () => {
               status: "complete",
             },
           ],
+          activityHistory: [
+            {
+              type: "activity",
+              stage: "evidence",
+              code: "internal_sources",
+              status: "complete",
+            },
+          ],
+          context: null,
+          memoryUpdated: null,
           terminalFailure: null,
         },
       }),

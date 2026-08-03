@@ -7,13 +7,13 @@ import {
   type StreamDraftState,
 } from "@brief/api-client/stream";
 import { ApiResponseError } from "@brief/api-client";
+import { failActiveAiRunActivity, projectAiRunActivity } from "@brief/shared";
 import type {
   ActiveAiRunConflict,
   AiRunEvent,
   GetChatResponse,
   SendChatMessageRequest,
 } from "@brief/shared";
-import { aiRunActivityKey } from "@brief/shared";
 
 export { clearRunStreamState, persistRunStreamState, restoreRunStreamState, runStreamStorageKey };
 export type { PersistedRunStreamState, StreamDraftState };
@@ -189,6 +189,9 @@ export const emptyStreamDraft = (runId: string): StreamDraftState => ({
   attempt: 0,
   sourcesRead: [],
   activities: [],
+  activityHistory: [],
+  context: null,
+  memoryUpdated: null,
   terminalFailure: null,
 });
 
@@ -206,14 +209,10 @@ export const reduceRunStreamEvent = (
     return { applied: true, terminal: true, lastSeq: seq, draft: null };
   }
   if (event.type === "error") {
-    const activities = [...draft.activities];
-    for (let index = activities.length - 1; index >= 0; index -= 1) {
-      const activity = activities[index];
-      if (activity?.status === "running" || activity?.status === "retrying") {
-        activities[index] = { ...activity, status: "failed" };
-        break;
-      }
-    }
+    const projection = failActiveAiRunActivity({
+      activities: draft.activities,
+      history: draft.activityHistory,
+    });
     return {
       applied: true,
       terminal: true,
@@ -221,24 +220,27 @@ export const reduceRunStreamEvent = (
       draft: {
         ...draft,
         text: "",
-        activities,
+        activities: projection.activities,
+        activityHistory: projection.history,
         terminalFailure: { code: event.code, retryable: event.retryable },
       },
     };
   }
   if (event.type === "activity") {
-    const key = aiRunActivityKey(event.code, event.topicId);
-    const activities = [...draft.activities];
-    const index = activities.findIndex(
-      (activity) => aiRunActivityKey(activity.code, activity.topicId) === key,
+    const projection = projectAiRunActivity(
+      { activities: draft.activities, history: draft.activityHistory },
+      event,
     );
-    if (index === -1) activities.push(event);
-    else activities[index] = event;
     return {
       applied: true,
       terminal: false,
       lastSeq: seq,
-      draft: { ...draft, activities, terminalFailure: null },
+      draft: {
+        ...draft,
+        activities: projection.activities,
+        activityHistory: projection.history,
+        terminalFailure: null,
+      },
     };
   }
   if (event.type === "context_ready") {
@@ -246,7 +248,26 @@ export const reduceRunStreamEvent = (
       applied: true,
       terminal: false,
       lastSeq: seq,
-      draft: { ...draft, sourcesRead: event.sourcesRead },
+      draft: {
+        ...draft,
+        sourcesRead: event.sourcesRead,
+        context: { compactionRan: event.compactionRan, consumers: event.consumers },
+      },
+    };
+  }
+  if (event.type === "memory_updated") {
+    return {
+      applied: true,
+      terminal: false,
+      lastSeq: seq,
+      draft: {
+        ...draft,
+        memoryUpdated: {
+          created: event.created,
+          updated: event.updated,
+          discarded: event.discarded,
+        },
+      },
     };
   }
   if (event.type === "answer_started") {

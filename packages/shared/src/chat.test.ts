@@ -8,6 +8,9 @@ import {
   AiRunEvent,
   activityCodeForAiRunError,
   activityCodeForPhase,
+  emptyAiRunActivityProjection,
+  failActiveAiRunActivity,
+  projectAiRunActivity,
   EffectiveWebPolicy,
   GetChatResponse,
   MemoryRecord,
@@ -245,6 +248,56 @@ describe("canonical chat schemas", () => {
     expect(activityCodeForPhase("context_compaction_plan")).toBe("context_preparation");
     expect(activityCodeForPhase("context_compaction_fallback_measure")).toBe("context_preparation");
     expect(() => decode("provider_internal_operation")).toThrow();
+  });
+
+  it("keeps one current activity per key while replaying each transition once", () => {
+    const running = {
+      type: "activity" as const,
+      stage: "evidence" as const,
+      code: "internal_sources" as const,
+      status: "running" as const,
+      attempt: 1,
+    };
+    const complete = { ...running, status: "complete" as const, durationMs: 120 };
+    let projection = projectAiRunActivity(emptyAiRunActivityProjection(), running);
+    projection = projectAiRunActivity(projection, complete);
+    projection = projectAiRunActivity(projection, complete);
+    expect(projection.activities).toEqual([complete]);
+    expect(projection.history).toEqual([running, complete]);
+  });
+
+  it("keeps a repeated transition when it occurs again after another state", () => {
+    const running = {
+      type: "activity" as const,
+      stage: "evidence" as const,
+      code: "internal_sources" as const,
+      status: "running" as const,
+    };
+    const complete = { ...running, status: "complete" as const };
+    let projection = projectAiRunActivity(emptyAiRunActivityProjection(), running);
+    projection = projectAiRunActivity(projection, complete);
+    projection = projectAiRunActivity(projection, running);
+    expect(projection.history).toEqual([running, complete, running]);
+  });
+
+  it("fails the activity from the latest active transition", () => {
+    const first = {
+      type: "activity" as const,
+      stage: "evidence" as const,
+      code: "internal_sources" as const,
+      status: "running" as const,
+    };
+    const second = {
+      type: "activity" as const,
+      stage: "preparing" as const,
+      code: "context_preparation" as const,
+      status: "running" as const,
+    };
+    let projection = projectAiRunActivity(emptyAiRunActivityProjection(), first);
+    projection = projectAiRunActivity(projection, second);
+    projection = projectAiRunActivity(projection, { ...first, status: "retrying" });
+    const failed = failActiveAiRunActivity(projection);
+    expect(failed.activities).toEqual([{ ...first, status: "failed" }, second]);
   });
 
   it("does not expose chat message ranges in public source records", () => {

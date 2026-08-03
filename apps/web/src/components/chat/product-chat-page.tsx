@@ -356,7 +356,7 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
       if (preserveFailure && isCurrentRoute()) {
         setDraft(currentDraft);
         persistRunStreamState(window.sessionStorage, {
-          version: 2,
+          version: 4,
           runId,
           lastSeq: streamSeq.current,
           draft: currentDraft,
@@ -415,7 +415,7 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
       if (!isCurrentRoute()) return;
       setDraft(currentDraft);
       persistRunStreamState(window.sessionStorage, {
-        version: 2,
+        version: 4,
         runId,
         lastSeq: streamSeq.current,
         draft: currentDraft,
@@ -466,6 +466,12 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
         sourcesRead: routeDraft.sourcesRead,
         activities: routeDraft.activities,
         activityFailure: routeDraft.terminalFailure,
+        diagnostics: {
+          activityHistory: routeDraft.activityHistory,
+          context: routeDraft.context,
+          memoryUpdated: routeDraft.memoryUpdated,
+          sequence: streamSeq.current,
+        },
         streaming: true,
       },
     ];

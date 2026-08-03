@@ -656,6 +656,75 @@ export type AiRunActivityEvent = Schema.Schema.Type<typeof AiRunActivityEvent>;
 export const aiRunActivityKey = (code: AiRunActivityCode, topicId?: "t1" | "t2" | "t3"): string =>
   `${code}${topicId === undefined ? "" : `:${topicId}`}`;
 
+/** The browser keeps one current item for the compact rail and a unique
+ * transition history for the opt-in diagnostics view. */
+export interface AiRunActivityProjection {
+  readonly activities: readonly AiRunActivityEvent[];
+  readonly history: readonly AiRunActivityEvent[];
+}
+
+export const emptyAiRunActivityProjection = (): AiRunActivityProjection => ({
+  activities: [],
+  history: [],
+});
+
+export const aiRunActivityTransitionKey = (event: AiRunActivityEvent): string =>
+  [
+    aiRunActivityKey(event.code, event.topicId),
+    event.stage,
+    event.status,
+    event.attempt ?? "",
+    event.durationMs ?? "",
+    event.sourceCount ?? "",
+    event.resultCount ?? "",
+    event.reason ?? "",
+  ].join("|");
+
+/** Apply one ordered SSE activity transition without duplicating replayed data. */
+export const projectAiRunActivity = (
+  projection: AiRunActivityProjection,
+  event: AiRunActivityEvent,
+): AiRunActivityProjection => {
+  const key = aiRunActivityKey(event.code, event.topicId);
+  const activities = [...projection.activities];
+  const index = activities.findIndex(
+    (activity) => aiRunActivityKey(activity.code, activity.topicId) === key,
+  );
+  if (index === -1) activities.push(event);
+  else activities[index] = event;
+  const transitionKey = aiRunActivityTransitionKey(event);
+  const previous = projection.history[projection.history.length - 1];
+  const history =
+    previous !== undefined && aiRunActivityTransitionKey(previous) === transitionKey
+      ? projection.history
+      : [...projection.history, event];
+  return { activities, history };
+};
+
+/** Mark the latest active item failed when a terminal error races its event. */
+export const failActiveAiRunActivity = (
+  projection: AiRunActivityProjection,
+): AiRunActivityProjection => {
+  for (let index = projection.history.length - 1; index >= 0; index -= 1) {
+    const latest = projection.history[index];
+    if (latest?.status !== "running" && latest?.status !== "retrying") continue;
+    const key = aiRunActivityKey(latest.code, latest.topicId);
+    const activity = projection.activities.find(
+      (candidate) =>
+        aiRunActivityKey(candidate.code, candidate.topicId) === key &&
+        (candidate.status === "running" || candidate.status === "retrying"),
+    );
+    if (activity !== undefined)
+      return projectAiRunActivity(projection, { ...activity, status: "failed" });
+  }
+  for (let index = projection.activities.length - 1; index >= 0; index -= 1) {
+    const activity = projection.activities[index];
+    if (activity?.status !== "running" && activity?.status !== "retrying") continue;
+    return projectAiRunActivity(projection, { ...activity, status: "failed" });
+  }
+  return projection;
+};
+
 export const AiRunActivityFailureCode = Schema.Literals([
   "plan_turn_failed",
   "internal_retrieval_failed",

@@ -832,7 +832,7 @@ function ClientFeedsList({
       });
       if (event.type !== "done" && event.type !== "error") {
         persistRunStreamState(window.sessionStorage, {
-          version: 2,
+          version: 4,
           runId: activeRunId,
           lastSeq: next.seq,
           draft: {
@@ -841,6 +841,9 @@ function ClientFeedsList({
             attempt: next.attempt,
             sourcesRead: next.sourcesRead,
             activities: next.activities,
+            activityHistory: next.activityHistory,
+            context: next.context,
+            memoryUpdated: next.memoryUpdated,
             terminalFailure: null,
           },
         });
