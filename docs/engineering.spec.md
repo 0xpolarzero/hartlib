@@ -854,7 +854,21 @@ and it never removes an actively leased attempt.
 
 Text extraction runs in worker jobs.
 
-Untrusted PDF parsing runs off the main queue loop in a terminable parser worker. The parser receives a private byte copy and enforces code-owned ceilings of 50 MiB input, 2,000 pages, 10,000,000 extracted characters, a 30-second wall-clock deadline, a 256 MiB old-generation heap, and a 64 MiB young-generation heap. Public-source PDFs retain their stricter 25 MiB ingestion ceiling. A timeout, heap termination, malformed page sequence, or input/page/text ceiling breach becomes a content-free extraction failure; it never detaches or mutates the canonical bytes and never prevents an authorized user from reading or downloading the unchanged file. Changing these ceilings requires updating this specification and their boundary tests.
+Untrusted PDF parsing runs in a dedicated, killable child process, never in the
+queue worker's JavaScript worker. The child receives a private byte copy and
+loads the pinned `@firecrawl/pdf-inspector` native parser. On Linux, a fixed
+`RLIMIT_AS` address-space cap of 384 MiB covers Rust and N-API allocations; the
+parent also enforces 50 MiB input, 2,000 pages, 10,000,000 extracted
+characters, a bounded output protocol, and a 30-second wall-clock deadline.
+The parent rejects child output above 80 MiB before JSON decoding.
+The parser's position-aware plain-text output is grouped into ordered,
+one-based page text; Markdown is not canonical searchable text. Public-source
+PDFs retain their stricter 25 MiB ingestion ceiling. A timeout or kill,
+malformed page sequence, child failure, invalid PDF, or input/page/text/output
+ceiling breach becomes a content-free extraction failure; it never detaches or
+mutates the canonical bytes and never prevents an authorized user from reading
+or downloading the unchanged file. Changing these ceilings requires updating
+this specification and their boundary tests.
 
 Text extraction powers:
 
@@ -881,11 +895,11 @@ PDF reader:
 
 PDF extraction tooling:
 
-- use a lightweight, reliable JS/TS PDF extraction library first
-- avoid native system dependencies for MVP
+- use the pinned `@firecrawl/pdf-inspector` native package for plain,
+  position-aware text extraction
+- keep the parser behind the killable child-process boundary and OS memory cap
 - run extraction in worker jobs
 - store extracted text with page-level metadata when available
-- use a native extraction worker later only if extraction quality requires it
 
 ## Retrieval
 

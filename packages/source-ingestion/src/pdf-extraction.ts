@@ -1,16 +1,16 @@
-import { Worker } from "node:worker_threads";
+import { spawn, type ChildProcess, type ChildProcessByStdio } from "node:child_process";
+import type { Readable, Writable } from "node:stream";
+import { fileURLToPath } from "node:url";
 
 export const PDF_EXTRACTION_MAX_INPUT_BYTES = 50 * 1024 * 1024;
 export const PDF_EXTRACTION_MAX_PAGES = 2_000;
 export const PDF_EXTRACTION_MAX_CHARACTERS = 10_000_000;
 export const PDF_EXTRACTION_TIMEOUT_MS = 30_000;
 
-const PDF_EXTRACTION_MAX_OLD_GENERATION_MB = 256;
-const PDF_EXTRACTION_MAX_YOUNG_GENERATION_MB = 64;
-const pdfParseModuleUrl = new URL(
-  "../node_modules/pdf-parse/dist/pdf-parse/esm/index.js",
-  import.meta.url,
-).href;
+/** Linux child-process address-space limit. The native parser is not loaded in the parent. */
+export const PDF_EXTRACTION_MAX_MEMORY_MB = 384;
+const PDF_EXTRACTION_MAX_OUTPUT_BYTES = 80 * 1024 * 1024;
+const childModulePath = fileURLToPath(new URL("./pdf-extraction-child.ts", import.meta.url));
 
 export interface IsolatedExtractedPdfPage {
   readonly pageNumber: number;
@@ -55,66 +55,6 @@ const extractionLimits = (reductions?: PdfExtractionLimitReductions): PdfExtract
   timeoutMs: positiveBoundedInteger(reductions?.timeoutMs, PDF_EXTRACTION_TIMEOUT_MS),
 });
 
-const workerSource = String.raw`
-const { parentPort, workerData } = require("node:worker_threads");
-
-const failure = (code) => ({ ok: false, code });
-
-void (async () => {
-  let parser;
-  let response;
-  try {
-    const { PDFParse } = await import(workerData.pdfParseModuleUrl);
-    const bytes = new Uint8Array(workerData.bytes);
-    if (bytes.byteLength < 5 || bytes.byteLength > workerData.maxInputBytes) {
-      response = failure("pdf_input_too_large");
-    } else {
-      parser = new PDFParse({ data: bytes });
-      const info = await parser.getInfo();
-      if (!Number.isSafeInteger(info.total) || info.total < 1) {
-        response = failure("pdf_page_shape_invalid");
-      } else if (info.total > workerData.maxPages) {
-        response = failure("pdf_page_limit_exceeded");
-      } else {
-        const result = await parser.getText();
-        if (!Array.isArray(result.pages) || result.pages.length !== info.total) {
-          response = failure("pdf_page_shape_invalid");
-        } else {
-          const pages = [];
-          let characterCount = 0;
-          for (let index = 0; index < result.pages.length; index += 1) {
-            const page = result.pages[index];
-            const expectedPageNumber = index + 1;
-            if (page?.num !== expectedPageNumber || typeof page.text !== "string") {
-              response = failure("pdf_page_shape_invalid");
-              break;
-            }
-            characterCount += page.text.length + (index === 0 ? 0 : 2);
-            if (characterCount > workerData.maxCharacters) {
-              response = failure("pdf_text_limit_exceeded");
-              break;
-            }
-            pages.push({ pageNumber: page.num, text: page.text });
-          }
-          response ??= { ok: true, pages };
-        }
-      }
-    }
-  } catch {
-    response = failure("pdf_extraction_failed");
-  } finally {
-    if (parser !== undefined) {
-      try {
-        await parser.destroy();
-      } catch {
-        response = failure("pdf_extraction_failed");
-      }
-    }
-  }
-  parentPort.postMessage(response ?? failure("pdf_extraction_failed"));
-})().catch(() => parentPort.postMessage(failure("pdf_extraction_failed")));
-`;
-
 const isExtractionErrorCode = (value: unknown): value is PdfExtractionErrorCode =>
   value === "pdf_input_too_large" ||
   value === "pdf_page_limit_exceeded" ||
@@ -123,7 +63,7 @@ const isExtractionErrorCode = (value: unknown): value is PdfExtractionErrorCode 
   value === "pdf_extraction_timeout" ||
   value === "pdf_extraction_failed";
 
-const decodeWorkerPages = (
+const decodeChildPages = (
   value: unknown,
   limits: PdfExtractionLimits,
 ): readonly IsolatedExtractedPdfPage[] => {
@@ -168,10 +108,47 @@ const decodeWorkerPages = (
   });
 };
 
+const limitedCommand = (limits: PdfExtractionLimits): readonly [string, readonly string[]] => {
+  const args = [
+    childModulePath,
+    String(limits.maxInputBytes),
+    String(limits.maxPages),
+    String(limits.maxCharacters),
+  ];
+  if (process.platform !== "linux") {
+    return [process.execPath, args];
+  }
+
+  // The command is fixed; all paths and limits are positional, quoted by the shell.
+  // Linux ulimit applies RLIMIT_AS to the native parser process, including Rust/N-API memory.
+  return [
+    "/bin/sh",
+    [
+      "-c",
+      'ulimit -v "$1" || exit 125; shift; exec "$@"',
+      "brief-pdf-extraction",
+      String(PDF_EXTRACTION_MAX_MEMORY_MB * 1024),
+      process.execPath,
+      ...args,
+    ],
+  ];
+};
+
+const killChild = (child: ChildProcess): void => {
+  if (child.exitCode === null && child.signalCode === null) {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The child can exit between the state check and kill. The parent has
+      // already selected the stable extraction error, so there is no new
+      // failure to expose here.
+    }
+  }
+};
+
 /**
- * Parse untrusted PDFs off the main worker thread. The private byte copy keeps
- * the caller's canonical bytes intact, while timeout and heap ceilings can
- * terminate a parser that hangs or expands hostile content excessively.
+ * Parse untrusted PDFs in a killable child process. The child receives a private
+ * byte copy and, on Linux, a process-level address-space limit for native memory.
  */
 export const extractPdfPagesIsolated = (
   bytes: Uint8Array,
@@ -182,55 +159,100 @@ export const extractPdfPagesIsolated = (
     return Promise.reject(new PdfExtractionError("pdf_input_too_large"));
   }
   const privateBytes = Uint8Array.from(bytes);
-  const buffer = privateBytes.buffer;
+  const [command, args] = limitedCommand(limits);
+  const maxOutputBytes = Math.min(
+    PDF_EXTRACTION_MAX_OUTPUT_BYTES,
+    limits.maxCharacters * 8 + limits.maxPages * 64 + 1_024,
+  );
 
   return new Promise((resolve, reject) => {
-    const worker = new Worker(workerSource, {
-      eval: true,
-      workerData: { bytes: buffer, pdfParseModuleUrl, ...limits },
-      transferList: [buffer],
-      resourceLimits: {
-        maxOldGenerationSizeMb: PDF_EXTRACTION_MAX_OLD_GENERATION_MB,
-        maxYoungGenerationSizeMb: PDF_EXTRACTION_MAX_YOUNG_GENERATION_MB,
-        stackSizeMb: 8,
-      },
-    });
+    let child: ChildProcessByStdio<Writable, Readable, null>;
+    try {
+      child = spawn(command, [...args], {
+        stdio: ["pipe", "pipe", "ignore"],
+        windowsHide: true,
+      }) as ChildProcessByStdio<Writable, Readable, null>;
+    } catch {
+      reject(new PdfExtractionError("pdf_extraction_failed"));
+      return;
+    }
+
     let settled = false;
-    const finish = (
-      outcome:
-        | { readonly ok: true; readonly pages: readonly IsolatedExtractedPdfPage[] }
-        | { readonly ok: false; readonly error: PdfExtractionError },
-    ) => {
+    let outputBytes = 0;
+    const outputChunks: Buffer[] = [];
+    const finish = (error?: PdfExtractionError): void => {
       if (settled) return;
+      let pages: readonly IsolatedExtractedPdfPage[] | undefined;
+      if (!error) {
+        try {
+          pages = decodeChildPages(
+            JSON.parse(Buffer.concat(outputChunks).toString("utf8")),
+            limits,
+          );
+        } catch (cause) {
+          error =
+            cause instanceof PdfExtractionError
+              ? cause
+              : new PdfExtractionError("pdf_extraction_failed");
+        }
+      }
       settled = true;
       clearTimeout(timeout);
-      worker.removeAllListeners();
-      void worker.terminate();
-      if (outcome.ok) resolve(outcome.pages);
-      else reject(outcome.error);
+      if (error) {
+        // Kill while the child error/close listeners are still attached. A
+        // failed spawn or a late kill race may emit one more child error; the
+        // settled guard keeps it harmless instead of turning it unhandled.
+        killChild(child);
+      }
+      child.stdout.removeAllListeners();
+      child.stdin.removeAllListeners();
+      child.removeAllListeners();
+      if (error) {
+        reject(error);
+      } else {
+        resolve(pages as readonly IsolatedExtractedPdfPage[]);
+      }
     };
     const timeout = setTimeout(
-      () => finish({ ok: false, error: new PdfExtractionError("pdf_extraction_timeout") }),
+      () => finish(new PdfExtractionError("pdf_extraction_timeout")),
       limits.timeoutMs,
     );
-    worker.once("message", (message: unknown) => {
-      try {
-        finish({ ok: true, pages: decodeWorkerPages(message, limits) });
-      } catch (error) {
-        finish({
-          ok: false,
-          error:
-            error instanceof PdfExtractionError
-              ? error
-              : new PdfExtractionError("pdf_extraction_failed"),
-        });
+
+    child.stdout.on("data", (chunk: Buffer | Uint8Array) => {
+      outputBytes += chunk.byteLength;
+      if (outputBytes > maxOutputBytes) {
+        finish(new PdfExtractionError("pdf_extraction_failed"));
+        return;
+      }
+      outputChunks.push(Buffer.from(chunk));
+    });
+    child.stdout.once("error", () => finish(new PdfExtractionError("pdf_extraction_failed")));
+    child.stdin.once("error", () => finish(new PdfExtractionError("pdf_extraction_failed")));
+    child.once("error", () => finish(new PdfExtractionError("pdf_extraction_failed")));
+    child.once("exit", (code, signal) => {
+      if (code !== 0 || signal !== null) {
+        finish(new PdfExtractionError("pdf_extraction_failed"));
       }
     });
-    worker.once("error", () =>
-      finish({ ok: false, error: new PdfExtractionError("pdf_extraction_failed") }),
-    );
-    worker.once("exit", () =>
-      finish({ ok: false, error: new PdfExtractionError("pdf_extraction_failed") }),
-    );
+    // Wait for `close`, not `exit`: Node/Bun may emit `exit` before the child
+    // stdout pipe has delivered its final bytes. Parsing on `exit` can turn a
+    // valid response into a sporadic malformed-output failure.
+    child.once("close", (code, signal) => {
+      if (settled) return;
+      if (code !== 0 || signal !== null) {
+        finish(new PdfExtractionError("pdf_extraction_failed"));
+        return;
+      }
+      try {
+        finish();
+      } catch {
+        finish(new PdfExtractionError("pdf_extraction_failed"));
+      }
+    });
+    try {
+      child.stdin.end(Buffer.from(privateBytes));
+    } catch {
+      finish(new PdfExtractionError("pdf_extraction_failed"));
+    }
   });
 };
