@@ -86,6 +86,8 @@ Credits are consumed by AI chats.
 
 AI chats can answer in text with summaries, comparisons, explicit web research, and Markdown tables. Generated graphs, visualizations, and executable artifacts are not part of the current runtime.
 
+Planned product direction: Brief will add a visual companion alongside the conversation. It will present answers and explanations as live visualizations that update as the discussion changes. This is not part of the current runtime contract.
+
 Current catalog access and future delivery follow the subscription. Reading,
 downloading, and basic archive search for a delivered issue require an
 unrevoked current company membership and the exact delivery-time recipient

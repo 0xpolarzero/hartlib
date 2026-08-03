@@ -97,11 +97,15 @@ The demo client already has an active AI plan.
 
 The product makes a publisher's existing publications more valuable to subscribers.
 
-It turns static issue documents into an interactive AI product.
+Brief centers subscriber research on one active conversation. For each question, focused passes select only the relevant earlier messages, private memories, and source passages that matter. The full history and memory store do not enter every answer.
 
-Subscribers can read the latest issue, search the archive, ask questions, compare past coverage, and get cited answers.
+Brief connects relevant evidence from the publisher subscriptions selected for the chat and official sources the client company has enabled. When a question has independent parts, Brief can research them in parallel and return one cited answer.
 
-The business outcome is stronger retention, more usage, and higher pricing power for publishers.
+Subscribers can read the latest issue, search the archive, and compare past coverage.
+
+**Planned — not part of the current text-answer runtime:** one final companion pass will update long-term memory and the visual view together after each turn. The visual companion alongside the conversation will present answers and explanations as live visualizations that update as the discussion changes.
+
+The intended business outcome is stronger retention, more usage, and higher pricing power for publishers.
 
 ## Users
 
