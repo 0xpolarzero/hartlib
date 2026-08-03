@@ -1,0 +1,27 @@
+# Repair validation failures
+
+Use Luna to repair only the causes recorded by the latest failed validation.
+Read the latest command output, the relevant source and tests, `AGENTS.md`, the
+canonical docs, and `docs/references/effect-smol/` before editing. Preserve the
+verified foundation, protected files, Smithers 0.31 changes, and unrelated
+worker runtime changes.
+
+Fix the smallest complete cause, including its focused test or documentation
+contract when the failure shows a real gap. Do not silence a command, skip a
+test, add a placeholder, or broaden scope. If a failure needs a protected or
+destructive change, stop and request a human.
+
+## Stage
+
+{props.stage}
+
+## Failed validation
+
+{JSON.stringify(props.failedValidation, null, 2)}
+
+## Plan
+
+{JSON.stringify(props.plan, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

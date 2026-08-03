@@ -1,0 +1,34 @@
+# Reconcile final readiness
+
+Do not edit files. Reconcile the initialization scope and acceptance maps,
+incremental canonical-doc policy, every Phase A–F implementation, validation,
+bounded repair attempt, and review gate, the migration output and Phase E
+preflight, final-suite commands, Section 17 evidence, protected fingerprints,
+clean-cutover scan, no-UI check, and canonical spec update. Read the plan and
+canonical spec to ensure no check is silently dropped. Mark `ready` only when
+every required check has concrete real evidence, the final suite passes,
+migration 0072 succeeded exactly once, protected state is unchanged, the
+clean-cutover scan is clear, and blockers is empty.
+
+## Evidence
+
+{JSON.stringify(props.evidence, null, 2)}
+
+## Initialization
+
+{JSON.stringify(props.initialization, null, 2)}
+
+## Phase E preflight
+
+{JSON.stringify(props.preflight, null, 2)}
+
+## Migration
+
+{JSON.stringify(props.migration, null, 2)}
+
+## Final commands
+
+{JSON.stringify(props.commands, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

@@ -1,0 +1,25 @@
+# Update canonical specifications
+
+Read `AGENTS.md`, the approved chat-reset brief, the current implementation
+plan, and all affected canonical files under `docs/`. Update only the
+specifications whose contracts change: reset identity and fencing, API
+authorization and status mapping, archive read-only rules, collection
+invalidation, copy requirements, and the required test gates.
+
+Docs are the source of truth, not a changelog. State the final behavior and
+acceptance contract clearly. Do not add history notes, placeholders, TODOs, or
+claims that the implementation does not support. Do not edit code in this task.
+
+## Plan
+
+{JSON.stringify(props.plan, null, 2)}
+
+## Optional context
+
+{props.prompt || "(none)"}
+
+Ask for a human only if the final contract would need an out-of-scope or
+protected change.
+
+REQUIRED OUTPUT:
+{props.schema}

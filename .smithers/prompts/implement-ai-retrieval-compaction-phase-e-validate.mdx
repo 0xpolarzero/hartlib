@@ -1,0 +1,17 @@
+# Validate Phase E without migration
+
+Do not edit files and never apply migrations. Run every supplied Phase E command
+exactly as written, in order. Capture real exit codes, output, and failures for
+provider-request, product-state, jobs, and backend-domain tests. A pass requires
+zero exit codes for all commands.
+
+## Commands
+
+`{JSON.stringify(props.commands)}`
+
+## Context
+
+{JSON.stringify(props.context, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

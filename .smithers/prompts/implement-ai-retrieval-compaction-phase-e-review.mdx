@@ -1,0 +1,30 @@
+# Review Phase E and migration readiness
+
+Do not edit files or apply migrations. Keep tool output bounded: inspect only
+relevant file ranges, at most 120 lines per read; use narrow grep searches for
+symbols; never read the whole plan, canonical spec, diff, file, run transcript,
+or command log. Inspect only the changed Phase E paths and the focused migration
+evidence needed for a decision. Verify private chat identity and range/hash proof,
+durable observations, finalization locks, source exposures and source uses,
+backend reload checks, migration `0072` ordering and fences, public `ranges: []`,
+and clean-cutover behavior. Approve only when migration `0072` has not run
+against the shared workspace database and every check has real evidence.
+Migration runs in isolated test databases are expected. Rejection blocks without
+repair.
+When checking durable evidence, query only the current run's named output rows
+with `smithers output`; do not inspect or dump historical run transcripts.
+
+Keep the final response small. Return only the required JSON object: a summary
+of at most 240 characters, at most 8 evidence items of at most 160 characters
+each, and at most 4 blockers of at most 160 characters each. Do not paste
+command output, full diffs, file contents, or review notes into the response.
+Do not count the Smithers runner, supervisors, or validation and review agents as stopped-writer violations. They orchestrate checks but do not create product or Smithers rows; the stop-writers gate applies to worker, API, evaluation, and other application services that can write those rows.
+
+## Plan and validation
+
+{JSON.stringify(props.plan, null, 2)}
+
+{JSON.stringify(props.validation, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

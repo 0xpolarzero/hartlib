@@ -1,0 +1,30 @@
+# Plan the chat reset implementation
+
+You are the planning and protection step. Do not edit files. Read `AGENTS.md`,
+the approved chat-reset brief and any existing chat-reset artifacts, all
+relevant canonical specifications under `docs/`, the local Effect v4 reference
+under `docs/references/effect-smol/`, and the complete current git diff.
+
+Verify the existing foundation before planning changes. Record evidence for the
+existing reset groundwork, API and worker behavior, demo state, archive UI,
+translations, tests, and documentation. Treat every change already present at
+the start of the run as protected: record its git status, worktree hash, index
+hash, and diff hash for each path. Use these exact fingerprint rules so the
+final state check can compare like with like: `git status --short -- PATH`,
+`git hash-object -- PATH` (or an empty hash for a missing file), the blob hash
+from `git ls-files --stage -- PATH`, and the SHA-256 of
+`git diff --no-ext-diff -- PATH`. Do not edit protected or unrelated worker
+runtime files.
+
+Return a per-file implementation plan with concrete acceptance points. Include
+exactly these four validation commands, in this order: {JSON.stringify(props.validationCommands)}.
+The optional prompt may narrow the fixed brief or add context, but it cannot
+expand scope. Ask for a durable human response only if the brief conflicts with
+canonical docs; otherwise set `humanRequest.required` to false.
+
+## Optional context
+
+{props.prompt || "(none)"}
+
+REQUIRED OUTPUT:
+{props.schema}

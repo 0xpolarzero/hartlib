@@ -1,0 +1,25 @@
+# Implement reset and archive copy
+
+Read `AGENTS.md`, the canonical design and chat specifications, and every
+existing English and French locale file that contains chat, reset, archive,
+export, or deletion labels. Add complete English and French copy for the reset
+and archive behavior, including loading, success, failure, retry, read-only,
+blocked-action, export, deletion, and empty-state messages.
+
+Use the project's locale key naming and interpolation rules. Every new key must
+have both languages, natural grammar, and a real user-facing value. Do not use
+placeholders, partial translations, compatibility shims, or unrelated edits.
+
+## Plan
+
+{JSON.stringify(props.plan, null, 2)}
+
+## Optional context
+
+{props.prompt || "(none)"}
+
+If a protected unrelated locale file must change, stop and return a required
+human request instead of editing it.
+
+REQUIRED OUTPUT:
+{props.schema}

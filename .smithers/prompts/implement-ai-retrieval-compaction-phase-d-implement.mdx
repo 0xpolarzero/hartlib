@@ -1,0 +1,21 @@
+# Implement Phase D parallel compaction
+
+Implement only Phase D. Read the canonical spec, approved prior outputs, plan
+Sections 14–17, and `docs/references/effect-smol/` for Effect v4 work. Add strict
+complete manifests; stable bounded normal-group concurrency; bounded oversized
+single-source tools; exact passage-to-range proof for documents and chat; ledger-
+order merging; one monotone fallback and one final exact measure. Remove
+`ContextReductionLoop` from direct, topic, and synthesis paths, including reducer
+iteration state and recovery cursors named by the plan. Add the requested AI chat
+and config proof coverage, update the affected canonical-doc sections in this
+phase, and do not run migrations or delete files outside the Phase D map. Record
+removed legacy paths and tests.
+
+## Prior evidence
+
+{JSON.stringify(props.plan, null, 2)}
+
+{JSON.stringify(props.previousPhase, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

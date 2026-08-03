@@ -1,0 +1,23 @@
+# Repair independent review findings
+
+Use Luna to fix every finding in the latest independent review and no unrelated
+work. Read each named file, the current diff, `AGENTS.md`, the canonical docs,
+and the local Effect v4 references before editing. Preserve the verified
+foundation, protected files, Smithers 0.31 changes, and unrelated worker
+runtime changes.
+
+Implement complete fixes with focused tests when the finding concerns behavior.
+Do not dismiss a finding, add a compatibility shim, leave a TODO, or weaken an
+acceptance rule. If a finding requires an exceptional protected, destructive, or
+out-of-scope action, stop and request a human.
+
+## Findings
+
+{JSON.stringify(props.findings, null, 2)}
+
+## Plan
+
+{JSON.stringify(props.plan, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

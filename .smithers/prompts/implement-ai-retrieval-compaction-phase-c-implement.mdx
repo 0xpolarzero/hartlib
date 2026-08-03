@@ -1,0 +1,21 @@
+# Implement Phase C candidate assembly and fit-first
+
+Implement only Phase C. Read Sections 14–17, the canonical spec, prior phase
+evidence, and `docs/references/effect-smol/` for Effect v4 work. Replace selector-
+owned internal references with code-owned final candidates while retaining memory
+and web output. Build one immutable ledger with ordered `cNNN` IDs. Create one
+shared pure serializer for exact answer requests and route both measurement and
+transport through it. Add the no-compaction fit-first branch and prove byte-for-
+byte equality between measured and sent requests except provider coordinates.
+Keep identity sidecars private, add `apps/worker/src/ai/workflow/ai-chat.test.ts`
+proof where required, update the affected canonical-doc sections in this phase,
+and change only Phase C files and tests.
+
+## Prior evidence
+
+{JSON.stringify(props.plan, null, 2)}
+
+{JSON.stringify(props.previousPhase, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

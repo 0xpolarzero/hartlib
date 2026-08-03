@@ -1,0 +1,27 @@
+# Run the required validation commands
+
+You are the validation worker. Do not edit files. Run all four commands below
+in the exact order shown, even if an earlier command fails. Capture useful
+stdout and stderr for every command, the real exit code, and a pass or fail
+status. Do not replace a command with a narrower check.
+
+1. `bun run check`
+2. `bun run lint`
+3. `bun run test`
+4. `bun run e2e`
+
+This is the `{props.stage}` validation pass. Use the supplied context only to
+explain failures; do not invent success. A command passes only with exit code
+zero. The e2e command is the project's canonical Playwright gate and must run
+both configured projects.
+
+## Context
+
+{JSON.stringify(props.context, null, 2)}
+
+## Fixed command list
+
+{JSON.stringify(props.validationCommands, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

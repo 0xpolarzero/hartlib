@@ -1,0 +1,27 @@
+# Review Phase C
+
+Do not edit files. Independently verify code-owned final candidate ownership,
+immutable ordered `cNNN` ledger behavior, shared exact request serialization,
+fit-first no-compaction routing, byte-equivalent measure/send requests, private
+identity sidecars, tests, protected-state integrity, and clean cutover.
+
+This run may resume after later phases were repaired in the same worktree. Do
+not reject Phase C because later-phase files or commits already exist, because
+the worktree is dirty, or because a shared runtime dependency sits outside the
+Phase C file map. Review the current code against the Phase C contract and flag
+only defects that break that contract. Run current focused or database-backed
+tests when stored validation predates a repair; the local test database is
+`postgres://brief:brief@127.0.0.1:5432/brief`.
+
+Read the canonical spec, complete diff, validation history, plan, and local
+Effect v4 reference. Approve only when evidence is concrete and no
+selector-owned or legacy producer remains in production.
+
+## Plan and validation
+
+{JSON.stringify(props.plan, null, 2)}
+
+{JSON.stringify(props.validation, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

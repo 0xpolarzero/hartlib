@@ -1,0 +1,31 @@
+# Add focused chat reset tests
+
+Read `AGENTS.md`, the approved plan, the canonical docs, the Effect v4
+references under `docs/references/effect-smol/`, and the implementation output.
+Inspect the code before writing tests so each test checks a real contract.
+
+Add the required domain, migration, worker-fence, authorization, demo success
+and rollback, API-client, and Playwright race and failure tests. Cover one
+replacement UUID, duplicate-click suppression, send and stale GET/SSE fences,
+lost-response retry, competing resets, archive read-only access, allowed
+export/deletion, blocked write/sharing, collection invalidation, English and
+French copy, and protected identity or ownership boundaries. Use the project's
+Effect test layers and test database rules. Do not make unrelated edits.
+
+## Plan
+
+{JSON.stringify(props.plan, null, 2)}
+
+## Implementation aggregate
+
+{JSON.stringify(props.implementation, null, 2)}
+
+## Optional context
+
+{props.prompt || "(none)"}
+
+Ask for a human only if a protected unrelated file or out-of-scope action is
+required.
+
+REQUIRED OUTPUT:
+{props.schema}

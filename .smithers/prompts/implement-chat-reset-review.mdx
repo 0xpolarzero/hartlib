@@ -1,0 +1,32 @@
+# Independently review chat reset
+
+Do not edit files. Read the brief, `AGENTS.md`, every affected canonical
+specification, the local Effect v4 references, the plan, the full current diff,
+and the latest validation record. Review every acceptance point and each race
+and failure rule independently of the implementers.
+
+Check API identity and schema validation, result projection and status mapping,
+audit wiring, client types, reducer fencing and rollback, archive permissions
+and collection invalidation, complete English and French copy, focused test
+coverage, docs accuracy, protected-file integrity, and the four-command
+validation result. Report every blocking finding with a file, problem, and
+required fix. Set `approved` only when the complete contract is met.
+
+## Stage
+
+{props.stage}
+
+## Plan
+
+{JSON.stringify(props.plan, null, 2)}
+
+## Validation
+
+{JSON.stringify(props.validation, null, 2)}
+
+## Previous review, if any
+
+{JSON.stringify(props.previousReview, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

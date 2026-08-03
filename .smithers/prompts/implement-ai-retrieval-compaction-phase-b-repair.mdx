@@ -1,0 +1,17 @@
+# Repair only Phase B validation failures
+
+Read the Phase B diff, plan scope, and real failed command results. Fix only a
+failure caused by Phase B query compilers, scope resolution, search bounds,
+fusion, hydration, previews, exact counts, or the single review/replacement
+operation. Do not change the fixed command list, widen scope, touch protected
+files, run migrations, or repair an unrelated failure. Use the local Effect v4
+reference for Effect changes. Report each repair and remaining blocker.
+
+## Plan and validation
+
+{JSON.stringify(props.plan, null, 2)}
+
+{JSON.stringify(props.validation, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

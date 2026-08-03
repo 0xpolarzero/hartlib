@@ -1,0 +1,17 @@
+# Repair only Phase D validation failures
+
+Repair only failures caused by Phase D manifests, bounded scheduling, oversized
+source tools, range proof, ledger merge, fallback, or removal of direct/topic/
+synthesis `ContextReductionLoop` paths. Read the failed results and full diff.
+Keep the fixed Section 16 command set, do not widen scope, touch protected work,
+or run migrations. Use `docs/references/effect-smol/` for Effect v4 changes.
+Report exact repairs and unresolved blockers.
+
+## Plan and validation
+
+{JSON.stringify(props.plan, null, 2)}
+
+{JSON.stringify(props.validation, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

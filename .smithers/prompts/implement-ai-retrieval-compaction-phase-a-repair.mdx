@@ -1,0 +1,19 @@
+# Repair only Phase A validation failures
+
+Read the approved plan, the Phase A implementation, and the failed validation.
+Repair only failures caused by Phase A changes. Do not widen the file map, alter
+the fixed validation command, touch protected work, or implement later phases.
+Use `docs/references/effect-smol/` for any Effect v4 correction. Run no tests in
+this task; report the concrete files and repairs for the following exact
+revalidation command to run next.
+
+## Plan
+
+{JSON.stringify(props.plan, null, 2)}
+
+## Failed validation
+
+{JSON.stringify(props.validation, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

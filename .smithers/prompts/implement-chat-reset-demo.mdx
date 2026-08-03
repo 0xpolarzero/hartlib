@@ -1,0 +1,26 @@
+# Implement the demo reset state machine
+
+Read `AGENTS.md`, the canonical design and chat runtime specifications, the
+approved chat-reset artifacts, and the local Effect v4 references before
+editing. Preserve the existing foundation and protected files.
+
+Complete the demo reset reducer or controller with optimistic clearing, one
+replacement UUID per accepted reset, repeat-click suppression, send fencing,
+success reconciliation, failure rollback, retry after a lost response,
+competing-reset handling, and fencing for old GET or SSE responses. Keep the
+state transitions deterministic and test the race cases named in the brief.
+Do not add a second reset identity or a compatibility shim.
+
+## Plan
+
+{JSON.stringify(props.plan, null, 2)}
+
+## Optional context
+
+{props.prompt || "(none)"}
+
+Ask for a human only if a protected unrelated file or an out-of-scope or
+destructive action is required.
+
+REQUIRED OUTPUT:
+{props.schema}

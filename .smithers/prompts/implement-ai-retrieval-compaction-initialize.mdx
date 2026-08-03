@@ -1,0 +1,47 @@
+# Initialize the retrieval and compaction cutover
+
+Do not edit files. Read `AGENTS.md`, the full approved plan at
+`artifacts/ai-retrieval-compaction-plan.html`, `docs/ai-chat-runtime.spec.md`,
+the complete current Git state, every existing workflow and prompt named by the
+plan, the companion skill, and the local Effect v4 reference under
+`docs/references/effect-smol/` before making any Effect claim. Map Sections 14–17
+to six ordered phases. For every phase, record concrete files, exact tests,
+affected canonical-doc sections, and acceptance evidence. Use the command lists
+from the plan's Section 16 and keep the final command groups exact. Record the
+approved additive proof commands for Phases B–F. Set an incremental canonical-doc
+policy: each affected phase updates its own sections, and Phase F completes the
+full reconciliation. Record a protected baseline for every pre-existing changed
+path that does not belong to this cutover. On a rerun, treat a changed path as
+cutover-owned only when the optional prompt names the prior Smithers run that
+created it and the path is inside the Sections 14–15 file map; list those paths
+in the summary and continue from them. Protect every other changed path with
+`git status --short`, worktree blob hash, index blob hash, and SHA-256 of the
+unstaged path diff. The baseline must include `.smithers/agents.ts` and
+`db/migrations/0071_chat_archive_and_replace.sql` even when they are clean. Do
+not edit protected files.
+
+The optional prompt is guidance only. Accept it only when it narrows or clarifies
+the approved plan; ignore it when it adds no useful scope and reject it when it
+widens the file map, tests, migration, or acceptance rules. State every blocker
+instead of guessing. The scope map must include the files named by Sections 14–15,
+the phase command map must preserve the exact Section 16 commands, and the
+acceptance map must tie each Section 17 check to evidence that later tasks can
+collect. Map the future Phase E drain prerequisites without running them now:
+terminal product AI runs, drained or empty forbidden Smithers/current-output rows,
+and stopped local services. `summary`, digests, and fingerprints must describe
+what you actually read.
+
+## Optional prompt
+
+{props.prompt || "(none)"}
+
+## Command maps
+
+{JSON.stringify(props.phaseCommands, null, 2)}
+
+{JSON.stringify(props.proofCommandAdditions, null, 2)}
+
+{JSON.stringify(props.finalCommands, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

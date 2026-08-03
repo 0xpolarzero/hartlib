@@ -6,8 +6,9 @@
 - Keep `docs/` in sync whenever code changes affect behavior, architecture, interfaces, or project expectations.
 - Do not use `docs/` as a journal or changelog. It is the canonical specification, not a history log.
 - For Effect v4 backend work, always use `docs/references/effect-smol/` as the local reference before relying on memory or older Effect patterns.
-- For every repository agent delegation, including directly spawned subagents and every nested Smithers task agent, use Codex `gpt-5.6-luna` at high-to-xhigh reasoning for implementation, debugging, test authoring, and other intensive execution work.
-- Use Codex `gpt-5.6-sol` at high-to-xhigh reasoning for planning, orchestration, delegation, synthesis, and independent review. Sol agents should delegate intensive execution work to Luna agents and remain independently responsible for reconciling and reviewing the result.
+- Match each repository agent delegation to its work. Use Codex `gpt-5.6-luna` at max reasoning for implementation, debugging, test authoring, and behavior-changing execution.
+- Use Codex `gpt-5.6-sol` at max reasoning for planning, orchestration, delegation, synthesis, and independent review. Sol agents do not implement; they delegate intensive execution to Luna and reconcile the result.
+- Use Codex `gpt-5.3-codex-spark` at xhigh reasoning for exact, low-risk mechanical edits, commit-message drafting, and read-only UI or browser checks. Spark agents do not make design or behavior decisions.
 
 ## Prose style
 

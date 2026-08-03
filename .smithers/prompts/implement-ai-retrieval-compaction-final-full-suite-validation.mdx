@@ -1,0 +1,13 @@
+# Run the final full-suite validation gate
+
+Do not edit files and perform no repair. Run all commands below exactly in order,
+even after a failure. Capture stdout, stderr, real exit codes, and every failure.
+The final gate is green only when every command exits zero. Do not apply a second
+migration or conceal a failing suite.
+
+## Fixed commands
+
+`{JSON.stringify(props.commands)}`
+
+REQUIRED OUTPUT:
+{props.schema}

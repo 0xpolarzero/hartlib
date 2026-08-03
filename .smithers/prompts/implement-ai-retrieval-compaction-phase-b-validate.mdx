@@ -1,0 +1,17 @@
+# Validate Phase B
+
+Do not edit files. Run every command in the supplied Phase B command set exactly
+as written and in order. Capture real exit codes and useful output. A command
+passes only with exit code zero; do not substitute a narrower test. Do not apply
+database migrations.
+
+## Commands
+
+`{JSON.stringify(props.commands)}`
+
+## Context
+
+{JSON.stringify(props.context, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

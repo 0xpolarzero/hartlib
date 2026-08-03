@@ -1,0 +1,35 @@
+# Run the non-mutating migration preflight
+
+Do not edit files and do not run any migration command. Read the plan, repository
+database scripts, migration directory, backend configuration, and canonical spec.
+Run only non-mutating checks that prove migration `0072_ai_retrieval_compaction.sql`
+exists in order, configuration is loaded, every product AI run is terminal,
+forbidden product Smithers/current-output rows are drained or empty, database
+access works, backend reload is ready, and no Brief API, web, worker, Vite,
+evaluation, or job-poll service is running. Treat the current Smithers workflow,
+its resumer, and its supervisor as orchestration infrastructure, not a local
+Brief service; do not count them as a blocker and do not try to stop them.
+
+Shell safety is part of this task: never paste Markdown backticks into a
+double-quoted shell argument, never use `eval`, and never run a command that
+could expand or execute the migration. In particular, do not run `bun run
+db:migrate`, `bun run db:up`, a migration module, or a shell command copied
+from the runbook that contains one of those commands. Use single-quoted
+search patterns or fixed read-only SQL instead.
+Record exact commands, concrete output for every check, and blockers. A
+preflight pass is not migration approval.
+
+Output semantics are strict: `passed` means only that every supplied
+read-only preflight check passed. Set it to `true` when those checks pass,
+even though this task does not request migration approval, does not take the
+exclusive fence, and cannot verify post-migration schema state. Do not list
+the lack of approval, fence, or post-migration checks as blockers. List only
+actual failed preflight checks in `blockers`; keep the no-approval boundary in
+the summary.
+
+## Initialization plan
+
+{JSON.stringify(props.plan, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

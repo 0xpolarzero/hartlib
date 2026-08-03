@@ -1,0 +1,21 @@
+# Implement Phase E durable evidence and migration files
+
+Implement only Phase E. Read the plan, canonical spec, prior phase evidence, and
+`docs/references/effect-smol/` before Effect v4 work. Add private chat identity
+and exact range/hash proof; durable observation, finalization, source exposure,
+source-use, and backend reload changes; and migration `0072_ai_retrieval_compaction.sql`
+with fences, ordering, indexes, constraints, seals, and deterministic retained
+source-use conversion. Create only `db/migrations/0072_ai_retrieval_compaction.sql`
+for this cutover, add migration proof tests, and update the affected
+canonical-doc sections in this phase. Do not apply any migration, start services, or
+remove Phase F legacy artifacts. Keep public chat ranges empty and protect
+pre-existing user changes.
+
+## Prior evidence
+
+{JSON.stringify(props.plan, null, 2)}
+
+{JSON.stringify(props.previousPhase, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

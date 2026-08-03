@@ -1,0 +1,24 @@
+# Implement Phase A contracts and pure helpers
+
+Implement only Phase A from Sections 14–15 of the approved plan. Read the
+canonical spec, the plan, the initialization output, and `docs/references/effect-smol/`
+for all Effect v4 work. Work only in the Phase A file map: strict query/review,
+branch, fused-result, candidate-ledger, compaction-manifest, group, fallback,
+identity, run-local ID, passage, range, and pure RRF helpers plus their focused
+tests. Update only the affected canonical contract sections in this phase when
+behavior changes, and report `canonicalDocUpdated` truthfully. Do not change query compilers, operations, migrations, product state, or
+legacy paths assigned to later phases. Preserve all protected baseline content.
+
+Use strict schemas and deterministic pure functions. Cover Unicode normalization,
+surrogate boundaries, empty text, citation stripping, sentence and paragraph
+boundaries, adjacency merging, canonical identity, explicit provenance, stable
+bytewise ties, caps, truncation, and complete manifest accounting. Do not invent
+test success or leave stubs. Report exact files and tests changed, plan sections
+addressed, and any real blocker.
+
+## Initialization
+
+{JSON.stringify(props.plan, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

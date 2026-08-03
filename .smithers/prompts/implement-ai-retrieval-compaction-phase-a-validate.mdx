@@ -1,0 +1,15 @@
+# Validate Phase A
+
+Do not edit files. Run exactly the supplied command, with the repository's Bun
+and Vitest setup, and capture stdout, stderr, the real exit code, and failures.
+A pass requires exit code zero. Do not narrow, replace, or skip the command.
+Use the context only to explain failures. The Phase A command is:
+
+`{JSON.stringify(props.commands)}`
+
+## Context
+
+{JSON.stringify(props.context, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

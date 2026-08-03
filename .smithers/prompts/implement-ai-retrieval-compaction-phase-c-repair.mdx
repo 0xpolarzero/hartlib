@@ -1,0 +1,16 @@
+# Repair only Phase C validation failures
+
+Use the plan and real validation output to repair only Phase C candidate-ledger,
+serialization, fit-first, or byte-equivalence failures. Keep the command set
+fixed. Do not change Phase A/B behavior, add compatibility paths, touch protected
+files, or apply a migration. Consult `docs/references/effect-smol/` for Effect v4
+work. Report concrete repairs, files, and blockers; do not claim a test passed.
+
+## Plan and validation
+
+{JSON.stringify(props.plan, null, 2)}
+
+{JSON.stringify(props.validation, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

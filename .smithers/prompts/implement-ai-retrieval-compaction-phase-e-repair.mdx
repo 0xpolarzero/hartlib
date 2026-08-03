@@ -1,0 +1,16 @@
+# Repair only Phase E validation failures
+
+Repair only Phase E failures in private identity/range proof, durable observations,
+finalization, reload checks, or migration-file tests. Keep the exact validation
+commands. Never run `bun run db:migrate`, touch protected files, or widen scope.
+Use `docs/references/effect-smol/` for Effect v4 work. Report all changed files,
+repairs, and blockers without claiming migration success.
+
+## Plan and validation
+
+{JSON.stringify(props.plan, null, 2)}
+
+{JSON.stringify(props.validation, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

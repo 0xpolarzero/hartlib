@@ -1,0 +1,22 @@
+# Implement Phase B query compilers and retrieval
+
+Implement only Phase B. Read the approved plan, canonical spec, completed Phase A
+evidence, and `docs/references/effect-smol/` before Effect v4 work. Replace the
+query contract and physical-store compilers; add accepted-scope resolution that
+does not reveal an authorization oracle, bounded parallel branch execution,
+explicit coverage and truncation, two-stage identity-preserving RRF, hydration,
+snapshot/hash verification, exact previews and token counts, and the single
+review-or-replacement operation. Keep provider-visible objects free of source
+identity. Add the requested config proof tests where the contracts require them,
+update the affected canonical-doc sections in this phase, and report both test
+and doc changes. Add or change only files in the Phase B map and their tests. Do
+not run the migration or remove later-phase legacy paths.
+
+## Initialization and prior gate
+
+{JSON.stringify(props.plan, null, 2)}
+
+{JSON.stringify(props.previousPhase, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}
