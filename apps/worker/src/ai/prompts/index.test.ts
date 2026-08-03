@@ -200,6 +200,21 @@ describe("retrieval and compaction prompt inventory", () => {
       "FallbackContextPrompt",
     ]);
   });
+  it("requires phrase atoms to represent explicit adjacency", () => {
+    for (const prompt of [InternalQueryPlanPrompt, InternalQueryReviewPrompt]) {
+      expect(prompt).toContain("Use one term atom per separate concept");
+      expect(prompt).toContain("Use a phrase atom only when exact word adjacency is explicit");
+    }
+  });
+  it("requires date-only planning for broad freshness", () => {
+    expect(InternalQueryPlanPrompt).toContain(
+      'produce an ordinary document query with order "newest", an exact publishedAt date filter, and empty all and anyOf arrays',
+    );
+    expect(InternalQueryReviewPrompt).toContain(
+      "preserve the date filter and newest ordering with empty all and anyOf arrays",
+    );
+    expect(InternalQueryReviewPrompt).not.toContain("remove generic lexical terms");
+  });
 });
 describe("parallel compaction provider contracts", () => {
   const candidate = {

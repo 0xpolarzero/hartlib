@@ -1611,6 +1611,70 @@ class IntegrationAgentClient extends CanonicalAgentClient {
     return super.structured(input);
   }
 }
+
+class BroadFreshnessPlanAgent extends IntegrationAgentClient {
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName === "emit_internal_query_plan") {
+      await invokeStructuredProviderHook(input);
+      const after = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
+      return input.validate({
+        action: "search",
+        queries: [
+          {
+            purpose: "find documents published since yesterday",
+            scope: "documents",
+            all: [],
+            anyOf: [],
+            not: [],
+            filters: { documents: { publishedAt: { after } } },
+            order: "newest",
+          },
+        ],
+      });
+    }
+    return super.structured(input);
+  }
+}
+class FreshnessPlanPassthroughAgent extends IntegrationAgentClient {
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName === "emit_internal_query_plan") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({
+        action: "search",
+        queries: [
+          {
+            purpose: "find latest news",
+            scope: "documents",
+            all: [{ text: "news", mode: "term" }],
+            anyOf: [],
+            not: [],
+            filters: { documents: { publishedAt: { after: "2026-08-02" } } },
+            order: "relevance",
+          },
+        ],
+      });
+    }
+    if (input.outputToolName === "emit_internal_query_review") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({
+        action: "replace",
+        reason: "missed_concept",
+        queries: [
+          {
+            purpose: "find latest actualités",
+            scope: "documents",
+            all: [{ text: "actualités", mode: "term" }],
+            anyOf: [],
+            not: [],
+            filters: { documents: { publishedAt: { after: "2026-08-02" } } },
+            order: "relevance",
+          },
+        ],
+      });
+    }
+    return super.structured(input);
+  }
+}
 class StructuredNoEvidenceAgent extends IntegrationAgentClient {
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
     if (input.outputToolName === "emit_internal_query_review") {
@@ -2839,6 +2903,116 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       initialPlan: { action: "search" },
       review: { action: "accept", reason: "sufficient_coverage" },
       replacementPlan: null,
+    });
+  }, 120_000);
+
+  it("uses a provider-authored date-only plan for broad freshness", async () => {
+    const fixture = await runDb(
+      createPublicPreviewFixture(
+        "A recent public update contains enough immutable text to exercise freshness retrieval. ".repeat(
+          4,
+        ),
+      ),
+    );
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      phaseBOperationConfig,
+      new BroadFreshnessPlanAgent(),
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    const result = await inTask("freshness-retrieve", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "What is new since yesterday?",
+        "freshness-retrieve",
+        [],
+      ),
+    );
+
+    expect(result?.queryPlan).toMatchObject({
+      action: "search",
+      queries: [{ scope: "documents", all: [], anyOf: [], order: "newest" }],
+    });
+    expect(
+      result?.fused.results.some(
+        (candidate) =>
+          candidate.identity.kind === "public_document" &&
+          candidate.identity.sourceId === fixture.publicSourceId &&
+          candidate.identity.documentId === fixture.publicDocumentId,
+      ),
+    ).toBe(true);
+  }, 120_000);
+  it("passes provider freshness atoms and ordering through unchanged", async () => {
+    const fixture = await runDb(
+      createPublicPreviewFixture(
+        "A recent public update contains enough immutable text to exercise freshness passthrough. ".repeat(
+          4,
+        ),
+      ),
+    );
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      phaseBOperationConfig,
+      new FreshnessPlanPassthroughAgent(),
+    );
+    const load = await inTask("load-freshness-passthrough", () =>
+      operations.loadTurn(fixture.runId),
+    );
+    const result = await inTask("freshness-passthrough-retrieve", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "What is new since yesterday?",
+        "freshness-passthrough-retrieve",
+        [],
+      ),
+    );
+
+    expect(result?.queryPlan).toMatchObject({
+      action: "search",
+      queries: [
+        {
+          scope: "documents",
+          all: [{ text: "actualités", mode: "term" }],
+          anyOf: [],
+          order: "relevance",
+          filters: { documents: { publishedAt: { after: "2026-08-02" } } },
+        },
+      ],
+    });
+    const traces = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly payload: Record<string, unknown> }>`
+          select payload
+          from ai_observations
+          where run_id = ${fixture.runId}
+            and kind = 'structured_retrieval_trace'
+        `;
+      }),
+    );
+    expect(traces).toHaveLength(1);
+    expect(StructuredRetrievalTraceSchema.parse(traces[0]!.payload)).toMatchObject({
+      outcome: "replaced",
+      initialPlan: {
+        action: "search",
+        queries: [
+          {
+            all: [{ text: "news", mode: "term" }],
+            order: "relevance",
+            filters: { documents: { publishedAt: { after: "2026-08-02" } } },
+          },
+        ],
+      },
+      replacementPlan: {
+        action: "search",
+        queries: [
+          {
+            all: [{ text: "actualités", mode: "term" }],
+            order: "relevance",
+            filters: { documents: { publishedAt: { after: "2026-08-02" } } },
+          },
+        ],
+      },
     });
   }, 120_000);
   it("replaces a structured review without duplicating discovered evidence", async () => {

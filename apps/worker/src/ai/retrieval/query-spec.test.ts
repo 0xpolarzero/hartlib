@@ -314,6 +314,46 @@ describe("Phase A query contracts", () => {
     ).toThrow();
   });
 
+  it("accepts a broad freshness plan as a date-only document query", () => {
+    const plan = InternalQueryPlanSchema.parse({
+      action: "search",
+      queries: [
+        {
+          purpose: "find documents published since yesterday",
+          scope: "documents",
+          all: [],
+          anyOf: [],
+          not: [],
+          filters: {
+            documents: {
+              languages: ["fr"],
+              publishedAt: { after: "2026-08-02" },
+            },
+          },
+          order: "newest",
+        },
+      ],
+    });
+
+    expect(plan).toMatchObject({
+      action: "search",
+      queries: [
+        {
+          scope: "documents",
+          all: [],
+          anyOf: [],
+          filters: {
+            documents: {
+              languages: ["fr"],
+              publishedAt: { after: "2026-08-02" },
+            },
+          },
+          order: "newest",
+        },
+      ],
+    });
+  });
+
   it("enforces exact query, atom, and UTF-8 byte bounds", () => {
     const exactAtom = "é".repeat(QUERY_CONTRACT_LIMITS.maxAtomUtf8Bytes / 2);
     expect(

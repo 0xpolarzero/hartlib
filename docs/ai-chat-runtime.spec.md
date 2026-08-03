@@ -732,7 +732,8 @@ retrieval has begun.
 
 The `InternalQueryPlanPrompt` emits one strict, non-recursive
 `InternalQueryPlan`. A search plan contains the complete provider-authored
-query array; code does not add a query, remove an atom, or infer a source.
+query array. Code validates and canonicalizes the transport shape; it does not
+add a query, remove an atom, or infer a source.
 The Z.AI transport schema uses one flat object root for plans and reviews so
 the provider can emit the action and its fields without a root union. The
 runtime checks those fields, restores canonical branch semantics, and then
@@ -746,10 +747,21 @@ transport fields such as an explanatory review reason are discarded or mapped
 only when they contain a closed replacement cue; no free-form reason reaches the
 canonical contract.
 An atom is a `term` or `phrase`; `all`, `anyOf`, and `not` compile to
-parameterized PostgreSQL full-text predicates.
+parameterized PostgreSQL full-text predicates. A `phrase` requires word
+adjacency, so the planner uses separate `term` atoms for separate concepts
+unless the user explicitly requests an exact phrase or title.
 No fixed term count constrains the plan. Code enforces only the query count,
 serialized UTF-8 plan, total atom, provider-output, branch-row, candidate, and
 hydration bounds. A negative-only query must carry a positive indexed filter.
+
+For a broad freshness request such as “what’s new” or “depuis hier”, the provider
+must emit an ordinary date-bounded document query with `order: "newest"`, an
+exact publication-date filter, and empty `all` and `anyOf` arrays.
+If the user names a subject, the provider may keep atoms for that subject. The
+date filter, not generic words such as `news` or `actualités`, defines the
+requested time range. The runtime does not detect freshness vocabulary or
+rewrite a provider plan. Initial and replacement plans remain in the
+structured retrieval trace for human review.
 
 Before compilation, code resolves document `sourceNames` against the immutable
 accepted scope. Public-source IDs, publisher subscription IDs, company/user

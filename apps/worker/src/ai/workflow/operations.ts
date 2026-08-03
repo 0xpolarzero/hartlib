@@ -1561,7 +1561,7 @@ export class CanonicalWorkflowOperations {
         );
         const previewForRequest = pendingPreview;
         pendingPreview = undefined;
-        return this.agents.structured({
+        const review = await this.agents.structured({
           requestClass: "fast",
           model: load.acceptanceScope.fastModelId,
           system: InternalQueryReviewPrompt,
@@ -1603,6 +1603,7 @@ export class CanonicalWorkflowOperations {
             );
           },
         });
+        return review;
       },
       excludedMessageIds,
       async (exposure) => {

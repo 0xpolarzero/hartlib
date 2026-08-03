@@ -1486,6 +1486,30 @@ test.describe("opt-in live provider contract smoke", () => {
     await expect(latestAssistant(page).getByTestId("citation-reference").first()).toBeVisible();
   });
 
+  test("real provider freshness retrieval returns newest cited documents", async ({ page }) => {
+    test.setTimeout(240_000);
+    await sendAndWait(
+      page,
+      "What is new in the French public-source documents since July 1, 2026? Cite the supporting sources.",
+      180_000,
+    );
+    const state = readE2eRuntimeState();
+    const run = state.runs[0];
+    if (run?.status === "failed" || run === undefined) {
+      throw new Error(`live freshness chat run failed durably: ${JSON.stringify(state)}`);
+    }
+    expect(run.status).toBe("succeeded");
+    const contextReady = state.events.find((event) => event.type === "context_ready")?.event;
+    const sourcesRead = Array.isArray(contextReady?.sourcesRead) ? contextReady.sourcesRead : [];
+    expect(sourcesRead.length).toBeGreaterThan(0);
+    await expect(latestAssistant(page).getByTestId("citation-reference").first()).toBeVisible();
+    const answer = await latestAssistantContent(page).innerText();
+    await page.reload();
+    await expect(page.getByTestId("chat-message-assistant")).toHaveCount(1);
+    await expect(latestAssistant(page).getByTestId("citation-reference").first()).toBeVisible();
+    await expect(latestAssistantContent(page)).toHaveText(answer);
+  });
+
   test("real GLM and Tinyfish complete the required web-evidence branch", async ({ page }) => {
     test.skip(
       !liveWebProvider,
