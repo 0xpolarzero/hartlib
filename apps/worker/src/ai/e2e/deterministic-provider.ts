@@ -877,11 +877,11 @@ const outputFor = (
                 question: currentMessage,
                 topics: [
                   {
-                    question: "What does the first deterministic topic cover?",
+                    question: "What do the solar connection sources report?",
                     relevantTurnIds: [],
                   },
                   {
-                    question: "What does the second deterministic topic cover?",
+                    question: "What do the storage operation sources report?",
                     relevantTurnIds: [],
                   },
                 ],

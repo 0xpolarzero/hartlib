@@ -150,20 +150,31 @@ export const renderOfficialGlmProviderRequest = (
   });
 };
 
-const turboProviderAccountingOverhead = (request: ProviderRequest): number =>
-  normalizeProviderRequest(request).messages.at(-1)?.role === "assistant" ? 1 : 0;
+const turboProviderAccountingOverhead = (request: ProviderRequest): number => {
+  const normalized = normalizeProviderRequest(request);
+  const lastMessage = normalized.messages.at(-1);
+  const assistantContinuation = lastMessage?.role === "assistant" ? 1 : 0;
+  // Z.AI counts one additional framing token for each completed assistant
+  // tool-call turn when the prompt ends in tool results. A later assistant
+  // prose turn replaces that framing in the provider's serialization.
+  const completedToolTurns =
+    lastMessage?.role === "tool"
+      ? normalized.messages.filter(
+          (message) => message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0,
+        ).length
+      : 0;
+  return assistantContinuation + completedToolTurns;
+};
 
 const exactCount = (request: ProviderRequest, modelId: RegisteredModel["id"]): number => {
   const template = renderOfficialGlmProviderRequest(request, modelId);
   const templateTokens =
     modelId === "glm-5.2" ? countGlm52TextTokens(template) : countGlmTurboTextTokens(template);
-  // Z.AI Turbo's prompt usage is four tokens lower per function definition
-  // than the pinned local template rendering. It also adds one out-of-template
-  // token only for a trailing assistant continuation. Historical tool-call
-  // turns are already represented in the provider's prompt count.
-  const toolDefinitionAdjustment = (normalizeProviderRequest(request).tools?.length ?? 0) * 4;
+  // GLM-5-Turbo's live prompt usage matches the pinned template for function
+  // definitions. Its only provider-only framing is the bounded continuation
+  // adjustment above.
   return modelId === "glm-5-turbo"
-    ? templateTokens - toolDefinitionAdjustment + turboProviderAccountingOverhead(request)
+    ? templateTokens + turboProviderAccountingOverhead(request)
     : templateTokens;
 };
 

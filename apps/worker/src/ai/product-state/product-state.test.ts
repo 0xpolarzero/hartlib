@@ -2777,6 +2777,63 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       ),
     ).resolves.toMatchObject({ status: "succeeded" });
   });
+  it("ignores an unconsumed preview from a failed retrieval retry", async () => {
+    const fixture = await runDb(createFixture("selected-route-retrieval-failed-preview"));
+    await runDb(seedSingleObservability(fixture));
+    await runDb(
+      Effect.gen(function* () {
+        yield* insertProviderMeasurementAndUsage(fixture, {
+          taskId: "single-retrieve-internal",
+          agentRole: "internal_retrieval",
+          loopIteration: 0,
+          attempt: 1,
+          providerRequestIndex: 0,
+          requestSha256Hex: "8".repeat(64),
+        });
+        yield* insertProviderMeasurementAndUsage(fixture, {
+          taskId: "single-retrieve-internal",
+          agentRole: "internal_retrieval",
+          loopIteration: 0,
+          attempt: 1,
+          providerRequestIndex: 1,
+          requestSha256Hex: "9".repeat(64),
+        });
+        yield* insertInternalRetrievalPlanAndReview(fixture, {
+          taskId: "single-retrieve-internal",
+          loopIteration: 0,
+          attempt: 2,
+          planRequestSha256Hex: "a".repeat(64),
+          reviewRequestSha256Hex: "b".repeat(64),
+        });
+        yield* insertAiObservation({
+          runId: fixture.runId,
+          chatId: fixture.chatId,
+          emittingTask: "single-retrieve-internal",
+          loopIteration: 0,
+          attempt: 2,
+          observationKey: "fixture:single-retrieve-internal:failed-preview-terminal-manifest",
+          kind: "retrieval_manifest",
+          payload: { selectorRole: "internal", references: [] },
+        });
+      }),
+    );
+    const memory = await runDb(
+      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
+    );
+
+    await expect(
+      runDb(
+        finalizeAiRun({
+          runId: fixture.runId,
+          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
+          coordinates: finalizeCoordinates,
+          answer: { status: "ok", mode: "single", content: "Answer", sourceMap: [] },
+          memory,
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "succeeded" });
+  });
+
 
   it("rejects missing, extra, and mismatched structured review metadata", async () => {
     const tamperKinds = [
@@ -3507,6 +3564,84 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         }),
       ),
     ).resolves.toMatchObject({ status: "succeeded" });
+  });
+  it("stores a provider-bound web exposure without a separate attestation", async () => {
+    const fixture = await runDb(createFixture("web-source-proof"));
+    const model = resolveRegisteredModel("glm-5-turbo");
+    const visibleText = "A web result shown to the model.";
+    const url = "https://example.test/source";
+    const call = {
+      id: "web-proof-call",
+      name: "web_search",
+      arguments: { query: "source" },
+    };
+    const marker: CodeOwnedSourceExposureProof = {
+      sourceKind: "web",
+      logicalSourceIdentity: url,
+      contentItemIdentity: `${url}:${sha256Base64Url(visibleText)}`,
+      exposureStage: "web_search_preview",
+      visibleTokenCount: model.countTextTokens(visibleText),
+      visibleText,
+      sourceToolCallId: call.id,
+      sourceResultIndex: 0,
+    };
+    const request = {
+      requestClass: "fast" as const,
+      model: "glm-5-turbo" as const,
+      messages: [
+        { role: "system" as const, content: "tool test" },
+        { role: "assistant" as const, content: "", toolCalls: [call] },
+        {
+          role: "tool" as const,
+          toolCallId: call.id,
+          name: call.name,
+          content: JSON.stringify({ results: [{ url, snippet: visibleText }] }),
+        },
+      ],
+      requestedOutputTokens: 128,
+      reasoning: "medium" as const,
+      sourceExposureProofs: [marker],
+    };
+    const bindings = providerRequestSourceExposureProofBindings(request, model.countTextTokens);
+    expect(bindings).toHaveLength(1);
+    const proof = bindings[0]!.providerSerializationProofSha256Hex;
+    const requestSha256Hex = providerRequestSha256Hex(request);
+
+    await expect(
+      runDb(
+        insertAiSourceExposure({
+          runId: fixture.runId,
+          taskId: "web-source-proof-task",
+          loopIteration: 0,
+          attempt: 0,
+          providerRequestIndex: 0,
+          providerRequestSha256Hex: requestSha256Hex,
+          ...marker,
+        }),
+      ),
+    ).resolves.toBe(true);
+
+    const stored = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const exposures = yield* sql<{ readonly contentItemIdentity: string }>`
+          select content_item_identity as "contentItemIdentity"
+          from ai_source_exposures
+          where run_id = ${fixture.runId}
+            and task_id = 'web-source-proof-task'
+        `;
+        const attestations = yield* sql<{ readonly count: number }>`
+          select count(*)::int as count
+          from ai_observations
+          where run_id = ${fixture.runId}
+            and emitting_task = 'web-source-proof-task'
+            and kind = 'source_exposure_attestation'
+        `;
+        return { exposure: exposures[0]?.contentItemIdentity, attestations: attestations[0]?.count };
+      }),
+    );
+    expect(stored.exposure).toBe(`${marker.contentItemIdentity}#proof=${proof}`);
+    expect(stored.attestations).toBe(0);
   });
 
   it("consumes the latest repeated-marker sidecar after measurement-first insertion", async () => {

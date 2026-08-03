@@ -1,4 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
+import { withEnvironment } from "@brief/config";
 import { Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -23,7 +24,6 @@ const databaseName = `brief_legal_hold_retention_${process.pid}_${crypto
   .randomUUID()
   .replaceAll("-", "")
   .slice(0, 8)}`;
-const priorDatabaseUrl = process.env.DATABASE_URL;
 
 const sourceUrl = (): string => {
   if (databaseUrl === undefined) {
@@ -222,30 +222,31 @@ const readChatPresence = (chatId: string) =>
 const runPlatformJob = (job: JobRecord) => {
   const fileStore = makeInMemoryPlatformFileStore();
   return Effect.runPromise(
-    handlePlatformJob(job).pipe(
-      Effect.provide(fileStore.layer),
-      Effect.provide(makePdfTextExtractorLayer(() => Effect.succeed([]))),
-      Effect.provideService(
-        NotificationEmailService,
-        NotificationEmailService.of({ send: () => Promise.reject(new Error("unused")) }),
+    withEnvironment(
+      handlePlatformJob(job).pipe(
+        Effect.provide(fileStore.layer),
+        Effect.provide(makePdfTextExtractorLayer(() => Effect.succeed([]))),
+        Effect.provideService(
+          NotificationEmailService,
+          NotificationEmailService.of({ send: () => Promise.reject(new Error("unused")) }),
+        ),
+        Effect.provideService(
+          ExportObjectStoreService,
+          ExportObjectStoreService.of({
+            verifyPhysicalDeletionSafety: () => Promise.reject(new Error("unused")),
+            get: () => Promise.reject(new Error("unused")),
+            head: () => Promise.reject(new Error("unused")),
+            delete: () => Promise.reject(new Error("unused")),
+            put: () => Promise.reject(new Error("unused")),
+          }),
+        ),
       ),
-      Effect.provideService(
-        ExportObjectStoreService,
-        ExportObjectStoreService.of({
-          verifyPhysicalDeletionSafety: () => Promise.reject(new Error("unused")),
-          get: () => Promise.reject(new Error("unused")),
-          head: () => Promise.reject(new Error("unused")),
-          delete: () => Promise.reject(new Error("unused")),
-          put: () => Promise.reject(new Error("unused")),
-        }),
-      ),
+      { DATABASE_URL: testUrl() },
     ),
   );
 };
-
 describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", () => {
   beforeAll(async () => {
-    process.env.DATABASE_URL = testUrl();
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -263,8 +264,6 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
   }, 120_000);
 
   afterAll(async () => {
-    if (priorDatabaseUrl === undefined) delete process.env.DATABASE_URL;
-    else process.env.DATABASE_URL = priorDatabaseUrl;
     await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;

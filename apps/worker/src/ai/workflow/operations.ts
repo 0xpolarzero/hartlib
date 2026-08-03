@@ -188,6 +188,8 @@ import {
   QueryReviewProviderSchema,
   QueryReviewSchema,
   StructuredRetrievalTraceSchema,
+  normalizeInternalQueryPlanProvider,
+  normalizeQueryReviewProvider,
   type InternalQueryPlan,
   type InternalQueryValue,
   type InternalQueryPlanValue,
@@ -1509,8 +1511,7 @@ export class CanonicalWorkflowOperations {
       outputToolName: "emit_internal_query_plan",
       outputToolDescription: "Emit one complete structured internal query plan.",
       outputSchema: z.toJSONSchema(InternalQueryPlanProviderSchema),
-      validate: (value) =>
-        InternalQueryPlanSchema.parse(InternalQueryPlanProviderSchema.parse(value)),
+      validate: normalizeInternalQueryPlanProvider,
       requestedOutputTokens: Math.min(2048, this.config.aiFastOutputMaxTokens),
       reasoning: "medium",
       coordinates: taskCoordinates(taskId, "internal_retrieval", planCoordinates),
@@ -1568,7 +1569,7 @@ export class CanonicalWorkflowOperations {
           outputToolName: "emit_internal_query_review",
           outputToolDescription: "Review the complete structured retrieval result.",
           outputSchema: z.toJSONSchema(QueryReviewProviderSchema),
-          validate: (value) => QueryReviewSchema.parse(QueryReviewProviderSchema.parse(value)),
+          validate: normalizeQueryReviewProvider,
           requestedOutputTokens: Math.min(2048, this.config.aiFastOutputMaxTokens),
           reasoning: "medium",
           coordinates: {
@@ -4632,13 +4633,7 @@ export class CanonicalWorkflowOperations {
         candidate.kind === "document"
           ? PublicProvenanceSchema.parse(candidate.publicProvenance)
           : candidate.kind === "web"
-            ? {
-                documentTitle: candidate.title,
-                citationUrl: candidate.url,
-                ...(candidate.publishedAt === undefined
-                  ? {}
-                  : { publishedAt: candidate.publishedAt }),
-              }
+            ? { citationUrl: candidate.url }
             : {},
       uses: [use],
     };
@@ -7585,14 +7580,24 @@ export class CanonicalWorkflowOperations {
     memory: MemoryExtractionArtifact,
     expectedSmithersRunId: string,
   ) {
-    return this.db(
-      finalizeAiRun({
-        runId: load.aiRunId,
-        expectedSmithersRunId,
-        coordinates: requireCurrentTaskCoordinates("finalize"),
-        answer,
-        memory,
-      }),
-    );
+    try {
+      return await this.db(
+        finalizeAiRun({
+          runId: load.aiRunId,
+          expectedSmithersRunId,
+          coordinates: requireCurrentTaskCoordinates("finalize"),
+          answer,
+          memory,
+        }),
+      );
+    } catch (error) {
+      if (process.env.AI_DEBUG_ERRORS === "1") {
+        console.error("AI_DEBUG_FINALIZATION", {
+          message: error instanceof Error ? error.message : String(error),
+          error,
+        });
+      }
+      throw error;
+    }
   }
 }

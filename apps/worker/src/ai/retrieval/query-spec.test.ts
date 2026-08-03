@@ -13,7 +13,8 @@ import {
   QueryReviewProviderSchema,
   QueryReviewSchema,
   StructuredRetrievalTraceSchema,
-  normalizeInternalQuery,
+  normalizeInternalQueryPlanProvider,
+  normalizeQueryReviewProvider,
 } from "./query-spec";
 
 const query = (purpose = "Résumé des batteries") => ({
@@ -51,8 +52,13 @@ describe("Phase A query contracts", () => {
   it("exposes strict JSON-schema-safe provider contracts and normalizes after return", () => {
     const planSchema = z.toJSONSchema(InternalQueryPlanProviderSchema);
     const reviewSchema = z.toJSONSchema(QueryReviewProviderSchema);
-    expect(planSchema).toHaveProperty("oneOf");
-    expect(reviewSchema).toHaveProperty("oneOf");
+    expect(planSchema).not.toHaveProperty("oneOf");
+    expect(reviewSchema).not.toHaveProperty("oneOf");
+    expect(planSchema).toMatchObject({
+      type: "object",
+      required: ["action"],
+      additionalProperties: false,
+    });
 
     const rawPlan = {
       action: "search" as const,
@@ -67,11 +73,36 @@ describe("Phase A query contracts", () => {
         },
       ],
     };
-    expect(() => InternalQueryPlanProviderSchema.parse(rawPlan)).not.toThrow();
-    const normalized = normalizeInternalQuery(rawPlan.queries[0]);
-    expect(normalized.purpose).toBe("Résumé");
-    expect(normalized.all[0]?.text).toBe("café");
-    expect(normalized.filters.documents?.publishedAt?.after).toBe("2026-02-01");
+    const providerNullFilters = {
+      ...rawPlan,
+      queries: [
+        {
+          ...rawPlan.queries[0],
+          filters: { documents: null, chatMessages: null },
+        },
+      ],
+    };
+    const parsedNullFilters = InternalQueryPlanProviderSchema.parse(providerNullFilters);
+    expect(parsedNullFilters.action).toBe("search");
+    if (parsedNullFilters.action === "search") {
+      expect(parsedNullFilters.queries[0]?.filters).toEqual({
+        documents: null,
+        chatMessages: null,
+      });
+      const providerQuery = parsedNullFilters.queries[0]!;
+      const flatAnyOf: typeof providerQuery.anyOf = [{ text: "flat", mode: "term" }];
+      const nullableFilters: typeof providerQuery.filters = {
+        documents: null,
+        chatMessages: null,
+      };
+      expect(flatAnyOf).toEqual([{ text: "flat", mode: "term" }]);
+      expect(nullableFilters).toEqual({ documents: null, chatMessages: null });
+    }
+    const normalizedNullFilters = normalizeInternalQueryPlanProvider(providerNullFilters);
+    expect(normalizedNullFilters).toMatchObject({
+      action: "search",
+      queries: [{ filters: {} }],
+    });
     expect(() => InternalQueryPlanProviderSchema.parse({ ...rawPlan, extra: true })).toThrow();
     expect(JSON.stringify(planSchema)).toContain("additionalProperties");
     expect(() =>
@@ -91,6 +122,28 @@ describe("Phase A query contracts", () => {
         ],
       }),
     ).toThrow();
+
+    const flattened = normalizeInternalQueryPlanProvider({
+      action: "search",
+      reason: "provider explanation is transport-only",
+      queries: [
+        {
+          ...rawPlan.queries[0],
+          anyOf: [
+            { text: "battery", mode: "term" },
+            { text: "accumulator", mode: "phrase" },
+          ],
+        },
+      ],
+    });
+    expect(flattened.action === "search" ? flattened.queries[0]?.anyOf : undefined).toEqual([
+      [
+        { text: "battery", mode: "term" },
+        { text: "accumulator", mode: "phrase" },
+      ],
+    ]);
+    expect(flattened).not.toHaveProperty("reason");
+    expect(() => normalizeInternalQueryPlanProvider({ action: "search", queries: [] })).toThrow();
   });
 
   it("keeps provider date and author constraints in raw parsing and emitted JSON Schema", () => {
@@ -134,6 +187,43 @@ describe("Phase A query contracts", () => {
     expect(JSON.stringify(z.toJSONSchema(InternalQueryPlanProviderSchema))).toContain(
       '"format":"date"',
     );
+    expect(
+      normalizeQueryReviewProvider({ action: "accept", reason: "provider explanation" }),
+    ).toEqual({
+      action: "accept",
+      reason: "sufficient_coverage",
+    });
+    expect(() => normalizeQueryReviewProvider({ action: "accept" })).toThrow();
+    const providerReviewQuery = {
+      ...query(),
+      anyOf: [
+        { text: "stockage", mode: "term" as const },
+        { text: "storage", mode: "term" as const },
+      ],
+    };
+    const parsedReview = QueryReviewProviderSchema.parse({
+      action: "replace",
+      reason: "unclassified provider prose",
+      queries: [providerReviewQuery],
+    });
+    expect(parsedReview).toMatchObject({
+      action: "replace",
+      reason: "unclassified provider prose",
+    });
+    expect(
+      normalizeQueryReviewProvider({
+        action: "replace",
+        reason: "Zero results: the English term missed the French concept.",
+        queries: [providerReviewQuery],
+      }),
+    ).toMatchObject({ action: "replace", reason: "wrong_language" });
+    expect(() =>
+      normalizeQueryReviewProvider({
+        action: "replace",
+        reason: "unclassified provider prose",
+        queries: [providerReviewQuery],
+      }),
+    ).toThrow();
   });
 
   it("uses NFC and outer trim only and rejects hostile unknown fields", () => {

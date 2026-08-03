@@ -993,6 +993,61 @@ const validateDurableObservability = (
       const coordinate = `${row.emittingTask}:${row.loopIteration}:${row.attempt}`;
       traceCoordinatesByOwner.set(coordinate, (traceCoordinatesByOwner.get(coordinate) ?? 0) + 1);
     }
+    const structuredRetrievalTraceCoordinates = new Set(traceCoordinatesByOwner.keys());
+    const hasStructuredRetrievalTrace = (
+      taskId: string,
+      loopIteration: number,
+      attempt: number,
+    ): boolean =>
+      structuredRetrievalTraceCoordinates.has(`${taskId}:${loopIteration}:${attempt}`);
+
+    const allReviewPreviewRows = observationRows.filter(
+      (observation) => observation.kind === "structured_retrieval_review_preview",
+    );
+    if (allReviewPreviewRows.some((row) => !internalRetrievalOwnerSet.has(row.emittingTask))) {
+      return yield* Effect.fail(
+        new Error("structured retrieval review preview has a foreign owner"),
+      );
+    }
+    // A retry can durably expose a review preview before its provider call
+    // fails. Only a retrieval attempt with a terminal trace consumed that
+    // preview; incomplete retry previews remain unconsumed history.
+    const reviewPreviewRows = allReviewPreviewRows.filter((row) =>
+      hasStructuredRetrievalTrace(row.emittingTask, row.loopIteration, row.attempt),
+    );
+    const reviewPreviewCoordinates = new Set<string>();
+    const reviewPreviewSlots = new Set<string>();
+    // Review ownership comes from the current durable chat-preview request
+    // and its provider measurement. Preview rows are outputs, not evidence
+    // used to decide which outputs are required.
+    const durableReviewRequests = (
+      yield* sql<{
+        readonly taskId: string;
+        readonly loopIteration: number;
+        readonly attempt: number;
+        readonly providerRequestIndex: number;
+      }>`
+        select distinct exposures.task_id as "taskId",
+               exposures.loop_iteration as "loopIteration",
+               exposures.attempt,
+               exposures.provider_request_index as "providerRequestIndex"
+        from ai_source_exposures exposures
+        join ai_observations measurements
+          on measurements.run_id = exposures.run_id
+         and measurements.emitting_task = exposures.task_id
+         and measurements.loop_iteration = exposures.loop_iteration
+         and measurements.attempt = exposures.attempt
+         and measurements.kind = 'provider_request_measurement'
+         and (measurements.payload->>'providerRequestIndex')::int = exposures.provider_request_index
+        where exposures.run_id = ${runId}
+          and exposures.exposure_stage = 'internal_chat_search_preview'
+          and exposures.provider_request_index > 0
+          and measurements.payload->>'agentRole' = 'internal_retrieval'
+          and exposures.task_id = any(${expectedRetrievalOwners})
+      `
+    ).filter((request) =>
+      hasStructuredRetrievalTrace(request.taskId, request.loopIteration, request.attempt),
+    );
     for (const owner of internalRetrievalOwnerSet) {
       const latestManifest = terminalRetrievalRows.get(owner);
       if (latestManifest === undefined) continue;
@@ -1004,63 +1059,35 @@ const validateDurableObservability = (
       }
     }
 
-    const reviewPreviewRows = observationRows.filter(
-      (observation) => observation.kind === "structured_retrieval_review_preview",
-    );
-    const reviewPreviewCoordinates = new Set<string>();
-    const reviewPreviewSlots = new Set<string>();
-    // Review ownership comes from the current durable chat-preview request
-    // and its provider measurement. Preview rows are outputs, not evidence
-    // used to decide which outputs are required.
-    const durableReviewRequests = yield* sql<{
-      readonly taskId: string;
-      readonly loopIteration: number;
-      readonly attempt: number;
-      readonly providerRequestIndex: number;
-    }>`
-      select distinct exposures.task_id as "taskId",
-             exposures.loop_iteration as "loopIteration",
-             exposures.attempt,
-             exposures.provider_request_index as "providerRequestIndex"
-      from ai_source_exposures exposures
-      join ai_observations measurements
-        on measurements.run_id = exposures.run_id
-       and measurements.emitting_task = exposures.task_id
-       and measurements.loop_iteration = exposures.loop_iteration
-       and measurements.attempt = exposures.attempt
-       and measurements.kind = 'provider_request_measurement'
-       and (measurements.payload->>'providerRequestIndex')::int = exposures.provider_request_index
-      where exposures.run_id = ${runId}
-        and exposures.exposure_stage = 'internal_chat_search_preview'
-        and exposures.provider_request_index > 0
-        and measurements.payload->>'agentRole' = 'internal_retrieval'
-        and exposures.task_id = any(${expectedRetrievalOwners})
-    `;
-    const measuredReviewRequests = observationRows.flatMap((observation) => {
-      if (
-        observation.kind !== "provider_request_measurement" ||
-        !expectedRetrievalOwners.includes(observation.emittingTask) ||
-        observation.payload.agentRole !== "internal_retrieval"
-      ) {
-        return [];
-      }
-      const providerRequestIndex = observation.payload.providerRequestIndex;
-      if (
-        typeof providerRequestIndex !== "number" ||
-        !Number.isSafeInteger(providerRequestIndex) ||
-        providerRequestIndex <= 0
-      ) {
-        return [];
-      }
-      return [
-        {
-          taskId: observation.emittingTask,
-          loopIteration: observation.loopIteration,
-          attempt: observation.attempt,
-          providerRequestIndex,
-        },
-      ];
-    });
+    const measuredReviewRequests = observationRows
+      .flatMap((observation) => {
+        if (
+          observation.kind !== "provider_request_measurement" ||
+          !expectedRetrievalOwners.includes(observation.emittingTask) ||
+          observation.payload.agentRole !== "internal_retrieval"
+        ) {
+          return [];
+        }
+        const providerRequestIndex = observation.payload.providerRequestIndex;
+        if (
+          typeof providerRequestIndex !== "number" ||
+          !Number.isSafeInteger(providerRequestIndex) ||
+          providerRequestIndex <= 0
+        ) {
+          return [];
+        }
+        return [
+          {
+            taskId: observation.emittingTask,
+            loopIteration: observation.loopIteration,
+            attempt: observation.attempt,
+            providerRequestIndex,
+          },
+        ];
+      })
+      .filter((request) =>
+        hasStructuredRetrievalTrace(request.taskId, request.loopIteration, request.attempt),
+      );
     const allDurableReviewRequests = [
       ...durableReviewRequests,
       ...measuredReviewRequests.filter(
@@ -1304,7 +1331,7 @@ const validateDurableObservability = (
       }
     }
     if (
-      (parsedPlan.data.mode === "clarify" && reviewPreviewRows.length > 0) ||
+      (parsedPlan.data.mode === "clarify" && allReviewPreviewRows.length > 0) ||
       (parsedPlan.data.mode !== "clarify" &&
         allDurableReviewRequests.some(
           (request) =>

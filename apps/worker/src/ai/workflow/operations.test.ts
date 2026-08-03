@@ -356,8 +356,8 @@ describe("bounded web provider views", () => {
 
 describe("structured retrieval query plans", () => {
   it("converts the exact provider plan and review schemas", () => {
-    expect(z.toJSONSchema(InternalQueryPlanProviderSchema)).toHaveProperty("oneOf");
-    expect(z.toJSONSchema(QueryReviewProviderSchema)).toHaveProperty("oneOf");
+    expect(z.toJSONSchema(InternalQueryPlanProviderSchema)).not.toHaveProperty("oneOf");
+    expect(z.toJSONSchema(QueryReviewProviderSchema)).not.toHaveProperty("oneOf");
   });
 
   it("keeps temporal wording in the provider-owned query text", () => {

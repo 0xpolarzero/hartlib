@@ -4275,11 +4275,12 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
   });
 
   it("onboards the first publisher admin and manages publisher client access/pause contracts", async () => {
+    const invitationExpiresAt = new Date(Date.now() + 60 * 60 * 1_000);
     const platformProvider: PublisherOnboardingProvider = {
       ensureOrganization: async () => "org_new_publisher",
       inviteAdmin: async () => ({
         externalId: "inv_first_publisher",
-        expiresAt: new Date("2026-08-01T00:00:00.000Z"),
+        expiresAt: new Date(invitationExpiresAt),
       }),
     };
     const onboarding = makePublisherOnboardingRoute(pgLayer(), platformProvider);
@@ -4299,7 +4300,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
     const createClientInvitation = vi.fn<PublisherClientOnboardingProvider["createInvitation"]>(
       async () => ({
         externalId: `inv_client_${crypto.randomUUID()}`,
-        expiresAt: new Date("2026-08-01T00:00:00.000Z"),
+        expiresAt: new Date(invitationExpiresAt),
       }),
     );
     const clientProvider: PublisherClientOnboardingProvider = {

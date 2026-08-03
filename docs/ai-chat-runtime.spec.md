@@ -356,7 +356,7 @@ The configured model must have a locally available exact tokenizer and matching 
 
 Real-provider contract tests compare the local provider-shaped count with provider-reported prompt usage, including deterministic zero-, one-, and three-function inventories so per-definition transport drift fails independently of ordinary message framing. The normalized request matches Pi's transport omission of empty assistant turns before counting. The local exact gate owns context admission; raw provider/error text cannot promote a later role failure into `context_budget_mismatch`. A repeated mismatch for an identical normalized official request remains capture-ineligible: durable local measurement and provider usage are preserved at their exact coordinates and evaluation does not add a tolerance, rewrite provider usage, or round either count. That code is reserved for a trusted, code-owned accounting defect.
 
-Provider-template rendering suppresses the generation prompt when the request already ends in assistant text. GLM-5-Turbo's provider-only accounting subtracts four tokens per provider-visible function definition from the pinned local template count and adds one token for a trailing assistant continuation. Historical assistant tool-call turns are already included in the provider prompt count and receive no separate local adjustment. The opt-in live tokenizer contract covers zero-, one-, and three-function inventories plus complete tool transcripts.
+Provider-template rendering suppresses the generation prompt when the request already ends in assistant text. GLM-5-Turbo's provider accounting matches the pinned local template for provider-visible function definitions, adds one token for a trailing assistant continuation, and adds one framing token per completed assistant tool-call turn when the prompt ends in tool results. A later assistant prose turn replaces that framing in the provider serialization. The opt-in live tokenizer contract covers zero-, one-, and three-function inventories and accumulated tool transcripts.
 
 Z.AI reports a reused prompt prefix in `prompt_tokens_details.cached_tokens` while retaining those tokens inside `prompt_tokens`. Brief therefore stores the uncached prompt portion in `inputTokens`, the reused portion in `cachedTokens`, and compares the local exact prompt count with their sum. Reasoning tokens remain a subset of provider completion tokens and are recorded separately without being added to the local prompt comparison.
 
@@ -733,6 +733,18 @@ retrieval has begun.
 The `InternalQueryPlanPrompt` emits one strict, non-recursive
 `InternalQueryPlan`. A search plan contains the complete provider-authored
 query array; code does not add a query, remove an atom, or infer a source.
+The Z.AI transport schema uses one flat object root for plans and reviews so
+the provider can emit the action and its fields without a root union. The
+runtime checks those fields, restores canonical branch semantics, and then
+parses the strict contract. Provider JSON may encode an omitted optional filter
+object or filter field as `null`; the transport schema accepts only those known
+nulls, removes them before canonical parsing, and does not discard unknown
+fields. A provider may flatten one `anyOf` group into an atom list; the runtime
+wraps that list into one canonical OR group. Canonical nested groups remain
+valid, while malformed or ambiguous groups fail canonical validation. Shared
+transport fields such as an explanatory review reason are discarded or mapped
+only when they contain a closed replacement cue; no free-form reason reaches the
+canonical contract.
 An atom is a `term` or `phrase`; `all`, `anyOf`, and `not` compile to
 parameterized PostgreSQL full-text predicates.
 No fixed term count constrains the plan. Code enforces only the query count,
@@ -1061,6 +1073,10 @@ type FinalSourceRecord = {
 };
 ```
 
+For a web source, `publicProvenance` is exactly `{ citationUrl: locator.url }`.
+The title, domain, quotation, quotation hash, and capture times remain in the
+typed web locator.
+
 The final internal document identity is one strict kind-specific binding. For a
 public document, `documentId` binds to the exact
 `public_source_documents.document_id` row. For a publisher document,
@@ -1153,9 +1169,12 @@ are append-only at the database boundary; identical proof replay is idempotent,
 while a retry or later tool turn creates a separate detailed row.
 
 Content-item identity is document-version ID plus exact range/snippet hash for document previews, message ID for whole chat messages, memory-revision ID for whole memories, and final URL plus normalized snippet/quotation hash for web content. The identity stays in the internal sidecar and durable exposure row, never in provider-visible content. Therefore 20 distinct snippets shown to A are 20 exposed items even if A selects only three. Run-level exposed-item metrics deduplicate repeat visibility as `count distinct (runId, sourceKind, contentItemIdentity)`.
-For non-web exposures, the durable row also keeps the exact provider-field proof
-as storage-only occurrence data. The attestation keeps the canonical content-item
-identity; finalization requires the durable row and attestation to agree.
+For non-web exposures, the durable row also keeps the exact provider-field
+proof as storage-only occurrence data. The attestation keeps the canonical
+content-item identity; finalization requires the durable row and attestation to
+agree. Web exposures do not create a separate attestation, but retain the exact
+provider-field proof in the durable row when the provider request exposes one;
+finalization matches those web proofs directly to the request measurement.
 
 The immutable exposure identity in a code-owned sidecar is the tuple of source
 kind, logical source identity, content-item identity, and exposure stage. If a
@@ -1616,7 +1635,11 @@ bijections among the provider measurement, provider usage, content exposures,
 and exposure attestations for every provider output consumed by the result.
 Earlier retry rows may remain only as unconsumed history: a failed or aborted
 attempt may have one unmatched terminal measurement only when it has no
-provider-authored output. Missing, extra, duplicate, conflicting, or foreign
+provider-authored output. A structured retrieval review preview written before
+a retry fails may also remain without a matching retrieval trace; finalization
+does not treat that preview as terminal review evidence. It still rejects
+foreign preview owners, and fully validates previews attached to traced
+retrieval attempts. Missing, extra, duplicate, conflicting, or foreign
 records at any task/loop/attempt/provider-request coordinate fail closed before
 the transaction can write product state.
 

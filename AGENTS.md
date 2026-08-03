@@ -10,6 +10,18 @@
 - Use Codex `gpt-5.6-sol` at max reasoning for planning, orchestration, delegation, synthesis, and independent review. Sol agents do not implement; they delegate intensive execution to Luna and reconcile the result.
 - Use Codex `gpt-5.3-codex-spark` at xhigh reasoning for exact, low-risk mechanical edits, commit-message drafting, and read-only UI or browser checks. Spark agents do not make design or behavior decisions.
 
+## E2E flow testing
+
+- When a user asks to test any end-to-end flow, run a relevant Playwright test with live providers and real credentials. The test must exercise the requested path through the full stack: UI submission, API, worker, provider, durable result, and reload or persistence when relevant.
+- If no existing test covers the requested path, add or extend a Playwright test before claiming the flow was tested.
+- For retrieval chat flows, always run `tests/e2e/chat.spec.ts` test `real provider internal retrieval persists a cited answer` as the required baseline. It is an example of retrieval coverage, not proof for unrelated flows.
+- Run the baseline or a flow-specific live test with real credentials, not only the deterministic provider:
+  `BRIEF_E2E_LIVE_PROVIDER=1 BRIEF_E2E_STACK=1 bun --env-file=.env x --bun playwright test <test-file> --project=brief-ai-chat-runtime -g "<test title>"`.
+- Treat the live flow as verified only when Playwright reports `passed`. A skipped test, including a skip caused by missing `BRIEF_E2E_LIVE_PROVIDER=1` or `ZAI_API_KEY`, does not verify the flow even if the command exits with status zero.
+- Use a free `BRIEF_E2E_PORT_BASE` when the default E2E ports are occupied.
+- Run relevant deterministic tests as regression checks, but do not present them as proof of live-provider behavior.
+- If live credentials are unavailable, state that the live E2E could not run. Do not silently substitute deterministic coverage.
+
 ## Prose style
 
 Apply these rules to all prose: documentation, pull requests, commit messages, user-facing text, and agent-to-agent communication. They do not apply to code, identifiers, commands, quotations, API names, or established technical terms. Replace technical language with everyday words only when precision survives.

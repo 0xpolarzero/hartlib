@@ -275,6 +275,19 @@ const readStream = async (response: Response) => {
     text += decoder.decode(value, { stream: true });
   }
 };
+const readStreamUntil = async (
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  expected: string,
+) => {
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) throw new Error(`stream ended before ${expected}`);
+    text += decoder.decode(value, { stream: true });
+    if (text.includes(expected)) return text;
+  }
+};
 
 describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
   beforeAll(async () => {
@@ -2442,9 +2455,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         `;
       }),
     );
-    const malformedAfter = await reader.read();
-    expect(malformedAfter.done).toBe(false);
-    expect(new TextDecoder().decode(malformedAfter.value)).toContain("MALFORMED_FORBIDDEN");
+    const malformedAfter = await readStreamUntil(reader, "MALFORMED_FORBIDDEN");
+    expect(malformedAfter).toContain("MALFORMED_FORBIDDEN");
     await reader.cancel();
     const malformedReplay = await route(request("GET", `/v1/ai-runs/${accepted.run.id}/stream`));
     expect(malformedReplay.status).toBe(200);

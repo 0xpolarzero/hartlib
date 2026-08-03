@@ -1,4 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
+import { withEnvironment } from "@brief/config";
 import { Effect, Fiber, Redacted } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -36,8 +37,6 @@ vi.mock("../ai/workflow/ai-chat", () => ({
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const isolatedDatabaseName = `brief_handlers_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
-const previousDatabaseUrl = process.env.DATABASE_URL;
-
 const sourceDatabaseUrl = () => {
   if (databaseUrl === undefined) {
     throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL is required");
@@ -59,6 +58,12 @@ const isolatedDatabaseUrl = () => {
 };
 
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
+const runInIsolatedDatabase = <A, E>(effect: Effect.Effect<A, E, never>): Promise<A> =>
+  Effect.runPromise(
+    withEnvironment(effect, {
+      DATABASE_URL: isolatedDatabaseUrl(),
+    }),
+  );
 
 describe("AI provider service identity", () => {
   it("distinguishes the exact official endpoint, custom OpenAI-compatible endpoints, and tests", async () => {
@@ -481,8 +486,6 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
   });
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = isolatedDatabaseUrl();
-
     await runDb(
       adminDatabaseUrl(),
       Effect.gen(function* () {
@@ -501,12 +504,6 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
   }, 120_000);
 
   afterAll(async () => {
-    if (previousDatabaseUrl === undefined) {
-      delete process.env.DATABASE_URL;
-    } else {
-      process.env.DATABASE_URL = previousDatabaseUrl;
-    }
-
     await runDb(
       adminDatabaseUrl(),
       Effect.gen(function* () {
@@ -546,7 +543,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
     );
 
     await expect(
-      Effect.runPromise(
+      runInIsolatedDatabase(
         handleJob({
           id: "job-stale-smithers-coordinate",
           kind: "ai_chat_run",
@@ -614,7 +611,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
     });
 
     await expect(
-      Effect.runPromise(
+      runInIsolatedDatabase(
         handleJob({
           id: "job-stale-after-success",
           kind: "ai_chat_run",
@@ -716,7 +713,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
       });
 
       await expect(
-        Effect.runPromise(
+        runInIsolatedDatabase(
           handleJob({
             id: `job-stale-after-${status}`,
             kind: "ai_chat_run",
@@ -791,7 +788,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
     });
 
     await expect(
-      Effect.runPromise(
+      runInIsolatedDatabase(
         handleJob({
           id: "job-stale-after-error",
           kind: "ai_chat_run",
@@ -877,7 +874,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
       }),
     );
 
-    const result = await Effect.runPromise(
+    const result = await runInIsolatedDatabase(
       handleJob({
         id: "job-1",
         kind: "ai_chat_run",
@@ -1014,7 +1011,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
       }),
     );
 
-    const result = await Effect.runPromise(
+    const result = await runInIsolatedDatabase(
       handleJob({
         id: "job-durable-terminal-order",
         kind: "ai_chat_run",
@@ -1056,7 +1053,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
     Object.assign(error, { code: "RESUME_METADATA_MISMATCH" });
     runSmithersWorkflowMock.mockRejectedValueOnce(error);
 
-    const result = await Effect.runPromise(
+    const result = await runInIsolatedDatabase(
       handleJob({
         id: "job-2",
         kind: "ai_chat_run",
@@ -1116,7 +1113,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
     runSmithersWorkflowMock.mockRejectedValueOnce(new Error("Smithers launch failed"));
 
     await expect(
-      Effect.runPromise(
+      runInIsolatedDatabase(
         handleJob({
           id: "job-unexpected-smithers-error",
           kind: "ai_chat_run",
@@ -1198,7 +1195,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
       });
 
       await expect(
-        Effect.runPromise(
+        runInIsolatedDatabase(
           handleJob({
             id: "job-missing-smithers-terminal-metadata",
             kind: "ai_chat_run",
@@ -1265,7 +1262,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
     );
 
     await expect(
-      Effect.runPromise(
+      runInIsolatedDatabase(
         handleJob(
           {
             id: "job-aborted",
@@ -1332,12 +1329,15 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
     );
 
     const fiber = Effect.runFork(
-      handleJob({
-        id: "job-effect-interrupted",
-        kind: "ai_chat_run",
-        payload: { aiRunId },
-        attempts: 1,
-      } satisfies JobRecord) as Effect.Effect<JobResult, unknown, never>,
+      withEnvironment(
+        handleJob({
+          id: "job-effect-interrupted",
+          kind: "ai_chat_run",
+          payload: { aiRunId },
+          attempts: 1,
+        } satisfies JobRecord) as Effect.Effect<JobResult, unknown, never>,
+        { DATABASE_URL: isolatedDatabaseUrl() },
+      ),
     );
     await started;
     await Effect.runPromise(Fiber.interrupt(fiber));

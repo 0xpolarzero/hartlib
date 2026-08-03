@@ -141,6 +141,11 @@ const docText = (lead: string): string =>
   "La note de marche decrit les raccordements, les appels d'offres, le stockage et les contraintes de reseau en France. ".repeat(
     5,
   );
+const industryDocText = (lead: string): string =>
+  `${lead} ` +
+  "La note industrielle decrit les calendriers, l'hydrogene, les usages lourds et les priorites de transition en France. ".repeat(
+    5,
+  );
 
 const e2eCorpus = [
   {
@@ -175,7 +180,7 @@ const e2eCorpus = [
     title: "Hydrogene bas-carbone: calendrier industriel",
     canonicalUrl: "https://e2e.example/fr/hydrogene-industrie",
     publishedAt: "2026-07-03T08:00:00.000Z",
-    text: docText(
+    text: industryDocText(
       "Le calendrier industriel francais maintient les appels d'offres hydrogene et les usages lourds comme priorites de transition.",
     ),
   },

@@ -465,8 +465,8 @@ export const insertAiSourceExposure = (
     } as const;
     const baseIdentity = input.contentItemIdentity.replace(/#proof=[0-9a-f]{64}$/u, "");
     // Resolve the exact provider-field proof before reading or writing the
-    // durable exposure row. Attestations keep the canonical identity; the
-    // row key includes the resolved proof for non-web exposures.
+    // durable exposure row. Web rows omit the separate attestation, but use
+    // the same proof-bound storage identity when an exact proof is available.
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         const replayKey = `${input.runId}:${input.taskId}:${input.loopIteration}:${input.attempt}:${input.providerRequestIndex}:${input.exposureStage}:${baseIdentity}`;
@@ -522,13 +522,10 @@ export const insertAiSourceExposure = (
             );
           }
         }
-        let providerSerializationProofSha256Hex: string | undefined =
-          input.sourceKind === "web" ? undefined : callerBoundProof;
+        let providerSerializationProofSha256Hex: string | undefined = callerBoundProof;
         let providerSerializationProofBinding:
           | ProviderVisibleSourceExposureProofBinding
-          | undefined =
-          input.sourceKind === "web" ? undefined : input.providerSerializationProofBinding;
-        if (input.sourceKind !== "web") {
+          | undefined = input.providerSerializationProofBinding;
           const coordinateAttestedProofs = yield* sql<{
             readonly proof: string;
             readonly binding: unknown;
@@ -773,8 +770,9 @@ export const insertAiSourceExposure = (
             );
             if (sidecarBindings.length === 0) {
               if (
-                callerBoundProof === undefined ||
-                input.providerSerializationProofBinding === undefined
+                input.sourceKind !== "web" &&
+                (callerBoundProof === undefined ||
+                  input.providerSerializationProofBinding === undefined)
               ) {
                 return yield* Effect.fail(
                   new Error("source exposure requires its exact provider field binding"),
@@ -795,24 +793,30 @@ export const insertAiSourceExposure = (
               );
             }
           }
-        }
         if (
-          input.sourceKind !== "web" &&
-          (providerSerializationProofSha256Hex === undefined ||
-            providerSerializationProofBinding === undefined ||
-            providerVisibleSourceExposureProofSha256Hex(
-              marker,
-              providerSerializationProofBinding,
-            ) !== providerSerializationProofSha256Hex)
+          (input.sourceKind !== "web" &&
+            (providerSerializationProofSha256Hex === undefined ||
+              providerSerializationProofBinding === undefined ||
+              providerVisibleSourceExposureProofSha256Hex(
+                marker,
+                providerSerializationProofBinding,
+              ) !== providerSerializationProofSha256Hex)) ||
+          (input.sourceKind === "web" &&
+            providerSerializationProofSha256Hex !== undefined &&
+            (providerSerializationProofBinding === undefined ||
+              providerVisibleSourceExposureProofSha256Hex(
+                marker,
+                providerSerializationProofBinding,
+              ) !== providerSerializationProofSha256Hex))
         ) {
           return yield* Effect.fail(
             new Error("source exposure provider proof does not match its exact field binding"),
           );
         }
         const storedContentItemIdentity =
-          input.sourceKind === "web"
+          providerSerializationProofSha256Hex === undefined
             ? baseIdentity
-            : `${baseIdentity}#proof=${providerSerializationProofSha256Hex!}`;
+            : `${baseIdentity}#proof=${providerSerializationProofSha256Hex}`;
         const existingSourceRows = yield* sql<{
           readonly id: string;
           readonly sourceKind: string;

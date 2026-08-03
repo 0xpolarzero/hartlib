@@ -6,7 +6,7 @@
     "dev": "bun --env-file=../../.env --env-file=../../.env.local --watch src/index.ts",
     "start": "bun --env-file=../../.env --env-file=../../.env.local src/index.ts",
     "build": "tsc -b --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "bun ../../scripts/test-with-postgres.ts apps/api/src"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1075.0",

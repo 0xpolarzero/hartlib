@@ -66,20 +66,56 @@ const sendMessageWithAcceptance = async (
 
 const sendAndWait = async (page: Page, text: string, timeoutMs = 60_000): Promise<void> => {
   const before = await page.getByTestId("chat-message-assistant").count();
+  const beforeRuns = readE2eRuntimeState().runs.length;
+  const runFailed = async (): Promise<boolean> => {
+    if ((await page.getByTestId("chat-run-failed").count()) > 0) return true;
+    const state = readE2eRuntimeState();
+    return state.runs.length > beforeRuns && state.runs.at(-1)?.status === "failed";
+  };
   await sendMessage(page, text);
   await expect
     .poll(
-      async () =>
-        (await page.getByTestId("chat-message-assistant").count()) > before ||
-        (await page.getByTestId("chat-run-failed").count()) > 0,
+      async () => {
+        if (await runFailed()) return "failed";
+        if ((await page.getByTestId("chat-message-assistant").count()) <= before) {
+          return "pending";
+        }
+        const content = await latestAssistantContent(page).textContent();
+        return content?.trim() === "" ? "pending" : "complete";
+      },
       { timeout: timeoutMs },
     )
-    .toBe(true);
-  if ((await page.getByTestId("chat-run-failed").count()) > 0) {
+    .toMatch(/^(?:complete|failed)$/u);
+  if (await runFailed()) {
     throw new Error(`chat run failed: ${JSON.stringify(readE2eRuntimeState())}`);
   }
-  await expect(latestAssistantContent(page)).not.toBeEmpty({ timeout: timeoutMs });
-  await waitForIdle(page, timeoutMs);
+  await expect
+    .poll(
+      async () => {
+        if (await runFailed()) return "failed";
+        const input = page.getByTestId("chat-composer-input");
+        const send = page.getByTestId("chat-send-button");
+        return (await input.isEnabled()) && (await send.isDisabled()) ? "idle" : "pending";
+      },
+      { timeout: timeoutMs },
+    )
+    .toMatch(/^(?:idle|failed)$/u);
+  if (await runFailed()) {
+    throw new Error(`chat run failed: ${JSON.stringify(readE2eRuntimeState())}`);
+  }
+  await expect
+    .poll(
+      async () => {
+        if (await runFailed()) return "failed";
+        return readE2eRuntimeState().runs.at(-1)?.status ?? "pending";
+      },
+      { timeout: timeoutMs },
+    )
+    .toMatch(/^(?:succeeded|failed)$/u);
+  const durableStatus = readE2eRuntimeState().runs.at(-1)?.status;
+  if (durableStatus !== "succeeded" || (await runFailed())) {
+    throw new Error(`chat run failed durably: ${JSON.stringify(readE2eRuntimeState())}`);
+  }
 };
 
 const postMessage = (page: Page, text: string) =>
@@ -1370,6 +1406,30 @@ test.describe("opt-in live provider contract smoke", () => {
     await expect(page.getByTestId("chat-message-user")).toHaveCount(1);
     await expect(page.getByTestId("chat-message-assistant")).toHaveCount(1);
     expect(readE2eRuntimeState().runs[0]?.status).toBe("succeeded");
+  });
+
+  test("real provider internal retrieval persists a cited answer", async ({ page }) => {
+    test.setTimeout(240_000);
+    await sendAndWait(
+      page,
+      "What do the French public-source documents report about solaire raccordements? Cite the supporting sources.",
+      180_000,
+    );
+    const state = readE2eRuntimeState();
+    const run = state.runs[0];
+    if (run?.status === "failed" || run === undefined) {
+      throw new Error(`live chat run failed durably: ${JSON.stringify(state)}`);
+    }
+    expect(run.status).toBe("succeeded");
+    const contextReady = state.events.find((event) => event.type === "context_ready")?.event;
+    const sourcesRead = Array.isArray(contextReady?.sourcesRead) ? contextReady.sourcesRead : [];
+    expect(sourcesRead.length).toBeGreaterThan(0);
+    await expect(latestAssistant(page).getByTestId("citation-reference").first()).toBeVisible();
+    const answer = await latestAssistantContent(page).innerText();
+    await page.reload();
+    await expect(page.getByTestId("chat-message-assistant")).toHaveCount(1);
+    await expect(latestAssistantContent(page)).toHaveText(answer);
+    await expect(latestAssistant(page).getByTestId("citation-reference").first()).toBeVisible();
   });
 
   test("real GLM and Tinyfish complete the required web-evidence branch", async ({ page }) => {

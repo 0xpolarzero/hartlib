@@ -528,6 +528,10 @@ Use real Postgres integration tests for:
 
 Postgres integration tests that can mutate or truncate tables must use an explicit test database URL, not a developer's normal application database. Worker job repository integration tests read `WORKER_POSTGRES_TEST_DATABASE_URL` and are skipped when it is unset.
 
+- `bun run test` starts and waits for the local Docker Postgres service, creates a random temporary test database, applies committed migrations, runs Bun Vitest with `WORKER_POSTGRES_TEST_DATABASE_URL` and `DATABASE_URL` set to that database, then drops it
+- the API, backend-domain, and worker package `test` scripts use the same temporary-database runner
+- focused Vitest commands outside those scripts must set `WORKER_POSTGRES_TEST_DATABASE_URL` explicitly and run through Bun when a suite requires Bun
+
 Use pure unit tests for:
 
 - credit math
@@ -583,9 +587,9 @@ Critical MVP E2E paths:
 The reset contract is not complete until these focused checks and the full repository gates pass:
 
 ```sh
-bunx --bun vitest run packages/backend-domain/src/product-chats.integration.test.ts packages/backend-domain/src/chat-runtime.integration.test.ts apps/api/src/authorization.integration.test.ts
+bun scripts/test-with-postgres.ts packages/backend-domain/src/product-chats.integration.test.ts packages/backend-domain/src/chat-runtime.integration.test.ts apps/api/src/authorization.integration.test.ts
 bunx --bun vitest run apps/demo/src/*chat-reset*.test.ts packages/api-client/src/product-client.test.ts
-bunx --bun vitest run apps/worker/src/ai/product-state/product-state.test.ts -t "real reset"
+bun scripts/test-with-postgres.ts apps/worker/src/ai/product-state/product-state.test.ts -t "real reset"
 bunx --bun vitest run apps/web/src/components/chat/chat-permissions.test.ts apps/web/src/components/chat/chat-workspace-page.test.tsx apps/web/src/lib/db.test.ts apps/api/src/domain/administrative-audit-matrix.test.ts
 BRIEF_E2E_STACK=1 bunx --bun playwright test tests/e2e/chat.spec.ts --project=brief-ai-chat-runtime --grep "start a new chat"
 bun run check

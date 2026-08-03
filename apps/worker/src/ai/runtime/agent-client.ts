@@ -559,6 +559,14 @@ export class CanonicalAgentClient {
     try {
       return parseExactlyOneTerminal(completion, input.outputToolName, input.validate);
     } catch (error) {
+      if (process.env.AI_DEBUG_ERRORS === "1") {
+        console.error("AI_DEBUG_STRUCTURED_PARSE", {
+          taskId: input.coordinates.taskId,
+          providerRequestIndex: firstCoordinates.providerRequestIndex,
+          completion,
+          error,
+        });
+      }
       let repair: StructuredRepair | undefined;
       try {
         repair = input.repair?.(error, firstCoordinates);

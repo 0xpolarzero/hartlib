@@ -19,7 +19,7 @@
   },
   "scripts": {
     "build": "tsc -b --noEmit",
-    "test": "vitest run --root ../.. packages/backend-domain/src"
+    "test": "bun ../../scripts/test-with-postgres.ts packages/backend-domain/src"
   },
   "dependencies": {
     "@brief/database": "workspace:*",

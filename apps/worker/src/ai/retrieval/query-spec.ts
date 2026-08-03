@@ -229,7 +229,11 @@ const nonEmptyProviderQueryAtoms = z
   .array(ProviderQueryAtomSchema)
   .max(MAX_QUERY_ARRAY_VALUE)
   .min(1);
-const providerAnyOfAtoms = z.array(nonEmptyProviderQueryAtoms).max(MAX_QUERY_ARRAY_VALUE);
+const providerAnyOfGroups = z.array(nonEmptyProviderQueryAtoms).max(MAX_QUERY_ARRAY_VALUE);
+// The provider-facing schema accepts both canonical groups and providers that
+// flatten one group. The normalizer restores the canonical grouped form.
+const providerAnyOfAtoms = z.array(ProviderQueryAtomSchema).max(MAX_QUERY_ARRAY_VALUE);
+const providerAnyOf = z.union([providerAnyOfAtoms, providerAnyOfGroups]);
 
 const authorsSchema = z
   .array(z.enum(["user", "assistant"]))
@@ -333,18 +337,43 @@ export const InternalQuerySchema = makeQueryShape({
   }
 });
 
-/** Exact provider-facing shape; canonical parsing performs all normalization below. */
-const ProviderQueryFiltersSchema = makeQueryFiltersSchema(
-  z.array(providerText(MAX_ATOM_BYTES)).max(MAX_QUERY_ARRAY_VALUE),
-  providerDateInterval,
-);
+/** Provider tool calls often encode omitted optional filters as JSON null. */
+const providerTextList = z.array(providerText(MAX_ATOM_BYTES)).max(MAX_QUERY_ARRAY_VALUE);
+const providerOptionalTextList = providerTextList.nullable().optional();
+const providerOptionalDateInterval = providerDateInterval.nullable().optional();
+const ProviderQueryFiltersSchema = z
+  .strictObject({
+    documents: z
+      .strictObject({
+        sourceNames: providerOptionalTextList,
+        countries: providerOptionalTextList,
+        languages: providerOptionalTextList,
+        documentTypes: providerOptionalTextList,
+        publishedAt: providerOptionalDateInterval,
+      })
+      .nullable()
+      .optional(),
+    chatMessages: z
+      .strictObject({
+        authors: authorsSchema.nullable().optional(),
+        sentAt: providerOptionalDateInterval,
+      })
+      .nullable()
+      .optional(),
+  })
+  .nullable();
 
-export const InternalQueryProviderSchema = makeQueryShape({
+/** Exact provider-facing shape; canonical parsing performs all normalization below. */
+const providerQueryFields = makeQueryShape({
   purpose: providerText(MAX_PURPOSE_BYTES),
   atom: ProviderQueryAtomSchema,
-  anyOf: providerAnyOfAtoms,
+  anyOf: providerAnyOf,
   filters: ProviderQueryFiltersSchema,
 });
+
+type InternalQueryProviderValue = z.output<typeof providerQueryFields>;
+
+export const InternalQueryProviderSchema = providerQueryFields;
 
 type QueryBatchEntry = z.output<typeof InternalQuerySchema>;
 
@@ -465,23 +494,97 @@ export const StructuredRetrievalTraceSchema = z
 
 export type StructuredRetrievalTraceValue = z.infer<typeof StructuredRetrievalTraceSchema>;
 
-export const InternalQueryPlanProviderSchema = z.discriminatedUnion("action", [
-  z.strictObject({ action: z.literal("skip"), reason: providerText(MAX_PURPOSE_BYTES) }),
-  z.strictObject({
-    action: z.literal("search"),
-    queries: z.array(InternalQueryProviderSchema).min(1).max(MAX_QUERY_COUNT),
-  }),
-]);
+const providerPlanFields = z
+  .strictObject({
+    action: z.enum(["skip", "search"]),
+    reason: providerText(MAX_PURPOSE_BYTES).optional(),
+    queries: z.array(InternalQueryProviderSchema).min(1).max(MAX_QUERY_COUNT).optional(),
+  })
+  .superRefine((plan, context) => {
+    if (plan.action === "skip") {
+      if (plan.reason === undefined) {
+        context.addIssue({ code: "custom", path: ["reason"], message: "skip needs a reason" });
+      }
+      if (plan.queries !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["queries"],
+          message: "skip cannot have queries",
+        });
+      }
+    } else {
+      if (plan.queries === undefined) {
+        context.addIssue({ code: "custom", path: ["queries"], message: "search needs queries" });
+      }
+    }
+  });
 
-export const QueryReviewProviderSchema = z.discriminatedUnion("action", [
-  z.strictObject({ action: z.literal("accept"), reason: z.literal("sufficient_coverage") }),
-  z.strictObject({
-    action: z.literal("replace"),
-    reason: z.enum(["missed_concept", "narrow_filter", "wrong_language", "unsupported_branch"]),
-    queries: z.array(InternalQueryProviderSchema).min(1).max(MAX_QUERY_COUNT),
-  }),
-  z.strictObject({ action: z.literal("no_evidence"), reason: z.literal("no_supporting_evidence") }),
-]);
+type InternalQueryPlanProviderValue =
+  | { readonly action: "skip"; readonly reason: string }
+  | {
+      readonly action: "search";
+      readonly queries: readonly InternalQueryProviderValue[];
+    };
+
+export const InternalQueryPlanProviderSchema =
+  providerPlanFields as unknown as z.ZodType<InternalQueryPlanProviderValue>;
+
+const providerReviewFields = z
+  .strictObject({
+    action: z.enum(["accept", "replace", "no_evidence"]),
+    reason: providerText(MAX_PURPOSE_BYTES).optional(),
+    queries: z.array(InternalQueryProviderSchema).min(1).max(MAX_QUERY_COUNT).optional(),
+  })
+  .superRefine((review, context) => {
+    if (review.action === "accept") {
+      if (review.reason === undefined) {
+        context.addIssue({ code: "custom", path: ["reason"], message: "accept needs a reason" });
+      }
+      if (review.queries !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["queries"],
+          message: "accept cannot have queries",
+        });
+      }
+      return;
+    }
+    if (review.action === "no_evidence") {
+      if (review.reason === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["reason"],
+          message: "no_evidence needs a reason",
+        });
+      }
+      if (review.queries !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["queries"],
+          message: "no_evidence cannot have queries",
+        });
+      }
+      return;
+    }
+    if (review.reason === undefined) {
+      context.addIssue({ code: "custom", path: ["reason"], message: "replace needs a reason" });
+    }
+    if (review.queries === undefined) {
+      context.addIssue({ code: "custom", path: ["queries"], message: "replace needs queries" });
+    }
+  });
+
+type QueryReviewProviderValue =
+  | { readonly action: "accept"; readonly reason: string }
+  | {
+      readonly action: "replace";
+      readonly reason: string;
+      readonly queries: readonly InternalQueryProviderValue[];
+    }
+  | { readonly action: "no_evidence"; readonly reason: string };
+
+export const QueryReviewProviderSchema =
+  providerReviewFields as unknown as z.ZodType<QueryReviewProviderValue>;
 
 export const BranchCoverageSchema = z
   .strictObject({
@@ -700,4 +803,110 @@ export const normalizeInternalQuery = (value: unknown): NormalizedInternalQuery 
     },
     order: parsed.order,
   };
+};
+
+type ProviderQueryValue = z.output<typeof providerQueryFields>;
+
+const withoutNullObjectFields = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(withoutNullObjectFields);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== null)
+      .map(([key, entry]) => [key, withoutNullObjectFields(entry)]),
+  );
+};
+
+const normalizeProviderAnyOf = (
+  value: ProviderQueryValue["anyOf"],
+): readonly (readonly z.output<typeof ProviderQueryAtomSchema>[])[] => {
+  if (value.length === 0) return [];
+  return Array.isArray(value[0])
+    ? (value as readonly (readonly z.output<typeof ProviderQueryAtomSchema>[])[])
+    : [value as readonly z.output<typeof ProviderQueryAtomSchema>[]];
+};
+
+/** Parse provider query syntax, then restore the canonical grouped anyOf form. */
+export const normalizeInternalQueryProvider = (value: unknown): NormalizedInternalQuery => {
+  const parsed = providerQueryFields.parse(value);
+  return normalizeInternalQuery(
+    withoutNullObjectFields({
+      ...parsed,
+      filters: parsed.filters ?? {},
+      anyOf: normalizeProviderAnyOf(parsed.anyOf),
+    }),
+  );
+};
+
+/** Parse and normalize the provider transport shape before canonical validation. */
+export const normalizeInternalQueryPlanProvider = (value: unknown): InternalQueryPlanValue => {
+  const parsed = InternalQueryPlanProviderSchema.parse(value);
+  if (parsed.action === "skip") {
+    return InternalQueryPlanSchema.parse({ action: parsed.action, reason: parsed.reason });
+  }
+  return InternalQueryPlanSchema.parse({
+    action: parsed.action,
+    queries: parsed.queries.map(normalizeInternalQueryProvider),
+  });
+};
+
+const normalizeProviderReviewReason = (
+  value: string,
+): "missed_concept" | "narrow_filter" | "wrong_language" | "unsupported_branch" => {
+  if (
+    value === "missed_concept" ||
+    value === "narrow_filter" ||
+    value === "wrong_language" ||
+    value === "unsupported_branch"
+  ) {
+    return value;
+  }
+  const reason = value.toLocaleLowerCase("en-US");
+  if (
+    reason.includes("unsupported") ||
+    reason.includes("not applicable") ||
+    reason.includes("non pris en charge")
+  ) {
+    return "unsupported_branch";
+  }
+  if (
+    reason.includes("language") ||
+    reason.includes("langue") ||
+    reason.includes("french") ||
+    reason.includes("français") ||
+    reason.includes("english") ||
+    reason.includes("anglais")
+  ) {
+    return "wrong_language";
+  }
+  if (reason.includes("narrow") || reason.includes("filter") || reason.includes("filtre")) {
+    return "narrow_filter";
+  }
+  if (
+    reason.includes("missed") ||
+    reason.includes("manqué") ||
+    reason.includes("zero result") ||
+    reason.includes("no result") ||
+    reason.includes("aucun résultat") ||
+    reason.includes("concept")
+  ) {
+    return "missed_concept";
+  }
+  throw new Error("provider replacement reason does not map to a closed review code");
+};
+
+/** Parse and normalize the provider transport shape before canonical validation. */
+export const normalizeQueryReviewProvider = (value: unknown): QueryReviewValue => {
+  const parsed = QueryReviewProviderSchema.parse(value);
+  if (parsed.action === "accept" || parsed.action === "no_evidence") {
+    return QueryReviewSchema.parse({
+      action: parsed.action,
+      reason: parsed.action === "accept" ? "sufficient_coverage" : "no_supporting_evidence",
+    });
+  }
+  return QueryReviewSchema.parse({
+    action: parsed.action,
+    reason: normalizeProviderReviewReason(parsed.reason),
+    queries: parsed.queries.map(normalizeInternalQueryProvider),
+  });
 };

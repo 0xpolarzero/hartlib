@@ -26,6 +26,8 @@ import {
   InternalQueryPlanSchema,
   QueryReviewProviderSchema,
   QueryReviewSchema,
+  normalizeInternalQueryPlanProvider,
+  normalizeQueryReviewProvider,
   type InternalQueryPlan,
 } from "../retrieval/query-spec";
 import {
@@ -819,7 +821,7 @@ describe("deterministic internal retrieval and citation", () => {
         outputToolName: "emit_internal_query_plan",
         outputToolDescription: "Emit one complete structured internal query plan.",
         outputSchema: z.toJSONSchema(InternalQueryPlanProviderSchema),
-        validate: (value) => InternalQueryPlanSchema.parse(value),
+        validate: normalizeInternalQueryPlanProvider,
         requestedOutputTokens: 2_048,
         reasoning: "medium",
         coordinates: {
@@ -851,7 +853,7 @@ describe("deterministic internal retrieval and citation", () => {
         outputToolName: "emit_internal_query_review",
         outputToolDescription: "Review the complete structured retrieval result.",
         outputSchema: z.toJSONSchema(QueryReviewProviderSchema),
-        validate: (value) => QueryReviewSchema.parse(value),
+        validate: normalizeQueryReviewProvider,
         sourceExposureProofs: [
           {
             sourceKind: "document" as const,
@@ -982,7 +984,7 @@ describe("deterministic internal retrieval and citation", () => {
           outputToolName: "emit_internal_query_plan",
           outputToolDescription: "Emit one complete structured internal query plan.",
           outputSchema: z.toJSONSchema(InternalQueryPlanProviderSchema),
-          validate: (value) => InternalQueryPlanSchema.parse(value),
+          validate: normalizeInternalQueryPlanProvider,
           requestedOutputTokens: 2_048,
           reasoning: "medium",
           coordinates: {
@@ -1703,7 +1705,7 @@ const runDeterministicProductionWorkflow = async (
           }),
           "emit_internal_query_plan",
           z.toJSONSchema(InternalQueryPlanProviderSchema),
-          (value) => InternalQueryPlanSchema.parse(InternalQueryPlanProviderSchema.parse(value)),
+          normalizeInternalQueryPlanProvider,
           { useCompactionProofs: false },
         ),
       );
@@ -1715,10 +1717,9 @@ const runDeterministicProductionWorkflow = async (
         return retrievalResultFor(replacementPlan, search);
       };
       const initialResult = await execute(plan);
-      const providerPlan = InternalQueryPlanProviderSchema.parse(plan);
       const initialReviewInput = {
         question: retrievalQuestion,
-        queries: providerPlan.action === "search" ? providerPlan.queries : [],
+        queries: plan.action === "search" ? plan.queries : [],
         results: initialResult.review,
         coverage: retrievalCoverage,
         truncation: initialResult.fused.truncation,
@@ -1741,7 +1742,7 @@ const runDeterministicProductionWorkflow = async (
               JSON.stringify(input),
               "emit_internal_query_review",
               z.toJSONSchema(QueryReviewProviderSchema),
-              (value) => QueryReviewSchema.parse(QueryReviewProviderSchema.parse(value)),
+              normalizeQueryReviewProvider,
               {
                 providerRequestIndex: 1,
                 useCompactionProofs: false,
@@ -1754,8 +1755,8 @@ const runDeterministicProductionWorkflow = async (
             providerInput: {
               question: retrievalQuestion,
               queries: (() => {
-                const providerResultPlan = InternalQueryPlanProviderSchema.parse(result.queryPlan);
-                return providerResultPlan.action === "search" ? providerResultPlan.queries : [];
+                const canonicalResultPlan = InternalQueryPlanSchema.parse(result.queryPlan);
+                return canonicalResultPlan.action === "search" ? canonicalResultPlan.queries : [];
               })(),
               results: result.review,
               coverage: retrievalCoverage,

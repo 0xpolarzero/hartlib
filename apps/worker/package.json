@@ -9,7 +9,7 @@
     "start": "bun --env-file=../../.env --env-file=../../.env.local src/index.ts",
     "build": "tsc -b --noEmit",
     "eval:ai": "bun src/ai/evaluation/cli.ts",
-    "test": "bunx --bun vitest run --root ../.. apps/worker/src"
+    "test": "bun ../../scripts/test-with-postgres.ts apps/worker/src"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1075.0",

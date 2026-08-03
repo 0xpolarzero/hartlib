@@ -1,4 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
+import { withEnvironment } from "@brief/config";
 import { Effect, Layer, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -25,7 +26,6 @@ const isolatedDatabaseName = `brief_platform_jobs_test_${process.pid}_${crypto
   .randomUUID()
   .replaceAll("-", "")
   .slice(0, 8)}`;
-const previousDatabaseUrl = process.env.DATABASE_URL;
 
 const sourceDatabaseUrl = (): string => {
   if (databaseUrl === undefined) {
@@ -349,8 +349,8 @@ const runPlatformJob = (
   pages: ReadonlyArray<{ readonly pageNumber: number; readonly text: string }> = [],
   exportStore = unusedExportObjectStore,
 ) =>
-  Effect.runPromise(
-    handlePlatformJob(job).pipe(
+  (() => {
+    const effect = handlePlatformJob(job).pipe(
       Effect.provide(fileStore.layer),
       Effect.provide(makePdfTextExtractorLayer(() => Effect.succeed(pages))),
       Effect.provideService(
@@ -358,8 +358,13 @@ const runPlatformJob = (
         NotificationEmailService.of({ send: () => Promise.reject(new Error("unused")) }),
       ),
       Effect.provideService(ExportObjectStoreService, exportStore),
-    ),
-  );
+    );
+    return Effect.runPromise(
+      databaseUrl === undefined
+        ? effect
+        : withEnvironment(effect, { DATABASE_URL: isolatedDatabaseUrl() }),
+    );
+  })();
 
 describe("publisher text normalization", () => {
   it("normalizes Unicode, whitespace, page order, and stable offsets", () => {
@@ -416,7 +421,6 @@ describe("export cleanup", () => {
 
 describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
   beforeAll(async () => {
-    process.env.DATABASE_URL = isolatedDatabaseUrl();
     await runAdminDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -432,8 +436,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
   }, 120_000);
 
   afterAll(async () => {
-    if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
-    else process.env.DATABASE_URL = previousDatabaseUrl;
     await runAdminDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
