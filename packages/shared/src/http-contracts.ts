@@ -25,7 +25,7 @@ import {
   AiUsageRequestResponse,
   AiUsageResponse,
   ArchiveResponse,
-  BriefDocumentResponse,
+  HartlibDocumentResponse,
   ChangeMonthlyPlanRequest,
   ChangeMonthlyPlanResponse,
   ClientInvitationResponse,
@@ -341,7 +341,7 @@ export const PublisherPdfUploadHeaders = Schema.Struct({
   "idempotency-key": Schema.String.pipe(
     Schema.check(Schema.isPattern(/^[A-Za-z0-9._:-]{16,200}$/u)),
   ),
-  "x-brief-title": Schema.String.pipe(Schema.check(Schema.isLengthBetween(1, 300))),
+  "x-hartlib-title": Schema.String.pipe(Schema.check(Schema.isLengthBetween(1, 300))),
   "x-file-name": Schema.String.pipe(
     Schema.check(Schema.isLengthBetween(1, 255)),
     Schema.check(Schema.isPattern(/^[^/\\\r\n]+$/u)),
@@ -661,9 +661,9 @@ export const httpRouteContracts: Readonly<Record<string, HttpRouteContract>> = {
   "POST /v1/publisher-issues/:issueId/documents": withHeaders(
     contract(
       binaryBody(["application/pdf"], 50 * 1024 * 1024),
-      jsonSuccess(BriefDocumentResponse, [201]),
+      jsonSuccess(HartlibDocumentResponse, [201]),
     ),
-    ["idempotency-key", "x-brief-title", "x-file-name", "x-content-sha256"],
+    ["idempotency-key", "x-hartlib-title", "x-file-name", "x-content-sha256"],
     PublisherPdfUploadHeaders,
   ),
   "DELETE /v1/publisher-issues/:issueId/documents/:documentId": contract(emptyBody, emptySuccess),

@@ -1,4 +1,4 @@
-import { EXPORT_ARCHIVE_MEDIA_TYPE } from "@brief/shared/export-contract";
+import { EXPORT_ARCHIVE_MEDIA_TYPE } from "@hartlib/shared/export-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -179,7 +179,7 @@ describe("publisher workspace API client", () => {
     const uploadHeaders = new Headers(fetchMock.mock.calls[8]?.[1]?.headers);
     expect(uploadHeaders.get("content-type")).toBe("application/pdf");
     expect(uploadHeaders.get("idempotency-key")).toBe("upload-key-12345678");
-    expect(uploadHeaders.get("x-brief-title")).toBe("Main PDF");
+    expect(uploadHeaders.get("x-hartlib-title")).toBe("Main PDF");
     expect(uploadHeaders.get("x-file-name")).toBe("main.pdf");
     expect(fetchMock.mock.calls[9]?.[1]?.body).toBeUndefined();
   });
@@ -824,7 +824,7 @@ describe("client company settings API client", () => {
     await expect(listCompanyDeletionRequests("client /1")).resolves.toEqual([]);
     await expect(
       requestCompanyDeletion("client /1", {
-        reason: "Company is ending its Brief account",
+        reason: "Company is ending its Hartlib account",
         idempotencyKey: "company-deletion:00000001",
       }),
     ).resolves.toEqual([deletion]);
@@ -840,7 +840,7 @@ describe("client company settings API client", () => {
       allowedDomains: ["PUBLIC-AUTHORITY.EU.", "example.com"],
     });
     expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
-      reason: "Company is ending its Brief account",
+      reason: "Company is ending its Hartlib account",
       idempotencyKey: "company-deletion:00000001",
     });
   });

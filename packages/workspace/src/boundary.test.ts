@@ -13,7 +13,7 @@ describe("workspace package boundary", () => {
   it.each(adapters)("keeps %s as a typed HTTP/auth adapter", async (file) => {
     const source = await readFile(new URL(`../../../${file}`, import.meta.url), "utf8");
 
-    expect(source).toContain('from "@brief/workspace"');
+    expect(source).toContain('from "@hartlib/workspace"');
     expect(source).not.toMatch(/\bsql(?:<|`|\.)/u);
     expect(source).not.toContain("withTransaction");
     expect(source).not.toMatch(/request\.(?:arrayBuffer|json|text|formData|headers)/u);

@@ -3,13 +3,13 @@ import {
   listProductChats,
   mutateProductChat,
   resetProductChat,
-} from "@brief/backend-domain/product-chats";
+} from "@hartlib/backend-domain/product-chats";
 import {
   ResetProductChatResponse,
   type CreateProductChatRequest,
   type ResetProductChatRequest,
-} from "@brief/shared";
-import { WorkspaceAuthorizationError } from "@brief/workspace";
+} from "@hartlib/shared";
+import { WorkspaceAuthorizationError } from "@hartlib/workspace";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity } from "../auth";
@@ -18,7 +18,7 @@ import { ApiDatabaseLayer, type ApiDatabaseLayer as ApiDatabaseLayerType } from 
 import { json, jsonFromSchema, type Route } from "../http";
 import { readChat } from "./chat";
 
-export { CHAT_ACTIVE_PURGE_WINDOW_DAYS } from "@brief/backend-domain/product-chats";
+export { CHAT_ACTIVE_PURGE_WINDOW_DAYS } from "@hartlib/backend-domain/product-chats";
 
 const requireIdentity = (request: Request) =>
   Effect.gen(function* () {

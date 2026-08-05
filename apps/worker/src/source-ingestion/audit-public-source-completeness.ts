@@ -1,13 +1,13 @@
 import { BunRuntime } from "@effect/platform-bun";
 import { PgClient } from "@effect/sql-pg";
-import { databaseUrlRedactedConfig, loadPublicSourceAuditConfig } from "@brief/config";
+import { databaseUrlRedactedConfig, loadPublicSourceAuditConfig } from "@hartlib/config";
 import {
   ingestDiscoveredItem,
   makePublicSourceAdapter,
   publicSourceDefinitions,
   type DiscoveredItem,
   type PublicSourceId,
-} from "@brief/source-ingestion";
+} from "@hartlib/source-ingestion";
 import { Config, Effect } from "effect";
 
 type StoredPublicationRow = {
@@ -47,7 +47,7 @@ const orderedUniqueItems = (items: readonly DiscoveredItem[]): readonly Discover
 
 const PgLayer = PgClient.layerConfig({
   url: databaseUrlRedactedConfig,
-  applicationName: Config.succeed("brief-public-source-completeness-audit"),
+  applicationName: Config.succeed("hartlib-public-source-completeness-audit"),
 });
 
 const storedPublications = (sourceId: PublicSourceId, since: Date) =>

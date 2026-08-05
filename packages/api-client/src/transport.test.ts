@@ -1,5 +1,5 @@
-import { HealthResponse } from "@brief/shared";
-import { EXPORT_ARCHIVE_MEDIA_TYPE } from "@brief/shared/export-contract";
+import { HealthResponse } from "@hartlib/shared";
+import { EXPORT_ARCHIVE_MEDIA_TYPE } from "@hartlib/shared/export-contract";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -214,9 +214,9 @@ describe("canonical HTTP client transport", () => {
 
   it("uses an injected fetch and resolves relative routes against the configured base", async () => {
     const fetch = vi.fn<Fetch>(async () => Response.json({ ok: true, service: "api" }));
-    const transport = createApiTransport({ fetch, baseUrl: "https://api.brief.test/root/" });
+    const transport = createApiTransport({ fetch, baseUrl: "https://api.hartlib.test/root/" });
     await transport.json("GET /health", "/health", HealthResponse);
-    expect(String(fetch.mock.calls[0]?.[0])).toBe("https://api.brief.test/health");
+    expect(String(fetch.mock.calls[0]?.[0])).toBe("https://api.hartlib.test/health");
   });
 
   it("accepts only the canonical ustar media contract after an export redirect", async () => {

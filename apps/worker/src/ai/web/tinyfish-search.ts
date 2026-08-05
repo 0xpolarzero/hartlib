@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import {
   AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT,
   AI_WEB_MAX_DOMAIN_FILTERS_HARD_MAX,
-} from "@brief/shared";
+} from "@hartlib/shared";
 
 import type { EffectiveWebPolicy, Locale, Market } from "../runtime/types";
 import { canonicalizeWebUrl } from "../runtime/canonicalization";
@@ -326,7 +326,7 @@ const decodeProviderResponse = (
     if (requestedDomain !== undefined) assertDomainAllowed(domain, [requestedDomain]);
 
     // `date` is documented discovery metadata. Validate it above, then omit it:
-    // only Brief's independently fetched page may establish citation publication time.
+    // only Hartlib's independently fetched page may establish citation publication time.
     return {
       title: result.title.normalize("NFC").trim(),
       url,

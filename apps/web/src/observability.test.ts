@@ -49,7 +49,7 @@ describe("Sentry restricted-content scrubber", () => {
       type: undefined,
       event_id: "event-1",
       message: "customer prompt is secret",
-      request: { url: "https://brief.test/chat/private-chat-id", data: "secret prompt" },
+      request: { url: "https://hartlib.test/chat/private-chat-id", data: "secret prompt" },
       user: { id: "customer-user", email: "person@example.com" },
       breadcrumbs: [{ message: "secret document title" }],
       extra: { answer: "restricted answer" },
@@ -74,12 +74,12 @@ describe("Sentry restricted-content scrubber", () => {
     expect(sanitized).toEqual({
       type: undefined,
       event_id: "event-1",
-      logger: "brief.web",
+      logger: "hartlib.web",
       message: "ui_render_failed",
       exception: {
         values: [
           {
-            type: "BriefWebError",
+            type: "HartlibWebError",
             value: "ui_render_failed",
             stacktrace: { frames: [{ filename: "main.tsx", lineno: 10 }] },
           },

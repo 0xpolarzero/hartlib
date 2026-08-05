@@ -7,8 +7,8 @@ import {
   useLocale,
   useMarket,
   useSetLocaleMarket,
-} from "@brief/i18n";
-import { cn } from "@brief/ui";
+} from "@hartlib/i18n";
+import { cn } from "@hartlib/ui";
 
 const LABEL_KEY: Record<Locale, string> = {
   "fr-FR": "localeSwitcher.frFR",

@@ -1,5 +1,5 @@
-import { useLocale } from "@brief/i18n";
-import { Badge, Card, CardContent, CardHeader, CardTitle, cn } from "@brief/ui";
+import { useLocale } from "@hartlib/i18n";
+import { Badge, Card, CardContent, CardHeader, CardTitle, cn } from "@hartlib/ui";
 import type { ReactNode } from "react";
 
 export interface WorkspaceNavItem {

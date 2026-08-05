@@ -4,7 +4,7 @@ import { TestClock } from "effect/testing";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import { InvalidQuerySpecError } from "./compile-query-spec";
 import {
   findNormalizedSubstringRanges,
@@ -24,7 +24,7 @@ import { fuseTwoStageRankedResults, type RankedBranchHit } from "./rank-fusion";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const isolatedDatabaseName = `brief_retrieval_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const isolatedDatabaseName = `hartlib_retrieval_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 const now = new Date();
 const daysAgo = (days: number) => new Date(now.getTime() - days * 86_400_000);
@@ -727,7 +727,7 @@ function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-retrieval-test",
+          applicationName: "hartlib-retrieval-test",
         }),
       ),
     ),
@@ -1322,7 +1322,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           )
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type, byte_size,
             sha256_hex, upload_completed_at, created_by_user_id
           ) values (
@@ -1337,8 +1337,8 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           returning id::text as id
         `;
         yield* sql`
-          insert into brief_document_extractions (
-            id, brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+          insert into hartlib_document_extractions (
+            id, hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
           ) values (
             ${phaseBFixture.extractionId}, ${phaseBFixture.documentId}, ${publisherHash},
             ${JSON.stringify([{ pageNumber: 1, text: publisherText }])}::jsonb,
@@ -1346,8 +1346,8 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           )
         `;
         yield* sql`
-          insert into brief_document_versions (
-            id, brief_document_id, publisher_extraction_id, content_hash, language,
+          insert into hartlib_document_versions (
+            id, hartlib_document_id, publisher_extraction_id, content_hash, language,
             canonical_text, text_char_count, page_ranges
           ) values (
             ${phaseBFixture.snapshotId}, ${phaseBFixture.documentId}, ${phaseBFixture.extractionId},
@@ -1356,7 +1356,7 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           )
         `;
         yield* sql`
-          update brief_documents set current_version_id = ${phaseBFixture.snapshotId}
+          update hartlib_documents set current_version_id = ${phaseBFixture.snapshotId}
           where id = ${phaseBFixture.documentId}
         `;
         yield* sql`

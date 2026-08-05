@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-import { LIVE_AI_MODEL_ID, ZAI_CODING_PLAN_BASE_URL } from "@brief/config";
-import type { AiProviderEndpointIdentity, AiProviderServiceId } from "@brief/shared";
+import { LIVE_AI_MODEL_ID, ZAI_CODING_PLAN_BASE_URL } from "@hartlib/config";
+import type { AiProviderEndpointIdentity, AiProviderServiceId } from "@hartlib/shared";
 import { tokenizers } from "@lenml/tokenizers";
 import { Template } from "@huggingface/jinja";
 

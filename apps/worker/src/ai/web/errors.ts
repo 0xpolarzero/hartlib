@@ -29,7 +29,7 @@ export class WebBoundaryError extends Error {
     _cause?: unknown,
     readonly operations: readonly {
       readonly kind: "search" | "fetch";
-      readonly provider: "tinyfish" | "zai" | "brief_fetch";
+      readonly provider: "tinyfish" | "zai" | "hartlib_fetch";
       readonly outcome: "succeeded" | "empty" | "failed";
       readonly resultCount: number;
       readonly responseBytes: number;

@@ -16,9 +16,9 @@
 - If no existing test covers the requested path, add or extend a Playwright test before claiming the flow was tested.
 - For retrieval chat flows, always run `tests/e2e/chat.spec.ts` test `real provider internal retrieval persists a cited answer` as the required baseline. It is an example of retrieval coverage, not proof for unrelated flows.
 - Run the baseline or a flow-specific live test with real credentials, not only the deterministic provider:
-  `BRIEF_E2E_LIVE_PROVIDER=1 BRIEF_E2E_STACK=1 bun --env-file=.env x --bun playwright test <test-file> --project=brief-ai-chat-runtime -g "<test title>"`.
-- Treat the live flow as verified only when Playwright reports `passed`. A skipped test, including a skip caused by missing `BRIEF_E2E_LIVE_PROVIDER=1` or `ZAI_API_KEY`, does not verify the flow even if the command exits with status zero.
-- Use a free `BRIEF_E2E_PORT_BASE` when the default E2E ports are occupied.
+  `HARTLIB_E2E_LIVE_PROVIDER=1 HARTLIB_E2E_STACK=1 bun --env-file=.env x --bun playwright test <test-file> --project=hartlib-ai-chat-runtime -g "<test title>"`.
+- Treat the live flow as verified only when Playwright reports `passed`. A skipped test, including a skip caused by missing `HARTLIB_E2E_LIVE_PROVIDER=1` or `ZAI_API_KEY`, does not verify the flow even if the command exits with status zero.
+- Use a free `HARTLIB_E2E_PORT_BASE` when the default E2E ports are occupied.
 - Run relevant deterministic tests as regression checks, but do not present them as proof of live-provider behavior.
 - If live credentials are unavailable, state that the live E2E could not run. Do not silently substitute deterministic coverage.
 

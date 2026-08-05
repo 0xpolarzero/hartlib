@@ -18,9 +18,9 @@ const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
   authMode: "clerk",
   clerkSecretKey: "secret",
   clerkPublishableKey: "publishable",
-  clerkAuthorizedParties: ["https://brief.test"],
+  clerkAuthorizedParties: ["https://hartlib.test"],
   clerkWebhookSigningSecret: "whsec_test",
-  clerkInvitationRedirectUrl: "https://brief.test/invitations/accept",
+  clerkInvitationRedirectUrl: "https://hartlib.test/invitations/accept",
   stripeSecretKey: "",
   stripeWebhookSecret: "",
   stripePriceLight: "",
@@ -30,7 +30,7 @@ const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
   stripeCheckoutSuccessUrl: "",
   stripeCheckoutCancelUrl: "",
   stripePortalReturnUrl: "",
-  corsAllowedOrigins: ["https://brief.test"],
+  corsAllowedOrigins: ["https://hartlib.test"],
   objectStorageConfigured: false,
   exportObjectStorageConfigured: false,
   sentryDsn: "",
@@ -41,7 +41,7 @@ const run = (apiConfig: ApiConfig, authenticator?: RequestAuthenticator, cookie?
   Effect.runPromise(
     resolveRequestIdentity(
       new Request(
-        "https://brief.test/v1/chat",
+        "https://hartlib.test/v1/chat",
         cookie === undefined ? {} : { headers: { cookie } },
       ),
       apiConfig,
@@ -104,7 +104,7 @@ describe("request authentication", () => {
       },
     });
     expect(authenticateRequest).toHaveBeenCalledWith(expect.any(Request), {
-      authorizedParties: ["https://brief.test"],
+      authorizedParties: ["https://hartlib.test"],
     });
   });
 

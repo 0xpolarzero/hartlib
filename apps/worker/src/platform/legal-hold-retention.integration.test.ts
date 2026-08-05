@@ -1,12 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
-import { withEnvironment } from "@brief/config";
+import { withEnvironment } from "@hartlib/config";
 import { Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { makeRunAcceptanceScope } from "@brief/shared/chat";
+import { makeRunAcceptanceScope } from "@hartlib/shared/chat";
 
 import { purgeUserMemoryTombstones } from "../ai/product-state/retention";
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import type { JobRecord } from "../jobs/types";
 import {
   ExportObjectStoreService,
@@ -20,7 +20,7 @@ import { makePdfTextExtractorLayer } from "./pdf-text";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const databaseName = `brief_legal_hold_retention_${process.pid}_${crypto
+const databaseName = `hartlib_legal_hold_retention_${process.pid}_${crypto
   .randomUUID()
   .replaceAll("-", "")
   .slice(0, 8)}`;
@@ -44,7 +44,7 @@ const quoted = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 
 const runDb = <A, E>(
   effect: Effect.Effect<A, E, PgClient.PgClient>,
-  applicationName = "brief-legal-hold-retention-test",
+  applicationName = "hartlib-legal-hold-retention-test",
   url = testUrl(),
 ): Promise<A> =>
   Effect.runPromise(
@@ -74,7 +74,7 @@ const waitForAdvisoryWait = async (applicationName: string): Promise<void> => {
         `;
         return rows[0]?.waiting === true;
       }),
-      "brief-legal-hold-race-inspector",
+      "hartlib-legal-hold-race-inspector",
     );
     if (waiting) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -136,7 +136,7 @@ const seedPlatformFixture = (label: string) =>
       ) values (${issueId}, ${subscriptionId}, ${`Issue ${label}`}, 'draft', ${publisherUserId})
     `;
     yield* sql`
-      insert into brief_documents (
+      insert into hartlib_documents (
         id, issue_id, title, original_file_name, object_key, media_type,
         byte_size, sha256_hex, upload_completed_at, created_by_user_id, language
       ) values (
@@ -257,7 +257,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           yield* sql.unsafe(`create database ${quoted(databaseName)}`);
         }
       }),
-      "brief-legal-hold-retention-admin",
+      "hartlib-legal-hold-retention-admin",
       adminUrl(),
     );
     await runDb(runMigrations);
@@ -274,7 +274,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
         `;
         yield* sql.unsafe(`drop database if exists ${quoted(databaseName)}`);
       }),
-      "brief-legal-hold-retention-admin",
+      "hartlib-legal-hold-retention-admin",
       adminUrl(),
     );
   }, 60_000);
@@ -340,8 +340,8 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           returning id::text
         `;
         const [extraction] = yield* sql<{ readonly id: string }>`
-          insert into brief_document_extractions (
-            brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+          insert into hartlib_document_extractions (
+            hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
           ) values (
             ${fixture.documentId}, ${contentHash},
             '[{"pageNumber":1,"text":"Cited publisher evidence"}]'::jsonb,
@@ -350,8 +350,8 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           returning id::text
         `;
         yield* sql`
-          insert into brief_document_versions (
-            id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
+          insert into hartlib_document_versions (
+            id, hartlib_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
             ${snapshotId}, ${fixture.documentId}, ${extraction!.id}, encode(digest(convert_to('Cited publisher evidence', 'UTF8'), 'sha256'), 'hex'), 'en-US',
@@ -360,7 +360,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           )
         `;
         yield* sql`
-          update brief_documents set current_version_id = ${snapshotId}
+          update hartlib_documents set current_version_id = ${snapshotId}
           where id = ${fixture.documentId}
         `;
         yield* sql`
@@ -420,7 +420,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
               publisherExtractionId: extraction!.id,
               ranges: [{ charStart: 0, charEnd: 24 }],
             })},
-              ${snapshotId}, (select id from brief_document_extractions where brief_document_id = ${fixture.documentId} limit 1),
+              ${snapshotId}, (select id from hartlib_document_extractions where hartlib_document_id = ${fixture.documentId} limit 1),
               ${`publisher:${fixture.subscriptionId}`}, ${fixture.documentId}, ${contentHash},
               'Cited publisher evidence',
             ${sql.json({
@@ -569,7 +569,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           }),
         );
       }),
-      "brief-export-object-hold-holder",
+      "hartlib-export-object-hold-holder",
     );
     await holdInserted;
     const holdWinsDeletes: string[] = [];
@@ -584,9 +584,9 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
     };
     const heldPurge = runDb(
       purgeExpiredExportObjects(holdWinsStore),
-      "brief-export-object-hold-purger",
+      "hartlib-export-object-hold-purger",
     );
-    await waitForAdvisoryWait("brief-export-object-hold-purger");
+    await waitForAdvisoryWait("hartlib-export-object-hold-purger");
     releaseHoldTransaction();
     await holdPlacement;
     await expect(heldPurge).resolves.toBe(0);
@@ -677,7 +677,10 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
         gcWinsDeletes.push(objectKey);
       },
     };
-    const deleting = runDb(purgeExpiredExportObjects(gcWinsStore), "brief-export-object-gc-winner");
+    const deleting = runDb(
+      purgeExpiredExportObjects(gcWinsStore),
+      "hartlib-export-object-gc-winner",
+    );
     await deleteStarted;
     const lateHold = runDb(
       Effect.gen(function* () {
@@ -687,7 +690,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           values ('issue', ${fixture.issueId}::text, 'GC wins export hold race', 'legal-admin')
         `;
       }),
-      "brief-export-object-hold-placer",
+      "hartlib-export-object-hold-placer",
     );
     await lateHold;
     const fenceCommitted = await runDb(
@@ -949,7 +952,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return (yield* sql<{ readonly held: boolean }>`
-          select brief_has_active_legal_hold(request.hold_scope_keys) as held
+          select hartlib_has_active_legal_hold(request.hold_scope_keys) as held
           from export_requests request
           where request.id = ${exportId}
         `)[0]!.held;
@@ -1256,8 +1259,8 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
             ${crypto.randomUUID()}, 'checkout-retention-session',
             'clerk', true, 'additional', 10,
             'cus_requester_only', 'price_additional',
-            'https://brief.test/success', 'https://brief.test/cancel',
-            ${`brief-checkout:${requesterCompanyId}:${checkoutKey}:session`},
+            'https://hartlib.test/success', 'https://hartlib.test/cancel',
+            ${`hartlib-checkout:${requesterCompanyId}:${checkoutKey}:session`},
             'cs_checkout_retention', 'https://checkout.stripe.test/retention',
             'succeeded', now() - interval '1 second'
           )
@@ -1324,7 +1327,7 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           readonly holdScopeKeys: readonly string[];
         }>`
           select stripe_event_id as id,
-                 brief_stripe_event_legal_hold_scope_keys(
+                 hartlib_stripe_event_legal_hold_scope_keys(
                    stripe_customer_id, stripe_subscription_id, stripe_schedule_id,
                    stripe_payment_id, stripe_invoice_id
                  ) as "holdScopeKeys"
@@ -1410,8 +1413,8 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
               ${crypto.randomUUID()}, ${`checkout-retention-${suffix}`},
               'clerk', true, 'additional', 10,
               ${`cus_checkout_retention_${suffix}`}, 'price_additional',
-              'https://brief.test/success', 'https://brief.test/cancel',
-              ${`brief-checkout:${companyId}:${idempotencyKey}:session`},
+              'https://hartlib.test/success', 'https://hartlib.test/cancel',
+              ${`hartlib-checkout:${companyId}:${idempotencyKey}:session`},
               ${`cs_checkout_retention_${suffix}`},
               ${`https://checkout.stripe.test/${suffix}`}, 'succeeded'
             )
@@ -1706,12 +1709,12 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           }),
         );
       }),
-      "brief-accounting-hold-holder",
+      "hartlib-accounting-hold-holder",
     );
     await placementReady;
-    const purge = runDb(purgeDeletedAccounts(), "brief-accounting-hold-purger");
+    const purge = runDb(purgeDeletedAccounts(), "hartlib-accounting-hold-purger");
     try {
-      await waitForAdvisoryWait("brief-accounting-hold-purger");
+      await waitForAdvisoryWait("hartlib-accounting-hold-purger");
     } finally {
       releaseHolder();
     }
@@ -1773,12 +1776,12 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           }),
         );
       }),
-      "brief-audit-hold-holder",
+      "hartlib-audit-hold-holder",
     );
     await placementReady;
-    const purge = runDb(purgeOperationalAuditRetention(), "brief-operational-audit-hold-purger");
+    const purge = runDb(purgeOperationalAuditRetention(), "hartlib-operational-audit-hold-purger");
     try {
-      await waitForAdvisoryWait("brief-operational-audit-hold-purger");
+      await waitForAdvisoryWait("hartlib-operational-audit-hold-purger");
     } finally {
       releaseHolder();
     }
@@ -1964,11 +1967,11 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           }),
         );
       }),
-      "brief-user-account-hold-holder",
+      "hartlib-user-account-hold-holder",
     );
     await holdInserted;
-    const heldPurge = runDb(purgeDeletedAccounts(), "brief-user-account-hold-purger");
-    await waitForAdvisoryWait("brief-user-account-hold-purger");
+    const heldPurge = runDb(purgeDeletedAccounts(), "hartlib-user-account-hold-purger");
+    await waitForAdvisoryWait("hartlib-user-account-hold-purger");
     releaseHoldTransaction();
     await holdPlacement;
     await expect(heldPurge).resolves.toMatchObject({ purgedUsers: 0, purgedChats: 0 });
@@ -1997,17 +2000,17 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtextextended(${`brief:legal-hold:user:${secondFixture.userId}`}, 0)
+                hashtextextended(${`hartlib:legal-hold:user:${secondFixture.userId}`}, 0)
               )
             `;
             yield* Effect.promise(() => gateReleased);
           }),
         );
       }),
-      "brief-user-account-purge-gate",
+      "hartlib-user-account-purge-gate",
     );
-    const purgeFirst = runDb(purgeDeletedAccounts(), "brief-user-account-purge-first");
-    await waitForAdvisoryWait("brief-user-account-purge-first");
+    const purgeFirst = runDb(purgeDeletedAccounts(), "hartlib-user-account-purge-first");
+    await waitForAdvisoryWait("hartlib-user-account-purge-first");
     const lateHold = runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -2020,9 +2023,9 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           }),
         );
       }),
-      "brief-user-account-purge-late-hold",
+      "hartlib-user-account-purge-late-hold",
     );
-    await waitForAdvisoryWait("brief-user-account-purge-late-hold");
+    await waitForAdvisoryWait("hartlib-user-account-purge-late-hold");
     releaseGate();
     await gate;
     await purgeFirst;
@@ -2061,11 +2064,11 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           }),
         );
       }),
-      "brief-company-account-hold-holder",
+      "hartlib-company-account-hold-holder",
     );
     await holdInserted;
-    const heldPurge = runDb(purgeDeletedAccounts(), "brief-company-account-hold-purger");
-    await waitForAdvisoryWait("brief-company-account-hold-purger");
+    const heldPurge = runDb(purgeDeletedAccounts(), "hartlib-company-account-hold-purger");
+    await waitForAdvisoryWait("hartlib-company-account-hold-purger");
     releaseHoldTransaction();
     await holdPlacement;
     await expect(heldPurge).resolves.toMatchObject({ purgedCompanies: 0 });
@@ -2091,17 +2094,17 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtextextended(${`brief:legal-hold:user:${secondFixture.userId}`}, 0)
+                hashtextextended(${`hartlib:legal-hold:user:${secondFixture.userId}`}, 0)
               )
             `;
             yield* Effect.promise(() => gateReleased);
           }),
         );
       }),
-      "brief-company-account-purge-gate",
+      "hartlib-company-account-purge-gate",
     );
-    const purgeFirst = runDb(purgeDeletedAccounts(), "brief-company-account-purge-first");
-    await waitForAdvisoryWait("brief-company-account-purge-first");
+    const purgeFirst = runDb(purgeDeletedAccounts(), "hartlib-company-account-purge-first");
+    await waitForAdvisoryWait("hartlib-company-account-purge-first");
     const lateHold = runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -2117,9 +2120,9 @@ describe.skipIf(!isBun || !databaseUrl)("legal-hold retention serialization", ()
           }),
         );
       }),
-      "brief-company-account-purge-late-hold",
+      "hartlib-company-account-purge-late-hold",
     );
-    await waitForAdvisoryWait("brief-company-account-purge-late-hold");
+    await waitForAdvisoryWait("hartlib-company-account-purge-late-hold");
     releaseGate();
     await gate;
     await purgeFirst;

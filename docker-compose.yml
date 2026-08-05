@@ -2,15 +2,15 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     environment:
-      POSTGRES_USER: brief
-      POSTGRES_PASSWORD: brief
-      POSTGRES_DB: brief
+      POSTGRES_USER: hartlib
+      POSTGRES_PASSWORD: hartlib
+      POSTGRES_DB: hartlib
     ports:
-      - "${BRIEF_POSTGRES_HOST_PORT:-5432}:5432"
+      - "${HARTLIB_POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U brief -d brief"]
+      test: ["CMD-SHELL", "pg_isready -U hartlib -d hartlib"]
       interval: 5s
       timeout: 5s
       retries: 10

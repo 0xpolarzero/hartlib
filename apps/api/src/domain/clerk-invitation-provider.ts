@@ -1,6 +1,6 @@
 const PAGE_SIZE = 100;
 const MAX_SCANNED_INVITATIONS = 10_000;
-const LOCAL_INVITATION_METADATA_KEY = "briefWorkspaceInvitationId";
+const LOCAL_INVITATION_METADATA_KEY = "hartlibWorkspaceInvitationId";
 
 type OrganizationRole = "org:admin" | "org:member";
 type InvitationStatus = "pending" | "accepted";

@@ -1,5 +1,5 @@
 {
-  "name": "@brief/workspace",
+  "name": "@hartlib/workspace",
   "private": true,
   "type": "module",
   "exports": {
@@ -12,8 +12,8 @@
     "test": "vitest run --root ../.. packages/workspace/src"
   },
   "dependencies": {
-    "@brief/shared": "workspace:*",
     "@effect/sql-pg": "4.0.0-beta.92",
+    "@hartlib/shared": "workspace:*",
     "effect": "4.0.0-beta.92"
   },
   "devDependencies": {

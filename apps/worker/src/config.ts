@@ -1,10 +1,10 @@
-import type { WorkerConfig } from "@brief/config";
-import { PRODUCTION_DECISIONS_BLOCKER } from "@brief/config";
+import type { WorkerConfig } from "@hartlib/config";
+import { PRODUCTION_DECISIONS_BLOCKER } from "@hartlib/config";
 
 import { resolveRuntimeModel, verifyRegisteredModelsAtStartup } from "./ai/runtime/model-registry";
 
-export type { WorkerConfig } from "@brief/config";
-export { loadWorkerConfig, PRODUCTION_DECISIONS_BLOCKER } from "@brief/config";
+export type { WorkerConfig } from "@hartlib/config";
+export { loadWorkerConfig, PRODUCTION_DECISIONS_BLOCKER } from "@hartlib/config";
 
 export const assertWorkerAiProviderPosture = (config: WorkerConfig): void => {
   if (config.nodeEnv === "production") {

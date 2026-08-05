@@ -7,7 +7,7 @@ import {
   type PublicCitationRecord,
   type PublicSourceRecord,
   type UserChatMessage,
-} from "@brief/shared";
+} from "@hartlib/shared";
 
 import type { MessageRow, RunRow, SourceRow, SourceUseRow } from "./chat-runtime";
 

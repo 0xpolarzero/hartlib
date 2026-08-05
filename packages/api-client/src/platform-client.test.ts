@@ -1,4 +1,4 @@
-import { EXPORT_ARCHIVE_MEDIA_TYPE } from "@brief/shared/export-contract";
+import { EXPORT_ARCHIVE_MEDIA_TYPE } from "@hartlib/shared/export-contract";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPlatformApiClient } from "./platform-client";

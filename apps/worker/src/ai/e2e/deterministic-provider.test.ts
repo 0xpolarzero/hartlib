@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import * as SmithersTaskRuntimeModule from "@smithers-orchestrator/driver/task-runtime";
-import { makeRunAcceptanceScope } from "@brief/shared";
+import { makeRunAcceptanceScope } from "@hartlib/shared";
 import { openSmithersBackend } from "smithers-orchestrator";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -331,13 +331,13 @@ const memoryLoopTools = () => [
     complete: true,
     truncated: false,
     cursor: null,
-    __briefSourceExposures: [memoryExposureMarker],
+    __hartlibSourceExposures: [memoryExposureMarker],
   })),
   memoryTool("inspect_memory", async () => ({
     found: true,
     complete: true,
     memory: memorySnapshot,
-    __briefSourceExposures: [memoryExposureMarker],
+    __hartlibSourceExposures: [memoryExposureMarker],
   })),
   memoryTool("emit_memory_manifest", async () => ({ complete: true })),
   memoryTool("emit_memory_proposals", async () => ({ complete: true })),
@@ -362,7 +362,7 @@ const pagedMemoryLoopTools = (
           complete: false,
           truncated: true,
           cursor: 1,
-          __briefSourceExposures: [memoryExposureMarker],
+          __hartlibSourceExposures: [memoryExposureMarker],
         }
       : {
           items: [
@@ -376,7 +376,7 @@ const pagedMemoryLoopTools = (
           complete: true,
           truncated: false,
           cursor: null,
-          __briefSourceExposures: [
+          __hartlibSourceExposures: [
             {
               sourceKind: "memory" as const,
               logicalSourceIdentity: "memory:memory-later-page",
@@ -395,7 +395,7 @@ const pagedMemoryLoopTools = (
       found: true,
       complete: true,
       memory: inspectedMemory,
-      __briefSourceExposures: [memoryExposureMarker],
+      __hartlibSourceExposures: [memoryExposureMarker],
     };
   }),
   memoryTool("emit_memory_manifest", async () => ({ complete: true })),
@@ -1529,7 +1529,7 @@ const runDeterministicProductionWorkflow = async (
   const agent = new CanonicalAgentClient(provider);
   const storage = await openSmithersBackend(aiChatSchemas, {
     backend: "sqlite",
-    dbPath: `/tmp/brief-deterministic-${crypto.randomUUID()}.db`,
+    dbPath: `/tmp/hartlib-deterministic-${crypto.randomUUID()}.db`,
   });
   const calls: string[] = [];
   const structuredViaAgent = async <Value>(
@@ -2465,7 +2465,7 @@ describe("deterministic v4 retrieval and compaction roles", () => {
       const contentHash = createHash("sha256").update(text, "utf8").digest("hex");
       const rangeHash = sha256Base64Url(JSON.stringify([{ charStart: 0, charEnd: text.length }]));
       return {
-        __briefSourceExposures: [
+        __hartlibSourceExposures: [
           {
             sourceKind: "document" as const,
             logicalSourceIdentity,
@@ -2474,7 +2474,7 @@ describe("deterministic v4 retrieval and compaction roles", () => {
             visibleTokenCount: resolveRuntimeModel("glm-5-turbo").countTextTokens(text),
           },
         ],
-        __briefSourceIdentity: [
+        __hartlibSourceIdentity: [
           {
             snapshotId: "snapshot-1",
             contentHash,

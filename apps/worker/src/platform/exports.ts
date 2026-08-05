@@ -1,10 +1,10 @@
 import { PgClient } from "@effect/sql-pg";
-import { SERVER_NUMERIC_SETTING_HARD_MAXIMA } from "@brief/config";
+import { SERVER_NUMERIC_SETTING_HARD_MAXIMA } from "@hartlib/config";
 import { Effect } from "effect";
 import {
   EXPORT_ARCHIVE_FILE_EXTENSION,
   EXPORT_ARCHIVE_MEDIA_TYPE,
-} from "@brief/shared/export-contract";
+} from "@hartlib/shared/export-contract";
 import { compareSourceKeys } from "../ai/runtime/canonicalization";
 
 import type { ExportObjectStore } from "./adapters";
@@ -330,7 +330,7 @@ const loadExportFiles = (
                    documents.object_key as "objectKey",
                    documents.byte_size as "byteSize",
                    documents.sha256_hex as "sha256Hex"
-            from brief_documents documents
+            from hartlib_documents documents
             join publisher_issues issues on issues.id = documents.issue_id
             where ${sql.in("documents.id", snapshot.documentIds)}
               and ${sql.in("issues.id", snapshot.issueIds)}
@@ -393,11 +393,11 @@ const loadExportFiles = (
                        sources.locator, sources.display_label as "displayLabel",
                        sources.public_provenance as "publicProvenance"
                 from assistant_message_sources sources
-                join brief_document_extractions extractions
+                join hartlib_document_extractions extractions
                   on extractions.id = sources.publisher_extraction_id
-                join brief_documents documents on documents.id = extractions.brief_document_id
-                join brief_document_versions versions
-                  on versions.brief_document_id = documents.id
+                join hartlib_documents documents on documents.id = extractions.hartlib_document_id
+                join hartlib_document_versions versions
+                  on versions.hartlib_document_id = documents.id
                  and versions.id::text = sources.snapshot_id
                 join publisher_issues issues on issues.id = documents.issue_id
                 where ${sql.in("sources.assistant_message_id", chatMessageIds)}
@@ -771,8 +771,8 @@ export const purgeExpiredExportObjects = (store: ExportObjectStore, now?: Date) 
         and (
           generation.delete_fenced_at is not null
           or (
-            not brief_has_active_legal_hold(request.hold_scope_keys)
-            and not brief_has_embedded_legal_hold(request.hold_scope_keys)
+            not hartlib_has_active_legal_hold(request.hold_scope_keys)
+            and not hartlib_has_embedded_legal_hold(request.hold_scope_keys)
           )
         )
       order by generation.next_delete_attempt_at, generation.purge_after,
@@ -793,7 +793,7 @@ export const purgeExpiredExportObjects = (store: ExportObjectStore, now?: Date) 
                 for (const scopeKey of holdScopeKeys) {
                   yield* sql`
                     select pg_advisory_xact_lock(
-                      hashtextextended(${`brief:legal-hold:${scopeKey}`}, 0)
+                      hashtextextended(${`hartlib:legal-hold:${scopeKey}`}, 0)
                     )
                   `;
                 }
@@ -847,17 +847,17 @@ export const purgeExpiredExportObjects = (store: ExportObjectStore, now?: Date) 
                 `;
                 yield* sql`
                   select documents.id
-                  from brief_documents documents
+                  from hartlib_documents documents
                   where ('issue:' || documents.issue_id::text) = any(${holdScopeKeys})
                   order by documents.id::text
                   for share
                 `;
                 const held = yield* sql<{ readonly held: boolean }>`
-                  select brief_has_active_legal_hold(${holdScopeKeys})
-                    or brief_has_embedded_legal_hold(${holdScopeKeys}) as held
+                  select hartlib_has_active_legal_hold(${holdScopeKeys})
+                    or hartlib_has_embedded_legal_hold(${holdScopeKeys}) as held
                 `;
                 if (held[0]?.held !== false) return null;
-                yield* sql`select set_config('brief.allow_export_object_purge', 'on', true)`;
+                yield* sql`select set_config('hartlib.allow_export_object_purge', 'on', true)`;
                 const rows = yield* sql<ExportObjectGenerationRow>`
                   update export_object_generations generation
                   set delete_fenced_at = coalesce(delete_fenced_at, now())
@@ -897,7 +897,7 @@ export const purgeExpiredExportObjects = (store: ExportObjectStore, now?: Date) 
               for update
             `;
             if (rows.length !== 1) return;
-            yield* sql`select set_config('brief.allow_export_object_purge', 'on', true)`;
+            yield* sql`select set_config('hartlib.allow_export_object_purge', 'on', true)`;
             yield* sql`
               update export_object_generations
               set delete_attempts = delete_attempts + 1,
@@ -928,7 +928,7 @@ export const purgeExpiredExportObjects = (store: ExportObjectStore, now?: Date) 
           `;
           const current = rows[0];
           if (current === undefined) return false;
-          yield* sql`select set_config('brief.allow_export_object_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_export_object_purge', 'on', true)`;
           if (current.writerState !== "not_started" && current.writerState !== "succeeded") {
             yield* sql`
               update export_object_generations

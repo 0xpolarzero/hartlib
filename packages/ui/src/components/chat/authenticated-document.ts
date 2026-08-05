@@ -31,7 +31,7 @@ const decodeOpaquePathSegment = (value: string): string | null => {
   }
 };
 
-/** Recognize only Brief's relative, authorized publisher-document route. */
+/** Recognize only Hartlib's relative, authorized publisher-document route. */
 export const publisherDocumentCitationTarget = (
   citationUrl: string,
 ): PublisherDocumentCitationTarget | null => {

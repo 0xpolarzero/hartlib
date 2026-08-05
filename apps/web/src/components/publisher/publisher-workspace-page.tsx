@@ -1,5 +1,5 @@
-import { useIntl, useLocale } from "@brief/i18n";
-import type { PublisherIssueDescriptor } from "@brief/shared";
+import { useIntl, useLocale } from "@hartlib/i18n";
+import type { PublisherIssueDescriptor } from "@hartlib/shared";
 import {
   Button,
   Input,
@@ -10,7 +10,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@brief/ui";
+} from "@hartlib/ui";
 import { useForm } from "@tanstack/react-form";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

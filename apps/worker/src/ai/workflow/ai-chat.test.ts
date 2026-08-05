@@ -1,12 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
-import { makeRunAcceptanceScope } from "@brief/shared";
+import { makeRunAcceptanceScope } from "@hartlib/shared";
 import { Effect, Redacted } from "effect";
 import { Effect as Effect3 } from "effect3";
 import { SmithersDb } from "smithers-orchestrator";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import type { CanonicalAgentClient } from "../runtime/agent-client";
 import { AiRuntimeError } from "../runtime/errors";
 import type {
@@ -55,7 +55,7 @@ import type {
 import type { CompactionPassResult } from "../context/compaction-runtime";
 
 const sourceDatabaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const databaseName = `brief_ai_chat_graph_test_${process.pid}_${crypto
+const databaseName = `hartlib_ai_chat_graph_test_${process.pid}_${crypto
   .randomUUID()
   .replaceAll("-", "")
   .slice(0, 8)}`;
@@ -90,7 +90,7 @@ const runDb = <A, E>(
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-ai-chat-graph-test",
+          applicationName: "hartlib-ai-chat-graph-test",
         }),
       ),
     ),
@@ -2107,7 +2107,7 @@ describe.skipIf(databaseUrl === undefined)("canonical ai-chat Smithers graph", (
                 select 1
                 from pg_stat_activity
                 where datname = current_database()
-                  and application_name = 'brief-ai-chat-smithers-fence'
+                  and application_name = 'hartlib-ai-chat-smithers-fence'
                   and state <> 'idle'
                   and query like '%pg_advisory_lock_shared%'
               ) as waiting

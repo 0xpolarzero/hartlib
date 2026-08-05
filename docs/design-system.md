@@ -1,4 +1,4 @@
-# Brief Design System
+# Hartlib Design System
 
 ## Concept: Pressroom
 
@@ -57,7 +57,7 @@ All values in OKLCH. Neutrals tinted slightly cool (hue ~220 or ~60) for cohesio
 
 ### Font Roles
 
-- **Fraunces** (serif, optical size axis) — Display / wordmark "brief."
+- **Fraunces** (serif, optical size axis) — Display / wordmark "hartlib."
   - Weights: 400, 500, 600
   - opsz: 9-144
 - **Newsreader** (serif) — Long-form issue summaries, reading body text
@@ -146,11 +146,11 @@ TanStack Table renderer for dense product tables that share Pressroom header, so
 
 - `DataTable` — renders TanStack header groups, sortable headers, body rows, optional leading rows, row click behavior, hidden columns, responsive column/table classes, and custom cell rendering
 - `SortableTableHead` — standalone sortable header cell used by `DataTable`
-- Low-level sorting state, column definitions, row models, and domain cell content may be owned by reusable product components inside `@brief/ui`; consuming apps should prefer package-level product tables when they exist.
+- Low-level sorting state, column definitions, row models, and domain cell content may be owned by reusable product components inside `@hartlib/ui`; consuming apps should prefer package-level product tables when they exist.
 
 ### Product Tables And Detail Components
 
-Reusable product UI for the demo and MVP lives in `@brief/ui`, while apps keep routing, account switching, local demo persistence, and fixture-to-view-model mapping.
+Reusable product UI for the demo and MVP lives in `@hartlib/ui`, while apps keep routing, account switching, local demo persistence, and fixture-to-view-model mapping.
 
 - `SourcesTable` — publisher source rows with subscriber counts, issue counts, and latest publication date
 - `PublicationsTable` — publisher publication rows with metrics, scheduled-state treatment, and optional scheduled deletion
@@ -194,14 +194,14 @@ Reusable chat transcript primitives for client AI conversations.
 
 ## Package Exports
 
-The `@brief/ui` package exports:
+The `@hartlib/ui` package exports:
 
-- `@brief/ui` — all components and utilities (TypeScript entrypoint)
-- `@brief/ui/styles` — Tailwind v4 `@theme` tokens CSS file (import via `@import "@brief/ui/styles"` in app CSS after `@import "tailwindcss"`)
+- `@hartlib/ui` — all components and utilities (TypeScript entrypoint)
+- `@hartlib/ui/styles` — Tailwind v4 `@theme` tokens CSS file (import via `@import "@hartlib/ui/styles"` in app CSS after `@import "tailwindcss"`)
 
 ## Shadcn/UI Component Patterns
 
-`@brief/ui` uses [shadcn/ui](https://ui.shadcn.com/) component patterns (source-copied, adapted to Pressroom tokens) with Radix UI primitives. This provides accessible, composable primitives while maintaining the Pressroom design language.
+`@hartlib/ui` uses [shadcn/ui](https://ui.shadcn.com/) component patterns (source-copied, adapted to Pressroom tokens) with Radix UI primitives. This provides accessible, composable primitives while maintaining the Pressroom design language.
 
 ### Component Inventory
 
@@ -236,9 +236,9 @@ The `@brief/ui` package exports:
 
 ### Usage
 
-Apps import components from `@brief/ui` and styles from `@brief/ui/styles`:
+Apps import components from `@hartlib/ui` and styles from `@hartlib/ui/styles`:
 
 ```css
 @import "tailwindcss";
-@import "@brief/ui/styles";
+@import "@hartlib/ui/styles";
 ```

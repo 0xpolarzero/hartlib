@@ -1,4 +1,4 @@
-import { loadWebApiConfig } from "@brief/config/browser";
+import { loadWebApiConfig } from "@hartlib/config/browser";
 
 export type ApiTokenProvider = () => Promise<string | null>;
 
@@ -51,7 +51,7 @@ export const authenticatedFetch = async (
 
 export const isSecureBearerTarget = (
   input: RequestInfo | URL,
-  baseUrl = "https://brief.invalid/",
+  baseUrl = "https://hartlib.invalid/",
 ): boolean => {
   try {
     const raw = input instanceof Request ? input.url : input;

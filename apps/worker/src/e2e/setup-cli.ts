@@ -1,22 +1,22 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
-import { loadE2eDatabaseUrl, ZAI_CODING_PLAN_BASE_URL } from "@brief/config";
-import { makeRunAcceptanceScope } from "@brief/shared";
+import { loadE2eDatabaseUrl, ZAI_CODING_PLAN_BASE_URL } from "@hartlib/config";
+import { makeRunAcceptanceScope } from "@hartlib/shared";
 import { runPublicSourceIngestionBatch } from "../source-ingestion/orchestrator";
 import { makePgPublicSourceIngestionRepository } from "../source-ingestion/pg-repository";
 import { PublicSourceIngestionRepository } from "../source-ingestion/repository";
 
 import { e2eStreamGateLockKey, isE2eStreamGateId } from "../ai/e2e/stream-gate";
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import {
   makeE2ePublicSourceAdapters,
   type E2ePublicSourceCorpusItem,
 } from "./public-source-corpus";
 
 const databaseUrl = Effect.runSync(loadE2eDatabaseUrl);
-const databaseName = new URL(databaseUrl).pathname.replace(/^\//, "") || "brief_e2e";
-const demoCompanyHash = createHash("md5").update("brief:client-company:demo-user").digest("hex");
+const databaseName = new URL(databaseUrl).pathname.replace(/^\//, "") || "hartlib_e2e";
+const demoCompanyHash = createHash("md5").update("hartlib:client-company:demo-user").digest("hex");
 const demoClientCompanyId = [
   demoCompanyHash.slice(0, 8),
   demoCompanyHash.slice(8, 12),
@@ -99,7 +99,7 @@ const runDb = <A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-playwright-e2e-setup",
+          applicationName: "hartlib-playwright-e2e-setup",
         }),
       ),
     ),
@@ -208,7 +208,7 @@ const ingestPublicCorpusAndSeedDemoData = Effect.gen(function* () {
   const clientCompanyId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   yield* sql`
     insert into platform_users (id, primary_email, display_name, clerk_user_id)
-    values ('demo-user', 'demo@brief.test', 'Demo User', 'clerk-demo-user')
+    values ('demo-user', 'demo@hartlib.test', 'Demo User', 'clerk-demo-user')
     on conflict (id) do update set recovery_deleted_at = null, purge_after = null
   `;
   // The demo chat endpoint derives this workspace before creating its first
@@ -264,7 +264,7 @@ const ingestPublicCorpusAndSeedDemoData = Effect.gen(function* () {
     insert into publisher_company_memberships (
       publisher_company_id, user_id, role, invited_email, accepted_at
     ) values (
-      ${publisherPdfFixture.publisherCompanyId}, 'demo-user', 'admin', 'demo@brief.test', now()
+      ${publisherPdfFixture.publisherCompanyId}, 'demo-user', 'admin', 'demo@hartlib.test', now()
     )
   `;
   yield* sql`
@@ -281,7 +281,7 @@ const ingestPublicCorpusAndSeedDemoData = Effect.gen(function* () {
       accepted_at, subscribed_at, created_by_user_id
     ) values (
       ${publisherPdfFixture.accessId}, ${publisherPdfFixture.subscriptionId}, ${clientCompanyId},
-      'active', 'demo@brief.test', now(), now(), 'demo-user'
+      'active', 'demo@hartlib.test', now(), now(), 'demo-user'
     )
   `;
   yield* sql`
@@ -616,9 +616,9 @@ const readPublisherPdfState = Effect.gen(function* () {
            documents.byte_size::int as "byteSize", documents.sha256_hex as "sha256Hex",
            documents.current_version_id::text as "currentVersionId",
            count(extractions.id)::int as "extractionCount"
-    from brief_documents documents
-    left join brief_document_extractions extractions
-      on extractions.brief_document_id = documents.id
+    from hartlib_documents documents
+    left join hartlib_document_extractions extractions
+      on extractions.hartlib_document_id = documents.id
     where documents.issue_id = ${publisherPdfFixture.issueId}
       and documents.deleted_at is null
     group by documents.id
@@ -635,12 +635,12 @@ const readPublisherPdfState = Effect.gen(function* () {
     where (
       payload->>'issueId' = ${publisherPdfFixture.issueId}
       or payload->>'documentId' in (
-        select id::text from brief_documents where issue_id = ${publisherPdfFixture.issueId}
+        select id::text from hartlib_documents where issue_id = ${publisherPdfFixture.issueId}
       )
       or payload->>'extractionId' in (
         select extractions.id::text
-        from brief_document_extractions extractions
-        join brief_documents documents on documents.id = extractions.brief_document_id
+        from hartlib_document_extractions extractions
+        join hartlib_documents documents on documents.id = extractions.hartlib_document_id
         where documents.issue_id = ${publisherPdfFixture.issueId}
       )
     )
@@ -689,10 +689,10 @@ const seedPublisherDocumentCitation = Effect.gen(function* () {
            versions.content_hash as "contentHash",
            versions.text_char_count::int as "textCharCount",
            issues.published_at as "publishedAt"
-    from brief_documents documents
-    join brief_document_versions versions on versions.id = documents.current_version_id
-    join brief_document_extractions extractions
-      on extractions.brief_document_id = documents.id
+    from hartlib_documents documents
+    join hartlib_document_versions versions on versions.id = documents.current_version_id
+    join hartlib_document_extractions extractions
+      on extractions.hartlib_document_id = documents.id
      and extractions.input_sha256_hex = documents.sha256_hex
     join publisher_issues issues on issues.id = documents.issue_id
     where documents.issue_id = ${publisherPdfFixture.issueId}

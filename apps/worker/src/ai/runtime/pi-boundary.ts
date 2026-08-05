@@ -38,7 +38,7 @@ import {
   type ProviderToolCall,
 } from "./provider-request";
 import type { LiveProviderRequestMeasurement, ModelUsage } from "./types";
-import type { AiProviderEndpointIdentity, AiProviderServiceId } from "@brief/shared";
+import type { AiProviderEndpointIdentity, AiProviderServiceId } from "@hartlib/shared";
 import { workerProviderSemaphore, type ProviderSemaphore } from "./provider-semaphore";
 import { withProviderOriginGuard } from "./provider-origin-guard";
 import {
@@ -132,7 +132,7 @@ const toModelUsage = (message: AssistantMessage): ModelUsage => ({
   inputTokens: message.usage.input,
   outputTokens: message.usage.output,
   // Pi's pinned OpenAI-compatible transport subtracts both cache reads and
-  // cache writes from `input`, while retaining them in `totalTokens`. Brief's
+  // cache writes from `input`, while retaining them in `totalTokens`. Hartlib's
   // single cached-token field therefore carries their complete sum so no
   // provider-accounted prompt token disappears from durable arithmetic.
   cachedTokens: message.usage.cacheRead + message.usage.cacheWrite,

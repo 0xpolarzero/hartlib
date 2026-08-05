@@ -163,8 +163,8 @@ describe("canonical agent tool loop", () => {
             truncated: false,
             cursor: null,
             passages: [{ passageId, text }],
-            __briefSourceExposures: [source.marker],
-            __briefSourceIdentity: [source.identity],
+            __hartlibSourceExposures: [source.marker],
+            __hartlibSourceIdentity: [source.identity],
           };
         };
         const completionFor = (requestIndex: number): PiCompletion =>
@@ -327,8 +327,8 @@ describe("canonical agent tool loop", () => {
       truncated: false,
       cursor: null,
       passages: [passage],
-      __briefSourceExposures: [sourceMarker],
-      __briefSourceIdentity: [
+      __hartlibSourceExposures: [sourceMarker],
+      __hartlibSourceIdentity: [
         {
           candidateId: "c1",
           passageId: passage.passageId,
@@ -963,7 +963,7 @@ describe("canonical agent tool loop", () => {
                 {
                   kind: "chat_message",
                   text: "visible",
-                  __briefSourceIdentity: {
+                  __hartlibSourceIdentity: {
                     chatReconstruction: {
                       messageId: "public-message",
                       contentHash: createHash("sha256").update("visible", "utf8").digest("hex"),
@@ -972,7 +972,7 @@ describe("canonical agent tool loop", () => {
                   },
                 },
               ],
-              __briefSourceExposures: [
+              __hartlibSourceExposures: [
                 {
                   sourceKind: "chat_message",
                   logicalSourceIdentity: chatMessageEvidenceIdentity("public-message"),
@@ -1007,7 +1007,7 @@ describe("canonical agent tool loop", () => {
       "tool",
     ]);
     expect(secondRequest.messages.at(-1).content).toContain('"complete":true');
-    expect(secondRequest.messages.at(-1).content).not.toContain("__briefSourceExposures");
+    expect(secondRequest.messages.at(-1).content).not.toContain("__hartlibSourceExposures");
     expect(secondRequest.messages.at(-1).content).not.toContain("secret");
     expect(secondRequest.sourceExposureProofs).toEqual([
       expect.objectContaining({
@@ -1074,7 +1074,7 @@ describe("canonical agent tool loop", () => {
                       content: snippet,
                     },
                   ],
-                  __briefSourceExposures: [
+                  __hartlibSourceExposures: [
                     {
                       sourceKind: "memory" as const,
                       logicalSourceIdentity: "memory:same-memory",
@@ -1173,14 +1173,14 @@ describe("canonical agent tool loop", () => {
                   found: true,
                   complete: true,
                   conversationEntry: entry,
-                  __briefSourceExposures: visibleMessages.map(({ messageId, content }) => ({
+                  __hartlibSourceExposures: visibleMessages.map(({ messageId, content }) => ({
                     sourceKind: "chat_message" as const,
                     logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
                     contentItemIdentity: messageId,
                     exposureStage: "provider_input",
                     visibleTokenCount: countTextTokens(content),
                   })),
-                  __briefSourceIdentity: visibleMessages.map(({ messageId, content }) => ({
+                  __hartlibSourceIdentity: visibleMessages.map(({ messageId, content }) => ({
                     messageId,
                     contentHash: createHash("sha256").update(content, "utf8").digest("hex"),
                     ranges: [{ charStart: 0, charEnd: content.length }],
@@ -1860,7 +1860,7 @@ describe("canonical agent tool loop", () => {
     expect(rejectedAssistant?.toolCalls?.[1]?.arguments).toEqual({});
     expect(rejectedAssistant?.toolCalls?.map((call) => call.id)).toEqual([
       "first-1",
-      "brief_rejected_1_0_1",
+      "hartlib_rejected_1_0_1",
     ]);
   });
 

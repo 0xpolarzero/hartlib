@@ -29,7 +29,7 @@ export const selectAuthorizedPublisherDocument = (
       select document.object_key as "objectKey",
              document.media_type as "mediaType",
              document.original_file_name as "fileName"
-      from brief_documents document
+      from hartlib_documents document
       join publisher_issues issue
         on issue.id = document.issue_id
        and issue.restricted_at is null
@@ -121,7 +121,7 @@ export const withAuthorizedPublisherDocumentLease = <A, E, R>(
           readonly publisherCompanyId: string;
         }>`
           select subscription.publisher_company_id::text as "publisherCompanyId"
-          from brief_documents document
+          from hartlib_documents document
           join publisher_issues issue on issue.id = document.issue_id
           join publisher_subscriptions subscription on subscription.id = issue.subscription_id
           where document.id = ${documentId} and document.issue_id = ${issueId}
@@ -153,7 +153,7 @@ export const withAuthorizedPublisherDocumentLease = <A, E, R>(
           const companyId = laneKey.slice(separator + 1);
           yield* sql`
             select pg_advisory_xact_lock(
-              hashtext(${kind === "publisher" ? `brief:publisher-members:${companyId}` : `brief:client-members:${companyId}`})
+              hashtext(${kind === "publisher" ? `hartlib:publisher-members:${companyId}` : `hartlib:client-members:${companyId}`})
             )
           `;
         }

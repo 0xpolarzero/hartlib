@@ -1,4 +1,4 @@
-import type { ClientPublicSourceSetting } from "@brief/shared";
+import type { ClientPublicSourceSetting } from "@hartlib/shared";
 import { queryOnce } from "@tanstack/react-db";
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";

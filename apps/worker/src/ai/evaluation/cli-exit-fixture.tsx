@@ -5,9 +5,9 @@ import { z } from "zod";
 
 const { Workflow, Sequence, Task, smithers, outputs } = createSmithers(
   { result: z.object({ value: z.string() }) },
-  { dbPath: process.env.BRIEF_EXIT_DB_PATH ?? "/private/tmp/brief-smithers-exit-test.db" },
+  { dbPath: process.env.HARTLIB_EXIT_DB_PATH ?? "/private/tmp/hartlib-smithers-exit-test.db" },
 );
-const activeMode = process.env.BRIEF_EXIT_ACTIVE === "1";
+const activeMode = process.env.HARTLIB_EXIT_ACTIVE === "1";
 let taskStarted!: () => void;
 const taskStartedPromise = new Promise<void>((resolve) => {
   taskStarted = resolve;
@@ -21,7 +21,7 @@ const workflow = smithers(() => (
     <Sequence>
       <Task id="result" output={outputs.result} retries={0}>
         {async () => {
-          if (process.env.BRIEF_EXIT_FAIL === "1") throw new Error("expected evaluation failure");
+          if (process.env.HARTLIB_EXIT_FAIL === "1") throw new Error("expected evaluation failure");
           if (activeMode) {
             taskStarted();
             await releaseTaskPromise;
@@ -36,7 +36,7 @@ try {
   const run = () =>
     Effect.runPromise(
       runWorkflow(workflow, {
-        runId: process.env.BRIEF_EXIT_RUN_ID ?? "exit-test",
+        runId: process.env.HARTLIB_EXIT_RUN_ID ?? "exit-test",
         input: {},
       }),
     );

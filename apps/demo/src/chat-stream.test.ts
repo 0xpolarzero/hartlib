@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { GetChatResponse, SendChatMessageRequest } from "@brief/shared";
+import type { GetChatResponse, SendChatMessageRequest } from "@hartlib/shared";
 
 import {
   initialChatStreamState,
@@ -14,7 +14,7 @@ import {
   type ChatStreamInput,
   type UserScopedConflict,
 } from "./chat-stream";
-import { ApiResponseError } from "@brief/api-client";
+import { ApiResponseError } from "@hartlib/api-client";
 
 const source = {
   sourceKey: "k_nonce_1",

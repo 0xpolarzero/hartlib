@@ -1,19 +1,19 @@
 /// <reference types="bun" />
 
 import { PgClient } from "@effect/sql-pg";
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import {
   createUserMessageAndRun,
   ensureDemoChat,
   loadAuthorizedChatRuntimeState,
-} from "@brief/backend-domain/chat-runtime";
-import { resetProductChat } from "@brief/backend-domain/product-chats";
+} from "@hartlib/backend-domain/chat-runtime";
+import { resetProductChat } from "@hartlib/backend-domain/product-chats";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const isBun = typeof process.versions.bun === "string";
 const sourceDatabaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const databaseName = `brief_demo_feed_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const databaseName = `hartlib_demo_feed_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 const withDatabase = (name: string): string => {
   if (sourceDatabaseUrl === undefined)
@@ -29,7 +29,7 @@ const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""
 const runDb = <A, E>(
   url: string,
   effect: Effect.Effect<A, E, PgClient.PgClient>,
-  applicationName = "brief-demo-feed-test",
+  applicationName = "hartlib-demo-feed-test",
 ): Promise<A> =>
   Effect.runPromise(
     effect.pipe(Effect.provide(PgClient.layer({ url: Redacted.make(url), applicationName }))),
@@ -101,7 +101,7 @@ describe.skipIf(!isBun || sourceDatabaseUrl === undefined)(
             {
               id: "eval-v2-fixture",
               name: "Evaluation source fixture",
-              publisher: "Brief canonical evaluation",
+              publisher: "Hartlib canonical evaluation",
               url: "https://evaluation.invalid/discovery/eval-v2-fixture",
             },
           ] as const;
@@ -287,14 +287,14 @@ describe.skipIf(!isBun || sourceDatabaseUrl === undefined)(
             return yield* sql.withTransaction(
               Effect.gen(function* () {
                 yield* sql`
-                  select pg_advisory_xact_lock(hashtext(${`brief:user-memory:${userId}`}))
+                  select pg_advisory_xact_lock(hashtext(${`hartlib:user-memory:${userId}`}))
                 `;
                 yield* Effect.sync(signalLaneHeld);
                 yield* Effect.promise(() => laneReleased);
               }),
             );
           }),
-          `brief-${winner}-first-holder`,
+          `hartlib-${winner}-first-holder`,
         );
         await laneHeld;
 
@@ -308,7 +308,7 @@ describe.skipIf(!isBun || sourceDatabaseUrl === undefined)(
               null,
               predecessor.id,
             ),
-            `brief-${winner}-first-message`,
+            `hartlib-${winner}-first-message`,
           );
         const reset = () =>
           runDb(
@@ -318,7 +318,7 @@ describe.skipIf(!isBun || sourceDatabaseUrl === undefined)(
               predecessor.id,
               replacementChatId,
             ),
-            `brief-${winner}-first-reset`,
+            `hartlib-${winner}-first-reset`,
           );
 
         let messageResult!: Awaited<ReturnType<typeof message>>;
@@ -326,16 +326,16 @@ describe.skipIf(!isBun || sourceDatabaseUrl === undefined)(
         try {
           if (winner === "message") {
             const pendingMessage = message();
-            await waitForDatabaseLock(`brief-${winner}-first-message`);
+            await waitForDatabaseLock(`hartlib-${winner}-first-message`);
             const pendingReset = reset();
-            await waitForDatabaseLock(`brief-${winner}-first-reset`);
+            await waitForDatabaseLock(`hartlib-${winner}-first-reset`);
             releaseLane();
             [messageResult, resetResult] = await Promise.all([pendingMessage, pendingReset]);
           } else {
             const pendingReset = reset();
-            await waitForDatabaseLock(`brief-${winner}-first-reset`);
+            await waitForDatabaseLock(`hartlib-${winner}-first-reset`);
             const pendingMessage = message();
-            await waitForDatabaseLock(`brief-${winner}-first-message`);
+            await waitForDatabaseLock(`hartlib-${winner}-first-message`);
             releaseLane();
             [resetResult, messageResult] = await Promise.all([pendingReset, pendingMessage]);
           }

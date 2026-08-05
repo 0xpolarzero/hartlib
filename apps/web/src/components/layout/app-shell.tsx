@@ -1,6 +1,6 @@
 import type * as React from "react";
-import { FormattedMessage, useIntl, useLocale } from "@brief/i18n";
-import { cn } from "@brief/ui";
+import { FormattedMessage, useIntl, useLocale } from "@hartlib/i18n";
+import { cn } from "@hartlib/ui";
 import { useLocation } from "@tanstack/react-router";
 import { SignedIn } from "@clerk/clerk-react";
 

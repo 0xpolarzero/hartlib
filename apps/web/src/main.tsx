@@ -1,6 +1,6 @@
 import { RouterProvider } from "@tanstack/react-router";
 import { ClerkProvider } from "@clerk/clerk-react";
-import { DEFAULT_LOCALE, htmlLang } from "@brief/i18n";
+import { DEFAULT_LOCALE, htmlLang } from "@hartlib/i18n";
 import React from "react";
 import ReactDOM from "react-dom/client";
 

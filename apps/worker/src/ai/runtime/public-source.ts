@@ -3,7 +3,7 @@ import {
   isCanonicalPublicDocumentSourceId,
   isCanonicalPublisherDocumentSourceId,
   type PublicSourceRecord,
-} from "@brief/shared";
+} from "@hartlib/shared";
 
 import { PublicProvenanceSchema } from "./source-schemas";
 import type { FinalSourceRecord } from "./types";

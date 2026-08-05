@@ -1,1 +1,1 @@
-export { loadDemoBrowserConfig, type DemoBrowserConfig } from "@brief/config/browser";
+export { loadDemoBrowserConfig, type DemoBrowserConfig } from "@hartlib/config/browser";

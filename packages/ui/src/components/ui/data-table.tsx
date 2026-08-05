@@ -74,19 +74,19 @@ export function SortableTableHead<TData>({
           type="button"
           onClick={(event) => column.toggleSorting(undefined, event.shiftKey)}
           className={cn(
-            "brief-sortable-head",
+            "hartlib-sortable-head",
             align === "right" ? "justify-end text-right" : "justify-start text-left",
           )}
         >
           <span className="inline-flex max-w-full items-center gap-1">
             <span className="min-w-0 truncate">{children}</span>
-            <span className="brief-sortable-head-icon">
+            <span className="hartlib-sortable-head-icon">
               {sorted === "desc" ? (
                 <ArrowDown className="size-3 text-ink" aria-hidden="true" />
               ) : sorted === "asc" ? (
                 <ArrowUp className="size-3 text-ink" aria-hidden="true" />
               ) : (
-                <ChevronsUpDown className="brief-sortable-head-idle-icon" aria-hidden="true" />
+                <ChevronsUpDown className="hartlib-sortable-head-idle-icon" aria-hidden="true" />
               )}
             </span>
           </span>

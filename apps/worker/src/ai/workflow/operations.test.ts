@@ -1,7 +1,7 @@
 import * as SmithersTaskRuntimeModule from "@smithers-orchestrator/driver/task-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { makeRunAcceptanceScope } from "@brief/shared";
+import { makeRunAcceptanceScope } from "@hartlib/shared";
 
 import { CanonicalAgentClient } from "../runtime/agent-client";
 import { resolveRegisteredModel } from "../runtime/model-registry";

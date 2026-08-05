@@ -1,5 +1,5 @@
 {
-  "name": "@brief/demo",
+  "name": "@hartlib/demo",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,14 +10,14 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@brief/api-client": "workspace:*",
-    "@brief/config": "workspace:*",
-    "@brief/demo-data": "workspace:*",
-    "@brief/docs": "workspace:*",
-    "@brief/i18n": "workspace:*",
-    "@brief/shared": "workspace:*",
-    "@brief/source-ingestion": "workspace:*",
-    "@brief/ui": "workspace:*",
+    "@hartlib/api-client": "workspace:*",
+    "@hartlib/config": "workspace:*",
+    "@hartlib/demo-data": "workspace:*",
+    "@hartlib/docs": "workspace:*",
+    "@hartlib/i18n": "workspace:*",
+    "@hartlib/shared": "workspace:*",
+    "@hartlib/source-ingestion": "workspace:*",
+    "@hartlib/ui": "workspace:*",
     "effect": "4.0.0-beta.92",
     "lucide-react": "1.21.0",
     "react": "19.2.7",

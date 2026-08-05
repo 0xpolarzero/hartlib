@@ -5,7 +5,7 @@ import {
   PublicSourceRecord,
   type AiRunActivityEvent as AiRunActivityEventValue,
   type AiRunEvent as AiRunEventValue,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Schema } from "effect";
 
 import { ApiResponseError } from "./transport";
@@ -187,7 +187,7 @@ const PersistedRunStream = Schema.Struct({
   draft: StreamDraft,
 });
 
-export const runStreamStorageKey = (runId: string): string => `brief:web:ai-run-stream:${runId}`;
+export const runStreamStorageKey = (runId: string): string => `hartlib:web:ai-run-stream:${runId}`;
 
 export const restoreRunStreamState = (
   storage: Pick<Storage, "getItem">,

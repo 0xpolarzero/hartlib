@@ -1,5 +1,5 @@
 import type { EffectiveWebPolicy } from "../runtime/types";
-import { deriveEffectiveWebPolicy, normalizeDomainAllowlist } from "@brief/shared";
+import { deriveEffectiveWebPolicy, normalizeDomainAllowlist } from "@hartlib/shared";
 import { WebBoundaryError } from "./errors";
 import type { EnabledWebPolicy } from "./types";
 

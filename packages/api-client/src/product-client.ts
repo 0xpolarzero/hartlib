@@ -19,7 +19,7 @@ import {
   type PublicSourcesResponse as PublicSources,
   type SendChatMessageRequest,
   type SendChatMessageAccepted as AcceptedChatMessage,
-} from "@brief/shared";
+} from "@hartlib/shared";
 
 import { decodeAiRunSse, type AiRunStreamFrame } from "./stream";
 import { ApiResponseError, createApiTransport, type ApiTransportOptions } from "./transport";

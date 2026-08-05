@@ -2,7 +2,7 @@ import {
   OpaquePathParameter,
   PositiveIntegerPathParameter,
   UuidPathParameter,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Schema } from "effect";
 
 import type { Route } from "../http";

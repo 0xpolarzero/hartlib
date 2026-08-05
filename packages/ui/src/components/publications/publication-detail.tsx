@@ -1,4 +1,4 @@
-import { useIntl } from "@brief/i18n";
+import { useIntl } from "@hartlib/i18n";
 import { type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";

@@ -1,11 +1,11 @@
-import { useIntl, useLocale } from "@brief/i18n";
+import { useIntl, useLocale } from "@hartlib/i18n";
 import type {
   ClientMemberDescriptor,
   ClientSubscriptionAccessDescriptor,
   PublisherMemberDescriptor,
   PublisherSubscriptionDescriptor,
-} from "@brief/shared";
-import { Button, Input, Label } from "@brief/ui";
+} from "@hartlib/shared";
+import { Button, Input, Label } from "@hartlib/ui";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { UserPlus } from "lucide-react";

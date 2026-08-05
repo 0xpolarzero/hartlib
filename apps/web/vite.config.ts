@@ -9,9 +9,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": new URL("./src", import.meta.url).pathname,
-      "@brief/docs": new URL("../../packages/docs/src/index.ts", import.meta.url).pathname,
-      "@brief/i18n": new URL("../../packages/i18n/src/index.ts", import.meta.url).pathname,
-      "@brief/ui": new URL("../../packages/ui/src/index.ts", import.meta.url).pathname,
+      "@hartlib/docs": new URL("../../packages/docs/src/index.ts", import.meta.url).pathname,
+      "@hartlib/i18n": new URL("../../packages/i18n/src/index.ts", import.meta.url).pathname,
+      "@hartlib/ui": new URL("../../packages/ui/src/index.ts", import.meta.url).pathname,
     },
   },
 });

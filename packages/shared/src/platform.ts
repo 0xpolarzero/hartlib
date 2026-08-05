@@ -11,7 +11,7 @@ import { LocaleSchema } from "./content";
  * write.
  */
 export const publisherIssueAdvisoryLockKey = (issueId: string): string =>
-  `brief:publisher-issue:${issueId}`;
+  `hartlib:publisher-issue:${issueId}`;
 
 export const ExportScopeKind = Schema.Literals([
   "user_chats",
@@ -144,7 +144,7 @@ export type SchedulePublisherIssueRequest = Schema.Schema.Type<
   typeof SchedulePublisherIssueRequest
 >;
 
-export const BriefDocumentDescriptor = Schema.Struct({
+export const HartlibDocumentDescriptor = Schema.Struct({
   id: Schema.String,
   issueId: Schema.String,
   title: Schema.String,
@@ -154,7 +154,7 @@ export const BriefDocumentDescriptor = Schema.Struct({
   sha256Hex: Schema.String,
   createdAt: Schema.String,
 });
-export type BriefDocumentDescriptor = Schema.Schema.Type<typeof BriefDocumentDescriptor>;
+export type HartlibDocumentDescriptor = Schema.Schema.Type<typeof HartlibDocumentDescriptor>;
 
 const DeliveredArchiveFields = {
   subscriptionName: Schema.String,
@@ -640,14 +640,14 @@ export const PausePublisherClientAccessResponse = Schema.Struct({
   status: Schema.Literal("ending"),
   deliveryEndAt: Schema.String,
 });
-export const BriefDocumentResponse = Schema.Struct({ document: BriefDocumentDescriptor });
+export const HartlibDocumentResponse = Schema.Struct({ document: HartlibDocumentDescriptor });
 export const ArchiveResponse = Schema.Struct({
   items: Schema.Array(DeliveredArchiveResult),
   nextCursor: Schema.NullOr(Schema.String),
 });
 export const IssueDetailResponse = Schema.Struct({
   issue: PublisherIssueDescriptor,
-  documents: Schema.Array(BriefDocumentDescriptor),
+  documents: Schema.Array(HartlibDocumentDescriptor),
 });
 export const NotificationListResponse = Schema.Struct({
   notifications: Schema.Array(PlatformNotificationDescriptor),

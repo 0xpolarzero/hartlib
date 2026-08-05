@@ -10,7 +10,7 @@ import {
   type PublicSourceId,
   type RawArtifact,
   type SourceAdapter,
-} from "@brief/source-ingestion";
+} from "@hartlib/source-ingestion";
 import {
   makeInMemoryPublicSourceIngestionRepository,
   type InMemoryPublicSourceIngestionState,

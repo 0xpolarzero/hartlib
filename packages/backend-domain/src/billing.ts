@@ -4,7 +4,7 @@ import type {
   AiUsageOverview,
   AiUsageRequestDescriptor,
   MonthlyPlanChangeDescriptor,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Effect } from "effect";
 
 type SqlEffect<A = void> = Effect.Effect<A, unknown, PgClient.PgClient>;
@@ -46,6 +46,9 @@ export type BillingCheckoutReservation =
   | {
       readonly kind: "execute";
       readonly stripeOperationKey: string;
+      readonly successUrl: string;
+      readonly cancelUrl: string;
+      readonly metadataPrefix: "brief" | "hartlib";
       readonly attempts: number;
       readonly leaseToken: string;
     }
@@ -67,7 +70,7 @@ export const withBillingAuthorizationLease = <A>(input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         // A membership-lane lock serializes membership/grant changes. Row
         // locks additionally serialize the independent Clerk user lifecycle
@@ -124,7 +127,7 @@ export const bindBillingCustomer = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:billing-customer:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:billing-customer:${input.companyId}`}))
         `;
         const rows = yield* sql<{ readonly customerId: string | null }>`
           select stripe_customer_id as "customerId"
@@ -155,9 +158,9 @@ export const bindBillingCustomer = (input: {
 /**
  * Reserve one Stripe Checkout capability under the caller's company lane.
  * Identity columns are compared on every replay; only the provider output and
- * lease/attempt state are mutable.  An uncertain provider call therefore stays
- * replayable with the exact same Stripe idempotency key while a different
- * logical request cannot overtake a live one.
+ * lease/attempt state are mutable. An existing pre-cutover `brief-checkout`
+ * provider key may replay through its exact canonical Hartlib equivalent, but
+ * the stored provider key remains authoritative for every provider retry.
  */
 export const reserveBillingCheckout = (
   input: BillingCheckoutReservationInput,
@@ -169,7 +172,7 @@ export const reserveBillingCheckout = (
     // commit the immutable reservation before phase B enters the provider
     // boundary; competing keys still serialize deterministically.
     yield* sql`
-      select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+      select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
     `;
     const existing = yield* sql<{
       readonly id: string;
@@ -216,6 +219,19 @@ export const reserveBillingCheckout = (
     const prior = existing[0];
     const priorCredits =
       prior?.credits === null || prior?.credits === undefined ? null : Number(prior.credits);
+    const expectedHartlibOperationKey = `hartlib-checkout:${input.companyId}:${input.idempotencyKey}:session`;
+    const expectedLegacyOperationKey = `brief-checkout:${input.companyId}:${input.idempotencyKey}:session`;
+    const legacyOperationKeyReplay =
+      prior !== undefined &&
+      input.stripeOperationKey === expectedHartlibOperationKey &&
+      prior.stripeOperationKey === expectedLegacyOperationKey;
+    const sameOperationKey =
+      prior !== undefined &&
+      (prior.stripeOperationKey === input.stripeOperationKey || legacyOperationKeyReplay);
+    const sameReturnUrls =
+      prior !== undefined &&
+      (legacyOperationKeyReplay ||
+        (prior.successUrl === input.successUrl && prior.cancelUrl === input.cancelUrl));
     const sameIdentity =
       prior !== undefined &&
       prior.requestedByUserId === input.userId &&
@@ -228,9 +244,8 @@ export const reserveBillingCheckout = (
       priorCredits === input.credits &&
       prior.customerId === input.customerId &&
       prior.priceId === input.priceId &&
-      prior.successUrl === input.successUrl &&
-      prior.cancelUrl === input.cancelUrl &&
-      prior.stripeOperationKey === input.stripeOperationKey;
+      sameReturnUrls &&
+      sameOperationKey;
     if (prior !== undefined && !sameIdentity) {
       return yield* Effect.fail(new Error("billing_checkout_idempotency_conflict"));
     }
@@ -320,6 +335,10 @@ export const reserveBillingCheckout = (
       return {
         kind: "execute",
         stripeOperationKey: input.stripeOperationKey,
+        successUrl: input.successUrl,
+        cancelUrl: input.cancelUrl,
+        metadataPrefix:
+          input.stripeOperationKey === expectedLegacyOperationKey ? "brief" : "hartlib",
         attempts: 1,
         leaseToken,
       } satisfies BillingCheckoutReservation;
@@ -345,6 +364,10 @@ export const reserveBillingCheckout = (
       return {
         kind: "execute",
         stripeOperationKey: prior.stripeOperationKey,
+        successUrl: prior.successUrl,
+        cancelUrl: prior.cancelUrl,
+        metadataPrefix:
+          prior.stripeOperationKey === expectedLegacyOperationKey ? "brief" : "hartlib",
         attempts: prior.attempts,
         leaseToken: prior.leaseToken,
       } satisfies BillingCheckoutReservation;
@@ -370,6 +393,9 @@ export const reserveBillingCheckout = (
     return {
       kind: "execute",
       stripeOperationKey: prior.stripeOperationKey,
+      successUrl: prior.successUrl,
+      cancelUrl: prior.cancelUrl,
+      metadataPrefix: prior.stripeOperationKey === expectedLegacyOperationKey ? "brief" : "hartlib",
       attempts: prior.attempts + 1,
       leaseToken: (yield* sql<{ readonly leaseToken: string }>`
         select lease_token::text as "leaseToken"
@@ -583,7 +609,7 @@ export const loadAiUsageOverview = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* input.authorize;
         return yield* loadAiUsageOverviewLocked(input);
@@ -604,7 +630,7 @@ export const updateAiLimit = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* input.authorize;
         if (input.employeeUserId !== null) {
@@ -664,7 +690,7 @@ export const createAiUsageRequest = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* input.authorize;
         const rows = yield* sql<AiUsageRequestRow>`
@@ -707,7 +733,7 @@ export const resolveAiUsageRequest = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* input.authorize;
         const rows = yield* sql<{ readonly id: string }>`
@@ -822,7 +848,7 @@ export const reserveMonthlyPlanChange = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* input.authorize;
         const rows = yield* sql<{

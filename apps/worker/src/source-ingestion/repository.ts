@@ -1,11 +1,11 @@
 import { Context, Effect, Layer } from "effect";
-import { sha256Hex } from "@brief/source-ingestion";
+import { sha256Hex } from "@hartlib/source-ingestion";
 import type {
   ConditionalRequestValidators,
   DiscoveredItem,
   PublicSourceDefinition,
   PublicSourceId,
-} from "@brief/source-ingestion";
+} from "@hartlib/source-ingestion";
 import type {
   PublicSourceIngestionRepositoryShape,
   PublicSourceIngestionRun,
@@ -57,7 +57,7 @@ const assertReadableStoredItem = (
 export class PublicSourceIngestionRepository extends Context.Service<
   PublicSourceIngestionRepository,
   PublicSourceIngestionRepositoryShape
->()("brief/worker/PublicSourceIngestionRepository") {}
+>()("hartlib/worker/PublicSourceIngestionRepository") {}
 
 type MemorySourceState = {
   readonly definition: PublicSourceDefinition;

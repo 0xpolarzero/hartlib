@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { demoDataset, type BriefPublication, type BriefSource } from "@brief/demo-data";
+import { demoDataset, type HartlibPublication, type HartlibSource } from "@hartlib/demo-data";
 
 import {
   buildDemoPath,
@@ -14,7 +14,7 @@ import {
 const publisherIssues = demoDataset.issues;
 const publicPublicationId =
   "public:service_public:https%3A%2F%2Fwww.service-public.fr%2Fparticuliers%2Factualites%2FA00001";
-const publicSources: readonly BriefSource[] = [
+const publicSources: readonly HartlibSource[] = [
   ...demoDataset.sources,
   {
     id: "service_public",
@@ -34,7 +34,7 @@ const publicSources: readonly BriefSource[] = [
     metrics: { opens: null, downloads: null, aiContextPulls: null },
   },
 ];
-const publicPublications: readonly BriefPublication[] = [
+const publicPublications: readonly HartlibPublication[] = [
   ...publisherIssues,
   {
     id: publicPublicationId,

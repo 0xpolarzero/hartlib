@@ -5,15 +5,15 @@ import {
   runStreamStorageKey,
   type PersistedRunStreamState,
   type StreamDraftState,
-} from "@brief/api-client/stream";
-import { ApiResponseError } from "@brief/api-client";
-import { failActiveAiRunActivity, projectAiRunActivity } from "@brief/shared";
+} from "@hartlib/api-client/stream";
+import { ApiResponseError } from "@hartlib/api-client";
+import { failActiveAiRunActivity, projectAiRunActivity } from "@hartlib/shared";
 import type {
   ActiveAiRunConflict,
   AiRunEvent,
   GetChatResponse,
   SendChatMessageRequest,
-} from "@brief/shared";
+} from "@hartlib/shared";
 
 export { clearRunStreamState, persistRunStreamState, restoreRunStreamState, runStreamStorageKey };
 export type { PersistedRunStreamState, StreamDraftState };

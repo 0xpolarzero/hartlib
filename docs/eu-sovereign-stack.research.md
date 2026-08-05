@@ -31,7 +31,7 @@ Offer a stronger EU/French hosting story if it becomes commercially useful for p
 
 Mistral is part of the later EU/French positioning story, but is not a preselected production dependency.
 
-The development chat uses the exact registered GLM-5-Turbo contract through Z.AI behind Brief's provider boundary and optional Tinyfish Search for discovery. The production MVP provider remains deferred until the comparison, contractual controls, and exact runtime contract in `docs/production-readiness.spec.md` are accepted. OpenRouter remains a later provider option.
+The development chat uses the exact registered GLM-5-Turbo contract through Z.AI behind Hartlib's provider boundary and optional Tinyfish Search for discovery. The production MVP provider remains deferred until the comparison, contractual controls, and exact runtime contract in `docs/production-readiness.spec.md` are accepted. OpenRouter remains a later provider option.
 
 ## Providers To Keep
 

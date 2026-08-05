@@ -16,7 +16,8 @@ const fixturePath = fileURLToPath(
 const fixtureBytes = readFileSync(fixturePath);
 const fixtureSha256 = createHash("sha256").update(fixtureBytes).digest("hex");
 const documentTitle = "Atlas energy market PDF";
-const objectStoreBaseUrl = process.env.BRIEF_E2E_OBJECT_STORE_BASE_URL ?? "http://127.0.0.1:43113";
+const objectStoreBaseUrl =
+  process.env.HARTLIB_E2E_OBJECT_STORE_BASE_URL ?? "http://127.0.0.1:43113";
 
 const requiredWorkerJobsCompleted = (): boolean => {
   const state = readE2ePublisherPdfState();
@@ -51,7 +52,7 @@ const signedStorageResponse = (response: PlaywrightResponse): boolean => {
   const url = new URL(response.url());
   return (
     response.url().startsWith(`${objectStoreBaseUrl}/`) &&
-    url.pathname.startsWith("/brief-e2e/publisher-issues/") &&
+    url.pathname.startsWith("/hartlib-e2e/publisher-issues/") &&
     url.pathname.endsWith(".pdf")
   );
 };
@@ -176,7 +177,7 @@ test("publisher uploads a real PDF and the delivered client opens the exact sign
   const signedUrl = new URL(storageResponse.url());
   expect(signedUrl.searchParams.get("X-Amz-Expires")).toBe("300");
   expect(signedUrl.searchParams.get("X-Amz-Signature")).toMatch(/^[0-9a-f]{64}$/u);
-  expect(signedUrl.searchParams.get("X-Amz-Credential")).toContain("brief-e2e-access-key");
+  expect(signedUrl.searchParams.get("X-Amz-Credential")).toContain("hartlib-e2e-access-key");
   expect(signedUrl.searchParams.get("response-content-type")).toBe("application/pdf");
   expect(signedUrl.searchParams.get("response-content-disposition")).toBe(
     'inline; filename="atlas-energy-2026-05-market.pdf"',
@@ -190,7 +191,7 @@ test("publisher uploads a real PDF and the delivered client opens the exact sign
     "X-Amz-Credential",
     wrongCredentialUrl.searchParams
       .get("X-Amz-Credential")!
-      .replace("brief-e2e-access-key", "wrong-access-key"),
+      .replace("hartlib-e2e-access-key", "wrong-access-key"),
   );
   for (const rejected of [
     await fetch(unsignedUrl),
@@ -264,7 +265,7 @@ test("publisher uploads a real PDF and the delivered client opens the exact sign
   expect(citationRedirect.request().redirectedTo()?.url()).toBe(citationStorage.url());
   expect(citationStorage.status()).toBe(200);
   expect(citationStorage.headers()["content-type"]).toBe("application/pdf");
-  expect(citationStorage.headers()["x-brief-e2e-authorization-received"]).toBe("absent");
+  expect(citationStorage.headers()["x-hartlib-e2e-authorization-received"]).toBe("absent");
   expect(citationStorage.request().headers()["authorization"]).toBeUndefined();
   expect(citationStorage.request().headers()["referer"]).toBeUndefined();
   expect(await citationStorage.body()).toEqual(fixtureBytes);
@@ -272,7 +273,7 @@ test("publisher uploads a real PDF and the delivered client opens the exact sign
     .poll(() => citationSignedResponses.length, { timeout: 10_000 })
     .toBeGreaterThanOrEqual(2);
   for (const response of citationSignedResponses) {
-    expect(response.headers()["x-brief-e2e-authorization-received"]).toBe("absent");
+    expect(response.headers()["x-hartlib-e2e-authorization-received"]).toBe("absent");
     expect(response.request().headers()["authorization"]).toBeUndefined();
     expect(response.request().headers()["referer"]).toBeUndefined();
   }

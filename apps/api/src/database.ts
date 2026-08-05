@@ -1,4 +1,4 @@
-import { databaseUrlRedactedConfig } from "@brief/config";
+import { databaseUrlRedactedConfig } from "@hartlib/config";
 import { PgClient } from "@effect/sql-pg";
 import { Config, Layer } from "effect";
 import type { SqlClient } from "effect/unstable/sql/SqlClient";
@@ -15,5 +15,5 @@ export type ApiDatabaseService = PgClient.PgClient;
 
 export const ApiDatabaseLayer: ApiDatabaseLayer = PgClient.layerConfig({
   url: databaseUrlRedactedConfig,
-  applicationName: Config.succeed("brief-api"),
+  applicationName: Config.succeed("hartlib-api"),
 });

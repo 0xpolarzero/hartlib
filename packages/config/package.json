@@ -1,5 +1,5 @@
 {
-  "name": "@brief/config",
+  "name": "@hartlib/config",
   "private": true,
   "type": "module",
   "exports": {

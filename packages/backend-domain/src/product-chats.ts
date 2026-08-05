@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import type { CreateProductChatRequest } from "@brief/shared";
+import type { CreateProductChatRequest } from "@hartlib/shared";
 import { Effect } from "effect";
 
 export const CHAT_ACTIVE_PURGE_WINDOW_DAYS = 30;
@@ -68,7 +68,7 @@ export const listProductChats = (
         for (const candidate of candidates) {
           yield* sql`
             select pg_advisory_xact_lock(
-              hashtext(${`brief:client-members:${candidate.id}`})
+              hashtext(${`hartlib:client-members:${candidate.id}`})
             )
           `;
         }
@@ -169,10 +169,10 @@ export const createProductChat = (identity: ProductChatIdentity, body: CreatePro
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${body.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${body.companyId}`}))
         `;
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:create-chat:${identity.userId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:create-chat:${identity.userId}`}))
         `;
         const membership = yield* sql<{ readonly exists: boolean }>`
           select exists (
@@ -257,7 +257,7 @@ export const resetProductChat = (
         // Match message acceptance and finalization before taking the chat
         // row: user-memory, chat row, company membership, then chat execution.
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:user-memory:${identity.userId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:user-memory:${identity.userId}`}))
         `;
         const oldChats = yield* sql<ArchivedChatRow>`
           select company_id::text as company_id, user_id, memory_mode,
@@ -272,12 +272,12 @@ export const resetProductChat = (
         // execution, then the create-chat lane shared with createProductChat.
         yield* sql`
           select pg_advisory_xact_lock(
-            hashtext(${`brief:client-members:${old.company_id}`})
+            hashtext(${`hartlib:client-members:${old.company_id}`})
           )
         `;
-        yield* sql`select pg_advisory_xact_lock(hashtext(${`brief:ai-chat:${chatId}`}))`;
+        yield* sql`select pg_advisory_xact_lock(hashtext(${`hartlib:ai-chat:${chatId}`}))`;
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:create-chat:${identity.userId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:create-chat:${identity.userId}`}))
         `;
         if (old.user_id !== identity.userId) return { kind: "forbidden" } as const;
         if (!(yield* organizationMatchesCompany(identity, old.company_id))) {
@@ -451,10 +451,10 @@ export const mutateProductChat = (
         if (candidate === undefined) return "forbidden" as const;
         yield* sql`
           select pg_advisory_xact_lock(
-            hashtext(${`brief:client-members:${candidate.companyId}`})
+            hashtext(${`hartlib:client-members:${candidate.companyId}`})
           )
         `;
-        yield* sql`select pg_advisory_xact_lock(hashtext(${`brief:ai-chat:${chatId}`}))`;
+        yield* sql`select pg_advisory_xact_lock(hashtext(${`hartlib:ai-chat:${chatId}`}))`;
         if (!(yield* organizationMatchesCompany(identity, candidate.companyId))) {
           return "forbidden" as const;
         }

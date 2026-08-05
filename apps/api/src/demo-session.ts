@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
  * new visitor.
  */
 
-export const DEMO_COOKIE_NAME = "brief_demo";
+export const DEMO_COOKIE_NAME = "hartlib_demo";
 
 // A visitor id is any short, cookie-safe slug (no dot, semicolon, or space).
 // Real sessions mint random UUIDs; tests carry stable ids like "demo-user".

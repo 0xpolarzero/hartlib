@@ -2,14 +2,14 @@ import {
   discoverSource,
   ingestDiscoveredItem,
   SourceIngestionError,
-} from "@brief/source-ingestion";
+} from "@hartlib/source-ingestion";
 import type {
   DiscoveredItem,
   PublicSourceId,
   SourceAdapter,
   SourceIngestionResult,
-} from "@brief/source-ingestion";
-import { canonicalPublicSourceHttpsUrl } from "@brief/shared";
+} from "@hartlib/source-ingestion";
+import { canonicalPublicSourceHttpsUrl } from "@hartlib/shared";
 import { Cause, Effect } from "effect";
 import { PublicSourceIngestionRepository } from "./repository";
 import type {

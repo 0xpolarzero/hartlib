@@ -18,7 +18,7 @@ describe("authenticated publisher-document citations", () => {
       documentId: "document 1",
     });
     for (const value of [
-      "https://brief.example/v1/issues/i/documents/d/content",
+      "https://hartlib.example/v1/issues/i/documents/d/content",
       "//evil.example/v1/issues/i/documents/d/content",
       "/v1/issues/i/documents/d/content?token=secret",
       "/v1/issues/i/documents/%2F/content",
@@ -42,7 +42,7 @@ describe("authenticated publisher-document citations", () => {
     const revokeObjectUrl = vi.fn();
     const browser: AuthenticatedDocumentBrowser = {
       openPendingWindow: () => pending,
-      createObjectUrl: () => "blob:brief-document",
+      createObjectUrl: () => "blob:hartlib-document",
       revokeObjectUrl,
       defer: (callback, milliseconds) => {
         expect(milliseconds).toBe(300_000);
@@ -83,7 +83,7 @@ describe("authenticated publisher-document citations", () => {
         navigate,
         close: vi.fn(),
       }),
-      createObjectUrl: () => "blob:brief-document",
+      createObjectUrl: () => "blob:hartlib-document",
       revokeObjectUrl,
       defer: (callback, milliseconds) => {
         expect(milliseconds).toBe(300_000);
@@ -102,9 +102,9 @@ describe("authenticated publisher-document citations", () => {
       documentId: "d",
     });
 
-    expect(navigate).toHaveBeenCalledWith("blob:brief-document");
+    expect(navigate).toHaveBeenCalledWith("blob:hartlib-document");
     deferred[0]?.();
-    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:brief-document");
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:hartlib-document");
   });
 
   it("writes an actual no-referrer policy into the pending browser document", async () => {

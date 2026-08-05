@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@brief/shared";
+import type { ChatMessage } from "@hartlib/shared";
 import { describe, expect, it } from "vitest";
 
 import { mapApiMessagesToTranscript } from "./chat-api";

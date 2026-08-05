@@ -1,5 +1,5 @@
 {
-  "name": "brief",
+  "name": "hartlib",
   "private": true,
   "workspaces": [
     "apps/*",
@@ -8,21 +8,21 @@
   "type": "module",
   "scripts": {
     "dev": "bun run db:up && (bun run dev:api & bun run dev:worker & bun run dev:web & wait)",
-    "dev:web": "bun --filter @brief/web dev",
-    "dev:demo": "bun run db:up && (bun run dev:api & bun run dev:worker & bun --filter @brief/demo dev & wait)",
-    "dev:api": "bun --filter @brief/api dev",
-    "dev:worker": "bun --filter @brief/worker dev",
+    "dev:web": "bun --filter @hartlib/web dev",
+    "dev:demo": "bun run db:up && (bun run dev:api & bun run dev:worker & bun --filter @hartlib/demo dev & wait)",
+    "dev:api": "bun --filter @hartlib/api dev",
+    "dev:worker": "bun --filter @hartlib/worker dev",
     "build": "bun run --filter '*' build",
     "check": "tsc -b --noEmit",
     "lint": "oxlint apps packages scripts tests *.ts",
     "format": "oxfmt AGENTS.md README.md package.json tsconfig.json tsconfig.base.json vitest.config.ts playwright.config.ts scripts/*.ts apps/*/package.json apps/*/tsconfig*.json apps/*/*.ts apps/*/src packages/*/package.json packages/*/tsconfig*.json packages/*/src tests docs/*.md",
     "format:check": "oxfmt --check AGENTS.md README.md package.json tsconfig.json tsconfig.base.json vitest.config.ts playwright.config.ts scripts/*.ts apps/*/package.json apps/*/tsconfig*.json apps/*/*.ts apps/*/src packages/*/package.json packages/*/tsconfig*.json packages/*/src tests docs/*.md",
     "test": "bun scripts/test-with-postgres.ts",
-    "e2e": "BRIEF_E2E_STACK=1 bunx --bun playwright test --project=brief-ai-chat-runtime --project=brief-platform",
+    "e2e": "HARTLIB_E2E_STACK=1 bunx --bun playwright test --project=hartlib-ai-chat-runtime --project=hartlib-platform",
     "eval:ai": "bun apps/worker/src/ai/evaluation/cli.ts",
     "db:up": "docker compose up -d postgres",
-    "db:migrate": "bun --filter @brief/worker db:migrate",
-    "db:reset": "bun --filter @brief/worker db:reset",
+    "db:migrate": "bun --filter @hartlib/worker db:migrate",
+    "db:reset": "bun --filter @hartlib/worker db:reset",
     "db:down": "docker compose down"
   },
   "devDependencies": {

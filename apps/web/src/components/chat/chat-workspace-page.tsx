@@ -1,4 +1,4 @@
-import { useIntl, useLocale } from "@brief/i18n";
+import { useIntl, useLocale } from "@hartlib/i18n";
 import {
   Button,
   Card,
@@ -12,7 +12,7 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
-} from "@brief/ui";
+} from "@hartlib/ui";
 import { useForm } from "@tanstack/react-form";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMutation, useQueryClient } from "@tanstack/react-query";

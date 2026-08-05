@@ -5,13 +5,13 @@ import {
   readUserMemoryWithRevisions,
   revertUserMemory,
   type MemoryMutationResult,
-} from "@brief/backend-domain/memories";
+} from "@hartlib/backend-domain/memories";
 import {
   ListMemoriesResponse,
   MemoryRecord,
   MemoryRevisionResponse,
   type RevertMemoryRequest as RevertMemoryBody,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity } from "../auth";

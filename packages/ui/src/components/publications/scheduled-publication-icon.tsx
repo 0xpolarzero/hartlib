@@ -1,6 +1,6 @@
 import { CalendarClock } from "lucide-react";
 
-import { useIntl } from "@brief/i18n";
+import { useIntl } from "@hartlib/i18n";
 
 import { cn } from "../../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";

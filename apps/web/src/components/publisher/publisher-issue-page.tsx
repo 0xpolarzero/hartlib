@@ -1,5 +1,5 @@
-import { useIntl, useLocale } from "@brief/i18n";
-import { Button, ConfirmingDeleteButton, Input, Label } from "@brief/ui";
+import { useIntl, useLocale } from "@hartlib/i18n";
+import { Button, ConfirmingDeleteButton, Input, Label } from "@hartlib/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FilePlus2, Send, Timer } from "lucide-react";
 import { useEffect, useRef, useState } from "react";

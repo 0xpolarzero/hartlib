@@ -1,5 +1,5 @@
 {
-  "name": "@brief/web",
+  "name": "@hartlib/web",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,13 +10,13 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@brief/api-client": "workspace:*",
-    "@brief/config": "workspace:*",
-    "@brief/docs": "workspace:*",
-    "@brief/i18n": "workspace:*",
-    "@brief/shared": "workspace:*",
-    "@brief/ui": "workspace:*",
     "@clerk/clerk-react": "5.61.8",
+    "@hartlib/api-client": "workspace:*",
+    "@hartlib/config": "workspace:*",
+    "@hartlib/docs": "workspace:*",
+    "@hartlib/i18n": "workspace:*",
+    "@hartlib/shared": "workspace:*",
+    "@hartlib/ui": "workspace:*",
     "@sentry/react": "10.62.0",
     "@tanstack/db": "0.6.12",
     "@tanstack/query-core": "5.101.2",

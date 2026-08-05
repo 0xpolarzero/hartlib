@@ -1,13 +1,13 @@
 import { PgClient } from "@effect/sql-pg";
-import { runMigrations } from "@brief/database/migrations";
-import { createExportRequest } from "@brief/backend-domain/exports";
-import { createUserMessageAndRun } from "@brief/backend-domain/chat-runtime";
+import { runMigrations } from "@hartlib/database/migrations";
+import { createExportRequest } from "@hartlib/backend-domain/exports";
+import { createUserMessageAndRun } from "@hartlib/backend-domain/chat-runtime";
 import {
   selectAuthorizedPublisherDocument,
   withAuthorizedPublisherDocumentLease,
-} from "@brief/backend-domain/publisher-documents";
-import { listProductChats, mutateProductChat } from "@brief/backend-domain/product-chats";
-import { recordRestrictedSupportAccess } from "@brief/backend-domain/platform-support";
+} from "@hartlib/backend-domain/publisher-documents";
+import { listProductChats, mutateProductChat } from "@hartlib/backend-domain/product-chats";
+import { recordRestrictedSupportAccess } from "@hartlib/backend-domain/platform-support";
 import {
   requireChatAccess,
   requireClientCompanyAdmin,
@@ -26,7 +26,7 @@ import {
   requirePublisherCompanyMembership as workspaceRequirePublisherCompanyMembership,
   requirePublisherSubscriptionAccess as workspaceRequirePublisherSubscriptionAccess,
   updateClientWebPolicy,
-} from "@brief/workspace";
+} from "@hartlib/workspace";
 import { ConfigProvider, Effect, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -41,7 +41,7 @@ import { makePlatformSupportRoutes } from "./domain/platform-support";
 import { makePublisherDocumentContentRoute } from "./domain/publisher-documents";
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const isolatedDatabaseName = `brief_authorization_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const isolatedDatabaseName = `hartlib_authorization_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 const databaseUrlFor = (name: string): string => {
   if (databaseUrl === undefined) throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL is required");
@@ -56,7 +56,7 @@ const runDb = <A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-authorization-integration-test",
+          applicationName: "hartlib-authorization-integration-test",
         }),
       ),
     ),
@@ -97,10 +97,10 @@ const runProductRoute = async (
   const url = databaseUrlFor(isolatedDatabaseName);
   const pgLayer = PgClient.layer({
     url: Redacted.make(url),
-    applicationName: "brief-product-chat-route-test",
+    applicationName: "hartlib-product-chat-route-test",
   });
   const routes = makeProductChatRoutes(pgLayer);
-  const request = new Request(`https://brief.test${path}`, {
+  const request = new Request(`https://hartlib.test${path}`, {
     method,
     headers: {
       cookie: demoCookie(userId),
@@ -129,9 +129,9 @@ const runUnauthenticatedProductRoute = async (
   const url = databaseUrlFor(isolatedDatabaseName);
   const pgLayer = PgClient.layer({
     url: Redacted.make(url),
-    applicationName: "brief-product-chat-unauthenticated-test",
+    applicationName: "hartlib-product-chat-unauthenticated-test",
   });
-  const request = new Request(`https://brief.test${path}`, {
+  const request = new Request(`https://hartlib.test${path}`, {
     method,
     headers: body === undefined ? {} : { "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -161,9 +161,9 @@ const runProductRouteAs = async (
     const url = databaseUrlFor(isolatedDatabaseName);
     const pgLayer = PgClient.layer({
       url: Redacted.make(url),
-      applicationName: "brief-product-chat-clerk-route-test",
+      applicationName: "hartlib-product-chat-clerk-route-test",
     });
-    const request = new Request(`https://brief.test${path}`, {
+    const request = new Request(`https://hartlib.test${path}`, {
       method,
       headers: {
         cookie: demoCookie(requestIdentity.userId),
@@ -232,9 +232,9 @@ const runChatRoute = async (
   const url = databaseUrlFor(isolatedDatabaseName);
   const pgLayer = PgClient.layer({
     url: Redacted.make(url),
-    applicationName: "brief-chat-route-test",
+    applicationName: "hartlib-chat-route-test",
   });
-  const request = new Request(`https://brief.test${path}`, {
+  const request = new Request(`https://hartlib.test${path}`, {
     method,
     headers: {
       cookie: demoCookie(userId),
@@ -265,13 +265,13 @@ const runPlatformRoute = async (
   const url = databaseUrlFor(isolatedDatabaseName);
   const pgLayer = PgClient.layer({
     url: Redacted.make(url),
-    applicationName: "brief-platform-support-route-test",
+    applicationName: "hartlib-platform-support-route-test",
   });
   const routes = makePlatformSupportRoutes(
     pgLayer,
     async () => "https://private-storage.test/restricted",
   );
-  const request = new Request(`https://brief.test${path}`, {
+  const request = new Request(`https://hartlib.test${path}`, {
     method,
     headers: {
       cookie: demoCookie(userId),
@@ -397,11 +397,11 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           ) values (${ids.issueId}, ${ids.subscriptionId}, 'Issue', 'draft', 'publisher-admin')
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type,
             byte_size, sha256_hex, upload_completed_at, created_by_user_id
           ) values (
-            ${ids.documentId}, ${ids.issueId}, 'Brief', 'brief.pdf', ${`issues/${ids.issueId}/brief.pdf`},
+            ${ids.documentId}, ${ids.issueId}, 'Hartlib', 'hartlib.pdf', ${`issues/${ids.issueId}/hartlib.pdf`},
             'application/pdf', 4, ${"a".repeat(64)}, now(), 'publisher-admin'
           )
         `;
@@ -659,14 +659,14 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     const clientRoutes = makeClientWorkspaceRoutes(
       PgClient.layer({
         url: Redacted.make(url),
-        applicationName: "brief-client-lifecycle-route-test",
+        applicationName: "hartlib-client-lifecycle-route-test",
       }),
     );
     const callClientRoute = (method: string, path: string, body?: unknown) =>
       Effect.runPromise(
         routeRequest(
           clientRoutes,
-          new Request(`https://brief.test${path}`, {
+          new Request(`https://hartlib.test${path}`, {
             method,
             headers: {
               cookie: demoCookie("owner"),
@@ -791,7 +791,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           const sql = yield* PgClient.PgClient;
           yield* sql.withTransaction(
             Effect.gen(function* () {
-              yield* sql`set local brief.allow_account_purge = 'on'`;
+              yield* sql`set local hartlib.allow_account_purge = 'on'`;
               yield* sql`
                 delete from client_employee_subscription_grants
                 where client_company_id = ${companyId}
@@ -880,7 +880,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
           Effect.gen(function* () {
-            yield* sql`set local brief.allow_account_purge = 'on'`;
+            yield* sql`set local hartlib.allow_account_purge = 'on'`;
             yield* sql`delete from platform_notifications where client_company_id = ${companyId}`;
             yield* sql`delete from client_company_memberships where company_id = ${companyId}`;
             yield* sql`delete from client_companies where id = ${companyId}`;
@@ -956,13 +956,13 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
 
     const chatLayer = PgClient.layer({
       url: Redacted.make(url),
-      applicationName: "brief-shared-chat-policy-test",
+      applicationName: "hartlib-shared-chat-policy-test",
     });
     const readAs = (userId: string) =>
       Effect.runPromise(
         routeRequest(
           makeChatRoutes(chatLayer),
-          new Request(`https://brief.test/v1/chats/${fixture.sharedChatId}`, {
+          new Request(`https://hartlib.test/v1/chats/${fixture.sharedChatId}`, {
             headers: { cookie: demoCookie(userId) },
           }),
         ).pipe(
@@ -1546,7 +1546,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
             Effect.gen(function* () {
               yield* sql`
                 select pg_advisory_xact_lock(
-                  hashtext(${`brief:client-members:${fixture.clientCompanyId}`})
+                  hashtext(${`hartlib:client-members:${fixture.clientCompanyId}`})
                 )
               `;
               yield* Effect.sync(signalHeld);
@@ -1564,7 +1564,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
             Effect.gen(function* () {
               yield* sql`
                 select pg_advisory_xact_lock(
-                  hashtext(${`brief:client-members:${fixture.clientCompanyId}`})
+                  hashtext(${`hartlib:client-members:${fixture.clientCompanyId}`})
                 )
               `;
               yield* sql`
@@ -1620,13 +1620,13 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     );
     const chatLayer = PgClient.layer({
       url: Redacted.make(url),
-      applicationName: "brief-chat-read-lease-test",
+      applicationName: "hartlib-chat-read-lease-test",
     });
     const readSharedChat = () =>
       Effect.runPromise(
         routeRequest(
           makeChatRoutes(chatLayer),
-          new Request(`https://brief.test/v1/chats/${fixture.sharedChatId}`, {
+          new Request(`https://hartlib.test/v1/chats/${fixture.sharedChatId}`, {
             headers: { cookie: demoCookie("viewer") },
           }),
         ).pipe(
@@ -1680,7 +1680,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:client-members:${fixture.clientCompanyId}`})
+                hashtext(${`hartlib:client-members:${fixture.clientCompanyId}`})
               )
             `;
             yield* Effect.sync(signalMembershipHeld);
@@ -1698,7 +1698,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:client-members:${fixture.clientCompanyId}`})
+                hashtext(${`hartlib:client-members:${fixture.clientCompanyId}`})
               )
             `;
             yield* sql`
@@ -1757,7 +1757,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:ai-chat:${fixture.sharedChatId}`})
+                hashtext(${`hartlib:ai-chat:${fixture.sharedChatId}`})
               )
             `;
             yield* Effect.sync(signalExecutionHeld);
@@ -1783,7 +1783,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
             select exists(
               select 1 from pg_stat_activity
               where datname = current_database()
-                and application_name = 'brief-chat-read-lease-test'
+                and application_name = 'hartlib-chat-read-lease-test'
                 and wait_event_type = 'Lock'
             ) as waiting
           `)[0]!.waiting;
@@ -1810,7 +1810,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     const url = databaseUrlFor(isolatedDatabaseName);
     const pgLayer = PgClient.layer({
       url: Redacted.make(url),
-      applicationName: "brief-publisher-document-route-test",
+      applicationName: "hartlib-publisher-document-route-test",
     });
     const signedInputs: unknown[] = [];
     const route = makePublisherDocumentContentRoute(pgLayer, async (input) => {
@@ -1818,7 +1818,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       return "https://private-storage.test/signed-document";
     });
     const request = new Request(
-      `https://brief.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
+      `https://hartlib.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
       { headers: { cookie: demoCookie("owner") } },
     );
     const response = await Effect.runPromise(
@@ -1854,7 +1854,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(signedInputs).toEqual([
       expect.objectContaining({
-        objectKey: `issues/${fixture.issueId}/brief.pdf`,
+        objectKey: `issues/${fixture.issueId}/hartlib.pdf`,
         expiresInSeconds: 300,
       }),
     ]);
@@ -1864,7 +1864,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     const url = databaseUrlFor(isolatedDatabaseName);
     const pgLayer = PgClient.layer({
       url: Redacted.make(url),
-      applicationName: "brief-publisher-citation-route-test",
+      applicationName: "hartlib-publisher-citation-route-test",
     });
     const citationUrl =
       `/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content` as const;
@@ -1873,7 +1873,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       async () => "https://private-storage.test/saved-citation",
     );
     const readCitation = (userId: string) => {
-      const request = new Request(`https://brief.test${citationUrl}`, {
+      const request = new Request(`https://hartlib.test${citationUrl}`, {
         headers: { cookie: demoCookie(userId) },
       });
       return Effect.runPromise(
@@ -1988,7 +1988,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     const url = databaseUrlFor(isolatedDatabaseName);
     const pgLayer = PgClient.layer({
       url: Redacted.make(url),
-      applicationName: "brief-publisher-document-cors-test",
+      applicationName: "hartlib-publisher-document-cors-test",
     });
     const route = makePublisherDocumentContentRoute(
       pgLayer,
@@ -1996,7 +1996,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     );
     const request = (origin: string, userId: string) =>
       new Request(
-        `https://brief.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
+        `https://hartlib.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
         { headers: { cookie: demoCookie(userId), origin } },
       );
     const run = (
@@ -2011,7 +2011,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           method === "GET"
             ? request(origin, userId)
             : new Request(
-                `https://brief.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
+                `https://hartlib.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
                 {
                   method,
                   headers: {
@@ -2110,7 +2110,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           )
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type,
             byte_size, sha256_hex, upload_completed_at, created_by_user_id
           ) values (
@@ -2249,7 +2249,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
         `;
         yield* sql.withTransaction(
           Effect.gen(function* () {
-            yield* sql`set local brief.allow_account_purge = 'on'`;
+            yield* sql`set local hartlib.allow_account_purge = 'on'`;
             yield* sql`
               delete from client_employee_subscription_grants
               where access_id = ${fixture.accessId}
@@ -2398,7 +2398,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
     const url = databaseUrlFor(isolatedDatabaseName);
     const pgLayer = PgClient.layer({
       url: Redacted.make(url),
-      applicationName: "brief-publisher-document-lease-test",
+      applicationName: "hartlib-publisher-document-lease-test",
     });
     let signalSigner!: () => void;
     const signerStarted = new Promise<void>((resolve) => {
@@ -2415,7 +2415,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
       return "https://private-storage.test/signed-document-lease";
     });
     const request = new Request(
-      `https://brief.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
+      `https://hartlib.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
       { headers: { cookie: demoCookie("viewer") } },
     );
     const response = Effect.runPromise(
@@ -2453,7 +2453,7 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:client-members:${fixture.clientCompanyId}`})
+                hashtext(${`hartlib:client-members:${fixture.clientCompanyId}`})
               )
             `;
             yield* sql`
@@ -2845,14 +2845,14 @@ describe.skipIf(databaseUrl === undefined)("canonical product authorization", ()
 
     const pgLayer = PgClient.layer({
       url: Redacted.make(databaseUrlFor(isolatedDatabaseName)),
-      applicationName: "brief-restricted-document-test",
+      applicationName: "hartlib-restricted-document-test",
     });
     const documentRoute = makePublisherDocumentContentRoute(
       pgLayer,
       async () => "https://private-storage.test/document",
     );
     const request = new Request(
-      `https://brief.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
+      `https://hartlib.test/v1/issues/${fixture.issueId}/documents/${fixture.documentId}/content`,
       { headers: { cookie: demoCookie("owner") } },
     );
     const denied = await Effect.runPromise(

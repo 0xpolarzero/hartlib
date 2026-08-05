@@ -3,9 +3,9 @@ import * as SmithersTaskRuntimeModule from "@smithers-orchestrator/driver/task-r
 import { Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { makeRunAcceptanceScope } from "@brief/shared";
+import { makeRunAcceptanceScope } from "@hartlib/shared";
 
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import {
   CanonicalAgentClient,
   type StructuredCallInput,
@@ -63,7 +63,7 @@ import {
 import { StructuredRetrievalTraceSchema } from "../retrieval/query-spec";
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const databaseName = `brief_ai_operations_test_${process.pid}_${crypto
+const databaseName = `hartlib_ai_operations_test_${process.pid}_${crypto
   .randomUUID()
   .replaceAll("-", "")
   .slice(0, 8)}`;
@@ -258,7 +258,7 @@ const toolLoopExposureStates = new WeakMap<object, ToolLoopExposureState>();
 const sourceExposureMarkersFromToolResult = (
   value: Readonly<Record<string, unknown>>,
 ): readonly ProviderVisibleSourceExposureMarker[] => {
-  const raw = value.__briefSourceExposures;
+  const raw = value.__hartlibSourceExposures;
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) throw new Error("source exposure inventory must be an array");
   return raw as readonly ProviderVisibleSourceExposureMarker[];
@@ -269,7 +269,7 @@ const stripSourceExposureMarkers = (value: unknown): unknown => {
   if (value === null || typeof value !== "object") return value;
   return Object.fromEntries(
     Object.entries(value as Readonly<Record<string, unknown>>)
-      .filter(([key]) => key !== "__briefSourceExposures")
+      .filter(([key]) => key !== "__hartlibSourceExposures")
       .map(([key, nested]) => [key, stripSourceExposureMarkers(nested)]),
   );
 };
@@ -393,7 +393,7 @@ const runDb = <A, E>(
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-ai-operations-test",
+          applicationName: "hartlib-ai-operations-test",
         }),
       ),
     ),
@@ -409,7 +409,7 @@ const waitForRuntimeDatabaseLock = async (): Promise<void> => {
             select 1
             from pg_stat_activity
             where datname = current_database()
-              and application_name = 'brief-ai-runtime'
+              and application_name = 'hartlib-ai-runtime'
               and wait_event_type = 'Lock'
           ) as waiting
         `)[0]!.waiting;
@@ -1282,7 +1282,7 @@ const createFixtureWithCanonicalText = (
     )
   `;
     yield* sql`
-    insert into brief_documents (
+    insert into hartlib_documents (
       id, issue_id, title, original_file_name, object_key, media_type, byte_size,
       sha256_hex, upload_completed_at, created_by_user_id
     ) values (
@@ -1297,8 +1297,8 @@ const createFixtureWithCanonicalText = (
       returning id::text
     `;
     const extractions = yield* sql<{ readonly id: string }>`
-      insert into brief_document_extractions (
-        brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+      insert into hartlib_document_extractions (
+        hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
       ) values (
         ${documentId}, ${pdfHash},
         ${JSON.stringify([{ pageNumber: 1, text: canonicalText }])}::jsonb,
@@ -1307,8 +1307,8 @@ const createFixtureWithCanonicalText = (
       returning id::text
     `;
     yield* sql`
-    insert into brief_document_versions (
-      id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
+    insert into hartlib_document_versions (
+      id, hartlib_document_id, publisher_extraction_id, content_hash, language, canonical_text,
       text_char_count, page_ranges
     ) values (
       ${snapshotId}, ${documentId}, ${extractions[0]!.id}, encode(digest(convert_to(${canonicalText}, 'UTF8'), 'sha256'), 'hex'), 'english',
@@ -1317,7 +1317,7 @@ const createFixtureWithCanonicalText = (
     )
   `;
     yield* sql`
-    update brief_documents set current_version_id = ${snapshotId} where id = ${documentId}
+    update hartlib_documents set current_version_id = ${snapshotId} where id = ${documentId}
   `;
     yield* sql`
     update publisher_issues
@@ -2768,7 +2768,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
 
   it("resolves accepted names and durably records the real structured review preview", async () => {
     const fixture = await runDb(
-      createFixtureWithCanonicalText("Liquidity evidence for the macro brief."),
+      createFixtureWithCanonicalText("Liquidity evidence for the macro hartlib."),
     );
     const foreignPublisherCompanyId = crypto.randomUUID();
     const foreignSubscriptionId = crypto.randomUUID();
@@ -3815,7 +3815,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql`
-            update brief_documents set current_version_id = ${crypto.randomUUID()}
+            update hartlib_documents set current_version_id = ${crypto.randomUUID()}
             where id = ${fixture.documentId}
           `;
         }),
@@ -3918,7 +3918,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
             yield* sql`
-              update brief_documents set current_version_id = ${crypto.randomUUID()}
+              update hartlib_documents set current_version_id = ${crypto.randomUUID()}
               where id = ${fixture.documentId}
             `;
           }),
@@ -4205,7 +4205,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         const documentId = crypto.randomUUID();
         const snapshotId = crypto.randomUUID();
         const canonicalText =
-          "Liquidity conditions improved while inflation expectations remained anchored in the second brief.";
+          "Liquidity conditions improved while inflation expectations remained anchored in the second hartlib.";
         const contentHash = createHash("sha256").update(canonicalText, "utf8").digest("hex");
         const jobs = yield* sql<{ readonly id: string }>`
           insert into jobs (kind, payload)
@@ -4222,7 +4222,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           )
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type, byte_size,
             sha256_hex, upload_completed_at, created_by_user_id
           ) values (
@@ -4232,8 +4232,8 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           )
         `;
         const extractions = yield* sql<{ readonly id: string }>`
-          insert into brief_document_extractions (
-            brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+          insert into hartlib_document_extractions (
+            hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
           ) values (
             ${documentId}, ${contentHash},
             ${JSON.stringify([{ pageNumber: 1, text: canonicalText }])}::jsonb,
@@ -4242,8 +4242,8 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           returning id::text
         `;
         yield* sql`
-          insert into brief_document_versions (
-            id, brief_document_id, publisher_extraction_id, content_hash, language,
+          insert into hartlib_document_versions (
+            id, hartlib_document_id, publisher_extraction_id, content_hash, language,
             canonical_text, text_char_count, page_ranges
           ) values (
             ${snapshotId}, ${documentId}, ${extractions[0]!.id}, ${contentHash}, 'english',
@@ -4252,7 +4252,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           )
         `;
         yield* sql`
-          update brief_documents set current_version_id = ${snapshotId} where id = ${documentId}
+          update hartlib_documents set current_version_id = ${snapshotId} where id = ${documentId}
         `;
         yield* sql`
           update publisher_issues
@@ -6406,12 +6406,12 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           readonly publisherExtractionId: string;
           readonly canonicalText: string;
         }>`
-          select versions.brief_document_id::text as "documentId",
+          select versions.hartlib_document_id::text as "documentId",
                   versions.id::text as "snapshotId",
                   versions.content_hash as "contentHash",
                   versions.publisher_extraction_id::text as "publisherExtractionId",
                   versions.canonical_text as "canonicalText"
-             from brief_document_versions versions
+             from hartlib_document_versions versions
             where versions.id = ${fixture.snapshotId}
         `;
         const extractions = yield* sql<{
@@ -6422,7 +6422,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           select id::text as "extractionId",
                  input_sha256_hex as "inputSha256Hex",
                  pages
-            from brief_document_extractions
+            from hartlib_document_extractions
            where id = ${fixture.extractionId}
         `;
         return { exposures, manifests, versions, extractions };

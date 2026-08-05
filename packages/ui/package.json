@@ -1,5 +1,5 @@
 {
-  "name": "@brief/ui",
+  "name": "@hartlib/ui",
   "private": true,
   "type": "module",
   "exports": {
@@ -11,8 +11,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@brief/i18n": "workspace:*",
-    "@brief/shared": "workspace:*",
+    "@hartlib/i18n": "workspace:*",
+    "@hartlib/shared": "workspace:*",
     "@radix-ui/react-label": "2.1.10",
     "@radix-ui/react-separator": "1.1.10",
     "@radix-ui/react-slot": "1.3.0",

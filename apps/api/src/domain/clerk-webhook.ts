@@ -1,4 +1,4 @@
-import { acceptClerkWebhook } from "@brief/backend-domain/clerk-webhook";
+import { acceptClerkWebhook } from "@hartlib/backend-domain/clerk-webhook";
 import { verifyWebhook, type WebhookEvent } from "@clerk/backend/webhooks";
 import { Effect } from "effect";
 

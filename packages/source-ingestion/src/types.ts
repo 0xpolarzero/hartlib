@@ -1,5 +1,5 @@
 import type { Effect } from "effect";
-import type { Locale, Market } from "@brief/shared";
+import type { Locale, Market } from "@hartlib/shared";
 
 export const PUBLIC_SOURCE_IDS = ["service_public", "bofip_impots", "assemblee_nationale"] as const;
 

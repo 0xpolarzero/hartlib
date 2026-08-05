@@ -1,5 +1,9 @@
 import { MemoryConflictError } from "../product-state/memory";
-import { type AiRunActivityEvent, activityCodeForPhase, activityStageForCode } from "@brief/shared";
+import {
+  type AiRunActivityEvent,
+  activityCodeForPhase,
+  activityStageForCode,
+} from "@hartlib/shared";
 import {
   AiRuntimeError,
   isAbortError,

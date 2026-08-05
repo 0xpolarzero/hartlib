@@ -1,5 +1,5 @@
 {
-  "name": "@brief/shared",
+  "name": "@hartlib/shared",
   "private": true,
   "type": "module",
   "exports": {

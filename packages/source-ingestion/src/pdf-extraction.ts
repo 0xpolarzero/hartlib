@@ -126,7 +126,7 @@ const limitedCommand = (limits: PdfExtractionLimits): readonly [string, readonly
     [
       "-c",
       'ulimit -v "$1" || exit 125; shift; exec "$@"',
-      "brief-pdf-extraction",
+      "hartlib-pdf-extraction",
       String(PDF_EXTRACTION_MAX_MEMORY_MB * 1024),
       process.execPath,
       ...args,

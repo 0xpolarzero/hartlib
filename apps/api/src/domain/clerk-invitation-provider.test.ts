@@ -15,7 +15,7 @@ const input = (workspaceInvitationId = crypto.randomUUID()): ClerkInvitationInpu
   email: "person@example.test",
   role: "org:admin",
   inviterUserId: "user_inviter",
-  redirectUrl: "https://brief.test/invitations/accept",
+  redirectUrl: "https://hartlib.test/invitations/accept",
   workspaceInvitationId,
 });
 
@@ -29,7 +29,7 @@ const remote = (
   role: request.role,
   expiresAt: Date.parse("2026-08-01T00:00:00.000Z"),
   status: "pending",
-  privateMetadata: { briefWorkspaceInvitationId: request.workspaceInvitationId },
+  privateMetadata: { hartlibWorkspaceInvitationId: request.workspaceInvitationId },
 });
 
 const api = (

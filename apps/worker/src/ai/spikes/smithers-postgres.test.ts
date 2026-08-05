@@ -15,11 +15,11 @@ const getSpikeDatabaseUrl = () => {
 
   const url = new URL(databaseUrl);
 
-  if (url.pathname === "/brief_smithers_spike") {
-    throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL must not point at brief_smithers_spike");
+  if (url.pathname === "/hartlib_smithers_spike") {
+    throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL must not point at hartlib_smithers_spike");
   }
 
-  url.pathname = "/brief_smithers_spike";
+  url.pathname = "/hartlib_smithers_spike";
   return url.toString();
 };
 
@@ -36,7 +36,7 @@ const runDb = <A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-ai-smithers-spike",
+          applicationName: "hartlib-ai-smithers-spike",
         }),
       ),
     ),
@@ -49,11 +49,11 @@ describe.skipIf(!isBun || !databaseUrl)("smithers postgres backend", () => {
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         const rows = yield* sql<{ readonly datname: string }>`
-            select datname from pg_database where datname = 'brief_smithers_spike'
+            select datname from pg_database where datname = 'hartlib_smithers_spike'
           `;
 
         if (rows.length === 0) {
-          yield* sql.unsafe("create database brief_smithers_spike");
+          yield* sql.unsafe("create database hartlib_smithers_spike");
         }
       }),
     );
@@ -251,7 +251,7 @@ describe.skipIf(!isBun || !databaseUrl)("smithers postgres backend", () => {
 
   it("runs the toy workflow from a directory outside any git repository", async () => {
     const spikeDatabaseUrl = getSpikeDatabaseUrl();
-    const rootDir = await mkdtemp(join(tmpdir(), "brief-smithers-gitless-"));
+    const rootDir = await mkdtemp(join(tmpdir(), "hartlib-smithers-gitless-"));
     const { createSmithersStorage, runSmithersWorkflow } = await import("../smithers-interop");
     const { buildSpikeWorkflow, spikeSchemas } = await import("./spike-workflow");
     const api = await createSmithersStorage(spikeSchemas, {

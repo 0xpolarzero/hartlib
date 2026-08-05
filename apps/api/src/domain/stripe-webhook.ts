@@ -1,7 +1,7 @@
 import {
   acceptStripeWebhook,
   type VerifiedStripeEvent,
-} from "@brief/backend-domain/stripe-webhook";
+} from "@hartlib/backend-domain/stripe-webhook";
 import { Effect } from "effect";
 import Stripe from "stripe";
 
@@ -9,7 +9,7 @@ import { loadApiConfig } from "../config";
 import { ApiDatabaseLayer, type ApiDatabaseLayer as ApiDatabaseLayerType } from "../database";
 import { json, type Route } from "../http";
 
-export type { VerifiedStripeEvent } from "@brief/backend-domain/stripe-webhook";
+export type { VerifiedStripeEvent } from "@hartlib/backend-domain/stripe-webhook";
 
 export type StripeWebhookVerifier = (input: {
   readonly rawBody: string;

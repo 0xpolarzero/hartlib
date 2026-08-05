@@ -1,4 +1,4 @@
-import { parseRunAcceptanceScope, type RunAcceptanceScope } from "@brief/shared";
+import { parseRunAcceptanceScope, type RunAcceptanceScope } from "@hartlib/shared";
 import { z } from "zod";
 
 import type { Locale, Market } from "../runtime/types";

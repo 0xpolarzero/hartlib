@@ -5,8 +5,8 @@ import type {
   RawArtifact,
   SourceAdapter,
   SourceFetchOptions,
-} from "@brief/source-ingestion";
-import { SourceIngestionError } from "@brief/source-ingestion";
+} from "@hartlib/source-ingestion";
+import { SourceIngestionError } from "@hartlib/source-ingestion";
 import {
   InMemoryPublicSourceIngestionRepositoryLayer,
   makeInMemoryPublicSourceIngestionRepository,

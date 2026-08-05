@@ -1,4 +1,4 @@
-import { citationRecordsFromText, type ChatTranscriptMessage } from "@brief/ui";
+import { citationRecordsFromText, type ChatTranscriptMessage } from "@hartlib/ui";
 
 import type { ChatStreamPhase, ChatStreamState } from "./chat-stream";
 

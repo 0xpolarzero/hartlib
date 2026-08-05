@@ -1,20 +1,20 @@
 import type { WebhookEvent } from "@clerk/backend/webhooks";
 import { PgClient } from "@effect/sql-pg";
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import { ConfigProvider, Effect, Redacted } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { reserveBillingCheckout } from "@brief/backend-domain/billing";
-import { acceptClerkWebhook } from "@brief/backend-domain/clerk-webhook";
-import { resolveCompanyDeletionRequest } from "@brief/backend-domain/platform-support";
-import { requireClientCompanyAdmin } from "@brief/workspace";
+import { reserveBillingCheckout } from "@hartlib/backend-domain/billing";
+import { acceptClerkWebhook } from "@hartlib/backend-domain/clerk-webhook";
+import { resolveCompanyDeletionRequest } from "@hartlib/backend-domain/platform-support";
+import { requireClientCompanyAdmin } from "@hartlib/workspace";
 import { routeRequest } from "../http";
 import { DEMO_COOKIE_NAME } from "../demo-session";
 import { makeBillingRoutes, type BillingStripeGateway } from "../domain/billing";
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const isBun = typeof process.versions.bun === "string";
-const databaseName = `brief_billing_plan_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const databaseName = `hartlib_billing_plan_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 const companyId = "20000000-0000-4000-8000-000000000002";
 const periodEnd = "2026-08-01T00:00:00.000Z";
 
@@ -55,9 +55,9 @@ const config = (_userId: string) =>
         STRIPE_PRICE_TEAM: "price_team",
         STRIPE_PRICE_INTENSIVE: "price_intensive",
         STRIPE_PRICE_ADDITIONAL_CREDIT: "price_additional",
-        STRIPE_CHECKOUT_SUCCESS_URL: "https://brief.test/billing/success",
-        STRIPE_CHECKOUT_CANCEL_URL: "https://brief.test/billing/cancel",
-        STRIPE_PORTAL_RETURN_URL: "https://brief.test/billing",
+        STRIPE_CHECKOUT_SUCCESS_URL: "https://hartlib.test/billing/success",
+        STRIPE_CHECKOUT_CANCEL_URL: "https://hartlib.test/billing/cancel",
+        STRIPE_PORTAL_RETURN_URL: "https://hartlib.test/billing",
       },
     }),
   );
@@ -66,7 +66,7 @@ const call = (gateway: BillingStripeGateway, userId: string, body: unknown) =>
   Effect.runPromise(
     routeRequest(
       makeBillingRoutes(pgLayer(), gateway),
-      new Request(`https://brief.test/v1/client-companies/${companyId}/billing/plan-change`, {
+      new Request(`https://hartlib.test/v1/client-companies/${companyId}/billing/plan-change`, {
         method: "POST",
         headers: {
           cookie: demoCookie(userId),
@@ -87,7 +87,7 @@ const callCheckout = (
   Effect.runPromise(
     routeRequest(
       makeBillingRoutes(pgLayer(), gateway),
-      new Request(`https://brief.test/v1/client-companies/${companyId}/billing/checkout`, {
+      new Request(`https://hartlib.test/v1/client-companies/${companyId}/billing/checkout`, {
         method: "POST",
         headers: {
           cookie: demoCookie(userId),
@@ -103,7 +103,7 @@ const callPortal = (gateway: BillingStripeGateway, userId: string) =>
   Effect.runPromise(
     routeRequest(
       makeBillingRoutes(pgLayer(), gateway),
-      new Request(`https://brief.test/v1/client-companies/${companyId}/billing/portal`, {
+      new Request(`https://hartlib.test/v1/client-companies/${companyId}/billing/portal`, {
         method: "POST",
         headers: { cookie: demoCookie(userId), "x-request-id": crypto.randomUUID() },
       }),
@@ -296,7 +296,7 @@ describe.skipIf(!isBun || !databaseUrl)("monthly AI plan-change route", () => {
       }),
     );
     const ensureCustomer = vi.fn<BillingStripeGateway["ensureCustomer"]>(async (input) => {
-      expect(input.idempotencyKey).toBe(`brief-customer:${companyId}`);
+      expect(input.idempotencyKey).toBe(`hartlib-customer:${companyId}`);
       return input.customerId ?? "cus_first_purchase";
     });
     const checkout = vi.fn<BillingStripeGateway["checkout"]>(async () => ({
@@ -327,6 +327,84 @@ describe.skipIf(!isBun || !databaseUrl)("monthly AI plan-change route", () => {
     );
     expect(bound).toBe("cus_first_purchase");
     expect(ensureCustomer.mock.calls[1]?.[0].customerId).toBe("cus_first_purchase");
+  });
+
+  it("replays a retained legacy Checkout row through the Hartlib route", async () => {
+    const idempotencyKey = "checkout-legacy-replay-0001";
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into client_ai_checkout_requests (
+            client_company_id, idempotency_key, requested_by_user_id,
+            authorization_request_id, authorization_session_id,
+            authorization_mode, authorization_mfa_verified, kind, credits,
+            stripe_customer_id, stripe_price_id, success_url, cancel_url,
+            stripe_operation_key, status, lease_expires_at
+          ) values (
+            ${companyId}, ${idempotencyKey}, 'admin-user',
+            'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'demo-session',
+            'demo', true, 'additional', 125,
+            'cus_client', 'price_additional',
+            'https://brief.test/billing/success',
+            'https://brief.test/billing/cancel',
+            ${`brief-checkout:${companyId}:${idempotencyKey}:session`},
+            'processing', now() - interval '1 second'
+          )
+        `;
+      }),
+    );
+    const checkout = vi.fn<BillingStripeGateway["checkout"]>(async (input) => {
+      expect(input).toMatchObject({
+        customerId: "cus_client",
+        companyId,
+        kind: "additional",
+        planTier: null,
+        credits: 125,
+        priceId: "price_additional",
+        successUrl: "https://brief.test/billing/success",
+        cancelUrl: "https://brief.test/billing/cancel",
+        automaticTaxEnabled: true,
+        billingAddressCollection: "required",
+        taxIdCollectionEnabled: true,
+        updateExistingCustomerAddress: true,
+        idempotencyKey: `brief-checkout:${companyId}:${idempotencyKey}:session`,
+      });
+      expect(input.metadata).toEqual({
+        brief_client_company_id: companyId,
+        brief_purchase_kind: "additional_credits",
+        brief_credits: "125",
+      });
+      return { sessionId: "cs_legacy_replay", url: "https://stripe.test/legacy-replay" };
+    });
+    const response = await callCheckout({ ...gateway(), checkout }, "admin-user", {
+      kind: "additional",
+      credits: 125,
+      idempotencyKey,
+    });
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({ url: "https://stripe.test/legacy-replay" });
+    expect(checkout).toHaveBeenCalledOnce();
+    const row = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return (yield* sql<{
+          readonly operationKey: string;
+          readonly status: string;
+          readonly attempts: number;
+        }>`
+          select stripe_operation_key as "operationKey", status, attempts
+          from client_ai_checkout_requests
+          where client_company_id = ${companyId}
+            and idempotency_key = ${idempotencyKey}
+        `)[0]!;
+      }),
+    );
+    expect(row).toEqual({
+      operationKey: `brief-checkout:${companyId}:${idempotencyKey}:session`,
+      status: "succeeded",
+      attempts: 2,
+    });
   });
 
   it("serializes competing first-customer bindings and rejects the losing identity", async () => {
@@ -365,7 +443,7 @@ describe.skipIf(!isBun || !databaseUrl)("monthly AI plan-change route", () => {
     let attempts = 0;
     const checkout = vi.fn<BillingStripeGateway["checkout"]>(async (input) => {
       expect(input.idempotencyKey).toBe(
-        `brief-checkout:${companyId}:checkout-response-loss-0001:session`,
+        `hartlib-checkout:${companyId}:checkout-response-loss-0001:session`,
       );
       attempts += 1;
       if (attempts === 1) throw new Error("provider_response_lost_after_commit");
@@ -454,9 +532,9 @@ describe.skipIf(!isBun || !databaseUrl)("monthly AI plan-change route", () => {
           credits: 25,
           customerId: "cus_client",
           priceId: "price_additional",
-          successUrl: "https://brief.test/billing/success",
-          cancelUrl: "https://brief.test/billing/cancel",
-          stripeOperationKey: `brief-checkout:${companyId}:${idempotencyKey}:session`,
+          successUrl: "https://hartlib.test/billing/success",
+          cancelUrl: "https://hartlib.test/billing/cancel",
+          stripeOperationKey: `hartlib-checkout:${companyId}:${idempotencyKey}:session`,
           allowNew: false,
           requireExisting: true,
           claimExisting: true,
@@ -492,9 +570,9 @@ describe.skipIf(!isBun || !databaseUrl)("monthly AI plan-change route", () => {
       credits: 25,
       customerId: "cus_client",
       priceId: "price_additional",
-      successUrl: "https://brief.test/billing/success",
-      cancelUrl: "https://brief.test/billing/cancel",
-      stripeOperationKey: `brief-checkout:${companyId}:${idempotencyKey}:session`,
+      successUrl: "https://hartlib.test/billing/success",
+      cancelUrl: "https://hartlib.test/billing/cancel",
+      stripeOperationKey: `hartlib-checkout:${companyId}:${idempotencyKey}:session`,
       allowNew: true,
     };
     const first = await runDb(reserveBillingCheckout(reservationInput));
@@ -1057,7 +1135,7 @@ describe.skipIf(!isBun || !databaseUrl)("monthly AI plan-change route", () => {
           return yield* sql.withTransaction(
             Effect.gen(function* () {
               yield* sql`
-                select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+                select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
               `;
               yield* Effect.sync(signalHeld);
               yield* Effect.promise(() => released);
@@ -1072,7 +1150,7 @@ describe.skipIf(!isBun || !databaseUrl)("monthly AI plan-change route", () => {
           return yield* sql.withTransaction(
             Effect.gen(function* () {
               yield* sql`
-                select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+                select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
               `;
               yield* sql`
                 update client_company_memberships

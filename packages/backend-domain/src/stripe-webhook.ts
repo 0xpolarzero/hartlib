@@ -13,7 +13,7 @@ export const acceptStripeWebhook = (event: VerifiedStripeEvent, signedPayload: s
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:stripe-webhook:${event.id}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:stripe-webhook:${event.id}`}))
         `;
         const prior = yield* sql<{ readonly matches: boolean }>`
           select event_type = ${event.type}

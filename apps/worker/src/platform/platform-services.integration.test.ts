@@ -5,11 +5,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import {
   EXPORT_ARCHIVE_FILE_EXTENSION,
   EXPORT_ARCHIVE_MEDIA_TYPE,
-} from "@brief/shared/export-contract";
-import { makeRunAcceptanceScope } from "@brief/shared/chat";
-import { SERVER_NUMERIC_SETTING_HARD_MAXIMA } from "@brief/config";
+} from "@hartlib/shared/export-contract";
+import { makeRunAcceptanceScope } from "@hartlib/shared/chat";
+import { SERVER_NUMERIC_SETTING_HARD_MAXIMA } from "@hartlib/config";
 
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import type { ExportObjectStore, NotificationEmailAdapter } from "./adapters";
 import { consumeCredits, processStripeWebhookEvent } from "./billing";
 import {
@@ -24,7 +24,7 @@ import type { PlatformFileStoreShape } from "./file-store";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const databaseName = `brief_platform_services_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const databaseName = `hartlib_platform_services_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 const memoryDomainModuleUrl = new URL(
   "../../../../packages/backend-domain/src/memories.ts",
   import.meta.url,
@@ -85,7 +85,7 @@ const runDb = <A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-platform-services-test",
+          applicationName: "hartlib-platform-services-test",
         }),
       ),
     ),
@@ -459,7 +459,11 @@ describe.skipIf(!isBun || !databaseUrl)(
       await expect(
         runDb(
           isolatedUrl(),
-          sendEmailNotification({ deliveryId, adapter: failing, appBaseUrl: "https://brief.test" }),
+          sendEmailNotification({
+            deliveryId,
+            adapter: failing,
+            appBaseUrl: "https://hartlib.test",
+          }),
         ),
       ).rejects.toThrow("provider_error");
       const failed = await runDb(
@@ -485,7 +489,7 @@ describe.skipIf(!isBun || !databaseUrl)(
           sendEmailNotification({
             deliveryId,
             adapter: succeeding,
-            appBaseUrl: "https://brief.test",
+            appBaseUrl: "https://hartlib.test",
           }),
         ),
       ).resolves.toMatchObject({ status: "sent" });
@@ -494,23 +498,23 @@ describe.skipIf(!isBun || !databaseUrl)(
         sendEmailNotification({
           deliveryId,
           adapter: succeeding,
-          appBaseUrl: "https://brief.test",
+          appBaseUrl: "https://hartlib.test",
         }),
       );
       expect(sentIdempotencyKeys).toEqual([
-        `brief-email-${deliveryId}`,
-        `brief-email-${deliveryId}`,
+        `hartlib-email-${deliveryId}`,
+        `hartlib-email-${deliveryId}`,
       ]);
       expect(succeeding.send).toHaveBeenCalledTimes(1);
       expect(succeeding.send).toHaveBeenCalledWith(
         expect.objectContaining({
           to: "demo@example.test",
-          subject: "La limite d’usage de l’IA Brief est atteinte",
+          subject: "La limite d’usage de l’IA Hartlib est atteinte",
           text: expect.stringContaining(
-            `https://brief.test/fr-FR/client/${companyId}/notifications`,
+            `https://hartlib.test/fr-FR/client/${companyId}/notifications`,
           ),
           html: expect.stringContaining(
-            `href="https://brief.test/fr-FR/client/${companyId}/notifications"`,
+            `href="https://hartlib.test/fr-FR/client/${companyId}/notifications"`,
           ),
         }),
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -582,23 +586,23 @@ describe.skipIf(!isBun || !databaseUrl)(
         sendEmailNotification({
           deliveryId: created.deliveryId!,
           adapter,
-          appBaseUrl: "https://brief.test/fr/",
+          appBaseUrl: "https://hartlib.test/fr/",
         }),
       );
 
-      const expectedUrl = `https://brief.test/en-US/client/${companyId}/issues/${issueId}`;
+      const expectedUrl = `https://hartlib.test/en-US/client/${companyId}/issues/${issueId}`;
       expect(sent).toHaveLength(1);
       expect(adapter.send).toHaveBeenCalledWith(
         expect.objectContaining({
           to: "current@example.test",
-          subject: "A new Brief issue is available",
+          subject: "A new Hartlib issue is available",
         }),
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       );
       expect(sent[0]?.text).toContain(expectedUrl);
       expect(sent[0]?.html).toContain(`href="${expectedUrl}"`);
-      expect(sent[0]?.text).not.toContain(`https://brief.test/fr-FR/`);
-      expect(sent[0]?.html).not.toContain(`href="https://brief.test/client/`);
+      expect(sent[0]?.text).not.toContain(`https://hartlib.test/fr-FR/`);
+      expect(sent[0]?.html).not.toContain(`href="https://hartlib.test/client/`);
     });
 
     it("terminally cancels a current email opt-out without calling the provider and replays safely", async () => {
@@ -630,7 +634,7 @@ describe.skipIf(!isBun || !databaseUrl)(
           sendEmailNotification({
             deliveryId: created.deliveryId!,
             adapter,
-            appBaseUrl: "https://brief.test",
+            appBaseUrl: "https://hartlib.test",
           }),
         ),
       ).resolves.toEqual({ status: "cancelled", reasonCode: "email_opt_out" });
@@ -640,7 +644,7 @@ describe.skipIf(!isBun || !databaseUrl)(
           sendEmailNotification({
             deliveryId: created.deliveryId!,
             adapter,
-            appBaseUrl: "https://brief.test",
+            appBaseUrl: "https://hartlib.test",
           }),
         ),
       ).resolves.toEqual({ status: "already_cancelled", reasonCode: "email_opt_out" });
@@ -720,7 +724,7 @@ describe.skipIf(!isBun || !databaseUrl)(
         await expect(
           runDb(
             isolatedUrl(),
-            sendEmailNotification({ deliveryId, adapter, appBaseUrl: "https://brief.test" }),
+            sendEmailNotification({ deliveryId, adapter, appBaseUrl: "https://hartlib.test" }),
           ),
         ).resolves.toEqual({ status: "cancelled", reasonCode: "access_grant_revoked" });
       }
@@ -776,7 +780,7 @@ describe.skipIf(!isBun || !databaseUrl)(
       for (const deliveryId of [scheduled.deliveryId!, sevenDays.deliveryId!]) {
         await runDb(
           isolatedUrl(),
-          sendEmailNotification({ deliveryId, adapter, appBaseUrl: "https://brief.test" }),
+          sendEmailNotification({ deliveryId, adapter, appBaseUrl: "https://hartlib.test" }),
         );
       }
       await runDb(
@@ -805,17 +809,19 @@ describe.skipIf(!isBun || !databaseUrl)(
         sendEmailNotification({
           deliveryId: ended.deliveryId!,
           adapter,
-          appBaseUrl: "https://brief.test",
+          appBaseUrl: "https://hartlib.test",
         }),
       );
 
       expect(sent.map((email) => email.subject)).toEqual([
-        "A Brief delivery end date was scheduled",
-        "Brief delivery ends in 7 days",
-        "Brief delivery has ended",
+        "A Hartlib delivery end date was scheduled",
+        "Hartlib delivery ends in 7 days",
+        "Hartlib delivery has ended",
       ]);
       for (const email of sent) {
-        expect(email.text).toContain(`https://brief.test/en-US/client/${companyId}/notifications`);
+        expect(email.text).toContain(
+          `https://hartlib.test/en-US/client/${companyId}/notifications`,
+        );
       }
     });
 
@@ -852,7 +858,7 @@ describe.skipIf(!isBun || !databaseUrl)(
           sendEmailNotification({
             deliveryId: created.deliveryId!,
             adapter,
-            appBaseUrl: "https://brief.test",
+            appBaseUrl: "https://hartlib.test",
           }),
         ),
       ).resolves.toEqual({ status: "cancelled", reasonCode: "issue_restricted" });
@@ -937,7 +943,7 @@ describe.skipIf(!isBun || !databaseUrl)(
             sendEmailNotification({
               deliveryId: created.deliveryId!,
               adapter,
-              appBaseUrl: "https://brief.test",
+              appBaseUrl: "https://hartlib.test",
             }),
           ),
         ).resolves.toEqual({ status: "cancelled", reasonCode: scenario.reasonCode });
@@ -987,7 +993,7 @@ describe.skipIf(!isBun || !databaseUrl)(
           sendEmailNotification({
             deliveryId: created.deliveryId!,
             adapter,
-            appBaseUrl: "https://brief.test",
+            appBaseUrl: "https://hartlib.test",
           }),
         ),
       ).resolves.toEqual({ status: "cancelled", reasonCode: "delivery_state_changed" });
@@ -1041,7 +1047,7 @@ describe.skipIf(!isBun || !databaseUrl)(
       await expect(
         runDb(
           isolatedUrl(),
-          sendEmailNotification({ deliveryId, adapter, appBaseUrl: "https://brief.test" }),
+          sendEmailNotification({ deliveryId, adapter, appBaseUrl: "https://hartlib.test" }),
         ),
       ).rejects.toThrow("notification_scope_tenant_mismatch");
       expect(adapter.send).not.toHaveBeenCalled();
@@ -1081,7 +1087,7 @@ describe.skipIf(!isBun || !databaseUrl)(
             sendEmailNotification({
               deliveryId: created.deliveryId!,
               adapter,
-              appBaseUrl: "https://brief.test",
+              appBaseUrl: "https://hartlib.test",
             }),
           ),
         ),
@@ -1138,7 +1144,7 @@ describe.skipIf(!isBun || !databaseUrl)(
         sendEmailNotification({
           deliveryId: created.deliveryId!,
           adapter,
-          appBaseUrl: "https://brief.test",
+          appBaseUrl: "https://hartlib.test",
         }),
       );
       await providerStarted;
@@ -1150,7 +1156,7 @@ describe.skipIf(!isBun || !databaseUrl)(
           yield* sql.withTransaction(
             Effect.gen(function* () {
               yield* sql`
-                select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+                select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
               `;
               yield* sql`
                 update client_company_memberships
@@ -1226,7 +1232,7 @@ describe.skipIf(!isBun || !databaseUrl)(
         sendEmailNotification({
           deliveryId: created.deliveryId!,
           adapter,
-          appBaseUrl: "https://brief.test",
+          appBaseUrl: "https://hartlib.test",
         }),
       );
       await providerStarted;
@@ -1288,7 +1294,7 @@ describe.skipIf(!isBun || !databaseUrl)(
         sendEmailNotification({
           deliveryId: created.deliveryId!,
           adapter,
-          appBaseUrl: "https://brief.test",
+          appBaseUrl: "https://hartlib.test",
         }),
       );
       await providerStarted;
@@ -1413,14 +1419,14 @@ describe.skipIf(!isBun || !databaseUrl)(
           id: "sub_platform",
           customer: "cus_platform_test",
           status: "active",
-          metadata: { brief_client_company_id: companyId, brief_plan_tier: "team" },
+          metadata: { hartlib_client_company_id: companyId, hartlib_plan_tier: "team" },
           items: {
             data: [
               {
                 quantity: 1,
                 current_period_start: 1767225600,
                 current_period_end: 1769904000,
-                price: { id: "price_team", metadata: { brief_plan_tier: "team" } },
+                price: { id: "price_team", metadata: { hartlib_plan_tier: "team" } },
               },
             ],
           },
@@ -1436,7 +1442,7 @@ describe.skipIf(!isBun || !databaseUrl)(
           paid: true,
           amount_paid: 2_500,
           billing_reason: "subscription_cycle",
-          metadata: { brief_credits: "100" },
+          metadata: { hartlib_credits: "100" },
           parent: {
             subscription_details: { subscription: "sub_platform", metadata: {} },
           },
@@ -1470,9 +1476,9 @@ describe.skipIf(!isBun || !databaseUrl)(
           amount_total: 4_000,
           payment_intent: "pi_platform",
           metadata: {
-            brief_client_company_id: companyId,
-            brief_purchase_kind: "additional_credits",
-            brief_credits: "40",
+            hartlib_client_company_id: companyId,
+            hartlib_purchase_kind: "additional_credits",
+            hartlib_credits: "40",
           },
         }),
       );
@@ -1489,9 +1495,9 @@ describe.skipIf(!isBun || !databaseUrl)(
           amount_total: 2_000,
           payment_intent: "pi_platform_async",
           metadata: {
-            brief_client_company_id: companyId,
-            brief_purchase_kind: "additional_credits",
-            brief_credits: "20",
+            hartlib_client_company_id: companyId,
+            hartlib_purchase_kind: "additional_credits",
+            hartlib_credits: "20",
           },
         }),
       );
@@ -1561,13 +1567,13 @@ describe.skipIf(!isBun || !databaseUrl)(
           parent: {
             subscription_details: {
               subscription: "sub_platform",
-              metadata: { brief_credits: "100" },
+              metadata: { hartlib_credits: "100" },
             },
           },
           lines: {
             data: [
               {
-                metadata: { brief_credits: "100" },
+                metadata: { hartlib_credits: "100" },
                 quantity: 1,
                 pricing: { type: "price_details", price_details: { price: "price_team" } },
                 period: { start: 1767225600, end: 1769904000 },
@@ -1592,9 +1598,9 @@ describe.skipIf(!isBun || !databaseUrl)(
           amount_total: 4_000,
           payment_intent: "pi_unpaid",
           metadata: {
-            brief_client_company_id: companyId,
-            brief_purchase_kind: "additional_credits",
-            brief_credits: "40",
+            hartlib_client_company_id: companyId,
+            hartlib_purchase_kind: "additional_credits",
+            hartlib_credits: "40",
           },
         }),
       );
@@ -1616,9 +1622,9 @@ describe.skipIf(!isBun || !databaseUrl)(
             amount_total: 4_000,
             payment_intent: "pi_unpaid",
             metadata: {
-              brief_client_company_id: companyId,
-              brief_purchase_kind: "additional_credits",
-              brief_credits: "40",
+              hartlib_client_company_id: companyId,
+              hartlib_purchase_kind: "additional_credits",
+              hartlib_credits: "40",
             },
           },
         ),
@@ -1641,9 +1647,9 @@ describe.skipIf(!isBun || !databaseUrl)(
             amount_total: 3_000,
             payment_intent: "pi_reverse",
             metadata: {
-              brief_client_company_id: companyId,
-              brief_purchase_kind: "additional_credits",
-              brief_credits: "30",
+              hartlib_client_company_id: companyId,
+              hartlib_purchase_kind: "additional_credits",
+              hartlib_credits: "30",
             },
           },
         ),
@@ -1661,9 +1667,9 @@ describe.skipIf(!isBun || !databaseUrl)(
           amount_total: 3_000,
           payment_intent: "pi_reverse",
           metadata: {
-            brief_client_company_id: companyId,
-            brief_purchase_kind: "additional_credits",
-            brief_credits: "30",
+            hartlib_client_company_id: companyId,
+            hartlib_purchase_kind: "additional_credits",
+            hartlib_credits: "30",
           },
         }),
       );
@@ -1685,9 +1691,9 @@ describe.skipIf(!isBun || !databaseUrl)(
             payment_status: "unpaid",
             amount_total: 2_000,
             metadata: {
-              brief_client_company_id: companyId,
-              brief_purchase_kind: "additional_credits",
-              brief_credits: "20",
+              hartlib_client_company_id: companyId,
+              hartlib_purchase_kind: "additional_credits",
+              hartlib_credits: "20",
             },
           }),
         );
@@ -1715,9 +1721,9 @@ describe.skipIf(!isBun || !databaseUrl)(
           amount_total: 4_000,
           payment_intent: "pi_unbound",
           metadata: {
-            brief_client_company_id: companyId,
-            brief_purchase_kind: "additional_credits",
-            brief_credits: "40",
+            hartlib_client_company_id: companyId,
+            hartlib_purchase_kind: "additional_credits",
+            hartlib_credits: "40",
           },
         }),
       );
@@ -1760,8 +1766,8 @@ describe.skipIf(!isBun || !databaseUrl)(
         customer: "cus_platform_test",
         status: "active",
         metadata: {
-          brief_client_company_id: companyId,
-          ...(subscriptionTier === undefined ? {} : { brief_plan_tier: subscriptionTier }),
+          hartlib_client_company_id: companyId,
+          ...(subscriptionTier === undefined ? {} : { hartlib_plan_tier: subscriptionTier }),
         },
         items: {
           data: [
@@ -1771,7 +1777,7 @@ describe.skipIf(!isBun || !databaseUrl)(
               current_period_end: 1769904000,
               price: {
                 id: "price_team",
-                metadata: priceTier === undefined ? {} : { brief_plan_tier: priceTier },
+                metadata: priceTier === undefined ? {} : { hartlib_plan_tier: priceTier },
               },
             },
           ],
@@ -1824,9 +1830,9 @@ describe.skipIf(!isBun || !databaseUrl)(
         customer: "cus_platform_test",
         status: input.status,
         metadata: {
-          brief_client_company_id: companyId,
-          brief_plan_tier: input.tier,
-          ...(input.monthlyCheckout ? { brief_purchase_kind: "monthly_plan" } : {}),
+          hartlib_client_company_id: companyId,
+          hartlib_plan_tier: input.tier,
+          ...(input.monthlyCheckout ? { hartlib_purchase_kind: "monthly_plan" } : {}),
         },
         items: {
           data: [
@@ -1836,7 +1842,7 @@ describe.skipIf(!isBun || !databaseUrl)(
               current_period_end: input.end,
               price: {
                 id: `price_${input.tier}`,
-                metadata: { brief_plan_tier: input.tier },
+                metadata: { hartlib_plan_tier: input.tier },
               },
             },
           ],
@@ -1975,14 +1981,14 @@ describe.skipIf(!isBun || !databaseUrl)(
         id: "sub_plan_change",
         customer: "cus_platform_test",
         status: "active",
-        metadata: { brief_client_company_id: companyId, brief_plan_tier: tier },
+        metadata: { hartlib_client_company_id: companyId, hartlib_plan_tier: tier },
         items: {
           data: [
             {
               quantity: 1,
               current_period_start: start,
               current_period_end: end,
-              price: { id: `price_${tier}`, metadata: { brief_plan_tier: tier } },
+              price: { id: `price_${tier}`, metadata: { hartlib_plan_tier: tier } },
             },
           ],
         },
@@ -2037,10 +2043,10 @@ describe.skipIf(!isBun || !databaseUrl)(
             items: [{ price: "price_team", quantity: 1 }],
             proration_behavior: "none",
             metadata: {
-              brief_client_company_id: companyId,
-              brief_plan_change_key: "downgrade-plan-0001",
-              brief_plan_previous_tier: "team",
-              brief_plan_tier: "team",
+              hartlib_client_company_id: companyId,
+              hartlib_plan_change_key: "downgrade-plan-0001",
+              hartlib_plan_previous_tier: "team",
+              hartlib_plan_tier: "team",
             },
           },
           {
@@ -2048,17 +2054,17 @@ describe.skipIf(!isBun || !databaseUrl)(
             items: [{ price: "price_light", quantity: 1 }],
             proration_behavior: "none",
             metadata: {
-              brief_client_company_id: companyId,
-              brief_plan_change_key: "downgrade-plan-0001",
-              brief_plan_previous_tier: "team",
-              brief_plan_tier: "light",
+              hartlib_client_company_id: companyId,
+              hartlib_plan_change_key: "downgrade-plan-0001",
+              hartlib_plan_previous_tier: "team",
+              hartlib_plan_tier: "light",
             },
           },
         ],
         metadata: {
-          brief_client_company_id: companyId,
-          brief_plan_change_key: "downgrade-plan-0001",
-          brief_plan_tier: "light",
+          hartlib_client_company_id: companyId,
+          hartlib_plan_change_key: "downgrade-plan-0001",
+          hartlib_plan_tier: "light",
         },
       });
       await runDb(
@@ -2271,10 +2277,10 @@ describe.skipIf(!isBun || !databaseUrl)(
             items: [{ price: "price_team", quantity: 1 }],
             proration_behavior: "none",
             metadata: {
-              brief_client_company_id: cancellationCompanyId,
-              brief_plan_change_key: "cancel-downgrade-0001",
-              brief_plan_previous_tier: "team",
-              brief_plan_tier: "team",
+              hartlib_client_company_id: cancellationCompanyId,
+              hartlib_plan_change_key: "cancel-downgrade-0001",
+              hartlib_plan_previous_tier: "team",
+              hartlib_plan_tier: "team",
             },
           },
           {
@@ -2282,17 +2288,17 @@ describe.skipIf(!isBun || !databaseUrl)(
             items: [{ price: "price_light", quantity: 1 }],
             proration_behavior: "none",
             metadata: {
-              brief_client_company_id: cancellationCompanyId,
-              brief_plan_change_key: "cancel-downgrade-0001",
-              brief_plan_previous_tier: "team",
-              brief_plan_tier: "light",
+              hartlib_client_company_id: cancellationCompanyId,
+              hartlib_plan_change_key: "cancel-downgrade-0001",
+              hartlib_plan_previous_tier: "team",
+              hartlib_plan_tier: "light",
             },
           },
         ],
         metadata: {
-          brief_client_company_id: cancellationCompanyId,
-          brief_plan_change_key: "cancel-downgrade-0001",
-          brief_plan_tier: "light",
+          hartlib_client_company_id: cancellationCompanyId,
+          hartlib_plan_change_key: "cancel-downgrade-0001",
+          hartlib_plan_tier: "light",
         },
       });
       await runDb(
@@ -2336,8 +2342,8 @@ describe.skipIf(!isBun || !databaseUrl)(
           customer: "cus_schedule_cancel",
           status: "active",
           metadata: {
-            brief_client_company_id: cancellationCompanyId,
-            brief_plan_tier: "light",
+            hartlib_client_company_id: cancellationCompanyId,
+            hartlib_plan_tier: "light",
           },
           items: {
             data: [
@@ -2345,7 +2351,7 @@ describe.skipIf(!isBun || !databaseUrl)(
                 quantity: 1,
                 current_period_start: 1769904000,
                 current_period_end: 1772323200,
-                price: { id: "price_light", metadata: { brief_plan_tier: "light" } },
+                price: { id: "price_light", metadata: { hartlib_plan_tier: "light" } },
               },
             ],
           },
@@ -2415,14 +2421,14 @@ describe.skipIf(!isBun || !databaseUrl)(
         customer: "cus_platform_test",
         status: "active",
         metadata: {
-          brief_client_company_id: companyId,
+          hartlib_client_company_id: companyId,
           ...(planChange
             ? {
-                brief_plan_change_key: "upgrade-recovery-0001",
-                brief_plan_previous_tier: "team",
+                hartlib_plan_change_key: "upgrade-recovery-0001",
+                hartlib_plan_previous_tier: "team",
               }
             : {}),
-          brief_plan_tier: tier,
+          hartlib_plan_tier: tier,
         },
         items: {
           data: [
@@ -2430,7 +2436,7 @@ describe.skipIf(!isBun || !databaseUrl)(
               quantity: 1,
               current_period_start: 1767225600,
               current_period_end: 1769904000,
-              price: { id: `price_${tier}`, metadata: { brief_plan_tier: tier } },
+              price: { id: `price_${tier}`, metadata: { hartlib_plan_tier: tier } },
             },
           ],
         },
@@ -2508,10 +2514,10 @@ describe.skipIf(!isBun || !databaseUrl)(
             subscription_details: {
               subscription: "sub_upgrade_recovery",
               metadata: {
-                brief_client_company_id: companyId,
-                brief_plan_change_key: "upgrade-recovery-0001",
-                brief_plan_previous_tier: "team",
-                brief_plan_tier: "intensive",
+                hartlib_client_company_id: companyId,
+                hartlib_plan_change_key: "upgrade-recovery-0001",
+                hartlib_plan_previous_tier: "team",
+                hartlib_plan_tier: "intensive",
               },
             },
           },
@@ -3043,14 +3049,14 @@ describe.skipIf(!isBun || !databaseUrl)(
         releaseMembership = resolve;
       });
       const membershipHolder = runDbAs(
-        "brief-memory-account-membership-holder",
+        "hartlib-memory-account-membership-holder",
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql.withTransaction(
             Effect.gen(function* () {
               yield* sql`
                 select pg_advisory_xact_lock(
-                  hashtext(${`brief:client-members:${companyId}`})
+                  hashtext(${`hartlib:client-members:${companyId}`})
                 )
               `;
               yield* Effect.sync(signalMembershipHeld);
@@ -3061,16 +3067,19 @@ describe.skipIf(!isBun || !databaseUrl)(
       );
       await membershipHeld;
 
-      const revisionBlocker = holdMemoryRevisionTable("brief-memory-account-revision-blocker");
+      const revisionBlocker = holdMemoryRevisionTable("hartlib-memory-account-revision-blocker");
       await revisionBlocker.held;
-      const reading = runDbAs("brief-memory-account-reader", listUserMemories(deletingUserId));
+      const reading = runDbAs("hartlib-memory-account-reader", listUserMemories(deletingUserId));
       await waitForDatabaseBlocker(
-        "brief-memory-account-reader",
-        "brief-memory-account-revision-blocker",
+        "hartlib-memory-account-reader",
+        "hartlib-memory-account-revision-blocker",
       );
 
-      const purging = runDbAs("brief-memory-account-purger", purgeDeletedAccounts());
-      await waitForDatabaseBlocker("brief-memory-account-purger", "brief-memory-account-reader");
+      const purging = runDbAs("hartlib-memory-account-purger", purgeDeletedAccounts());
+      await waitForDatabaseBlocker(
+        "hartlib-memory-account-purger",
+        "hartlib-memory-account-reader",
+      );
       revisionBlocker.release();
       await revisionBlocker.done;
       const projection = await reading;
@@ -3079,10 +3088,10 @@ describe.skipIf(!isBun || !databaseUrl)(
       // releases it, purge must retain that lane while waiting for the already
       // held membership lane; a later memory writer therefore remains blocked.
       const memoryProbe = runDbAs(
-        "brief-memory-account-probe",
+        "hartlib-memory-account-probe",
         deleteUserMemory(deletingUserId, memoryId),
       );
-      await waitForDatabaseBlocker("brief-memory-account-probe", "brief-memory-account-purger");
+      await waitForDatabaseBlocker("hartlib-memory-account-probe", "hartlib-memory-account-purger");
       expect(projection.memories).toEqual([
         expect.objectContaining({
           id: memoryId,
@@ -3194,9 +3203,9 @@ describe.skipIf(!isBun || !databaseUrl)(
           }),
         );
 
-        const blockerName = `brief-chat-gc-${provenance}-row-blocker`;
-        const mutationName = `brief-chat-gc-${provenance}-mutation`;
-        const purgerName = `brief-chat-gc-${provenance}-purger`;
+        const blockerName = `hartlib-chat-gc-${provenance}-row-blocker`;
+        const mutationName = `hartlib-chat-gc-${provenance}-mutation`;
+        const purgerName = `hartlib-chat-gc-${provenance}-purger`;
         const rowBlocker = holdMemoryRow(blockerName, memoryId);
         await rowBlocker.held;
         const mutation = runDbAs(mutationName, deleteUserMemory(memoryUserId, memoryId));
@@ -3274,13 +3283,13 @@ describe.skipIf(!isBun || !databaseUrl)(
         releaseExecution = resolve;
       });
       const executionHolder = runDbAs(
-        "brief-account-purge-execution-holder",
+        "hartlib-account-purge-execution-holder",
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql.withTransaction(
             Effect.gen(function* () {
               yield* sql`
-                select pg_advisory_xact_lock(hashtext(${`brief:ai-chat:${sharedChatId}`}))
+                select pg_advisory_xact_lock(hashtext(${`hartlib:ai-chat:${sharedChatId}`}))
               `;
               yield* Effect.sync(signalExecutionHeld);
               yield* Effect.promise(() => executionReleased);
@@ -3291,7 +3300,7 @@ describe.skipIf(!isBun || !databaseUrl)(
       await executionHeld;
 
       const reading = runDbAs(
-        "brief-account-purge-shared-reader",
+        "hartlib-account-purge-shared-reader",
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           return yield* sql.withTransaction(
@@ -3303,11 +3312,11 @@ describe.skipIf(!isBun || !databaseUrl)(
               `;
               yield* sql`
                 select pg_advisory_xact_lock(
-                  hashtext(${`brief:client-members:${chat!.companyId}`})
+                  hashtext(${`hartlib:client-members:${chat!.companyId}`})
                 )
               `;
               yield* sql`
-                select pg_advisory_xact_lock(hashtext(${`brief:ai-chat:${sharedChatId}`}))
+                select pg_advisory_xact_lock(hashtext(${`hartlib:ai-chat:${sharedChatId}`}))
               `;
               yield* sql`
                 select id from platform_users where id = ${deletingUserId} for share
@@ -3334,9 +3343,9 @@ describe.skipIf(!isBun || !databaseUrl)(
           );
         }),
       );
-      await waitForDatabaseLock("brief-account-purge-shared-reader");
-      const purging = runDbAs("brief-account-purge-member-lane", purgeDeletedAccounts());
-      await waitForDatabaseLock("brief-account-purge-member-lane");
+      await waitForDatabaseLock("hartlib-account-purge-shared-reader");
+      const purging = runDbAs("hartlib-account-purge-member-lane", purgeDeletedAccounts());
+      await waitForDatabaseLock("hartlib-account-purge-member-lane");
       releaseExecution();
 
       await expect(reading).resolves.toBe(false);
@@ -3808,7 +3817,7 @@ describe.skipIf(!isBun || !databaseUrl)(
               )
           `;
           yield* sql`
-            insert into brief_documents (
+            insert into hartlib_documents (
               id, issue_id, title, original_file_name, object_key, media_type,
               byte_size, sha256_hex, upload_completed_at, deleted_at,
               deleted_by_user_id, purge_after, created_by_user_id
@@ -3831,8 +3840,8 @@ describe.skipIf(!isBun || !databaseUrl)(
             returning id::text
           `;
           const [extraction] = yield* sql<{ readonly id: string }>`
-            insert into brief_document_extractions (
-              brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+            insert into hartlib_document_extractions (
+              hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
             ) values (
               ${restrictedDocumentId}, ${createHash("sha256").update(restrictedText, "utf8").digest("hex")},
               ${JSON.stringify([{ pageNumber: 1, text: restrictedText }])}::jsonb,
@@ -3841,8 +3850,8 @@ describe.skipIf(!isBun || !databaseUrl)(
             returning id::text
           `;
           yield* sql`
-            insert into brief_document_versions (
-              id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
+            insert into hartlib_document_versions (
+              id, hartlib_document_id, publisher_extraction_id, content_hash, language, canonical_text,
               text_char_count, page_ranges
             ) values (
               ${restrictedVersionId}, ${restrictedDocumentId}, ${extraction!.id}, encode(digest(convert_to(${restrictedText}, 'UTF8'), 'sha256'), 'hex'),
@@ -3853,7 +3862,7 @@ describe.skipIf(!isBun || !databaseUrl)(
             )
           `;
           yield* sql`
-            update brief_documents set current_version_id = ${restrictedVersionId}
+            update hartlib_documents set current_version_id = ${restrictedVersionId}
             where id = ${restrictedDocumentId}
           `;
           yield* sql`
@@ -3897,7 +3906,7 @@ describe.skipIf(!isBun || !databaseUrl)(
                 publisherExtractionId: extraction!.id,
                 ranges: [{ charStart: 0, charEnd: restrictedText.length }],
               })},
-              ${restrictedVersionId}, (select id from brief_document_extractions where brief_document_id = ${restrictedDocumentId} limit 1),
+              ${restrictedVersionId}, (select id from hartlib_document_extractions where hartlib_document_id = ${restrictedDocumentId} limit 1),
               ${`publisher:${subscription.id}`}, ${restrictedDocumentId},
               ${createHash("sha256").update(restrictedText, "utf8").digest("hex")},
               'Restricted citation label',
@@ -4026,7 +4035,7 @@ describe.skipIf(!isBun || !databaseUrl)(
             returning id::text
           `;
           yield* sql`
-            insert into brief_documents (
+            insert into hartlib_documents (
               id, issue_id, title, original_file_name, object_key, media_type,
               byte_size, sha256_hex, upload_completed_at, created_by_user_id
             ) values (
@@ -4036,8 +4045,8 @@ describe.skipIf(!isBun || !databaseUrl)(
             )
           `;
           const [extraction] = yield* sql<{ readonly id: string }>`
-            insert into brief_document_extractions (
-              brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+            insert into hartlib_document_extractions (
+              hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
             ) values (
               ${documentId}, ${contentHash},
               ${JSON.stringify([{ pageNumber: 1, text: extractionText }])}::jsonb,
@@ -4046,8 +4055,8 @@ describe.skipIf(!isBun || !databaseUrl)(
             returning id::text
           `;
           yield* sql`
-            insert into brief_document_versions (
-              id, brief_document_id, publisher_extraction_id, content_hash, language,
+            insert into hartlib_document_versions (
+              id, hartlib_document_id, publisher_extraction_id, content_hash, language,
               canonical_text, text_char_count, page_ranges
             ) values (
               ${snapshotId}, ${documentId}, ${extraction!.id}, ${contentHash}, 'en-US',
@@ -4056,7 +4065,7 @@ describe.skipIf(!isBun || !databaseUrl)(
             )
           `;
           yield* sql`
-            update brief_documents set current_version_id = ${snapshotId}
+            update hartlib_documents set current_version_id = ${snapshotId}
             where id = ${documentId}
           `;
           yield* sql`
@@ -4103,21 +4112,21 @@ describe.skipIf(!isBun || !databaseUrl)(
                 ${runOne}, 'publisher-metric', 0, 0, 0, 'document',
                 'document:one', ${delivered.issueId}, ${documentId}, 'version:one', 'answer', 10,
                 ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${snapshotId},
-                (select id from brief_document_extractions where brief_document_id = ${documentId}),
+                (select id from hartlib_document_extractions where hartlib_document_id = ${documentId}),
                 ${contentHash}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               ),
               (
                 ${runOne}, 'publisher-metric', 0, 0, 0, 'document',
                 'document:two', ${delivered.issueId}, ${documentId}, 'version:two', 'answer', 12,
                 ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${snapshotId},
-                (select id from brief_document_extractions where brief_document_id = ${documentId}),
+                (select id from hartlib_document_extractions where hartlib_document_id = ${documentId}),
                 ${contentHash}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               ),
               (
                 ${runTwo}, 'publisher-metric', 0, 0, 0, 'document',
                 'document:three', ${delivered.issueId}, ${documentId}, 'version:three', 'answer', 14,
                 ${`publisher:${delivered.subscriptionId}`}, ${documentId}, ${snapshotId},
-                (select id from brief_document_extractions where brief_document_id = ${documentId}),
+                (select id from hartlib_document_extractions where hartlib_document_id = ${documentId}),
                 ${contentHash}, ${JSON.stringify([{ charStart: 0, charEnd: 1 }])}::jsonb
               )
           `;
@@ -4216,7 +4225,7 @@ describe.skipIf(!isBun || !databaseUrl)(
             )
           `;
           yield* sql`
-            insert into brief_documents (
+            insert into hartlib_documents (
               id, issue_id, title, original_file_name, object_key, media_type,
               byte_size, sha256_hex, upload_completed_at, created_by_user_id
             ) values (
@@ -4361,7 +4370,7 @@ describe.skipIf(!isBun || !databaseUrl)(
           Effect.provide(
             PgClient.layer({
               url: Redacted.make(isolatedUrl()),
-              applicationName: "brief-export-interrupted-writer",
+              applicationName: "hartlib-export-interrupted-writer",
             }),
           ),
         ),
@@ -4560,7 +4569,7 @@ describe.skipIf(!isBun || !databaseUrl)(
           `;
           yield* sql.withTransaction(
             Effect.gen(function* () {
-              yield* sql`select set_config('brief.allow_export_object_purge', 'on', true)`;
+              yield* sql`select set_config('hartlib.allow_export_object_purge', 'on', true)`;
               yield* sql`
                 update export_object_generations set delete_fenced_at = now()
                 where export_request_id = ${exportId} and generation = 1

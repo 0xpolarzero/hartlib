@@ -37,7 +37,7 @@ const config = (overrides: Partial<ApiConfig> = {}): ApiConfig => ({
   stripeCheckoutSuccessUrl: "",
   stripeCheckoutCancelUrl: "",
   stripePortalReturnUrl: "",
-  corsAllowedOrigins: ["https://brief.test"],
+  corsAllowedOrigins: ["https://hartlib.test"],
   objectStorageConfigured: false,
   exportObjectStorageConfigured: false,
   sentryDsn: "",
@@ -90,7 +90,7 @@ const call = (request: Request) =>
 describe("POST /v1/demo/session", () => {
   it("mints a visitor cookie for a new browser and authenticates end to end", async () => {
     const response = await call(
-      new Request("https://brief.test/v1/demo/session", { method: "POST" }),
+      new Request("https://hartlib.test/v1/demo/session", { method: "POST" }),
     );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true });
@@ -104,7 +104,7 @@ describe("POST /v1/demo/session", () => {
     // The minted cookie authenticates the request identity end to end.
     const identity = await Effect.runPromise(
       resolveRequestIdentity(
-        new Request("https://brief.test/v1/chat", {
+        new Request("https://hartlib.test/v1/chat", {
           headers: { cookie: `${DEMO_COOKIE_NAME}=${cookieValue}` },
         }),
         config(),
@@ -119,7 +119,7 @@ describe("POST /v1/demo/session", () => {
   it("keeps an existing valid cookie for a returning visitor", async () => {
     const visitorId = "returning-visitor";
     const response = await call(
-      new Request("https://brief.test/v1/demo/session", {
+      new Request("https://hartlib.test/v1/demo/session", {
         method: "POST",
         headers: { cookie: `${DEMO_COOKIE_NAME}=${visitorId}` },
       }),
@@ -133,7 +133,7 @@ describe("POST /v1/demo/session", () => {
     const response = await Effect.runPromise(
       routeRequest(
         demoSessionRoutes,
-        new Request("https://brief.test/v1/demo/session", { method: "POST" }),
+        new Request("https://hartlib.test/v1/demo/session", { method: "POST" }),
       ).pipe(
         Effect.provide(
           ConfigProvider.layer(

@@ -108,7 +108,7 @@ export const lockUserMemories = (
     const sql = yield* PgClient.PgClient;
     yield* sql`
       select pg_advisory_xact_lock(
-        hashtext(${`brief:user-memory:${userId}`})
+        hashtext(${`hartlib:user-memory:${userId}`})
       )
     `;
   });

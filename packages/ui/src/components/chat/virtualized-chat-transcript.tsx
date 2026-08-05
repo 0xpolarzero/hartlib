@@ -3,7 +3,7 @@ import { ArrowDown, Bot, ChevronDown, ChevronRight, Globe2, Users } from "lucide
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { FormattedMessage, useIntl } from "@brief/i18n";
+import { FormattedMessage, useIntl } from "@hartlib/i18n";
 import type {
   AiRunActivityEvent,
   AiRunActivityStage,
@@ -12,7 +12,7 @@ import type {
   PublicCitationRecord,
   PublicSourceRecord,
   UserMessageRunOutcome,
-} from "@brief/shared";
+} from "@hartlib/shared";
 
 import { cn } from "../../lib/utils";
 import { parseCitationTags } from "./citation-tags";
@@ -276,13 +276,13 @@ export function ChatBubble({
   return (
     <div
       id={`message-${message.id}`}
-      className={cn("brief-chat-row flex", isAssistant ? "justify-start" : "justify-end")}
+      className={cn("hartlib-chat-row flex", isAssistant ? "justify-start" : "justify-end")}
       data-author={message.author}
       data-testid={`chat-message-${message.author}`}
     >
       <div
         className={cn(
-          "brief-chat-bubble max-w-[86%] rounded-sm border px-3 py-2",
+          "hartlib-chat-bubble max-w-[86%] rounded-sm border px-3 py-2",
           isAssistant ? "border-rule bg-paper text-ink" : "border-accent/25 bg-accent/10 text-ink",
         )}
       >

@@ -1,1 +1,1 @@
-export { loadWebAuthConfig, type WebAuthConfig } from "@brief/config/browser";
+export { loadWebAuthConfig, type WebAuthConfig } from "@hartlib/config/browser";

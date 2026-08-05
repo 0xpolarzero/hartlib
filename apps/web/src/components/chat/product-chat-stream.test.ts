@@ -16,8 +16,8 @@ import {
   shouldApplyChatReload,
   streamFailureAction,
 } from "./product-chat-stream";
-import { ApiResponseError } from "@brief/api-client";
-import type { SendChatMessageRequest } from "@brief/shared";
+import { ApiResponseError } from "@hartlib/api-client";
+import type { SendChatMessageRequest } from "@hartlib/shared";
 
 const memoryStorage = () => {
   const values = new Map<string, string>();

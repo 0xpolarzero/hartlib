@@ -1,29 +1,29 @@
 import type { WebhookEvent } from "@clerk/backend/webhooks";
 import { PgClient } from "@effect/sql-pg";
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import { ConfigProvider, Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { routeRequest } from "../http";
 import { DEMO_COOKIE_NAME } from "../demo-session";
-import { createExportRequest } from "@brief/backend-domain/exports";
-import { acceptClerkWebhook } from "@brief/backend-domain/clerk-webhook";
+import { createExportRequest } from "@hartlib/backend-domain/exports";
+import { acceptClerkWebhook } from "@hartlib/backend-domain/clerk-webhook";
 import {
   selectAuthorizedPublisherDocument,
   withAuthorizedPublisherDocumentLease,
-} from "@brief/backend-domain/publisher-documents";
+} from "@hartlib/backend-domain/publisher-documents";
 import {
   changeIssueRestriction,
   createRestrictedSupportGrant,
   createRestrictedSupportReview,
-} from "@brief/backend-domain/platform-support";
+} from "@hartlib/backend-domain/platform-support";
 import { makeExportRoutes, type ExportArchiveSigner } from "../domain/exports";
 import { makeStripeWebhookRoute, type StripeWebhookVerifier } from "../domain/stripe-webhook";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const databaseName = `brief_platform_api_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const databaseName = `hartlib_platform_api_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 const companyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const publisherId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const subscriptionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -46,7 +46,7 @@ const runDb = <A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
   Effect.runPromise(
     effect.pipe(
       Effect.provide(
-        PgClient.layer({ url: Redacted.make(url), applicationName: "brief-platform-api-test" }),
+        PgClient.layer({ url: Redacted.make(url), applicationName: "hartlib-platform-api-test" }),
       ),
     ),
   );
@@ -90,7 +90,10 @@ const waitForDatabaseLock = async (applicationName: string): Promise<void> => {
 };
 
 const pgLayer = () =>
-  PgClient.layer({ url: Redacted.make(isolatedUrl()), applicationName: "brief-platform-api-test" });
+  PgClient.layer({
+    url: Redacted.make(isolatedUrl()),
+    applicationName: "hartlib-platform-api-test",
+  });
 const demoCookie = (userId: string) => `${DEMO_COOKIE_NAME}=${userId}`;
 const configLayer = ConfigProvider.layer(
   ConfigProvider.fromEnv({
@@ -102,7 +105,7 @@ const configLayer = ConfigProvider.layer(
   }),
 );
 const request = (method: string, path: string, init?: RequestInit) =>
-  new Request(`http://brief.test${path}`, {
+  new Request(`http://hartlib.test${path}`, {
     ...init,
     method,
     headers: {
@@ -625,7 +628,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       releaseRequester = resolve;
     });
     const requesterHolder = runDbAs(
-      "brief-export-purge-requester-holder",
+      "hartlib-export-purge-requester-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
@@ -640,7 +643,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
     await requesterHeld;
 
     const exporting = runDbAs(
-      "brief-export-before-purge-requester",
+      "hartlib-export-before-purge-requester",
       Effect.exit(
         createExportRequest({
           requesterUserId: "demo-user",
@@ -655,13 +658,13 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
         }),
       ),
     );
-    await waitForDatabaseLock("brief-export-before-purge-requester");
+    await waitForDatabaseLock("hartlib-export-before-purge-requester");
     const purging = runDbAs(
-      "brief-purge-behind-export-membership-lane",
+      "hartlib-purge-behind-export-membership-lane",
       jobsModule.purgeDeletedAccounts(),
     );
     try {
-      await waitForDatabaseLock("brief-purge-behind-export-membership-lane");
+      await waitForDatabaseLock("hartlib-purge-behind-export-membership-lane");
     } finally {
       releaseRequester();
     }
@@ -749,7 +752,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
             )
           `;
         yield* sql`
-            insert into brief_documents (
+            insert into hartlib_documents (
               id, issue_id, title, original_file_name, object_key, media_type,
               byte_size, sha256_hex, upload_completed_at, created_by_user_id
             ) values (
@@ -800,22 +803,22 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       return { held, release, done };
     };
     const clientHolder = holdLane(
-      "brief-mixed-purge-client-holder",
-      `brief:client-members:${companyId}`,
+      "hartlib-mixed-purge-client-holder",
+      `hartlib:client-members:${companyId}`,
     );
     const publisherHolder = holdLane(
-      "brief-mixed-purge-publisher-holder",
-      `brief:publisher-members:${publisherCompanyId}`,
+      "hartlib-mixed-purge-publisher-holder",
+      `hartlib:publisher-members:${publisherCompanyId}`,
     );
     await Promise.all([clientHolder.held, publisherHolder.held]);
 
     let signed = false;
-    const purging = runDbAs("brief-mixed-purge", jobsModule.purgeDeletedAccounts());
+    const purging = runDbAs("hartlib-mixed-purge", jobsModule.purgeDeletedAccounts());
     let reading!: Promise<string | null>;
     try {
-      await waitForDatabaseLock("brief-mixed-purge");
+      await waitForDatabaseLock("hartlib-mixed-purge");
       reading = runDbAs(
-        "brief-mixed-pdf-reader",
+        "hartlib-mixed-pdf-reader",
         withAuthorizedPublisherDocumentLease(
           { userId: deletingUserId, organizationId: null, mode: "clerk" },
           issueId,
@@ -827,7 +830,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
             }),
         ),
       );
-      await waitForDatabaseLock("brief-mixed-pdf-reader");
+      await waitForDatabaseLock("hartlib-mixed-pdf-reader");
       // With the old publisher-then-client purge order, releasing this lane
       // lets purge hold publisher while the reader is queued first on client.
       publisherHolder.release();
@@ -902,7 +905,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
           )
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type,
             byte_size, sha256_hex, upload_completed_at, created_by_user_id
           ) values (
@@ -933,7 +936,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       releaseSigner = resolve;
     });
     const signing = runDbAs(
-      "brief-pdf-race-reader",
+      "hartlib-pdf-race-reader",
       withAuthorizedPublisherDocumentLease(
         { userId: signerId, organizationId: null, mode: "clerk" },
         issueId,
@@ -957,14 +960,14 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       releaseAcceptance = resolve;
     });
     const acceptance = runDbAs(
-      "brief-pdf-race-acceptance",
+      "hartlib-pdf-race-acceptance",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:client-members:${clientCompanyId}`})
+                hashtext(${`hartlib:client-members:${clientCompanyId}`})
               )
             `;
             yield* sql`
@@ -982,7 +985,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
         );
       }),
     );
-    await waitForDatabaseLock("brief-pdf-race-acceptance");
+    await waitForDatabaseLock("hartlib-pdf-race-acceptance");
     let acceptedWhileSignerPaused = false;
     await Promise.race([
       acceptanceInserted.then(() => {
@@ -999,14 +1002,14 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
     await acceptance;
 
     await runDbAs(
-      "brief-pdf-race-revocation",
+      "hartlib-pdf-race-revocation",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:client-members:${clientCompanyId}`})
+                hashtext(${`hartlib:client-members:${clientCompanyId}`})
               )
             `;
             yield* sql`
@@ -1080,7 +1083,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       releaseDeletion = resolve;
     });
     const deletionHolder = runDbAs(
-      "brief-invitation-purge-user-holder",
+      "hartlib-invitation-purge-user-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
@@ -1101,7 +1104,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
     await deletionHeld;
 
     const accepting = runDbAs(
-      "brief-invitation-purge-acceptance",
+      "hartlib-invitation-purge-acceptance",
       Effect.exit(
         acceptClerkWebhook({
           eventId: `evt-${deletingUserId}`,
@@ -1115,7 +1118,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
               organization_id: "org_invitation_purge",
               email_address: deletingEmail,
               role: "org:member",
-              private_metadata: { briefWorkspaceInvitationId: invitationId },
+              private_metadata: { hartlibWorkspaceInvitationId: invitationId },
               expires_at: expiresAt.getTime(),
             },
           } as unknown as WebhookEvent,
@@ -1123,12 +1126,12 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       ),
     );
     try {
-      await waitForDatabaseLock("brief-invitation-purge-acceptance");
+      await waitForDatabaseLock("hartlib-invitation-purge-acceptance");
     } finally {
       releaseDeletion();
     }
     await deletionHolder;
-    const purging = runDbAs("brief-invitation-purge-worker", jobsModule.purgeDeletedAccounts());
+    const purging = runDbAs("hartlib-invitation-purge-worker", jobsModule.purgeDeletedAccounts());
     await expect(accepting).resolves.toMatchObject({ _tag: "Failure" });
     await expect(purging).resolves.toMatchObject({ purgedUsers: 1 });
     const after = await runDb(
@@ -1208,14 +1211,14 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       releaseLane = resolve;
     });
     const laneHolder = runDbAs(
-      "brief-upsert-invitation-lane-holder",
+      "hartlib-upsert-invitation-lane-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:client-members:${companyId}`})
+                hashtext(${`hartlib:client-members:${companyId}`})
               )
             `;
             yield* Effect.sync(signalLaneHeld);
@@ -1233,7 +1236,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       releaseUser = resolve;
     });
     const userHolder = runDbAs(
-      "brief-upsert-invitation-user-holder",
+      "hartlib-upsert-invitation-user-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
@@ -1247,10 +1250,10 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
     );
     await Promise.all([laneHeld, userHeld]);
 
-    const purging = runDbAs("brief-upsert-invitation-purger", jobsModule.purgeDeletedAccounts());
-    await waitForDatabaseLock("brief-upsert-invitation-purger");
+    const purging = runDbAs("hartlib-upsert-invitation-purger", jobsModule.purgeDeletedAccounts());
+    await waitForDatabaseLock("hartlib-upsert-invitation-purger");
     const upserting = runDbAs(
-      "brief-upsert-invitation-webhook",
+      "hartlib-upsert-invitation-webhook",
       Effect.exit(
         acceptClerkWebhook({
           eventId: `evt-${deletingUserId}`,
@@ -1278,7 +1281,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       ),
     );
     try {
-      await waitForDatabaseLock("brief-upsert-invitation-webhook");
+      await waitForDatabaseLock("hartlib-upsert-invitation-webhook");
       releaseUser();
       await userHolder;
       await Bun.sleep(25);
@@ -1344,7 +1347,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       releaseUser = resolve;
     });
     const userHolder = runDbAs(
-      "brief-upsert-tombstone-user-holder",
+      "hartlib-upsert-tombstone-user-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
@@ -1358,10 +1361,10 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
     );
     await userHeld;
 
-    const purging = runDbAs("brief-upsert-tombstone-purger", jobsModule.purgeDeletedAccounts());
-    await waitForDatabaseLock("brief-upsert-tombstone-purger");
+    const purging = runDbAs("hartlib-upsert-tombstone-purger", jobsModule.purgeDeletedAccounts());
+    await waitForDatabaseLock("hartlib-upsert-tombstone-purger");
     const upserting = runDbAs(
-      "brief-upsert-tombstone-webhook",
+      "hartlib-upsert-tombstone-webhook",
       acceptClerkWebhook({
         eventId: `evt-${deletingUserId}`,
         eventTimestamp: Math.floor(Date.now() / 1_000),
@@ -1387,7 +1390,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
       }),
     );
     try {
-      await waitForDatabaseLock("brief-upsert-tombstone-webhook");
+      await waitForDatabaseLock("hartlib-upsert-tombstone-webhook");
     } finally {
       releaseUser();
     }
@@ -1446,7 +1449,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
           )
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type,
             byte_size, sha256_hex, upload_completed_at, created_by_user_id, language
           ) values (
@@ -1460,8 +1463,8 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
           values (${extractionJobId}, 'extract_pdf_text', '{}'::jsonb)
         `;
         yield* sql`
-          insert into brief_document_extractions (
-            id, brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+          insert into hartlib_document_extractions (
+            id, hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
           ) values (
             ${extractionId}, ${documentId}, ${"a".repeat(64)},
             ${JSON.stringify([{ pageNumber: 1, text: publisherText }])}::jsonb,
@@ -1469,8 +1472,8 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
           )
         `;
         yield* sql`
-          insert into brief_document_versions (
-            id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
+          insert into hartlib_document_versions (
+            id, hartlib_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
             ${snapshotId}, ${documentId}, ${extractionId}, ${publisherContentHash}, 'en-US',
@@ -1479,7 +1482,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
           )
         `;
         yield* sql`
-          update brief_documents set current_version_id = ${snapshotId} where id = ${documentId}
+          update hartlib_documents set current_version_id = ${snapshotId} where id = ${documentId}
         `;
         yield* sql`
           update publisher_issues
@@ -1692,7 +1695,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
-              select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+              select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
             `;
             yield* Effect.sync(signalHeld);
             yield* Effect.promise(() => released);
@@ -1728,7 +1731,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
-              select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+              select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
             `;
             yield* sql`
               update client_employee_subscription_grants
@@ -1847,7 +1850,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:publisher-members:${publisherCompanyId}`})
+                hashtext(${`hartlib:publisher-members:${publisherCompanyId}`})
               )
             `;
             yield* Effect.sync(signalHeld);
@@ -1891,7 +1894,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
             organization_id: "org_publisher_export_race",
             email_address: inviteeEmail,
             role: "org:member",
-            private_metadata: { briefWorkspaceInvitationId: invitationId },
+            private_metadata: { hartlibWorkspaceInvitationId: invitationId },
             expires_at: expiresAt.getTime(),
           },
         } as unknown as WebhookEvent,
@@ -1980,7 +1983,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
     expect(signedInputs).toEqual([
       expect.objectContaining({
         objectKey,
-        fileName: `brief-export-${createdBody.export.id}.tar`,
+        fileName: `hartlib-export-${createdBody.export.id}.tar`,
         expiresInSeconds: 300,
         configuration: expect.objectContaining({
           endpoint: "https://storage.test",
@@ -2096,7 +2099,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
         Effect.provide(
           PgClient.layer({
             url: Redacted.make(isolatedUrl()),
-            applicationName: "brief-export-requester-deletion-race",
+            applicationName: "hartlib-export-requester-deletion-race",
           }),
         ),
       ),
@@ -2114,7 +2117,7 @@ describe.skipIf(!isBun || !databaseUrl)("platform webhook and export API", () =>
             select exists(
               select 1 from pg_stat_activity
               where datname = current_database()
-                and application_name = 'brief-export-requester-deletion-race'
+                and application_name = 'hartlib-export-requester-deletion-race'
                 and wait_event_type = 'Lock'
             ) as waiting
           `)[0]!.waiting;

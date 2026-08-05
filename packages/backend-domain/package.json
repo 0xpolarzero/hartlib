@@ -1,5 +1,5 @@
 {
-  "name": "@brief/backend-domain",
+  "name": "@hartlib/backend-domain",
   "private": true,
   "type": "module",
   "exports": {
@@ -22,11 +22,11 @@
     "test": "bun ../../scripts/test-with-postgres.ts packages/backend-domain/src"
   },
   "dependencies": {
-    "@brief/database": "workspace:*",
-    "@brief/shared": "workspace:*",
-    "@brief/workspace": "workspace:*",
     "@clerk/backend": "3.8.4",
     "@effect/sql-pg": "4.0.0-beta.92",
+    "@hartlib/database": "workspace:*",
+    "@hartlib/shared": "workspace:*",
+    "@hartlib/workspace": "workspace:*",
     "effect": "4.0.0-beta.92"
   },
   "devDependencies": {

@@ -3,7 +3,7 @@ import type {
   RequestCompanyDeletionRequest,
   UpdateClientPublicSourceRequest,
   UpdateClientWebPolicyRequest,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import {
   createCompanyDeletionRequest,
   getClientIssue,
@@ -21,8 +21,8 @@ import {
   updateNotificationPreferences,
   WorkspaceAuthorizationError,
   WorkspaceRuleError,
-} from "@brief/workspace";
-import { requestIdForAudit } from "@brief/workspace";
+} from "@hartlib/workspace";
+import { requestIdForAudit } from "@hartlib/workspace";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity } from "../auth";

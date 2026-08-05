@@ -1,4 +1,4 @@
-import type { GetChatResponse } from "@brief/shared";
+import type { GetChatResponse } from "@hartlib/shared";
 
 type ChatArchiveProjection = {
   readonly chat: Pick<GetChatResponse["chat"], "archivedAt">;

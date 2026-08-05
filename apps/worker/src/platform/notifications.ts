@@ -1,5 +1,5 @@
-import { messageForLocale } from "@brief/i18n/catalogs";
-import { DEFAULT_LOCALE, type Locale } from "@brief/shared";
+import { messageForLocale } from "@hartlib/i18n/catalogs";
+import { DEFAULT_LOCALE, type Locale } from "@hartlib/shared";
 import { PgClient } from "@effect/sql-pg";
 import { Effect } from "effect";
 
@@ -153,12 +153,12 @@ export const createPlatformNotificationInTransaction = (input: CreatePlatformNot
     const sql = yield* PgClient.PgClient;
     yield* sql`
       select pg_advisory_xact_lock(
-        hashtext(${`brief:client-members:${input.clientCompanyId}`})
+        hashtext(${`hartlib:client-members:${input.clientCompanyId}`})
       )
     `;
     yield* validateNotificationAuthorization(input);
     yield* sql`
-      select pg_advisory_xact_lock(hashtext(${`brief:notification:${input.deduplicationKey}`}))
+      select pg_advisory_xact_lock(hashtext(${`hartlib:notification:${input.deduplicationKey}`}))
     `;
     const prior = yield* sql<{ readonly id: string; readonly matches: boolean }>`
       select id::text,
@@ -385,11 +385,11 @@ const emailContent = (row: EmailDeliveryRow, locale: Locale, appBaseUrl: URL) =>
       : `/${locale}/client/${encodeURIComponent(row.clientCompanyId)}/issues/${encodeURIComponent(row.issueId)}`;
   const platformUrl = new URL(localizedPath, appBaseUrl).toString();
   const subject = messageForLocale(locale, subjectKeyByKind[row.kind]);
-  const openBrief = messageForLocale(locale, "notification.email.openBrief");
+  const openHartlib = messageForLocale(locale, "notification.email.openHartlib");
   return {
     subject,
-    text: `${subject}. ${openBrief}: ${platformUrl}`,
-    html: `<p>${htmlEscape(subject)}.</p><p><a href="${htmlEscape(platformUrl)}">${htmlEscape(openBrief)}</a></p>`,
+    text: `${subject}. ${openHartlib}: ${platformUrl}`,
+    html: `<p>${htmlEscape(subject)}.</p><p><a href="${htmlEscape(platformUrl)}">${htmlEscape(openHartlib)}</a></p>`,
   };
 };
 
@@ -460,7 +460,7 @@ export const sendEmailNotification = (input: {
         if (scope === undefined) return yield* Effect.fail(new Error("email_delivery_not_found"));
         yield* sql`
           select pg_advisory_xact_lock(
-            hashtext(${`brief:client-members:${scope.clientCompanyId}`})
+            hashtext(${`hartlib:client-members:${scope.clientCompanyId}`})
           )
         `;
         // Clerk user deletion and support-approved company deletion mutate
@@ -602,7 +602,7 @@ export const sendEmailNotification = (input: {
               {
                 to: decision.email,
                 ...content,
-                idempotencyKey: `brief-email-${row.id}`,
+                idempotencyKey: `hartlib-email-${row.id}`,
               },
               { signal },
             ),

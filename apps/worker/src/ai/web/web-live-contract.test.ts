@@ -23,7 +23,7 @@ describe.skipIf(process.env.WEB_BOUNDARY_LIVE_CONTRACT_TESTS !== "1")(
         canonicalUrl: "https://example.com/",
         domain: "example.com",
         mediaType: "text/html",
-        operation: { kind: "fetch", provider: "brief_fetch", outcome: "succeeded" },
+        operation: { kind: "fetch", provider: "hartlib_fetch", outcome: "succeeded" },
       });
       expect(page.text.length).toBeGreaterThan(0);
     }, 15_000);

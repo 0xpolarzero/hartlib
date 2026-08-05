@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { describe, expect, it, vi } from "vitest";
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import { TrustedJobFailure } from "./failure";
 import { makePgJobRepository } from "./repository";
 import type { JobRecord } from "./types";
@@ -18,7 +18,7 @@ const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A>
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(databaseUrl),
-          applicationName: "brief-worker-job-repository-test",
+          applicationName: "hartlib-worker-job-repository-test",
         }),
       ),
     ),
@@ -111,13 +111,13 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
           kind: "public_source_ingestion",
           attempts: 1,
         });
-        expect(claimed?.lockedBy).toMatch(/^brief-worker:/);
+        expect(claimed?.lockedBy).toMatch(/^hartlib-worker:/);
 
         yield* repository.markCompleted(claimed!);
         yield* Effect.flip(
           repository.markCompleted({
             ...claimed!,
-            lockedBy: "brief-worker:someone-else",
+            lockedBy: "hartlib-worker:someone-else",
           }),
         );
 
@@ -308,7 +308,7 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
               1,
               3,
               now() - interval '5 minutes',
-              'brief-worker:dead'
+              'hartlib-worker:dead'
             )
             returning id, kind, payload, attempts, locked_by as "lockedBy"
           `;
@@ -331,14 +331,14 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
               3,
               3,
               now() - interval '5 minutes',
-              'brief-worker:dead'
+              'hartlib-worker:dead'
             )
           `;
 
         const claimed = yield* repository.claimNext;
         expect(claimed?.id).toBe(retryable!.id);
         expect(claimed?.attempts).toBe(2);
-        expect(claimed?.lockedBy).toMatch(/^brief-worker:/);
+        expect(claimed?.lockedBy).toMatch(/^hartlib-worker:/);
 
         const rows = yield* jobRows;
         expect(rows).toEqual(
@@ -388,7 +388,7 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
             5,
             5,
             now() - interval '5 minutes',
-            'brief-worker:dead',
+            'hartlib-worker:dead',
             100
           )
           returning id, kind, payload, attempts, max_attempts as "maxAttempts",
@@ -510,13 +510,13 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
         });
 
         const claimed = yield* repository.claimNext;
-        expect(claimed?.lockedBy).toMatch(/^brief-worker:/);
+        expect(claimed?.lockedBy).toMatch(/^hartlib-worker:/);
 
         yield* repository.heartbeat(claimed!);
         yield* Effect.flip(
           repository.heartbeat({
             ...claimed!,
-            lockedBy: "brief-worker:someone-else",
+            lockedBy: "hartlib-worker:someone-else",
           }),
         );
 

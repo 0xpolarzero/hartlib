@@ -1,5 +1,5 @@
 import React from "react";
-import { messageForLocale, type Locale } from "@brief/i18n";
+import { messageForLocale, type Locale } from "@hartlib/i18n";
 
 import { captureWebError } from "@/observability";
 
@@ -30,7 +30,7 @@ export class ApplicationErrorBoundary extends React.Component<
     return (
       <main className="mx-auto flex min-h-screen max-w-2xl items-center px-6 py-16">
         <section className="w-full rounded-sm border border-rule bg-paper p-8">
-          <p className="text-sm font-medium text-muted">Brief</p>
+          <p className="text-sm font-medium text-muted">Hartlib</p>
           <h1 className="mt-2 text-2xl font-semibold text-ink">
             {messageForLocale(locale, "web.error.title")}
           </h1>

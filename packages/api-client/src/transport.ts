@@ -3,7 +3,7 @@ import {
   httpRouteContracts,
   type HttpRouteContract,
   type HttpSuccessContract,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Schema } from "effect";
 
 export type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -204,7 +204,7 @@ const requestMethod = (key: string): string => {
 const targetFor = (path: string, baseUrl: string | URL | undefined): string | URL =>
   baseUrl === undefined || baseUrl === "" ? path : new URL(path, baseUrl);
 
-const parsedUrl = (path: string): URL => new URL(path, "http://brief.invalid");
+const parsedUrl = (path: string): URL => new URL(path, "http://hartlib.invalid");
 
 const validateQuery = (contract: HttpRouteContract, path: string): void => {
   const entries = [...parsedUrl(path).searchParams.entries()];

@@ -448,7 +448,7 @@ describe("provider-visible source exposure proofs", () => {
       [proofFor(marker, text)],
     );
     expect(request.messages[1]?.content).not.toContain("private-message");
-    expect(request.messages[1]?.content).not.toContain("__briefSourceExposures");
+    expect(request.messages[1]?.content).not.toContain("__hartlibSourceExposures");
   });
 
   it("preserves two equal snippets with distinct immutable identities", () => {
@@ -533,7 +533,7 @@ describe("provider-visible source exposure proofs", () => {
     const request = reviewRequest([{ kind: "document", preview: text }], [proofFor(marker, text)]);
     expect(normalizeProviderRequest(request).messages).toEqual(request.messages);
     expect(toGlmTemplateInput(request).messages[1]?.content).not.toContain(
-      "__briefSourceExposures",
+      "__hartlibSourceExposures",
     );
   });
   it("keeps semantic repair metadata out of provider framing and measurement", () => {
@@ -658,7 +658,7 @@ describe("provider-visible source exposure proofs", () => {
                     content: "reserved marker",
                   },
                 ],
-                __briefSourceExposures: [],
+                __hartlibSourceExposures: [],
               }),
             }
           : message,
@@ -690,7 +690,7 @@ describe("provider-visible source exposure proofs", () => {
     const result = JSON.parse(
       request.messages.find((message) => message.role === "tool")!.content,
     ) as Record<string, unknown>;
-    result.__briefSourceExposures = [
+    result.__hartlibSourceExposures = [
       {
         sourceKind: "memory",
         logicalSourceIdentity: "memory:memory-1",
@@ -726,7 +726,7 @@ describe("provider-visible source exposure proofs", () => {
       sourceExposureProofs: [proofFor(chatMarker("m-1", text), text)],
     };
     expect(providerRequestSourceExposureProofs(request, countTextTokens)).toHaveLength(1);
-    expect(request.messages[1]?.content).not.toContain("__briefSourceExposures");
+    expect(request.messages[1]?.content).not.toContain("__hartlibSourceExposures");
   });
 
   it("does not create a second proof for an identical replay", () => {
@@ -1003,13 +1003,13 @@ describe("provider-visible source exposure proofs", () => {
       documentId: "doc-1",
       text,
       ranges: [range],
-      __briefSourceIdentity: {
+      __hartlibSourceIdentity: {
         snapshotId: "snapshot-1",
         contentHash: sha256(text),
         source: { kind: "public", sourceId: "public:candidate" },
         ranges: [range],
       },
-      __briefSourceExposures: [marker],
+      __hartlibSourceExposures: [marker],
     };
     const proof = providerSourceExposureProofFromToolResult(
       call.name,
@@ -1083,7 +1083,7 @@ describe("provider-visible source exposure proofs", () => {
           content: memoryText,
         },
       ],
-      __briefSourceExposures: [
+      __hartlibSourceExposures: [
         {
           sourceKind: "memory",
           logicalSourceIdentity: "memory:memory-2",
@@ -1111,7 +1111,7 @@ describe("provider-visible source exposure proofs", () => {
     const webResult = {
       url: webUrl,
       text: webText,
-      __briefSourceExposures: [
+      __hartlibSourceExposures: [
         {
           sourceKind: "web",
           logicalSourceIdentity: webUrl,
@@ -1358,7 +1358,7 @@ describe("provider-visible source exposure proofs", () => {
         call,
         result: {
           value: "not evidence",
-          __briefSourceExposures: [],
+          __hartlibSourceExposures: [],
         },
       },
     ]);
@@ -1439,12 +1439,12 @@ describe("provider-visible source exposure proofs", () => {
         matchOffset: 0,
         maximumMatches: 500,
       },
-      __briefSourceIdentity: {
+      __hartlibSourceIdentity: {
         snapshotId: "snapshot-1",
         contentHash: sha256(text),
         source: { kind: "public", sourceId: "public:candidate-search" },
       },
-      __briefSourceExposures: [marker],
+      __hartlibSourceExposures: [marker],
     };
     const proof = providerSourceExposureProofFromToolResult(
       call.name,
@@ -1486,7 +1486,7 @@ describe("provider-visible source exposure proofs", () => {
         assistantMessageId: "assistant-1",
         assistantContent: "assistant evidence",
       },
-      __briefSourceIdentity: [
+      __hartlibSourceIdentity: [
         {
           messageId: "user-1",
           contentHash: sha256("user evidence"),
@@ -1498,7 +1498,7 @@ describe("provider-visible source exposure proofs", () => {
           ranges: [{ charStart: 0, charEnd: "assistant evidence".length }],
         },
       ],
-      __briefSourceExposures: [
+      __hartlibSourceExposures: [
         {
           sourceKind: "chat_message",
           logicalSourceIdentity: chatMessageEvidenceIdentity("user-1"),
@@ -1591,7 +1591,7 @@ describe("provider-visible source exposure proofs", () => {
       truncated: false,
       cursor: null,
       passages,
-      __briefSourceExposures: passages.map((passage) => {
+      __hartlibSourceExposures: passages.map((passage) => {
         const range = { charStart: 0, charEnd: passage.text.length };
         const logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
           { kind: "public", sourceId: "public:source-1" },
@@ -1607,7 +1607,7 @@ describe("provider-visible source exposure proofs", () => {
           visibleTokenCount: countTextTokens(passage.text),
         };
       }),
-      __briefSourceIdentity: passages.map((passage) => ({
+      __hartlibSourceIdentity: passages.map((passage) => ({
         snapshotId: "snapshot-1",
         contentHash: sha256(passage.text),
         source: { kind: "public", sourceId: "public:source-1" },
@@ -1646,7 +1646,7 @@ describe("provider-visible source exposure proofs", () => {
       truncated: false,
       cursor: null,
       passages: [{ passageId: "p1", text }],
-      __briefSourceExposures: [
+      __hartlibSourceExposures: [
         {
           sourceKind: "chat_message" as const,
           logicalSourceIdentity: chatMessageEvidenceIdentity(messageId),
@@ -1655,7 +1655,7 @@ describe("provider-visible source exposure proofs", () => {
           visibleTokenCount: countTextTokens(text),
         },
       ],
-      __briefSourceIdentity: [
+      __hartlibSourceIdentity: [
         {
           candidateId: "c1",
           passageId: "p1",
@@ -1727,7 +1727,7 @@ describe("provider-visible source exposure proofs", () => {
         truncated: false,
         cursor: null,
         passages: [{ passageId: "p1", text }],
-        __briefSourceExposures: [
+        __hartlibSourceExposures: [
           {
             sourceKind: "document" as const,
             logicalSourceIdentity,
@@ -1738,7 +1738,7 @@ describe("provider-visible source exposure proofs", () => {
             visibleTokenCount: countTextTokens(text),
           },
         ],
-        __briefSourceIdentity: [
+        __hartlibSourceIdentity: [
           {
             snapshotId: "snapshot-1",
             contentHash: sha256(text),

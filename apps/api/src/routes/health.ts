@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { HealthResponse } from "@brief/shared";
+import { HealthResponse } from "@hartlib/shared";
 import { jsonFromSchema, type Route } from "../http";
 
 export const healthRoute: Route = {

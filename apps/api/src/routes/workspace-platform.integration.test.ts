@@ -1,6 +1,6 @@
 import type { WebhookEvent } from "@clerk/backend/webhooks";
 import { PgClient } from "@effect/sql-pg";
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import { ConfigProvider, Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,10 +17,10 @@ import {
   updateNotificationPreferences,
   appendDeniedAuthorizationAudit,
   requireClientCompanyAdmin,
-} from "@brief/workspace";
-import { acceptClerkWebhook } from "@brief/backend-domain/clerk-webhook";
-import { createUserMessageAndRun, ensureDemoChat } from "@brief/backend-domain/chat-runtime";
-import { hasProductChatAccess } from "@brief/backend-domain/product-chats";
+} from "@hartlib/workspace";
+import { acceptClerkWebhook } from "@hartlib/backend-domain/clerk-webhook";
+import { createUserMessageAndRun, ensureDemoChat } from "@hartlib/backend-domain/chat-runtime";
+import { hasProductChatAccess } from "@hartlib/backend-domain/product-chats";
 
 import { loadApiConfig } from "../config";
 import { routeRequest, type Route } from "../http";
@@ -45,7 +45,7 @@ import {
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const isBun = typeof process.versions.bun === "string";
-const databaseName = `brief_workspace_platform_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const databaseName = `hartlib_workspace_platform_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 const publisherCompanyId = "10000000-0000-4000-8000-000000000001";
 const clientCompanyId = "20000000-0000-4000-8000-000000000002";
 const subscriptionId = "30000000-0000-4000-8000-000000000003";
@@ -105,16 +105,16 @@ const config = (_userId = "admin-user", extra: Record<string, string> = {}) =>
         NODE_ENV: "test",
         AUTH_MODE: "demo",
         CLERK_WEBHOOK_SIGNING_SECRET: "whsec_test",
-        CLERK_INVITATION_REDIRECT_URL: "https://brief.test/invitations/accept",
+        CLERK_INVITATION_REDIRECT_URL: "https://hartlib.test/invitations/accept",
         TINYFISH_API_KEY: "tinyfish-test",
         STRIPE_SECRET_KEY: "stripe-test",
         STRIPE_PRICE_LIGHT: "price_light",
         STRIPE_PRICE_TEAM: "price_team",
         STRIPE_PRICE_INTENSIVE: "price_intensive",
         STRIPE_PRICE_ADDITIONAL_CREDIT: "price_additional",
-        STRIPE_CHECKOUT_SUCCESS_URL: "https://brief.test/billing/success",
-        STRIPE_CHECKOUT_CANCEL_URL: "https://brief.test/billing/cancel",
-        STRIPE_PORTAL_RETURN_URL: "https://brief.test/billing",
+        STRIPE_CHECKOUT_SUCCESS_URL: "https://hartlib.test/billing/success",
+        STRIPE_CHECKOUT_CANCEL_URL: "https://hartlib.test/billing/cancel",
+        STRIPE_PORTAL_RETURN_URL: "https://hartlib.test/billing",
         ...extra,
       },
     }),
@@ -128,7 +128,7 @@ const call = (
   body?: unknown,
   options?: { readonly origin?: string; readonly config?: Record<string, string> },
 ) => {
-  const request = new Request(`https://brief.test${path}`, {
+  const request = new Request(`https://hartlib.test${path}`, {
     method,
     headers: {
       cookie: demoCookie(userId),
@@ -332,7 +332,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
     } as unknown as WebhookEvent;
     const webhook = makeClerkWebhookRoute(pgLayer(), async () => event);
     const webhookCall = (id: string) => {
-      const request = new Request("https://brief.test/v1/identity/clerk/webhook", {
+      const request = new Request("https://hartlib.test/v1/identity/clerk/webhook", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -365,7 +365,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
         organization_id: "org_publisher",
         email_address: "new@example.test",
         role: "org:member",
-        private_metadata: { briefWorkspaceInvitationId: invitationId },
+        private_metadata: { hartlibWorkspaceInvitationId: invitationId },
         expires_at: invitationExpiry.getTime(),
       },
     } as unknown as WebhookEvent;
@@ -527,7 +527,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
               organization_id: input.organizationId,
               email_address: input.email,
               role: input.organizationRole,
-              private_metadata: { briefWorkspaceInvitationId: input.invitationId },
+              private_metadata: { hartlibWorkspaceInvitationId: input.invitationId },
               expires_at: expiresAt.getTime(),
             },
           } as unknown as WebhookEvent,
@@ -809,7 +809,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           organization_id: input.organizationId,
           email_address: input.email,
           role: "org:member",
-          private_metadata: { briefWorkspaceInvitationId: input.invitationId },
+          private_metadata: { hartlibWorkspaceInvitationId: input.invitationId },
           expires_at: input.expiresAt.getTime(),
         },
       }) as unknown as WebhookEvent;
@@ -1063,7 +1063,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:client-members:${clientCompanyId}`})
+                hashtext(${`hartlib:client-members:${clientCompanyId}`})
               )
             `;
             yield* Effect.sync(signalHeld);
@@ -1249,7 +1249,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             organization_id: "org_client",
             email_address: "member@example.test",
             role: "org:member",
-            private_metadata: { briefWorkspaceInvitationId: reinvitationId },
+            private_metadata: { hartlibWorkspaceInvitationId: reinvitationId },
             expires_at: reinvitationExpiry.getTime(),
           },
         } as unknown as WebhookEvent,
@@ -1426,7 +1426,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           ) values (${draftIssueId}, ${subscriptionId}, 'Draft rollback', 'draft', 'admin-user')
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type,
             byte_size, sha256_hex, upload_completed_at, created_by_user_id
           ) values (
@@ -1480,7 +1480,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             (select count(*)::int from publisher_subscriptions
              where name = 'Rollback subscription') as subscriptions,
             (select count(*)::int from publisher_issues where title = 'Rollback issue') as issues,
-            (select deleted_at is not null from brief_documents where id = ${documentId})
+            (select deleted_at is not null from hartlib_documents where id = ${documentId})
               as "documentDeleted",
             (select count(*)::int from jobs where kind = 'purge_deleted_files') as "purgeJobs",
             (select count(*)::int from notification_preferences
@@ -1511,7 +1511,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           )
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type,
             byte_size, sha256_hex, upload_completed_at, created_by_user_id
           ) values (
@@ -1598,7 +1598,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
-              select pg_advisory_xact_lock(hashtext(${`brief:client-members:${clientCompanyId}`}))
+              select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${clientCompanyId}`}))
             `;
             yield* sql`
               update client_company_memberships
@@ -1636,7 +1636,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
         `;
         for (const [index, documentId] of documentIds.entries()) {
           yield* sql`
-            insert into brief_documents (
+            insert into hartlib_documents (
               id, issue_id, title, original_file_name, object_key, media_type,
               byte_size, sha256_hex, upload_completed_at, created_by_user_id
             ) values (
@@ -1679,8 +1679,8 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             (select count(*)::int from publisher_issues where id = ${issueId}) as "issueRows",
             (select deleted_at is not null from publisher_issues where id = ${issueId})
               as "issueDeleted",
-            (select count(*)::int from brief_documents where issue_id = ${issueId}) as documents,
-            (select count(*)::int from brief_documents
+            (select count(*)::int from hartlib_documents where issue_id = ${issueId}) as documents,
+            (select count(*)::int from hartlib_documents
              where issue_id = ${issueId} and deleted_at is not null) as "deletedDocuments",
             (select count(*)::int from jobs
              where kind in ('extract_pdf_text', 'publish_scheduled_issue')
@@ -1989,7 +1989,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           successfulAudits: number;
         }>`
           select
-            (select count(*)::int from brief_documents where issue_id = ${issueId}) as documents,
+            (select count(*)::int from hartlib_documents where issue_id = ${issueId}) as documents,
             (select count(*)::int from publisher_document_upload_intents where issue_id = ${issueId}) as intents,
             (select count(*)::int from jobs where kind = 'extract_pdf_text'
              and payload->>'documentId' = ${first.id}) as jobs,
@@ -1997,7 +1997,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
              where operation_id = ${first.id} and event_kind = 'finalized') as finalized,
             (select count(*)::int from platform_authorization_audit_log
              where action = 'publisher.document.upload'
-               and scope_kind = 'brief_document' and scope_id = ${first.id}
+               and scope_kind = 'hartlib_document' and scope_id = ${first.id}
                and outcome = 'succeeded') as "successfulAudits"
         `)[0]!;
       }),
@@ -2662,7 +2662,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           return (yield* sql<{ readonly count: number }>`
-              select count(*)::int as count from brief_documents where issue_id = ${issueId}
+              select count(*)::int as count from hartlib_documents where issue_id = ${issueId}
             `)[0]!.count;
         }),
       ),
@@ -2801,7 +2801,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           return yield* sql<{ readonly count: number }>`
-            select count(*)::int as count from brief_documents where issue_id = ${issueId}
+            select count(*)::int as count from hartlib_documents where issue_id = ${issueId}
           `;
         }),
       ),
@@ -2884,7 +2884,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           readonly reconcileJobs: number;
         }>`
           select
-            (select count(*)::int from brief_documents where issue_id = ${issueId}) as documents,
+            (select count(*)::int from hartlib_documents where issue_id = ${issueId}) as documents,
             (select count(*)::int from publisher_document_upload_intents
              where issue_id = ${issueId}) as intents,
             (select count(*)::int from publisher_document_upload_events events
@@ -3455,7 +3455,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           )
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type,
             byte_size, sha256_hex, upload_completed_at, created_by_user_id
           ) values (
@@ -3799,7 +3799,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
         billingAddressCollection: "required",
         taxIdCollectionEnabled: true,
         updateExistingCustomerAddress: true,
-        successUrl: "https://brief.test/billing/success",
+        successUrl: "https://hartlib.test/billing/success",
       }),
     );
     for (const status of ["active", "trialing", "past_due", "paused"] as const) {
@@ -4424,7 +4424,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
           const extractionId = crypto.randomUUID();
           const snapshotId = crypto.randomUUID();
           yield* sql`
-            insert into brief_documents (
+            insert into hartlib_documents (
               id, issue_id, title, original_file_name, object_key, media_type,
               byte_size, sha256_hex, upload_completed_at, created_by_user_id
             ) values (
@@ -4437,8 +4437,8 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             values (${jobId}, 'extract_pdf_text', '{}'::jsonb)
           `;
           yield* sql`
-            insert into brief_document_extractions (
-              id, brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+            insert into hartlib_document_extractions (
+              id, hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
             ) values (
               ${extractionId}, ${document.id}, ${pdfHash},
               ${JSON.stringify([{ pageNumber: 1, text: document.text }])}::jsonb,
@@ -4446,8 +4446,8 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             )
           `;
           yield* sql`
-            insert into brief_document_versions (
-              id, brief_document_id, publisher_extraction_id, content_hash, language,
+            insert into hartlib_document_versions (
+              id, hartlib_document_id, publisher_extraction_id, content_hash, language,
               canonical_text, text_char_count, page_ranges
             ) values (
               ${snapshotId}, ${document.id}, ${extractionId}, ${contentHash}, 'en-US',
@@ -4456,7 +4456,7 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
             )
           `;
           yield* sql`
-            update brief_documents set current_version_id = ${snapshotId}
+            update hartlib_documents set current_version_id = ${snapshotId}
             where id = ${document.id}
           `;
         }
@@ -4531,8 +4531,8 @@ describe.skipIf(!isBun || !databaseUrl)("workspace platform APIs", () => {
         ]) {
           const version = yield* sql<{ readonly id: string; readonly extractionId: string }>`
             select id::text, publisher_extraction_id::text as "extractionId"
-            from brief_document_versions
-            where brief_document_id = ${exposure.document.id}
+            from hartlib_document_versions
+            where hartlib_document_id = ${exposure.document.id}
           `;
           const contentHash = createHash("sha256")
             .update(exposure.document.text, "utf8")

@@ -1,4 +1,4 @@
-import type { PublicCitationRecord, PublicSourceRecord } from "@brief/shared";
+import type { PublicCitationRecord, PublicSourceRecord } from "@hartlib/shared";
 
 export type CitationTextSegment = {
   readonly type: "text";

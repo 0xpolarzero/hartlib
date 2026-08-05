@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect } from "effect";
-import { loadDatabaseUrl, loadPlatformJobConfig } from "@brief/config";
+import { loadDatabaseUrl, loadPlatformJobConfig } from "@hartlib/config";
 
 import { runAiProductState } from "../ai/product-state/database";
 import type { JobRecord, JobResult } from "../jobs/types";
@@ -103,7 +103,7 @@ const lockMembershipLanes = (laneKeys: readonly MembershipLaneKey[]) =>
       const companyId = laneKey.slice(separator + 1);
       yield* sql`
         select pg_advisory_xact_lock(
-          hashtext(${kind === "client" ? `brief:client-members:${companyId}` : `brief:publisher-members:${companyId}`})
+          hashtext(${kind === "client" ? `hartlib:client-members:${companyId}` : `hartlib:publisher-members:${companyId}`})
         )
       `;
     }
@@ -115,7 +115,7 @@ const lockLegalHoldScopes = (scopeKeys: readonly string[]) =>
     for (const scopeKey of normalizedLegalHoldScopeKeys(scopeKeys)) {
       yield* sql`
         select pg_advisory_xact_lock(
-          hashtextextended(${`brief:legal-hold:${scopeKey}`}, 0)
+          hashtextextended(${`hartlib:legal-hold:${scopeKey}`}, 0)
         )
       `;
     }
@@ -149,7 +149,7 @@ const lockUserMemoryLanes = (users: readonly { readonly id: string }[]) =>
     const sql = yield* PgClient.PgClient;
     for (const userId of [...new Set(users.map((user) => user.id))].sort()) {
       yield* sql`
-        select pg_advisory_xact_lock(hashtext(${`brief:user-memory:${userId}`}))
+        select pg_advisory_xact_lock(hashtext(${`hartlib:user-memory:${userId}`}))
       `;
     }
   });
@@ -174,7 +174,7 @@ const lockEmbeddedLegalHoldRows = (scopeKeys: readonly string[]) =>
       order by chats.id for share
     `;
     yield* sql`
-      select documents.id from brief_documents documents
+      select documents.id from hartlib_documents documents
       where ('issue:' || documents.issue_id::text) = any(${normalized})
       order by documents.id for share
     `;
@@ -184,8 +184,8 @@ const hasLegalHoldForScopes = (scopeKeys: readonly string[]) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const rows = yield* sql<{ readonly held: boolean }>`
-      select brief_has_active_legal_hold(${normalizedLegalHoldScopeKeys(scopeKeys)})
-        or brief_has_embedded_legal_hold(${normalizedLegalHoldScopeKeys(scopeKeys)}) as held
+      select hartlib_has_active_legal_hold(${normalizedLegalHoldScopeKeys(scopeKeys)})
+        or hartlib_has_embedded_legal_hold(${normalizedLegalHoldScopeKeys(scopeKeys)}) as held
     `;
     return rows[0]?.held !== false;
   });
@@ -447,13 +447,13 @@ const enqueueDocumentPipeline = (issueId: string) =>
         jsonb_build_object('documentId', documents.id::text),
         'extract_pdf_text:' || documents.id::text || ':' || documents.sha256_hex,
         50
-      from brief_documents documents
+      from hartlib_documents documents
       where documents.issue_id = ${issueId}
         and documents.deleted_at is null
         and not exists (
           select 1
-          from brief_document_extractions extractions
-          where extractions.brief_document_id = documents.id
+          from hartlib_document_extractions extractions
+          where extractions.hartlib_document_id = documents.id
             and extractions.input_sha256_hex = documents.sha256_hex
         )
       on conflict (unique_key) where unique_key is not null do nothing
@@ -706,7 +706,7 @@ const markDocumentFailure = (documentId: string, code: string) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     yield* sql`
-      update brief_documents
+      update hartlib_documents
       set indexing_error_code = ${code}, updated_at = now()
       where id = ${documentId} and deleted_at is null
     `;
@@ -715,7 +715,7 @@ const markDocumentFailure = (documentId: string, code: string) =>
       set indexing_status = 'failed',
           indexing_error_code = ${code},
           updated_at = now()
-      from brief_documents documents
+      from hartlib_documents documents
       where documents.id = ${documentId}
         and issues.id = documents.issue_id
         and documents.deleted_at is null and issues.deleted_at is null
@@ -726,11 +726,11 @@ const markExtractionFailure = (extractionId: string, code: string) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     yield* sql`
-      update brief_documents documents
+      update hartlib_documents documents
       set indexing_error_code = ${code}, updated_at = now()
-      from brief_document_extractions extractions
+      from hartlib_document_extractions extractions
       where extractions.id = ${extractionId}
-        and documents.id = extractions.brief_document_id
+        and documents.id = extractions.hartlib_document_id
         and documents.deleted_at is null
     `;
     yield* sql`
@@ -738,9 +738,9 @@ const markExtractionFailure = (extractionId: string, code: string) =>
       set indexing_status = 'failed',
           indexing_error_code = ${code},
           updated_at = now()
-      from brief_documents documents
-      join brief_document_extractions extractions
-        on extractions.brief_document_id = documents.id
+      from hartlib_documents documents
+      join hartlib_document_extractions extractions
+        on extractions.hartlib_document_id = documents.id
       where extractions.id = ${extractionId}
         and issues.id = documents.issue_id
         and documents.deleted_at is null and issues.deleted_at is null
@@ -789,7 +789,7 @@ const extractPdfText = (
         documents.language,
         documents.deleted_at as "deletedAt",
         issues.deleted_at as "issueDeletedAt"
-      from brief_documents documents
+      from hartlib_documents documents
       join publisher_issues issues on issues.id = documents.issue_id
       where documents.id = ${documentId}
     `;
@@ -799,14 +799,14 @@ const extractPdfText = (
     if (document.deletedAt !== null || document.issueDeletedAt !== null) return null;
     const existing = yield* sql<{ readonly id: string }>`
       select id::text
-      from brief_document_extractions
-      where brief_document_id = ${documentId}
+      from hartlib_document_extractions
+      where hartlib_document_id = ${documentId}
         and input_sha256_hex = ${document.sha256Hex}
       limit 1
     `;
     if (existing[0] !== undefined) {
       yield* sql`
-        update brief_documents
+        update hartlib_documents
         set indexing_error_code = null, updated_at = now()
         where id = ${documentId}
       `;
@@ -846,14 +846,14 @@ const extractPdfText = (
         `;
         if (activeIssue[0] === undefined) return null;
         const activeDocument = yield* sql<{ readonly id: string }>`
-          select id::text from brief_documents
+          select id::text from hartlib_documents
           where id = ${documentId} and deleted_at is null and sha256_hex = ${document.sha256Hex}
           for update
         `;
         if (activeDocument[0] === undefined) return null;
         const inserted = yield* sql<{ readonly id: string }>`
-          insert into brief_document_extractions (
-        brief_document_id,
+          insert into hartlib_document_extractions (
+        hartlib_document_id,
         input_sha256_hex,
         pages,
         extracted_char_count,
@@ -866,19 +866,19 @@ const extractPdfText = (
         ${canonical.text.length},
         ${jobId}
       )
-      on conflict (brief_document_id, input_sha256_hex) do nothing
+      on conflict (hartlib_document_id, input_sha256_hex) do nothing
       returning id::text
         `;
         const extractionId =
           inserted[0]?.id ??
           (yield* sql<{ readonly id: string }>`
           select id::text
-          from brief_document_extractions
-          where brief_document_id = ${documentId}
+          from hartlib_document_extractions
+          where hartlib_document_id = ${documentId}
             and input_sha256_hex = ${document.sha256Hex}
           `)[0]!.id;
         yield* sql`
-      update brief_documents
+      update hartlib_documents
       set indexing_error_code = null, updated_at = now()
       where id = ${documentId}
         `;
@@ -907,12 +907,12 @@ const normalizeSearchableText = (extractionId: string, jobId: string) =>
     const rows = yield* sql<ExtractionRow>`
       select
         extractions.id::text,
-        extractions.brief_document_id::text as "documentId",
+        extractions.hartlib_document_id::text as "documentId",
         documents.issue_id::text as "issueId",
         documents.language,
         extractions.pages
-      from brief_document_extractions extractions
-      join brief_documents documents on documents.id = extractions.brief_document_id
+      from hartlib_document_extractions extractions
+      join hartlib_documents documents on documents.id = extractions.hartlib_document_id
       join publisher_issues issues on issues.id = documents.issue_id
       where extractions.id = ${extractionId}
         and documents.deleted_at is null
@@ -934,7 +934,7 @@ const normalizeSearchableText = (extractionId: string, jobId: string) =>
         `;
         if (activeIssue[0] === undefined) return null;
         const activeDocument = yield* sql<{ readonly id: string }>`
-          select id::text from brief_documents
+          select id::text from hartlib_documents
           where id = ${extraction.documentId} and deleted_at is null
           for update
         `;
@@ -943,8 +943,8 @@ const normalizeSearchableText = (extractionId: string, jobId: string) =>
           readonly id: string;
           readonly publisherExtractionId: string;
         }>`
-          insert into brief_document_versions (
-            brief_document_id,
+          insert into hartlib_document_versions (
+            hartlib_document_id,
             publisher_extraction_id,
             content_hash,
             language,
@@ -963,15 +963,15 @@ const normalizeSearchableText = (extractionId: string, jobId: string) =>
             ${JSON.stringify(canonical.pageRanges)}::jsonb,
             ${jobId}
           )
-          on conflict (brief_document_id, content_hash) do nothing
+          on conflict (hartlib_document_id, content_hash) do nothing
           returning id::text, publisher_extraction_id::text as "publisherExtractionId"
         `;
         const versionId =
           versions[0] ??
           (yield* sql<{ readonly id: string; readonly publisherExtractionId: string }>`
               select id::text, publisher_extraction_id::text as "publisherExtractionId"
-              from brief_document_versions
-              where brief_document_id = ${extraction.documentId}
+              from hartlib_document_versions
+              where hartlib_document_id = ${extraction.documentId}
                 and content_hash = ${contentHash}
             `)[0];
         if (versionId === undefined || versionId.publisherExtractionId !== extractionId) {
@@ -979,7 +979,7 @@ const normalizeSearchableText = (extractionId: string, jobId: string) =>
         }
         const resolvedVersionId = versionId.id;
         yield* sql`
-          update brief_documents
+          update hartlib_documents
           set current_version_id = ${resolvedVersionId},
               indexing_error_code = null,
               updated_at = now()
@@ -1019,7 +1019,7 @@ const updateAiIndexingStatus = (issueId: string) =>
         count(*)::int as documents,
         count(*) filter (where current_version_id is null)::int as missing,
         count(*) filter (where indexing_error_code is not null)::int as failed
-      from brief_documents
+      from hartlib_documents
       where issue_id = ${issueId} and deleted_at is null
     `;
     if (counts === undefined || counts.documents === 0) {
@@ -1035,7 +1035,7 @@ const updateAiIndexingStatus = (issueId: string) =>
           indexing_error_code = case
             when ${counts.failed} > 0 then (
               select min(documents.indexing_error_code)
-              from brief_documents documents
+              from hartlib_documents documents
               where documents.issue_id = ${issueId}
                 and documents.deleted_at is null
                 and documents.indexing_error_code is not null
@@ -1291,7 +1291,7 @@ const purgeExpiredCreditUsage = (budget: PlatformPurgeCandidateBudget) =>
       where usage.retained_until <= now()
         and companies.legal_hold = false
         and coalesce(users.legal_hold, false) = false
-        and not brief_has_active_legal_hold(array[
+        and not hartlib_has_active_legal_hold(array[
           'client_company:' || usage.client_company_id::text,
           'user:' || usage.user_id
         ]::text[])
@@ -1317,7 +1317,7 @@ const purgeExpiredCreditUsage = (budget: PlatformPurgeCandidateBudget) =>
               and usage.retained_until <= now()
               and companies.legal_hold = false
               and coalesce(users.legal_hold, false) = false
-              and not brief_has_active_legal_hold(array[
+              and not hartlib_has_active_legal_hold(array[
                 'client_company:' || usage.client_company_id::text,
                 'user:' || usage.user_id
               ]::text[])
@@ -1332,7 +1332,7 @@ const purgeExpiredCreditUsage = (budget: PlatformPurgeCandidateBudget) =>
           }
           yield* lockEmbeddedLegalHoldRows(current.holdScopeKeys);
           if (yield* hasLegalHoldForScopes(current.holdScopeKeys)) return false;
-          yield* sql`select set_config('brief.allow_accounting_retention_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_accounting_retention_purge', 'on', true)`;
           yield* sql`delete from client_credit_usage_allocations where usage_id = ${candidate.id}`;
           const removed = yield* sql<{ readonly id: string }>`
             delete from client_credit_usage where id = ${candidate.id} returning id::text
@@ -1357,7 +1357,7 @@ const purgeExpiredCreditLots = (budget: PlatformPurgeCandidateBudget) =>
       join client_companies companies on companies.id = lots.client_company_id
       where lots.retained_until <= now()
         and companies.legal_hold = false
-        and not brief_has_active_legal_hold(
+        and not hartlib_has_active_legal_hold(
           array['client_company:' || lots.client_company_id::text]::text[]
         )
         and not exists (
@@ -1382,7 +1382,7 @@ const purgeExpiredCreditLots = (budget: PlatformPurgeCandidateBudget) =>
             where lots.id = ${candidate.id}
               and lots.retained_until <= now()
               and companies.legal_hold = false
-              and not brief_has_active_legal_hold(
+              and not hartlib_has_active_legal_hold(
                 array['client_company:' || lots.client_company_id::text]::text[]
               )
               and not exists (
@@ -1400,7 +1400,7 @@ const purgeExpiredCreditLots = (budget: PlatformPurgeCandidateBudget) =>
           }
           yield* lockEmbeddedLegalHoldRows(current.holdScopeKeys);
           if (yield* hasLegalHoldForScopes(current.holdScopeKeys)) return false;
-          yield* sql`select set_config('brief.allow_accounting_retention_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_accounting_retention_purge', 'on', true)`;
           const removed = yield* sql<{ readonly id: string }>`
             delete from client_credit_lots where id = ${candidate.id} returning id::text
           `;
@@ -1423,7 +1423,7 @@ const purgeExpiredStripeEvents = (budget: PlatformPurgeCandidateBudget) =>
              events.stripe_schedule_id as "scheduleId",
              events.stripe_payment_id as "paymentId",
              events.stripe_invoice_id as "invoiceId",
-             brief_stripe_event_legal_hold_scope_keys(
+             hartlib_stripe_event_legal_hold_scope_keys(
                events.stripe_customer_id,
                events.stripe_subscription_id,
                events.stripe_schedule_id,
@@ -1432,8 +1432,8 @@ const purgeExpiredStripeEvents = (budget: PlatformPurgeCandidateBudget) =>
              ) as "holdScopeKeys"
       from stripe_webhook_events events
       where events.retained_until <= now()
-        and not brief_has_active_legal_hold(
-          brief_stripe_event_legal_hold_scope_keys(
+        and not hartlib_has_active_legal_hold(
+          hartlib_stripe_event_legal_hold_scope_keys(
             events.stripe_customer_id,
             events.stripe_subscription_id,
             events.stripe_schedule_id,
@@ -1445,7 +1445,7 @@ const purgeExpiredStripeEvents = (budget: PlatformPurgeCandidateBudget) =>
           select 1 from client_companies companies
           where companies.legal_hold
             and ('client_company:' || companies.id::text) = any(
-              brief_stripe_event_legal_hold_scope_keys(
+              hartlib_stripe_event_legal_hold_scope_keys(
                 events.stripe_customer_id,
                 events.stripe_subscription_id,
                 events.stripe_schedule_id,
@@ -1458,7 +1458,7 @@ const purgeExpiredStripeEvents = (budget: PlatformPurgeCandidateBudget) =>
           select 1 from platform_users users
           where users.legal_hold
             and ('user:' || users.id) = any(
-              brief_stripe_event_legal_hold_scope_keys(
+              hartlib_stripe_event_legal_hold_scope_keys(
                 events.stripe_customer_id,
                 events.stripe_subscription_id,
                 events.stripe_schedule_id,
@@ -1483,7 +1483,7 @@ const purgeExpiredStripeEvents = (budget: PlatformPurgeCandidateBudget) =>
                    events.stripe_schedule_id as "scheduleId",
                    events.stripe_payment_id as "paymentId",
                    events.stripe_invoice_id as "invoiceId",
-                   brief_stripe_event_legal_hold_scope_keys(
+                   hartlib_stripe_event_legal_hold_scope_keys(
                      events.stripe_customer_id,
                      events.stripe_subscription_id,
                      events.stripe_schedule_id,
@@ -1515,7 +1515,7 @@ const purgeExpiredStripeEvents = (budget: PlatformPurgeCandidateBudget) =>
             for share
           `;
           const held = yield* sql<{ readonly held: boolean }>`
-            select brief_has_active_legal_hold(${current.holdScopeKeys})
+            select hartlib_has_active_legal_hold(${current.holdScopeKeys})
               or exists (
                 select 1 from client_companies companies
                 where companies.legal_hold
@@ -1528,7 +1528,7 @@ const purgeExpiredStripeEvents = (budget: PlatformPurgeCandidateBudget) =>
               ) as held
           `;
           if (held[0]?.held !== false) return false;
-          yield* sql`select set_config('brief.allow_accounting_retention_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_accounting_retention_purge', 'on', true)`;
           const removed = yield* sql<{ readonly id: string }>`
             delete from stripe_webhook_events
             where stripe_event_id = ${candidate.id}
@@ -1559,7 +1559,7 @@ const purgeExpiredPlanChangeRequests = (budget: PlatformPurgeCandidateBudget) =>
         and requests.status in ('succeeded', 'failed')
         and companies.legal_hold = false
         and coalesce(users.legal_hold, false) = false
-        and not brief_has_active_legal_hold(array[
+        and not hartlib_has_active_legal_hold(array[
           'client_company:' || requests.client_company_id::text,
           'user:' || requests.requested_by_user_id
         ]::text[])
@@ -1586,7 +1586,7 @@ const purgeExpiredPlanChangeRequests = (budget: PlatformPurgeCandidateBudget) =>
               and requests.status in ('succeeded', 'failed')
               and companies.legal_hold = false
               and coalesce(users.legal_hold, false) = false
-              and not brief_has_active_legal_hold(array[
+              and not hartlib_has_active_legal_hold(array[
                 'client_company:' || requests.client_company_id::text,
                 'user:' || requests.requested_by_user_id
               ]::text[])
@@ -1601,7 +1601,7 @@ const purgeExpiredPlanChangeRequests = (budget: PlatformPurgeCandidateBudget) =>
           }
           yield* lockEmbeddedLegalHoldRows(current.holdScopeKeys);
           if (yield* hasLegalHoldForScopes(current.holdScopeKeys)) return false;
-          yield* sql`select set_config('brief.allow_accounting_retention_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_accounting_retention_purge', 'on', true)`;
           const removed = yield* sql<{ readonly id: string }>`
             delete from client_ai_plan_change_requests
             where id = ${candidate.id} returning id::text
@@ -1631,7 +1631,7 @@ const purgeExpiredCheckoutRequests = (budget: PlatformPurgeCandidateBudget) =>
         and requests.status in ('succeeded', 'failed')
         and companies.legal_hold = false
         and coalesce(users.legal_hold, false) = false
-        and not brief_has_active_legal_hold(array[
+        and not hartlib_has_active_legal_hold(array[
           'client_company:' || requests.client_company_id::text,
           'user:' || requests.requested_by_user_id
         ]::text[])
@@ -1658,7 +1658,7 @@ const purgeExpiredCheckoutRequests = (budget: PlatformPurgeCandidateBudget) =>
               and requests.status in ('succeeded', 'failed')
               and companies.legal_hold = false
               and coalesce(users.legal_hold, false) = false
-              and not brief_has_active_legal_hold(array[
+              and not hartlib_has_active_legal_hold(array[
                 'client_company:' || requests.client_company_id::text,
                 'user:' || requests.requested_by_user_id
               ]::text[])
@@ -1673,7 +1673,7 @@ const purgeExpiredCheckoutRequests = (budget: PlatformPurgeCandidateBudget) =>
           }
           yield* lockEmbeddedLegalHoldRows(current.holdScopeKeys);
           if (yield* hasLegalHoldForScopes(current.holdScopeKeys)) return false;
-          yield* sql`select set_config('brief.allow_accounting_retention_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_accounting_retention_purge', 'on', true)`;
           const removed = yield* sql<{ readonly id: string }>`
             delete from client_ai_checkout_requests
             where id = ${candidate.id}
@@ -1693,7 +1693,7 @@ const purgeExpiredBillingAccounts = (budget: PlatformPurgeCandidateBudget) =>
     const sql = yield* PgClient.PgClient;
     const candidates = yield* sql<AccountingPurgeCandidate>`
       select accounts.client_company_id::text as id,
-             brief_normalize_legal_hold_scope_keys(
+             hartlib_normalize_legal_hold_scope_keys(
                array['client_company:' || accounts.client_company_id::text]::text[]
                || coalesce(
                  array(
@@ -1726,8 +1726,8 @@ const purgeExpiredBillingAccounts = (budget: PlatformPurgeCandidateBudget) =>
           where requests.client_company_id = accounts.client_company_id
             and requests.status = 'processing'
         )
-        and not brief_has_active_legal_hold(
-          brief_normalize_legal_hold_scope_keys(
+        and not hartlib_has_active_legal_hold(
+          hartlib_normalize_legal_hold_scope_keys(
             array['client_company:' || accounts.client_company_id::text]::text[]
             || coalesce(
               array(
@@ -1747,7 +1747,7 @@ const purgeExpiredBillingAccounts = (budget: PlatformPurgeCandidateBudget) =>
           select 1 from platform_users users
           where users.legal_hold
             and ('user:' || users.id) = any(
-              brief_normalize_legal_hold_scope_keys(
+              hartlib_normalize_legal_hold_scope_keys(
                 array['client_company:' || accounts.client_company_id::text]::text[]
                 || coalesce(
                   array(
@@ -1775,7 +1775,7 @@ const purgeExpiredBillingAccounts = (budget: PlatformPurgeCandidateBudget) =>
           yield* lockLegalHoldScopes(candidate.holdScopeKeys);
           const rows = yield* sql<AccountingPurgeCandidate>`
             select accounts.client_company_id::text as id,
-                   brief_normalize_legal_hold_scope_keys(
+                   hartlib_normalize_legal_hold_scope_keys(
                      array['client_company:' || accounts.client_company_id::text]::text[]
                      || coalesce(
                        array(
@@ -1828,7 +1828,7 @@ const purgeExpiredBillingAccounts = (budget: PlatformPurgeCandidateBudget) =>
             for share
           `;
           const held = yield* sql<{ readonly held: boolean }>`
-            select brief_has_active_legal_hold(${current.holdScopeKeys})
+            select hartlib_has_active_legal_hold(${current.holdScopeKeys})
               or exists (
                 select 1 from client_companies companies
                 where companies.legal_hold
@@ -1841,7 +1841,7 @@ const purgeExpiredBillingAccounts = (budget: PlatformPurgeCandidateBudget) =>
               ) as held
           `;
           if (held[0]?.held !== false) return false;
-          yield* sql`select set_config('brief.allow_accounting_retention_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_accounting_retention_purge', 'on', true)`;
           const removed = yield* sql<{ readonly id: string }>`
             delete from client_ai_billing_accounts
             where client_company_id = ${candidate.id}
@@ -2179,7 +2179,7 @@ export const purgeDeletedAccounts = () =>
       const purged = yield* sql.withTransaction(
         Effect.gen(function* () {
           yield* sql`
-            select pg_advisory_xact_lock(hashtextextended(${`brief:legal-hold:user:${user.id}`}, 0))
+            select pg_advisory_xact_lock(hashtextextended(${`hartlib:legal-hold:user:${user.id}`}, 0))
           `;
           // Account purge deletes the complete memory/revision aggregate. It
           // must join the same user-memory lane as finalization, explicit
@@ -2187,7 +2187,7 @@ export const purgeDeletedAccounts = () =>
           // discovering/acquiring membership lanes to preserve the canonical
           // memory -> membership ordering used by finalization.
           yield* sql`
-            select pg_advisory_xact_lock(hashtext(${`brief:user-memory:${user.id}`}))
+            select pg_advisory_xact_lock(hashtext(${`hartlib:user-memory:${user.id}`}))
           `;
           const publisherCompanies = yield* sql<{ readonly id: string }>`
             select publisher_company_id::text as id
@@ -2242,7 +2242,7 @@ export const purgeDeletedAccounts = () =>
           ) {
             return false;
           }
-          yield* sql`select set_config('brief.allow_account_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_account_purge', 'on', true)`;
           yield* sql`delete from user_memories where user_id = ${user.id}`;
           yield* sql`delete from platform_notifications where user_id = ${user.id}`;
           yield* sql`delete from notification_preferences where user_id = ${user.id}`;
@@ -2287,7 +2287,7 @@ export const purgeDeletedAccounts = () =>
         Effect.gen(function* () {
           yield* sql`
             select pg_advisory_xact_lock(
-              hashtextextended(${`brief:legal-hold:client_company:${company.id}`}, 0)
+              hashtextextended(${`hartlib:legal-hold:client_company:${company.id}`}, 0)
             )
           `;
           const eligible = yield* sql<{ readonly id: string }>`
@@ -2305,7 +2305,7 @@ export const purgeDeletedAccounts = () =>
             for update
           `;
           if (eligible[0] === undefined) return false;
-          yield* sql`select set_config('brief.allow_account_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_account_purge', 'on', true)`;
           yield* sql`delete from client_company_memberships where company_id = ${company.id}`;
           yield* sql`delete from issue_deliveries where client_company_id = ${company.id}`;
           yield* sql`delete from client_subscription_accesses where client_company_id = ${company.id}`;
@@ -2358,8 +2358,8 @@ const purgeExpiredRestrictedSupportAccessLogs = (budget: PlatformPurgeCandidateB
              access.hold_scope_keys as "holdScopeKeys"
       from restricted_support_access_log access
       where access.accessed_at <= now() - interval '24 months'
-        and not brief_has_active_legal_hold(access.hold_scope_keys)
-        and not brief_has_embedded_legal_hold(access.hold_scope_keys)
+        and not hartlib_has_active_legal_hold(access.hold_scope_keys)
+        and not hartlib_has_embedded_legal_hold(access.hold_scope_keys)
       order by access.accessed_at, access.id
       limit ${budget.remaining}
     `;
@@ -2369,7 +2369,7 @@ const purgeExpiredRestrictedSupportAccessLogs = (budget: PlatformPurgeCandidateB
       const deleted = yield* sql.withTransaction(
         Effect.gen(function* () {
           yield* lockLegalHoldScopes(candidate.holdScopeKeys);
-          yield* sql`select pg_advisory_xact_lock(hashtext('brief:restricted-support-access-log'))`;
+          yield* sql`select pg_advisory_xact_lock(hashtext('hartlib:restricted-support-access-log'))`;
           const rows = yield* sql<OperationalAuditPurgeCandidate>`
             select access.id::text,
                    access.hold_scope_keys as "holdScopeKeys"
@@ -2387,11 +2387,11 @@ const purgeExpiredRestrictedSupportAccessLogs = (budget: PlatformPurgeCandidateB
           }
           yield* lockEmbeddedLegalHoldRows(current.holdScopeKeys);
           const held = yield* sql<{ readonly held: boolean }>`
-            select brief_has_active_legal_hold(${current.holdScopeKeys})
-              or brief_has_embedded_legal_hold(${current.holdScopeKeys}) as held
+            select hartlib_has_active_legal_hold(${current.holdScopeKeys})
+              or hartlib_has_embedded_legal_hold(${current.holdScopeKeys}) as held
           `;
           if (held[0]?.held !== false) return false;
-          yield* sql`select set_config('brief.allow_audit_retention_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_audit_retention_purge', 'on', true)`;
           yield* sql`
             delete from restricted_support_access_reviews
             where access_log_id = ${candidate.id}
@@ -2422,8 +2422,8 @@ const purgeExpiredRestrictedSupportGrants = (budget: PlatformPurgeCandidateBudge
           select 1 from restricted_support_access_log access
           where access.grant_id = grants.id
         )
-        and not brief_has_active_legal_hold(grants.hold_scope_keys)
-        and not brief_has_embedded_legal_hold(grants.hold_scope_keys)
+        and not hartlib_has_active_legal_hold(grants.hold_scope_keys)
+        and not hartlib_has_embedded_legal_hold(grants.hold_scope_keys)
       order by grants.expires_at, grants.id
       limit ${budget.remaining}
     `;
@@ -2454,8 +2454,8 @@ const purgeExpiredRestrictedSupportGrants = (budget: PlatformPurgeCandidateBudge
           }
           yield* lockEmbeddedLegalHoldRows(current.holdScopeKeys);
           const held = yield* sql<{ readonly held: boolean }>`
-            select brief_has_active_legal_hold(${current.holdScopeKeys})
-              or brief_has_embedded_legal_hold(${current.holdScopeKeys}) as held
+            select hartlib_has_active_legal_hold(${current.holdScopeKeys})
+              or hartlib_has_embedded_legal_hold(${current.holdScopeKeys}) as held
           `;
           if (held[0]?.held !== false) return false;
           const removed = yield* sql<{ readonly id: string }>`
@@ -2480,8 +2480,8 @@ const purgeExpiredAuthorizationAuditLogs = (budget: PlatformPurgeCandidateBudget
              audit.hold_scope_keys as "holdScopeKeys"
       from platform_authorization_audit_log audit
       where audit.purge_after <= now()
-        and not brief_has_active_legal_hold(audit.hold_scope_keys)
-        and not brief_has_embedded_legal_hold(audit.hold_scope_keys)
+        and not hartlib_has_active_legal_hold(audit.hold_scope_keys)
+        and not hartlib_has_embedded_legal_hold(audit.hold_scope_keys)
       order by audit.purge_after, audit.id
       limit ${budget.remaining}
     `;
@@ -2492,7 +2492,7 @@ const purgeExpiredAuthorizationAuditLogs = (budget: PlatformPurgeCandidateBudget
         Effect.gen(function* () {
           yield* lockLegalHoldScopes(candidate.holdScopeKeys);
           yield* sql`
-            select pg_advisory_xact_lock(hashtext('brief:platform-authorization-audit-log'))
+            select pg_advisory_xact_lock(hashtext('hartlib:platform-authorization-audit-log'))
           `;
           const rows = yield* sql<OperationalAuditPurgeCandidate>`
             select audit.id::text,
@@ -2511,11 +2511,11 @@ const purgeExpiredAuthorizationAuditLogs = (budget: PlatformPurgeCandidateBudget
           }
           yield* lockEmbeddedLegalHoldRows(current.holdScopeKeys);
           const held = yield* sql<{ readonly held: boolean }>`
-            select brief_has_active_legal_hold(${current.holdScopeKeys})
-              or brief_has_embedded_legal_hold(${current.holdScopeKeys}) as held
+            select hartlib_has_active_legal_hold(${current.holdScopeKeys})
+              or hartlib_has_embedded_legal_hold(${current.holdScopeKeys}) as held
           `;
           if (held[0]?.held !== false) return false;
-          yield* sql`select set_config('brief.allow_audit_retention_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_audit_retention_purge', 'on', true)`;
           const removed = yield* sql<{ readonly id: string }>`
             delete from platform_authorization_audit_log
             where id = ${candidate.id}
@@ -2588,7 +2588,7 @@ const reconcilePublisherUploads = (): Effect.Effect<
           yield* sql`
             select pg_advisory_xact_lock(
               hashtextextended(
-                ${`brief:publisher-upload-reservation:${candidate.issueId}:${candidate.idempotencyKey}`}, 0
+                ${`hartlib:publisher-upload-reservation:${candidate.issueId}:${candidate.idempotencyKey}`}, 0
               )
             )
           `;
@@ -2657,7 +2657,7 @@ const purgeDeletedFiles = (): Effect.Effect<
         documents.byte_size::float8 as "byteSize",
         documents.deleted_at as "deletedAt",
         documents.deleted_by_user_id as "deletedByUserId"
-      from brief_documents documents
+      from hartlib_documents documents
       join publisher_issues issues on issues.id = documents.issue_id
       join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
       where documents.deleted_at is not null
@@ -2685,13 +2685,13 @@ const purgeDeletedFiles = (): Effect.Effect<
         Effect.gen(function* () {
           yield* sql`
             select pg_advisory_xact_lock(
-              hashtextextended(${`brief:legal-hold:issue:${candidate.issueId}`}, 0)
+              hashtextextended(${`hartlib:legal-hold:issue:${candidate.issueId}`}, 0)
             )
           `;
           yield* sql`
             select pg_advisory_xact_lock(
               hashtextextended(
-                ${`brief:legal-hold:publisher_company:${candidate.publisherCompanyId}`},
+                ${`hartlib:legal-hold:publisher_company:${candidate.publisherCompanyId}`},
                 0
               )
             )
@@ -2707,7 +2707,7 @@ const purgeDeletedFiles = (): Effect.Effect<
               documents.byte_size::float8 as "byteSize",
               documents.deleted_at as "deletedAt",
               documents.deleted_by_user_id as "deletedByUserId"
-            from brief_documents documents
+            from hartlib_documents documents
             join publisher_issues issues on issues.id = documents.issue_id
             join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
             where documents.id = ${candidate.id}
@@ -2735,15 +2735,15 @@ const purgeDeletedFiles = (): Effect.Effect<
           // pointer update from racing the legal-purge delete.
           yield* sql`
             select id
-            from brief_document_versions
-            where brief_document_id = ${current.id}::uuid
+            from hartlib_document_versions
+            where hartlib_document_id = ${current.id}::uuid
             order by id
             for update
           `;
           yield* sql`
             select id
-            from brief_document_extractions
-            where brief_document_id = ${current.id}::uuid
+            from hartlib_document_extractions
+            where hartlib_document_id = ${current.id}::uuid
             order by id
             for update
           `;
@@ -2757,8 +2757,8 @@ const purgeDeletedFiles = (): Effect.Effect<
                where kind = 'document'
                  and (snapshot_id = ${current.id}
                       or publisher_extraction_id in (
-                        select id from brief_document_extractions
-                        where brief_document_id = ${current.id}::uuid
+                        select id from hartlib_document_extractions
+                        where hartlib_document_id = ${current.id}::uuid
                       )))
             )::int as count
           `;
@@ -2766,7 +2766,7 @@ const purgeDeletedFiles = (): Effect.Effect<
           // not delete the external object until every database reference is
           // gone; the next legal-purge pass can retry after retention clears.
           if ((retainedReferences[0]?.count ?? 0) > 0) return false;
-          yield* sql`select set_config('brief.allow_file_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_file_purge', 'on', true)`;
           // Keep the database rows and object-store delete in one abortable
           // boundary. A timed-out provider call must leave the tombstone and
           // every immutable content row available for a later retry.
@@ -2774,8 +2774,8 @@ const purgeDeletedFiles = (): Effect.Effect<
             .delete(current.objectKey)
             .pipe(Effect.timeout(`${PLATFORM_FILE_PURGE_DELETE_TIMEOUT_MS} millis`));
           yield* sql`
-            insert into purged_brief_document_tombstones (
-              brief_document_id,
+            insert into purged_hartlib_document_tombstones (
+              hartlib_document_id,
               issue_id,
               publisher_company_id,
               sha256_hex,
@@ -2792,19 +2792,19 @@ const purgeDeletedFiles = (): Effect.Effect<
               ${current.deletedAt},
               ${current.deletedByUserId}
             )
-            on conflict (brief_document_id) do nothing
+            on conflict (hartlib_document_id) do nothing
           `;
           yield* sql`
-            update brief_documents set current_version_id = null where id = ${current.id}
+            update hartlib_documents set current_version_id = null where id = ${current.id}
           `;
           yield* sql`
-            delete from brief_document_versions where brief_document_id = ${current.id}
+            delete from hartlib_document_versions where hartlib_document_id = ${current.id}
           `;
           yield* sql`
-            delete from brief_document_extractions where brief_document_id = ${current.id}
+            delete from hartlib_document_extractions where hartlib_document_id = ${current.id}
           `;
           const rows = yield* sql<{ readonly id: string }>`
-            delete from brief_documents
+            delete from hartlib_documents
             where id = ${current.id}
             returning id::text
           `;
@@ -2836,7 +2836,7 @@ const purgeDeletedFiles = (): Effect.Effect<
         join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
         where issues.deleted_at is not null and issues.purge_after <= now()
           and not exists (
-            select 1 from brief_documents documents where documents.issue_id = issues.id
+            select 1 from hartlib_documents documents where documents.issue_id = issues.id
           )
           and not exists (
             select 1 from legal_holds holds
@@ -2859,13 +2859,13 @@ const purgeDeletedFiles = (): Effect.Effect<
         Effect.gen(function* () {
           yield* sql`
             select pg_advisory_xact_lock(
-              hashtextextended(${`brief:legal-hold:issue:${candidate.id}`}, 0)
+              hashtextextended(${`hartlib:legal-hold:issue:${candidate.id}`}, 0)
             )
           `;
           yield* sql`
             select pg_advisory_xact_lock(
               hashtextextended(
-                ${`brief:legal-hold:publisher_company:${candidate.publisherCompanyId}`},
+                ${`hartlib:legal-hold:publisher_company:${candidate.publisherCompanyId}`},
                 0
               )
             )
@@ -2884,7 +2884,7 @@ const purgeDeletedFiles = (): Effect.Effect<
             where issues.id = ${candidate.id}
               and issues.deleted_at is not null and issues.purge_after <= now()
               and not exists (
-                select 1 from brief_documents documents where documents.issue_id = issues.id
+                select 1 from hartlib_documents documents where documents.issue_id = issues.id
               )
               and not exists (
                 select 1 from legal_holds holds
@@ -2909,7 +2909,7 @@ const purgeDeletedFiles = (): Effect.Effect<
             )
             on conflict (issue_id) do nothing
           `;
-          yield* sql`select set_config('brief.allow_issue_purge', 'on', true)`;
+          yield* sql`select set_config('hartlib.allow_issue_purge', 'on', true)`;
           yield* sql`delete from publisher_issues where id = ${current[0].id}`;
         }),
       );

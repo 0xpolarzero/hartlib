@@ -1,9 +1,9 @@
 import { BunRuntime } from "@effect/platform-bun";
 import { PgClient } from "@effect/sql-pg";
 import { Effect } from "effect";
-import { loadDatabaseResetConfig } from "@brief/config";
+import { loadDatabaseResetConfig } from "@hartlib/config";
 
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import { DatabaseMigrationLayer } from "./migrate";
 
 export const assertResetAllowed = Effect.gen(function* () {
@@ -12,7 +12,7 @@ export const assertResetAllowed = Effect.gen(function* () {
   if (nodeEnv === "production" && !allowProductionReset) {
     yield* Effect.fail(
       new Error(
-        "Refusing to reset the database when NODE_ENV=production. Set BRIEF_ALLOW_DB_RESET=true to override.",
+        "Refusing to reset the database when NODE_ENV=production. Set HARTLIB_ALLOW_DB_RESET=true to override.",
       ),
     );
   }

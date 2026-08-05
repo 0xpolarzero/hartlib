@@ -1,5 +1,5 @@
-import { useIntl, useLocale } from "@brief/i18n";
-import { Button, Input, Label } from "@brief/ui";
+import { useIntl, useLocale } from "@hartlib/i18n";
+import { Button, Input, Label } from "@hartlib/ui";
 import { useForm } from "@tanstack/react-form";
 import { eq, useLiveInfiniteQuery, useLiveQuery } from "@tanstack/react-db";
 import { useQuery } from "@tanstack/react-query";

@@ -2,12 +2,12 @@ import {
   makePublicSourceAdapter,
   publicSourceDefinitions,
   type PublicSourceId,
-} from "@brief/source-ingestion";
+} from "@hartlib/source-ingestion";
 import { PgClient } from "@effect/sql-pg";
 import { Cause, Effect } from "effect";
 import { z } from "zod";
-import { loadDatabaseUrl } from "@brief/config";
-import type { AiProviderEndpointIdentity, AiRunActivityEvent } from "@brief/shared";
+import { loadDatabaseUrl } from "@hartlib/config";
+import type { AiProviderEndpointIdentity, AiRunActivityEvent } from "@hartlib/shared";
 import { CanonicalAgentClient } from "../ai/runtime/agent-client";
 import {
   ExactPiBoundary,
@@ -679,7 +679,7 @@ export const makeWebResearchBoundary = (
           coordinates,
           {
             kind: "fetch",
-            provider: "brief_fetch",
+            provider: "hartlib_fetch",
             outcome: "succeeded",
             resultCount: 1,
             responseBytes: new TextEncoder().encode(text).byteLength,
@@ -788,7 +788,7 @@ export const persistWebBoundaryErrorOperations = async (
 
 /**
  * Canonical production operations factory. Evaluation uses this same real
- * Tinyfish search and Brief-owned fetch boundary; model requests cross the
+ * Tinyfish search and Hartlib-owned fetch boundary; model requests cross the
  * exact real Pi/Z.AI boundary and retain the same durable measurement hooks.
  */
 export const providerServiceIdForConfig = (

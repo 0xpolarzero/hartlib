@@ -1,4 +1,4 @@
-import { useIntl, useLocale } from "@brief/i18n";
+import { useIntl, useLocale } from "@hartlib/i18n";
 import { useQuery } from "@tanstack/react-query";
 
 import { getCurrentUserWorkspaces } from "@/lib/platform-api";

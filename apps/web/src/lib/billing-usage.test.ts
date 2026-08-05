@@ -1,4 +1,4 @@
-import type { AiUsageOverview } from "@brief/shared";
+import type { AiUsageOverview } from "@hartlib/shared";
 import { describe, expect, it } from "vitest";
 
 import { memberAiUsageIsLimited } from "./billing-usage";

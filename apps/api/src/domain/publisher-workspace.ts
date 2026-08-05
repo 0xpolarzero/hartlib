@@ -5,7 +5,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { createClerkClient } from "@clerk/backend";
-import { loadObjectStorageConfig } from "@brief/config";
+import { loadObjectStorageConfig } from "@hartlib/config";
 import type {
   CreatePublisherIssueRequest,
   CreatePublisherSubscriptionRequest,
@@ -13,7 +13,7 @@ import type {
   PausePublisherClientAccessRequest,
   SchedulePublisherIssueRequest,
   UpdatePublisherIssueRequest,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import {
   createPublisherIssue,
   createPublisherSubscription,
@@ -34,8 +34,8 @@ import {
   WorkspaceRuleError,
   type PublisherClientOnboardingProvider,
   type PublisherPdfObjectStore,
-} from "@brief/workspace";
-import { requestIdForAudit } from "@brief/workspace";
+} from "@hartlib/workspace";
+import { requestIdForAudit } from "@hartlib/workspace";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity } from "../auth";
@@ -49,8 +49,11 @@ import { json, type Route } from "../http";
 import { withAdministrativeAuditing } from "./administrative-audit";
 import { createOrRecoverClerkOrganizationInvitation } from "./clerk-invitation-provider";
 
-export { MAX_PUBLISHER_PDF_BYTES } from "@brief/workspace";
-export type { PublisherClientOnboardingProvider, PublisherPdfObjectStore } from "@brief/workspace";
+export { MAX_PUBLISHER_PDF_BYTES } from "@hartlib/workspace";
+export type {
+  PublisherClientOnboardingProvider,
+  PublisherPdfObjectStore,
+} from "@hartlib/workspace";
 
 type PgLayer = ApiDatabaseLayerType;
 const PgLayer = ApiDatabaseLayer;
@@ -117,7 +120,7 @@ const liveClientOnboardingProvider = (secretKey: string): PublisherClientOnboard
   const clerk = createClerkClient({ secretKey });
   return {
     ensureOrganization: async (input) => {
-      const slug = `brief-client-${input.companyId}`;
+      const slug = `hartlib-client-${input.companyId}`;
       try {
         return (await clerk.organizations.getOrganization({ slug })).id;
       } catch {
@@ -460,7 +463,7 @@ export const makePublisherWorkspaceRoutes = (
         const requestId = requestIdForAudit(request);
         if (requestId === null) return json({ code: "request_id_invalid" }, { status: 400 });
         const headers = input.headers as {
-          readonly "x-brief-title": string;
+          readonly "x-hartlib-title": string;
           readonly "x-file-name": string;
           readonly "x-content-sha256": string;
           readonly "idempotency-key": string;
@@ -472,7 +475,7 @@ export const makePublisherWorkspaceRoutes = (
             identity: authenticated.identity,
             issueId: pathParameters.issueId!,
             idempotencyKey: headers["idempotency-key"],
-            title: headers["x-brief-title"],
+            title: headers["x-hartlib-title"],
             fileName: headers["x-file-name"],
             expectedHash: headers["x-content-sha256"],
             declaredBytes: input.declaredBodyBytes ?? body.byteLength,

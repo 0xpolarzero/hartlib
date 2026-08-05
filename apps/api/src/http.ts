@@ -1,5 +1,5 @@
 import { Cause, Context, Effect, Schema } from "effect";
-import { httpRouteContract, type HttpRouteContract } from "@brief/shared";
+import { httpRouteContract, type HttpRouteContract } from "@hartlib/shared";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import type { HttpMethod } from "effect/unstable/http/HttpMethod";
 
@@ -115,7 +115,7 @@ const preflight = (request: Request, methods: ReadonlyArray<string>) =>
     headers.set("access-control-allow-methods", [...new Set(methods)].join(", "));
     headers.set(
       "access-control-allow-headers",
-      "authorization, content-type, idempotency-key, last-event-id, x-brief-title, x-content-sha256, x-file-name, x-request-id",
+      "authorization, content-type, idempotency-key, last-event-id, x-hartlib-title, x-content-sha256, x-file-name, x-request-id",
     );
     headers.set("access-control-max-age", "86400");
 

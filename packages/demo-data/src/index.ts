@@ -1,4 +1,4 @@
-import type { ContentDocument, ContentPublication, ContentSource } from "@brief/shared";
+import type { ContentDocument, ContentPublication, ContentSource } from "@hartlib/shared";
 
 export type DemoRole = "publisher" | "client";
 
@@ -36,11 +36,11 @@ export type DemoAiPlan = {
   webDomainAllowlist: readonly string[];
 };
 
-export type BriefSource = ContentSource;
+export type HartlibSource = ContentSource;
 
-export type BriefPublication = ContentPublication;
+export type HartlibPublication = ContentPublication;
 
-export type BriefDocument = ContentDocument;
+export type HartlibDocument = ContentDocument;
 
 export type DemoArchiveSnippet = {
   id: string;
@@ -115,8 +115,8 @@ export type DemoDataset = {
     client: DemoUser;
   };
   aiPlan: DemoAiPlan;
-  sources: readonly BriefSource[];
-  issues: readonly BriefPublication[];
+  sources: readonly HartlibSource[];
+  issues: readonly HartlibPublication[];
   archiveSnippets: readonly DemoArchiveSnippet[];
   chats: readonly DemoChat[];
 };
@@ -175,9 +175,9 @@ export const demoAiPlan: DemoAiPlan = {
   webDomainAllowlist: [],
 };
 
-export const demoSources: readonly BriefSource[] = [];
+export const demoSources: readonly HartlibSource[] = [];
 
-export const demoIssues: readonly BriefPublication[] = [];
+export const demoIssues: readonly HartlibPublication[] = [];
 
 export const demoArchiveSnippets: readonly DemoArchiveSnippet[] = [];
 
@@ -202,8 +202,8 @@ export const demoDataset: DemoDataset = {
 
 export function getPublicationsBySourceId(
   sourceId: string,
-  publications: readonly BriefPublication[] = demoIssues,
-): readonly BriefPublication[] {
+  publications: readonly HartlibPublication[] = demoIssues,
+): readonly HartlibPublication[] {
   return publications
     .filter((publication) => publication.sourceId === sourceId)
     .sort((a, b) => (b.publicationDate ?? "").localeCompare(a.publicationDate ?? ""));
@@ -211,7 +211,7 @@ export function getPublicationsBySourceId(
 
 export function findPublicationById(
   publicationId: string,
-  publications: readonly BriefPublication[] = demoIssues,
-): BriefPublication | undefined {
+  publications: readonly HartlibPublication[] = demoIssues,
+): HartlibPublication | undefined {
   return publications.find((publication) => publication.id === publicationId);
 }

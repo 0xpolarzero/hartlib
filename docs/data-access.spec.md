@@ -137,7 +137,7 @@ Publisher issue metrics include:
 
 AI context pull metrics roll up across the whole issue.
 
-AI context pull metrics also break down per brief document.
+AI context pull metrics also break down per hartlib document.
 
 Issue AI context pulls count runs in which some issue content became visible to an AI model. SQL-only matches do not count; structured retrieval previews or compaction passages exposed to a model count even when they are not selected for a final answer context. Each issue/document counts at most once per run.
 
@@ -250,7 +250,7 @@ The approved development runtime uses the exact registered GLM-5-Turbo contract 
 The platform sends the configured AI provider only the role-specific context required by `docs/ai-chat-runtime.spec.md`:
 
 - plan-turn receives the current message and a bounded live read of recent complete user/assistant turns or terminal failed user-only turns; failed drafts are never included.
-- structured internal retrieval receives one `InternalQueryPlan`; Brief executes its authorized parallel searches and supplies one complete `QueryReview` projection, with no provider search tools or SQL
+- structured internal retrieval receives one `InternalQueryPlan`; Hartlib executes its authorized parallel searches and supplies one complete `QueryReview` projection, with no provider search tools or SQL
 - B receives the resolved/topic question and bounded results from its authorized search/inspect tool loop over the exact memory revisions captured in the immutable acceptance scope; code does not create a semantic shortlist or reauthorize against the current memory head.
 - W receives the resolved/topic question and search/fetch results from allowed web domains.
 - compaction receives only code-owned candidate projections and its assigned group passages; a source-local oversized candidate may use only the bounded `search_source_passages`/`read_source_passages` tools
@@ -258,9 +258,9 @@ The platform sends the configured AI provider only the role-specific context req
 - synthesis receives bounded topic claim packets and source keys, not the original full documents.
 - memory extraction receives only the current user message and bounded results from its authorized search/inspect tools over the exact memory revision IDs captured in the immutable acceptance scope; it does not read the current memory head or active-memory setting.
 
-The main answer, topic-answer, and synthesis agents have no retrieval tools. Brief validates the saved acceptance scope before every internal fetch and validates exact immutable evidence identities before final serialization.
+The main answer, topic-answer, and synthesis agents have no retrieval tools. Hartlib validates the saved acceptance scope before every internal fetch and validates exact immutable evidence identities before final serialization.
 
-The chat turn keeps the saved authorized internal search scope in Brief code. No
+The chat turn keeps the saved authorized internal search scope in Hartlib code. No
 broad source list enters provider input. A model-visible document reference
 contains only `documentId`. For public evidence, code binds it to the exact
 public document row, immutable snapshot identity, lowercase content hash, source
@@ -277,7 +277,7 @@ The server creates one random per-answer `citationNamespace` at request
 acceptance. It scopes local citation handles only; the saved scope and exact
 immutable evidence identity validate every claim.
 
-Brief validates the saved user, company, membership and grant identities, chat scope,
+Hartlib validates the saved user, company, membership and grant identities, chat scope,
 source IDs, publisher subscription and issue identities, document versions,
 memory revision IDs, accepted web state, provider contract, and domain allowlist
 immediately before every content-bearing provider request and each content
@@ -314,7 +314,7 @@ target. The migration's fenced schema is the source of truth for structured
 retrieval/review, candidate assembly, compaction groups, fallback, context,
 answer, and finalization outputs.
 
-Web search/fetch services receive the minimum query and URL data required for the requested web path. Company domain allowlists are enforced before a request leaves Brief. Selected web quotations and provenance are stored with the chat; full fetched pages remain transient unless they are already canonical platform content under another ingestion contract. Web research is disabled in any deployment that has no approved `WebResearchService` adapter.
+Web search/fetch services receive the minimum query and URL data required for the requested web path. Company domain allowlists are enforced before a request leaves Hartlib. Selected web quotations and provenance are stored with the chat; full fetched pages remain transient unless they are already canonical platform content under another ingestion contract. Web research is disabled in any deployment that has no approved `WebResearchService` adapter.
 
 Publisher documents and client chats are excluded from model training.
 
@@ -328,7 +328,7 @@ The platform contract with the AI provider must cover:
 - security
 - training exclusion
 
-Production use with real publisher content requires written, account-specific terms for the selected AI provider and exact stateless endpoint that establish confidentiality, training/data-use exclusion, retention and deletion, subprocessors, security, incident obligations, and international transfers. A public product page, development key, plan name, or manually entered attestation is insufficient. Brief calls stateless endpoints directly and stores files in platform storage; provider file, conversation, agent, or other stateful products are outside the current runtime.
+Production use with real publisher content requires written, account-specific terms for the selected AI provider and exact stateless endpoint that establish confidentiality, training/data-use exclusion, retention and deletion, subprocessors, security, incident obligations, and international transfers. A public product page, development key, plan name, or manually entered attestation is insufficient. Hartlib calls stateless endpoints directly and stores files in platform storage; provider file, conversation, agent, or other stateful products are outside the current runtime.
 
 Until those decisions and evidence are accepted, production startup fails closed and real publisher content is not sent to an unapproved provider. Development and sales fixtures may use non-sensitive synthetic data. The platform security page names the selected provider and exact current posture only after acceptance, links to the governing terms, and never generalizes a provider-wide claim from an unsupported endpoint or account tier.
 
@@ -365,7 +365,7 @@ Client membership removal retains the company/user identity row because chats an
 
 When web research is enabled, the configured search service is also a subprocessor and must be named here, in customer disclosures, and on the security page with its region, retention, and training/use posture. A deployment may not enable the web toggle while that entry is unspecified.
 
-The development runtime uses Z.AI only for model calls and Tinyfish Search only for discovery when `TINYFISH_API_KEY` is present. Brief fetches candidate pages itself through its DNS-pinned safe-fetch boundary. Tinyfish's public terms do not by themselves establish the production customer-data posture required here; production web policy therefore remains disabled until the Tinyfish decisions and evidence in `docs/production-readiness.spec.md` are accepted.
+The development runtime uses Z.AI only for model calls and Tinyfish Search only for discovery when `TINYFISH_API_KEY` is present. Hartlib fetches candidate pages itself through its DNS-pinned safe-fetch boundary. Tinyfish's public terms do not by themselves establish the production customer-data posture required here; production web policy therefore remains disabled until the Tinyfish decisions and evidence in `docs/production-readiness.spec.md` are accepted.
 
 ## Disclosure
 
@@ -425,7 +425,7 @@ Client chats are retained while the client company account exists.
 
 Chat retention includes messages, per-run web choices, saved-answer source maps, selected web quotations, context-plan observations, source-exposure records, model usage, content-free web search/fetch operation usage, and citation metadata. Internal publisher/public document bodies remain governed by their source records and are referenced by ID and range rather than copied into chat observations.
 
-Terminal Smithers state and transient stream events are operational runtime data, not chat history. Smithers state is deleted after either normal finalization or the fatal-failure handler has committed the Brief product terminal transition; the orphan sweep removes terminal leftovers after 24 hours. Stream events are retained for replay for 24 hours after the terminal event, then deleted.
+Terminal Smithers state and transient stream events are operational runtime data, not chat history. Smithers state is deleted after either normal finalization or the fatal-failure handler has committed the Hartlib product terminal transition; the orphan sweep removes terminal leftovers after 24 hours. Stream events are retained for replay for 24 hours after the terminal event, then deleted.
 
 When a publisher pauses a subscription, the client company keeps existing subscription chats.
 
@@ -439,7 +439,7 @@ Legal hold pauses deletion for the affected data.
 
 Client users can export their chats while they have subscription access. This includes eligible archived chats until explicit deletion or an exceptional restriction.
 
-Publisher users can export their own issues, brief documents, issue metadata, and global AI context pull counts.
+Publisher users can export their own issues, hartlib documents, issue metadata, and global AI context pull counts.
 
 Client company admins can export delivered issue documents, delivered issue metadata, shared chats, and company-owned chat data.
 

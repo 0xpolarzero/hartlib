@@ -1,6 +1,6 @@
 @import "tailwindcss";
 @source "../../../packages/ui/src";
-@import "@brief/ui/styles";
+@import "@hartlib/ui/styles";
 
 *,
 *::before,

@@ -1,4 +1,4 @@
-import { demoDataset } from "@brief/demo-data";
+import { demoDataset } from "@hartlib/demo-data";
 import { describe, expect, it } from "vitest";
 
 import { DemoPublications, readStoredOr, SubscriberSession } from "./demo-state";

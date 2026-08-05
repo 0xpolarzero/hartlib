@@ -1,4 +1,4 @@
-import type { GetChatResponse, ResetProductChatResponse } from "@brief/shared";
+import type { GetChatResponse, ResetProductChatResponse } from "@hartlib/shared";
 import { describe, expect, it } from "vitest";
 
 import {

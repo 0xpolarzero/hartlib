@@ -1,12 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import {
   deleteUserMemory,
   listUserMemories,
   readUserMemoryWithRevisions,
-} from "@brief/backend-domain/memories";
+} from "@hartlib/backend-domain/memories";
 import { ConfigProvider, Effect, Redacted } from "effect";
-import { makeRunAcceptanceScope } from "@brief/shared";
+import { makeRunAcceptanceScope } from "@hartlib/shared";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -20,7 +20,7 @@ const isBun = typeof process.versions.bun === "string";
 
 const demoCookie = `${DEMO_COOKIE_NAME}=demo-user`;
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const databaseName = `brief_api_contract_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const databaseName = `hartlib_api_contract_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 const sourceUrl = () => {
   if (databaseUrl === undefined) throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL is required");
@@ -63,7 +63,7 @@ const runDb = <A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
   Effect.runPromise(
     effect.pipe(
       Effect.provide(
-        PgClient.layer({ url: Redacted.make(url), applicationName: "brief-api-contract-test" }),
+        PgClient.layer({ url: Redacted.make(url), applicationName: "hartlib-api-contract-test" }),
       ),
     ),
   );
@@ -135,7 +135,10 @@ const waitForDatabaseBlocker = async (
 };
 
 const pgLayer = () =>
-  PgClient.layer({ url: Redacted.make(isolatedUrl()), applicationName: "brief-api-contract-test" });
+  PgClient.layer({
+    url: Redacted.make(isolatedUrl()),
+    applicationName: "hartlib-api-contract-test",
+  });
 
 const configLayer = ConfigProvider.layer(
   ConfigProvider.fromEnv({
@@ -168,7 +171,7 @@ const routes = (): readonly Route[] => [
   ...makeMemoryRoutes(pgLayer()),
 ];
 const request = (method: string, path: string, init?: RequestInit) =>
-  new Request(`http://brief.test${path}`, {
+  new Request(`http://hartlib.test${path}`, {
     ...init,
     method,
     headers: { cookie: demoCookie, ...(init?.headers as Record<string, string> | undefined) },
@@ -511,7 +514,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
       releaseRunsTable = resolve;
     });
     const tableHolder = runDbAs(
-      "brief-demo-route-runs-table-holder",
+      "hartlib-demo-route-runs-table-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
@@ -526,9 +529,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     await runsTableHeld;
 
     const reading = route(request("GET", "/v1/chat"));
-    await waitForDatabaseLock("brief-api-contract-test");
+    await waitForDatabaseLock("hartlib-api-contract-test");
     const finalizing = runDbAs(
-      "brief-demo-route-actual-finalization",
+      "hartlib-demo-route-actual-finalization",
       finalizationModule.finalizeAiRun({
         runId,
         expectedSmithersRunId: `ai-chat:${runId}`,
@@ -543,7 +546,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
       }),
     );
     try {
-      await waitForDatabaseLock("brief-demo-route-actual-finalization");
+      await waitForDatabaseLock("hartlib-demo-route-actual-finalization");
     } finally {
       releaseRunsTable();
     }
@@ -2096,7 +2099,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           )
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type,
             byte_size, sha256_hex, upload_completed_at, created_by_user_id, language
           ) values (
@@ -2110,8 +2113,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           values (${extractionJobId}, 'extract_pdf_text', '{}'::jsonb)
         `;
         yield* sql`
-          insert into brief_document_extractions (
-            id, brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+          insert into hartlib_document_extractions (
+            id, hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
           ) values (
             ${extractionId}, ${documentId}, ${"a".repeat(64)},
             ${JSON.stringify([{ pageNumber: 1, text: publisherText }])}::jsonb,
@@ -2119,8 +2122,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           )
         `;
         yield* sql`
-          insert into brief_document_versions (
-            id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
+          insert into hartlib_document_versions (
+            id, hartlib_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
             ${snapshotId}, ${documentId}, ${extractionId}, ${publisherContentHash}, 'en-US', ${publisherText},
@@ -2129,7 +2132,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
           )
         `;
         yield* sql`
-          update brief_documents
+          update hartlib_documents
           set current_version_id = ${snapshotId}
           where id = ${documentId}
         `;
@@ -2576,16 +2579,22 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
   it("lists memory heads and revision ledgers from one user-memory snapshot", async () => {
     await getChat();
     const seeded = await seedMemory("Before concurrent finalization");
-    const blocker = holdMemoryRevisionTable("brief-memory-snapshot-blocker");
+    const blocker = holdMemoryRevisionTable("hartlib-memory-snapshot-blocker");
     await blocker.held;
-    const listing = runDbAs("brief-memory-snapshot-reader", listUserMemories("demo-user"));
-    await waitForDatabaseBlocker("brief-memory-snapshot-reader", "brief-memory-snapshot-blocker");
+    const listing = runDbAs("hartlib-memory-snapshot-reader", listUserMemories("demo-user"));
+    await waitForDatabaseBlocker(
+      "hartlib-memory-snapshot-reader",
+      "hartlib-memory-snapshot-blocker",
+    );
 
     const writer = runDbAs(
-      "brief-memory-snapshot-writer",
+      "hartlib-memory-snapshot-writer",
       deleteUserMemory("demo-user", seeded.memoryId),
     );
-    await waitForDatabaseBlocker("brief-memory-snapshot-writer", "brief-memory-snapshot-reader");
+    await waitForDatabaseBlocker(
+      "hartlib-memory-snapshot-writer",
+      "hartlib-memory-snapshot-reader",
+    );
     blocker.release();
     await blocker.done;
 
@@ -2600,7 +2609,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     });
     expect(memory?.revisions.map((revision) => revision.id)).toEqual([seeded.revisionId]);
 
-    const after = await runDbAs("brief-memory-snapshot-after", listUserMemories("demo-user"));
+    const after = await runDbAs("hartlib-memory-snapshot-after", listUserMemories("demo-user"));
     const nextRevisionId = written.status === "ok" ? written.memory.headRevisionId : "";
     expect(after.memories[0]).toMatchObject({
       id: seeded.memoryId,
@@ -2616,19 +2625,19 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
   it("reads an exact memory and its revision ledger under one user-memory lease", async () => {
     await getChat();
     const seeded = await seedMemory("Before exact revision read");
-    const blocker = holdMemoryRevisionTable("brief-memory-exact-blocker");
+    const blocker = holdMemoryRevisionTable("hartlib-memory-exact-blocker");
     await blocker.held;
     const reading = runDbAs(
-      "brief-memory-exact-reader",
+      "hartlib-memory-exact-reader",
       readUserMemoryWithRevisions("demo-user", seeded.memoryId),
     );
-    await waitForDatabaseBlocker("brief-memory-exact-reader", "brief-memory-exact-blocker");
+    await waitForDatabaseBlocker("hartlib-memory-exact-reader", "hartlib-memory-exact-blocker");
 
     const writer = runDbAs(
-      "brief-memory-exact-writer",
+      "hartlib-memory-exact-writer",
       deleteUserMemory("demo-user", seeded.memoryId),
     );
-    await waitForDatabaseBlocker("brief-memory-exact-writer", "brief-memory-exact-reader");
+    await waitForDatabaseBlocker("hartlib-memory-exact-writer", "hartlib-memory-exact-reader");
     blocker.release();
     await blocker.done;
 
@@ -2643,7 +2652,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     expect(loaded?.revisions.map((revision) => revision.id)).toEqual([seeded.revisionId]);
 
     const after = await runDbAs(
-      "brief-memory-exact-after",
+      "hartlib-memory-exact-after",
       readUserMemoryWithRevisions("demo-user", seeded.memoryId),
     );
     const nextRevisionId = written.status === "ok" ? written.memory.headRevisionId : "";

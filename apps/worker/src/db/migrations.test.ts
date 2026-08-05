@@ -2,19 +2,19 @@ import { createHash } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { makeRunAcceptanceScope } from "@brief/shared";
+import { makeRunAcceptanceScope } from "@hartlib/shared";
 import {
   canonicalSha256Hex,
   readAndRevalidateEvaluationV3Artifact,
   revalidateEvaluationV3Evidence,
 } from "../ai/evaluation/pipeline";
 
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
 const migrationsUrl = new URL("../../../../db/migrations/", import.meta.url);
-const isolatedDatabaseName = `brief_migrations_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const isolatedDatabaseName = `hartlib_migrations_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 type RelationRow = {
   client_companies: string | null;
@@ -125,7 +125,7 @@ function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-worker-migrations-test",
+          applicationName: "hartlib-worker-migrations-test",
         }),
       ),
     ),
@@ -189,7 +189,7 @@ function applyMigrationsThrough(lastMigration: string) {
 
     yield* sql.withTransaction(
       Effect.gen(function* () {
-        yield* sql`select pg_advisory_xact_lock(hashtext('brief:schema_migrations'))`;
+        yield* sql`select pg_advisory_xact_lock(hashtext('hartlib:schema_migrations'))`;
 
         for (const file of files) {
           const body = yield* Effect.promise(() => Bun.file(new URL(file, migrationsUrl)).text());
@@ -470,7 +470,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 and relations.relname in (
                   'ai_runs', 'ai_observations', 'ai_run_usage', 'ai_source_exposures',
                   'assistant_message_sources', 'assistant_message_source_uses',
-                  'brief_document_versions', 'public_source_documents'
+                  'hartlib_document_versions', 'public_source_documents'
                 )
             ) as count,
             (
@@ -994,7 +994,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
 
         yield* sql.withTransaction(
           Effect.gen(function* () {
-            yield* sql`select set_config('brief.allow_delivery_recipient_backfill', 'on', true)`;
+            yield* sql`select set_config('hartlib.allow_delivery_recipient_backfill', 'on', true)`;
             yield* sql`
               insert into issue_delivery_recipients (
                 issue_id, client_company_id, user_id, delivered_at
@@ -1077,7 +1077,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
 
   it("backfills only unambiguous legacy delivery recipients", { timeout: 120_000 }, async () => {
     const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-    const databaseName = `brief_migrations_delivery_backfill_${process.pid}_${suffix}`;
+    const databaseName = `hartlib_migrations_delivery_backfill_${process.pid}_${suffix}`;
     const legacyUrl = databaseUrlForName(databaseName);
     const migration = await Bun.file(
       new URL("../../../../db/migrations/0064_ai_chat_runtime_cutover.sql", import.meta.url),
@@ -1391,7 +1391,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     { timeout: 120_000 },
     async () => {
       const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-      const databaseName = `brief_migrations_failed_ledger_${process.pid}_${suffix}`;
+      const databaseName = `hartlib_migrations_failed_ledger_${process.pid}_${suffix}`;
       const databaseUrl = databaseUrlForName(databaseName);
       const ids = {
         user: `failed-ledger-user-${suffix}`,
@@ -2011,7 +2011,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     { timeout: 120_000 },
     async () => {
       const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-      const databaseName = `brief_migrations_astral_ranges_${process.pid}_${suffix}`;
+      const databaseName = `hartlib_migrations_astral_ranges_${process.pid}_${suffix}`;
       const databaseUrl = databaseUrlForName(databaseName);
       const ids = {
         user: `astral-ranges-user-${suffix}`,
@@ -2261,7 +2261,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     { timeout: 120_000 },
     async () => {
       const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-      const databaseName = `brief_migrations_duplicate_manifest_${process.pid}_${suffix}`;
+      const databaseName = `hartlib_migrations_duplicate_manifest_${process.pid}_${suffix}`;
       const databaseUrl = databaseUrlForName(databaseName);
       const ids = {
         user: `duplicate-manifest-user-${suffix}`,
@@ -2676,7 +2676,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     { timeout: 120_000 },
     async () => {
       const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-      const databaseName = `brief_migrations_fanout_${process.pid}_${suffix}`;
+      const databaseName = `hartlib_migrations_fanout_${process.pid}_${suffix}`;
       const databaseUrl = databaseUrlForName(databaseName);
       const ids = {
         user: `fanout-user-${suffix}`,
@@ -3428,7 +3428,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
 
   it("upgrades a populated 0063 publisher tuple through the final cutover", async () => {
     const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-    const databaseName = `brief_migrations_0063_${process.pid}_${suffix}`;
+    const databaseName = `hartlib_migrations_0063_${process.pid}_${suffix}`;
     const databaseUrl = databaseUrlForName(databaseName);
     const documentId = crypto.randomUUID();
     const issueId = crypto.randomUUID();
@@ -3454,7 +3454,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       "missing_key",
     ] as const;
     const locatorCaseDatabaseNames = locatorCaseNames.map(
-      (caseName) => `brief_migrations_0064_locator_${caseName}_${process.pid}_${suffix}`,
+      (caseName) => `hartlib_migrations_0064_locator_${caseName}_${process.pid}_${suffix}`,
     );
     const pdfHash = "a".repeat(64);
     const canonicalText = "A retained publisher page with exact immutable text.";
@@ -4792,7 +4792,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     { timeout: 120_000 },
     async () => {
       const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-      const databaseName = `brief_migrations_provenance_${process.pid}_${suffix}`;
+      const databaseName = `hartlib_migrations_provenance_${process.pid}_${suffix}`;
       const databaseUrl = databaseUrlForName(databaseName);
       const ids = {
         user: `provenance-user-${suffix}`,
@@ -5462,7 +5462,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
 
   it("converts a terminal 0063 answer with sparse ordinals and exact legacy text handling", async () => {
     const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-    const databaseName = `brief_migrations_terminal_0063_${process.pid}_${suffix}`;
+    const databaseName = `hartlib_migrations_terminal_0063_${process.pid}_${suffix}`;
     const databaseUrl = databaseUrlForName(databaseName);
     const ids = {
       user: `terminal-0063-user-${suffix}`,
@@ -7734,7 +7734,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
 
   it("rejects every legacy terminal 0063 ledger row before the cutover writes", async () => {
     const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
-    const databaseName = `brief_migrations_terminal_0063_legacy_${process.pid}_${suffix}`;
+    const databaseName = `hartlib_migrations_terminal_0063_legacy_${process.pid}_${suffix}`;
     const databaseUrl = databaseUrlForName(databaseName);
     const ids = {
       user: `terminal-0063-legacy-user-${suffix}`,
@@ -9278,7 +9278,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         const policy = yield* sql<{ readonly url: string; readonly allowed: boolean }>`
-          select value as url, brief_public_source_https_url_allowed(value) as allowed
+          select value as url, hartlib_public_source_https_url_allowed(value) as allowed
           from unnest(${[
             "https://www.service-public.fr/actualites/1",
             "http://www.service-public.fr/actualites/1",
@@ -11234,7 +11234,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           )
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type,
             byte_size, sha256_hex, upload_completed_at, language, created_by_user_id
           ) values (
@@ -11248,8 +11248,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           values (${publisherExtractionJobId}, 'extract_pdf_text', '{}'::jsonb)
         `;
         yield* sql`
-          insert into brief_document_extractions (
-            id, brief_document_id, input_sha256_hex, pages,
+          insert into hartlib_document_extractions (
+            id, hartlib_document_id, input_sha256_hex, pages,
             extracted_char_count, created_by_job_id
           ) values (
             ${publisherExtractionId}, ${publisherDocumentId}, ${"b".repeat(64)},
@@ -11258,8 +11258,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           )
         `;
         const publisherHashFailure = yield* Effect.flip(sql`
-          insert into brief_document_versions (
-            id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
+          insert into hartlib_document_versions (
+            id, hartlib_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
             ${publisherInvalidVersionId}, ${publisherDocumentId}, ${publisherExtractionId}, ${"b".repeat(64)},
@@ -11268,8 +11268,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           )
         `);
         yield* sql`
-          insert into brief_document_versions (
-            id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
+          insert into hartlib_document_versions (
+            id, hartlib_document_id, publisher_extraction_id, content_hash, language, canonical_text,
             text_char_count, page_ranges
           ) values (
             ${publisherVersionId}, ${publisherDocumentId}, ${publisherExtractionId},
@@ -11279,7 +11279,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           )
         `;
         const publisherTextUpdateFailure = yield* Effect.flip(sql`
-          update brief_document_versions
+          update hartlib_document_versions
           set canonical_text = 'Réécriture interdite ❌'
           where id = ${publisherVersionId}
         `);
@@ -11303,7 +11303,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
       "publisher document version content hash must match exact UTF-8 text",
     );
     expect(errorText(result.publisherTextUpdateFailure)).toContain(
-      "brief document versions are immutable",
+      "hartlib document versions are immutable",
     );
   });
 
@@ -11798,8 +11798,8 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             '92000000-0000-4000-8000-000000000001', 'checkout-session',
             'clerk', true, 'additional', 25,
             'cus_checkout_migration', 'price_additional',
-            'https://brief.test/success', 'https://brief.test/cancel',
-            ${`brief-checkout:${companyId}:${key}:session`}
+            'https://hartlib.test/success', 'https://hartlib.test/cancel',
+            ${`hartlib-checkout:${companyId}:${key}:session`}
           )
         `;
         yield* sql`
@@ -11840,6 +11840,72 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     expect(errorText(result.retentionFailure)).toContain(
       "billing/accounting records are retained for ten years",
     );
+  });
+
+  it("accepts Hartlib Checkout keys without rewriting retained legacy keys", async () => {
+    const result = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const hartlibCompanyId = crypto.randomUUID();
+        const legacyCompanyId = crypto.randomUUID();
+        const hartlibKey = `checkout-hartlib-${crypto.randomUUID().slice(0, 8)}`;
+        const legacyKey = `checkout-legacy-${crypto.randomUUID().slice(0, 8)}`;
+        yield* sql`
+          insert into client_companies (id, name)
+          values
+            (${hartlibCompanyId}, 'Hartlib Checkout invariant'),
+            (${legacyCompanyId}, 'Legacy Checkout invariant')
+        `;
+        yield* sql`
+          insert into client_ai_checkout_requests (
+            client_company_id, idempotency_key, requested_by_user_id,
+            authorization_request_id, authorization_session_id,
+            authorization_mode, authorization_mfa_verified, kind, credits,
+            stripe_customer_id, stripe_price_id, success_url, cancel_url,
+            stripe_operation_key
+          ) values (
+            ${hartlibCompanyId}, ${hartlibKey}, 'checkout-hartlib-user',
+            '93000000-0000-4000-8000-000000000001', 'checkout-hartlib-session',
+            'clerk', true, 'additional', 25,
+            'cus_checkout_hartlib', 'price_additional',
+            'https://hartlib.test/success', 'https://hartlib.test/cancel',
+            ${`hartlib-checkout:${hartlibCompanyId}:${hartlibKey}:session`}
+          )
+        `;
+        yield* sql`
+          insert into client_ai_checkout_requests (
+            client_company_id, idempotency_key, requested_by_user_id,
+            authorization_request_id, authorization_session_id,
+            authorization_mode, authorization_mfa_verified, kind, credits,
+            stripe_customer_id, stripe_price_id, success_url, cancel_url,
+            stripe_operation_key, stripe_checkout_session_id, checkout_url, status
+          ) values (
+            ${legacyCompanyId}, ${legacyKey}, 'checkout-legacy-user',
+            '93000000-0000-4000-8000-000000000002', 'checkout-legacy-session',
+            'clerk', true, 'additional', 25,
+            'cus_checkout_legacy', 'price_additional',
+            'https://hartlib.test/success', 'https://hartlib.test/cancel',
+            ${`brief-checkout:${legacyCompanyId}:${legacyKey}:session`},
+            'cs_checkout_legacy', 'https://checkout.stripe.test/legacy', 'succeeded'
+          )
+        `;
+        return yield* sql<{ readonly operationKey: string }>`
+          select stripe_operation_key as "operationKey"
+          from client_ai_checkout_requests
+          where client_company_id in (${hartlibCompanyId}, ${legacyCompanyId})
+          order by stripe_operation_key
+        `;
+      }),
+    );
+    expect(result).toEqual([
+      {
+        operationKey: expect.stringMatching(/^brief-checkout:[^:]+:.+:session$/u),
+      },
+      {
+        operationKey: expect.stringMatching(/^hartlib-checkout:[^:]+:.+:session$/u),
+      },
+    ]);
   });
 
   it("enforces exact authorization-audit outcome and denial-reason shape", async () => {
@@ -11936,7 +12002,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             )
         `;
         yield* sql`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type,
             byte_size, sha256_hex, upload_completed_at, language, created_by_user_id
           ) values (
@@ -11979,48 +12045,48 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
 
         const documentFailures = [
           yield* Effect.flip(
-            sql`update brief_documents set issue_id = ${otherIssueId} where id = ${documentId}`,
+            sql`update hartlib_documents set issue_id = ${otherIssueId} where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set title = 'Rewritten document' where id = ${documentId}`,
+            sql`update hartlib_documents set title = 'Rewritten document' where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set original_file_name = 'rewritten.pdf' where id = ${documentId}`,
+            sql`update hartlib_documents set original_file_name = 'rewritten.pdf' where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set object_key = 'publisher/rewritten.pdf' where id = ${documentId}`,
+            sql`update hartlib_documents set object_key = 'publisher/rewritten.pdf' where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set media_type = 'text/plain' where id = ${documentId}`,
+            sql`update hartlib_documents set media_type = 'text/plain' where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set byte_size = 256 where id = ${documentId}`,
+            sql`update hartlib_documents set byte_size = 256 where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set sha256_hex = ${"b".repeat(64)} where id = ${documentId}`,
+            sql`update hartlib_documents set sha256_hex = ${"b".repeat(64)} where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set upload_completed_at = upload_completed_at + interval '1 second' where id = ${documentId}`,
+            sql`update hartlib_documents set upload_completed_at = upload_completed_at + interval '1 second' where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set language = 'en-US' where id = ${documentId}`,
+            sql`update hartlib_documents set language = 'en-US' where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set deleted_at = now() where id = ${documentId}`,
+            sql`update hartlib_documents set deleted_at = now() where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set deleted_by_user_id = 'rewritten-user' where id = ${documentId}`,
+            sql`update hartlib_documents set deleted_by_user_id = 'rewritten-user' where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set purge_after = now() + interval '30 days' where id = ${documentId}`,
+            sql`update hartlib_documents set purge_after = now() + interval '30 days' where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set created_by_user_id = 'rewritten-user' where id = ${documentId}`,
+            sql`update hartlib_documents set created_by_user_id = 'rewritten-user' where id = ${documentId}`,
           ),
           yield* Effect.flip(
-            sql`update brief_documents set created_at = created_at - interval '1 day' where id = ${documentId}`,
+            sql`update hartlib_documents set created_at = created_at - interval '1 day' where id = ${documentId}`,
           ),
-          yield* Effect.flip(sql`delete from brief_documents where id = ${documentId}`),
+          yield* Effect.flip(sql`delete from hartlib_documents where id = ${documentId}`),
         ];
 
         yield* sql`
@@ -12031,7 +12097,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           where id = ${issueId}
         `;
         yield* sql`
-          update brief_documents
+          update hartlib_documents
           set indexing_error_code = 'extract_failed', legal_hold = true, updated_at = now()
           where id = ${documentId}
         `;
@@ -12046,9 +12112,9 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 as "issueFailed",
               (select restricted_at is not null from publisher_issues where id = ${issueId})
                 as "issueRestricted",
-              (select indexing_error_code = 'extract_failed' from brief_documents where id = ${documentId})
+              (select indexing_error_code = 'extract_failed' from hartlib_documents where id = ${documentId})
                 as "documentFailed",
-              (select legal_hold from brief_documents where id = ${documentId})
+              (select legal_hold from hartlib_documents where id = ${documentId})
                 as "documentHeld"
           `)[0]!;
         return { issueFailures, documentFailures, operational };
@@ -12060,7 +12126,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     }
     expect(result.documentFailures).toHaveLength(15);
     for (const failure of result.documentFailures) {
-      expect(errorText(failure)).toContain("published brief documents are immutable");
+      expect(errorText(failure)).toContain("published hartlib documents are immutable");
     }
     expect(result.operational).toEqual({
       issueFailed: true,
@@ -12315,7 +12381,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         `);
         yield* sql.withTransaction(
           Effect.gen(function* () {
-            yield* sql`select set_config('brief.allow_export_object_purge', 'on', true)`;
+            yield* sql`select set_config('hartlib.allow_export_object_purge', 'on', true)`;
             yield* sql`
               update export_object_generations set delete_fenced_at = now()
               where export_request_id = ${exportId} and generation = 1
@@ -12325,7 +12391,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         const ambiguousDeletionFailure = yield* Effect.exit(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* sql`select set_config('brief.allow_export_object_purge', 'on', true)`;
+              yield* sql`select set_config('hartlib.allow_export_object_purge', 'on', true)`;
               yield* sql`
               update export_object_generations set deleted_at = now()
               where export_request_id = ${exportId} and generation = 1
@@ -12499,7 +12565,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         const atomicAuthority = yield* Effect.exit(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* sql`select set_config('brief.allow_export_object_purge', 'on', true)`;
+              yield* sql`select set_config('hartlib.allow_export_object_purge', 'on', true)`;
               yield* sql`
                 update export_object_generations
                 set writer_state = 'succeeded', writer_succeeded_at = now(),
@@ -12515,7 +12581,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         `;
         yield* sql.withTransaction(
           Effect.gen(function* () {
-            yield* sql`select set_config('brief.allow_export_object_purge', 'on', true)`;
+            yield* sql`select set_config('hartlib.allow_export_object_purge', 'on', true)`;
             yield* sql`
               update export_object_generations set delete_fenced_at = now()
               where export_request_id = ${atomicId} and generation = 1
@@ -12525,7 +12591,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         const forgedRetry = yield* Effect.exit(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* sql`select set_config('brief.allow_export_object_purge', 'on', true)`;
+              yield* sql`select set_config('hartlib.allow_export_object_purge', 'on', true)`;
               yield* sql`
                 update export_object_generations
                 set delete_attempts = delete_attempts + 1,
@@ -12600,7 +12666,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
           Effect.gen(function* () {
-            yield* sql`select set_config('brief.allow_export_object_purge', 'on', true)`;
+            yield* sql`select set_config('hartlib.allow_export_object_purge', 'on', true)`;
             yield* sql`
               update export_object_generations set delete_fenced_at = now()
               where export_request_id = ${ids.deletionId} and generation = 1
@@ -12610,7 +12676,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         const falseDeletion = yield* Effect.exit(
           sql.withTransaction(
             Effect.gen(function* () {
-              yield* sql`select set_config('brief.allow_export_object_purge', 'on', true)`;
+              yield* sql`select set_config('hartlib.allow_export_object_purge', 'on', true)`;
               yield* sql`
                 update export_requests set object_deleted_at = now()
                 where id = ${ids.deletionId}
@@ -13155,9 +13221,11 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     "executes the retrieval/compaction migration body twice without drift or temporary helpers",
     { timeout: 60_000 },
     async () => {
-      const body = await Bun.file(
-        new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
-      ).text();
+      const body = (
+        await Bun.file(
+          new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
+        ).text()
+      ).replaceAll("brief", "hartlib");
       await runDb(
         isolatedDatabaseUrl(),
         Effect.gen(function* () {
@@ -13165,10 +13233,10 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           yield* sql`delete from ai_runs where finished_at is null and failed_at is null`;
           yield* sql.unsafe(`
             create table if not exists _smithers_runs (run_id text primary key);
-            create table brief_0072_smithers_dependent (
+            create table hartlib_0072_smithers_dependent (
               run_id text primary key references _smithers_runs(run_id)
             );
-            delete from brief_0072_smithers_dependent;
+            delete from hartlib_0072_smithers_dependent;
             delete from _smithers_runs;
           `).raw;
         }),
@@ -13428,11 +13496,11 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               ) as helpers,
               (
                 select array[
-                  brief_ai_strip_historical_citation_tags('A [[cite:x]] B'),
-                  brief_ai_strip_historical_citation_tags('A [[cite:x'),
-                  brief_ai_strip_historical_citation_tags('A [[cite:x]y]] B'),
-                  brief_ai_strip_historical_citation_tags(E'A\n[[cite:x]]\nB'),
-                  brief_ai_strip_historical_citation_tags('😀 [[cite:x]] z')
+                  hartlib_ai_strip_historical_citation_tags('A [[cite:x]] B'),
+                  hartlib_ai_strip_historical_citation_tags('A [[cite:x'),
+                  hartlib_ai_strip_historical_citation_tags('A [[cite:x]y]] B'),
+                  hartlib_ai_strip_historical_citation_tags(E'A\n[[cite:x]]\nB'),
+                  hartlib_ai_strip_historical_citation_tags('😀 [[cite:x]] z')
                 ]
               ) as sanitizer,
               (
@@ -13459,7 +13527,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
                 where run_id = ${twoUseIds.run}
                   and observation_key = 'two-use-evidence'
               ) as "twoUseEvidence",
-              (select to_regclass('public.brief_0072_smithers_dependent')::text) as "dependentTable",
+              (select to_regclass('public.hartlib_0072_smithers_dependent')::text) as "dependentTable",
               (select to_regclass('public._smithers_runs')::text) as "smithersRuns"
           `;
         }),
@@ -13521,9 +13589,11 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     "refuses populated FK-dependent Smithers tables before writes",
     { timeout: 60_000 },
     async () => {
-      const body = await Bun.file(
-        new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
-      ).text();
+      const body = (
+        await Bun.file(
+          new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
+        ).text()
+      ).replaceAll("brief", "hartlib");
       const testUrl = isolatedDatabaseUrl();
       const [existingSmithersRuns] = await runDb(
         testUrl,
@@ -13542,14 +13612,14 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
             const sql = yield* PgClient.PgClient;
             yield* sql.unsafe(`
             create table if not exists _smithers_runs (run_id text primary key);
-            create table brief_0072_smithers_dependent (
+            create table hartlib_0072_smithers_dependent (
               dependent_id text primary key,
               run_id text
             );
-            insert into brief_0072_smithers_dependent (dependent_id, run_id)
+            insert into hartlib_0072_smithers_dependent (dependent_id, run_id)
               values ('retained-dependent-row', null);
-            alter table brief_0072_smithers_dependent
-              add constraint brief_0072_smithers_dependent_run_fk
+            alter table hartlib_0072_smithers_dependent
+              add constraint hartlib_0072_smithers_dependent_run_fk
               foreign key (run_id) references _smithers_runs(run_id);
           `).raw;
           }),
@@ -13565,7 +13635,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
         );
         expect(failure._tag).toBe("Failure");
         expect(errorText(failure)).toContain(
-          "drained Smithers output table brief_0072_smithers_dependent",
+          "drained Smithers output table hartlib_0072_smithers_dependent",
         );
         const retained = await runDb(
           testUrl,
@@ -13576,20 +13646,20 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
               readonly migrationTable: string | null;
             }>`
             select
-              (select count(*)::int from brief_0072_smithers_dependent) as "dependentRows",
-              to_regclass('public.brief_0072_smithers_dependent')::text as "migrationTable"
+              (select count(*)::int from hartlib_0072_smithers_dependent) as "dependentRows",
+              to_regclass('public.hartlib_0072_smithers_dependent')::text as "migrationTable"
           `;
           }),
         );
         expect(retained).toEqual([
-          { dependentRows: 1, migrationTable: "brief_0072_smithers_dependent" },
+          { dependentRows: 1, migrationTable: "hartlib_0072_smithers_dependent" },
         ]);
       } finally {
         await runDb(
           testUrl,
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
-            yield* sql.unsafe("drop table if exists brief_0072_smithers_dependent").raw;
+            yield* sql.unsafe("drop table if exists hartlib_0072_smithers_dependent").raw;
             if (!hadSmithersRuns) {
               yield* sql.unsafe("drop table if exists _smithers_runs").raw;
             }
@@ -13603,9 +13673,11 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     "independently blocks active product runs, retained Smithers rows, and old output rows",
     { timeout: 60_000 },
     async () => {
-      const body = await Bun.file(
-        new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
-      ).text();
+      const body = (
+        await Bun.file(
+          new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
+        ).text()
+      ).replaceAll("brief", "hartlib");
       const testUrl = isolatedDatabaseUrl();
       await runDb(
         testUrl,
@@ -13669,7 +13741,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
           yield* sql`delete from chat_messages where id = ${activeIds.message}`;
           yield* sql`delete from chats where id = ${activeIds.chat}`;
           yield* sql`update client_company_memberships set revoked_at = now(), revoked_by_user_id = ${activeIds.user} where company_id = ${activeIds.company} and user_id = ${activeIds.user}`;
-          yield* sql.unsafe("set brief.allow_account_purge = 'on'");
+          yield* sql.unsafe("set hartlib.allow_account_purge = 'on'");
           yield* sql`delete from client_companies where id = ${activeIds.company}`;
           yield* sql`delete from platform_users where id = ${activeIds.user}`;
         }),
@@ -13766,9 +13838,11 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat runtime migrations", () => {
     "blocks malformed, foreign, and missing chat source uses before writes",
     { timeout: 60_000 },
     async () => {
-      const body = await Bun.file(
-        new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
-      ).text();
+      const body = (
+        await Bun.file(
+          new URL("../../../../db/migrations/0072_ai_retrieval_compaction.sql", import.meta.url),
+        ).text()
+      ).replaceAll("brief", "hartlib");
       const testUrl = isolatedDatabaseUrl();
       await runDb(
         testUrl,

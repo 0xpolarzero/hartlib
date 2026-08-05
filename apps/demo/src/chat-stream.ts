@@ -6,9 +6,9 @@ import {
   type GetChatResponse,
   type PublicSourceRecord,
   type SendChatMessageRequest,
-} from "@brief/shared";
-import { ApiResponseError } from "@brief/api-client";
-import type { PersistedRunStreamState } from "@brief/api-client/stream";
+} from "@hartlib/shared";
+import { ApiResponseError } from "@hartlib/api-client";
+import type { PersistedRunStreamState } from "@hartlib/api-client/stream";
 
 export type ChatStreamPhase = "idle" | "preparing" | "answering" | "done" | "error";
 export type ChatStreamEvent = AiRunEvent;

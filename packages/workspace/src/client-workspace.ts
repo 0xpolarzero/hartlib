@@ -2,13 +2,13 @@ import { PgClient } from "@effect/sql-pg";
 import {
   canonicalPublicSourceHttpsUrl,
   normalizeDomainAllowlist,
-  type BriefDocumentDescriptor,
+  type HartlibDocumentDescriptor,
   type ClientPublicSourceSetting,
   type ClientSubscriptionAccessDescriptor,
   type DeliveredArchiveResult,
   type NotificationPreferences,
   type PlatformNotificationDescriptor,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Effect } from "effect";
 
 import {
@@ -31,7 +31,7 @@ export const listClientSubscriptionAccesses = (identity: WorkspaceIdentity, comp
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
         `;
         yield* requireClientCompanyMembership(identity, companyId);
         const rows = yield* sql<{
@@ -116,7 +116,7 @@ export const listClientPublicSources = (identity: WorkspaceIdentity, companyId: 
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
         `;
         yield* requireClientCompanyMembership(identity, companyId);
         return yield* selectClientPublicSources(companyId, null);
@@ -136,7 +136,7 @@ export const updateClientPublicSource = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* requireClientCompanyAdmin(input.identity, input.companyId);
         const exists = yield* sql<{ exists: boolean }>`
@@ -210,7 +210,7 @@ export const getClientWebPolicy = (identity: WorkspaceIdentity, companyId: strin
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
         `;
         yield* requireClientCompanyMembership(identity, companyId);
         return yield* selectClientWebPolicy(companyId);
@@ -233,7 +233,7 @@ export const updateClientWebPolicy = (input: {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
-              select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+              select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
             `;
             yield* requireClientCompanyAdmin(input.identity, input.companyId);
             if (input.enabled && !input.deploymentAvailable) {
@@ -313,7 +313,7 @@ export const listCompanyDeletionRequests = (identity: WorkspaceIdentity, company
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
         `;
         yield* requireClientCompanyAdmin(identity, companyId);
         return yield* selectCompanyDeletionRequests(companyId);
@@ -333,7 +333,7 @@ export const createCompanyDeletionRequest = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* requireClientCompanyAdmin(input.identity, input.companyId);
         const prior = yield* sql<{ id: string; reasonMatches: boolean }>`
@@ -451,8 +451,8 @@ const listDeliveredArchiveLocked = (input: {
         join publisher_issues issue on issue.id = delivery.issue_id
         join publisher_subscriptions subscription on subscription.id = issue.subscription_id
         join publisher_companies publisher on publisher.id = subscription.publisher_company_id
-        join brief_documents document on document.issue_id = issue.id and document.deleted_at is null
-        left join brief_document_versions version on version.id = document.current_version_id
+        join hartlib_documents document on document.issue_id = issue.id and document.deleted_at is null
+        left join hartlib_document_versions version on version.id = document.current_version_id
         where delivery.client_company_id = ${input.companyId}
           and ${includePublisher}
           and issue.status = 'published'
@@ -497,7 +497,7 @@ const listDeliveredArchiveLocked = (input: {
           and ${includePublic}
           and (${publicSourceId}::text is null or sources.source_id = ${publicSourceId})
           and documents.text_char_count >= 100
-          and brief_public_source_https_url_allowed(items.canonical_url)
+          and hartlib_public_source_https_url_allowed(items.canonical_url)
           and btrim(lower(split_part(artifacts.media_type, ';', 1)))
             in ('text/html', 'application/pdf')
           and (
@@ -591,7 +591,7 @@ export const listDeliveredArchive = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* requireClientCompanyMembership(input.identity, input.companyId);
         return yield* listDeliveredArchiveLocked(input);
@@ -646,7 +646,7 @@ export const getClientIssue = (identity: WorkspaceIdentity, issueId: string) =>
           const companyId = lane.key.slice(separator + 1);
           yield* sql`
             select pg_advisory_xact_lock(
-              hashtext(${kind === "publisher" ? `brief:publisher-members:${companyId}` : `brief:client-members:${companyId}`})
+              hashtext(${kind === "publisher" ? `hartlib:publisher-members:${companyId}` : `hartlib:client-members:${companyId}`})
             )
           `;
         }
@@ -683,7 +683,7 @@ export const getClientIssue = (identity: WorkspaceIdentity, issueId: string) =>
              document.sha256_hex as "sha256Hex", document.created_at as "documentCreatedAt"
       from publisher_issues issue
       join publisher_subscriptions subscription on subscription.id = issue.subscription_id
-      left join brief_documents document
+      left join hartlib_documents document
         on document.issue_id = issue.id and document.deleted_at is null
       where issue.id = ${issueId}
         and issue.restricted_at is null and issue.deleted_at is null
@@ -759,7 +759,7 @@ export const getClientIssue = (identity: WorkspaceIdentity, issueId: string) =>
             createdAt: first.issueCreatedAt.toISOString(),
             updatedAt: first.issueUpdatedAt.toISOString(),
           } satisfies ClientIssueDescriptor,
-          documents: rows.flatMap((row): readonly BriefDocumentDescriptor[] =>
+          documents: rows.flatMap((row): readonly HartlibDocumentDescriptor[] =>
             row.documentId === null ||
             row.documentTitle === null ||
             row.originalFileName === null ||
@@ -797,7 +797,7 @@ export const listClientNotifications = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* requireClientCompanyMembership(input.identity, input.companyId);
         const rows = yield* sql<{
@@ -839,7 +839,7 @@ export const markClientNotificationRead = (identity: WorkspaceIdentity, notifica
         const companyId = notifications[0]?.companyId;
         if (companyId === undefined) return null;
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
         `;
         const rows = yield* sql<{ readAt: Date }>`
           update platform_notifications notification
@@ -889,7 +889,7 @@ export const getNotificationPreferences = (identity: WorkspaceIdentity, companyI
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
         `;
         yield* requireClientCompanyMembership(identity, companyId);
         return yield* selectNotificationPreferences(identity, companyId);
@@ -909,7 +909,7 @@ export const updateNotificationPreferences = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* requireClientCompanyMembership(input.identity, input.companyId);
         yield* sql`

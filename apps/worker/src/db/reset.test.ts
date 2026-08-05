@@ -25,7 +25,7 @@ describe("database reset safety", () => {
 
   it("requires the explicit production override and permits non-production", async () => {
     await expect(
-      runWith({ NODE_ENV: "production", BRIEF_ALLOW_DB_RESET: "true" }),
+      runWith({ NODE_ENV: "production", HARTLIB_ALLOW_DB_RESET: "true" }),
     ).resolves.toBeUndefined();
     await expect(runWith({ NODE_ENV: "test" })).resolves.toBeUndefined();
   });

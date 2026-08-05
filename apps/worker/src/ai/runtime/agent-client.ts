@@ -199,7 +199,7 @@ const parseExactlyOneTerminal = <Output>(
 const exposureMarkersFromResult = (
   value: Readonly<Record<string, unknown>>,
 ): readonly ProviderVisibleSourceExposureMarker[] => {
-  const raw = value.__briefSourceExposures;
+  const raw = value.__hartlibSourceExposures;
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) throw new Error("source exposure inventory must be an array");
   return raw.map((item) => {
@@ -694,7 +694,7 @@ export class CanonicalAgentClient {
           const id =
             call.id.length > 0 && !rejectedIds.has(call.id)
               ? call.id
-              : `brief_rejected_${coordinates.attempt}_${coordinates.providerRequestIndex}_${index}`;
+              : `hartlib_rejected_${coordinates.attempt}_${coordinates.providerRequestIndex}_${index}`;
           rejectedIds.add(id);
           return {
             ...call,

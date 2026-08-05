@@ -1,4 +1,4 @@
-import { publicSourceDefinitions } from "@brief/source-ingestion";
+import { publicSourceDefinitions } from "@hartlib/source-ingestion";
 import { Duration, Effect, Schedule } from "effect";
 import { JobRepository } from "../jobs/repository";
 import type { PublicSourceIngestionMode } from "./types";

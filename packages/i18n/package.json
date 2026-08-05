@@ -1,5 +1,5 @@
 {
-  "name": "@brief/i18n",
+  "name": "@hartlib/i18n",
   "private": true,
   "type": "module",
   "exports": {
@@ -11,7 +11,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@brief/shared": "workspace:*",
+    "@hartlib/shared": "workspace:*",
     "react-intl": "10.1.14"
   },
   "devDependencies": {

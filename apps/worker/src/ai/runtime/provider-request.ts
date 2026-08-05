@@ -640,8 +640,8 @@ interface CanonicalInspectionRange {
   readonly charEnd: number;
 }
 
-const SOURCE_EXPOSURE_FIELD = "__briefSourceExposures";
-const SOURCE_IDENTITY_FIELD = "__briefSourceIdentity";
+const SOURCE_EXPOSURE_FIELD = "__hartlibSourceExposures";
+const SOURCE_IDENTITY_FIELD = "__hartlibSourceIdentity";
 const HIDDEN_PROVIDER_TOOL_RESULT_FIELDS = new Set([
   SOURCE_EXPOSURE_FIELD,
   SOURCE_IDENTITY_FIELD,
@@ -3735,7 +3735,7 @@ export const normalizeProviderRequest = (request: ProviderRequest): ProviderRequ
     ...tool,
     parameters: stableJsonValue(tool.parameters) as Readonly<Record<string, unknown>>,
     // Pi serializes this inside each OpenAI `function` object. Retaining the
-    // derived constant in the normalized Brief request also binds request
+    // derived constant in the normalized Hartlib request also binds request
     // digests to that exact transport posture.
     strict: false as const,
   }));
@@ -3804,7 +3804,7 @@ export const toGlmTemplateInput = (
       parameters: stableJsonValue(tool.parameters) as Readonly<Record<string, unknown>>,
       // Pi's pinned openai-completions adapter sends this field whenever the
       // provider supports strict mode. It is provider-visible template input,
-      // even though Brief does not request strict schema enforcement.
+      // even though Hartlib does not request strict schema enforcement.
       strict: tool.strict ?? false,
     },
   }));

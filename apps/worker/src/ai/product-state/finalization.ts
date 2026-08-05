@@ -12,7 +12,7 @@ import {
   parseRunAcceptanceScope,
   publisherIssueAdvisoryLockKey,
   type RunAcceptanceScope,
-} from "@brief/shared";
+} from "@hartlib/shared";
 
 import { isRetryableAiRunError, type AiRunErrorCode } from "../runtime/errors";
 import {
@@ -998,8 +998,7 @@ const validateDurableObservability = (
       taskId: string,
       loopIteration: number,
       attempt: number,
-    ): boolean =>
-      structuredRetrievalTraceCoordinates.has(`${taskId}:${loopIteration}:${attempt}`);
+    ): boolean => structuredRetrievalTraceCoordinates.has(`${taskId}:${loopIteration}:${attempt}`);
 
     const allReviewPreviewRows = observationRows.filter(
       (observation) => observation.kind === "structured_retrieval_review_preview",
@@ -1020,13 +1019,12 @@ const validateDurableObservability = (
     // Review ownership comes from the current durable chat-preview request
     // and its provider measurement. Preview rows are outputs, not evidence
     // used to decide which outputs are required.
-    const durableReviewRequests = (
-      yield* sql<{
-        readonly taskId: string;
-        readonly loopIteration: number;
-        readonly attempt: number;
-        readonly providerRequestIndex: number;
-      }>`
+    const durableReviewRequests = (yield* sql<{
+      readonly taskId: string;
+      readonly loopIteration: number;
+      readonly attempt: number;
+      readonly providerRequestIndex: number;
+    }>`
         select distinct exposures.task_id as "taskId",
                exposures.loop_iteration as "loopIteration",
                exposures.attempt,
@@ -1044,8 +1042,7 @@ const validateDurableObservability = (
           and exposures.provider_request_index > 0
           and measurements.payload->>'agentRole' = 'internal_retrieval'
           and exposures.task_id = any(${expectedRetrievalOwners})
-      `
-    ).filter((request) =>
+      `).filter((request) =>
       hasStructuredRetrievalTrace(request.taskId, request.loopIteration, request.attempt),
     );
     for (const owner of internalRetrievalOwnerSet) {
@@ -1175,8 +1172,8 @@ const validateDurableObservability = (
           : record.identity.subscriptionId;
         const rows = yield* sql<{ readonly text: string }>`
         select versions.canonical_text as text
-        from brief_document_versions versions
-        join brief_documents documents on documents.id = versions.brief_document_id
+        from hartlib_document_versions versions
+        join hartlib_documents documents on documents.id = versions.hartlib_document_id
         where documents.id::text = ${record.identity.documentId}
           and versions.id::text = ${record.identity.snapshotId}
           and versions.publisher_extraction_id::text = ${record.identity.publisherExtractionId}
@@ -2160,7 +2157,7 @@ const validateDurableObservability = (
         return yield* Effect.fail(new Error("external usage has a foreign task owner"));
       }
       const expectedProviderServiceId =
-        usage.operation === "web_search" ? "tinyfish_search_official" : "brief_fetch";
+        usage.operation === "web_search" ? "tinyfish_search_official" : "hartlib_fetch";
       if (
         usage.providerServiceId !== expectedProviderServiceId ||
         !["ok", "empty", "failed"].includes(usage.status) ||
@@ -3858,7 +3855,7 @@ const lockRunExecutionScope = (
     }
     yield* sql`
       select pg_advisory_xact_lock(
-        hashtext(${`brief:user-memory:${scope.initiatingUserId}`})
+        hashtext(${`hartlib:user-memory:${scope.initiatingUserId}`})
       )
     `;
     const chats = yield* sql<{ readonly id: string }>`
@@ -3872,12 +3869,12 @@ const lockRunExecutionScope = (
     }
     yield* sql`
       select pg_advisory_xact_lock(
-        hashtext(${`brief:client-members:${scope.companyId}`})
+        hashtext(${`hartlib:client-members:${scope.companyId}`})
       )
     `;
     yield* sql`
       select pg_advisory_xact_lock(
-        hashtext(${`brief:ai-chat:${scope.chatId}`})
+        hashtext(${`hartlib:ai-chat:${scope.chatId}`})
       )
     `;
     return scope;
@@ -5002,12 +4999,12 @@ const persistAssistantSources = (
              and issues.subscription_id::text = ${source.locator.sourceId.slice("publisher:".length)}
              and issues.restricted_at is null
              and issues.deleted_at is null
-            join brief_documents documents
+            join hartlib_documents documents
               on documents.issue_id = issues.id
              and documents.id::text = ${publisherDocumentId}
              and documents.deleted_at is null
-            join brief_document_versions versions
-              on versions.brief_document_id = documents.id
+            join hartlib_document_versions versions
+              on versions.hartlib_document_id = documents.id
              and versions.id::text = ${source.locator.snapshotId}
              and versions.content_hash = ${source.locator.contentHash}
              and versions.publisher_extraction_id::text = ${source.locator.publisherExtractionId ?? ""}
@@ -5023,13 +5020,13 @@ const persistAssistantSources = (
           }
           const publisherExtractions = yield* sql<{ readonly id: string }>`
             select versions.publisher_extraction_id::text as id
-            from brief_document_extractions extractions
-            join brief_documents documents
-              on documents.id = extractions.brief_document_id
+            from hartlib_document_extractions extractions
+            join hartlib_documents documents
+              on documents.id = extractions.hartlib_document_id
              and documents.id::text = ${publisherDocumentId}
              and documents.deleted_at is null
-            join brief_document_versions versions
-              on versions.brief_document_id = documents.id
+            join hartlib_document_versions versions
+              on versions.hartlib_document_id = documents.id
              and versions.id::text = ${source.locator.snapshotId}
              and versions.content_hash = ${source.locator.contentHash}
              and versions.publisher_extraction_id = extractions.id

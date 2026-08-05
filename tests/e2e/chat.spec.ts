@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import type { GetChatResponse, SendChatMessageAccepted } from "@brief/shared";
+import type { GetChatResponse, SendChatMessageAccepted } from "@hartlib/shared";
 
 import {
   disableE2eDemoPublicSource,
@@ -14,10 +14,11 @@ import {
 import { e2ePortsFromBase, parseE2ePortBase } from "./ports";
 
 const e2ePorts = e2ePortsFromBase(parseE2ePortBase());
-const apiBaseUrl = process.env.BRIEF_E2E_API_BASE_URL ?? `http://127.0.0.1:${e2ePorts.api}`;
-const webBaseUrl = process.env.BRIEF_E2E_WEB_BASE_URL ?? `http://127.0.0.1:${e2ePorts.web}`;
+const apiBaseUrl = process.env.HARTLIB_E2E_API_BASE_URL ?? `http://127.0.0.1:${e2ePorts.api}`;
+const webBaseUrl = process.env.HARTLIB_E2E_WEB_BASE_URL ?? `http://127.0.0.1:${e2ePorts.web}`;
 const liveProvider =
-  process.env.BRIEF_E2E_LIVE_PROVIDER === "1" && (process.env.ZAI_API_KEY ?? "").trim().length > 0;
+  process.env.HARTLIB_E2E_LIVE_PROVIDER === "1" &&
+  (process.env.ZAI_API_KEY ?? "").trim().length > 0;
 const liveWebProvider = liveProvider && (process.env.TINYFISH_API_KEY ?? "").trim().length > 0;
 const directQuestion = "What do the French sources report about solar connections?";
 
@@ -328,8 +329,8 @@ test.describe("deterministic canonical runtime", () => {
     expect(new URL(page.url()).pathname).toBe("/fr-FR/client");
     expect(
       await page.evaluate(() => ({
-        locale: localStorage.getItem("brief:demo:locale"),
-        market: localStorage.getItem("brief:demo:market"),
+        locale: localStorage.getItem("hartlib:demo:locale"),
+        market: localStorage.getItem("hartlib:demo:market"),
       })),
     ).toEqual({ locale: "fr-FR", market: "US" });
 
@@ -342,8 +343,8 @@ test.describe("deterministic canonical runtime", () => {
     expect(new URL(page.url()).pathname).toBe("/en-US/client");
     expect(
       await page.evaluate(() => ({
-        locale: localStorage.getItem("brief:demo:locale"),
-        market: localStorage.getItem("brief:demo:market"),
+        locale: localStorage.getItem("hartlib:demo:locale"),
+        market: localStorage.getItem("hartlib:demo:market"),
       })),
     ).toEqual({ locale: "en-US", market: "US" });
 
@@ -402,7 +403,7 @@ test.describe("deterministic canonical runtime", () => {
     await sendAndWait(page, directQuestion);
     await sendAndWait(page, "[clarify] Compare this.");
     await expect(latestAssistantContent(page)).toHaveText(
-      "Which market and time horizon should Brief use?",
+      "Which market and time horizon should Hartlib use?",
     );
 
     const state = readE2eRuntimeState();
@@ -579,7 +580,7 @@ test.describe("deterministic canonical runtime", () => {
       ).toHaveLength(0);
 
       const persistedBeforeReload = await page.evaluate((runId) => {
-        const raw = sessionStorage.getItem(`brief:web:ai-run-stream:${runId}`);
+        const raw = sessionStorage.getItem(`hartlib:web:ai-run-stream:${runId}`);
         return raw === null
           ? null
           : (JSON.parse(raw) as {
@@ -641,7 +642,7 @@ test.describe("deterministic canonical runtime", () => {
       await expect(latestAssistant(page).getByTestId("chat-provisional-draft")).toHaveCount(0);
       expect(
         await page.evaluate(
-          (runId) => sessionStorage.getItem(`brief:web:ai-run-stream:${runId}`),
+          (runId) => sessionStorage.getItem(`hartlib:web:ai-run-stream:${runId}`),
           run.id,
         ),
       ).toBeNull();
@@ -709,7 +710,7 @@ test.describe("deterministic canonical runtime", () => {
     expect(seeded.chatId).toBe(demoChat.chat.id);
     await page.evaluate((runId) => {
       sessionStorage.setItem(
-        `brief:web:ai-run-stream:${runId}`,
+        `hartlib:web:ai-run-stream:${runId}`,
         JSON.stringify({
           version: 2,
           runId,
@@ -758,7 +759,7 @@ test.describe("deterministic canonical runtime", () => {
       await expect
         .poll(() =>
           page.evaluate(
-            (runId) => sessionStorage.getItem(`brief:web:ai-run-stream:${runId}`),
+            (runId) => sessionStorage.getItem(`hartlib:web:ai-run-stream:${runId}`),
             seeded.runId,
           ),
         )
@@ -1102,7 +1103,7 @@ test.describe("deterministic canonical runtime", () => {
     const seeded = seedActiveRun("chat");
     await page.evaluate((runId) => {
       sessionStorage.setItem(
-        `brief:web:ai-run-stream:${runId}`,
+        `hartlib:web:ai-run-stream:${runId}`,
         JSON.stringify({
           version: 2,
           runId,
@@ -1156,7 +1157,7 @@ test.describe("deterministic canonical runtime", () => {
       await expect
         .poll(() =>
           page.evaluate(
-            (runId) => sessionStorage.getItem(`brief:web:ai-run-stream:${runId}`),
+            (runId) => sessionStorage.getItem(`hartlib:web:ai-run-stream:${runId}`),
             seeded.runId,
           ),
         )
@@ -1178,7 +1179,7 @@ test.describe("deterministic canonical runtime", () => {
       await expect
         .poll(() =>
           page.evaluate((runId) => {
-            const raw = sessionStorage.getItem(`brief:web:ai-run-stream:${runId}`);
+            const raw = sessionStorage.getItem(`hartlib:web:ai-run-stream:${runId}`);
             return raw === null ? null : (JSON.parse(raw) as { lastSeq?: unknown }).lastSeq;
           }, seeded.runId),
         )
@@ -1447,7 +1448,7 @@ test.describe("deterministic canonical runtime", () => {
 });
 
 test.describe("opt-in live provider contract smoke", () => {
-  test.skip(!liveProvider, "set BRIEF_E2E_LIVE_PROVIDER=1 with ZAI_API_KEY to run live smoke");
+  test.skip(!liveProvider, "set HARTLIB_E2E_LIVE_PROVIDER=1 with ZAI_API_KEY to run live smoke");
 
   test("real provider streams, persists, and reloads a grounded answer", async ({ page }) => {
     test.setTimeout(240_000);
@@ -1513,7 +1514,7 @@ test.describe("opt-in live provider contract smoke", () => {
   test("real GLM and Tinyfish complete the required web-evidence branch", async ({ page }) => {
     test.skip(
       !liveWebProvider,
-      "set BRIEF_E2E_LIVE_PROVIDER=1 with ZAI_API_KEY and TINYFISH_API_KEY to run live web smoke",
+      "set HARTLIB_E2E_LIVE_PROVIDER=1 with ZAI_API_KEY and TINYFISH_API_KEY to run live web smoke",
     );
     test.setTimeout(240_000);
     const toggle = page.getByTestId("chat-web-search-toggle");

@@ -1,10 +1,10 @@
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
-const postgresUser = "brief";
-const postgresPassword = "brief";
+const postgresUser = "hartlib";
+const postgresPassword = "hartlib";
 const postgresPort = "5432";
-const composeProject = `brief-test-${process.pid}-${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const composeProject = `hartlib-test-${process.pid}-${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 const run = async (
   command: readonly string[],
@@ -81,7 +81,7 @@ const waitForPostgres = async (): Promise<void> => {
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 
 const createTestDatabase = async (): Promise<string> => {
-  const name = `brief_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+  const name = `hartlib_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
   await runOrThrow(
     compose(
       "exec",
@@ -152,7 +152,7 @@ let testDatabaseName: string | undefined;
 let exitCode = 1;
 try {
   await runOrThrow(compose("up", "-d", "--wait", "postgres"), {
-    env: { BRIEF_POSTGRES_HOST_PORT: "0" },
+    env: { HARTLIB_POSTGRES_HOST_PORT: "0" },
   });
   await waitForPostgres();
   const port = await publishedPort();

@@ -1,5 +1,5 @@
-import { useIntl, useLocale } from "@brief/i18n";
-import { Button, Label, Textarea } from "@brief/ui";
+import { useIntl, useLocale } from "@hartlib/i18n";
+import { Button, Label, Textarea } from "@hartlib/ui";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Download, PackageOpen } from "lucide-react";

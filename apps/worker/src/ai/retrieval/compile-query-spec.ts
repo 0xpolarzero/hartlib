@@ -285,7 +285,7 @@ export const sanitizedChatContentSql = (
   contentColumn = "m.content",
   authorColumn = "m.author",
 ): Statement.Fragment =>
-  frag`case when ${literalFragment(authorColumn)} = 'assistant' then brief_ai_strip_historical_citation_tags(${literalFragment(contentColumn)}) else ${literalFragment(contentColumn)} end`;
+  frag`case when ${literalFragment(authorColumn)} = 'assistant' then hartlib_ai_strip_historical_citation_tags(${literalFragment(contentColumn)}) else ${literalFragment(contentColumn)} end`;
 
 const branchNotApplicable = (
   branch: QueryBranch,
@@ -409,8 +409,8 @@ join issue_delivery_recipients recipients on recipients.issue_id = deliveries.is
 join publisher_issues issues on issues.id = deliveries.issue_id and issues.status = 'published' and issues.restricted_at is null and issues.deleted_at is null
 join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
 join publisher_companies companies on companies.id = subscriptions.publisher_company_id
-join brief_documents documents on documents.issue_id = issues.id and documents.deleted_at is null
-join brief_document_versions v on v.id = documents.current_version_id and v.brief_document_id = documents.id
+join hartlib_documents documents on documents.issue_id = issues.id and documents.deleted_at is null
+join hartlib_document_versions v on v.id = documents.current_version_id and v.hartlib_document_id = documents.id
 where ${accessPredicate}
   and deliveries.client_company_id = ${options.scope.companyId}
   and ${subscriptionPredicate}

@@ -1,7 +1,7 @@
 import { Config, Effect, Redacted, Schema } from "effect";
 
-export const LOCAL_DATABASE_URL = "postgres://brief:brief@localhost:5432/brief";
-export const LOCAL_E2E_DATABASE_URL = "postgres://brief:brief@localhost:5432/brief_e2e";
+export const LOCAL_DATABASE_URL = "postgres://hartlib:hartlib@localhost:5432/hartlib";
+export const LOCAL_E2E_DATABASE_URL = "postgres://hartlib:hartlib@localhost:5432/hartlib_e2e";
 export const LOCAL_APP_BASE_URL = "http://localhost:5173";
 export const LOCAL_CORS_ALLOWED_ORIGINS = [
   LOCAL_APP_BASE_URL,
@@ -683,7 +683,7 @@ export const databaseUrlConfig = Config.string("DATABASE_URL").pipe(
 );
 export const databaseUrlRedactedConfig = databaseUrlConfig.pipe(Config.map(Redacted.make));
 export const loadDatabaseUrl = databaseUrlConfig;
-export const loadE2eDatabaseUrl = Config.string("BRIEF_E2E_DATABASE_URL").pipe(
+export const loadE2eDatabaseUrl = Config.string("HARTLIB_E2E_DATABASE_URL").pipe(
   Config.withDefault(LOCAL_E2E_DATABASE_URL),
 );
 
@@ -855,11 +855,11 @@ export const loadPublicSourceAuditConfig = Config.schema(PublicSourceAuditEnviro
 
 const DatabaseResetEnvironment = Schema.Struct({
   NODE_ENV: nodeEnvField,
-  BRIEF_ALLOW_DB_RESET: BooleanWithDefault(false),
+  HARTLIB_ALLOW_DB_RESET: BooleanWithDefault(false),
 });
 export const loadDatabaseResetConfig = Config.schema(DatabaseResetEnvironment).pipe(
   Effect.map((raw) => ({
     nodeEnv: raw.NODE_ENV,
-    allowProductionReset: raw.BRIEF_ALLOW_DB_RESET,
+    allowProductionReset: raw.HARTLIB_ALLOW_DB_RESET,
   })),
 );

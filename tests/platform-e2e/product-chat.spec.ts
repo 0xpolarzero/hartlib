@@ -4,7 +4,7 @@ import { readE2eRuntimeState, resetE2eChatRuntime, seedE2eFailedRun } from "../e
 import { e2ePortsFromBase, parseE2ePortBase } from "../e2e/ports";
 
 const apiBaseUrl =
-  process.env.BRIEF_E2E_API_BASE_URL ??
+  process.env.HARTLIB_E2E_API_BASE_URL ??
   `http://127.0.0.1:${e2ePortsFromBase(parseE2ePortBase()).api}`;
 const companyId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 

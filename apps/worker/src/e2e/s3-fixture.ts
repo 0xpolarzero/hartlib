@@ -21,8 +21,8 @@ export interface S3FixtureAuthentication {
 }
 
 const defaultAuthentication: S3FixtureAuthentication = {
-  accessKeyId: "brief-e2e-access-key",
-  secretAccessKey: "brief-e2e-secret-key",
+  accessKeyId: "hartlib-e2e-access-key",
+  secretAccessKey: "hartlib-e2e-secret-key",
 };
 
 const sigV4Algorithm = "AWS4-HMAC-SHA256";
@@ -302,7 +302,7 @@ const responseHeaders = (extra: HeadersInit = {}, origin: string | null = null):
   if (origin !== null) headers.set("access-control-allow-credentials", "true");
   headers.set(
     "access-control-expose-headers",
-    "content-disposition, content-length, etag, x-brief-e2e-authorization-received",
+    "content-disposition, content-length, etag, x-hartlib-e2e-authorization-received",
   );
   return headers;
 };
@@ -490,7 +490,7 @@ export const makeS3Fixture = (
             "content-length": String(object.body.byteLength),
             "content-type": contentType,
             etag: object.etag,
-            "x-brief-e2e-authorization-received": request.headers.has("authorization")
+            "x-hartlib-e2e-authorization-received": request.headers.has("authorization")
               ? "present"
               : "absent",
           },

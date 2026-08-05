@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -13,7 +13,7 @@ import {
 } from "./product-chats";
 
 const sourceDatabaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const databaseName = `brief_product_chats_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const databaseName = `hartlib_product_chats_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 
 const withDatabase = (name: string): string => {
   if (sourceDatabaseUrl === undefined)
@@ -29,7 +29,7 @@ const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""
 
 const runDb = <A, E>(
   effect: Effect.Effect<A, E, PgClient.PgClient>,
-  applicationName = "brief-product-chats-test",
+  applicationName = "hartlib-product-chats-test",
 ): Promise<A> =>
   Effect.runPromise(
     effect.pipe(
@@ -43,7 +43,7 @@ const runAdmin = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(adminUrl()),
-          applicationName: "brief-product-chats-admin",
+          applicationName: "hartlib-product-chats-admin",
         }),
       ),
     ),
@@ -169,7 +169,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)(
           yield* sql.unsafe(`create database ${quoteIdentifier(databaseName)}`).raw;
         }),
       );
-      await runDb(runMigrations, "brief-product-chats-migrate");
+      await runDb(runMigrations, "hartlib-product-chats-migrate");
     });
 
     afterAll(async () => {
@@ -443,8 +443,8 @@ describe.skipIf(sourceDatabaseUrl === undefined)(
       const firstId = crypto.randomUUID();
       const secondId = crypto.randomUUID();
       const [first, second] = await Promise.all([
-        runDb(resetProductChat(fixture.owner, chatId, firstId), "brief-product-chats-race-a"),
-        runDb(resetProductChat(fixture.owner, chatId, secondId), "brief-product-chats-race-b"),
+        runDb(resetProductChat(fixture.owner, chatId, firstId), "hartlib-product-chats-race-a"),
+        runDb(resetProductChat(fixture.owner, chatId, secondId), "hartlib-product-chats-race-b"),
       ]);
       expect([first.kind, second.kind].sort()).toEqual(["already_reset", "created"]);
       const successors = await runDb(

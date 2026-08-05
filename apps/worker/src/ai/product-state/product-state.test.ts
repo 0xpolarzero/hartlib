@@ -2,9 +2,9 @@ import { PgClient } from "@effect/sql-pg";
 import { Effect, Redacted } from "effect";
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { makeRunAcceptanceScope } from "@brief/shared";
+import { makeRunAcceptanceScope } from "@hartlib/shared";
 
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import {
   chatMessageEvidenceIdentity,
   memoryEvidenceIdentity,
@@ -56,7 +56,7 @@ import { TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY } from "../web/tinyfish-sear
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const databaseName = `brief_product_state_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const databaseName = `hartlib_product_state_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 const finalizeCoordinates = { loopIteration: 0, attempt: 1 } as const;
 
 const sourceUrl = () => {
@@ -80,7 +80,7 @@ const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>, url = testU
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-product-state-test",
+          applicationName: "hartlib-product-state-test",
         }),
       ),
     ),
@@ -1921,7 +1921,7 @@ const createPublisherSourceFixture = (
       )
     `;
     yield* sql`
-      insert into brief_documents (
+      insert into hartlib_documents (
         id, issue_id, title, original_file_name, object_key, media_type,
         byte_size, sha256_hex, upload_completed_at, created_by_user_id
       ) values (
@@ -1935,8 +1935,8 @@ const createPublisherSourceFixture = (
       returning id::text
     `;
     const extractions = yield* sql<{ readonly id: string }>`
-      insert into brief_document_extractions (
-        brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+      insert into hartlib_document_extractions (
+        hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
       ) values (
         ${documentId}, ${contentHash},
         '[{"pageNumber":1,"text":"Fence source text"}]'::jsonb,
@@ -1945,8 +1945,8 @@ const createPublisherSourceFixture = (
       returning id::text
     `;
     yield* sql`
-      insert into brief_document_versions (
-        id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
+      insert into hartlib_document_versions (
+        id, hartlib_document_id, publisher_extraction_id, content_hash, language, canonical_text,
         text_char_count, page_ranges
       ) values (
         ${snapshotId}, ${documentId}, ${extractions[0]!.id}, ${contentHash}, 'english', 'Fence source text',
@@ -1954,7 +1954,7 @@ const createPublisherSourceFixture = (
       )
     `;
     yield* sql`
-      update brief_documents set current_version_id = ${snapshotId} where id = ${documentId}
+      update hartlib_documents set current_version_id = ${snapshotId} where id = ${documentId}
     `;
     yield* sql`
       update publisher_issues
@@ -2834,7 +2834,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     ).resolves.toMatchObject({ status: "succeeded" });
   });
 
-
   it("rejects missing, extra, and mismatched structured review metadata", async () => {
     const tamperKinds = [
       "missing_results",
@@ -3637,7 +3636,10 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             and emitting_task = 'web-source-proof-task'
             and kind = 'source_exposure_attestation'
         `;
-        return { exposure: exposures[0]?.contentItemIdentity, attestations: attestations[0]?.count };
+        return {
+          exposure: exposures[0]?.contentItemIdentity,
+          attestations: attestations[0]?.count,
+        };
       }),
     );
     expect(stored.exposure).toBe(`${marker.contentItemIdentity}#proof=${proof}`);
@@ -5766,7 +5768,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               )
             `;
             yield* sql`
-              insert into brief_documents (
+              insert into hartlib_documents (
                 id, issue_id, title, original_file_name, object_key, media_type,
                 byte_size, sha256_hex, upload_completed_at, created_by_user_id
               ) values (
@@ -5781,8 +5783,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               returning id::text
             `;
             const extractions = yield* sql<{ readonly id: string }>`
-              insert into brief_document_extractions (
-                brief_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
+              insert into hartlib_document_extractions (
+                hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
               ) values (
                 ${publisherDocumentId}, ${"b".repeat(64)},
                 ${JSON.stringify([{ pageNumber: 1, text: publisherText }])}::jsonb,
@@ -5792,8 +5794,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             `;
             publisherExtractionId = extractions[0]!.id;
             yield* sql`
-              insert into brief_document_versions (
-                id, brief_document_id, publisher_extraction_id, content_hash, language, canonical_text,
+              insert into hartlib_document_versions (
+                id, hartlib_document_id, publisher_extraction_id, content_hash, language, canonical_text,
                 text_char_count, page_ranges
               ) values (
                 ${publicDocumentId}, ${publisherDocumentId}, ${extractions[0]!.id}, ${publisherContentHash}, 'english',
@@ -5802,7 +5804,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               )
             `;
             yield* sql`
-              update brief_documents
+              update hartlib_documents
               set current_version_id = ${publicDocumentId}
               where id = ${publisherDocumentId}
             `;
@@ -6113,7 +6115,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     });
 
     const projection = runDbAs(
-      "brief-full-chat-projection-race",
+      "hartlib-full-chat-projection-race",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return yield* sql.withTransaction(
@@ -6126,11 +6128,11 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             `;
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:client-members:${chat!.companyId}`})
+                hashtext(${`hartlib:client-members:${chat!.companyId}`})
               )
             `;
             yield* sql`
-              select pg_advisory_xact_lock(hashtext(${`brief:ai-chat:${fixture.chatId}`}))
+              select pg_advisory_xact_lock(hashtext(${`hartlib:ai-chat:${fixture.chatId}`}))
             `;
             const [messageState] = yield* sql<{
               readonly messageCount: number;
@@ -6164,7 +6166,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     );
 
     const finalization = runDbAs(
-      "brief-finalization-behind-full-projection",
+      "hartlib-finalization-behind-full-projection",
       finalizeAiRun({
         runId: fixture.runId,
         expectedSmithersRunId: `ai-chat:${fixture.runId}`,
@@ -6179,7 +6181,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       }),
     );
     try {
-      await waitForDatabaseLock("brief-finalization-behind-full-projection");
+      await waitForDatabaseLock("hartlib-finalization-behind-full-projection");
     } finally {
       releaseProjection();
     }
@@ -6243,14 +6245,14 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       releaseLane = resolve;
     });
     const holder = runDbAs(
-      "brief-archive-before-finalization-holder",
+      "hartlib-archive-before-finalization-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:user-memory:${fixture.userId}`})
+                hashtext(${`hartlib:user-memory:${fixture.userId}`})
               )
             `;
             yield* Effect.sync(signalLaneHeld);
@@ -6262,16 +6264,16 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     await laneHeld;
 
     const reset = runDbAs(
-      "brief-archive-before-finalization-reset",
+      "hartlib-archive-before-finalization-reset",
       resetProductChat(
         { mode: "demo", userId: fixture.userId, organizationId: null },
         fixture.chatId,
         replacementChatId,
       ),
     );
-    await waitForDatabaseLock("brief-archive-before-finalization-reset");
+    await waitForDatabaseLock("hartlib-archive-before-finalization-reset");
     const finalization = runDbAs(
-      "brief-archive-before-finalization-finalize",
+      "hartlib-archive-before-finalization-finalize",
       Effect.exit(
         finalizeAiRun({
           runId: fixture.runId,
@@ -6283,7 +6285,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       ),
     );
     try {
-      await waitForDatabaseLock("brief-archive-before-finalization-finalize");
+      await waitForDatabaseLock("hartlib-archive-before-finalization-finalize");
     } finally {
       releaseLane();
     }
@@ -6373,14 +6375,14 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       releaseLane = resolve;
     });
     const holder = runDbAs(
-      "brief-finalization-before-archive-holder",
+      "hartlib-finalization-before-archive-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:user-memory:${fixture.userId}`})
+                hashtext(${`hartlib:user-memory:${fixture.userId}`})
               )
             `;
             yield* Effect.sync(signalLaneHeld);
@@ -6392,7 +6394,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     await laneHeld;
 
     const finalization = runDbAs(
-      "brief-finalization-before-archive-finalize",
+      "hartlib-finalization-before-archive-finalize",
       finalizeAiRun({
         runId: fixture.runId,
         expectedSmithersRunId: `ai-chat:${fixture.runId}`,
@@ -6406,9 +6408,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         memory,
       }),
     );
-    await waitForDatabaseLock("brief-finalization-before-archive-finalize");
+    await waitForDatabaseLock("hartlib-finalization-before-archive-finalize");
     const reset = runDbAs(
-      "brief-finalization-before-archive-reset",
+      "hartlib-finalization-before-archive-reset",
       resetProductChat(
         { mode: "demo", userId: fixture.userId, organizationId: null },
         fixture.chatId,
@@ -6416,7 +6418,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       ),
     );
     try {
-      await waitForDatabaseLock("brief-finalization-before-archive-reset");
+      await waitForDatabaseLock("hartlib-finalization-before-archive-reset");
     } finally {
       releaseLane();
     }
@@ -6527,14 +6529,14 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       releaseAcceptance = resolve;
     });
     const acceptance = runDbAs(
-      "brief-export-message-snapshot-holder",
+      "hartlib-export-message-snapshot-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:client-members:${fixture.companyId}`})
+                hashtext(${`hartlib:client-members:${fixture.companyId}`})
               )
             `;
             const messageIds = yield* sql<{ readonly id: string }>`
@@ -6580,7 +6582,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     );
 
     const finalization = runDbAs(
-      "brief-finalization-behind-export-snapshot",
+      "hartlib-finalization-behind-export-snapshot",
       finalizeAiRun({
         runId: fixture.runId,
         expectedSmithersRunId: `ai-chat:${fixture.runId}`,
@@ -6595,7 +6597,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       }),
     );
     try {
-      await waitForDatabaseLock("brief-finalization-behind-export-snapshot");
+      await waitForDatabaseLock("hartlib-finalization-behind-export-snapshot");
     } finally {
       releaseAcceptance();
     }
@@ -6638,13 +6640,13 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       releaseLane = resolve;
     });
     const holder = runDbAs(
-      "brief-failure-lane-holder",
+      "hartlib-failure-lane-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
-              select pg_advisory_xact_lock(hashtext(${`brief:ai-chat:${fixture.chatId}`}))
+              select pg_advisory_xact_lock(hashtext(${`hartlib:ai-chat:${fixture.chatId}`}))
             `;
             yield* Effect.sync(signalLaneHeld);
             yield* Effect.promise(() => laneReleased);
@@ -6654,11 +6656,11 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     );
     await laneHeld;
     const failure = runDbAs(
-      "brief-failure-behind-chat-projection",
+      "hartlib-failure-behind-chat-projection",
       failAiRun(fixture.runId, "answer_failed"),
     );
     try {
-      await waitForDatabaseLock("brief-failure-behind-chat-projection");
+      await waitForDatabaseLock("hartlib-failure-behind-chat-projection");
     } finally {
       releaseLane();
     }
@@ -8321,7 +8323,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
-            select pg_advisory_xact_lock(hashtext(${`brief:user-memory:${fixture.userId}`}))
+            select pg_advisory_xact_lock(hashtext(${`hartlib:user-memory:${fixture.userId}`}))
             `;
             yield* sql`select pg_sleep(0.3)`;
             const [memoryHead] = yield* sql<{ readonly revisionId: string }>`

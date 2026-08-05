@@ -8,7 +8,7 @@ import { e2ePortsFromBase, parseE2ePortBase } from "./ports";
 const repoRoot = new URL("../../", import.meta.url).pathname;
 const demoRoot = new URL("../../apps/demo/", import.meta.url).pathname;
 const databaseUrl =
-  process.env.BRIEF_E2E_DATABASE_URL ?? "postgres://brief:brief@localhost:5432/brief_e2e";
+  process.env.HARTLIB_E2E_DATABASE_URL ?? "postgres://hartlib:hartlib@localhost:5432/hartlib_e2e";
 const {
   api: apiPort,
   demo: demoPort,
@@ -19,7 +19,7 @@ const apiBaseUrl = `http://127.0.0.1:${apiPort}`;
 const demoBaseUrl = `http://127.0.0.1:${demoPort}`;
 const webBaseUrl = `http://127.0.0.1:${webPort}`;
 const objectStoreBaseUrl = `http://127.0.0.1:${objectStorePort}`;
-const objectStoreBucket = "brief-e2e";
+const objectStoreBucket = "hartlib-e2e";
 const readinessTimeoutMs = 30_000;
 const e2eSetupScript = "apps/worker/src/e2e/setup-cli.ts";
 
@@ -46,7 +46,7 @@ const assertChromiumInstalled = (): void => {
 const runSetupScript = (command: "setup" | "teardown"): void => {
   const result = spawnSync("bun", [e2eSetupScript, command], {
     cwd: repoRoot,
-    env: { ...process.env, BRIEF_E2E_DATABASE_URL: databaseUrl },
+    env: { ...process.env, HARTLIB_E2E_DATABASE_URL: databaseUrl },
     encoding: "utf8",
   });
 
@@ -237,17 +237,17 @@ const waitForLog = async (needle: string, managed: ManagedProcess): Promise<void
 
 export default async function globalSetup(_config: FullConfig) {
   assertChromiumInstalled();
-  process.env.BRIEF_E2E_DATABASE_URL = databaseUrl;
-  process.env.BRIEF_E2E_API_BASE_URL = apiBaseUrl;
-  process.env.BRIEF_E2E_DEMO_BASE_URL = demoBaseUrl;
-  process.env.BRIEF_E2E_OBJECT_STORE_BASE_URL = objectStoreBaseUrl;
+  process.env.HARTLIB_E2E_DATABASE_URL = databaseUrl;
+  process.env.HARTLIB_E2E_API_BASE_URL = apiBaseUrl;
+  process.env.HARTLIB_E2E_DEMO_BASE_URL = demoBaseUrl;
+  process.env.HARTLIB_E2E_OBJECT_STORE_BASE_URL = objectStoreBaseUrl;
 
   await assertStackPortsFree();
   runSetupScript("setup");
 
   const liveAiKey = (process.env.ZAI_API_KEY ?? "").trim();
   const liveWebKey = (process.env.TINYFISH_API_KEY ?? "").trim();
-  const useLiveProvider = process.env.BRIEF_E2E_LIVE_PROVIDER === "1" && liveAiKey !== "";
+  const useLiveProvider = process.env.HARTLIB_E2E_LIVE_PROVIDER === "1" && liveAiKey !== "";
   const useDeterministicProvider = !useLiveProvider;
 
   const objectStore = startProcess(
@@ -255,8 +255,8 @@ export default async function globalSetup(_config: FullConfig) {
     "bun",
     ["tests/e2e/s3-fixture-server.ts"],
     {
-      BRIEF_E2E_OBJECT_STORE_PORT: String(objectStorePort),
-      BRIEF_E2E_OBJECT_STORE_BUCKET: objectStoreBucket,
+      HARTLIB_E2E_OBJECT_STORE_PORT: String(objectStorePort),
+      HARTLIB_E2E_OBJECT_STORE_BUCKET: objectStoreBucket,
     },
     { port: objectStorePort },
   );
@@ -281,12 +281,12 @@ export default async function globalSetup(_config: FullConfig) {
     TINYFISH_API_KEY: useDeterministicProvider ? "e2e-deterministic-web" : liveWebKey,
     RAILWAY_BUCKET_ENDPOINT: objectStoreBaseUrl,
     RAILWAY_BUCKET_NAME: objectStoreBucket,
-    RAILWAY_BUCKET_ACCESS_KEY_ID: "brief-e2e-access-key",
-    RAILWAY_BUCKET_SECRET_ACCESS_KEY: "brief-e2e-secret-key",
+    RAILWAY_BUCKET_ACCESS_KEY_ID: "hartlib-e2e-access-key",
+    RAILWAY_BUCKET_SECRET_ACCESS_KEY: "hartlib-e2e-secret-key",
     EXPORT_BUCKET_ENDPOINT: objectStoreBaseUrl,
     EXPORT_BUCKET_NAME: `${objectStoreBucket}-exports`,
-    EXPORT_BUCKET_ACCESS_KEY_ID: "brief-e2e-access-key",
-    EXPORT_BUCKET_SECRET_ACCESS_KEY: "brief-e2e-secret-key",
+    EXPORT_BUCKET_ACCESS_KEY_ID: "hartlib-e2e-access-key",
+    EXPORT_BUCKET_SECRET_ACCESS_KEY: "hartlib-e2e-secret-key",
   };
   const api = startProcess(
     "api",

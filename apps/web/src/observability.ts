@@ -1,9 +1,9 @@
 import * as Sentry from "@sentry/react";
 import type { ErrorEvent, EventHint } from "@sentry/react";
 
-import { isSafeObservabilityValue, type WebObservabilityConfig } from "@brief/config/browser";
+import { isSafeObservabilityValue, type WebObservabilityConfig } from "@hartlib/config/browser";
 
-export { loadWebObservabilityConfig, type WebObservabilityConfig } from "@brief/config/browser";
+export { loadWebObservabilityConfig, type WebObservabilityConfig } from "@hartlib/config/browser";
 
 const sanitizedErrorCode = (event: ErrorEvent): string => {
   const value = event.tags?.error_code;
@@ -29,7 +29,7 @@ export const sanitizeSentryEvent = (event: ErrorEvent, _hint?: EventHint): Error
   );
   const sanitized: ErrorEvent = {
     type: undefined,
-    logger: "brief.web",
+    logger: "hartlib.web",
     message: errorCode,
     tags: { ...safeTags, error_code: errorCode },
   };
@@ -40,7 +40,7 @@ export const sanitizeSentryEvent = (event: ErrorEvent, _hint?: EventHint): Error
   if (event.exception?.values !== undefined) {
     sanitized.exception = {
       values: event.exception.values.map((value) => ({
-        type: "BriefWebError",
+        type: "HartlibWebError",
         value: errorCode,
         ...(value.stacktrace === undefined ? {} : { stacktrace: value.stacktrace }),
       })),

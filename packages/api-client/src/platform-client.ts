@@ -1,5 +1,5 @@
-import * as Shared from "@brief/shared";
-import { EXPORT_ARCHIVE_MEDIA_TYPE } from "@brief/shared/export-contract";
+import * as Shared from "@hartlib/shared";
+import { EXPORT_ARCHIVE_MEDIA_TYPE } from "@hartlib/shared/export-contract";
 import { Schema } from "effect";
 
 import { ApiResponseError, createApiTransport, type ApiTransportOptions } from "./transport";
@@ -10,7 +10,7 @@ export type PublisherIssue = Shared.PublisherIssueDescriptor;
 export type PublisherSubscriptionClientAccess = Shared.PublisherClientAccessDescriptor;
 export type PublisherSubscriptionAiPullMetric = Shared.PublisherAiPullMetric;
 export type PublisherIssuePullMetric = Shared.PublisherAiPullIssueMetric;
-export type BriefDocument = Shared.BriefDocumentDescriptor;
+export type HartlibDocument = Shared.HartlibDocumentDescriptor;
 export type ArchiveItem = Shared.DeliveredArchiveResult;
 export type IssueDetail = Schema.Schema.Type<typeof Shared.IssueDetailResponse>;
 export type PlatformNotification = Shared.PlatformNotificationDescriptor;
@@ -230,19 +230,19 @@ export const createPlatformApiClient = (options: ApiTransportOptions) => {
     uploadPublisherDocument: async (
       issueId: string,
       input: { readonly title: string; readonly file: File; readonly idempotencyKey: string },
-    ): Promise<BriefDocument> => {
+    ): Promise<HartlibDocument> => {
       const bytes = await input.file.arrayBuffer();
       return (
         await transport.json(
           "POST /v1/publisher-issues/:issueId/documents",
           `/v1/publisher-issues/${encodeURIComponent(issueId)}/documents`,
-          Shared.BriefDocumentResponse,
+          Shared.HartlibDocumentResponse,
           {
             body: bytes,
             headers: {
               "content-type": "application/pdf",
               "idempotency-key": input.idempotencyKey,
-              "x-brief-title": input.title,
+              "x-hartlib-title": input.title,
               "x-file-name": input.file.name,
               "x-content-sha256": await sha256Hex(bytes),
             },

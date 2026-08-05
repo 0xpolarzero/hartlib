@@ -22,8 +22,8 @@ import {
   useIntl,
   useLocale,
   LOCALE_MARKET_ALIASES,
-} from "@brief/i18n";
-import { Button } from "@brief/ui";
+} from "@hartlib/i18n";
+import { Button } from "@hartlib/ui";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { useCurrentWorkspaces } from "@/components/layout/workspace-switcher";
@@ -269,9 +269,9 @@ export function DocsDocument() {
     let active = true;
     const previousTitle = document.title;
     const previousLang = document.documentElement.lang;
-    document.title = "Brief — How chat works";
+    document.title = "Hartlib — How chat works";
     document.documentElement.lang = "en";
-    void import("@brief/docs").then(({ DOCS_HTML }) => {
+    void import("@hartlib/docs").then(({ DOCS_HTML }) => {
       if (active) setDocsHtml(DOCS_HTML);
     });
     return () => {
@@ -286,7 +286,7 @@ export function DocsDocument() {
   return (
     <iframe
       srcDoc={docsHtml}
-      title="Brief — How chat works"
+      title="Hartlib — How chat works"
       style={{ border: 0, display: "block", height: "100dvh", width: "100%" }}
     />
   );

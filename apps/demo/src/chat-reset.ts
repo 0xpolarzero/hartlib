@@ -1,4 +1,4 @@
-import type { ResetProductChatResponse, GetChatResponse } from "@brief/shared";
+import type { ResetProductChatResponse, GetChatResponse } from "@hartlib/shared";
 
 /** The cursor that must survive a failed reset so the old stream can resume. */
 export type ChatResetCursor = {

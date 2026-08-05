@@ -6,7 +6,7 @@ import {
   isLocale,
   isMarket,
   type PublicSourcesResponse,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Effect } from "effect";
 
 export interface PublicSourceRow {
@@ -249,7 +249,7 @@ export const listPublicSources = (market?: string, clientCompanyId?: string) =>
       join public_source_raw_artifacts r on r.id = d.raw_artifact_id
       where btrim(lower(split_part(r.media_type, ';', 1))) in ('text/html', 'application/pdf')
         and d.text_char_count >= ${minimumReadablePublicSourceTextChars}
-        and brief_public_source_https_url_allowed(i.canonical_url)
+        and hartlib_public_source_https_url_allowed(i.canonical_url)
       order by i.published_at desc nulls last, i.title asc
     `;
     const documents = yield* sql<PublicSourceDocumentRow>`
@@ -258,7 +258,7 @@ export const listPublicSources = (market?: string, clientCompanyId?: string) =>
              d.content_hash, d.raw_artifact_id, r.media_type as raw_media_type
       from public_source_documents d
       left join public_source_raw_artifacts r on r.id = d.raw_artifact_id
-      where brief_public_source_https_url_allowed(d.canonical_url)
+      where hartlib_public_source_https_url_allowed(d.canonical_url)
     `;
     return publicSourcesResponseFromRows(sources, items, documents, clientCompanyId);
   }).pipe(
@@ -317,7 +317,7 @@ export const readAuthorizedPublicSourceDocument = (
         and company.purged_at is null
         and d.text_char_count >= ${minimumReadablePublicSourceTextChars}
         and btrim(lower(split_part(r.media_type, ';', 1))) in ('text/html', 'application/pdf')
-        and brief_public_source_https_url_allowed(i.canonical_url)
+        and hartlib_public_source_https_url_allowed(i.canonical_url)
         and (
           (
             ${identity.mode} = 'demo'

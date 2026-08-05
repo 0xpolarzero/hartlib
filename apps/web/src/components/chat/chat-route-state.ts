@@ -1,4 +1,4 @@
-import type { GetChatResponse } from "@brief/shared";
+import type { GetChatResponse } from "@hartlib/shared";
 
 import type { UserScopedConflict } from "./product-chat-stream";
 

@@ -38,7 +38,7 @@ const serveDocs = (
 };
 
 export const docs = (): Plugin => ({
-  name: "brief:docs",
+  name: "hartlib:docs",
   generateBundle() {
     this.emitFile({
       type: "asset",

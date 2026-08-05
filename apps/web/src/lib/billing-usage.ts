@@ -1,4 +1,4 @@
-import type { AiUsageOverview } from "@brief/shared";
+import type { AiUsageOverview } from "@hartlib/shared";
 
 export const memberAiUsageIsLimited = (usage: AiUsageOverview): boolean => {
   const employee = usage.employees[0];

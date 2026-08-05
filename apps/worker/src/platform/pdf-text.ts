@@ -1,4 +1,4 @@
-import { extractPdfPagesIsolated } from "@brief/source-ingestion";
+import { extractPdfPagesIsolated } from "@hartlib/source-ingestion";
 import { Context, Effect, Layer } from "effect";
 
 export interface ExtractedPdfPage {
@@ -11,7 +11,7 @@ export interface PdfTextExtractorShape {
 }
 
 export class PdfTextExtractor extends Context.Service<PdfTextExtractor, PdfTextExtractorShape>()(
-  "brief/worker/PdfTextExtractor",
+  "hartlib/worker/PdfTextExtractor",
 ) {}
 
 export const PdfTextExtractorLive = Layer.succeed(

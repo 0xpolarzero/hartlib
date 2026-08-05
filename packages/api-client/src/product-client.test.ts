@@ -30,7 +30,7 @@ describe("product API client codecs", () => {
   it("queries the exact market-scoped public route", async () => {
     const calls: string[] = [];
     const client = createProductApiClient({
-      baseUrl: "https://api.brief.example",
+      baseUrl: "https://api.hartlib.example",
       fetch: async (input) => {
         calls.push(String(input));
         return Response.json({ sources: [], publications: [] });
@@ -40,7 +40,7 @@ describe("product API client codecs", () => {
       sources: [],
       publications: [],
     });
-    expect(calls).toEqual(["https://api.brief.example/v1/public-sources?market=US"]);
+    expect(calls).toEqual(["https://api.hartlib.example/v1/public-sources?market=US"]);
   });
 
   it("loads a publisher citation through the API origin and gates the redirected PDF", async () => {
@@ -50,10 +50,10 @@ describe("product API client codecs", () => {
     });
     Object.defineProperty(response, "redirected", { value: true });
     Object.defineProperty(response, "url", {
-      value: "https://objects.brief.example/document.pdf?expires=300",
+      value: "https://objects.hartlib.example/document.pdf?expires=300",
     });
     const client = createProductApiClient({
-      baseUrl: "https://api.brief.example",
+      baseUrl: "https://api.hartlib.example",
       fetch: async (input, init) => {
         calls.push({ input: String(input), init });
         return response;
@@ -62,10 +62,10 @@ describe("product API client codecs", () => {
 
     await expect(client.fetchPublisherDocument("issue /1", "document /1")).resolves.toEqual({
       kind: "redirected",
-      url: "https://objects.brief.example/document.pdf?expires=300",
+      url: "https://objects.hartlib.example/document.pdf?expires=300",
     });
     expect(calls[0]?.input).toBe(
-      "https://api.brief.example/v1/issues/issue%20%2F1/documents/document%20%2F1/content",
+      "https://api.hartlib.example/v1/issues/issue%20%2F1/documents/document%20%2F1/content",
     );
     expect(calls[0]?.init).toMatchObject({ method: "GET", referrerPolicy: "no-referrer" });
     expect(new Headers(calls[0]?.init?.headers).get("accept")).toBe("application/pdf");
@@ -87,7 +87,7 @@ describe("product API client codecs", () => {
     });
     Object.defineProperties(response, {
       redirected: { value: true },
-      url: { value: "http://objects.brief.example/document.pdf?expires=300" },
+      url: { value: "http://objects.hartlib.example/document.pdf?expires=300" },
     });
     const client = createProductApiClient({ fetch: async () => response });
     await expect(client.fetchPublisherDocument("issue-1", "document-1")).rejects.toMatchObject({
@@ -108,7 +108,7 @@ describe("product API client codecs", () => {
       replacement: chat,
     };
     const client = createProductApiClient({
-      baseUrl: "https://api.brief.example",
+      baseUrl: "https://api.hartlib.example",
       fetch: async (input, init) => {
         calls.push({ input: String(input), init });
         return Response.json(reset);
@@ -118,7 +118,7 @@ describe("product API client codecs", () => {
       client.resetChat("old/chat", "11111111-1111-4111-8111-111111111111"),
     ).resolves.toEqual(reset);
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.input).toBe("https://api.brief.example/v1/chats/old%2Fchat/reset");
+    expect(calls[0]?.input).toBe("https://api.hartlib.example/v1/chats/old%2Fchat/reset");
     expect(calls[0]?.init).toMatchObject({ method: "POST" });
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
       replacementChatId: "11111111-1111-4111-8111-111111111111",

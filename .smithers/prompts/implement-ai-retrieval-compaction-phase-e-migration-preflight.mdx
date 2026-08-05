@@ -5,10 +5,10 @@ database scripts, migration directory, backend configuration, and canonical spec
 Run only non-mutating checks that prove migration `0072_ai_retrieval_compaction.sql`
 exists in order, configuration is loaded, every product AI run is terminal,
 forbidden product Smithers/current-output rows are drained or empty, database
-access works, backend reload is ready, and no Brief API, web, worker, Vite,
+access works, backend reload is ready, and no Hartlib API, web, worker, Vite,
 evaluation, or job-poll service is running. Treat the current Smithers workflow,
 its resumer, and its supervisor as orchestration infrastructure, not a local
-Brief service; do not count them as a blocker and do not try to stop them.
+Hartlib service; do not count them as a blocker and do not try to stop them.
 
 Shell safety is part of this task: never paste Markdown backticks into a
 double-quoted shell argument, never use `eval`, and never run a command that

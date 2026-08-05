@@ -86,7 +86,7 @@ Credits are consumed by AI chats.
 
 AI chats can answer in text with summaries, comparisons, explicit web research, and Markdown tables. Generated graphs, visualizations, and executable artifacts are not part of the current runtime.
 
-Planned product direction: Brief will add a visual companion alongside the conversation. It will present answers and explanations as live visualizations that update as the discussion changes. This is not part of the current runtime contract.
+Planned product direction: Hartlib will add a visual companion alongside the conversation. It will present answers and explanations as live visualizations that update as the discussion changes. This is not part of the current runtime contract.
 
 Current catalog access and future delivery follow the subscription. Reading,
 downloading, and basic archive search for a delivered issue require an
@@ -230,7 +230,7 @@ The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runt
 The approved development runtime sends model calls through the exact registered GLM-5-Turbo contract on Z.AI's official Coding Plan endpoint. Optional development web discovery uses Tinyfish Search when `TINYFISH_API_KEY` is present. These development choices do not approve either provider for production customer data.
 
 Each billed model call is one direct Pi provider request inside one Smithers
-compute task. Brief records the exact request coordinates and provider usage;
+compute task. Hartlib records the exact request coordinates and provider usage;
 Smithers agent execution is not a billable or production chat path. Saved
 citations use immutable document `documentId` evidence bound by kind: public
 evidence uses the exact public document row, immutable snapshot identity, hash,

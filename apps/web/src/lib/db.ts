@@ -3,7 +3,7 @@ import type {
   ClientSubscriptionAccessDescriptor,
   DeliveredArchiveResult,
   PublisherSubscriptionDescriptor,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { createCollection, parseLoadSubsetOptions } from "@tanstack/react-db";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import type { QueryClient } from "@tanstack/query-core";

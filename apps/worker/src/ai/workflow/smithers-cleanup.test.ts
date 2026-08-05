@@ -54,7 +54,7 @@ describe("canonical Smithers cleanup inventory", () => {
     ]);
   });
 
-  it("retains only Brief-owned chat and evaluation Smithers identities", () => {
+  it("retains only Hartlib-owned chat and evaluation Smithers identities", () => {
     expect(AI_RUNTIME_SMITHERS_RUN_PREFIXES).toEqual([
       "ai-chat:",
       "ai-evaluation-general-planner:",

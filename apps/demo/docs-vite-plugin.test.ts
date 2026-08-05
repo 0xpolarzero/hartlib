@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DOCS_HTML } from "@brief/docs";
+import { DOCS_HTML } from "@hartlib/docs";
 import { docs } from "./docs-vite-plugin";
 
 type Middleware = (

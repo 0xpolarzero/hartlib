@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Brief separates UI locale from market. Locale is UI language and formatting. Market is source and content scope. They default together but remain technically independent. This separation supports scaling from France to more countries.
+Hartlib separates UI locale from market. Locale is UI language and formatting. Market is source and content scope. They default together but remain technically independent. This separation supports scaling from France to more countries.
 
 ## Supported Locales and Markets
 
@@ -13,7 +13,7 @@ Brief separates UI locale from market. Locale is UI language and formatting. Mar
 
 ## Conceptual Model
 
-- `locale`: UI language and formatting (dates, numbers, relative time). Controlled by `Intl` APIs and the `@brief/i18n` message catalogs.
+- `locale`: UI language and formatting (dates, numbers, relative time). Controlled by `Intl` APIs and the `@hartlib/i18n` message catalogs.
 - `market`: product and content scope. Controls default public-source selection. Country is first-class source metadata, not a UI category.
 - A French-speaking user in the US may use the `fr-FR` UI with `US` market sources, or vice versa. They default together, but the user can decouple them.
 

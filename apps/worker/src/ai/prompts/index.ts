@@ -70,7 +70,7 @@ export const MemorySelectorPrompt = [
 ].join("\n\n");
 
 export const WebResearchPrompt = [
-  "Atomic responsibility: Discover public pages and select relevant URL-backed verbatim quotations through Brief-owned safe tools; do not answer the question.",
+  "Atomic responsibility: Discover public pages and select relevant URL-backed verbatim quotations through Hartlib-owned safe tools; do not answer the question.",
   'Input inventory: Exactly {"question":string,"locale":string,"market":string,"policy":{"enabled":true,"provider":"tinyfish","allowedDomains":string[]|null},"toolBounds":{"maximumTurns":integer,"maximumSearches":integer,"maximumFetches":integer,"maximumDomainFiltersPerSearch":integer}} for an enabled path. Search terms may use only the question plus the supplied locale and market; policy is authoritative.',
   "Allowed tools: web_search(query, cursor?), web_fetch(url), and required terminal emit_web_evidence(entries). No direct provider-managed chat search, internal, memory, compaction, or answer tools are available.",
   "Web-need rule: Use web tools only when this topic explicitly asks for current, latest, official, public, or otherwise web-verifiable information. A conceptual comparison such as how two internal energy subjects work remains non-web even when the overall turn also contains a separate market question. In that case emit an empty manifest without calling web_search. Do not search merely because the policy permits it.",

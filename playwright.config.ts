@@ -2,12 +2,12 @@ import { defineConfig, devices } from "@playwright/test";
 
 import { e2ePortsFromBase, parseE2ePortBase } from "./tests/e2e/ports";
 
-const aiChatE2e = process.env.BRIEF_E2E_STACK === "1";
+const aiChatE2e = process.env.HARTLIB_E2E_STACK === "1";
 const { demo: e2eDemoPort, web: e2eWebPort } = e2ePortsFromBase(parseE2ePortBase());
 const e2eDemoStorageState = {
   cookies: [
     {
-      name: "brief_demo",
+      name: "hartlib_demo",
       value: "demo-user",
       domain: "127.0.0.1",
       path: "/",
@@ -39,7 +39,7 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
     {
-      name: "brief-ai-chat-runtime",
+      name: "hartlib-ai-chat-runtime",
       testMatch: "tests/e2e/**/*.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
@@ -48,7 +48,7 @@ export default defineConfig({
       },
     },
     {
-      name: "brief-platform",
+      name: "hartlib-platform",
       testMatch: "tests/platform-e2e/**/*.spec.ts",
       use: {
         ...devices["Desktop Chrome"],

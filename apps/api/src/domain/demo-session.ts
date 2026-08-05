@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 
-import { DemoSessionResponse } from "@brief/shared";
+import { DemoSessionResponse } from "@hartlib/shared";
 
 import { loadApiConfig } from "../config";
 import {

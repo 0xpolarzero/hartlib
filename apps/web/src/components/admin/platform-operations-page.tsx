@@ -1,6 +1,6 @@
-import { useIntl, useLocale } from "@brief/i18n";
-import type { RestrictedSupportScopeKind } from "@brief/shared";
-import { Button, Input, Label, Textarea } from "@brief/ui";
+import { useIntl, useLocale } from "@hartlib/i18n";
+import type { RestrictedSupportScopeKind } from "@hartlib/shared";
+import { Button, Input, Label, Textarea } from "@hartlib/ui";
 import { useForm } from "@tanstack/react-form";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMutation, useQueryClient } from "@tanstack/react-query";

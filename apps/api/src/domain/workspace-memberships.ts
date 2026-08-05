@@ -5,7 +5,7 @@ import type {
   InvitePublisherMemberRequest,
   UpdateClientMemberRequest,
   UpdatePublisherMemberRequest,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import {
   grantClientSubscription,
   inviteClientMember,
@@ -19,9 +19,9 @@ import {
   revokeClientSubscription,
   WorkspaceAuthorizationError,
   WorkspaceRuleError,
-} from "@brief/workspace";
-import type { WorkspaceInvitationProvider } from "@brief/workspace";
-import { requestIdForAudit } from "@brief/workspace";
+} from "@hartlib/workspace";
+import type { WorkspaceInvitationProvider } from "@hartlib/workspace";
+import { requestIdForAudit } from "@hartlib/workspace";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity } from "../auth";
@@ -35,7 +35,7 @@ import { json, type Route } from "../http";
 import { withAdministrativeAuditing } from "./administrative-audit";
 import { createOrRecoverClerkOrganizationInvitation } from "./clerk-invitation-provider";
 
-export type { WorkspaceInvitationProvider } from "@brief/workspace";
+export type { WorkspaceInvitationProvider } from "@hartlib/workspace";
 
 type PgLayer = ApiDatabaseLayerType;
 const PgLayer = ApiDatabaseLayer;

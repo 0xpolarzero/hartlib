@@ -1,4 +1,4 @@
-import type { AiRunEvent as SharedAiRunEvent } from "@brief/shared";
+import type { AiRunEvent as SharedAiRunEvent } from "@hartlib/shared";
 import { PgClient } from "@effect/sql-pg";
 import { Effect } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";

@@ -1,4 +1,4 @@
-import { I18nProvider } from "@brief/i18n";
+import { I18nProvider } from "@hartlib/i18n";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";

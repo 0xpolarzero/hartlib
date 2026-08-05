@@ -5,7 +5,7 @@ export type EnabledWebPolicy = Extract<EffectiveWebPolicy, { readonly enabled: t
 export type WebFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 /** Z.AI remains readable only for historical operation rows; no executable adapter exists. */
-export type WebOperationProvider = "tinyfish" | "zai" | "brief_fetch";
+export type WebOperationProvider = "tinyfish" | "zai" | "hartlib_fetch";
 
 export interface PinnedWebRequest {
   readonly url: URL;

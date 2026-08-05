@@ -81,7 +81,7 @@ describe("Phase B physical compilers", () => {
     expect(chatText).toContain("encode(digest(convert_to(sanitized_chat_content");
     expect(chatText).toContain("left(sanitized_chat_content, 512)");
     expect(chatText).toContain("length(sanitized_chat_content)");
-    expect(chatText).toContain("brief_ai_strip_historical_citation_tags(m.content)");
+    expect(chatText).toContain("hartlib_ai_strip_historical_citation_tags(m.content)");
     expect(chatText).not.toContain("regexp_replace");
     expect(chatText).toContain("m.chat_id = ");
     expect(chatText).toContain("c.company_id = ");

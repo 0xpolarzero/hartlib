@@ -2,13 +2,13 @@ import { createRoot } from "react-dom/client";
 import { RotateCcw, Send } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ApiResponseError, createProductApiClient } from "@brief/api-client";
+import { ApiResponseError, createProductApiClient } from "@hartlib/api-client";
 import {
   clearRunStreamState,
   persistRunStreamState,
   restoreRunStreamState,
-} from "@brief/api-client/stream";
-import { demoDataset, type BriefPublication, type BriefSource } from "@brief/demo-data";
+} from "@hartlib/api-client/stream";
+import { demoDataset, type HartlibPublication, type HartlibSource } from "@hartlib/demo-data";
 import {
   I18nProvider,
   LOCALES,
@@ -24,13 +24,13 @@ import {
   useLocale,
   useMarket,
   useSetLocaleMarket,
-} from "@brief/i18n";
+} from "@hartlib/i18n";
 import type {
   EffectiveWebPolicy,
   GetChatResponse,
   MemoryRevisionResponse,
   PublicSourcesResponse,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Schema } from "effect";
 import {
   type DemoRoute,
@@ -70,7 +70,7 @@ import {
   type OpenStoredPdfResult,
   type PublicationDetailIssue,
   type PublicationDocument,
-} from "@brief/ui";
+} from "@hartlib/ui";
 
 import {
   mapApiMessagesToTranscript,
@@ -189,7 +189,7 @@ async function deleteDemoMemory(memoryId: string): Promise<void> {
 function readInitialPublications() {
   const fallback = demoDataset.issues.map(clonePublication);
   if (typeof window === "undefined") return fallback;
-  return readStoredOr(window.localStorage, "brief:demo:issues:v1", DemoPublications, fallback);
+  return readStoredOr(window.localStorage, "hartlib:demo:issues:v1", DemoPublications, fallback);
 }
 
 function App() {
@@ -201,8 +201,8 @@ function App() {
     () => resolveDemoRoute(getDemoRouteFromPath(window.location.pathname), initialPublications),
     [initialPublications],
   );
-  const [issues, , resetIssues] = useSessionState<readonly BriefPublication[]>(
-    "brief:demo:issues:v1",
+  const [issues, , resetIssues] = useSessionState<readonly HartlibPublication[]>(
+    "hartlib:demo:issues:v1",
     initialPublications,
     DemoPublications,
   );
@@ -265,8 +265,8 @@ function App() {
   function applyDemoRoute(
     route: DemoRoute,
     historyMode: "push" | "replace" = "push",
-    routePublications: readonly BriefPublication[] = publications,
-    routeSources: readonly BriefSource[] = sources,
+    routePublications: readonly HartlibPublication[] = publications,
+    routeSources: readonly HartlibSource[] = sources,
   ) {
     const nextRoute = resolveDemoRoute(route, routePublications, routeSources);
     setSelectedSourceId(nextRoute.sourceId);
@@ -459,7 +459,7 @@ function App() {
           <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 sm:px-6 lg:px-8">
             <div className="flex min-w-0 items-baseline gap-1.5">
               <h1 className="shrink-0 font-display text-xl font-medium text-ink">
-                brief<span className="text-accent">.</span>
+                hartlib<span className="text-accent">.</span>
               </h1>
               <span className="truncate font-mono text-[11px] font-medium text-faint">
                 <FormattedMessage id="demo.badge" />
@@ -546,10 +546,10 @@ function PublisherPublicationDetail({
   onDeleteIssue,
   onUpdateIssue,
 }: {
-  issue: BriefPublication;
-  sourceById: ReadonlyMap<string, BriefSource>;
+  issue: HartlibPublication;
+  sourceById: ReadonlyMap<string, HartlibSource>;
   onDeleteIssue?: (id: string) => void;
-  onUpdateIssue?: (issue: BriefPublication) => void;
+  onUpdateIssue?: (issue: HartlibPublication) => void;
 }) {
   const intl = useIntl();
   const editable = Boolean(onUpdateIssue) && isEditableIssue(issue);
@@ -629,8 +629,8 @@ function ClientFeedsList({
   resetController,
 }: {
   market: Market;
-  sources: readonly BriefSource[];
-  publications: readonly BriefPublication[];
+  sources: readonly HartlibSource[];
+  publications: readonly HartlibPublication[];
   publicContentStatus: "loading" | "ready" | "error";
   onSelectFeed: (feedId: string) => void;
   onToggleSubscribed: (feedId: string) => void;
@@ -1496,8 +1496,8 @@ function ClientFeedDetail({
   publications,
   onSelectIssue,
 }: {
-  feed: BriefSource;
-  publications: readonly BriefPublication[];
+  feed: HartlibSource;
+  publications: readonly HartlibPublication[];
   onSelectIssue: (issueId: string) => void;
 }) {
   const intl = useIntl();
@@ -1547,8 +1547,8 @@ function ClientPublicationDetail({
   issue,
   sourceById,
 }: {
-  issue: BriefPublication;
-  sourceById: ReadonlyMap<string, BriefSource>;
+  issue: HartlibPublication;
+  sourceById: ReadonlyMap<string, HartlibSource>;
 }) {
   return <PublisherPublicationDetail issue={issue} sourceById={sourceById} />;
 }
@@ -1560,8 +1560,8 @@ function buildBreadcrumbs({
   intl,
   applyDemoRoute,
 }: {
-  selectedFeed: BriefSource | null;
-  selectedClientIssue: BriefPublication | null;
+  selectedFeed: HartlibSource | null;
+  selectedClientIssue: HartlibPublication | null;
   locale: Locale;
   intl: ReturnType<typeof useIntl>;
   applyDemoRoute: (route: DemoRoute) => void;
@@ -1605,9 +1605,9 @@ function buildBreadcrumbs({
 }
 
 function computeSourceLastDate(
-  source: BriefSource,
+  source: HartlibSource,
   publisherSourceIds: ReadonlySet<string>,
-  publisherIssues: readonly BriefPublication[],
+  publisherIssues: readonly HartlibPublication[],
 ): string | null {
   if (!publisherSourceIds.has(source.id)) return source.latestPublicationDate;
   let latest: string | null = source.latestPublicationDate;
@@ -1624,8 +1624,8 @@ function computeSourceLastDate(
 }
 
 function toPublicationDetailIssue(
-  issue: BriefPublication,
-  sourceById: ReadonlyMap<string, BriefSource>,
+  issue: HartlibPublication,
+  sourceById: ReadonlyMap<string, HartlibSource>,
 ): PublicationDetailIssue {
   return {
     id: issue.id,
@@ -1638,7 +1638,7 @@ function toPublicationDetailIssue(
   };
 }
 
-function isEditableIssue(issue: BriefPublication) {
+function isEditableIssue(issue: HartlibPublication) {
   return (
     issue.status === "scheduled" &&
     issue.publicationDate !== null &&
@@ -1646,7 +1646,7 @@ function isEditableIssue(issue: BriefPublication) {
   );
 }
 
-function clonePublication(issue: BriefPublication): BriefPublication {
+function clonePublication(issue: HartlibPublication): HartlibPublication {
   return {
     ...issue,
     documents: issue.documents.map((document) => ({
@@ -1661,7 +1661,7 @@ function createDraftDocument(
   issueId: string,
   sourceId: string,
   index: number,
-): BriefPublication["documents"][number] {
+): HartlibPublication["documents"][number] {
   const id = `document_local_${Date.now()}_${index}`;
   return {
     id,
@@ -1737,13 +1737,13 @@ function resetDemoStorage() {
   void clearDemoPdfStorage().catch(() => {});
   const keys = Array.from({ length: window.localStorage.length }, (_, index) =>
     window.localStorage.key(index),
-  ).filter((key): key is string => Boolean(key?.startsWith("brief:demo:")));
+  ).filter((key): key is string => Boolean(key?.startsWith("hartlib:demo:")));
   for (const key of keys) {
     window.localStorage.removeItem(key);
   }
 }
 
-const demoPdfDatabaseName = "brief-demo-pdfs";
+const demoPdfDatabaseName = "hartlib-demo-pdfs";
 const demoPdfStoreName = "pdfs";
 
 function openDemoPdfDatabase(): Promise<IDBDatabase> {

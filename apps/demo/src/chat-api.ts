@@ -5,8 +5,8 @@ import type {
   ListMemoriesResponse,
   MemoryRecord,
   SendChatMessageAccepted,
-} from "@brief/shared";
-import type { ChatTranscriptMessage } from "@brief/ui";
+} from "@hartlib/shared";
+import type { ChatTranscriptMessage } from "@hartlib/ui";
 
 export type ChatApiResponse = GetChatResponse;
 export type SendMessageResponse = SendChatMessageAccepted;

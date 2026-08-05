@@ -3,27 +3,27 @@ import {
   listPublicSources,
   readAuthorizedPublicSourceDocument,
   type RawPublicSourceDocument,
-} from "@brief/backend-domain/public-sources";
+} from "@hartlib/backend-domain/public-sources";
 import {
   PublicSourcesResponse,
   type Market,
   type UpdateClientPublicSourceRequest,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity, type RequestIdentityResult } from "../auth";
 import { ApiDatabaseLayer, type ApiDatabaseLayer as ApiDatabaseLayerType } from "../database";
 import { loadApiConfig, type ApiConfig } from "../config";
-import { ensureDemoChat } from "@brief/backend-domain/chat-runtime";
+import { ensureDemoChat } from "@hartlib/backend-domain/chat-runtime";
 import {
   requestIdForAudit,
   updateClientPublicSource,
   WorkspaceAuthorizationError,
-} from "@brief/workspace";
+} from "@hartlib/workspace";
 import { json, jsonFromSchema, type Route } from "../http";
 import { withAdministrativeAuditing } from "./administrative-audit";
 
-export { publicSourcesResponseFromRows } from "@brief/backend-domain/public-sources";
+export { publicSourcesResponseFromRows } from "@hartlib/backend-domain/public-sources";
 
 export const publicSourcesRoute: Route = {
   method: "GET",

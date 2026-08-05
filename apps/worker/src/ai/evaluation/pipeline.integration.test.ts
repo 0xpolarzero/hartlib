@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import type { WorkerConfig } from "../../config";
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import { handleAiChatRunJob, providerServiceIdForConfig } from "../../jobs/handlers";
 import type { JobRecord } from "../../jobs/types";
 import {
@@ -122,7 +122,7 @@ import {
 } from "./runner";
 
 const sourceDatabaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const databaseName = `brief_eval_pipeline_${process.pid}_${crypto
+const databaseName = `hartlib_eval_pipeline_${process.pid}_${crypto
   .randomUUID()
   .replaceAll("-", "")
   .slice(0, 8)}`;
@@ -292,7 +292,7 @@ const runDb = <A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-evaluation-pipeline-test",
+          applicationName: "hartlib-evaluation-pipeline-test",
         }),
       ),
     ),
@@ -1160,7 +1160,7 @@ const completeDurableCaptureSession = async (
             sourceName:
               row.topology === "specialized"
                 ? `Evaluation source ${fixture.id}`
-                : "Brief canonical evaluation",
+                : "Hartlib canonical evaluation",
             documentTitle: `Canonical evidence ${evaluationBindingGoldenSourceId(binding)}`,
             citationUrl: `https://evaluation.invalid/documents/${binding.documentId}`,
             ...(row.topology === "specialized" ? { publishedAt: "2026-07-01T00:00:00.000Z" } : {}),
@@ -2980,7 +2980,7 @@ const completeDurableCaptureSession = async (
                   ranges: details.ranges,
                   ...(details.binding.kind === "document"
                     ? {
-                        __briefSourceIdentity: {
+                        __hartlibSourceIdentity: {
                           snapshotId: details.binding.snapshotId,
                           contentHash: details.binding.contentHash,
                           ...(details.binding.publisherExtractionId === null
@@ -4918,7 +4918,7 @@ const completeDurableCaptureSession = async (
                 loopIteration: 0,
                 attempt: 0,
                 toolRequestIndex: index + 1,
-                providerServiceId: "brief_fetch",
+                providerServiceId: "hartlib_fetch",
                 operation: "web_fetch",
                 status: "ok",
                 resultCount: 1,

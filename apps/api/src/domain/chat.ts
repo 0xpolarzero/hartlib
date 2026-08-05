@@ -14,8 +14,8 @@ import {
   type AuthorizedAiRunEventPoll,
   type ChatRow,
   type RunStreamContext,
-} from "@brief/backend-domain/chat-runtime";
-import { chatMessagesResponseFromRows, runDescriptor } from "@brief/backend-domain/chat-response";
+} from "@hartlib/backend-domain/chat-runtime";
+import { chatMessagesResponseFromRows, runDescriptor } from "@hartlib/backend-domain/chat-response";
 import {
   AiRunEvent,
   normalizeDomainAllowlist,
@@ -23,8 +23,8 @@ import {
   GetChatResponse,
   SendChatMessageAccepted,
   SendChatMessageRequest,
-} from "@brief/shared";
-import { WorkspaceAuthorizationError as AuthorizationError } from "@brief/workspace";
+} from "@hartlib/shared";
+import { WorkspaceAuthorizationError as AuthorizationError } from "@hartlib/workspace";
 import { Effect, Schema } from "effect";
 
 import { resolveRequestIdentity, type RequestAuthenticator, type RequestIdentity } from "../auth";

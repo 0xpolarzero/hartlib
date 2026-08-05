@@ -1,5 +1,9 @@
 import { PgClient } from "@effect/sql-pg";
-import type { CreateExportRequest, ExportRequestDescriptor, ExportScopeKind } from "@brief/shared";
+import type {
+  CreateExportRequest,
+  ExportRequestDescriptor,
+  ExportScopeKind,
+} from "@hartlib/shared";
 import { Effect } from "effect";
 
 type SqlEffect<A = void> = Effect.Effect<A, unknown, PgClient.PgClient>;
@@ -190,7 +194,7 @@ const authorizeExport = (input: {
       `;
       const documents = yield* sql<{ readonly id: string }>`
         select documents.id::text
-        from brief_documents documents
+        from hartlib_documents documents
         join publisher_issues issues on issues.id = documents.issue_id
         join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
         where subscriptions.publisher_company_id = ${input.scopeId}
@@ -262,7 +266,7 @@ const authorizeExport = (input: {
     const documents = yield* sql<{ readonly id: string }>`
       select distinct documents.id::text
       from issue_deliveries deliveries
-      join brief_documents documents on documents.issue_id = deliveries.issue_id
+      join hartlib_documents documents on documents.issue_id = deliveries.issue_id
       join publisher_issues issues on issues.id = deliveries.issue_id
       where deliveries.client_company_id = ${input.scopeId}
         and deliveries.delivered_at <= ${authorizedAt}
@@ -325,7 +329,7 @@ const lockExportAuthorizationScope = (input: {
     if (input.scopeKind === "publisher_company") {
       yield* sql`
         select pg_advisory_xact_lock(
-          hashtext(${`brief:publisher-members:${input.scopeId}`})
+          hashtext(${`hartlib:publisher-members:${input.scopeId}`})
         )
       `;
       yield* lockLiveRequester;
@@ -344,7 +348,7 @@ const lockExportAuthorizationScope = (input: {
     }
     if (input.scopeKind === "client_company") {
       yield* sql`
-        select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.scopeId}`}))
+        select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.scopeId}`}))
       `;
       yield* lockLiveRequester;
       const companies = yield* sql<{ readonly id: string }>`
@@ -378,7 +382,7 @@ const lockExportAuthorizationScope = (input: {
     const ids = idRows(candidates);
     for (const companyId of ids) {
       yield* sql`
-        select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+        select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
       `;
     }
     yield* lockLiveRequester;
@@ -416,7 +420,7 @@ export const createExportRequest = (input: {
       Effect.gen(function* () {
         yield* sql`
           select pg_advisory_xact_lock(
-            hashtext(${`brief:export:${input.requesterUserId}:${input.request.idempotencyKey}`})
+            hashtext(${`hartlib:export:${input.requesterUserId}:${input.request.idempotencyKey}`})
           )
         `;
         const existing = yield* sql<ExportRow>`

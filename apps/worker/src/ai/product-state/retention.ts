@@ -52,7 +52,7 @@ const purgeOneMemory = (
         const legalHoldScopeKey = `user:${owner.userId}`;
         yield* sql`
           select pg_advisory_xact_lock(
-            hashtextextended(${`brief:legal-hold:${legalHoldScopeKey}`}, 0)
+            hashtextextended(${`hartlib:legal-hold:${legalHoldScopeKey}`}, 0)
           )
         `;
         yield* lockUserMemories(owner.userId);
@@ -74,7 +74,7 @@ const purgeOneMemory = (
                 - (${MEMORY_TOMBSTONE_RETENTION_MS} * interval '1 millisecond')
             )
             and coalesce(users.legal_hold, false) = false
-            and not brief_has_active_legal_hold(
+            and not hartlib_has_active_legal_hold(
               array['user:' || memories.user_id]::text[]
             )
           for update of memories
@@ -160,7 +160,7 @@ export const purgeUserMemoryTombstones = (
         and memories.deleted_at < now()
           - (${MEMORY_TOMBSTONE_RETENTION_MS} * interval '1 millisecond')
         and coalesce(users.legal_hold, false) = false
-        and not brief_has_active_legal_hold(
+        and not hartlib_has_active_legal_hold(
           array['user:' || memories.user_id]::text[]
         )
       order by memories.deleted_at, memories.id
@@ -181,7 +181,7 @@ export const purgeUserMemoryTombstones = (
           where revisions.memory_id = memories.id
         )
         and coalesce(users.legal_hold, false) = false
-        and not brief_has_active_legal_hold(
+        and not hartlib_has_active_legal_hold(
           array['user:' || memories.user_id]::text[]
         )
       order by memories.provenance_only_at, memories.id
@@ -198,7 +198,7 @@ export const purgeUserMemoryTombstones = (
           and memories.deleted_at < now()
             - (${MEMORY_TOMBSTONE_RETENTION_MS} * interval '1 millisecond')
           and coalesce(users.legal_hold, false) = false
-          and not brief_has_active_legal_hold(
+          and not hartlib_has_active_legal_hold(
             array['user:' || memories.user_id]::text[]
           )
         order by memories.deleted_at, memories.id

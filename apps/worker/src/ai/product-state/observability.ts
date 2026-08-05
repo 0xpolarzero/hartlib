@@ -479,10 +479,10 @@ export const insertAiSourceExposure = (
         ].join(":");
         let inserted = false;
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:source-exposure:${replayKey}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:source-exposure:${replayKey}`}))
         `;
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:source-exposure-proof:${coordinateLockKey}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:source-exposure-proof:${coordinateLockKey}`}))
         `;
         const callerBoundProof =
           input.providerSerializationProofBinding === undefined
@@ -526,16 +526,16 @@ export const insertAiSourceExposure = (
         let providerSerializationProofBinding:
           | ProviderVisibleSourceExposureProofBinding
           | undefined = input.providerSerializationProofBinding;
-          const coordinateAttestedProofs = yield* sql<{
-            readonly proof: string;
-            readonly binding: unknown;
-            readonly providerRequestSha256Hex: string | null;
-            readonly sourceKind: string | null;
-            readonly logicalSourceIdentity: string | null;
-            readonly contentItemIdentity: string | null;
-            readonly exposureStage: string | null;
-            readonly visibleTokenCount: string | null;
-          }>`
+        const coordinateAttestedProofs = yield* sql<{
+          readonly proof: string;
+          readonly binding: unknown;
+          readonly providerRequestSha256Hex: string | null;
+          readonly sourceKind: string | null;
+          readonly logicalSourceIdentity: string | null;
+          readonly contentItemIdentity: string | null;
+          readonly exposureStage: string | null;
+          readonly visibleTokenCount: string | null;
+        }>`
           select payload->>'providerSerializationProofSha256Hex' as proof,
                  payload->'providerSerializationProofBinding' as binding,
                  payload->>'providerRequestSha256Hex' as "providerRequestSha256Hex",
@@ -553,28 +553,28 @@ export const insertAiSourceExposure = (
             and (payload->>'providerRequestIndex')::int = ${input.providerRequestIndex}
           for update
         `;
-          const existingAttestedProofs = coordinateAttestedProofs.filter(
+        const existingAttestedProofs = coordinateAttestedProofs.filter(
+          (attestation) =>
+            attestation.sourceKind === input.sourceKind &&
+            attestation.logicalSourceIdentity === input.logicalSourceIdentity &&
+            attestation.contentItemIdentity === baseIdentity &&
+            attestation.exposureStage === input.exposureStage,
+        );
+        if (
+          coordinateAttestedProofs.some(
             (attestation) =>
-              attestation.sourceKind === input.sourceKind &&
-              attestation.logicalSourceIdentity === input.logicalSourceIdentity &&
-              attestation.contentItemIdentity === baseIdentity &&
-              attestation.exposureStage === input.exposureStage,
+              attestation.providerRequestSha256Hex !== null &&
+              attestation.providerRequestSha256Hex !== input.providerRequestSha256Hex,
+          )
+        ) {
+          return yield* Effect.fail(
+            replayConflict("ai_observations(source_exposure_attestation)", replayKey),
           );
-          if (
-            coordinateAttestedProofs.some(
-              (attestation) =>
-                attestation.providerRequestSha256Hex !== null &&
-                attestation.providerRequestSha256Hex !== input.providerRequestSha256Hex,
-            )
-          ) {
-            return yield* Effect.fail(
-              replayConflict("ai_observations(source_exposure_attestation)", replayKey),
-            );
-          }
-          const measurementRows = yield* sql<{
-            readonly proofs: unknown;
-            readonly bindings: unknown;
-          }>`
+        }
+        const measurementRows = yield* sql<{
+          readonly proofs: unknown;
+          readonly bindings: unknown;
+        }>`
           select payload->'sourceExposureProofSha256Hexes' as proofs,
                  payload->'sourceExposureProofBindings' as bindings
           from ai_observations
@@ -586,213 +586,212 @@ export const insertAiSourceExposure = (
             and (payload->>'providerRequestIndex')::int = ${input.providerRequestIndex}
           for update
         `;
-          const measurementProofs = measurementRows[0]?.proofs;
-          const measurementBindings = measurementRows[0]?.bindings;
-          const isBinding = (value: unknown): value is ProviderVisibleSourceExposureProofBinding =>
-            value !== null &&
-            typeof value === "object" &&
-            !Array.isArray(value) &&
-            Number.isSafeInteger((value as Record<string, unknown>).messageIndex) &&
-            Number.isSafeInteger((value as Record<string, unknown>).sourceOrdinal) &&
-            typeof (value as Record<string, unknown>).serializedField === "string" &&
-            typeof (value as Record<string, unknown>).orderedSourceDescriptor === "string" &&
-            ((value as Record<string, unknown>).characterOffset === undefined ||
-              Number.isSafeInteger((value as Record<string, unknown>).characterOffset)) &&
-            ((value as Record<string, unknown>).publicDocumentId === undefined ||
-              typeof (value as Record<string, unknown>).publicDocumentId === "string");
-          const isDurableBindingRow = (
-            value: unknown,
-          ): value is {
-            readonly providerSerializationProofSha256Hex: string;
-            readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
-          } =>
-            value !== null &&
-            typeof value === "object" &&
-            !Array.isArray(value) &&
-            typeof (value as Record<string, unknown>).providerSerializationProofSha256Hex ===
-              "string" &&
-            /^[0-9a-f]{64}$/u.test(
-              (value as Record<string, unknown>).providerSerializationProofSha256Hex as string,
-            ) &&
-            isBinding((value as Record<string, unknown>).providerSerializationProofBinding);
-          const sameBindingAttestations =
-            input.providerSerializationProofBinding === undefined
-              ? []
-              : coordinateAttestedProofs.filter(
-                  (attestation) =>
-                    isBinding(attestation.binding) &&
-                    stableJson(attestation.binding) ===
-                      stableJson(input.providerSerializationProofBinding),
-                );
+        const measurementProofs = measurementRows[0]?.proofs;
+        const measurementBindings = measurementRows[0]?.bindings;
+        const isBinding = (value: unknown): value is ProviderVisibleSourceExposureProofBinding =>
+          value !== null &&
+          typeof value === "object" &&
+          !Array.isArray(value) &&
+          Number.isSafeInteger((value as Record<string, unknown>).messageIndex) &&
+          Number.isSafeInteger((value as Record<string, unknown>).sourceOrdinal) &&
+          typeof (value as Record<string, unknown>).serializedField === "string" &&
+          typeof (value as Record<string, unknown>).orderedSourceDescriptor === "string" &&
+          ((value as Record<string, unknown>).characterOffset === undefined ||
+            Number.isSafeInteger((value as Record<string, unknown>).characterOffset)) &&
+          ((value as Record<string, unknown>).publicDocumentId === undefined ||
+            typeof (value as Record<string, unknown>).publicDocumentId === "string");
+        const isDurableBindingRow = (
+          value: unknown,
+        ): value is {
+          readonly providerSerializationProofSha256Hex: string;
+          readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+        } =>
+          value !== null &&
+          typeof value === "object" &&
+          !Array.isArray(value) &&
+          typeof (value as Record<string, unknown>).providerSerializationProofSha256Hex ===
+            "string" &&
+          /^[0-9a-f]{64}$/u.test(
+            (value as Record<string, unknown>).providerSerializationProofSha256Hex as string,
+          ) &&
+          isBinding((value as Record<string, unknown>).providerSerializationProofBinding);
+        const sameBindingAttestations =
+          input.providerSerializationProofBinding === undefined
+            ? []
+            : coordinateAttestedProofs.filter(
+                (attestation) =>
+                  isBinding(attestation.binding) &&
+                  stableJson(attestation.binding) ===
+                    stableJson(input.providerSerializationProofBinding),
+              );
+        if (
+          sameBindingAttestations.some(
+            (attestation) =>
+              attestation.sourceKind !== input.sourceKind ||
+              attestation.logicalSourceIdentity !== input.logicalSourceIdentity ||
+              attestation.contentItemIdentity !== baseIdentity ||
+              attestation.exposureStage !== input.exposureStage ||
+              attestation.visibleTokenCount !== String(input.visibleTokenCount),
+          )
+        ) {
+          return yield* Effect.fail(
+            replayConflict("ai_observations(source_exposure_attestation)", replayKey),
+          );
+        }
+        const sameProofAttestations =
+          callerBoundProof === undefined
+            ? []
+            : existingAttestedProofs.filter(
+                (attestation) => attestation.proof === callerBoundProof,
+              );
+        if (
+          sameProofAttestations.some((attestation) => !isBinding(attestation.binding)) ||
+          sameProofAttestations.length > 1
+        ) {
+          return yield* Effect.fail(
+            replayConflict("ai_observations(source_exposure_attestation)", replayKey),
+          );
+        }
+        const matchingAttestations =
+          input.providerSerializationProofBinding === undefined
+            ? []
+            : sameProofAttestations.filter(
+                (attestation) =>
+                  isBinding(attestation.binding) &&
+                  stableJson(attestation.binding) ===
+                    stableJson(input.providerSerializationProofBinding),
+              );
+        const existingAttestation =
+          matchingAttestations[0] ??
+          (callerBoundProof === undefined && existingAttestedProofs.length === 1
+            ? existingAttestedProofs[0]
+            : undefined);
+        if (
+          existingAttestation !== undefined &&
+          /^[0-9a-f]{64}$/u.test(existingAttestation.proof) &&
+          isBinding(existingAttestation.binding)
+        ) {
+          providerSerializationProofSha256Hex = existingAttestation.proof;
+          providerSerializationProofBinding = existingAttestation.binding;
+        } else if (existingAttestation !== undefined) {
+          return yield* Effect.fail(
+            new Error("source exposure attestation lacks its exact provider field binding"),
+          );
+        }
+        if (measurementProofs !== undefined && measurementProofs !== null) {
           if (
-            sameBindingAttestations.some(
-              (attestation) =>
-                attestation.sourceKind !== input.sourceKind ||
-                attestation.logicalSourceIdentity !== input.logicalSourceIdentity ||
-                attestation.contentItemIdentity !== baseIdentity ||
-                attestation.exposureStage !== input.exposureStage ||
-                attestation.visibleTokenCount !== String(input.visibleTokenCount),
+            !Array.isArray(measurementProofs) ||
+            measurementProofs.some(
+              (proof) => typeof proof !== "string" || !/^[0-9a-f]{64}$/u.test(proof),
             )
           ) {
-            return yield* Effect.fail(
-              replayConflict("ai_observations(source_exposure_attestation)", replayKey),
-            );
+            return yield* Effect.fail(new Error("provider measurement proof set is invalid"));
           }
-          const sameProofAttestations =
-            callerBoundProof === undefined
-              ? []
-              : existingAttestedProofs.filter(
-                  (attestation) => attestation.proof === callerBoundProof,
-                );
           if (
-            sameProofAttestations.some((attestation) => !isBinding(attestation.binding)) ||
-            sameProofAttestations.length > 1
+            !Array.isArray(measurementBindings) ||
+            measurementBindings.some((binding) => !isDurableBindingRow(binding)) ||
+            new Set(
+              (
+                measurementBindings as readonly {
+                  readonly providerSerializationProofSha256Hex: string;
+                }[]
+              ).map((binding) => binding.providerSerializationProofSha256Hex),
+            ).size !== measurementBindings.length
           ) {
             return yield* Effect.fail(
-              replayConflict("ai_observations(source_exposure_attestation)", replayKey),
+              new Error(
+                "provider measurement lacks its exact source exposure bindings: provider request measurement source proof bindings are not exact",
+              ),
             );
           }
-          const matchingAttestations =
-            input.providerSerializationProofBinding === undefined
-              ? []
-              : sameProofAttestations.filter(
-                  (attestation) =>
-                    isBinding(attestation.binding) &&
-                    stableJson(attestation.binding) ===
-                      stableJson(input.providerSerializationProofBinding),
-                );
-          const existingAttestation =
-            matchingAttestations[0] ??
-            (callerBoundProof === undefined && existingAttestedProofs.length === 1
-              ? existingAttestedProofs[0]
-              : undefined);
+          const expectedProofs = [...measurementProofs].sort();
+          const matchingBinding = callerBoundProof;
           if (
-            existingAttestation !== undefined &&
-            /^[0-9a-f]{64}$/u.test(existingAttestation.proof) &&
-            isBinding(existingAttestation.binding)
+            providerSerializationProofSha256Hex !== undefined &&
+            !expectedProofs.includes(providerSerializationProofSha256Hex)
           ) {
-            providerSerializationProofSha256Hex = existingAttestation.proof;
-            providerSerializationProofBinding = existingAttestation.binding;
-          } else if (existingAttestation !== undefined) {
             return yield* Effect.fail(
-              new Error("source exposure attestation lacks its exact provider field binding"),
+              new Error("source exposure attestation differs from its provider measurement"),
             );
           }
-          if (measurementProofs !== undefined && measurementProofs !== null) {
-            if (
-              !Array.isArray(measurementProofs) ||
-              measurementProofs.some(
-                (proof) => typeof proof !== "string" || !/^[0-9a-f]{64}$/u.test(proof),
-              )
-            ) {
-              return yield* Effect.fail(new Error("provider measurement proof set is invalid"));
+          if (matchingBinding !== undefined) {
+            if (!expectedProofs.includes(matchingBinding)) {
+              return yield* Effect.fail(
+                new Error("source exposure binding is absent from its provider measurement"),
+              );
             }
-            if (
-              !Array.isArray(measurementBindings) ||
-              measurementBindings.some((binding) => !isDurableBindingRow(binding)) ||
-              new Set(
-                (
-                  measurementBindings as readonly {
-                    readonly providerSerializationProofSha256Hex: string;
-                  }[]
-                ).map((binding) => binding.providerSerializationProofSha256Hex),
-              ).size !== measurementBindings.length
-            ) {
+            providerSerializationProofSha256Hex = matchingBinding;
+            const durableBinding = (
+              measurementBindings as readonly {
+                readonly providerSerializationProofSha256Hex: string;
+                readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+              }[]
+            ).find((binding) => binding.providerSerializationProofSha256Hex === matchingBinding);
+            if (durableBinding === undefined) {
               return yield* Effect.fail(
                 new Error(
-                  "provider measurement lacks its exact source exposure bindings: provider request measurement source proof bindings are not exact",
+                  "source exposure binding is absent from the durable provider measurement",
                 ),
               );
             }
-            const expectedProofs = [...measurementProofs].sort();
-            const matchingBinding = callerBoundProof;
+            providerSerializationProofBinding = durableBinding.providerSerializationProofBinding;
+          } else if (providerSerializationProofSha256Hex === undefined) {
+            const markerMatches = (
+              measurementBindings as readonly {
+                readonly providerSerializationProofSha256Hex: string;
+                readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
+              }[]
+            ).filter((binding) => {
+              const computed = providerVisibleSourceExposureProofSha256Hex(
+                marker,
+                binding.providerSerializationProofBinding,
+              );
+              return (
+                computed === binding.providerSerializationProofSha256Hex &&
+                expectedProofs.includes(computed)
+              );
+            });
+            if (markerMatches.length !== 1) {
+              return yield* Effect.fail(
+                new Error(
+                  "source exposure lacks its exact durable provider sidecar binding: source exposure requires its exact provider field binding",
+                ),
+              );
+            }
+            providerSerializationProofSha256Hex =
+              markerMatches[0]!.providerSerializationProofSha256Hex;
+            providerSerializationProofBinding = markerMatches[0]!.providerSerializationProofBinding;
+          }
+        } else if (providerSerializationProofSha256Hex === undefined) {
+          const sidecarBindings = providerRequestSourceExposureProofBindingCandidates(
+            input.providerRequestSha256Hex,
+            marker,
+          );
+          if (sidecarBindings.length === 0) {
             if (
-              providerSerializationProofSha256Hex !== undefined &&
-              !expectedProofs.includes(providerSerializationProofSha256Hex)
+              input.sourceKind !== "web" &&
+              (callerBoundProof === undefined ||
+                input.providerSerializationProofBinding === undefined)
             ) {
               return yield* Effect.fail(
-                new Error("source exposure attestation differs from its provider measurement"),
+                new Error("source exposure requires its exact provider field binding"),
               );
             }
-            if (matchingBinding !== undefined) {
-              if (!expectedProofs.includes(matchingBinding)) {
-                return yield* Effect.fail(
-                  new Error("source exposure binding is absent from its provider measurement"),
-                );
-              }
-              providerSerializationProofSha256Hex = matchingBinding;
-              const durableBinding = (
-                measurementBindings as readonly {
-                  readonly providerSerializationProofSha256Hex: string;
-                  readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
-                }[]
-              ).find((binding) => binding.providerSerializationProofSha256Hex === matchingBinding);
-              if (durableBinding === undefined) {
-                return yield* Effect.fail(
-                  new Error(
-                    "source exposure binding is absent from the durable provider measurement",
-                  ),
-                );
-              }
-              providerSerializationProofBinding = durableBinding.providerSerializationProofBinding;
-            } else if (providerSerializationProofSha256Hex === undefined) {
-              const markerMatches = (
-                measurementBindings as readonly {
-                  readonly providerSerializationProofSha256Hex: string;
-                  readonly providerSerializationProofBinding: ProviderVisibleSourceExposureProofBinding;
-                }[]
-              ).filter((binding) => {
-                const computed = providerVisibleSourceExposureProofSha256Hex(
-                  marker,
-                  binding.providerSerializationProofBinding,
-                );
-                return (
-                  computed === binding.providerSerializationProofSha256Hex &&
-                  expectedProofs.includes(computed)
-                );
-              });
-              if (markerMatches.length !== 1) {
-                return yield* Effect.fail(
-                  new Error(
-                    "source exposure lacks its exact durable provider sidecar binding: source exposure requires its exact provider field binding",
-                  ),
-                );
-              }
-              providerSerializationProofSha256Hex =
-                markerMatches[0]!.providerSerializationProofSha256Hex;
-              providerSerializationProofBinding =
-                markerMatches[0]!.providerSerializationProofBinding;
+            providerSerializationProofSha256Hex = callerBoundProof;
+            providerSerializationProofBinding = input.providerSerializationProofBinding;
+          } else {
+            if (sidecarBindings.length !== 1) {
+              return yield* Effect.fail(
+                new Error("source exposure requires its exact repeated-field binding"),
+              );
             }
-          } else if (providerSerializationProofSha256Hex === undefined) {
-            const sidecarBindings = providerRequestSourceExposureProofBindingCandidates(
-              input.providerRequestSha256Hex,
+            providerSerializationProofBinding = sidecarBindings[0]!;
+            providerSerializationProofSha256Hex = providerVisibleSourceExposureProofSha256Hex(
               marker,
+              providerSerializationProofBinding,
             );
-            if (sidecarBindings.length === 0) {
-              if (
-                input.sourceKind !== "web" &&
-                (callerBoundProof === undefined ||
-                  input.providerSerializationProofBinding === undefined)
-              ) {
-                return yield* Effect.fail(
-                  new Error("source exposure requires its exact provider field binding"),
-                );
-              }
-              providerSerializationProofSha256Hex = callerBoundProof;
-              providerSerializationProofBinding = input.providerSerializationProofBinding;
-            } else {
-              if (sidecarBindings.length !== 1) {
-                return yield* Effect.fail(
-                  new Error("source exposure requires its exact repeated-field binding"),
-                );
-              }
-              providerSerializationProofBinding = sidecarBindings[0]!;
-              providerSerializationProofSha256Hex = providerVisibleSourceExposureProofSha256Hex(
-                marker,
-                providerSerializationProofBinding,
-              );
-            }
           }
+        }
         if (
           (input.sourceKind !== "web" &&
             (providerSerializationProofSha256Hex === undefined ||

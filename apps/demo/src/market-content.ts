@@ -1,4 +1,4 @@
-import type { Market, PublicSourcesResponse } from "@brief/shared";
+import type { Market, PublicSourcesResponse } from "@hartlib/shared";
 
 export interface MarketPublicContentState {
   readonly market: Market;

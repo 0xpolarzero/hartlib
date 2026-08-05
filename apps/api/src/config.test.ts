@@ -33,7 +33,7 @@ describe("API configuration", () => {
         AUTH_MODE: "clerk",
         CLERK_SECRET_KEY: "secret",
         CLERK_PUBLISHABLE_KEY: "publishable",
-        CORS_ALLOWED_ORIGINS: "https://brief.example/path",
+        CORS_ALLOWED_ORIGINS: "https://hartlib.example/path",
       }),
     ).rejects.toThrow("exact web origins");
   });
@@ -46,7 +46,7 @@ describe("API configuration", () => {
       TINYFISH_API_KEY: secret,
       CLERK_SECRET_KEY: secret,
       STRIPE_SECRET_KEY: secret,
-      DATABASE_URL: `postgres://brief:${secret}@db.example/brief`,
+      DATABASE_URL: `postgres://hartlib:${secret}@db.example/hartlib`,
     }).then(
       () => null,
       (error: unknown) => String(error),

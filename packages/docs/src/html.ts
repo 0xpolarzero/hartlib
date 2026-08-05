@@ -1,4 +1,4 @@
-// @brief/web — static English-only chat reference served at /docs.
+// @hartlib/web — static English-only chat reference served at /docs.
 // served verbatim by the docs() Vite plugin and by the web bootstrap/router
 // fallback. Every path stays outside the localized application layout, so the
 // page has no fr/en locale switch.
@@ -15,7 +15,7 @@ export const DOCS_HTML: string = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Brief — How chat works</title>
+<title>Hartlib — How chat works</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -251,7 +251,7 @@ export const DOCS_HTML: string = `<!doctype html>
 <body>
 <main>
   <h1>How chat works</h1>
-  <p class="lede">A precise trace of a Brief chat turn, from HTTP request to streamed response.</p>
+  <p class="lede">A precise trace of a Hartlib chat turn, from HTTP request to streamed response.</p>
   <p class="meta">
     <span class="pill">GET /docs</span>
     <span class="pill">English</span>
@@ -400,22 +400,22 @@ export const DOCS_HTML: string = `<!doctype html>
   <p>
     The handler runs <code>createUserMessageAndRun</code> in a single
     transaction. It first takes the Smithers schema-fence lock
-    <code>brief:ai-chat:smithers-schema</code>, then the
-    <code>brief:user-memory:&lt;userId&gt;</code> lock. Demo requests then take
-    <code>brief:demo-chat:&lt;userId&gt;</code> while provisioning. For an
+    <code>hartlib:ai-chat:smithers-schema</code>, then the
+    <code>hartlib:user-memory:&lt;userId&gt;</code> lock. Demo requests then take
+    <code>hartlib:demo-chat:&lt;userId&gt;</code> while provisioning. For an
     explicit chat, the lookup locks its row <code>FOR UPDATE</code>; after the
-    lookup the transaction takes <code>brief:client-members:&lt;companyId&gt;</code>
-    and then <code>brief:ai-chat:&lt;chatId&gt;</code>. Explicit production
+    lookup the transaction takes <code>hartlib:client-members:&lt;companyId&gt;</code>
+    and then <code>hartlib:ai-chat:&lt;chatId&gt;</code>. Explicit production
     acceptance uses four advisory locks plus the chat-row lock. Demo acceptance
     uses five advisory locks — the four common lanes plus
-    <code>brief:demo-chat:&lt;userId&gt;</code> — and no explicit chat-row lookup.
+    <code>hartlib:demo-chat:&lt;userId&gt;</code> — and no explicit chat-row lookup.
     It runs all gating checks and only then writes rows.
   </p>
   <p>Inside the transaction, in order:</p>
   <ol>
-    <li><strong>Build the acceptance scope.</strong> While the acceptance locks are held, Brief resolves the caller, chat, company, exact source and access IDs, memory mode and revision IDs, provider and model identities, and requested/effective web state. The server intersects request fields with current entitlements and defaults; the client cannot add IDs or supply snapshot fields. Otherwise: <code>403 forbidden</code>.</li>
+    <li><strong>Build the acceptance scope.</strong> While the acceptance locks are held, Hartlib resolves the caller, chat, company, exact source and access IDs, memory mode and revision IDs, provider and model identities, and requested/effective web state. The server intersects request fields with current entitlements and defaults; the client cannot add IDs or supply snapshot fields. Otherwise: <code>403 forbidden</code>.</li>
     <li><strong>Credit preflight.</strong> In demo mode credits are not enforced. In production the check fails closed with <code>credit_conversion_undefined</code> → <code>402</code> until the turn-to-credit conversion is approved. Runs <em>before</em> any row is written.</li>
-    <li><strong>Save requested and effective web state.</strong> Brief records the approved provider, transport, requested/effective web state, and canonical domain allowlist in the immutable acceptance scope. If the caller requested web research but the saved policy is disabled: <code>403 web_research_unavailable</code> with the reason.</li>
+    <li><strong>Save requested and effective web state.</strong> Hartlib records the approved provider, transport, requested/effective web state, and canonical domain allowlist in the immutable acceptance scope. If the caller requested web research but the saved policy is disabled: <code>403 web_research_unavailable</code> with the reason.</li>
     <li><strong>Active-run conflict.</strong> There may be at most one active run per chat and at most one active run per initiating user across all their chats (enforced structurally by two partial unique indexes). If either is violated: <code>409 active_ai_run</code> with <code>conflictScope: "chat" | "user"</code>.</li>
     <li><strong>Insert three rows:</strong>
       <ul>
@@ -483,7 +483,7 @@ export const DOCS_HTML: string = `<!doctype html>
     Each tick is:
   </p>
   <ol>
-    <li><strong>Claim</strong> the next job under <code>pg_advisory_xact_lock('brief:jobs:claim')</code>. Stale leases (a worker that crashed mid-job) are reaped first; <code>ai_chat_run</code> rows are always sent back to <code>retrying</code>, never terminal-failed at the queue layer. The claim itself is <code>UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED LIMIT 1)</code> ordered by <code>priority desc, available_at asc, created_at asc</code>.</li>
+    <li><strong>Claim</strong> the next job under <code>pg_advisory_xact_lock('hartlib:jobs:claim')</code>. Stale leases (a worker that crashed mid-job) are reaped first; <code>ai_chat_run</code> rows are always sent back to <code>retrying</code>, never terminal-failed at the queue layer. The claim itself is <code>UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED LIMIT 1)</code> ordered by <code>priority desc, available_at asc, created_at asc</code>.</li>
     <li><strong>Heartbeat race.</strong> The handler runs racing against a heartbeat loop that refreshes <code>locked_at</code> every ~⅓ of the lock timeout. Whichever finishes first wins; the heartbeat dies when the handler returns.</li>
     <li><strong>Dispatch.</strong> <code>kind === 'ai_chat_run'</code> → <code>handleAiChatRunJob</code>.</li>
     <li><strong>Mark completed or failed.</strong> On thrown error the job is marked failed (re-queued with exponential backoff for <code>ai_chat_run</code>); otherwise marked completed.</li>
@@ -530,7 +530,7 @@ export const DOCS_HTML: string = `<!doctype html>
     of database rows. <code>load-turn</code> does not preload conversation
     bodies, memories, source metadata, document text, hashes, or policy rows.
     Each task loads only the rows it needs, restricted by the saved IDs.
-    Brief code owns those queries; models see only their declared inputs and
+    Hartlib code owns those queries; models see only their declared inputs and
     tool results. Later setting changes affect later runs, not this one.
   </p>
   <p>
@@ -608,9 +608,9 @@ export const DOCS_HTML: string = `<!doctype html>
   </p>
   <ol>
     <li>Take the user-memory advisory lane, lock the chat row <code>FOR SHARE</code>, take the membership and chat-execution advisory lanes, then lock the run row <code>FOR UPDATE</code>; verify <code>smithers_run_id</code> still matches.</li>
-    <li>If the answer succeeds, acquire each cited issue's restriction lane (<code>brief:publisher-issue:&lt;issueId&gt;</code>) in sorted order.</li>
+    <li>If the answer succeeds, acquire each cited issue's restriction lane (<code>hartlib:publisher-issue:&lt;issueId&gt;</code>) in sorted order.</li>
     <li>Validate the terminal product ledger and durable observation trail, including the memory-extraction artifact and producer usage proofs. An already-terminal replay returns only after these checks pass; otherwise finalization continues.</li>
-    <li><strong>Validate the saved scope and exact evidence.</strong> Brief checks the immutable acceptance scope plus exact document, version, hash, locator, range, memory-revision, quotation, usage, and provider identities. These source-integrity checks prove that saved evidence is unchanged; they do not reauthorize current access. Ordinary setting changes do not turn an accepted answer into a failure. Account deletion, purge, retention, legal or security restriction, and exact identity mismatch remain exceptional denials.</li>
+    <li><strong>Validate the saved scope and exact evidence.</strong> Hartlib checks the immutable acceptance scope plus exact document, version, hash, locator, range, memory-revision, quotation, usage, and provider identities. These source-integrity checks prove that saved evidence is unchanged; they do not reauthorize current access. Ordinary setting changes do not turn an accepted answer into a failure. Account deletion, purge, retention, legal or security restriction, and exact identity mismatch remain exceptional denials.</li>
     <li>Apply memory proposals after scope and integrity validation. Emit <code>memory_updated</code>.</li>
     <li>Aggregate all per-request model and web usage; emit one run-scope <code>usage</code> event.</li>
     <li>On failure: set <code>failed_at</code>, <code>error_code</code>, <code>retryable</code>, and emit a terminal <code>error</code> event.</li>
@@ -867,7 +867,7 @@ data: {"type":"text_delta","delta":"Q3 "}
       <tr><td><code>client_company_memberships</code></td><td>Links a user to a company; deactivated via <code>revoked_at</code> / <code>revoked_by_user_id</code> (no recovery/purge columns).</td></tr>
       <tr><td><code>client_company_ai_settings</code></td><td>Per-company web toggle and optional domain allowlist.</td></tr>
       <tr><td><code>chat_subscription_sources</code> / <code>client_employee_subscription_grants</code> / <code>client_subscription_accesses</code></td><td>The subscription wiring that gates publisher-document access.</td></tr>
-      <tr><td><code>public_source_documents</code>, <code>publisher_issues</code>, <code>publisher_subscriptions</code>, <code>brief_documents</code>, <code>issue_deliveries</code></td><td>Immutable document identities and historical delivery records used for evidence and publication access.</td></tr>
+      <tr><td><code>public_source_documents</code>, <code>publisher_issues</code>, <code>publisher_subscriptions</code>, <code>hartlib_documents</code>, <code>issue_deliveries</code></td><td>Immutable document identities and historical delivery records used for evidence and publication access.</td></tr>
       <tr><td><code>platform_users</code></td><td>User identities; soft-deleted via <code>recovery_deleted_at</code> / <code>purged_at</code>.</td></tr>
     </tbody>
   </table>
@@ -882,13 +882,13 @@ data: {"type":"text_delta","delta":"Q3 "}
   <h3>Lock discipline</h3>
   <p>Acceptance advisory locks follow a fixed order:</p>
   <ul>
-    <li><code>brief:ai-chat:smithers-schema</code> — enqueue/cutover fence.</li>
-    <li><code>brief:user-memory:&lt;userId&gt;</code> — enqueue and finalization memory lane.</li>
-    <li><code>brief:demo-chat:&lt;userId&gt;</code> — demo chat provisioning.</li>
-    <li><code>brief:client-members:&lt;companyId&gt;</code> — membership stability.</li>
-    <li><code>brief:ai-chat:&lt;chatId&gt;</code> — per-chat serialization.</li>
-    <li><code>brief:publisher-issue:&lt;issueId&gt;</code> — finalization-only restriction lane, acquired in sorted order.</li>
-    <li><code>brief:jobs:claim</code> — independent single-writer job-claim lane.</li>
+    <li><code>hartlib:ai-chat:smithers-schema</code> — enqueue/cutover fence.</li>
+    <li><code>hartlib:user-memory:&lt;userId&gt;</code> — enqueue and finalization memory lane.</li>
+    <li><code>hartlib:demo-chat:&lt;userId&gt;</code> — demo chat provisioning.</li>
+    <li><code>hartlib:client-members:&lt;companyId&gt;</code> — membership stability.</li>
+    <li><code>hartlib:ai-chat:&lt;chatId&gt;</code> — per-chat serialization.</li>
+    <li><code>hartlib:publisher-issue:&lt;issueId&gt;</code> — finalization-only restriction lane, acquired in sorted order.</li>
+    <li><code>hartlib:jobs:claim</code> — independent single-writer job-claim lane.</li>
   </ul>
   <p>
     Explicit-chat enqueue also locks the chat row <code>FOR UPDATE</code> before
@@ -912,7 +912,7 @@ data: {"type":"text_delta","delta":"Q3 "}
   </ul>
   <h3>Web policy lifecycle</h3>
   <p>
-    Brief saves the requested and effective web state, provider identity, and
+    Hartlib saves the requested and effective web state, provider identity, and
     canonical domain allowlist in the immutable acceptance scope. It gates
     <code>403 web_research_unavailable</code> at acceptance when the caller asks
     for disabled web research. Every later web operation uses those saved

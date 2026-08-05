@@ -1,22 +1,22 @@
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { loadExportObjectStorageConfig } from "@brief/config";
+import { loadExportObjectStorageConfig } from "@hartlib/config";
 import {
   createExportRequest,
   exportDescriptor,
   selectExport,
   withExportDownloadLease,
-} from "@brief/backend-domain/exports";
-import type { CreateExportRequest } from "@brief/shared";
+} from "@hartlib/backend-domain/exports";
+import type { CreateExportRequest } from "@hartlib/shared";
 import {
   appendAuthorizationAudit,
   appendDeniedAuthorizationAudit,
   requestIdForAudit,
-} from "@brief/workspace";
+} from "@hartlib/workspace";
 import {
   EXPORT_ARCHIVE_FILE_EXTENSION,
   EXPORT_ARCHIVE_MEDIA_TYPE,
-} from "@brief/shared/export-contract";
+} from "@hartlib/shared/export-contract";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity, type RequestIdentity } from "../auth";
@@ -222,7 +222,7 @@ export const makeExportRoutes = (
                       signal,
                       configuration: storage,
                       objectKey: row.objectKey!,
-                      fileName: `brief-export-${row.id}${EXPORT_ARCHIVE_FILE_EXTENSION}`,
+                      fileName: `hartlib-export-${row.id}${EXPORT_ARCHIVE_FILE_EXTENSION}`,
                       expiresInSeconds: EXPORT_SIGNED_URL_TTL_SECONDS,
                     }),
                   ).pipe(Effect.timeout(`${EXPORT_SIGNING_TIMEOUT_MS} millis`));

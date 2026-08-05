@@ -1,4 +1,4 @@
-# Brief
+# Hartlib
 
 ## Product
 
@@ -32,7 +32,7 @@ The MVP uses real accounts, real publisher content, and the real compliance post
 
 The demo is a separate app under `apps/demo`.
 
-The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`: Z.AI model calls and optional Tinyfish discovery sit behind the Brief backend, with Brief-owned safe fetching for evidence.
+The demo chat runtime uses the provider boundary specified in `docs/ai-chat-runtime.spec.md`: Z.AI model calls and optional Tinyfish discovery sit behind the Hartlib backend, with Hartlib-owned safe fetching for evidence.
 
 The demo uses fake accounts, seeded publisher content, and a real test database.
 
@@ -79,7 +79,7 @@ Inline editable fields are visually quiet at rest, show a subtle surface and rul
 
 Long editable document fields expand when focused so the edit surface is obvious.
 
-The demo client chat is live. It reads chat history from the Brief API, sends messages through the Brief API, streams active AI runs over SSE, renders citations from inline citation tags, and shows the sources read for each assistant answer. While an answer runs, the shared transcript shows a compact labeled stage rail; an explicit diagnostics disclosure reveals only the safe activity history and run summary. The composer sends an explicit per-message web-search choice. The UI does not treat streamed answer completion as terminal until the required parallel memory write has committed and `done` arrives. A terminal failure discards the provisional assistant draft and remains reload-durable on the originating user message, with resubmit only when the run is retryable. Stream growth keeps the transcript anchored only when the viewer is near the bottom; after a manual scroll away, an accessible Jump to latest control returns to the newest content.
+The demo client chat is live. It reads chat history from the Hartlib API, sends messages through the Hartlib API, streams active AI runs over SSE, renders citations from inline citation tags, and shows the sources read for each assistant answer. While an answer runs, the shared transcript shows a compact labeled stage rail; an explicit diagnostics disclosure reveals only the safe activity history and run summary. The composer sends an explicit per-message web-search choice. The UI does not treat streamed answer completion as terminal until the required parallel memory write has committed and `done` arrives. A terminal failure discards the provisional assistant draft and remains reload-durable on the originating user message, with resubmit only when the run is retryable. Stream growth keeps the transcript anchored only when the viewer is near the bottom; after a manual scroll away, an accessible Jump to latest control returns to the newest content.
 
 The demo client surface includes a compact memories panel where users can inspect saved memories, tombstone them for future use, view the 30-day reversible history, and append a revert revision.
 
@@ -97,9 +97,9 @@ The demo client already has an active AI plan.
 
 The product makes a publisher's existing publications more valuable to subscribers.
 
-Brief centers subscriber research on one active conversation. For each question, focused passes select only the relevant earlier messages, private memories, and source passages that matter. The full history and memory store do not enter every answer.
+Hartlib centers subscriber research on one active conversation. For each question, focused passes select only the relevant earlier messages, private memories, and source passages that matter. The full history and memory store do not enter every answer.
 
-Brief connects relevant evidence from the publisher subscriptions selected for the chat and official sources the client company has enabled. When a question has independent parts, Brief can research them in parallel and return one cited answer.
+Hartlib connects relevant evidence from the publisher subscriptions selected for the chat and official sources the client company has enabled. When a question has independent parts, Hartlib can research them in parallel and return one cited answer.
 
 Subscribers can read the latest issue, search the archive, and compare past coverage.
 
@@ -121,7 +121,7 @@ The intended business outcome is stronger retention, more usage, and higher pric
 2. The publisher invites employees.
 3. Authorized employees create subscriptions.
 4. Authorized employees prepare an issue.
-5. Authorized employees upload one or more brief documents to the issue.
+5. Authorized employees upload one or more hartlib documents to the issue.
 6. Authorized employees schedule or publish the issue.
 7. Client companies are invited to subscriptions.
 8. Client companies invite employees to subscription access.
@@ -174,9 +174,9 @@ Publisher users switch company workspace in the UI.
 
 An issue is a scheduled publication.
 
-An issue contains one or more brief documents.
+An issue contains one or more hartlib documents.
 
-Each brief document has a required PDF.
+Each hartlib document has a required PDF.
 
 Issue fields:
 
@@ -185,7 +185,7 @@ Issue fields:
 - publication date and time
 - status
 
-Brief document fields:
+Hartlib document fields:
 
 - title
 - PDF
@@ -213,7 +213,7 @@ AI billing and security pages are platform-branded.
 
 Publishers can add historical issues to a subscription.
 
-Historical issues use the same issue and brief document model.
+Historical issues use the same issue and hartlib document model.
 
 An issue scheduled in the past is created as a past issue.
 
@@ -259,7 +259,7 @@ To publish an issue, a publisher employee:
 
 1. Creates an issue.
 2. Adds issue metadata.
-3. Uploads one or more brief documents.
+3. Uploads one or more hartlib documents.
 4. Previews the issue.
 5. Schedules or publishes it.
 
@@ -325,7 +325,7 @@ Users can ask about a topic, entity, trend, or event across selected subscriptio
 
 Answers must cite the issue documents they use.
 
-The answer model has no search or read tools. `plan-turn` first selects valid original turns, resolves references, and returns `clarify`, `single`, or `fanout`. After that valid result, the internal lane emits one structured query batch; Brief compiles it, searches each allowed store in parallel, fuses the ranks, and allows one result-aware review. The memory selector, eligible web researcher, and memory extraction run in their selected parallel lanes. A clarification schedules no retrieval or answer request. Brief code authorizes, deduplicates, renders, and exact-counts every output before any direct/topic answer or synthesis call.
+The answer model has no search or read tools. `plan-turn` first selects valid original turns, resolves references, and returns `clarify`, `single`, or `fanout`. After that valid result, the internal lane emits one structured query batch; Hartlib compiles it, searches each allowed store in parallel, fuses the ranks, and allows one result-aware review. The memory selector, eligible web researcher, and memory extraction run in their selected parallel lanes. A clarification schedules no retrieval or answer request. Hartlib code authorizes, deduplicates, renders, and exact-counts every output before any direct/topic answer or synthesis call.
 
 Fanout is chosen before retrieval when topics can be researched independently and safely recombined. Only the final synthesis is shown to the user. Oversized single/topic prompts use one explicit keep/compact/omit plan, bounded parallel passage selection, exact fit measurement, and at most one monotone fallback; code never silently truncates context.
 
@@ -405,27 +405,27 @@ Archive search does not use credits.
 
 ## AI Sources And Citations
 
-Internal retriever A emits one structured query batch and, when the first results need it, one bounded result-aware review. Brief compiles each query, runs authorized SQL and rank fusion, hydrates the final candidates, and proves each preview in code. Web researcher W has controlled tools to search and fetch allowed web pages. Compaction agents can select only opaque passage IDs from their assigned candidates. The direct answer, topic-answer, and synthesis agents have no tools.
+Internal retriever A emits one structured query batch and, when the first results need it, one bounded result-aware review. Hartlib compiles each query, runs authorized SQL and rank fusion, hydrates the final candidates, and proves each preview in code. Web researcher W has controlled tools to search and fetch allowed web pages. Compaction agents can select only opaque passage IDs from their assigned candidates. The direct answer, topic-answer, and synthesis agents have no tools.
 
-Retrieval results carry typed provenance. Brief code performs authorization, source identity checks, content fetching, rank fusion, and turn-local source-key assignment. Models emit only query choices, review decisions, opaque passage selections, web quotations, and final citations.
+Retrieval results carry typed provenance. Hartlib code performs authorization, source identity checks, content fetching, rank fusion, and turn-local source-key assignment. Models emit only query choices, review decisions, opaque passage selections, web quotations, and final citations.
 
 The turn starts with one server-derived immutable acceptance scope; no broad
 source list enters provider input. Model-visible internal references contain only
-`documentId`. For public evidence, Brief binds each returned ID to the exact
+`documentId`. For public evidence, Hartlib binds each returned ID to the exact
 public document row, immutable snapshot identity, lowercase content hash, source
 scope, and normalized UTF-16 ranges, with no extraction ID. For publisher
-evidence, Brief additionally binds the ID to the exact extraction row through
+evidence, Hartlib additionally binds the ID to the exact extraction row through
 the required one-to-one version relation, with the same immutable snapshot, hash,
 source scope, and ranges. Web evidence stores the canonical HTTPS URL, capture metadata,
 an integrity hash, and the exact normalized quotation that the model saw.
-Brief creates one random `citationNamespace` at request acceptance; it scopes
+Hartlib creates one random `citationNamespace` at request acceptance; it scopes
 local handles only and never proves claim support.
 
 For issue sources, citation metadata includes:
 
 - issue title
 - publication date
-- brief document title
+- hartlib document title
 - page number when available
 - the immutable document version used by the answer in restricted provenance
 
@@ -691,7 +691,7 @@ Publishers can see global issue metrics:
 
 Issue pages show total AI context pulls for the issue.
 
-Issue pages show AI context pulls per brief document.
+Issue pages show AI context pulls per hartlib document.
 
 Issue AI context pulls count runs in which some issue content became visible to an AI model. A SQL-only match does not count. A preview or snippet returned to a retrieval agent does count even if that agent does not select it for the final answer context.
 
@@ -769,13 +769,13 @@ Clients keep already delivered issues, delivered archive search, and AI access w
 
 ## Exports
 
-Client users can download delivered brief documents when their authenticated
+Client users can download delivered hartlib documents when their authenticated
 identity has an unrevoked current company membership and the exact historical
 delivery-recipient record.
 
 Client users can export their chats while they have subscription access.
 
-Publisher users can export their own issues, brief documents, issue metadata, and global AI context pull counts.
+Publisher users can export their own issues, hartlib documents, issue metadata, and global AI context pull counts.
 
 Client company admins can export delivered issue documents, delivered issue metadata, shared chats, and company-owned chat data.
 

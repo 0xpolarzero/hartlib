@@ -2,7 +2,7 @@ import type { WebhookEvent } from "@clerk/backend/webhooks";
 import { PgClient } from "@effect/sql-pg";
 import { Effect } from "effect";
 
-const LOCAL_INVITATION_METADATA_KEY = "briefWorkspaceInvitationId";
+const LOCAL_INVITATION_METADATA_KEY = "hartlibWorkspaceInvitationId";
 
 const normalizedEmail = (value: string): string => value.trim().toLowerCase();
 
@@ -75,7 +75,7 @@ const lockMembershipLanes = (laneKeys: readonly MembershipLaneKey[]) =>
       const companyId = laneKey.slice(separator + 1);
       yield* sql`
         select pg_advisory_xact_lock(
-          hashtext(${kind === "client" ? `brief:client-members:${companyId}` : `brief:publisher-members:${companyId}`})
+          hashtext(${kind === "client" ? `hartlib:client-members:${companyId}` : `hartlib:publisher-members:${companyId}`})
         )
       `;
     }
@@ -563,7 +563,7 @@ const processInvitationEvent = (event: InvitationEvent, eventTimestamp: number) 
     if (invitation.workspaceKind === "client" && invitation.clientCompanyId !== null) {
       yield* sql`
         select pg_advisory_xact_lock(
-          hashtext(${`brief:client-members:${invitation.clientCompanyId}`})
+          hashtext(${`hartlib:client-members:${invitation.clientCompanyId}`})
         )
       `;
     }
@@ -691,7 +691,7 @@ export const acceptClerkWebhook = (input: {
     const sql = yield* PgClient.PgClient;
     return yield* sql.withTransaction(
       Effect.gen(function* () {
-        yield* sql`select pg_advisory_xact_lock(hashtext(${`brief:clerk-webhook:${input.eventId}`}))`;
+        yield* sql`select pg_advisory_xact_lock(hashtext(${`hartlib:clerk-webhook:${input.eventId}`}))`;
         const extant = yield* sql<{ eventType: string; payloadHash: string }>`
           select event_type as "eventType", payload_sha256 as "payloadHash"
           from clerk_webhook_events where webhook_event_id = ${input.eventId}

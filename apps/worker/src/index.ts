@@ -5,7 +5,7 @@ import { JsonLoggerLayer, serviceLogFields } from "./logging";
 import { JobRepositoryPgLayer } from "./jobs/repository";
 import { runWorker } from "./jobs/runner";
 import { runMaintenanceScheduler } from "./jobs/maintenance";
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import { DatabaseMigrationLayer } from "./db/migrate";
 import { PublicSourceIngestionRepositoryPgLayer } from "./source-ingestion/pg-repository";
 import { runPublicSourcePolling, runPublicSourceStartupBackfill } from "./source-ingestion/watcher";

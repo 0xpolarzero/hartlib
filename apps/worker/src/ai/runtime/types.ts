@@ -1,7 +1,7 @@
 import type { CharacterRange, TopicId } from "./canonicalization";
 import type { AiRunErrorCode } from "./errors";
 import type { LiveProviderRequest } from "./provider-request";
-import type { EffectiveWebPolicy as SharedEffectiveWebPolicy } from "@brief/shared";
+import type { EffectiveWebPolicy as SharedEffectiveWebPolicy } from "@hartlib/shared";
 
 export type Locale = "fr-FR" | "en-US";
 export type Market = "FR" | "US";

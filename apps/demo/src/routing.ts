@@ -1,10 +1,10 @@
 import {
   demoDataset,
-  type BriefPublication,
-  type BriefSource,
+  type HartlibPublication,
+  type HartlibSource,
   type DemoRole,
-} from "@brief/demo-data";
-import { LOCALE_MARKET_ALIASES, isLocale, type Locale, type Market } from "@brief/i18n";
+} from "@hartlib/demo-data";
+import { LOCALE_MARKET_ALIASES, isLocale, type Locale, type Market } from "@hartlib/i18n";
 
 export type DemoRoute = {
   locale: Locale | null;
@@ -105,14 +105,14 @@ export function buildLocalePath(locale: Locale, route: Omit<DemoRoute, "locale">
   return `/${locale}${buildRolePath(route)}`;
 }
 
-const routePublicationIsVisible = (publication: BriefPublication): boolean =>
+const routePublicationIsVisible = (publication: HartlibPublication): boolean =>
   publication.status === "published" &&
   (publication.sourceKind !== "public" || publication.documents.length > 0);
 
 export function resolveDemoRoute(
   route: DemoRoute,
-  publications: readonly BriefPublication[],
-  sources: readonly BriefSource[] = demoDataset.sources,
+  publications: readonly HartlibPublication[],
+  sources: readonly HartlibSource[] = demoDataset.sources,
 ): DemoRoute {
   const sourceById = new Map(sources.map((source) => [source.id, source]));
 

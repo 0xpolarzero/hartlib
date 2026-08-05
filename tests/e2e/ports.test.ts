@@ -26,7 +26,9 @@ describe("E2E port block", () => {
   it.each([" ", "1.5", "+44000", "-44000", "0xabe0", "44000 "])(
     "rejects a non-decimal override %j",
     (raw) => {
-      expect(() => parseE2ePortBase(raw)).toThrow("BRIEF_E2E_PORT_BASE must be a decimal integer");
+      expect(() => parseE2ePortBase(raw)).toThrow(
+        "HARTLIB_E2E_PORT_BASE must be a decimal integer",
+      );
     },
   );
 
@@ -34,7 +36,7 @@ describe("E2E port block", () => {
     "rejects an out-of-range override %s",
     (raw) => {
       expect(() => parseE2ePortBase(raw)).toThrow(
-        "BRIEF_E2E_PORT_BASE must be a safe integer between 1024 and 65532",
+        "HARTLIB_E2E_PORT_BASE must be a safe integer between 1024 and 65532",
       );
     },
   );

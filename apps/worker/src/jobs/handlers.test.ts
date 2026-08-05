@@ -1,15 +1,15 @@
 import { PgClient } from "@effect/sql-pg";
-import { withEnvironment } from "@brief/config";
+import { withEnvironment } from "@hartlib/config";
 import { Effect, Fiber, Redacted } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PUBLIC_SOURCE_IDS,
   publicSourceDefinitions,
   type PublicSourceId,
-} from "@brief/source-ingestion";
-import { makeRunAcceptanceScope } from "@brief/shared";
+} from "@hartlib/source-ingestion";
+import { makeRunAcceptanceScope } from "@hartlib/shared";
 
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import type { WorkerConfig } from "../config";
 import { WebBoundaryError, type WebOperationAccounting } from "../ai/web";
 import type { JobRecord, JobResult } from "./types";
@@ -21,7 +21,7 @@ const runWithAiChatSmithersProducerFenceMock = vi.hoisted(() =>
 );
 
 vi.mock("../ai/smithers-interop", () => ({
-  AI_CHAT_SMITHERS_SCHEMA_FENCE: "brief:ai-chat:smithers-schema",
+  AI_CHAT_SMITHERS_SCHEMA_FENCE: "hartlib:ai-chat:smithers-schema",
   createSmithersStorage: vi.fn(async () => ({ close: closeSmithersStorageMock })),
   runSmithersWorkflow: runSmithersWorkflowMock,
   smithersRunExists: vi.fn(async () => false),
@@ -36,7 +36,7 @@ vi.mock("../ai/workflow/ai-chat", () => ({
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const isolatedDatabaseName = `brief_handlers_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+const isolatedDatabaseName = `hartlib_handlers_test_${process.pid}_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
 const sourceDatabaseUrl = () => {
   if (databaseUrl === undefined) {
     throw new Error("WORKER_POSTGRES_TEST_DATABASE_URL is required");
@@ -134,7 +134,7 @@ function runDb<A, E>(url: string, effect: Effect.Effect<A, E, PgClient.PgClient>
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(url),
-          applicationName: "brief-handlers-test",
+          applicationName: "hartlib-handlers-test",
         }),
       ),
     ),
@@ -147,7 +147,7 @@ const createAiRun = Effect.gen(function* () {
   const companyId = crypto.randomUUID();
   yield* sql`
     insert into platform_users (id, primary_email, display_name, clerk_user_id)
-    values (${userId}, ${`${userId}@brief.test`}, 'Handler test user', ${`clerk-${userId}`})
+    values (${userId}, ${`${userId}@hartlib.test`}, 'Handler test user', ${`clerk-${userId}`})
   `;
   yield* sql`
     insert into client_companies (id, name)
@@ -830,7 +830,7 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
     expect(state.smithersRows?.count).toBe(1);
   });
 
-  it("fails the Brief run, emits terminal error, and cleans Smithers rows for terminal cancelled workflows", async () => {
+  it("fails the Hartlib run, emits terminal error, and cleans Smithers rows for terminal cancelled workflows", async () => {
     const { handleJob } = await import("./handlers");
     const aiRunId = await runDb(isolatedDatabaseUrl(), createAiRun);
     const smithersRunId = `ai-chat:${aiRunId}`;

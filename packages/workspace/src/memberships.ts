@@ -6,7 +6,7 @@ import type {
   PublisherInvitationDescriptor,
   PublisherMemberDescriptor,
   PublisherRole,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Effect } from "effect";
 
 import {
@@ -266,7 +266,7 @@ export const listClientMemberships = (identity: WorkspaceIdentity, companyId: st
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${companyId}`}))
         `;
         yield* requireClientCompanyAdmin(identity, companyId);
         return {
@@ -368,7 +368,7 @@ export const invitePublisherMember = (input: {
       Effect.gen(function* () {
         yield* requirePublisherCompanyAdmin(input.identity, input.companyId);
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:publisher-invites:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:publisher-invites:${input.companyId}`}))
         `;
         if (input.subscriptionIds.length > 0) {
           const subscriptions = yield* sql<{ count: number }>`
@@ -563,11 +563,11 @@ export const inviteClientMember = (input: {
     const prepared = yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* requireClientCompanyAdmin(input.identity, input.companyId);
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-invites:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-invites:${input.companyId}`}))
         `;
         if (input.subscriptionAccessIds.length > 0) {
           const accesses = yield* sql<{ count: number }>`
@@ -767,7 +767,7 @@ export const mutatePublisherMember = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:publisher-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:publisher-members:${input.companyId}`}))
         `;
         yield* requirePublisherCompanyAdmin(input.identity, input.companyId);
         const target = yield* sql<{ role: PublisherRole }>`
@@ -889,7 +889,7 @@ export const mutateClientMember = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* requireClientCompanyAdmin(input.identity, input.companyId);
         const target = yield* sql<{ role: ClientRole }>`
@@ -992,7 +992,7 @@ export const grantClientSubscription = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* requireClientCompanyAdmin(input.identity, input.companyId);
         yield* sql`
@@ -1061,7 +1061,7 @@ export const revokeClientSubscription = (input: {
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${input.companyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${input.companyId}`}))
         `;
         yield* requireClientCompanyAdmin(input.identity, input.companyId);
         const rows = yield* sql<{ accessId: string }>`

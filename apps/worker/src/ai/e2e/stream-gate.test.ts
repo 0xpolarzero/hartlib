@@ -9,7 +9,7 @@ describe("deterministic E2E stream gate", () => {
     );
     expect(isE2eStreamGateId("reload_active-1")).toBe(true);
     expect(e2eStreamGateLockKey("reload_active-1")).toBe(
-      "brief:ai:e2e-stream-gate:reload_active-1",
+      "hartlib:ai:e2e-stream-gate:reload_active-1",
     );
   });
 

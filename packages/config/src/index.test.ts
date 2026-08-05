@@ -279,7 +279,7 @@ describe("central server configuration", () => {
       Effect.runPromise(loadApiConfigFrom({ CORS_ALLOWED_ORIGINS: "*" })),
     ).rejects.toThrow("CORS_ALLOWED_ORIGINS must contain one or more explicit web origins");
     await expect(
-      Effect.runPromise(loadApiConfigFrom({ CORS_ALLOWED_ORIGINS: "https://brief.example,*" })),
+      Effect.runPromise(loadApiConfigFrom({ CORS_ALLOWED_ORIGINS: "https://hartlib.example,*" })),
     ).rejects.toThrow("CORS_ALLOWED_ORIGINS must contain one or more explicit web origins");
   });
 
@@ -387,12 +387,12 @@ describe("central server configuration", () => {
       Effect.runPromise(
         withEnvironment(loadObjectStorageConfig, {
           RAILWAY_BUCKET_ENDPOINT: "https://objects.test",
-          RAILWAY_BUCKET_NAME: "brief",
+          RAILWAY_BUCKET_NAME: "hartlib",
           RAILWAY_BUCKET_ACCESS_KEY_ID: "key",
           RAILWAY_BUCKET_SECRET_ACCESS_KEY: "secret",
         }),
       ),
-    ).resolves.toMatchObject({ configured: true, bucket: "brief" });
+    ).resolves.toMatchObject({ configured: true, bucket: "hartlib" });
     await expect(
       Effect.runPromise(withEnvironment(loadDatabaseResetConfig, { NODE_ENV: "production" })),
     ).resolves.toEqual({ nodeEnv: "production", allowProductionReset: false });
@@ -404,13 +404,13 @@ describe("central browser configuration", () => {
     expect(loadDemoBrowserConfig({})).toEqual({ apiBaseUrl: "http://localhost:3000" });
     expect(loadWebApiConfig({})).toEqual({ apiBaseUrl: "http://localhost:3000" });
     expect(loadWebApiConfig({ PROD: true })).toEqual({ apiBaseUrl: "" });
-    expect(loadWebApiConfig({ VITE_API_BASE_URL: "https://api.brief.example" })).toEqual({
-      apiBaseUrl: "https://api.brief.example",
+    expect(loadWebApiConfig({ VITE_API_BASE_URL: "https://api.hartlib.example" })).toEqual({
+      apiBaseUrl: "https://api.hartlib.example",
     });
-    expect(() => loadWebApiConfig({ VITE_API_BASE_URL: "https://api.brief.example/path" })).toThrow(
-      "exact HTTP(S) origin",
-    );
-    expect(() => loadWebApiConfig({ VITE_API_BASE_URL: "http://api.brief.example" })).toThrow(
+    expect(() =>
+      loadWebApiConfig({ VITE_API_BASE_URL: "https://api.hartlib.example/path" }),
+    ).toThrow("exact HTTP(S) origin");
+    expect(() => loadWebApiConfig({ VITE_API_BASE_URL: "http://api.hartlib.example" })).toThrow(
       "exact loopback origin",
     );
     expect(loadWebApiConfig({ VITE_API_BASE_URL: "http://127.0.0.1:43110" })).toEqual({
@@ -420,8 +420,8 @@ describe("central browser configuration", () => {
       loadWebApiConfig({ PROD: true, VITE_API_BASE_URL: "http://localhost:43110" }),
     ).toThrow("HTTPS in production");
     expect(
-      loadWebApiConfig({ PROD: true, VITE_API_BASE_URL: "https://api.brief.example" }),
-    ).toEqual({ apiBaseUrl: "https://api.brief.example" });
+      loadWebApiConfig({ PROD: true, VITE_API_BASE_URL: "https://api.hartlib.example" }),
+    ).toEqual({ apiBaseUrl: "https://api.hartlib.example" });
   });
 
   it("keeps browser production authentication fail-closed", () => {
@@ -429,7 +429,7 @@ describe("central browser configuration", () => {
       "forbidden in production",
     );
     expect(() =>
-      loadWebAuthConfig({ PROD: true, VITE_SECURITY_CONTACT_EMAIL: "security@brief.test" }),
+      loadWebAuthConfig({ PROD: true, VITE_SECURITY_CONTACT_EMAIL: "security@hartlib.test" }),
     ).toThrow("VITE_CLERK_PUBLISHABLE_KEY is required");
   });
 

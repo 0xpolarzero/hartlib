@@ -3,7 +3,7 @@ import {
   ResetProductChatRequest,
   ResetProductChatResponse,
   httpRouteContracts,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -100,7 +100,7 @@ describe("shared HTTP contract matrix", () => {
       ],
       [
         "POST /v1/publisher-issues/:issueId/documents",
-        ["idempotency-key", "x-brief-title", "x-file-name", "x-content-sha256"],
+        ["idempotency-key", "x-hartlib-title", "x-file-name", "x-content-sha256"],
       ],
     ]);
     for (const [, names] of headerRoutes) {

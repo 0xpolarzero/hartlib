@@ -1,4 +1,4 @@
-import { HttpErrorResponse, type HttpRouteContract } from "@brief/shared";
+import { HttpErrorResponse, type HttpRouteContract } from "@hartlib/shared";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -66,7 +66,7 @@ describe("canonical path parameter policy", () => {
         const response = await Effect.runPromise(
           routeRequest(
             [guarded],
-            new Request(`http://brief.test${path}`, { method: route.method }),
+            new Request(`http://hartlib.test${path}`, { method: route.method }),
           ),
         );
         expect(response.status, `${route.method} ${route.path} ${invalidName}`).toBe(404);
@@ -91,7 +91,7 @@ describe("canonical path parameter policy", () => {
       routeRequest(
         [route],
         new Request(
-          `http://brief.test/v1/client-companies/${uuid}/public-sources/source%20identifier`,
+          `http://hartlib.test/v1/client-companies/${uuid}/public-sources/source%20identifier`,
           { method: "PUT" },
         ),
       ),

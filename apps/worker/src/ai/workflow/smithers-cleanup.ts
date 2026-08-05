@@ -28,7 +28,7 @@ export const AI_EVALUATION_GENERAL_PLANNER_OUTPUT_TABLES = Object.freeze(
   AI_EVALUATION_GENERAL_PLANNER_OUTPUT_SCHEMA_KEYS.map(camelToSnake),
 );
 
-/** Output tables owned by every Brief AI Smithers workflow retained by this sweep. */
+/** Output tables owned by every Hartlib AI Smithers workflow retained by this sweep. */
 export const AI_RUNTIME_OUTPUT_TABLES = Object.freeze([
   ...AI_CHAT_OUTPUT_TABLES,
   ...AI_EVALUATION_GENERAL_PLANNER_OUTPUT_TABLES,
@@ -46,7 +46,7 @@ interface SmithersRunIdRow {
 
 export const AI_RUNTIME_RETENTION_CANDIDATE_LIMIT = 500;
 
-/** Smithers run IDs owned by Brief's AI runtime retention sweep. */
+/** Smithers run IDs owned by Hartlib's AI runtime retention sweep. */
 export const AI_RUNTIME_SMITHERS_RUN_PREFIXES = Object.freeze([
   "ai-chat:",
   "ai-evaluation-general-planner:",

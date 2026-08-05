@@ -13,20 +13,20 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
-      "@brief/api-client": ["packages/api-client/src/index.ts"],
-      "@brief/api-client/*": ["packages/api-client/src/*"],
-      "@brief/config": ["packages/config/src/index.ts"],
-      "@brief/config/*": ["packages/config/src/*"],
-      "@brief/docs": ["packages/docs/src/index.ts"],
-      "@brief/docs/*": ["packages/docs/src/*"],
-      "@brief/demo-data": ["packages/demo-data/src/index.ts"],
-      "@brief/source-ingestion": ["packages/source-ingestion/src/index.ts"],
-      "@brief/workspace": ["packages/workspace/src/index.ts"],
-      "@brief/workspace/*": ["packages/workspace/src/*"],
-      "@brief/i18n": ["packages/i18n/src/index.ts"],
-      "@brief/shared": ["packages/shared/src/index.ts"],
-      "@brief/shared/*": ["packages/shared/src/*"],
-      "@brief/ui": ["packages/ui/src/index.ts"]
+      "@hartlib/api-client": ["packages/api-client/src/index.ts"],
+      "@hartlib/api-client/*": ["packages/api-client/src/*"],
+      "@hartlib/config": ["packages/config/src/index.ts"],
+      "@hartlib/config/*": ["packages/config/src/*"],
+      "@hartlib/docs": ["packages/docs/src/index.ts"],
+      "@hartlib/docs/*": ["packages/docs/src/*"],
+      "@hartlib/demo-data": ["packages/demo-data/src/index.ts"],
+      "@hartlib/source-ingestion": ["packages/source-ingestion/src/index.ts"],
+      "@hartlib/workspace": ["packages/workspace/src/index.ts"],
+      "@hartlib/workspace/*": ["packages/workspace/src/*"],
+      "@hartlib/i18n": ["packages/i18n/src/index.ts"],
+      "@hartlib/shared": ["packages/shared/src/index.ts"],
+      "@hartlib/shared/*": ["packages/shared/src/*"],
+      "@hartlib/ui": ["packages/ui/src/index.ts"]
     }
   }
 }

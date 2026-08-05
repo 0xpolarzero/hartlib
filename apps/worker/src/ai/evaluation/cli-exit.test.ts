@@ -39,8 +39,8 @@ const runBounded = async (
 describe("finite Smithers evaluation lifecycle", () => {
   it("naturally exits after a real minimal Smithers success", async () => {
     const result = await runBounded(fixturePath, [], {
-      BRIEF_EXIT_DB_PATH: `/private/tmp/brief-eval-exit-${crypto.randomUUID()}.db`,
-      BRIEF_EXIT_RUN_ID: crypto.randomUUID(),
+      HARTLIB_EXIT_DB_PATH: `/private/tmp/hartlib-eval-exit-${crypto.randomUUID()}.db`,
+      HARTLIB_EXIT_RUN_ID: crypto.randomUUID(),
     });
 
     expect(result.timedOut).toBe(false);
@@ -50,9 +50,9 @@ describe("finite Smithers evaluation lifecycle", () => {
 
   it("naturally exits with the failed evaluation status", async () => {
     const result = await runBounded(fixturePath, [], {
-      BRIEF_EXIT_DB_PATH: `/private/tmp/brief-eval-failed-exit-${crypto.randomUUID()}.db`,
-      BRIEF_EXIT_FAIL: "1",
-      BRIEF_EXIT_RUN_ID: crypto.randomUUID(),
+      HARTLIB_EXIT_DB_PATH: `/private/tmp/hartlib-eval-failed-exit-${crypto.randomUUID()}.db`,
+      HARTLIB_EXIT_FAIL: "1",
+      HARTLIB_EXIT_RUN_ID: crypto.randomUUID(),
     });
 
     expect(result.timedOut).toBe(false);
@@ -62,9 +62,9 @@ describe("finite Smithers evaluation lifecycle", () => {
 
   it("rejects shutdown during an active dispatch, then closes after completion", async () => {
     const result = await runBounded(fixturePath, [], {
-      BRIEF_EXIT_ACTIVE: "1",
-      BRIEF_EXIT_DB_PATH: `/private/tmp/brief-eval-active-exit-${crypto.randomUUID()}.db`,
-      BRIEF_EXIT_RUN_ID: crypto.randomUUID(),
+      HARTLIB_EXIT_ACTIVE: "1",
+      HARTLIB_EXIT_DB_PATH: `/private/tmp/hartlib-eval-active-exit-${crypto.randomUUID()}.db`,
+      HARTLIB_EXIT_RUN_ID: crypto.randomUUID(),
     });
 
     expect(result.timedOut).toBe(false);

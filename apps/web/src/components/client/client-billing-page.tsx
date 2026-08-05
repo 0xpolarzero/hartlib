@@ -1,5 +1,5 @@
-import { useIntl, useLocale } from "@brief/i18n";
-import { Button, Input, Label, Textarea } from "@brief/ui";
+import { useIntl, useLocale } from "@hartlib/i18n";
+import { Button, Input, Label, Textarea } from "@hartlib/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CreditCard } from "lucide-react";
 import { useEffect, useRef, useState } from "react";

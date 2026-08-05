@@ -6,7 +6,7 @@ import {
   type AcceptedProviderProfile,
   type ProviderGateLimits,
 } from "../runtime/model-registry";
-import type { AiProviderEndpointIdentity, AiProviderServiceId } from "@brief/shared";
+import type { AiProviderEndpointIdentity, AiProviderServiceId } from "@hartlib/shared";
 import type {
   BeforeProviderRequest,
   PiBoundaryCoordinates,
@@ -869,7 +869,7 @@ const outputFor = (
               mode: "clarify",
               question: ambiguousComparative
                 ? `Which prior results should I compare: ${competingCandidates.join(" or ")}?`
-                : "Which market and time horizon should Brief use?",
+                : "Which market and time horizon should Hartlib use?",
             }
           : currentMessage.includes("[fanout]")
             ? {
@@ -1486,7 +1486,7 @@ export class DeterministicE2eProviderBoundary implements PiRuntimeBoundary {
     const text =
       executionCoordinates.agentRole === "synthesis"
         ? `Deterministic fanout synthesis grounded in both topic packets.${synthesisCitation(sourceKeys)}`
-        : `Deterministic direct answer grounded in the selected Brief evidence.${directCitationKeys.length === 0 ? "" : ` [[cite:${directCitationKeys.join(",")}]]`}`;
+        : `Deterministic direct answer grounded in the selected Hartlib evidence.${directCitationKeys.length === 0 ? "" : ` [[cite:${directCitationKeys.join(",")}]]`}`;
     const chunks = text.match(/.{1,12}/gu) ?? [text];
     for (const [index, chunk] of chunks.entries()) {
       throwIfAborted(signal);

@@ -9,7 +9,7 @@ import {
   extractHtmlTitle,
   extractPdfPagesIsolated,
   stripHtml,
-} from "@brief/source-ingestion";
+} from "@hartlib/source-ingestion";
 
 import type { EffectiveWebPolicy } from "../runtime/types";
 import { canonicalizeWebUrl } from "../runtime/canonicalization";
@@ -495,7 +495,7 @@ const operationFailure = (
   responseBytes: number,
 ): WebOperationAccounting => ({
   kind: "fetch",
-  provider: "brief_fetch",
+  provider: "hartlib_fetch",
   outcome: "failed",
   resultCount: 0,
   responseBytes,
@@ -567,7 +567,7 @@ export const safeFetchPage = async (
               accept:
                 "text/html,application/xhtml+xml,text/plain,text/markdown,application/pdf,application/json;q=0.8",
               "accept-encoding": "gzip, deflate, br",
-              "user-agent": "BriefWebResearch/1.0",
+              "user-agent": "HartlibWebResearch/1.0",
             },
           }),
           controller.signal,
@@ -681,7 +681,7 @@ export const safeFetchPage = async (
         capturedAt: (options.now ?? (() => new Date()))().toISOString(),
         operation: {
           kind: "fetch",
-          provider: "brief_fetch",
+          provider: "hartlib_fetch",
           outcome: text === "" ? "empty" : "succeeded",
           resultCount: text === "" ? 0 : 1,
           responseBytes,

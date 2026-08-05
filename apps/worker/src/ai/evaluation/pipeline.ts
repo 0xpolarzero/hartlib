@@ -7,7 +7,7 @@ import {
   type AiProviderServiceId,
   type RunAcceptanceScope,
   type AiRunEvent as PublicAiRunEvent,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Schema } from "effect";
 import { z } from "zod";
@@ -1175,7 +1175,7 @@ export const withEvaluationSessionExecutionLease = <Value>(
   sessionId: string,
   execute: () => Promise<Value>,
 ): Promise<Value> => {
-  const lockIdentity = `brief:ai-evaluation:v4:${sessionId}`;
+  const lockIdentity = `hartlib:ai-evaluation:v4:${sessionId}`;
   return db(
     connectionString,
     Effect.scoped(
@@ -1421,7 +1421,7 @@ const seedOneCase = (
                 source_id, display_name, publisher_name, description, ingestion_method,
                 discovery_url, average_chars_per_item, country, language
               ) values (
-                ${sourceId}, ${`Evaluation source ${fixture.id}`}, 'Brief canonical evaluation',
+                ${sourceId}, ${`Evaluation source ${fixture.id}`}, 'Hartlib canonical evaluation',
                 'Canonical golden evaluation evidence', 'manual',
                 ${`https://evaluation.invalid/discovery/${sourceId}`}, 1000,
                 ${fixture.market}, ${fixture.locale}
@@ -1497,7 +1497,7 @@ const seedOneCase = (
                 source_id, display_name, publisher_name, description, ingestion_method,
                 discovery_url, average_chars_per_item, country, language
               ) values (
-                ${sourceId}, ${`Evaluation source ${fixture.id}`}, 'Brief canonical evaluation',
+                ${sourceId}, ${`Evaluation source ${fixture.id}`}, 'Hartlib canonical evaluation',
                 'Canonical golden evaluation evidence', 'manual',
                 ${`https://evaluation.invalid/discovery/${sourceId}`}, 1000,
                 ${fixture.market}, ${fixture.locale}
@@ -1909,7 +1909,7 @@ const baselineSourceMap = async (
         locator,
         label: evaluationBindingGoldenSourceId(binding),
         publicProvenance: {
-          sourceName: "Brief canonical evaluation",
+          sourceName: "Hartlib canonical evaluation",
           documentTitle: `Canonical evidence ${evaluationBindingGoldenSourceId(binding)}`,
           citationUrl: `https://evaluation.invalid/documents/${binding.documentId}`,
         },
@@ -3459,7 +3459,7 @@ const attestDurableUsageChronology = (
     evidence.externalToolUsage.some(
       (entry) =>
         entry.providerServiceId !==
-          (entry.operation === "web_search" ? "tinyfish_search_official" : "brief_fetch") ||
+          (entry.operation === "web_search" ? "tinyfish_search_official" : "hartlib_fetch") ||
         entry.billedUnits !== null ||
         entry.durationMs < 0,
     )
@@ -4319,7 +4319,7 @@ const attestRelationalEvidence = (
             sourceName:
               row.topology === "specialized"
                 ? `Evaluation source ${fixture.id}`
-                : "Brief canonical evaluation",
+                : "Hartlib canonical evaluation",
             documentTitle: `Canonical evidence ${evaluationBindingGoldenSourceId(binding)}`,
             citationUrl: `https://evaluation.invalid/documents/${binding.documentId}`,
             ...(row.topology === "specialized" ? { publishedAt: "2026-07-01T00:00:00.000Z" } : {}),
@@ -5692,8 +5692,8 @@ const loadStoredEvaluationDocuments = (
                  versions.id::text as "snapshotId",
                  versions.canonical_text as text, versions.content_hash as "contentHash",
                  versions.text_char_count as "textCharCount"
-          from brief_document_versions versions
-          join brief_documents documents on documents.id = versions.brief_document_id
+          from hartlib_document_versions versions
+          join hartlib_documents documents on documents.id = versions.hartlib_document_id
           join publisher_issues issues on issues.id = documents.issue_id
           join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
           where ${binding.source.kind === "publisher"} = true
@@ -6883,8 +6883,8 @@ const sourceAudit = async (
                 when 'document' then case ${binding.kind === "document" && binding.source.kind === "publisher"}::boolean
                   when true then exists (
                     select 1
-                    from brief_document_versions versions
-                    join brief_documents documents on documents.id = versions.brief_document_id
+                    from hartlib_document_versions versions
+                    join hartlib_documents documents on documents.id = versions.hartlib_document_id
                     join publisher_issues issues on issues.id = documents.issue_id
                     join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
                     join publisher_companies companies

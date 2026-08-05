@@ -22,7 +22,7 @@ import {
   type PublisherSubscriptionClientAccess,
   type PublisherTeam,
   type RestrictedAccessList,
-} from "@brief/api-client";
+} from "@hartlib/api-client";
 
 import { authenticatedFetch } from "./api-auth";
 

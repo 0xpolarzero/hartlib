@@ -7,7 +7,7 @@ import {
 } from "@tanstack/react-table";
 import { useMemo, useState } from "react";
 
-import { useIntl } from "@brief/i18n";
+import { useIntl } from "@hartlib/i18n";
 
 import { DataTable } from "../ui/data-table";
 import { TableCell } from "../ui/table";

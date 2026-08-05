@@ -27,7 +27,7 @@ describe("Smithers workflow concurrency registration", () => {
     );
   });
 
-  it("exposes finite Smithers shutdown through the Brief interop boundary", async () => {
+  it("exposes finite Smithers shutdown through the Hartlib interop boundary", async () => {
     await expect(closeSmithersWorkflowRuntime()).resolves.toBeUndefined();
     expect(closeSingleRunnerRuntimeMock).toHaveBeenCalledOnce();
   });

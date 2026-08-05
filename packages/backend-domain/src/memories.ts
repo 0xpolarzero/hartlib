@@ -4,7 +4,7 @@ import {
   type MemoryRecord,
   type MemoryRevision,
   type MemorySnapshot,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Effect } from "effect";
 
 interface MemoryRow {
@@ -98,7 +98,7 @@ const readRevisionRows = (memoryIds: readonly string[]) =>
 const lockUserMemoryLease = (userId: string) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
-    yield* sql`select pg_advisory_xact_lock(hashtext(${`brief:user-memory:${userId}`}))`;
+    yield* sql`select pg_advisory_xact_lock(hashtext(${`hartlib:user-memory:${userId}`}))`;
   });
 
 export const listUserMemories = (userId: string) =>

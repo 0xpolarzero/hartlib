@@ -595,8 +595,8 @@ const hydrateFusedResultsFromDatabase = (
                          v.content_hash as "contentHash",
                          v.publisher_extraction_id::text as "publisherExtractionId",
                          documents.title as label, issues.published_at as date
-                  from brief_documents documents
-                  join brief_document_versions v on v.id = documents.current_version_id
+                  from hartlib_documents documents
+                  join hartlib_document_versions v on v.id = documents.current_version_id
                   join publisher_issues issues on issues.id = documents.issue_id
                   join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
                   join issue_deliveries deliveries on deliveries.issue_id = issues.id

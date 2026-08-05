@@ -1,11 +1,11 @@
 import { PgClient } from "@effect/sql-pg";
-import { databaseUrlRedactedConfig } from "@brief/config";
+import { databaseUrlRedactedConfig } from "@hartlib/config";
 import {
   sha256Hex,
   type ConditionalRequestValidators,
   type DiscoveredItem,
   type PublicSourceDefinition,
-} from "@brief/source-ingestion";
+} from "@hartlib/source-ingestion";
 import { Config, Effect, Layer } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 import type {
@@ -840,7 +840,7 @@ export const PublicSourceIngestionRepositoryPgLayer = Layer.effect(
   Layer.provide(
     PgClient.layerConfig({
       url: databaseUrlRedactedConfig,
-      applicationName: Config.succeed("brief-worker"),
+      applicationName: Config.succeed("hartlib-worker"),
     }),
   ),
 );

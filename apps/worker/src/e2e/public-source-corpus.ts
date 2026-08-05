@@ -8,7 +8,7 @@ import type {
   SourceAdapter,
   SourceDiscoveryResult,
   SourceFetchResult,
-} from "@brief/source-ingestion";
+} from "@hartlib/source-ingestion";
 
 /**
  * The Playwright corpus is a local connector, not a second persistence path.

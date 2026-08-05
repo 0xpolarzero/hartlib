@@ -40,10 +40,10 @@ describe("authenticated API fetch", () => {
   });
 
   it("resolves relative bearer targets against the live page origin", () => {
-    expect(isSecureBearerTarget("/v1/chats", "https://app.brief.example/client")).toBe(true);
+    expect(isSecureBearerTarget("/v1/chats", "https://app.hartlib.example/client")).toBe(true);
     expect(isSecureBearerTarget("/v1/chats", "http://localhost:5173/client")).toBe(false);
-    expect(isSecureBearerTarget("https://api.brief.example/v1/chats")).toBe(true);
-    expect(isSecureBearerTarget("http://api.brief.example/v1/chats")).toBe(false);
+    expect(isSecureBearerTarget("https://api.hartlib.example/v1/chats")).toBe(true);
+    expect(isSecureBearerTarget("http://api.hartlib.example/v1/chats")).toBe(false);
   });
 
   it("does not invent an authorization header in demo mode", async () => {

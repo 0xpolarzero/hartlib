@@ -1,12 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
 import type {
-  BriefDocumentDescriptor,
+  HartlibDocumentDescriptor,
   PublisherAiPullIssueMetric,
   PublisherAiPullMetric,
   PublisherClientAccessDescriptor,
   PublisherIssueDescriptor,
   PublisherSubscriptionDescriptor,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Effect } from "effect";
 
 import {
@@ -103,7 +103,7 @@ interface StoredDocumentRow extends DocumentRow {
   readonly createdByUserId: string;
 }
 
-const documentDescriptor = (row: DocumentRow): BriefDocumentDescriptor => ({
+const documentDescriptor = (row: DocumentRow): HartlibDocumentDescriptor => ({
   ...row,
   byteSize: Number(row.byteSize),
   createdAt: row.createdAt.toISOString(),
@@ -391,7 +391,7 @@ export const getPublisherIssue = (identity: WorkspaceIdentity, issueId: string) 
       select id::text, issue_id::text as "issueId", title,
              original_file_name as "originalFileName", media_type as "mediaType",
              byte_size as "byteSize", sha256_hex as "sha256Hex", created_at as "createdAt"
-      from brief_documents
+      from hartlib_documents
       where issue_id = ${issueId} and deleted_at is null
       order by created_at, id
     `;
@@ -489,7 +489,7 @@ export const deletePublisherIssue = (input: {
             return yield* Effect.fail(new WorkspaceRuleError("published_issue_immutable"));
           }
           yield* sql`
-            update brief_documents
+            update hartlib_documents
             set deleted_at = ${deletedAt}, deleted_by_user_id = ${input.identity.userId},
                 purge_after = ${purgeAfter}, updated_at = now()
             where issue_id = ${input.issueId} and deleted_at is null
@@ -505,14 +505,14 @@ export const deletePublisherIssue = (input: {
                  and payload->>'issueId' = ${input.issueId})
                 or
                 (kind = 'extract_pdf_text' and payload->>'documentId' in (
-                  select id::text from brief_documents where issue_id = ${input.issueId}
+                  select id::text from hartlib_documents where issue_id = ${input.issueId}
                 ))
                 or
                 (kind = 'normalize_searchable_text' and payload->>'extractionId' in (
                   select extractions.id::text
-                  from brief_document_extractions extractions
-                  join brief_documents documents
-                    on documents.id = extractions.brief_document_id
+                  from hartlib_document_extractions extractions
+                  join hartlib_documents documents
+                    on documents.id = extractions.hartlib_document_id
                   where documents.issue_id = ${input.issueId}
                 ))
               )
@@ -578,7 +578,7 @@ export const schedulePublisherIssue = (input: {
             return yield* Effect.fail(new WorkspaceRuleError("issue_not_schedulable"));
           }
           const documents = yield* sql<{ count: number }>`
-            select count(*)::int count from brief_documents
+            select count(*)::int count from hartlib_documents
             where issue_id = ${input.issueId} and deleted_at is null
               and upload_completed_at is not null
           `;
@@ -625,7 +625,7 @@ export const publishPublisherIssue = (input: {
             );
           }
           const documents = yield* sql<{ count: number }>`
-            select count(*)::int count from brief_documents
+            select count(*)::int count from hartlib_documents
             where issue_id = ${input.issueId} and deleted_at is null
           `;
           if ((documents[0]?.count ?? 0) === 0) {
@@ -785,7 +785,7 @@ export const uploadPublisherDocument = (input: {
                media_type as "mediaType", byte_size::float8 as "byteSize",
                sha256_hex as "sha256Hex", created_by_user_id as "createdByUserId",
                created_at as "createdAt"
-        from brief_documents
+        from hartlib_documents
         where id = ${documentId} and issue_id = ${input.issueId}
       `;
     const exactStoredDocument = (
@@ -830,7 +830,7 @@ export const uploadPublisherDocument = (input: {
       Effect.gen(function* () {
         yield* sql`
           select pg_advisory_xact_lock(
-            hashtextextended(${`brief:publisher-upload-reservation:${input.issueId}:${idempotencyKey}`}, 0)
+            hashtextextended(${`hartlib:publisher-upload-reservation:${input.issueId}:${idempotencyKey}`}, 0)
           )
         `;
         const existing = yield* selectExisting(idempotencyKey);
@@ -856,7 +856,7 @@ export const uploadPublisherDocument = (input: {
           yield* sql`
             select pg_advisory_xact_lock(
               hashtextextended(
-                ${`brief:publisher-upload-reservation:${input.issueId}:${idempotencyKey}`}, 0
+                ${`hartlib:publisher-upload-reservation:${input.issueId}:${idempotencyKey}`}, 0
               )
             )
           `;
@@ -874,7 +874,7 @@ export const uploadPublisherDocument = (input: {
             identity: input.identity,
             requestId: input.requestId,
             action: "publisher.document.upload",
-            scopeKind: "brief_document",
+            scopeKind: "hartlib_document",
             scopeId: stored.id,
             outcome: "succeeded",
           });
@@ -907,7 +907,7 @@ export const uploadPublisherDocument = (input: {
         Effect.gen(function* () {
           yield* sql`
             select pg_advisory_xact_lock(
-              hashtextextended(${`brief:publisher-upload-reservation:${input.issueId}:${idempotencyKey}`}, 0)
+              hashtextextended(${`hartlib:publisher-upload-reservation:${input.issueId}:${idempotencyKey}`}, 0)
             )
           `;
           const existing = yield* selectExisting(idempotencyKey);
@@ -925,7 +925,7 @@ export const uploadPublisherDocument = (input: {
                 identity: input.identity,
                 requestId: input.requestId,
                 action: "publisher.document.upload",
-                scopeKind: "brief_document",
+                scopeKind: "hartlib_document",
                 scopeId: stored.id,
                 outcome: "succeeded",
               });
@@ -1155,7 +1155,7 @@ export const uploadPublisherDocument = (input: {
             yield* sql`
               select pg_advisory_xact_lock(
                 hashtextextended(
-                  ${`brief:publisher-upload-reservation:${current.issueId}:${current.idempotencyKey}`}, 0
+                  ${`hartlib:publisher-upload-reservation:${current.issueId}:${current.idempotencyKey}`}, 0
                 )
               )
             `;
@@ -1240,7 +1240,7 @@ export const uploadPublisherDocument = (input: {
           yield* sql`
             select pg_advisory_xact_lock(
               hashtextextended(
-                ${`brief:publisher-upload-reservation:${current.issueId}:${current.idempotencyKey}`}, 0
+                ${`hartlib:publisher-upload-reservation:${current.issueId}:${current.idempotencyKey}`}, 0
               )
             )
           `;
@@ -1283,7 +1283,7 @@ export const uploadPublisherDocument = (input: {
           yield* sql`
           select pg_advisory_xact_lock(
             hashtextextended(
-              ${`brief:publisher-upload-reservation:${current.issueId}:${current.idempotencyKey}`}, 0
+              ${`hartlib:publisher-upload-reservation:${current.issueId}:${current.idempotencyKey}`}, 0
             )
           )
         `;
@@ -1340,7 +1340,7 @@ export const uploadPublisherDocument = (input: {
           if (issue.status === "published")
             return yield* Effect.fail(new WorkspaceRuleError("published_issue_immutable"));
           const rows = yield* sql<DocumentRow>`
-          insert into brief_documents (
+          insert into hartlib_documents (
             id, issue_id, title, original_file_name, object_key, media_type,
             byte_size, sha256_hex, upload_completed_at, created_by_user_id
           ) values (
@@ -1362,7 +1362,7 @@ export const uploadPublisherDocument = (input: {
                 identity: input.identity,
                 requestId: current.requestId,
                 action: "publisher.document.upload",
-                scopeKind: "brief_document",
+                scopeKind: "hartlib_document",
                 scopeId: current.documentId,
                 outcome: "succeeded",
               })
@@ -1437,7 +1437,7 @@ export const deletePublisherDocument = (input: {
             return yield* Effect.fail(new WorkspaceRuleError("published_issue_immutable"));
           }
           const rows = yield* sql<{ id: string }>`
-            update brief_documents
+            update hartlib_documents
             set deleted_at = now(), deleted_by_user_id = ${input.identity.userId},
                 purge_after = now() + interval '30 days', updated_at = now()
             where id = ${input.documentId} and issue_id = ${input.issueId} and deleted_at is null
@@ -1460,7 +1460,7 @@ export const deletePublisherDocument = (input: {
                 identity: input.identity,
                 requestId: input.requestId,
                 action: "publisher.document.delete",
-                scopeKind: "brief_document",
+                scopeKind: "hartlib_document",
                 scopeId: input.documentId,
                 outcome: "succeeded",
               })
@@ -1471,7 +1471,7 @@ export const deletePublisherDocument = (input: {
     input.identity,
     input.requestId,
     "publisher.document.delete",
-    "brief_document",
+    "hartlib_document",
     input.documentId,
   );
 
@@ -1528,7 +1528,7 @@ export const invitePublisherClientAccess = (input: {
         );
         yield* sql`
           select pg_advisory_xact_lock(
-            hashtext(${`brief:publisher-client-access:${input.subscriptionId}:${input.idempotencyKey}`})
+            hashtext(${`hartlib:publisher-client-access:${input.subscriptionId}:${input.idempotencyKey}`})
           )
         `;
         yield* sql`

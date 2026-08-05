@@ -6,11 +6,11 @@ import {
   isLocale,
   isMarket,
   resolveRedirectTarget,
-} from "@brief/i18n";
+} from "@hartlib/i18n";
 
-const LOCALE_STORAGE_KEY = "brief:demo:locale";
-const MARKET_STORAGE_KEY = "brief:demo:market";
-const MANUAL_SOURCES_STORAGE_KEY = "brief:demo:manual-sources";
+const LOCALE_STORAGE_KEY = "hartlib:demo:locale";
+const MARKET_STORAGE_KEY = "hartlib:demo:market";
+const MANUAL_SOURCES_STORAGE_KEY = "hartlib:demo:manual-sources";
 
 export function getStoredLocale(): Locale | null {
   if (typeof window === "undefined") return null;

@@ -6,7 +6,7 @@ import {
   type AiProviderEndpointIdentity,
   type AiProviderServiceId,
   type PublicContextConsumer,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { PgClient } from "@effect/sql-pg";
 import { Effect } from "effect";
 import { z } from "zod";
@@ -2329,7 +2329,7 @@ export class CanonicalWorkflowOperations {
               offset,
               maximumItems: this.config.aiMemoryToolResultMaxItems,
             },
-            __briefSourceExposures: items.map((memory) =>
+            __hartlibSourceExposures: items.map((memory) =>
               providerVisibleExposureMarker({
                 sourceKind: "memory",
                 logicalSourceIdentity: memoryEvidenceIdentity(memory.memoryId),
@@ -2379,7 +2379,7 @@ export class CanonicalWorkflowOperations {
             found: true,
             complete: true,
             memory: saved,
-            __briefSourceExposures: [
+            __hartlibSourceExposures: [
               providerVisibleExposureMarker({
                 sourceKind: "memory",
                 logicalSourceIdentity: memoryEvidenceIdentity(saved.memoryId),
@@ -3383,7 +3383,7 @@ export class CanonicalWorkflowOperations {
             throwIfAborted(signal);
             return {
               ...result,
-              __briefSourceExposures: result.results.map((item) => {
+              __hartlibSourceExposures: result.results.map((item) => {
                 const logicalSourceIdentity = canonicalizeWebUrl(item.url);
                 return providerVisibleExposureMarker({
                   sourceKind: "web",
@@ -3402,7 +3402,7 @@ export class CanonicalWorkflowOperations {
         {
           definition: {
             name: "web_fetch",
-            description: "Fetch one policy-allowed URL through the safe Brief boundary.",
+            description: "Fetch one policy-allowed URL through the safe Hartlib boundary.",
             parameters: z.toJSONSchema(z.object({ url: z.string().url() }).strict()),
           },
           parseArguments: parseWebFetchArguments,
@@ -3458,7 +3458,7 @@ export class CanonicalWorkflowOperations {
             return {
               ...page,
               complete: true,
-              __briefSourceExposures: [
+              __hartlibSourceExposures: [
                 providerVisibleExposureMarker({
                   sourceKind: "web",
                   logicalSourceIdentity,
@@ -4256,7 +4256,7 @@ export class CanonicalWorkflowOperations {
         ...(options.sourceExposureMarker === undefined
           ? {}
           : {
-              __briefSourceExposures: selected.map(options.sourceExposureMarker),
+              __hartlibSourceExposures: selected.map(options.sourceExposureMarker),
             }),
         ...(selected.length === 0 && tokenTruncated ? { nextItemTooLarge: true as const } : {}),
       };
@@ -4420,7 +4420,7 @@ export class CanonicalWorkflowOperations {
                      '/v1/issues/' || issues.id::text || '/documents/' || documents.id::text || '/content' as "citationUrl",
                      issues.id::text as "issueId", issues.title as "issueTitle", issues.published_at as "publishedAt",
                      subscriptions.id::text as "sourceId"
-              from brief_documents documents
+              from hartlib_documents documents
               join publisher_issues issues on issues.id = documents.issue_id
               join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
               join publisher_companies companies on companies.id = subscriptions.publisher_company_id
@@ -6115,8 +6115,8 @@ export class CanonicalWorkflowOperations {
             truncated,
             cursor: truncated ? String(start + page.length) : null,
             passages: page,
-            __briefSourceExposures: page.map((passage) => markerForPassage(passage.passageId)),
-            __briefSourceIdentity: page.map(privateIdentityForPassage),
+            __hartlibSourceExposures: page.map((passage) => markerForPassage(passage.passageId)),
+            __hartlibSourceIdentity: page.map(privateIdentityForPassage),
           };
           if (!truncated && page.length === 0) terminalReady = true;
           assertSourceToolResultBound(page, result);
@@ -6163,8 +6163,10 @@ export class CanonicalWorkflowOperations {
             truncated: false,
             cursor: null,
             passages: selected,
-            __briefSourceExposures: selected.map((passage) => markerForPassage(passage.passageId)),
-            __briefSourceIdentity: selected.map(privateIdentityForPassage),
+            __hartlibSourceExposures: selected.map((passage) =>
+              markerForPassage(passage.passageId),
+            ),
+            __hartlibSourceIdentity: selected.map(privateIdentityForPassage),
           };
           assertSourceToolResultBound(selected, result);
           if (selected.length > 0) terminalReady = true;

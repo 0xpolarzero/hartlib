@@ -4,8 +4,8 @@ import {
   type ChatListView,
   type ChatSummary,
   type CreatedChat,
-} from "@brief/api-client";
-import type { CreateProductChatRequest, MemoryRecord } from "@brief/shared";
+} from "@hartlib/api-client";
+import type { CreateProductChatRequest, MemoryRecord } from "@hartlib/shared";
 
 import { authenticatedFetch } from "./api-auth";
 

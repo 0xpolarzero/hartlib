@@ -1,13 +1,13 @@
 import { createClerkClient } from "@clerk/backend";
-import type { CreatePublisherCompanyOnboardingRequest } from "@brief/shared";
+import type { CreatePublisherCompanyOnboardingRequest } from "@hartlib/shared";
 import {
   normalizeWorkspaceEmail,
   onboardPublisherCompany,
   WorkspaceAuthorizationError,
   WorkspaceRuleError,
   type PublisherOnboardingProvider,
-} from "@brief/workspace";
-import { requestIdForAudit } from "@brief/workspace";
+} from "@hartlib/workspace";
+import { requestIdForAudit } from "@hartlib/workspace";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity } from "../auth";
@@ -17,7 +17,7 @@ import { json, type Route } from "../http";
 import { withAdministrativeAuditing } from "./administrative-audit";
 import { createOrRecoverClerkOrganizationInvitation } from "./clerk-invitation-provider";
 
-export type { PublisherOnboardingProvider } from "@brief/workspace";
+export type { PublisherOnboardingProvider } from "@hartlib/workspace";
 
 type PgLayer = ApiDatabaseLayerType;
 const PgLayer = ApiDatabaseLayer;
@@ -26,7 +26,7 @@ const liveProvider = (secretKey: string): PublisherOnboardingProvider => {
   const clerk = createClerkClient({ secretKey });
   return {
     ensureOrganization: async (input) => {
-      const slug = `brief-publisher-${input.companyId}`;
+      const slug = `hartlib-publisher-${input.companyId}`;
       try {
         return (await clerk.organizations.getOrganization({ slug })).id;
       } catch {

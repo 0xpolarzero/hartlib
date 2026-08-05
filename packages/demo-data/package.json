@@ -1,5 +1,5 @@
 {
-  "name": "@brief/demo-data",
+  "name": "@hartlib/demo-data",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,8 +10,8 @@
     "test": "vitest run --root ../.. packages/demo-data/src"
   },
   "dependencies": {
-    "@brief/shared": "workspace:*",
-    "@brief/source-ingestion": "workspace:*"
+    "@hartlib/shared": "workspace:*",
+    "@hartlib/source-ingestion": "workspace:*"
   },
   "devDependencies": {
     "typescript": "6.0.3",

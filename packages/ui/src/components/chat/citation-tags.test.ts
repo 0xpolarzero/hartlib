@@ -1,4 +1,4 @@
-import type { PublicSourceRecord } from "@brief/shared";
+import type { PublicSourceRecord } from "@hartlib/shared";
 import { describe, expect, it } from "vitest";
 
 import { citationRecordsFromText, parseCitationTags } from "./citation-tags";

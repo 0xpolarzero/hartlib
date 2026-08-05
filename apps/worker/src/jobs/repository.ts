@@ -5,7 +5,7 @@ import {
   databaseUrlRedactedConfig,
   loadJobRepositoryConfig,
   WORKER_JOB_LOCK_TIMEOUT_MS_DEFAULT,
-} from "@brief/config";
+} from "@hartlib/config";
 import { persistedJobFailureCode } from "./failure";
 import { jobSql } from "./sql";
 import type { EnqueueJobInput, JobRecord } from "./types";
@@ -20,7 +20,7 @@ export interface JobRepositoryShape {
 }
 
 export class JobRepository extends Context.Service<JobRepository, JobRepositoryShape>()(
-  "brief/worker/JobRepository",
+  "hartlib/worker/JobRepository",
 ) {}
 
 const retryDelayMs = (attempts: number): number =>
@@ -51,7 +51,7 @@ export const makePgJobRepository = (
 ): Effect.Effect<JobRepositoryShape, never, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
-    const workerId = `brief-worker:${crypto.randomUUID()}`;
+    const workerId = `hartlib-worker:${crypto.randomUUID()}`;
 
     return JobRepository.of({
       lockRenewalIntervalMs: lockRenewalIntervalMs(jobLockTimeoutMs),
@@ -128,7 +128,7 @@ export const makePgJobRepository = (
       claimNext: Effect.gen(function* () {
         const rows = yield* sql.withTransaction(
           Effect.gen(function* () {
-            yield* sql`select pg_advisory_xact_lock(hashtext('brief:jobs:claim'))`;
+            yield* sql`select pg_advisory_xact_lock(hashtext('hartlib:jobs:claim'))`;
             yield* sql`
                 update jobs
                 set status = case
@@ -281,7 +281,7 @@ export const JobRepositoryPgLayer = Layer.effect(
   Layer.provide(
     PgClient.layerConfig({
       url: databaseUrlRedactedConfig,
-      applicationName: Config.succeed("brief-worker"),
+      applicationName: Config.succeed("hartlib-worker"),
     }),
   ),
 );

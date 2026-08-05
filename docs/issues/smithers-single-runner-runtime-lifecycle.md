@@ -2,7 +2,7 @@
 
 ## Runtime contract
 
-Brief uses `smithers-orchestrator@0.31.0` and `@smithers-orchestrator/engine@0.31.0`. Both packages expose `closeSingleRunnerRuntime`; the engine also owns the matching reopen boundary.
+Hartlib uses `smithers-orchestrator@0.31.0` and `@smithers-orchestrator/engine@0.31.0`. Both packages expose `closeSingleRunnerRuntime`; the engine also owns the matching reopen boundary.
 
 `apps/worker/src/ai/smithers-interop.ts` owns the application boundary. The finite evaluation CLI closes the process-local Effect Cluster SingleRunner runtime during finalization, including after failed work. Cleanup failure produces exit `2`; the CLI never forces termination with `process.exit`.
 
@@ -16,11 +16,11 @@ The lifecycle must:
 - require the public reopen operation before a long-lived host accepts new work after closure; and
 - remain exported by both `@smithers-orchestrator/engine` and `smithers-orchestrator`.
 
-Brief carries no local Smithers dependency patch. The installed package owns these lifecycle rules.
+Hartlib carries no local Smithers dependency patch. The installed package owns these lifecycle rules.
 
 ## Product cleanup boundary
 
-The chat cutover keeps Smithers state disposable. Brief commits the product
+The chat cutover keeps Smithers state disposable. Hartlib commits the product
 terminal transition first, then removes the exact `ai-chat:<aiRunId>` engine,
 input, and output rows. Cleanup never repairs an old output shape, reads a
 product answer from Smithers, or runs a second provider path. A schema change

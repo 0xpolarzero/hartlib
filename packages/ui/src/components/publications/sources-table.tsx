@@ -1,4 +1,4 @@
-import { useIntl } from "@brief/i18n";
+import { useIntl } from "@hartlib/i18n";
 import {
   createColumnHelper,
   getCoreRowModel,

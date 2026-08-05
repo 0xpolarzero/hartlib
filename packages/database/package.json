@@ -1,5 +1,5 @@
 {
-  "name": "@brief/database",
+  "name": "@hartlib/database",
   "private": true,
   "type": "module",
   "exports": {

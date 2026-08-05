@@ -42,7 +42,7 @@ export const jobSql = {
     returning id, kind, payload, attempts
   `,
   claimNext: `
-    select pg_advisory_xact_lock(hashtext('brief:jobs:claim'));
+    select pg_advisory_xact_lock(hashtext('hartlib:jobs:claim'));
 
     update jobs
     set status = case

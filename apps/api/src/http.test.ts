@@ -5,7 +5,7 @@ import {
   HttpErrorResponse,
   ProductChatsQuery,
   type HttpRouteContract,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { ConfigProvider, Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -39,7 +39,7 @@ const route = (request: Request) =>
 describe("routeRequest", () => {
   it("answers CORS preflight for a registered POST route", async () => {
     const response = await route(
-      new Request("http://brief.test/v1/chat/messages", {
+      new Request("http://hartlib.test/v1/chat/messages", {
         method: "OPTIONS",
         headers: {
           origin: "http://localhost:43111",
@@ -53,7 +53,7 @@ describe("routeRequest", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe("http://localhost:43111");
     expect(response.headers.get("access-control-allow-methods")).toBe("POST");
     expect(response.headers.get("access-control-allow-headers")).toBe(
-      "authorization, content-type, idempotency-key, last-event-id, x-brief-title, x-content-sha256, x-file-name, x-request-id",
+      "authorization, content-type, idempotency-key, last-event-id, x-hartlib-title, x-content-sha256, x-file-name, x-request-id",
     );
     expect(response.headers.get("access-control-max-age")).toBe("86400");
     expect(await response.text()).toBe("");
@@ -61,7 +61,7 @@ describe("routeRequest", () => {
 
   it("keeps unknown preflight paths as 404", async () => {
     const response = await route(
-      new Request("http://brief.test/v1/unknown", {
+      new Request("http://hartlib.test/v1/unknown", {
         method: "OPTIONS",
       }),
     );
@@ -86,20 +86,20 @@ describe("routeRequest", () => {
       },
     ];
     const get = await Effect.runPromise(
-      routeRequest(dynamicRoutes, new Request(`http://brief.test/v1/widgets/${uuid}`)),
+      routeRequest(dynamicRoutes, new Request(`http://hartlib.test/v1/widgets/${uuid}`)),
     );
     expect(get.status).toBe(200);
     expect(await get.json()).toEqual({ widgetId: uuid });
 
     const getV6 = await Effect.runPromise(
-      routeRequest(dynamicRoutes, new Request(`http://brief.test/v1/widgets/${uuidV6}`)),
+      routeRequest(dynamicRoutes, new Request(`http://hartlib.test/v1/widgets/${uuidV6}`)),
     );
     expect(getV6.status).toBe(200);
     expect(await getV6.json()).toEqual({ widgetId: uuidV6 });
 
     for (const alias of [`/V1/WIDGETS/${uuid}`, `/v1/widgets/${uuid}/`]) {
       const response = await Effect.runPromise(
-        routeRequest(dynamicRoutes, new Request(`http://brief.test${alias}`)),
+        routeRequest(dynamicRoutes, new Request(`http://hartlib.test${alias}`)),
       );
       expect(response.status).toBe(404);
       expect(await response.json()).toEqual({ error: "not_found" });
@@ -108,7 +108,7 @@ describe("routeRequest", () => {
     const preflight = await Effect.runPromise(
       routeRequest(
         dynamicRoutes,
-        new Request(`http://brief.test/v1/widgets/${uuid}`, {
+        new Request(`http://hartlib.test/v1/widgets/${uuid}`, {
           method: "OPTIONS",
           headers: { origin: "http://localhost:43111" },
         }),
@@ -120,7 +120,7 @@ describe("routeRequest", () => {
       const unsupported = await Effect.runPromise(
         routeRequest(
           dynamicRoutes,
-          new Request(`http://brief.test/v1/widgets/${uuid}`, { method: "DELETE" }),
+          new Request(`http://hartlib.test/v1/widgets/${uuid}`, { method: "DELETE" }),
         ),
       );
       expect(unsupported.status).toBe(405);
@@ -138,7 +138,7 @@ describe("routeRequest", () => {
       },
     ];
     const response = await Effect.runPromise(
-      routeRequest(broken, new Request("http://brief.test/broken")),
+      routeRequest(broken, new Request("http://hartlib.test/broken")),
     );
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "internal_error" });
@@ -174,7 +174,7 @@ describe("routeRequest", () => {
     const invalidRequest = await Effect.runPromise(
       routeRequest(
         exact,
-        new Request("http://brief.test/contract", {
+        new Request("http://hartlib.test/contract", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ value: "ok", unexpected: true }),
@@ -194,7 +194,7 @@ describe("routeRequest", () => {
     const response = await Effect.runPromise(
       routeRequest(
         invalidResponse,
-        new Request("http://brief.test/contract", {
+        new Request("http://hartlib.test/contract", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ value: "ok" }),
@@ -213,7 +213,7 @@ describe("routeRequest", () => {
     const wrongStatus = await Effect.runPromise(
       routeRequest(
         invalidStatus,
-        new Request("http://brief.test/contract", {
+        new Request("http://hartlib.test/contract", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ value: "ok" }),
@@ -236,7 +236,7 @@ describe("routeRequest", () => {
       const response = await Effect.runPromise(
         routeRequest(
           guarded,
-          new Request("http://brief.test/v1/client-companies/not-a-uuid/ai-limit", {
+          new Request("http://hartlib.test/v1/client-companies/not-a-uuid/ai-limit", {
             method,
             ...(method === "OPTIONS" ? { headers: { origin: "http://localhost:43111" } } : {}),
           }),
@@ -272,7 +272,7 @@ describe("routeRequest", () => {
         return Effect.runPromise(
           routeRequest(
             administrative,
-            new Request(`http://brief.test/v1/client-companies/${uuid}/ai-limit`, {
+            new Request(`http://hartlib.test/v1/client-companies/${uuid}/ai-limit`, {
               method: "PUT",
               headers: {
                 "content-type": "application/json",
@@ -315,7 +315,7 @@ describe("routeRequest", () => {
       const response = await Effect.runPromise(
         routeRequest(
           administrative,
-          new Request(`http://brief.test/v1/client-companies/${uuid}/ai-limit`, {
+          new Request(`http://hartlib.test/v1/client-companies/${uuid}/ai-limit`, {
             method: "PUT",
             headers: { "content-type": "application/json", "x-request-id": supplied },
             body: JSON.stringify({ companyMonthlyLimit: null }),
@@ -380,7 +380,7 @@ describe("routeRequest", () => {
     const response = await Effect.runPromise(
       routeRequest(
         administrative,
-        new Request(`http://brief.test/v1/client-companies/${uuid}/ai-limit`, {
+        new Request(`http://hartlib.test/v1/client-companies/${uuid}/ai-limit`, {
           method: "PUT",
           headers: {
             authorization: "Bearer authenticated-admin",
@@ -412,7 +412,7 @@ describe("routeRequest", () => {
     ];
     for (const query of ["market=EU", "market=FR&market=US", "unknown=value"]) {
       const response = await Effect.runPromise(
-        routeRequest(guarded, new Request(`http://brief.test/v1/public-sources?${query}`)),
+        routeRequest(guarded, new Request(`http://hartlib.test/v1/public-sources?${query}`)),
       );
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ code: "invalid_query" });
@@ -458,7 +458,7 @@ describe("routeRequest", () => {
     const response = await Effect.runPromise(
       routeRequest(
         guarded,
-        new Request("http://brief.test/decoded?view=shared", {
+        new Request("http://hartlib.test/decoded?view=shared", {
           headers: { "last-event-id": "7", "x-ignored-standard-header": "allowed" },
         }),
       ),
@@ -516,7 +516,7 @@ describe("routeRequest", () => {
         },
       };
       const response = await Effect.runPromise(
-        routeRequest([route], new Request(`http://brief.test${item.url}`, item.init)),
+        routeRequest([route], new Request(`http://hartlib.test${item.url}`, item.init)),
       );
       expect(response.status, `${item.method} ${item.path}`).toBe(400);
       expect(executes).toBe(0);
@@ -554,7 +554,7 @@ describe("routeRequest", () => {
       },
     });
     const response = await Effect.runPromise(
-      routeRequest([route], new Request("http://brief.test/no-body", { method: "POST", body })),
+      routeRequest([route], new Request("http://hartlib.test/no-body", { method: "POST", body })),
     );
     await Promise.resolve();
     expect(response.status).toBe(400);
@@ -601,7 +601,7 @@ describe("routeRequest", () => {
           Effect.promise(async () => audits.push(await response.clone().json())),
       };
       const response = await Effect.runPromise(
-        routeRequest([route], new Request(`http://brief.test${item.url}`, item.init)),
+        routeRequest([route], new Request(`http://hartlib.test${item.url}`, item.init)),
       );
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ code: item.code });
@@ -638,7 +638,7 @@ describe("routeRequest", () => {
     };
     for (const value of ["01", "9007199254740992"]) {
       const response = await Effect.runPromise(
-        routeRequest([guarded], new Request(`http://brief.test/cursor?afterSeq=${value}`)),
+        routeRequest([guarded], new Request(`http://hartlib.test/cursor?afterSeq=${value}`)),
       );
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({ code: "invalid_query" });
@@ -647,7 +647,7 @@ describe("routeRequest", () => {
       const response = await Effect.runPromise(
         routeRequest(
           [guarded],
-          new Request("http://brief.test/cursor", { headers: { "last-event-id": value } }),
+          new Request("http://hartlib.test/cursor", { headers: { "last-event-id": value } }),
         ),
       );
       expect(response.status).toBe(400);
@@ -686,7 +686,7 @@ describe("routeRequest", () => {
       const response = await Effect.runPromise(
         routeRequest(
           [guarded],
-          new Request(`http://brief.test/archive?cursor=${encodeURIComponent(cursor)}`),
+          new Request(`http://hartlib.test/archive?cursor=${encodeURIComponent(cursor)}`),
         ),
       );
       expect(response.status, cursor).toBe(400);
@@ -727,7 +727,7 @@ describe("routeRequest", () => {
     ];
     for (const query of valid) {
       const response = await Effect.runPromise(
-        routeRequest([guarded], new Request(`http://brief.test/archive-filter${query}`)),
+        routeRequest([guarded], new Request(`http://hartlib.test/archive-filter${query}`)),
       );
       expect(response.status, query).toBe(200);
     }
@@ -748,7 +748,7 @@ describe("routeRequest", () => {
     ];
     for (const query of invalid) {
       const response = await Effect.runPromise(
-        routeRequest([guarded], new Request(`http://brief.test/archive-filter${query}`)),
+        routeRequest([guarded], new Request(`http://hartlib.test/archive-filter${query}`)),
       );
       expect(response.status, query).toBe(400);
       expect(await response.json()).toEqual({ code: "invalid_query" });
@@ -776,7 +776,7 @@ describe("routeRequest", () => {
         return Effect.succeed(json({ ok: true }));
       },
     };
-    const request = new Request("http://brief.test/decoded-body", {
+    const request = new Request("http://hartlib.test/decoded-body", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: new ReadableStream<Uint8Array>({
@@ -790,7 +790,7 @@ describe("routeRequest", () => {
     expect(response.status).toBe(200);
     expect(request.bodyUsed).toBe(true);
 
-    const malformed = new Request("http://brief.test/decoded-body", {
+    const malformed = new Request("http://hartlib.test/decoded-body", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{",
@@ -826,10 +826,10 @@ describe("routeRequest", () => {
         Effect.succeed(new Response("unexpected", { status: 302, headers: { location: "/next" } })),
     };
     const emptyResponse = await Effect.runPromise(
-      routeRequest([empty], new Request("http://brief.test/empty", { method: "DELETE" })),
+      routeRequest([empty], new Request("http://hartlib.test/empty", { method: "DELETE" })),
     );
     const redirectResponse = await Effect.runPromise(
-      routeRequest([redirect], new Request("http://brief.test/redirect")),
+      routeRequest([redirect], new Request("http://hartlib.test/redirect")),
     );
     expect(emptyResponse.status).toBe(500);
     expect(redirectResponse.status).toBe(500);
@@ -848,7 +848,7 @@ describe("routeRequest", () => {
     const response = await Effect.runPromise(
       routeRequest(
         [guarded],
-        new Request("http://brief.test/aborted", { signal: controller.signal }),
+        new Request("http://hartlib.test/aborted", { signal: controller.signal }),
       ),
     );
     expect(response.status).toBe(499);
@@ -864,7 +864,7 @@ describe("routeRequest", () => {
     };
 
     const response = await Effect.runPromise(
-      routeRequest([interrupted], new Request("http://brief.test/interrupted")),
+      routeRequest([interrupted], new Request("http://hartlib.test/interrupted")),
     );
     expect(response.status).toBe(499);
     expect(await response.text()).toBe("");

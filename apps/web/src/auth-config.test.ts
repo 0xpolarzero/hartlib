@@ -15,18 +15,18 @@ describe("production web authentication configuration", () => {
 
   it("requires a Clerk publishable key", () => {
     expect(() =>
-      loadWebAuthConfig({ PROD: true, VITE_SECURITY_CONTACT_EMAIL: "security@brief.test" }),
+      loadWebAuthConfig({ PROD: true, VITE_SECURITY_CONTACT_EMAIL: "security@hartlib.test" }),
     ).toThrow("VITE_CLERK_PUBLISHABLE_KEY is required");
     expect(
       loadWebAuthConfig({
         PROD: true,
         VITE_CLERK_PUBLISHABLE_KEY: "pk_live_example",
-        VITE_SECURITY_CONTACT_EMAIL: "security@brief.test",
+        VITE_SECURITY_CONTACT_EMAIL: "security@hartlib.test",
       }),
     ).toEqual({
       mode: "clerk",
       publishableKey: "pk_live_example",
-      securityContactEmail: "security@brief.test",
+      securityContactEmail: "security@hartlib.test",
     });
   });
 

@@ -33,7 +33,7 @@ const subscription = (
   customer: "cus_1",
   status: "active",
   schedule,
-  metadata: { brief_plan_tier: tier },
+  metadata: { hartlib_plan_tier: tier },
   latest_invoice: {
     id: "in_current_1",
     customer: "cus_1",
@@ -60,7 +60,7 @@ const subscription = (
         quantity: 1,
         current_period_start: periodStart,
         current_period_end: periodEnd,
-        price: { id: `price_${tier}`, metadata: { brief_plan_tier: tier } },
+        price: { id: `price_${tier}`, metadata: { hartlib_plan_tier: tier } },
       },
     ],
   },
@@ -69,10 +69,10 @@ const subscription = (
 const upgradedSubscription = (tier: BillingPlanChangeGatewayInput["targetTier"]) => ({
   ...subscription(tier),
   metadata: {
-    brief_client_company_id: "company-1",
-    brief_plan_change_key: "plan-change-0001",
-    brief_plan_previous_tier: "team",
-    brief_plan_tier: tier,
+    hartlib_client_company_id: "company-1",
+    hartlib_plan_change_key: "plan-change-0001",
+    hartlib_plan_previous_tier: "team",
+    hartlib_plan_tier: tier,
   },
 });
 
@@ -112,9 +112,9 @@ const ownedSchedule = (
   status: "active",
   current_phase: { start_date: periodStart, end_date: periodEnd },
   metadata: {
-    brief_client_company_id: "company-1",
-    brief_plan_change_key: "plan-change-0001",
-    brief_plan_tier: tier,
+    hartlib_client_company_id: "company-1",
+    hartlib_plan_change_key: "plan-change-0001",
+    hartlib_plan_tier: tier,
   },
   ...extra,
 });
@@ -132,13 +132,13 @@ const configuredSchedule = (
         end_date: periodEnd,
         items: [{ price: `price_${currentTier}`, quantity: 1 }],
         proration_behavior: "none",
-        metadata: { brief_plan_tier: currentTier },
+        metadata: { hartlib_plan_tier: currentTier },
       },
       {
         start_date: periodEnd,
         items: [{ price: `price_${targetTier}`, quantity: 1 }],
         proration_behavior: "none",
-        metadata: { brief_plan_tier: targetTier },
+        metadata: { hartlib_plan_tier: targetTier },
       },
     ],
   });
@@ -202,13 +202,13 @@ describe("live Stripe monthly plan change gateway", () => {
         proration_behavior: "always_invoice",
         payment_behavior: "error_if_incomplete",
         metadata: {
-          brief_client_company_id: "company-1",
-          brief_plan_change_key: "plan-change-0001",
-          brief_plan_previous_tier: "team",
-          brief_plan_tier: "intensive",
+          hartlib_client_company_id: "company-1",
+          hartlib_plan_change_key: "plan-change-0001",
+          hartlib_plan_previous_tier: "team",
+          hartlib_plan_tier: "intensive",
         },
       }),
-      { idempotencyKey: "brief-plan:company-1:plan-change-0001:upgrade" },
+      { idempotencyKey: "hartlib-plan:company-1:plan-change-0001:upgrade" },
     );
     expect(stripe.spies.subscriptions.retrieve).toHaveBeenCalledWith("sub_1", {
       expand: ["items.data.price", "latest_invoice", "schedule"],
@@ -293,9 +293,9 @@ describe("live Stripe monthly plan change gateway", () => {
     expect(stripe.spies.subscriptionSchedules.create).toHaveBeenCalledWith(
       {
         from_subscription: "sub_1",
-        metadata: expect.objectContaining({ brief_plan_tier: "team" }),
+        metadata: expect.objectContaining({ hartlib_plan_tier: "team" }),
       },
-      { idempotencyKey: "brief-plan:company-1:plan-change-0001:schedule-create" },
+      { idempotencyKey: "hartlib-plan:company-1:plan-change-0001:schedule-create" },
     );
     expect(stripe.spies.subscriptionSchedules.update).toHaveBeenCalledWith(
       "sub_sched_1",
@@ -311,7 +311,7 @@ describe("live Stripe monthly plan change gateway", () => {
           expect.objectContaining({ start_date: periodEnd, proration_behavior: "none" }),
         ]),
       }),
-      { idempotencyKey: "brief-plan:company-1:plan-change-0001:schedule-update" },
+      { idempotencyKey: "hartlib-plan:company-1:plan-change-0001:schedule-update" },
     );
   });
 
@@ -337,7 +337,7 @@ describe("live Stripe monthly plan change gateway", () => {
       retrievedSubscription: subscription("intensive", { id: "sub_sched_other" }),
       retrievedSchedule: ownedSchedule("team", {
         id: "sub_sched_other",
-        metadata: { brief_client_company_id: "another-company" },
+        metadata: { hartlib_client_company_id: "another-company" },
       }),
     });
     await expect(

@@ -1,4 +1,4 @@
-import { useIntl } from "@brief/i18n";
+import { useIntl } from "@hartlib/i18n";
 
 type Intl = ReturnType<typeof useIntl>;
 

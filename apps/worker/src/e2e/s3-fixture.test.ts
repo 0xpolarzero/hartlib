@@ -7,8 +7,8 @@ import { decodeAwsChunked, makeS3Fixture } from "./s3-fixture";
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
 const text = (value: Uint8Array): string => new TextDecoder().decode(value);
 const requestBody = (value: Uint8Array): ArrayBuffer => Uint8Array.from(value).buffer;
-const fixtureAccessKeyId = "brief-e2e-access-key";
-const fixtureSecretAccessKey = "brief-e2e-secret-key";
+const fixtureAccessKeyId = "hartlib-e2e-access-key";
+const fixtureSecretAccessKey = "hartlib-e2e-secret-key";
 const signedAt = new Date("2026-07-11T12:34:56.000Z");
 const fixtureNow = new Date("2026-07-11T12:35:00.000Z");
 
@@ -167,7 +167,7 @@ const headerSignedRequest = (input: {
 };
 
 const makeAuthenticatedFixture = () =>
-  makeS3Fixture("brief-e2e", {
+  makeS3Fixture("hartlib-e2e", {
     accessKeyId: fixtureAccessKeyId,
     secretAccessKey: fixtureSecretAccessKey,
     now: () => fixtureNow,
@@ -177,20 +177,20 @@ describe("deterministic S3-compatible E2E fixture", () => {
   it("matches the AWS SDK SigV4 GET vector including response overrides and reserved paths", () => {
     const url = presign({
       url:
-        "http://storage.test/brief-e2e/publisher-issues/i/a%20b.pdf" +
+        "http://storage.test/hartlib-e2e/publisher-issues/i/a%20b.pdf" +
         "?response-content-disposition=inline%3B%20filename%3D%22a%20b.pdf%22" +
         "&response-content-type=application%2Fpdf" +
         "&x-amz-checksum-mode=ENABLED&x-id=GetObject",
     });
     expect(url.searchParams.get("X-Amz-Signature")).toBe(
-      "80942b409ec657dde35bdf9b0f6e5cfb109ae6c5ab4529f97c2413a88f1ea642",
+      "5352f5f6007cd64a6241672dc8bfe527d5ea89ec2155edd6234f24aa31c89c48",
     );
   });
 
   it("stores exact bytes and serves independent private signed-response copies", async () => {
     const fixture = makeAuthenticatedFixture();
     const body = bytes("%PDF-1.4\nexact fixture bytes");
-    const objectUrl = "http://storage.test/brief-e2e/publisher-issues/i/documents/d.pdf";
+    const objectUrl = "http://storage.test/hartlib-e2e/publisher-issues/i/documents/d.pdf";
 
     const put = await fixture.fetch(
       headerSignedRequest({
@@ -220,10 +220,10 @@ describe("deterministic S3-compatible E2E fixture", () => {
     expect(first.headers.get("cache-control")).toBe("private, no-store");
     expect(first.headers.get("content-type")).toBe("application/pdf");
     expect(first.headers.get("content-disposition")).toBe('inline; filename="fixture.pdf"');
-    expect(first.headers.get("x-brief-e2e-authorization-received")).toBe("absent");
+    expect(first.headers.get("x-hartlib-e2e-authorization-received")).toBe("absent");
     expect(browser.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:46112");
     expect(browser.headers.get("access-control-allow-credentials")).toBe("true");
-    expect(second.headers.get("x-brief-e2e-authorization-received")).toBe("present");
+    expect(second.headers.get("x-hartlib-e2e-authorization-received")).toBe("present");
     expect(new Uint8Array(await first.arrayBuffer())).toEqual(body);
     expect(new Uint8Array(await second.arrayBuffer())).toEqual(body);
 
@@ -235,7 +235,7 @@ describe("deterministic S3-compatible E2E fixture", () => {
 
   it("requires valid method-bound SigV4 query authentication for GET and HEAD", async () => {
     const fixture = makeAuthenticatedFixture();
-    const objectUrl = "http://storage.test/brief-e2e/publisher-issues/i/a%20b.pdf";
+    const objectUrl = "http://storage.test/hartlib-e2e/publisher-issues/i/a%20b.pdf";
     const body = bytes("signed object");
     expect(
       (await fixture.fetch(headerSignedRequest({ url: objectUrl, method: "PUT", body }))).status,
@@ -248,7 +248,7 @@ describe("deterministic S3-compatible E2E fixture", () => {
           new Request(objectUrl, {
             headers: {
               authorization:
-                "AWS4-HMAC-SHA256 Credential=brief-e2e-access-key/20260711/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=" +
+                "AWS4-HMAC-SHA256 Credential=hartlib-e2e-access-key/20260711/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=" +
                 "0".repeat(64),
               "x-amz-content-sha256": createHash("sha256").update("").digest("hex"),
               "x-amz-date": "20260711T123456Z",
@@ -274,7 +274,7 @@ describe("deterministic S3-compatible E2E fixture", () => {
 
   it("authenticates PUT, DELETE, and versioning before reading or mutating state", async () => {
     const fixture = makeAuthenticatedFixture();
-    const objectUrl = "http://storage.test/brief-e2e/security/mutation.pdf";
+    const objectUrl = "http://storage.test/hartlib-e2e/security/mutation.pdf";
     const body = bytes("authorized mutation");
     const expectDenied = async (request: Request): Promise<void> => {
       const response = await fixture.fetch(request);
@@ -365,7 +365,7 @@ describe("deterministic S3-compatible E2E fixture", () => {
     await expectDenied(new Request(objectUrl, { method: "DELETE", headers: signedAsPut.headers }));
     expect(fixture.objectCount()).toBe(1);
 
-    const versioningUrl = "http://storage.test/brief-e2e?versioning=";
+    const versioningUrl = "http://storage.test/hartlib-e2e?versioning=";
     fixture.setVersioningStatus("Enabled");
     await expectDenied(new Request(versioningUrl));
     await expectDenied(new Request(presign({ url: versioningUrl })));
@@ -405,7 +405,7 @@ describe("deterministic S3-compatible E2E fixture", () => {
   });
 
   it("rejects missing, duplicate, tampered, wrong-scope, wrong-secret, and expired signatures generically", async () => {
-    const objectUrl = "http://storage.test/brief-e2e/publisher-issues/i/security.pdf";
+    const objectUrl = "http://storage.test/hartlib-e2e/publisher-issues/i/security.pdf";
     const fixture = makeAuthenticatedFixture();
     await fixture.fetch(
       headerSignedRequest({ url: objectUrl, method: "PUT", body: bytes("private") }),
@@ -485,7 +485,7 @@ describe("deterministic S3-compatible E2E fixture", () => {
       expect(deniedHeaders).not.toContain(fixtureSecretAccessKey);
     }
 
-    const expiredFixture = makeS3Fixture("brief-e2e", {
+    const expiredFixture = makeS3Fixture("hartlib-e2e", {
       accessKeyId: fixtureAccessKeyId,
       secretAccessKey: fixtureSecretAccessKey,
       now: () => new Date(signedAt.getTime() + 300_000),
@@ -518,7 +518,7 @@ describe("deterministic S3-compatible E2E fixture", () => {
     for (let index = 0; index < 32; index += 1) {
       const value = `${values[index % values.length]}-${index}`;
       const objectUrl = new URL(
-        `http://storage.test/brief-e2e/property/${awsUriEncode(value)}.pdf`,
+        `http://storage.test/hartlib-e2e/property/${awsUriEncode(value)}.pdf`,
       );
       const body = bytes(`object-${index}`);
       await fixture.fetch(headerSignedRequest({ url: objectUrl, method: "PUT", body }));
@@ -550,7 +550,7 @@ describe("deterministic S3-compatible E2E fixture", () => {
     expect(text(decodeAwsChunked(encoded))).toBe("%PDF-1.4data");
 
     const fixture = makeAuthenticatedFixture();
-    const objectUrl = "http://storage.test/brief-e2e/publisher-issues/i/documents/chunked.pdf";
+    const objectUrl = "http://storage.test/hartlib-e2e/publisher-issues/i/documents/chunked.pdf";
     const put = await fixture.fetch(
       headerSignedRequest({
         url: objectUrl,
@@ -580,7 +580,7 @@ describe("deterministic S3-compatible E2E fixture", () => {
     await expect(
       fixture.fetch(
         headerSignedRequest({
-          url: "http://storage.test/brief-e2e/document.pdf",
+          url: "http://storage.test/hartlib-e2e/document.pdf",
           method: "PUT",
           headers: { "x-amz-decoded-content-length": "99" },
           body: bytes("short"),
@@ -593,7 +593,7 @@ describe("deterministic S3-compatible E2E fixture", () => {
 describe.skipIf(typeof process.versions.bun !== "string")(
   "production export-object S3 adapter contract",
   () => {
-    const bucket = "brief-export-adapter";
+    const bucket = "hartlib-export-adapter";
     const fixture = makeS3Fixture(bucket, {
       accessKeyId: "fixture-access-key",
       secretAccessKey: "fixture-secret-key",

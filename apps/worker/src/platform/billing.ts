@@ -68,11 +68,11 @@ export const consumeCredits = (input: ConsumeCreditsInput) =>
       Effect.gen(function* () {
         const now = input.now ?? new Date();
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:credits:${input.clientCompanyId}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:credits:${input.clientCompanyId}`}))
         `;
         yield* sql`
           select pg_advisory_xact_lock(
-            hashtext(${`brief:client-members:${input.clientCompanyId}`})
+            hashtext(${`hartlib:client-members:${input.clientCompanyId}`})
           )
         `;
         const prior = yield* sql<{
@@ -427,8 +427,8 @@ const processSubscription = (payload: Record<string, unknown>, deleted: boolean)
     const existingAccount = existingAccounts[0];
     const metadata = objectValue(object.metadata ?? {});
     if (
-      metadata.brief_client_company_id !== undefined &&
-      metadata.brief_client_company_id !== companyId
+      metadata.hartlib_client_company_id !== undefined &&
+      metadata.hartlib_client_company_id !== companyId
     ) {
       throw new Error("stripe_subscription_company_mismatch");
     }
@@ -440,8 +440,8 @@ const processSubscription = (payload: Record<string, unknown>, deleted: boolean)
       throw new Error("stripe_subscription_quantity_invalid");
     }
     const price = objectValue(firstItem.price ?? {});
-    const metadataTier = planTier(metadata.brief_plan_tier);
-    const priceTier = planTier(objectValue(price.metadata ?? {}).brief_plan_tier);
+    const metadataTier = planTier(metadata.hartlib_plan_tier);
+    const priceTier = planTier(objectValue(price.metadata ?? {}).hartlib_plan_tier);
     if (metadataTier === null || priceTier === null) {
       throw new Error("stripe_plan_tier_missing");
     }
@@ -455,7 +455,7 @@ const processSubscription = (payload: Record<string, unknown>, deleted: boolean)
     if (periodEnd <= periodStart) throw new Error("stripe_subscription_period_invalid");
     const priceId = objectId(price, "stripe_subscription_price_missing");
     const subscriptionId = stringValue(object.id, "stripe_subscription_id_missing");
-    const planChangeKey = optionalString(metadata.brief_plan_change_key);
+    const planChangeKey = optionalString(metadata.hartlib_plan_change_key);
     const subscriptionChanged =
       existingAccount?.subscriptionId !== null &&
       existingAccount?.subscriptionId !== undefined &&
@@ -465,8 +465,8 @@ const processSubscription = (payload: Record<string, unknown>, deleted: boolean)
       (existingAccount.status === "inactive" || existingAccount.status === "cancelled") &&
       existingAccount.pendingTier === null &&
       existingAccount.pendingScheduleId === null &&
-      metadata.brief_client_company_id === companyId &&
-      metadata.brief_purchase_kind === "monthly_plan" &&
+      metadata.hartlib_client_company_id === companyId &&
+      metadata.hartlib_purchase_kind === "monthly_plan" &&
       planChangeKey === null;
     if (
       subscriptionChanged &&
@@ -507,7 +507,7 @@ const processSubscription = (payload: Record<string, unknown>, deleted: boolean)
       const request = requests[0];
       if (
         request === undefined ||
-        optionalString(metadata.brief_plan_previous_tier) !== request.previousTier ||
+        optionalString(metadata.hartlib_plan_previous_tier) !== request.previousTier ||
         request.subscriptionId !== subscriptionId
       ) {
         throw new Error("stripe_plan_change_request_mismatch");
@@ -673,14 +673,14 @@ const validateOwnedDowngradeScheduleShape = (
     targetPhaseStart.getTime() !== snapshot.periodEnd.getTime() ||
     currentPhase.proration_behavior !== "none" ||
     targetPhase.proration_behavior !== "none" ||
-    currentMetadata.brief_client_company_id !== input.companyId ||
-    currentMetadata.brief_plan_change_key !== input.idempotencyKey ||
-    currentMetadata.brief_plan_previous_tier !== snapshot.previousTier ||
-    currentMetadata.brief_plan_tier !== snapshot.previousTier ||
-    targetMetadata.brief_client_company_id !== input.companyId ||
-    targetMetadata.brief_plan_change_key !== input.idempotencyKey ||
-    targetMetadata.brief_plan_previous_tier !== snapshot.previousTier ||
-    targetMetadata.brief_plan_tier !== snapshot.targetTier ||
+    currentMetadata.hartlib_client_company_id !== input.companyId ||
+    currentMetadata.hartlib_plan_change_key !== input.idempotencyKey ||
+    currentMetadata.hartlib_plan_previous_tier !== snapshot.previousTier ||
+    currentMetadata.hartlib_plan_tier !== snapshot.previousTier ||
+    targetMetadata.hartlib_client_company_id !== input.companyId ||
+    targetMetadata.hartlib_plan_change_key !== input.idempotencyKey ||
+    targetMetadata.hartlib_plan_previous_tier !== snapshot.previousTier ||
+    targetMetadata.hartlib_plan_tier !== snapshot.targetTier ||
     positiveInteger(currentItem.quantity ?? 1, "stripe_schedule_quantity_invalid") !== 1 ||
     positiveInteger(targetItem.quantity ?? 1, "stripe_schedule_quantity_invalid") !== 1 ||
     objectId(currentItem.price, "stripe_schedule_price_invalid") !== snapshot.previousPriceId ||
@@ -696,9 +696,9 @@ const processSubscriptionSchedule = (eventType: string, payload: Record<string, 
     const sql = yield* PgClient.PgClient;
     const object = stripeObject(payload);
     const metadata = objectValue(object.metadata ?? {});
-    const metadataCompanyId = optionalString(metadata.brief_client_company_id);
-    const idempotencyKey = optionalString(metadata.brief_plan_change_key);
-    const targetTier = planTier(metadata.brief_plan_tier);
+    const metadataCompanyId = optionalString(metadata.hartlib_client_company_id);
+    const idempotencyKey = optionalString(metadata.hartlib_plan_change_key);
+    const targetTier = planTier(metadata.hartlib_plan_tier);
     if (metadataCompanyId === null && idempotencyKey === null && targetTier === null) return;
     if (metadataCompanyId === null || idempotencyKey === null || targetTier === null) {
       throw new Error("stripe_schedule_metadata_invalid");
@@ -902,14 +902,14 @@ const reconcilePaidPlanUpgrade = (object: Record<string, unknown>) =>
     const subscriptionDetails = objectValue(parent.subscription_details ?? {});
     const subscriptionMetadata = objectValue(subscriptionDetails.metadata ?? {});
     const planChangeKey = stringValue(
-      subscriptionMetadata.brief_plan_change_key,
+      subscriptionMetadata.hartlib_plan_change_key,
       "stripe_upgrade_plan_change_key_missing",
     );
-    if (subscriptionMetadata.brief_client_company_id !== companyId) {
+    if (subscriptionMetadata.hartlib_client_company_id !== companyId) {
       throw new Error("stripe_upgrade_company_mismatch");
     }
-    const targetTier = planTier(subscriptionMetadata.brief_plan_tier);
-    const previousTier = planTier(subscriptionMetadata.brief_plan_previous_tier);
+    const targetTier = planTier(subscriptionMetadata.hartlib_plan_tier);
+    const previousTier = planTier(subscriptionMetadata.hartlib_plan_previous_tier);
     if (
       targetTier === null ||
       previousTier === null ||
@@ -1085,7 +1085,7 @@ const processMonthlyInvoice = (payload: Record<string, unknown>) =>
     ) {
       throw new Error("stripe_monthly_payment_missing");
     }
-    const credits = positiveInteger(metadata.brief_credits, "stripe_monthly_credits_missing");
+    const credits = positiveInteger(metadata.hartlib_credits, "stripe_monthly_credits_missing");
     const period = objectValue(firstLine.period ?? {});
     const availableAt = timestamp(period.start, "stripe_invoice_period_start_missing");
     const expiresAt = timestamp(period.end, "stripe_invoice_period_end_missing");
@@ -1132,17 +1132,17 @@ const processAdditionalCheckout = (eventType: string, payload: Record<string, un
     const sql = yield* PgClient.PgClient;
     const object = stripeObject(payload);
     const metadata = objectValue(object.metadata ?? {});
-    if (metadata.brief_purchase_kind !== "additional_credits") return;
+    if (metadata.hartlib_purchase_kind !== "additional_credits") return;
     const customerId = stringValue(object.customer, "stripe_checkout_customer_missing");
     const companyId = yield* companyIdForCustomer(customerId);
     if (
-      stringValue(metadata.brief_client_company_id, "stripe_checkout_company_missing") !==
+      stringValue(metadata.hartlib_client_company_id, "stripe_checkout_company_missing") !==
         companyId ||
       (object.client_reference_id !== undefined && object.client_reference_id !== companyId)
     ) {
       throw new Error("stripe_checkout_company_mismatch");
     }
-    const credits = positiveInteger(metadata.brief_credits, "stripe_additional_credits_missing");
+    const credits = positiveInteger(metadata.hartlib_credits, "stripe_additional_credits_missing");
     const availableAt = timestamp(object.created, "stripe_checkout_created_missing");
     if (positiveInteger(object.amount_total, "stripe_checkout_payment_missing") <= 0) {
       throw new Error("stripe_checkout_payment_missing");

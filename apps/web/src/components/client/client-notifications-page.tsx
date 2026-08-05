@@ -1,5 +1,5 @@
-import { type Locale, useIntl, useLocale } from "@brief/i18n";
-import { Button } from "@brief/ui";
+import { type Locale, useIntl, useLocale } from "@hartlib/i18n";
+import { Button } from "@hartlib/ui";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, Check } from "lucide-react";
 

@@ -2,7 +2,7 @@
 
 ## Purpose and authority
 
-This document is the canonical workflow for choosing and approving Brief's production providers,
+This document is the canonical workflow for choosing and approving Hartlib's production providers,
 infrastructure, contractual posture, public promises, and launch controls. The behavioral and data
 invariants in the other files under `docs/` remain mandatory. This document owns the decisions that
 cannot honestly be made from source code alone.
@@ -19,7 +19,7 @@ The current approved development profile is:
 - Z.AI's official Coding Plan endpoint with the exact registered GLM-5-Turbo model, tokenizer, chat
   template, limits, and transport behavior
 - Tinyfish Search for optional web discovery when `TINYFISH_API_KEY` is present
-- Brief-owned DNS-pinned, redirect-bounded page fetching for web evidence
+- Hartlib-owned DNS-pinned, redirect-bounded page fetching for web evidence
 - external billing, email, object storage, and observability disabled unless a focused local test
   supplies their credentials
 - code-owned AI topology, limits, timeouts, polling, concurrency, and retention constants
@@ -40,7 +40,7 @@ For each decision group, the agent must:
 2. Explain the decision and its practical consequence in plain language.
 3. Present two or three viable options when alternatives exist. Include current price shape,
    contractual consequence, operational burden, and migration cost.
-4. Make one recommendation and explain why it best fits Brief's current stage and French/EU market.
+4. Make one recommendation and explain why it best fits Hartlib's current stage and French/EU market.
 5. Automatically retain code-owned safe defaults when the choice has no material effect on cost,
    contracts, customer promises, or external infrastructure.
 6. Ask the user only for a material business choice, account action, or approval that cannot be
@@ -137,7 +137,7 @@ platforms for the first launch while keeping PostgreSQL and object storage priva
 
 ### AI and web providers
 
-At API acceptance, Brief freezes the exact provider service, fast and main
+At API acceptance, Hartlib freezes the exact provider service, fast and main
 model IDs, web transport, enabled state, and canonical domain allowlist in the
 run scope. Later deployment or company setting changes apply only to later
 runs. A queued or retried run must keep using its saved scope. Missing
@@ -197,10 +197,10 @@ account-specific agreement.
 #### PR-WEB-002 — Web boundary conformance
 
 Verify Tinyfish search authentication, strict response contract, provider-side domain scoping,
-rate-limit behavior, query limits, failure semantics, and billed units. Verify Brief's independent
+rate-limit behavior, query limits, failure semantics, and billed units. Verify Hartlib's independent
 domain enforcement, DNS pinning, redirect checks, decoded-byte limits, cancellation, exact
 quotation, provenance, and content-free operation accounting. Recommendation: keep provider search
-as discovery only and keep evidence fetching under Brief control.
+as discovery only and keep evidence fetching under Hartlib control.
 
 The current code-owned development contract is based on the primary
 [Search API reference](https://docs.tinyfish.ai/search-api/reference) and
@@ -332,7 +332,7 @@ sign-off.
 | Development database/auth                       | accepted      | local PostgreSQL and demo auth                                           |
 | Development AI                                  | accepted      | exact registered GLM-5-Turbo over the official Z.AI Coding Plan endpoint |
 | Development web discovery                       | accepted      | Tinyfish Search when `TINYFISH_API_KEY` is present                       |
-| Development web evidence                        | accepted      | Brief-owned safe fetch and exact quotation validation                    |
+| Development web evidence                        | accepted      | Hartlib-owned safe fetch and exact quotation validation                  |
 | Production foundation                           | deferred      | none                                                                     |
 | Production AI                                   | deferred      | none; Mistral remains an option, not a blocker-specific selection        |
 | Production web research                         | deferred      | disabled until Tinyfish terms and disclosures are accepted               |

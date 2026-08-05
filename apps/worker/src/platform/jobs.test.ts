@@ -1,9 +1,9 @@
 import { PgClient } from "@effect/sql-pg";
-import { withEnvironment } from "@brief/config";
+import { withEnvironment } from "@hartlib/config";
 import { Effect, Layer, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { runMigrations } from "@brief/database/migrations";
+import { runMigrations } from "@hartlib/database/migrations";
 import type { JobKind, JobRecord } from "../jobs/types";
 import {
   makeInMemoryPlatformFileStore,
@@ -22,7 +22,7 @@ import { ExportObjectStoreService, NotificationEmailService } from "./adapters";
 
 const isBun = typeof process.versions.bun === "string";
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
-const isolatedDatabaseName = `brief_platform_jobs_test_${process.pid}_${crypto
+const isolatedDatabaseName = `hartlib_platform_jobs_test_${process.pid}_${crypto
   .randomUUID()
   .replaceAll("-", "")
   .slice(0, 8)}`;
@@ -60,7 +60,7 @@ const runDbAs = <A, E>(
   );
 
 const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A> =>
-  runDbAs("brief-platform-jobs-test", effect);
+  runDbAs("hartlib-platform-jobs-test", effect);
 
 const waitForDatabaseLock = async (applicationName: string): Promise<void> => {
   for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -90,7 +90,7 @@ const runAdminDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promi
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(adminDatabaseUrl()),
-          applicationName: "brief-platform-jobs-test-admin",
+          applicationName: "hartlib-platform-jobs-test-admin",
         }),
       ),
     ),
@@ -262,7 +262,7 @@ const provisionFixture = (options: {
       )
     `;
     yield* sql`
-      insert into brief_documents (
+      insert into hartlib_documents (
         id,
         issue_id,
         title,
@@ -666,34 +666,34 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
     const barrierHeld = new Promise<void>((resolve) => {
       signalBarrierHeld = resolve;
     });
-    const barrierKey = "brief:test-delivery-recipient-barrier";
+    const barrierKey = "hartlib:test-delivery-recipient-barrier";
 
     try {
       await runDb(
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql`
-            create or replace function brief_test_pause_issue_delivery()
+            create or replace function hartlib_test_pause_issue_delivery()
             returns trigger language plpgsql as $$
             begin
-              perform pg_advisory_xact_lock(hashtext('brief:test-delivery-recipient-barrier'));
+              perform pg_advisory_xact_lock(hashtext('hartlib:test-delivery-recipient-barrier'));
               return new;
             end;
             $$
           `;
           yield* sql`
-            drop trigger if exists brief_test_pause_issue_delivery on issue_deliveries
+            drop trigger if exists hartlib_test_pause_issue_delivery on issue_deliveries
           `;
           yield* sql`
-            create trigger brief_test_pause_issue_delivery
+            create trigger hartlib_test_pause_issue_delivery
             after insert on issue_deliveries
-            for each row execute function brief_test_pause_issue_delivery()
+            for each row execute function hartlib_test_pause_issue_delivery()
           `;
         }),
       );
 
       const barrier = runDbAs(
-        "brief-delivery-recipient-barrier",
+        "hartlib-delivery-recipient-barrier",
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql.withTransaction(
@@ -707,7 +707,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       );
       await barrierHeld;
       const publication = runPlatformJob(publishJob, fileStore);
-      await waitForDatabaseLock("brief-ai-runtime");
+      await waitForDatabaseLock("hartlib-ai-runtime");
       revocation = (async () => {
         await runDb(
           Effect.gen(function* () {
@@ -716,7 +716,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
               Effect.gen(function* () {
                 yield* sql`
                   select pg_advisory_xact_lock(
-                    hashtext(${`brief:client-members:${fixture.clientCompanyId}`})
+                    hashtext(${`hartlib:client-members:${fixture.clientCompanyId}`})
                   )
                 `;
                 yield* sql`
@@ -732,7 +732,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         );
       })();
 
-      await waitForDatabaseLock("brief-platform-jobs-test");
+      await waitForDatabaseLock("hartlib-platform-jobs-test");
       releaseBarrier();
       await barrier;
       await expect(publication).resolves.toMatchObject({ status: "completed" });
@@ -758,8 +758,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       await runDb(
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          yield* sql`drop trigger if exists brief_test_pause_issue_delivery on issue_deliveries`;
-          yield* sql`drop function if exists brief_test_pause_issue_delivery()`;
+          yield* sql`drop trigger if exists hartlib_test_pause_issue_delivery on issue_deliveries`;
+          yield* sql`drop function if exists hartlib_test_pause_issue_delivery()`;
         }),
       );
     }
@@ -783,14 +783,14 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       signalLaneHeld = resolve;
     });
     const laneHolder = runDbAs(
-      "brief-publication-set-holder",
+      "hartlib-publication-set-holder",
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`
               select pg_advisory_xact_lock(
-                hashtext(${`brief:client-members:${fixture.clientCompanyId}`})
+                hashtext(${`hartlib:client-members:${fixture.clientCompanyId}`})
               )
             `;
             yield* Effect.sync(signalLaneHeld);
@@ -801,7 +801,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
     );
     await laneHeld;
     const publication = runPlatformJob(publishJob, fileStore);
-    await waitForDatabaseLock("brief-ai-runtime");
+    await waitForDatabaseLock("hartlib-ai-runtime");
     const additionalAccess = await runDb(provisionAdditionalClientAccess(fixture));
 
     releaseLane();
@@ -864,7 +864,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
     const publishJob = await runDb(
       createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
     );
-    const barrierKey = "brief:test-publication-late-access-barrier";
+    const barrierKey = "hartlib:test-publication-late-access-barrier";
     let releaseBarrier!: () => void;
     const barrierReleased = new Promise<void>((resolve) => {
       releaseBarrier = resolve;
@@ -879,29 +879,29 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql`
-            create or replace function brief_test_pause_publication_late_access()
+            create or replace function hartlib_test_pause_publication_late_access()
             returns trigger language plpgsql as $$
             begin
               if new.status = 'published' and old.status <> 'published' then
-                perform pg_advisory_xact_lock(hashtext('brief:test-publication-late-access-barrier'));
+                perform pg_advisory_xact_lock(hashtext('hartlib:test-publication-late-access-barrier'));
               end if;
               return new;
             end;
             $$
           `;
           yield* sql`
-            drop trigger if exists brief_test_pause_publication_late_access on publisher_issues
+            drop trigger if exists hartlib_test_pause_publication_late_access on publisher_issues
           `;
           yield* sql`
-            create trigger brief_test_pause_publication_late_access
+            create trigger hartlib_test_pause_publication_late_access
             before update of status on publisher_issues
-            for each row execute function brief_test_pause_publication_late_access()
+            for each row execute function hartlib_test_pause_publication_late_access()
           `;
         }),
       );
 
       const barrier = runDbAs(
-        "brief-publication-late-access-barrier",
+        "hartlib-publication-late-access-barrier",
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql.withTransaction(
@@ -916,7 +916,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       await barrierHeld;
 
       const publication = runPlatformJob(publishJob, fileStore);
-      await waitForDatabaseLock("brief-ai-runtime");
+      await waitForDatabaseLock("hartlib-ai-runtime");
       const additionalAccess = await runDb(provisionAdditionalClientAccess(fixture));
 
       releaseBarrier();
@@ -953,8 +953,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       await runDb(
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          yield* sql`drop trigger if exists brief_test_pause_publication_late_access on publisher_issues`;
-          yield* sql`drop function if exists brief_test_pause_publication_late_access()`;
+          yield* sql`drop trigger if exists hartlib_test_pause_publication_late_access on publisher_issues`;
+          yield* sql`drop function if exists hartlib_test_pause_publication_late_access()`;
         }),
       );
     }
@@ -968,7 +968,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
     const publishJob = await runDb(
       createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
     );
-    const barrierKey = "brief:test-publication-insert-barrier";
+    const barrierKey = "hartlib:test-publication-insert-barrier";
     let releaseBarrier!: () => void;
     const barrierReleased = new Promise<void>((resolve) => {
       releaseBarrier = resolve;
@@ -983,29 +983,29 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql`
-            create or replace function brief_test_pause_publication_insert()
+            create or replace function hartlib_test_pause_publication_insert()
             returns trigger language plpgsql as $$
             begin
               if new.status = 'published' and old.status <> 'published' then
-                perform pg_advisory_xact_lock(hashtext('brief:test-publication-insert-barrier'));
+                perform pg_advisory_xact_lock(hashtext('hartlib:test-publication-insert-barrier'));
               end if;
               return new;
             end;
             $$
           `;
           yield* sql`
-            drop trigger if exists brief_test_pause_publication_insert on publisher_issues
+            drop trigger if exists hartlib_test_pause_publication_insert on publisher_issues
           `;
           yield* sql`
-            create trigger brief_test_pause_publication_insert
+            create trigger hartlib_test_pause_publication_insert
             before update of status on publisher_issues
-            for each row execute function brief_test_pause_publication_insert()
+            for each row execute function hartlib_test_pause_publication_insert()
           `;
         }),
       );
 
       const barrier = runDbAs(
-        "brief-publication-insert-barrier",
+        "hartlib-publication-insert-barrier",
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql.withTransaction(
@@ -1020,7 +1020,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       await barrierHeld;
 
       const publication = runPlatformJob(publishJob, fileStore);
-      await waitForDatabaseLock("brief-ai-runtime");
+      await waitForDatabaseLock("hartlib-ai-runtime");
       await runDb(
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
@@ -1052,8 +1052,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       await runDb(
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          yield* sql`drop trigger if exists brief_test_pause_publication_insert on publisher_issues`;
-          yield* sql`drop function if exists brief_test_pause_publication_insert()`;
+          yield* sql`drop trigger if exists hartlib_test_pause_publication_insert on publisher_issues`;
+          yield* sql`drop function if exists hartlib_test_pause_publication_insert()`;
         }),
       );
     }
@@ -1068,7 +1068,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
     );
     const replacementCompanyId = crypto.randomUUID();
-    const barrierKey = "brief:test-publication-company-change-barrier";
+    const barrierKey = "hartlib:test-publication-company-change-barrier";
     let releaseBarrier!: () => void;
     const barrierReleased = new Promise<void>((resolve) => {
       releaseBarrier = resolve;
@@ -1091,29 +1091,29 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
             values (${replacementCompanyId})
           `;
           yield* sql`
-            create or replace function brief_test_pause_publication_company_change()
+            create or replace function hartlib_test_pause_publication_company_change()
             returns trigger language plpgsql as $$
             begin
               if new.status = 'published' and old.status <> 'published' then
-                perform pg_advisory_xact_lock(hashtext('brief:test-publication-company-change-barrier'));
+                perform pg_advisory_xact_lock(hashtext('hartlib:test-publication-company-change-barrier'));
               end if;
               return new;
             end;
             $$
           `;
           yield* sql`
-            drop trigger if exists brief_test_pause_publication_company_change on publisher_issues
+            drop trigger if exists hartlib_test_pause_publication_company_change on publisher_issues
           `;
           yield* sql`
-            create trigger brief_test_pause_publication_company_change
+            create trigger hartlib_test_pause_publication_company_change
             before update of status on publisher_issues
-            for each row execute function brief_test_pause_publication_company_change()
+            for each row execute function hartlib_test_pause_publication_company_change()
           `;
         }),
       );
 
       const barrier = runDbAs(
-        "brief-publication-company-change-barrier",
+        "hartlib-publication-company-change-barrier",
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql.withTransaction(
@@ -1128,7 +1128,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       await barrierHeld;
 
       const publication = runPlatformJob(publishJob, fileStore);
-      await waitForDatabaseLock("brief-ai-runtime");
+      await waitForDatabaseLock("hartlib-ai-runtime");
       await runDb(
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
@@ -1161,8 +1161,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       await runDb(
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          yield* sql`drop trigger if exists brief_test_pause_publication_company_change on publisher_issues`;
-          yield* sql`drop function if exists brief_test_pause_publication_company_change()`;
+          yield* sql`drop trigger if exists hartlib_test_pause_publication_company_change on publisher_issues`;
+          yield* sql`drop function if exists hartlib_test_pause_publication_company_change()`;
         }),
       );
     }
@@ -1176,7 +1176,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
     const publishJob = await runDb(
       createJob("publish_scheduled_issue", { issueId: fixture.issueId }),
     );
-    const barrierKey = "brief:test-publication-delete-barrier";
+    const barrierKey = "hartlib:test-publication-delete-barrier";
     let releaseBarrier!: () => void;
     const barrierReleased = new Promise<void>((resolve) => {
       releaseBarrier = resolve;
@@ -1191,29 +1191,29 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql`
-            create or replace function brief_test_pause_publication_delete()
+            create or replace function hartlib_test_pause_publication_delete()
             returns trigger language plpgsql as $$
             begin
               if new.status = 'published' and old.status <> 'published' then
-                perform pg_advisory_xact_lock(hashtext('brief:test-publication-delete-barrier'));
+                perform pg_advisory_xact_lock(hashtext('hartlib:test-publication-delete-barrier'));
               end if;
               return new;
             end;
             $$
           `;
           yield* sql`
-            drop trigger if exists brief_test_pause_publication_delete on publisher_issues
+            drop trigger if exists hartlib_test_pause_publication_delete on publisher_issues
           `;
           yield* sql`
-            create trigger brief_test_pause_publication_delete
+            create trigger hartlib_test_pause_publication_delete
             before update of status on publisher_issues
-            for each row execute function brief_test_pause_publication_delete()
+            for each row execute function hartlib_test_pause_publication_delete()
           `;
         }),
       );
 
       const barrier = runDbAs(
-        "brief-publication-delete-barrier",
+        "hartlib-publication-delete-barrier",
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql.withTransaction(
@@ -1228,7 +1228,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       await barrierHeld;
 
       const publication = runPlatformJob(publishJob, fileStore);
-      await waitForDatabaseLock("brief-ai-runtime");
+      await waitForDatabaseLock("hartlib-ai-runtime");
       await runDb(
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
@@ -1256,8 +1256,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       await runDb(
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          yield* sql`drop trigger if exists brief_test_pause_publication_delete on publisher_issues`;
-          yield* sql`drop function if exists brief_test_pause_publication_delete()`;
+          yield* sql`drop trigger if exists hartlib_test_pause_publication_delete on publisher_issues`;
+          yield* sql`drop function if exists hartlib_test_pause_publication_delete()`;
         }),
       );
     }
@@ -1354,8 +1354,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
           delete from jobs
           where kind = 'normalize_searchable_text'
             and payload->>'extractionId' = (
-              select id::text from brief_document_extractions
-              where brief_document_id = ${fixture.documentId}
+              select id::text from hartlib_document_extractions
+              where hartlib_document_id = ${fixture.documentId}
             )
         `;
       }),
@@ -1371,8 +1371,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
           Effect.gen(function* () {
             const sql = yield* PgClient.PgClient;
             const [row] = yield* sql<{ readonly id: string }>`
-              select id::text from brief_document_extractions
-              where brief_document_id = ${fixture.documentId}
+              select id::text from hartlib_document_extractions
+              where hartlib_document_id = ${fixture.documentId}
             `;
             return row!.id;
           }),
@@ -1404,19 +1404,19 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
             versions.publisher_extraction_id::text as "publisherExtractionId",
             issues.indexing_status as "issueStatus",
             (
-              select count(*)::int from brief_document_extractions
-              where brief_document_id = documents.id
+              select count(*)::int from hartlib_document_extractions
+              where hartlib_document_id = documents.id
             ) as "extractionCount",
             (
-              select count(*)::int from brief_document_versions
-              where brief_document_id = documents.id
+              select count(*)::int from hartlib_document_versions
+              where hartlib_document_id = documents.id
             ) as "versionCount",
             versions.search_vector @@ plainto_tsquery(
               language_to_regconfig(versions.language),
               'First'
             ) as searchable
-          from brief_documents documents
-          join brief_document_versions versions on versions.id = documents.current_version_id
+          from hartlib_documents documents
+          join hartlib_document_versions versions on versions.id = documents.current_version_id
           join publisher_issues issues on issues.id = documents.issue_id
           where documents.id = ${fixture.documentId}
         `;
@@ -1440,8 +1440,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           const [row] = yield* sql<{ readonly id: string }>`
-            select id::text from brief_document_extractions
-            where brief_document_id = ${fixture.documentId}
+            select id::text from hartlib_document_extractions
+            where hartlib_document_id = ${fixture.documentId}
           `;
           return row!.id;
         }),
@@ -1453,8 +1453,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql`
-            insert into brief_document_versions (
-              brief_document_id,
+            insert into hartlib_document_versions (
+              hartlib_document_id,
               publisher_extraction_id,
               content_hash,
               language,
@@ -1465,7 +1465,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
             )
             values (
               ${fixture.documentId},
-              (select id from brief_document_extractions where brief_document_id = ${fixture.documentId} limit 1),
+              (select id from hartlib_document_extractions where hartlib_document_id = ${fixture.documentId} limit 1),
               ${crypto.randomUUID().replaceAll("-", "")},
               'en-US',
               'invalid ranges',
@@ -1540,7 +1540,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
             issues.indexing_error_code as code,
             documents.indexing_error_code as "documentCode"
           from publisher_issues issues
-          join brief_documents documents on documents.issue_id = issues.id
+          join hartlib_documents documents on documents.issue_id = issues.id
           where issues.id = ${badFixture.issueId}
         `;
         return row;
@@ -1560,8 +1560,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         const [row] = yield* sql<{ readonly id: string }>`
-          select id::text from brief_document_extractions
-          where brief_document_id = ${badFixture.documentId}
+          select id::text from hartlib_document_extractions
+          where hartlib_document_id = ${badFixture.documentId}
         `;
         return row!.id;
       }),
@@ -1587,7 +1587,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
             issues.indexing_error_code as "issueCode",
             documents.indexing_error_code as "documentCode"
           from publisher_issues issues
-          join brief_documents documents on documents.issue_id = issues.id
+          join hartlib_documents documents on documents.issue_id = issues.id
           where issues.id = ${badFixture.issueId}
         `;
         return row;
@@ -1799,8 +1799,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return yield* sql<{ readonly id: string }>`
-          select id::text from brief_document_extractions
-          where brief_document_id = ${fixture.documentId}
+          select id::text from hartlib_document_extractions
+          where hartlib_document_id = ${fixture.documentId}
         `;
       }),
     );
@@ -1813,7 +1813,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql`
-          update brief_documents
+          update hartlib_documents
           set
             deleted_at = now() - interval '1 day',
             deleted_by_user_id = ${fixture.userId},
@@ -1855,18 +1855,18 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
           readonly tombstones: number;
         }>`
           select
-            (select count(*)::int from brief_documents where id = ${fixture.documentId}) as documents,
+            (select count(*)::int from hartlib_documents where id = ${fixture.documentId}) as documents,
             (
-              select count(*)::int from brief_document_extractions
-              where brief_document_id = ${fixture.documentId}
+              select count(*)::int from hartlib_document_extractions
+              where hartlib_document_id = ${fixture.documentId}
             ) as extractions,
             (
-              select count(*)::int from brief_document_versions
-              where brief_document_id = ${fixture.documentId}
+              select count(*)::int from hartlib_document_versions
+              where hartlib_document_id = ${fixture.documentId}
             ) as versions,
             (
-              select count(*)::int from purged_brief_document_tombstones
-              where brief_document_id = ${fixture.documentId}
+              select count(*)::int from purged_hartlib_document_tombstones
+              where hartlib_document_id = ${fixture.documentId}
             ) as tombstones
         `;
         return row;
@@ -1888,7 +1888,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
           where id = ${fixture.issueId}
         `;
         yield* sql`
-          update brief_documents
+          update hartlib_documents
           set deleted_at = now() - interval '1 day',
               deleted_by_user_id = ${fixture.userId}, purge_after = now() - interval '1 second'
           where id = ${fixture.documentId}
@@ -1908,11 +1908,11 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         }>`
           select
             (select count(*)::int from publisher_issues where id = ${fixture.issueId}) as issues,
-            (select count(*)::int from brief_documents where id = ${fixture.documentId}) as documents,
+            (select count(*)::int from hartlib_documents where id = ${fixture.documentId}) as documents,
             (select count(*)::int from purged_publisher_issue_tombstones
              where issue_id = ${fixture.issueId}) as "issueTombstones",
-            (select count(*)::int from purged_brief_document_tombstones
-             where brief_document_id = ${fixture.documentId}) as "documentTombstones"
+            (select count(*)::int from purged_hartlib_document_tombstones
+             where hartlib_document_id = ${fixture.documentId}) as "documentTombstones"
         `)[0]!;
       }),
     );
@@ -1932,7 +1932,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
           yield* sql`
-            update brief_documents
+            update hartlib_documents
             set deleted_at = now() - interval '1 day',
                 deleted_by_user_id = ${fixture.userId}, purge_after = now() - interval '1 second'
             where id = ${fixture.documentId}
@@ -1969,9 +1969,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical platform jobs", () => {
           const sql = yield* PgClient.PgClient;
           return (yield* sql<{ readonly documents: number; readonly tombstones: number }>`
             select
-              (select count(*)::int from brief_documents where id = ${fixture.documentId}) as documents,
-              (select count(*)::int from purged_brief_document_tombstones
-               where brief_document_id = ${fixture.documentId}) as tombstones
+              (select count(*)::int from hartlib_documents where id = ${fixture.documentId}) as documents,
+              (select count(*)::int from purged_hartlib_document_tombstones
+               where hartlib_document_id = ${fixture.documentId}) as tombstones
           `)[0]!;
         }),
       );

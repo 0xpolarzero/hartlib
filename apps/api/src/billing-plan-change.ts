@@ -1,6 +1,6 @@
 import type Stripe from "stripe";
 
-import type { AiPlanTier } from "@brief/shared";
+import type { AiPlanTier } from "@hartlib/shared";
 
 export const AI_PLAN_TIERS = [
   "light",
@@ -129,9 +129,9 @@ const validateSubscription = (
   ) {
     throw new BillingPlanChangeError("stripe_subscription_item_ambiguous");
   }
-  const subscriptionTier = object(subscription.metadata).brief_plan_tier;
+  const subscriptionTier = object(subscription.metadata).hartlib_plan_tier;
   const subscriptionMetadataRecord = object(subscription.metadata);
-  const priceTier = object(price.metadata).brief_plan_tier;
+  const priceTier = object(price.metadata).hartlib_plan_tier;
   const expectedTier = state === "current" ? input.currentTier : input.targetTier;
   if (
     (subscriptionTier !== undefined && subscriptionTier !== expectedTier) ||
@@ -155,9 +155,9 @@ const validateSubscription = (
   }
   if (
     state === "upgrade_replay" &&
-    (subscriptionMetadataRecord.brief_client_company_id !== input.companyId ||
-      subscriptionMetadataRecord.brief_plan_change_key !== input.idempotencyKey ||
-      subscriptionMetadataRecord.brief_plan_previous_tier !== input.currentTier)
+    (subscriptionMetadataRecord.hartlib_client_company_id !== input.companyId ||
+      subscriptionMetadataRecord.hartlib_plan_change_key !== input.idempotencyKey ||
+      subscriptionMetadataRecord.hartlib_plan_previous_tier !== input.currentTier)
   ) {
     throw new BillingPlanChangeError("stripe_subscription_state_mismatch");
   }
@@ -172,19 +172,19 @@ const validateSubscription = (
 };
 
 const planChangeIdempotency = (input: BillingPlanChangeGatewayInput, operation: string): string =>
-  `brief-plan:${input.companyId}:${input.idempotencyKey}:${operation}`;
+  `hartlib-plan:${input.companyId}:${input.idempotencyKey}:${operation}`;
 
 const scheduleMetadata = (input: BillingPlanChangeGatewayInput) => ({
-  brief_client_company_id: input.companyId,
-  brief_plan_change_key: input.idempotencyKey,
-  brief_plan_tier: input.targetTier,
+  hartlib_client_company_id: input.companyId,
+  hartlib_plan_change_key: input.idempotencyKey,
+  hartlib_plan_tier: input.targetTier,
 });
 
 const subscriptionMetadata = (input: BillingPlanChangeGatewayInput) => ({
-  brief_client_company_id: input.companyId,
-  brief_plan_change_key: input.idempotencyKey,
-  brief_plan_previous_tier: input.currentTier,
-  brief_plan_tier: input.targetTier,
+  hartlib_client_company_id: input.companyId,
+  hartlib_plan_change_key: input.idempotencyKey,
+  hartlib_plan_previous_tier: input.currentTier,
+  hartlib_plan_tier: input.targetTier,
 });
 
 interface OwnedSchedule {
@@ -204,9 +204,9 @@ const validateOwnedSchedule = (
   const currentPhaseEnd = integer(currentPhase.end_date);
   if (
     id === null ||
-    metadata.brief_client_company_id !== input.companyId ||
-    metadata.brief_plan_change_key !== input.idempotencyKey ||
-    metadata.brief_plan_tier !== input.targetTier ||
+    metadata.hartlib_client_company_id !== input.companyId ||
+    metadata.hartlib_plan_change_key !== input.idempotencyKey ||
+    metadata.hartlib_plan_tier !== input.targetTier ||
     stringId(schedule.subscription) !== input.subscriptionId ||
     schedule.status !== "active" ||
     currentPhaseStart === null ||
@@ -246,13 +246,13 @@ const validateConfiguredSchedule = (
     integer(current.start_date) !== expectedCurrentPhaseStart ||
     integer(current.end_date) !== validated.periodEnd ||
     current.proration_behavior !== "none" ||
-    object(current.metadata).brief_plan_tier !== input.currentTier ||
+    object(current.metadata).hartlib_plan_tier !== input.currentTier ||
     !Array.isArray(currentItems) ||
     currentItems.length !== 1 ||
     !validateSchedulePhaseItem(currentItems[0], input.currentPriceId) ||
     integer(target.start_date) !== validated.periodEnd ||
     target.proration_behavior !== "none" ||
-    object(target.metadata).brief_plan_tier !== input.targetTier ||
+    object(target.metadata).hartlib_plan_tier !== input.targetTier ||
     !Array.isArray(targetItems) ||
     targetItems.length !== 1 ||
     !validateSchedulePhaseItem(targetItems[0], input.targetPriceId)
@@ -376,10 +376,10 @@ export const makeLiveBillingPlanChangeGateway = (
             items: [{ price: input.currentPriceId, quantity: 1 }],
             proration_behavior: "none",
             metadata: {
-              brief_client_company_id: input.companyId,
-              brief_plan_change_key: input.idempotencyKey,
-              brief_plan_previous_tier: input.currentTier,
-              brief_plan_tier: input.currentTier,
+              hartlib_client_company_id: input.companyId,
+              hartlib_plan_change_key: input.idempotencyKey,
+              hartlib_plan_previous_tier: input.currentTier,
+              hartlib_plan_tier: input.currentTier,
             },
           },
           {

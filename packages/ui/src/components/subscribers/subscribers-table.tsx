@@ -1,4 +1,4 @@
-import { useIntl, useLocale } from "@brief/i18n";
+import { useIntl, useLocale } from "@hartlib/i18n";
 import { Check, ChevronsUpDown, Pause, Play, Plus, Trash2 } from "lucide-react";
 import {
   createColumnHelper,

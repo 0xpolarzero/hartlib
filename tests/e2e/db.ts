@@ -2,13 +2,13 @@ import { spawn, spawnSync } from "node:child_process";
 
 const repoRoot = new URL("../../", import.meta.url).pathname;
 const databaseUrl =
-  process.env.BRIEF_E2E_DATABASE_URL ?? "postgres://brief:brief@localhost:5432/brief_e2e";
+  process.env.HARTLIB_E2E_DATABASE_URL ?? "postgres://hartlib:hartlib@localhost:5432/hartlib_e2e";
 const e2eSetupScript = "apps/worker/src/e2e/setup-cli.ts";
 
 export const resetE2eChatRuntime = (): Promise<void> => {
   const result = spawnSync("bun", [e2eSetupScript, "reset"], {
     cwd: repoRoot,
-    env: { ...process.env, BRIEF_E2E_DATABASE_URL: databaseUrl },
+    env: { ...process.env, HARTLIB_E2E_DATABASE_URL: databaseUrl },
     encoding: "utf8",
   });
 
@@ -24,7 +24,7 @@ export const resetE2eChatRuntime = (): Promise<void> => {
 const runJsonCommand = <Result>(command: string, args: readonly string[] = []): Result => {
   const result = spawnSync("bun", [e2eSetupScript, command, ...args], {
     cwd: repoRoot,
-    env: { ...process.env, BRIEF_E2E_DATABASE_URL: databaseUrl },
+    env: { ...process.env, HARTLIB_E2E_DATABASE_URL: databaseUrl },
     encoding: "utf8",
   });
   if (result.status !== 0) {
@@ -161,7 +161,7 @@ export const seedE2eFailedRun = (
 export const pruneSeededStreamRun = (runId: string): void => {
   const result = spawnSync("bun", [e2eSetupScript, "prune-seeded-stream-run", runId], {
     cwd: repoRoot,
-    env: { ...process.env, BRIEF_E2E_DATABASE_URL: databaseUrl },
+    env: { ...process.env, HARTLIB_E2E_DATABASE_URL: databaseUrl },
     encoding: "utf8",
   });
   if (result.status !== 0) {
@@ -180,7 +180,7 @@ export const holdE2eStreamGate = async (gateId: string): Promise<E2eStreamGate> 
 
   const child = spawn("bun", [e2eSetupScript, "hold-stream-gate", gateId], {
     cwd: repoRoot,
-    env: { ...process.env, BRIEF_E2E_DATABASE_URL: databaseUrl },
+    env: { ...process.env, HARTLIB_E2E_DATABASE_URL: databaseUrl },
     stdio: ["pipe", "pipe", "pipe"],
   });
   child.stdout.setEncoding("utf8");

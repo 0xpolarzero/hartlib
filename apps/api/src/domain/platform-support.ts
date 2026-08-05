@@ -14,19 +14,19 @@ import {
   selectCompanyDeletionRequests,
   selectRestrictedSupportGrant,
   type RestrictedFileRow,
-} from "@brief/backend-domain/platform-support";
-import { loadObjectStorageConfig } from "@brief/config";
+} from "@hartlib/backend-domain/platform-support";
+import { loadObjectStorageConfig } from "@hartlib/config";
 import type {
   CreateRestrictedSupportGrantRequest,
   RestrictIssueRequest,
   ResolveCompanyDeletionRequest,
   ReviewRestrictedSupportAccessRequest,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import {
   WorkspaceAuthorizationError as AuthorizationError,
   requirePlatformAdminRole,
   type WorkspacePlatformAdminRole as PlatformAdminRole,
-} from "@brief/workspace";
+} from "@hartlib/workspace";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity, type RequestIdentity } from "../auth";
@@ -37,7 +37,7 @@ import {
   appendAuthorizationAudit,
   appendDeniedAuthorizationAudit,
   requestIdForAudit,
-} from "@brief/workspace";
+} from "@hartlib/workspace";
 import { withAdministrativeAuditing } from "./administrative-audit";
 
 const allPlatformRoles = new Set<PlatformAdminRole>(["admin", "support", "security", "legal"]);

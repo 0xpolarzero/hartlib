@@ -8,7 +8,7 @@ import {
   type AiProviderServiceId,
   type AiProviderEndpointIdentity,
   type EffectiveWebPolicy,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import { Effect } from "effect";
 import type { SqlClient } from "effect/unstable/sql/SqlClient";
 
@@ -144,12 +144,12 @@ const deploymentPolicy = (config: ChatRuntimeConfiguration) => ({
 const ensureDemoChatInTransaction = (userId: string) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
-    yield* sql`select pg_advisory_xact_lock(hashtext(${`brief:demo-chat:${userId}`}))`;
+    yield* sql`select pg_advisory_xact_lock(hashtext(${`hartlib:demo-chat:${userId}`}))`;
     yield* sql`
       insert into platform_users (id, primary_email, display_name, clerk_user_id)
       values (
         ${userId},
-        ${`demo+${encodeURIComponent(userId)}@brief.invalid`},
+        ${`demo+${encodeURIComponent(userId)}@hartlib.invalid`},
         ${`Demo ${userId}`},
         ${`demo:${userId}`}
       )
@@ -183,11 +183,11 @@ const ensureDemoChatInTransaction = (userId: string) =>
     }
     const deterministicCompany = yield* sql<{ readonly id: string }>`
       select (
-        substr(md5(${"brief:client-company:" + userId}), 1, 8) || '-' ||
-        substr(md5(${"brief:client-company:" + userId}), 9, 4) || '-' ||
-        substr(md5(${"brief:client-company:" + userId}), 13, 4) || '-' ||
-        substr(md5(${"brief:client-company:" + userId}), 17, 4) || '-' ||
-        substr(md5(${"brief:client-company:" + userId}), 21, 12)
+        substr(md5(${"hartlib:client-company:" + userId}), 1, 8) || '-' ||
+        substr(md5(${"hartlib:client-company:" + userId}), 9, 4) || '-' ||
+        substr(md5(${"hartlib:client-company:" + userId}), 13, 4) || '-' ||
+        substr(md5(${"hartlib:client-company:" + userId}), 17, 4) || '-' ||
+        substr(md5(${"hartlib:client-company:" + userId}), 21, 12)
       )::uuid::text as id
     `;
     const companyId = deterministicCompany[0]!.id;
@@ -433,10 +433,10 @@ export const withAuthorizedChatReadLease = <A, E, R>(
         if (candidate === undefined) return null;
         yield* sql`
           select pg_advisory_xact_lock(
-            hashtext(${`brief:client-members:${candidate.companyId}`})
+            hashtext(${`hartlib:client-members:${candidate.companyId}`})
           )
         `;
-        yield* sql`select pg_advisory_xact_lock(hashtext(${`brief:ai-chat:${chatId}`}))`;
+        yield* sql`select pg_advisory_xact_lock(hashtext(${`hartlib:ai-chat:${chatId}`}))`;
         yield* sql`
           select id
           from platform_users
@@ -713,8 +713,8 @@ export const createUserMessageAndRun = (
         // Match migration 0064's shared side of the schema fence. A cutover
         // cannot pass its active-run drain check while this transaction can
         // still insert a new run.
-        yield* sql`select pg_advisory_xact_lock(hashtextextended('brief:ai-chat:smithers-schema', 0))`;
-        yield* sql`select pg_advisory_xact_lock(hashtext(${`brief:user-memory:${userId}`}))`;
+        yield* sql`select pg_advisory_xact_lock(hashtextextended('hartlib:ai-chat:smithers-schema', 0))`;
+        yield* sql`select pg_advisory_xact_lock(hashtext(${`hartlib:user-memory:${userId}`}))`;
         const chat =
           chatId === undefined
             ? yield* ensureDemoChatInTransaction(userId)
@@ -757,9 +757,9 @@ export const createUserMessageAndRun = (
               `)[0];
         if (chat === undefined) return { kind: "forbidden" } as const;
         yield* sql`
-          select pg_advisory_xact_lock(hashtext(${`brief:client-members:${chat.company_id}`}))
+          select pg_advisory_xact_lock(hashtext(${`hartlib:client-members:${chat.company_id}`}))
         `;
-        yield* sql`select pg_advisory_xact_lock(hashtext(${`brief:ai-chat:${chat.id}`}))`;
+        yield* sql`select pg_advisory_xact_lock(hashtext(${`hartlib:ai-chat:${chat.id}`}))`;
         const membershipStillActive = yield* sql<{ readonly active: boolean }>`
           select exists(
             select 1

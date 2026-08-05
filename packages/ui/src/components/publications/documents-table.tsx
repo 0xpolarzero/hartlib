@@ -1,4 +1,4 @@
-import { useIntl } from "@brief/i18n";
+import { useIntl } from "@hartlib/i18n";
 import { ExternalLink, Upload } from "lucide-react";
 import { type ChangeEvent, useState } from "react";
 

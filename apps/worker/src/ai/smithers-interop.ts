@@ -37,7 +37,7 @@ export const closeSmithersWorkflowRuntime = (): Promise<void> => closeSingleRunn
  * dropping AI-chat Smithers outputs. Every AI-chat producer/resumer takes the
  * shared side before Smithers can create or write those tables.
  */
-export const AI_CHAT_SMITHERS_SCHEMA_FENCE = "brief:ai-chat:smithers-schema";
+export const AI_CHAT_SMITHERS_SCHEMA_FENCE = "hartlib:ai-chat:smithers-schema";
 
 export type SmithersStorage<Schemas extends Record<string, z.ZodObject<any>>> =
   CreateSmithersApi<Schemas> & { close: () => Promise<void> };
@@ -173,7 +173,7 @@ const withAiChatSmithersProducerFence = <A, E, R>(
     Effect4.provide(
       PgClient.layer({
         url: Redacted.make(connectionString),
-        applicationName: "brief-ai-chat-smithers-fence",
+        applicationName: "hartlib-ai-chat-smithers-fence",
       }),
     ),
   );
@@ -240,7 +240,7 @@ export async function smithersRunSummary<Schemas extends Record<string, z.ZodObj
   };
 }
 
-export type BriefRunOptions = Pick<RunOptions, "input"> &
+export type HartlibRunOptions = Pick<RunOptions, "input"> &
   Partial<
     Pick<RunOptions, "runId" | "logDir" | "resume" | "signal" | "rootDir" | "maxConcurrency">
   > & {
@@ -249,7 +249,7 @@ export type BriefRunOptions = Pick<RunOptions, "input"> &
 
 export async function runSmithersWorkflow(
   workflow: unknown,
-  options: BriefRunOptions,
+  options: HartlibRunOptions,
 ): Promise<RunResult> {
   const registeredMaxConcurrency = workflowMaxConcurrency.get(workflowKey(workflow));
   if (

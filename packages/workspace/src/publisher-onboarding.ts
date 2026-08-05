@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import type { PublisherCompanyOnboardingDescriptor } from "@brief/shared";
+import type { PublisherCompanyOnboardingDescriptor } from "@hartlib/shared";
 import { Effect } from "effect";
 
 import {
@@ -76,7 +76,7 @@ export const onboardPublisherCompany = (input: {
         yield* requirePlatformAdminRole(input.identity, new Set(["admin"]));
         yield* sql`
           select pg_advisory_xact_lock(
-            hashtext(${`brief:publisher-onboarding:${input.idempotencyKey}`})
+            hashtext(${`hartlib:publisher-onboarding:${input.idempotencyKey}`})
           )
         `;
         yield* sql`

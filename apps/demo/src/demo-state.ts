@@ -1,5 +1,5 @@
-import { decodeStoredJson } from "@brief/api-client/stream";
-import { ContentPublication } from "@brief/shared";
+import { decodeStoredJson } from "@hartlib/api-client/stream";
+import { ContentPublication } from "@hartlib/shared";
 import { Schema } from "effect";
 
 export const DemoPublications = Schema.Array(ContentPublication);

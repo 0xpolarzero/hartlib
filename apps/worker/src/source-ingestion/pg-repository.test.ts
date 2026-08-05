@@ -6,8 +6,8 @@ import {
   sha256Hex,
   type IngestedSourceItem,
   type PublicSourceDefinition,
-} from "@brief/source-ingestion";
-import { runMigrations } from "@brief/database/migrations";
+} from "@hartlib/source-ingestion";
+import { runMigrations } from "@hartlib/database/migrations";
 import { makePgPublicSourceIngestionRepository } from "./pg-repository";
 
 const databaseUrl = process.env.WORKER_POSTGRES_TEST_DATABASE_URL;
@@ -35,7 +35,7 @@ const runDb = <A, E>(effect: Effect.Effect<A, E, PgClient.PgClient>): Promise<A>
       Effect.provide(
         PgClient.layer({
           url: Redacted.make(databaseUrl),
-          applicationName: "brief-public-source-pg-repository-test",
+          applicationName: "hartlib-public-source-pg-repository-test",
         }),
       ),
     ),
@@ -148,7 +148,7 @@ describe.skipIf(!databaseUrl)("postgres public source repository", () => {
         const repository = yield* makePgPublicSourceIngestionRepository();
         yield* repository.startRun(source, { mode: "poll" });
         yield* sql.unsafe(`
-          create or replace function brief_test_fail_public_source_candidate()
+          create or replace function hartlib_test_fail_public_source_candidate()
           returns trigger
           language plpgsql
           as $$
@@ -159,11 +159,11 @@ describe.skipIf(!databaseUrl)("postgres public source repository", () => {
             return new;
           end
           $$;
-          drop trigger if exists brief_test_fail_public_source_candidate
+          drop trigger if exists hartlib_test_fail_public_source_candidate
             on public_source_candidates;
-          create trigger brief_test_fail_public_source_candidate
+          create trigger hartlib_test_fail_public_source_candidate
             before insert on public_source_candidates
-            for each row execute function brief_test_fail_public_source_candidate();
+            for each row execute function hartlib_test_fail_public_source_candidate();
         `).raw;
 
         const discoveredAt = new Date("2026-07-07T10:00:00.000Z");
@@ -200,9 +200,9 @@ describe.skipIf(!databaseUrl)("postgres public source repository", () => {
           }
         } finally {
           yield* sql.unsafe(`
-            drop trigger if exists brief_test_fail_public_source_candidate
+            drop trigger if exists hartlib_test_fail_public_source_candidate
               on public_source_candidates;
-            drop function if exists brief_test_fail_public_source_candidate();
+            drop function if exists hartlib_test_fail_public_source_candidate();
           `).raw;
         }
 

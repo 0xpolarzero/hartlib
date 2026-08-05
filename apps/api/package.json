@@ -1,5 +1,5 @@
 {
-  "name": "@brief/api",
+  "name": "@hartlib/api",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,14 +11,14 @@
   "dependencies": {
     "@aws-sdk/client-s3": "3.1075.0",
     "@aws-sdk/s3-request-presigner": "3.1075.0",
-    "@brief/backend-domain": "workspace:*",
-    "@brief/config": "workspace:*",
-    "@brief/database": "workspace:*",
-    "@brief/shared": "workspace:*",
-    "@brief/workspace": "workspace:*",
     "@clerk/backend": "3.8.4",
     "@effect/platform-bun": "4.0.0-beta.92",
     "@effect/sql-pg": "4.0.0-beta.92",
+    "@hartlib/backend-domain": "workspace:*",
+    "@hartlib/config": "workspace:*",
+    "@hartlib/database": "workspace:*",
+    "@hartlib/shared": "workspace:*",
+    "@hartlib/workspace": "workspace:*",
     "@sentry/bun": "10.62.0",
     "effect": "4.0.0-beta.92",
     "resend": "6.16.0",

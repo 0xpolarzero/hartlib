@@ -20,7 +20,7 @@ describe("canonical API architecture", () => {
 
   it("builds the complete Effect router and serves its schema-validated health response", async () => {
     const response = await Effect.runPromise(
-      routeRequest(routes, new Request("http://brief.test/health")),
+      routeRequest(routes, new Request("http://hartlib.test/health")),
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, service: "api" });

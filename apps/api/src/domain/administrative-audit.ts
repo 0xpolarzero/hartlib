@@ -1,5 +1,5 @@
-import { findAdministrativeAuditOutcomes } from "@brief/backend-domain/administrative-audit";
-import { appendAuthorizationAudit, boundedAuthorizationReasonCode } from "@brief/workspace";
+import { findAdministrativeAuditOutcomes } from "@hartlib/backend-domain/administrative-audit";
+import { appendAuthorizationAudit, boundedAuthorizationReasonCode } from "@hartlib/workspace";
 import { Effect } from "effect";
 
 import { resolveRequestIdentity } from "../auth";
@@ -126,7 +126,7 @@ const expectedScope = (
       case "POST /v1/publisher-issues/:issueId/documents":
         if (outcome === "succeeded") {
           return yield* requiredScope(
-            "brief_document",
+            "hartlib_document",
             nestedString(yield* responseBody(response), "document", "id"),
           );
         }

@@ -6,7 +6,7 @@ import type {
   PublicSourceId,
   SourceDiscoveryResult,
   SourceIngestionResult,
-} from "@brief/source-ingestion";
+} from "@hartlib/source-ingestion";
 import type { Effect } from "effect";
 
 export type PublicSourceIngestionMode = "backfill" | "poll";

@@ -1,6 +1,6 @@
 import { DeleteObjectCommand, GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { Context, Effect, Layer } from "effect";
-import { loadObjectStorageConfig } from "@brief/config";
+import { loadObjectStorageConfig } from "@hartlib/config";
 
 export interface PlatformFileStoreShape {
   readonly get: (objectKey: string) => Effect.Effect<Uint8Array, Error>;
@@ -8,7 +8,7 @@ export interface PlatformFileStoreShape {
 }
 
 export class PlatformFileStore extends Context.Service<PlatformFileStore, PlatformFileStoreShape>()(
-  "brief/worker/PlatformFileStore",
+  "hartlib/worker/PlatformFileStore",
 ) {}
 
 const configurationError = () =>

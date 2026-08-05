@@ -8,10 +8,10 @@ import {
   isMarket,
   isLocale,
   resolveRedirectTarget,
-} from "@brief/i18n";
+} from "@hartlib/i18n";
 
-const LOCALE_STORAGE_KEY = "brief:web:locale";
-const MARKET_STORAGE_KEY = "brief:web:market";
+const LOCALE_STORAGE_KEY = "hartlib:web:locale";
+const MARKET_STORAGE_KEY = "hartlib:web:market";
 
 export const LOCALE_INDEPENDENT_PATH_LANGUAGES: Readonly<Record<string, string>> = {
   "/docs": "en",

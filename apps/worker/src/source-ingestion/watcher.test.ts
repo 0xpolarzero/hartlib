@@ -1,6 +1,6 @@
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
-import { publicSourceDefinitions } from "@brief/source-ingestion";
+import { publicSourceDefinitions } from "@hartlib/source-ingestion";
 import { JobRepository } from "../jobs/repository";
 import type { EnqueueJobInput, JobRecord } from "../jobs/types";
 import { runPublicSourceSafePollTick, runPublicSourceStartupBackfill } from "./watcher";

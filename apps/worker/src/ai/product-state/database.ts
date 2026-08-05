@@ -22,7 +22,7 @@ export const runAiProductState = <A, E>(
         Effect.provide(
           PgClient.layer({
             url: Redacted.make(connectionString),
-            applicationName: "brief-ai-runtime",
+            applicationName: "hartlib-ai-runtime",
           }),
         ),
       ),

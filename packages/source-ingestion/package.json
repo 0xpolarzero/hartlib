@@ -1,5 +1,5 @@
 {
-  "name": "@brief/source-ingestion",
+  "name": "@hartlib/source-ingestion",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,8 +10,8 @@
     "test": "vitest run --root ../.. packages/source-ingestion/src"
   },
   "dependencies": {
-    "@brief/shared": "workspace:*",
     "@firecrawl/pdf-inspector": "1.11.1",
+    "@hartlib/shared": "workspace:*",
     "effect": "4.0.0-beta.92"
   },
   "devDependencies": {

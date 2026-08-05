@@ -1,4 +1,4 @@
-import type { PublicSourcesResponse } from "@brief/shared";
+import type { PublicSourcesResponse } from "@hartlib/shared";
 import { describe, expect, it } from "vitest";
 
 import {

@@ -7,7 +7,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { Context, Effect, Layer } from "effect";
-import { loadExportObjectStorageConfig, loadNotificationConfig } from "@brief/config";
+import { loadExportObjectStorageConfig, loadNotificationConfig } from "@hartlib/config";
 import { Resend } from "resend";
 
 export interface NotificationEmail {
@@ -28,7 +28,7 @@ export interface NotificationEmailAdapter {
 export class NotificationEmailService extends Context.Service<
   NotificationEmailService,
   NotificationEmailAdapter
->()("brief/worker/NotificationEmailService") {}
+>()("hartlib/worker/NotificationEmailService") {}
 
 export const makeResendEmailAdapter = (options: {
   readonly apiKey: string;
@@ -109,7 +109,7 @@ export interface ExportObjectStore {
 export class ExportObjectStoreService extends Context.Service<
   ExportObjectStoreService,
   ExportObjectStore
->()("brief/worker/ExportObjectStoreService") {}
+>()("hartlib/worker/ExportObjectStoreService") {}
 
 const bytesFromBody = async (body: unknown): Promise<Uint8Array> => {
   if (
@@ -179,8 +179,8 @@ export const makeS3ExportObjectStore = (options: {
         );
         return {
           byteSize: response.ContentLength ?? 0,
-          sha256Hex: response.Metadata?.["brief-sha256"] ?? null,
-          generation: response.Metadata?.["brief-generation"] ?? null,
+          sha256Hex: response.Metadata?.["hartlib-sha256"] ?? null,
+          generation: response.Metadata?.["hartlib-generation"] ?? null,
         };
       } catch (error) {
         if (isMissingObject(error)) return null;
@@ -202,8 +202,8 @@ export const makeS3ExportObjectStore = (options: {
           ServerSideEncryption: "AES256",
           IfNoneMatch: "*",
           Metadata: {
-            "brief-sha256": sha256Hex,
-            "brief-generation": String(generation),
+            "hartlib-sha256": sha256Hex,
+            "hartlib-generation": String(generation),
           },
         }),
         { abortSignal: signal },

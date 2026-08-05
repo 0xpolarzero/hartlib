@@ -1,4 +1,4 @@
-import { canonicalPublicSourceHttpsUrl } from "@brief/shared";
+import { canonicalPublicSourceHttpsUrl } from "@hartlib/shared";
 
 import type { Fetcher, FetchResponse, PublicSourceDefinition } from "./types";
 import { cancelPublicSourceResponseBody } from "./http";
@@ -62,7 +62,7 @@ export const assertSourceFetchUrl = (definition: PublicSourceDefinition, value: 
 
 /**
  * The native fetcher is forced into manual redirect mode so every hop is
- * authorized before the request leaves Brief. A custom test/host fetcher that
+ * authorized before the request leaves Hartlib. A custom test/host fetcher that
  * ignores `redirect: manual` is still rejected if its final response URL is
  * outside policy.
  */

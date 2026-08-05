@@ -5,7 +5,7 @@ import type {
   MemoryRecord,
   MemoryRevisionResponse,
   SendChatMessageRequest,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import {
   ChatWebSearchToggle,
   VirtualizedChatTranscript,
@@ -14,9 +14,9 @@ import {
   memoryRevisionFragment,
   parseMemoryRevisionFragment,
   type ChatTranscriptMessage,
-} from "@brief/ui";
+} from "@hartlib/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useIntl, useLocale, useMarket } from "@brief/i18n";
+import { useIntl, useLocale, useMarket } from "@hartlib/i18n";
 
 import {
   ApiResponseError,

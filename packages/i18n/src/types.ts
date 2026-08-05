@@ -1,7 +1,7 @@
 import type frFR from "./locales/fr-FR.json";
 
 /**
- * Locale and market primitives are owned by `@brief/shared` so that backend
+ * Locale and market primitives are owned by `@hartlib/shared` so that backend
  * packages (source-ingestion, worker, api) can use them without depending on
  * React or this i18n package. Re-export them here so frontend code has a
  * single import surface for everything i18n-related.
@@ -15,15 +15,15 @@ export {
   MARKETS,
   isLocale,
   isMarket,
-} from "@brief/shared";
-export type { Locale, Market } from "@brief/shared";
+} from "@hartlib/shared";
+export type { Locale, Market } from "@hartlib/shared";
 
 /**
  * A resolved (locale, market) pair.
  */
 export type LocaleMarketPair = {
-  locale: import("@brief/shared").Locale;
-  market: import("@brief/shared").Market;
+  locale: import("@hartlib/shared").Locale;
+  market: import("@hartlib/shared").Market;
 };
 
 /**
@@ -46,6 +46,6 @@ export type Messages = typeof frFR;
  * The value to set on `<html lang>`. react-intl accepts the full locale tag,
  * so the locale itself is the correct document language.
  */
-export function htmlLang(locale: import("@brief/shared").Locale): string {
+export function htmlLang(locale: import("@hartlib/shared").Locale): string {
   return locale;
 }

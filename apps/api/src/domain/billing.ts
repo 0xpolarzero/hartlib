@@ -14,7 +14,7 @@ import {
   resolveAiUsageRequest as resolveAiUsageRequestRecord,
   updateAiLimit,
   withBillingAuthorizationLease,
-} from "@brief/backend-domain/billing";
+} from "@hartlib/backend-domain/billing";
 import {
   ChangeMonthlyPlanRequest,
   CreateAiUsageRequest,
@@ -24,7 +24,7 @@ import {
   UpdateEmployeeAiLimitRequest,
   type AiPlanTier,
   type MonthlyPlanChangeDescriptor,
-} from "@brief/shared";
+} from "@hartlib/shared";
 import {
   appendAuthorizationAudit,
   appendDeniedAuthorizationAudit,
@@ -32,7 +32,7 @@ import {
   WorkspaceAuthorizationError as AuthorizationError,
   requireClientCompanyAdmin,
   requireClientCompanyMembership,
-} from "@brief/workspace";
+} from "@hartlib/workspace";
 import { Effect, Schema } from "effect";
 import Stripe from "stripe";
 
@@ -70,6 +70,7 @@ export interface BillingStripeGateway extends BillingPlanChangeGateway {
     readonly priceId: string;
     readonly successUrl: string;
     readonly cancelUrl: string;
+    readonly metadata: Record<string, string>;
     readonly automaticTaxEnabled: true;
     readonly billingAddressCollection: "required";
     readonly taxIdCollectionEnabled: true;
@@ -113,7 +114,7 @@ const liveGateway = (secretKey: string): BillingStripeGateway => {
           ? await stripe.customers.create(
               {
                 email: input.customerEmail,
-                metadata: { brief_client_company_id: input.companyId },
+                metadata: { hartlib_client_company_id: input.companyId },
               },
               { idempotencyKey: input.idempotencyKey },
             )
@@ -121,19 +122,13 @@ const liveGateway = (secretKey: string): BillingStripeGateway => {
       if (
         ("deleted" in customer && customer.deleted === true) ||
         !("metadata" in customer) ||
-        customer.metadata.brief_client_company_id !== input.companyId
+        customer.metadata.hartlib_client_company_id !== input.companyId
       ) {
         throw new Error("stripe_customer_company_mismatch");
       }
       return customer.id;
     },
     checkout: async (input) => {
-      const metadata = {
-        brief_client_company_id: input.companyId,
-        brief_purchase_kind: input.kind === "additional" ? "additional_credits" : "monthly_plan",
-        ...(input.planTier === null ? {} : { brief_plan_tier: input.planTier }),
-        ...(input.credits === null ? {} : { brief_credits: String(input.credits) }),
-      };
       const session = await stripe.checkout.sessions.create(
         {
           mode: input.kind === "monthly" ? "subscription" : "payment",
@@ -146,8 +141,8 @@ const liveGateway = (secretKey: string): BillingStripeGateway => {
           tax_id_collection: { enabled: input.taxIdCollectionEnabled },
           customer_update: { address: "auto" as const, name: "auto" as const },
           line_items: [{ price: input.priceId, quantity: input.credits ?? 1 }],
-          metadata,
-          ...(input.kind === "monthly" ? { subscription_data: { metadata } } : {}),
+          metadata: input.metadata,
+          ...(input.kind === "monthly" ? { subscription_data: { metadata: input.metadata } } : {}),
           allow_promotion_codes: false,
         },
         { idempotencyKey: input.idempotencyKey },
@@ -281,7 +276,7 @@ export const makeBillingRoutes = (
                     customerId: context.customerId,
                     customerEmail: context.email,
                     companyId,
-                    idempotencyKey: `brief-customer:${companyId}`,
+                    idempotencyKey: `hartlib-customer:${companyId}`,
                   }),
                 catch: (error) => error,
               }).pipe(
@@ -327,7 +322,7 @@ export const makeBillingRoutes = (
                 priceId,
                 successUrl: config.stripeCheckoutSuccessUrl,
                 cancelUrl: config.stripeCheckoutCancelUrl,
-                stripeOperationKey: `brief-checkout:${companyId}:${body.idempotencyKey}:session`,
+                stripeOperationKey: `hartlib-checkout:${companyId}:${body.idempotencyKey}:session`,
                 allowNew:
                   body.kind !== "monthly" ||
                   context.status === "inactive" ||
@@ -425,7 +420,7 @@ export const makeBillingRoutes = (
                 priceId,
                 successUrl: config.stripeCheckoutSuccessUrl,
                 cancelUrl: config.stripeCheckoutCancelUrl,
-                stripeOperationKey: `brief-checkout:${companyId}:${body.idempotencyKey}:session`,
+                stripeOperationKey: `hartlib-checkout:${companyId}:${body.idempotencyKey}:session`,
                 allowNew: false,
                 requireExisting: true,
                 claimExisting: true,
@@ -456,8 +451,19 @@ export const makeBillingRoutes = (
                     planTier: body.kind === "monthly" ? body.planTier : null,
                     credits: body.kind === "additional" ? body.credits : null,
                     priceId,
-                    successUrl: config.stripeCheckoutSuccessUrl,
-                    cancelUrl: config.stripeCheckoutCancelUrl,
+                    successUrl: reservation.successUrl,
+                    cancelUrl: reservation.cancelUrl,
+                    metadata: {
+                      [`${reservation.metadataPrefix}_client_company_id`]: companyId,
+                      [`${reservation.metadataPrefix}_purchase_kind`]:
+                        body.kind === "additional" ? "additional_credits" : "monthly_plan",
+                      ...(body.kind === "monthly"
+                        ? { [`${reservation.metadataPrefix}_plan_tier`]: body.planTier }
+                        : {}),
+                      ...(body.kind === "additional"
+                        ? { [`${reservation.metadataPrefix}_credits`]: String(body.credits) }
+                        : {}),
+                    },
                     automaticTaxEnabled: true,
                     billingAddressCollection: "required",
                     taxIdCollectionEnabled: true,

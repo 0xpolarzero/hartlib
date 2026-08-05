@@ -2,9 +2,9 @@ import { PgClient } from "@effect/sql-pg";
 import type {
   CreateRestrictedSupportGrantRequest,
   PlatformCompanyDeletionRequestDescriptor,
-} from "@brief/shared";
-import { publisherIssueAdvisoryLockKey } from "@brief/shared";
-import { WorkspaceAuthorizationError, type WorkspaceIdentity } from "@brief/workspace/common";
+} from "@hartlib/shared";
+import { publisherIssueAdvisoryLockKey } from "@hartlib/shared";
+import { WorkspaceAuthorizationError, type WorkspaceIdentity } from "@hartlib/workspace/common";
 import { Effect } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
@@ -356,7 +356,7 @@ export const loadRestrictedSupportContent = (grant: RestrictedSupportGrantScope)
       const rows = yield* sql<RestrictedFileRow>`
         select object_key as "objectKey", media_type as "mediaType",
                original_file_name as "fileName"
-        from brief_documents document
+        from hartlib_documents document
         join publisher_issues issue
           on issue.id = document.issue_id
          and issue.deleted_at is null
@@ -377,9 +377,9 @@ export const loadRestrictedSupportContent = (grant: RestrictedSupportGrantScope)
       }>`
         select versions.id::text, versions.language,
                versions.canonical_text as "canonicalText", versions.page_ranges as "pageRanges"
-        from brief_document_versions versions
-        join brief_documents document
-          on document.id = versions.brief_document_id
+        from hartlib_document_versions versions
+        join hartlib_documents document
+          on document.id = versions.hartlib_document_id
          and document.deleted_at is null
         join publisher_issues issue
           on issue.id = document.issue_id
