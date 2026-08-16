@@ -14,7 +14,6 @@ import {
   DEFAULT_LOCALE,
   DEFAULT_MARKET_FOR_LOCALE,
   type LocaleMarketPair,
-  type Market,
   FormattedMessage,
   I18nProvider,
   htmlLang,
@@ -48,7 +47,7 @@ import {
 } from "@/components/admin/platform-operations-page";
 import { queryClient } from "@/lib/query-client";
 import { workspaceRoleLabel } from "@/lib/workspace-labels";
-import { getStoredMarket, setStoredLocale, setStoredMarket } from "@/locale-bootstrap";
+import { setStoredLocale } from "@/locale-bootstrap";
 
 type RouterContext = {
   queryClient: QueryClient;
@@ -301,9 +300,7 @@ function RootLayout() {
   const navigate = useNavigate({ from: localeLayoutRoute.id });
   const location = useLocation();
 
-  const [market, setMarket] = useState<Market>(
-    () => getStoredMarket() ?? DEFAULT_MARKET_FOR_LOCALE[locale],
-  );
+  const market = DEFAULT_MARKET_FOR_LOCALE[locale];
 
   // Keep `<html lang>` in sync with the live locale param so it stays correct
   // for client-side navigation (not just full reloads / switcher changes).
@@ -315,8 +312,6 @@ function RootLayout() {
 
   function handleChangeLocaleMarket(next: LocaleMarketPair) {
     setStoredLocale(next.locale);
-    setStoredMarket(next.market);
-    setMarket(next.market);
     if (typeof document !== "undefined") {
       document.documentElement.lang = htmlLang(next.locale);
     }

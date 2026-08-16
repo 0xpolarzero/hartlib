@@ -196,8 +196,7 @@ const queryRank = (
   return Statement.fragment(segments);
 };
 
-const dateValue = (value: string | undefined): Date | undefined =>
-  value === undefined ? undefined : new Date(`${value}T00:00:00.000Z`);
+const timestampValue = (value: string): Statement.Fragment => frag`${value}::timestamptz`;
 
 const documentFilters = (
   query: NormalizedInternalQuery,
@@ -236,12 +235,12 @@ const documentFilters = (
       frag`${literalFragment(fields.documentTypeColumn)} in (${sqlList(filters.documentTypes)})`,
     );
   }
-  const after = dateValue(filters.publishedAt?.after);
-  const before = dateValue(filters.publishedAt?.before);
+  const after = filters.publishedAt?.after;
+  const before = filters.publishedAt?.before;
   if (after !== undefined)
-    fragments.push(frag`${literalFragment(fields.publishedAtColumn)} >= ${after}`);
+    fragments.push(frag`${literalFragment(fields.publishedAtColumn)} >= ${timestampValue(after)}`);
   if (before !== undefined)
-    fragments.push(frag`${literalFragment(fields.publishedAtColumn)} <= ${before}`);
+    fragments.push(frag`${literalFragment(fields.publishedAtColumn)} < ${timestampValue(before)}`);
   return fragments;
 };
 
@@ -269,10 +268,10 @@ const chatFilters = (query: NormalizedInternalQuery): Statement.Fragment[] => {
   if (filters.authors !== undefined && filters.authors.length > 0) {
     fragments.push(frag`m.author in (${sqlList(filters.authors)})`);
   }
-  const after = dateValue(filters.sentAt?.after);
-  const before = dateValue(filters.sentAt?.before);
-  if (after !== undefined) fragments.push(frag`m.created_at >= ${after}`);
-  if (before !== undefined) fragments.push(frag`m.created_at <= ${before}`);
+  const after = filters.sentAt?.after;
+  const before = filters.sentAt?.before;
+  if (after !== undefined) fragments.push(frag`m.created_at >= ${timestampValue(after)}`);
+  if (before !== undefined) fragments.push(frag`m.created_at < ${timestampValue(before)}`);
   return fragments;
 };
 

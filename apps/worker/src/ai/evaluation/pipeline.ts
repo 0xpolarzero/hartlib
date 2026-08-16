@@ -75,7 +75,11 @@ import {
   TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY,
 } from "../web/tinyfish-search";
 import { parseCompactionGroupTaskId } from "../context/compaction-runtime";
-import { BranchCoverageSchema, StructuredRetrievalTraceSchema } from "../retrieval/query-spec";
+import {
+  BranchCoverageSchema,
+  Rfc3339UtcTimestampSchema,
+  StructuredRetrievalTraceSchema,
+} from "../retrieval/query-spec";
 import {
   FusionTruncationSchema,
   ReviewModelFusedResultMetadataSchema,
@@ -690,6 +694,10 @@ const EvaluationSourceBindingSchema = z
     }
   });
 
+const CanonicalEvaluationRunCurrentTimestamp = "2026-07-10T10:00:00.123456Z";
+const CanonicalEvaluationRunCreatedAt = "2026-07-10T10:00:00.123Z";
+export const CanonicalEvaluationDocumentTimestamp = "2026-07-10T09:00:00.000000Z";
+
 export const EvaluationSeedManifestSchema = z
   .object({
     artifactVersion: z.literal(4),
@@ -894,6 +902,7 @@ const DurableRunSnapshotSchema = z
     acceptanceScope: EvaluationAcceptanceScopeSchema,
     smithersRunId: z.string().min(1),
     createdAt: z.iso.datetime(),
+    currentTimestamp: Rfc3339UtcTimestampSchema,
     startedAt: z.iso.datetime(),
     finishedAt: z.iso.datetime(),
     failedAt: z.null(),
@@ -1523,7 +1532,7 @@ const seedOneCase = (
                 insert into public_source_raw_artifacts (
                   id, source_id, canonical_url, fetched_at, media_type, body, body_hash
                 ) values (
-                  ${artifactId}, ${sourceId}, ${canonicalUrl}, '2026-07-01T00:00:00.000Z',
+                  ${artifactId}, ${sourceId}, ${canonicalUrl}, ${CanonicalEvaluationDocumentTimestamp},
                   'text/html', ${storedText}, ${sha256Hex(storedText)}
                 ) on conflict (id) do nothing
               `;
@@ -1535,8 +1544,8 @@ const seedOneCase = (
                 ) values (
                   ${binding.documentId}, ${sourceId}, ${artifactId}, ${canonicalUrl},
                   ${`Canonical evidence ${evaluationBindingGoldenSourceId(binding)}`}, ${storedText}, ${fixture.locale},
-                  '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z',
-                  '2026-07-01T00:00:00.000Z', 'article', ${binding.contentHash},
+                  ${CanonicalEvaluationDocumentTimestamp}, ${CanonicalEvaluationDocumentTimestamp},
+                  ${CanonicalEvaluationDocumentTimestamp}, 'article', ${binding.contentHash},
                   ${storedText.length}
                 ) on conflict (document_id) do nothing
               `;
@@ -1565,7 +1574,7 @@ const seedOneCase = (
             insert into chat_messages (id, chat_id, author, content, created_at)
             values (
               ${manifest.userMessageId}, ${manifest.chatId}, 'user', ${fixture.currentMessage},
-              '2026-07-10T10:00:00.000Z'
+              ${CanonicalEvaluationRunCurrentTimestamp}
             ) on conflict (id) do nothing
           `;
           yield* sql`
@@ -1574,7 +1583,7 @@ const seedOneCase = (
               acceptance_scope
             ) values (
               ${manifest.aiRunId}, ${manifest.chatId}, ${manifest.userId}, ${manifest.userMessageId},
-              ${fixture.locale}, ${fixture.market}, ${citationNamespaceForRun(manifest.aiRunId)}, '2026-07-10T10:00:00.000Z',
+              ${fixture.locale}, ${fixture.market}, ${citationNamespaceForRun(manifest.aiRunId)}, ${CanonicalEvaluationRunCurrentTimestamp},
               ${JSON.stringify(acceptanceScopeForRun(fixture.webRequested))}::jsonb
             ) on conflict (id) do nothing
           `;
@@ -2620,6 +2629,7 @@ const loadDurableRunEvidence = (
         readonly acceptanceScope: unknown;
         readonly smithersRunId: string | null;
         readonly createdAt: Date;
+        readonly currentTimestamp: string;
         readonly startedAt: Date | null;
         readonly finishedAt: Date | null;
         readonly failedAt: Date | null;
@@ -2669,7 +2679,12 @@ const loadDurableRunEvidence = (
                end as "effectiveWebPolicy",
                runs.acceptance_scope as "acceptanceScope",
                runs.smithers_run_id as "smithersRunId",
-               runs.created_at as "createdAt", runs.started_at as "startedAt",
+               runs.created_at as "createdAt",
+               to_char(
+                 runs.created_at at time zone 'UTC',
+                 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+               ) as "currentTimestamp",
+               runs.started_at as "startedAt",
                runs.finished_at as "finishedAt", runs.failed_at as "failedAt",
                runs.assistant_message_id::text as "assistantMessageId",
                runs.citation_namespace as "citationNamespace",
@@ -2971,6 +2986,7 @@ const loadDurableRunEvidence = (
           acceptanceScope: run.acceptanceScope,
           smithersRunId: run.smithersRunId,
           createdAt: run.createdAt.toISOString(),
+          currentTimestamp: run.currentTimestamp,
           startedAt: run.startedAt.toISOString(),
           finishedAt: run.finishedAt.toISOString(),
           failedAt: run.failedAt === null ? null : run.failedAt.toISOString(),
@@ -3160,8 +3176,10 @@ export const revalidateEvaluationV3Evidence = async (
   }
 
   const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
+  const { currentTimestamp: _currentTimestamp, ...historicalRun } = evidence.run;
   const historicalEvidence = {
     ...evidence,
+    run: historicalRun,
     sourceExposures: evidence.sourceExposures.map((exposure) => {
       const {
         chatContentHash: _chatContentHash,
@@ -3686,14 +3704,8 @@ const canonicalResolutionAndPlan = (
           assistantMessageId: binding.assistantMessageId,
         };
       });
-    const createdAt = new Date(evidence.run.createdAt);
-    const currentDate = Number.isNaN(createdAt.getTime())
-      ? undefined
-      : createdAt.toISOString().slice(0, 10);
-    const expected =
-      currentDate === undefined
-        ? undefined
-        : attestExactPlanTurnRequest(fixture, selectedConversation, currentDate);
+    const currentTimestamp = evidence.run.currentTimestamp;
+    const expected = attestExactPlanTurnRequest(fixture, selectedConversation, currentTimestamp);
     const planMeasurement =
       terminalPlanUsage === null
         ? undefined
@@ -3702,7 +3714,6 @@ const canonicalResolutionAndPlan = (
           );
     const measurement = planMeasurement?.payload;
     if (
-      expected === undefined ||
       terminalPlanUsage === null ||
       planMeasurement === undefined ||
       measurement === undefined ||
@@ -4322,7 +4333,9 @@ const attestRelationalEvidence = (
                 : "Hartlib canonical evaluation",
             documentTitle: `Canonical evidence ${evaluationBindingGoldenSourceId(binding)}`,
             citationUrl: `https://evaluation.invalid/documents/${binding.documentId}`,
-            ...(row.topology === "specialized" ? { publishedAt: "2026-07-01T00:00:00.000Z" } : {}),
+            ...(row.topology === "specialized"
+              ? { publishedAt: CanonicalEvaluationDocumentTimestamp }
+              : {}),
           }
         : binding?.kind === "web"
           ? { citationUrl: liveWebLocator?.url ?? binding.url }
@@ -4648,7 +4661,8 @@ const attestAcceptedRunSnapshot = (
     run.webSearchEnabled !== fixture.webRequested ||
     canonicalJson(run.effectiveWebPolicy) !== canonicalJson(expectedPolicy) ||
     run.smithersRunId !== expectedEvaluationSmithersRunId(row) ||
-    run.createdAt !== "2026-07-10T10:00:00.000Z" ||
+    run.createdAt !== CanonicalEvaluationRunCreatedAt ||
+    run.currentTimestamp !== CanonicalEvaluationRunCurrentTimestamp ||
     Date.parse(run.startedAt) < Date.parse(run.createdAt) ||
     Date.parse(run.finishedAt) <= Date.parse(run.startedAt) ||
     run.failedAt !== null ||

@@ -67,14 +67,10 @@ export function resolveMarketFromCountry(country: string | undefined): Market {
 export interface ResolveRedirectTargetArgs {
   /** A previously stored user choice (e.g. from cookie/localStorage). */
   storedLocale?: string;
-  /** A previously stored source-market choice, independent from UI locale. */
-  storedMarket?: string;
   /** A locale present in the current URL, if any. */
   urlLocale?: string;
   /** The raw `Accept-Language` header value, if available. */
   acceptLanguage?: string;
-  /** A country signal (e.g. geo-IP), if available. */
-  countrySignal?: string;
 }
 
 /**
@@ -83,15 +79,13 @@ export interface ResolveRedirectTargetArgs {
  * 1. Stored explicit user choice ({@link ResolveRedirectTargetArgs.storedLocale}).
  * 2. URL locale ({@link ResolveRedirectTargetArgs.urlLocale}), if it's a valid locale.
  * 3. Browser `Accept-Language` ({@link ResolveRedirectTargetArgs.acceptLanguage}).
- * 4. Country signal ({@link ResolveRedirectTargetArgs.countrySignal}) — affects market only.
- * 5. Default `fr-FR` / `FR`.
+ * 4. Default `fr-FR` / `FR`.
  *
- * Locale is resolved via steps 1–3 (falling back to the default). Market is
- * coupled to the resolved locale by default; a present, valid country signal
- * overrides only the market (never the locale).
+ * The market always comes from the resolved locale. This keeps startup state
+ * aligned with the paired locale and source-market selector.
  */
 export function resolveRedirectTarget(args: ResolveRedirectTargetArgs): LocaleMarketPair {
-  const { storedLocale, storedMarket, urlLocale, acceptLanguage, countrySignal } = args;
+  const { storedLocale, urlLocale, acceptLanguage } = args;
 
   let locale: Locale;
 
@@ -103,22 +97,5 @@ export function resolveRedirectTarget(args: ResolveRedirectTargetArgs): LocaleMa
     locale = resolveLocaleFromAcceptLanguage(acceptLanguage);
   }
 
-  let market: Market =
-    storedMarket !== undefined && isMarket(storedMarket)
-      ? storedMarket
-      : DEFAULT_MARKET_FOR_LOCALE[locale];
-
-  // ...but a present, valid country signal overrides the market only.
-  if (
-    (storedMarket === undefined || !isMarket(storedMarket)) &&
-    countrySignal !== undefined &&
-    countrySignal !== ""
-  ) {
-    const resolvedMarket = resolveMarketFromCountry(countrySignal);
-    if (resolvedMarket !== DEFAULT_MARKET || isMarket(countrySignal.trim().toUpperCase())) {
-      market = resolvedMarket;
-    }
-  }
-
-  return { locale, market };
+  return { locale, market: DEFAULT_MARKET_FOR_LOCALE[locale] };
 }

@@ -776,7 +776,7 @@ interface LoadRow {
   readonly userMessage: string;
   readonly locale: Locale;
   readonly market: Market;
-  readonly currentDate: string;
+  readonly currentTimestamp: string;
   readonly citationNamespace: string;
   readonly acceptanceScope: unknown;
 }
@@ -1506,7 +1506,7 @@ export class CanonicalWorkflowOperations {
         selectedConversation: providerConversationEntries(selectedConversation),
         locale: load.locale,
         market: load.market,
-        currentDate: load.currentDate,
+        currentTimestamp: load.currentTimestamp,
       }),
       outputToolName: "emit_internal_query_plan",
       outputToolDescription: "Emit one complete structured internal query plan.",
@@ -1903,7 +1903,10 @@ export class CanonicalWorkflowOperations {
             messages.content as "userMessage",
             runs.locale,
             runs.market,
-                ((runs.created_at at time zone 'UTC')::date)::text as "currentDate",
+                to_char(
+                  runs.created_at at time zone 'UTC',
+                  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                ) as "currentTimestamp",
             runs.citation_namespace as "citationNamespace",
                 runs.acceptance_scope as "acceptanceScope"
           from ai_runs runs
@@ -1955,7 +1958,7 @@ export class CanonicalWorkflowOperations {
               userMessage: run.userMessage,
               locale: run.locale,
               market: run.market,
-              currentDate: run.currentDate,
+              currentTimestamp: run.currentTimestamp,
               citationNamespace: run.citationNamespace,
               acceptanceScope,
             };
@@ -1967,7 +1970,7 @@ export class CanonicalWorkflowOperations {
 
   private boundConversationInventory(
     run: Pick<LoadRow, "userMessage" | "locale" | "market"> & {
-      readonly currentDate: string;
+      readonly currentTimestamp: string;
     },
     entries: readonly ConversationEntry[],
     modelId: RuntimeModelId,
@@ -1990,7 +1993,7 @@ export class CanonicalWorkflowOperations {
               entries: candidate,
               locale: run.locale,
               market: run.market,
-              currentDate: run.currentDate,
+              currentTimestamp: run.currentTimestamp,
             }),
           },
         ],
@@ -2069,7 +2072,7 @@ export class CanonicalWorkflowOperations {
         userMessage: load.userMessage,
         locale: load.locale,
         market: load.market,
-        currentDate: load.currentDate,
+        currentTimestamp: load.currentTimestamp,
       },
       entries,
       load.acceptanceScope.fastModelId,
@@ -2090,7 +2093,7 @@ export class CanonicalWorkflowOperations {
         entries: conversation,
         locale: load.locale,
         market: load.market,
-        currentDate: load.currentDate,
+        currentTimestamp: load.currentTimestamp,
       }),
       outputToolName: "emit_plan_turn",
       outputToolDescription: "Emit exactly one strict plan-turn result.",

@@ -14,8 +14,9 @@ export type DemoRoute = {
 };
 
 /**
- * A canonical locale prefix carries no market override. A pretty alias retains
- * its canonical locale/market pair so bootstrap cannot lose the alias market.
+ * A canonical locale prefix derives its market from the locale. A pretty alias
+ * retains its canonical locale/market pair so bootstrap can resolve it before
+ * normalizing the path.
  */
 export type DemoLocalePrefix = {
   readonly locale: Locale | null;

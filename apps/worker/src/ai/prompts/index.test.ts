@@ -47,7 +47,7 @@ describe("canonical AI role prompts", () => {
 
   it("pins the plan-turn inventory, union, and only terminal tool", () => {
     expect(PlanTurnPrompt).toContain('"currentMessage"');
-    expect(PlanTurnPrompt).toContain('"currentDate"');
+    expect(PlanTurnPrompt).toContain('"currentTimestamp"');
     expect(PlanTurnPrompt).toContain('"assistantContent"');
     expect(PlanTurnPrompt).toContain('"retryable"');
     expect(PlanTurnPrompt).toContain("emit_plan_turn only");
@@ -68,7 +68,7 @@ describe("canonical AI role prompts", () => {
       '"entries"',
       '"locale"',
       '"market"',
-      '"currentDate"',
+      '"currentTimestamp"',
     ]) {
       expect(PlanTurnPrompt).toContain(field);
     }
@@ -206,12 +206,12 @@ describe("retrieval and compaction prompt inventory", () => {
       expect(prompt).toContain("Use a phrase atom only when exact word adjacency is explicit");
     }
   });
-  it("requires date-only planning for broad freshness", () => {
+  it("requires exact timestamp planning for broad freshness", () => {
     expect(InternalQueryPlanPrompt).toContain(
-      'produce an ordinary document query with order "newest", an exact publishedAt date filter, and empty all and anyOf arrays',
+      'publishedAt bounds [currentTimestamp - 24 hours, currentTimestamp), order "newest", and empty all and anyOf arrays',
     );
     expect(InternalQueryReviewPrompt).toContain(
-      "preserve the date filter and newest ordering with empty all and anyOf arrays",
+      "[currentTimestamp - 24 hours, currentTimestamp) is the required publishedAt window",
     );
     expect(InternalQueryReviewPrompt).not.toContain("remove generic lexical terms");
   });

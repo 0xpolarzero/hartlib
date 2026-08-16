@@ -559,7 +559,7 @@ const load = (_historyText: string): LoadedTurn => {
     userMessage: "Compare both topics.",
     locale: "en-US",
     market: "US",
-    currentDate: "2026-07-10",
+    currentTimestamp: "2026-07-10T00:00:00.000Z",
     citationNamespace,
     acceptanceScope: makeRunAcceptanceScope({
       userId: "fanout-allocation-user",

@@ -520,7 +520,7 @@ export const DOCS_HTML: string = `<!doctype html>
   </p>
   <pre><code>LoadedTurn = {
   aiRunId, chatId, initiatingUserId, userMessageId, userMessage,
-  locale, market, currentDate,
+  locale, market, currentTimestamp,
   citationNamespace,
   acceptanceScope
 }</code></pre>

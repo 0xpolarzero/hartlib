@@ -1565,6 +1565,43 @@ const createPublicPreviewFixture = (canonicalText: string) =>
     } satisfies PublicPreviewFixture;
   });
 
+const addPublicPreviewDocument = (
+  fixture: Pick<PublicPreviewFixture, "publicSourceId">,
+  canonicalText: string,
+  publishedAt: string,
+) =>
+  Effect.gen(function* () {
+    const documentId = `ai-public-preview-document-${crypto.randomUUID()}`;
+    const rawArtifactId = crypto.randomUUID();
+    const canonicalUrl = `https://example.test/public-preview/${documentId}`;
+    const rawBody = `public preview body ${documentId}`;
+    const contentHash = createHash("sha256").update(canonicalText, "utf8").digest("hex");
+    const bodyHash = createHash("sha256").update(rawBody, "utf8").digest("hex");
+    const sql = yield* PgClient.PgClient;
+    yield* sql`
+      insert into public_source_raw_artifacts (
+        id, source_id, canonical_url, fetched_at, media_type, body, body_hash
+      ) values (
+        ${rawArtifactId}, ${fixture.publicSourceId}, ${canonicalUrl},
+        ${publishedAt}::timestamptz, 'text/html', ${rawBody}, ${bodyHash}
+      )
+    `;
+    yield* sql`
+      insert into public_source_documents (
+        document_id, source_id, canonical_url, title, published_at,
+        discovered_at, fetched_at, language, document_type, text,
+        text_char_count, content_hash, raw_artifact_id
+      ) values (
+        ${documentId}, ${fixture.publicSourceId}, ${canonicalUrl},
+        'Public repeated preview', ${publishedAt}::timestamptz,
+        ${publishedAt}::timestamptz, ${publishedAt}::timestamptz,
+        'en-US', 'article', ${canonicalText}, ${canonicalText.length},
+        ${contentHash}, ${rawArtifactId}
+      )
+    `;
+    return documentId;
+  });
+
 class IntegrationAgentClient extends CanonicalAgentClient {
   constructor() {
     super(testProviderBoundary());
@@ -1616,7 +1653,13 @@ class BroadFreshnessPlanAgent extends IntegrationAgentClient {
   override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
     if (input.outputToolName === "emit_internal_query_plan") {
       await invokeStructuredProviderHook(input);
-      const after = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
+      const payload = JSON.parse(input.user) as { readonly currentTimestamp?: unknown };
+      if (typeof payload.currentTimestamp !== "string") {
+        throw new Error("internal query planner lacks currentTimestamp");
+      }
+      const after = new Date(
+        new Date(payload.currentTimestamp).getTime() - 24 * 60 * 60 * 1_000,
+      ).toISOString();
       return input.validate({
         action: "search",
         queries: [
@@ -1626,7 +1669,7 @@ class BroadFreshnessPlanAgent extends IntegrationAgentClient {
             all: [],
             anyOf: [],
             not: [],
-            filters: { documents: { publishedAt: { after } } },
+            filters: { documents: { publishedAt: { after, before: payload.currentTimestamp } } },
             order: "newest",
           },
         ],
@@ -1648,7 +1691,7 @@ class FreshnessPlanPassthroughAgent extends IntegrationAgentClient {
             all: [{ text: "news", mode: "term" }],
             anyOf: [],
             not: [],
-            filters: { documents: { publishedAt: { after: "2026-08-02" } } },
+            filters: { documents: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } } },
             order: "relevance",
           },
         ],
@@ -1666,7 +1709,7 @@ class FreshnessPlanPassthroughAgent extends IntegrationAgentClient {
             all: [{ text: "actualités", mode: "term" }],
             anyOf: [],
             not: [],
-            filters: { documents: { publishedAt: { after: "2026-08-02" } } },
+            filters: { documents: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } } },
             order: "relevance",
           },
         ],
@@ -2906,12 +2949,46 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     });
   }, 120_000);
 
-  it("uses a provider-authored date-only plan for broad freshness", async () => {
+  it("uses a provider-authored exact UTC 24-hour plan for broad freshness", async () => {
     const fixture = await runDb(
       createPublicPreviewFixture(
         "A recent public update contains enough immutable text to exercise freshness retrieval. ".repeat(
           4,
         ),
+      ),
+    );
+    await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update ai_runs
+          set created_at = '2026-08-16T14:12:48.063Z'::timestamptz
+          where id = ${fixture.runId}
+        `;
+        yield* sql`
+          update public_source_documents
+          set published_at = '2026-08-16T00:38:44Z'::timestamptz
+          where document_id = ${fixture.publicDocumentId}
+            and source_id = ${fixture.publicSourceId}
+        `;
+      }),
+    );
+    const secondDocumentId = await runDb(
+      addPublicPreviewDocument(
+        fixture,
+        "A second recent public update proves the exact freshness window keeps post-midnight documents. ".repeat(
+          4,
+        ),
+        "2026-08-16T00:38:48Z",
+      ),
+    );
+    const upperBoundDocumentId = await runDb(
+      addPublicPreviewDocument(
+        fixture,
+        "A public update at the exclusive upper bound must not appear in the freshness result. ".repeat(
+          4,
+        ),
+        "2026-08-16T14:12:48.063Z",
       ),
     );
     const operations = new CanonicalWorkflowOperations(
@@ -2929,18 +3006,36 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       ),
     );
 
+    expect(load.currentTimestamp).toBe("2026-08-16T14:12:48.063000Z");
     expect(result?.queryPlan).toMatchObject({
       action: "search",
-      queries: [{ scope: "documents", all: [], anyOf: [], order: "newest" }],
+      queries: [
+        {
+          scope: "documents",
+          all: [],
+          anyOf: [],
+          filters: {
+            documents: {
+              publishedAt: {
+                after: "2026-08-15T14:12:48.063Z",
+                before: "2026-08-16T14:12:48.063000Z",
+              },
+            },
+          },
+          order: "newest",
+        },
+      ],
     });
-    expect(
-      result?.fused.results.some(
-        (candidate) =>
-          candidate.identity.kind === "public_document" &&
-          candidate.identity.sourceId === fixture.publicSourceId &&
-          candidate.identity.documentId === fixture.publicDocumentId,
-      ),
-    ).toBe(true);
+    const matchedDocumentIds = result?.fused.results.flatMap((candidate) =>
+      candidate.identity.kind === "public_document" &&
+      candidate.identity.sourceId === fixture.publicSourceId
+        ? [candidate.identity.documentId]
+        : [],
+    );
+    expect(matchedDocumentIds).toEqual(
+      expect.arrayContaining([fixture.publicDocumentId, secondDocumentId]),
+    );
+    expect(matchedDocumentIds).not.toContain(upperBoundDocumentId);
   }, 120_000);
   it("passes provider freshness atoms and ordering through unchanged", async () => {
     const fixture = await runDb(
@@ -2975,7 +3070,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           all: [{ text: "actualités", mode: "term" }],
           anyOf: [],
           order: "relevance",
-          filters: { documents: { publishedAt: { after: "2026-08-02" } } },
+          filters: { documents: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } } },
         },
       ],
     });
@@ -2999,7 +3094,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           {
             all: [{ text: "news", mode: "term" }],
             order: "relevance",
-            filters: { documents: { publishedAt: { after: "2026-08-02" } } },
+            filters: { documents: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } } },
           },
         ],
       },
@@ -3009,7 +3104,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
           {
             all: [{ text: "actualités", mode: "term" }],
             order: "relevance",
-            filters: { documents: { publishedAt: { after: "2026-08-02" } } },
+            filters: { documents: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } } },
           },
         ],
       },
@@ -3255,7 +3350,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     ]);
   });
 
-  it("keeps plan and retrieval input stable when delayed retries cross a UTC date boundary", async () => {
+  it("keeps the run UTC timestamp stable when delayed retries cross a UTC date boundary", async () => {
     const fixture = await runDb(createFixture);
     await runDb(
       Effect.gen(function* () {
@@ -3304,7 +3399,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     const retryLoad = await inTask("load-turn", () => afterBoundary.loadTurn(fixture.runId), {
       attempt: 2,
     });
-    expect(firstLoad.currentDate).toBe("2026-07-10");
+    expect(firstLoad.currentTimestamp).toBe("2026-07-10T23:59:59.500000Z");
     expect(retryLoad).toEqual(firstLoad);
     expect(retryLoad.acceptanceScope).toEqual(firstLoad.acceptanceScope);
     expect(retryLoad).toMatchObject({
@@ -3343,15 +3438,15 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(agent.planInputs[1]).toBe(agent.planInputs[0]);
     expect(agent.retrievalInputs).toHaveLength(2);
     expect(agent.retrievalInputs[1]).toBe(agent.retrievalInputs[0]);
-    expect(JSON.parse(agent.planInputs[0]!) as { currentDate: string }).toMatchObject({
-      currentDate: "2026-07-10",
+    expect(JSON.parse(agent.planInputs[0]!) as { currentTimestamp: string }).toMatchObject({
+      currentTimestamp: "2026-07-10T23:59:59.500000Z",
     });
-    expect(JSON.parse(agent.retrievalInputs[0]!) as { currentDate: string }).toMatchObject({
-      currentDate: "2026-07-10",
+    expect(JSON.parse(agent.retrievalInputs[0]!) as { currentTimestamp: string }).toMatchObject({
+      currentTimestamp: "2026-07-10T23:59:59.500000Z",
     });
   }, 120_000);
 
-  it("locks the persisted run date through the idempotent start event transaction", async () => {
+  it("locks the persisted run timestamp through the idempotent start event transaction", async () => {
     const fixture = await runDb(createFixture);
     await runDb(
       Effect.gen(function* () {
@@ -3410,16 +3505,19 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       await blocker;
     }
     const load = await loadPromise;
-    expect(load.currentDate).toBe("2026-07-11");
+    expect(load.currentTimestamp).toBe("2026-07-11T00:00:00.250000Z");
     const persisted = await runDb(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         return (yield* sql<{
-          readonly currentDate: string;
+          readonly currentTimestamp: string;
           readonly startedAt: Date | null;
           readonly startEventCount: number;
         }>`
-          select ((runs.created_at at time zone 'UTC')::date)::text as "currentDate",
+          select to_char(
+                   runs.created_at at time zone 'UTC',
+                   'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                 ) as "currentTimestamp",
                  runs.started_at as "startedAt",
                  (
                    select count(*)::int
@@ -3433,7 +3531,7 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       }),
     );
     expect(persisted).toMatchObject({
-      currentDate: "2026-07-11",
+      currentTimestamp: "2026-07-11T00:00:00.250000Z",
       startedAt: expect.any(Date),
       startEventCount: 1,
     });

@@ -205,7 +205,7 @@ const load: LoadedTurn = {
   userMessage: "Compare the evidence.",
   locale: "en-US",
   market: "US",
-  currentDate: "2026-07-10",
+  currentTimestamp: "2026-07-10T00:00:00.000Z",
   citationNamespace: "cn_" + "A".repeat(22),
   acceptanceScope: makeRunAcceptanceScope({
     userId: "workflow-user",

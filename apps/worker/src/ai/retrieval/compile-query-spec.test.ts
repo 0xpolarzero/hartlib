@@ -27,7 +27,10 @@ const query = {
     documents: {
       sourceNames: ["Saved Source"],
       languages: ["en-US"],
-      publishedAt: { after: "2026-01-01", before: "2026-02-01" },
+      publishedAt: {
+        after: "2026-01-01T00:00:00.000Z",
+        before: "2026-02-01T00:00:00.000Z",
+      },
     },
     chatMessages: { authors: ["user" as const] },
   },
@@ -35,6 +38,30 @@ const query = {
 };
 
 const options = { scope, branchCap: 3 } as const;
+
+const literalSql = (statement: { readonly segments: readonly unknown[] } | undefined): string =>
+  statement?.segments
+    .map((segment) =>
+      typeof segment === "object" &&
+      segment !== null &&
+      "_tag" in segment &&
+      segment._tag === "Literal"
+        ? String((segment as unknown as { readonly value: unknown }).value)
+        : "",
+    )
+    .join("") ?? "";
+
+const parameterValues = (
+  statement: { readonly segments: readonly unknown[] } | undefined,
+): readonly unknown[] =>
+  statement?.segments.flatMap((segment) =>
+    typeof segment === "object" &&
+    segment !== null &&
+    "_tag" in segment &&
+    segment._tag === "Parameter"
+      ? [(segment as unknown as { readonly value: unknown }).value]
+      : [],
+  ) ?? [];
 
 describe("Phase B physical compilers", () => {
   it("uses the canonical physical branch order", () => {
@@ -100,5 +127,45 @@ describe("Phase B physical compilers", () => {
     expect(boundedText).toContain(
       "(m.created_at, m.id) < (current_message.created_at, current_message.id)",
     );
+  });
+
+  it("preserves the reported UTC freshness window and compiles every bound as [after, before)", () => {
+    const after = "2026-08-15T14:12:48.063Z";
+    const before = "2026-08-16T14:12:48.063Z";
+    const bounded = {
+      ...query,
+      filters: {
+        documents: { publishedAt: { after, before } },
+        chatMessages: { sentAt: { after, before } },
+      },
+      order: "newest" as const,
+    };
+    const compiled = [
+      compilePublicDocumentsQuery(bounded, options),
+      compilePublisherDocumentsQuery(bounded, options),
+      compileChatMessagesQuery(bounded, options),
+    ] as const;
+
+    for (const branch of compiled) {
+      expect(parameterValues(branch.statement)).toContain(after);
+      expect(parameterValues(branch.statement)).toContain(before);
+      expect(parameterValues(branch.statement)).not.toContainEqual(expect.any(Date));
+      expect(literalSql(branch.statement)).toContain("::timestamptz");
+    }
+
+    const publicSql = literalSql(compiled[0].statement);
+    expect(publicSql).toContain("d.published_at >= ");
+    expect(publicSql).toContain("d.published_at < ");
+    expect(publicSql).not.toContain("d.published_at <= ");
+
+    const publisherSql = literalSql(compiled[1].statement);
+    expect(publisherSql).toContain("issues.published_at >= ");
+    expect(publisherSql).toContain("issues.published_at < ");
+    expect(publisherSql).not.toContain("issues.published_at <= ");
+
+    const chatSql = literalSql(compiled[2].statement);
+    expect(chatSql).toContain("m.created_at >= ");
+    expect(chatSql).toContain("m.created_at < ");
+    expect(chatSql).not.toContain("m.created_at <= ");
   });
 });

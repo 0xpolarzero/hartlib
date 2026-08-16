@@ -14,6 +14,7 @@ import {
   QueryReviewSchema,
   StructuredRetrievalTraceSchema,
   normalizeInternalQueryPlanProvider,
+  normalizeInternalQuery,
   normalizeQueryReviewProvider,
 } from "./query-spec";
 
@@ -68,7 +69,7 @@ describe("Phase A query contracts", () => {
           all: [{ text: "  cafe\u0301  ", mode: "term" as const }],
           anyOf: [],
           not: [],
-          filters: { documents: { publishedAt: { after: " 2026-02-01 " } } },
+          filters: { documents: { publishedAt: { after: " 2026-02-01T00:00:00.000Z " } } },
           order: "relevance" as const,
         },
       ],
@@ -117,7 +118,7 @@ describe("Phase A query contracts", () => {
         queries: [
           {
             ...rawPlan.queries[0],
-            filters: { documents: { publishedAt: { after: "2023-02-29" } } },
+            filters: { documents: { publishedAt: { after: "2023-02-29T00:00:00.000Z" } } },
           },
         ],
       }),
@@ -146,7 +147,7 @@ describe("Phase A query contracts", () => {
     expect(() => normalizeInternalQueryPlanProvider({ action: "search", queries: [] })).toThrow();
   });
 
-  it("keeps provider date and author constraints in raw parsing and emitted JSON Schema", () => {
+  it("keeps provider timestamp and author constraints in raw parsing and emitted JSON Schema", () => {
     const plan = {
       action: "search" as const,
       queries: [
@@ -157,7 +158,7 @@ describe("Phase A query contracts", () => {
           not: [],
           filters: {
             chatMessages: {
-              sentAt: { after: "2023-02-29" },
+              sentAt: { after: "2023-02-29T00:00:00.000Z" },
               authors: ["user", "user"],
             },
           },
@@ -177,7 +178,9 @@ describe("Phase A query contracts", () => {
         queries: [
           {
             ...plan.queries[0],
-            filters: { chatMessages: { sentAt: { after: "2024-02-29" }, authors: ["user"] } },
+            filters: {
+              chatMessages: { sentAt: { after: "2024-02-29T00:00:00.000Z" }, authors: ["user"] },
+            },
           },
         ],
       }),
@@ -185,7 +188,7 @@ describe("Phase A query contracts", () => {
     expect(containsUniqueItems(z.toJSONSchema(InternalQueryPlanProviderSchema))).toBe(true);
     expect(containsUniqueItems(z.toJSONSchema(QueryReviewProviderSchema))).toBe(true);
     expect(JSON.stringify(z.toJSONSchema(InternalQueryPlanProviderSchema))).toContain(
-      '"format":"date"',
+      '"format":"date-time"',
     );
     expect(
       normalizeQueryReviewProvider({ action: "accept", reason: "provider explanation" }),
@@ -261,21 +264,21 @@ describe("Phase A query contracts", () => {
       InternalQuerySchema.parse({
         ...negativeOnly,
         scope: "documents",
-        filters: { documents: { publishedAt: { after: "2026-01-01" } } },
+        filters: { documents: { publishedAt: { after: "2026-01-01T00:00:00.000Z" } } },
       }),
     ).not.toThrow();
     expect(() =>
       InternalQuerySchema.parse({
         ...negativeOnly,
-        filters: { documents: { publishedAt: { after: "2026-01-01" } } },
+        filters: { documents: { publishedAt: { after: "2026-01-01T00:00:00.000Z" } } },
       }),
     ).toThrow();
     expect(() =>
       InternalQuerySchema.parse({
         ...negativeOnly,
         filters: {
-          documents: { publishedAt: { after: "2026-01-01" } },
-          chatMessages: { sentAt: { after: "2026-01-01" } },
+          documents: { publishedAt: { after: "2026-01-01T00:00:00.000Z" } },
+          chatMessages: { sentAt: { after: "2026-01-01T00:00:00.000Z" } },
         },
       }),
     ).not.toThrow();
@@ -301,20 +304,66 @@ describe("Phase A query contracts", () => {
     ).toThrow(/unique/u);
   });
 
-  it("enforces exact calendar dates and ordered intervals", () => {
-    const withDate = (publishedAt: { after?: string; before?: string }) => ({
+  it("validates exact RFC3339 UTC timestamp bounds for canonical and provider filters", () => {
+    const withTimestamp = (publishedAt: { after?: string; before?: string }) => ({
       ...query(),
       filters: { documents: { publishedAt } },
     });
-    expect(InternalQuerySchema.parse(withDate({ after: "2024-02-29" }))).toBeDefined();
-    expect(() => InternalQuerySchema.parse(withDate({ after: "2023-02-29" }))).toThrow();
-    expect(() => InternalQuerySchema.parse(withDate({ after: "2026-1-01" }))).toThrow();
+    const withChatTimestamp = (sentAt: { after?: string; before?: string }) => ({
+      ...query(),
+      filters: { chatMessages: { sentAt } },
+    });
+    const providerPlan = (filters: unknown) => ({
+      action: "search" as const,
+      queries: [{ ...query(), filters }],
+    });
+    const exact = "2024-02-29T12:34:56.123456Z";
+    const canonical = InternalQuerySchema.parse(withTimestamp({ after: ` ${exact} ` }));
+    expect(canonical.filters.documents?.publishedAt?.after).toBe(exact);
+    expect(normalizeInternalQuery(withTimestamp({ after: ` ${exact} ` }))).toMatchObject({
+      filters: { documents: { publishedAt: { after: exact } } },
+    });
+    const provider = InternalQueryPlanProviderSchema.parse(
+      providerPlan({ documents: { publishedAt: { after: ` ${exact} ` } } }),
+    );
+    expect(
+      provider.action === "search"
+        ? provider.queries[0]?.filters?.documents?.publishedAt?.after
+        : undefined,
+    ).toBe(exact);
+
+    for (const invalid of [
+      "2024-02-29",
+      "2024-02-29T12:34Z",
+      "2024-02-29T12:34:56.1234567Z",
+      "2024-02-29T12:34:56z",
+      "2024-02-29T12:34:56+00:00",
+      "2023-02-29T12:34:56Z",
+    ]) {
+      expect(() => InternalQuerySchema.parse(withTimestamp({ after: invalid }))).toThrow();
+      expect(() => InternalQuerySchema.parse(withChatTimestamp({ before: invalid }))).toThrow();
+      expect(() =>
+        InternalQueryPlanProviderSchema.parse(
+          providerPlan({ documents: { publishedAt: { after: invalid } } }),
+        ),
+      ).toThrow();
+      expect(() =>
+        InternalQueryPlanProviderSchema.parse(
+          providerPlan({ chatMessages: { sentAt: { before: invalid } } }),
+        ),
+      ).toThrow();
+    }
     expect(() =>
-      InternalQuerySchema.parse(withDate({ after: "2026-02-01", before: "2026-01-01" })),
+      InternalQuerySchema.parse(
+        withTimestamp({
+          after: "2026-02-01T00:00:00.000Z",
+          before: "2026-01-01T00:00:00.000Z",
+        }),
+      ),
     ).toThrow();
   });
 
-  it("accepts a broad freshness plan as a date-only document query", () => {
+  it("accepts a broad freshness plan as an exact timestamp-bounded document query", () => {
     const plan = InternalQueryPlanSchema.parse({
       action: "search",
       queries: [
@@ -327,7 +376,10 @@ describe("Phase A query contracts", () => {
           filters: {
             documents: {
               languages: ["fr"],
-              publishedAt: { after: "2026-08-02" },
+              publishedAt: {
+                after: "2026-08-01T14:12:48.063Z",
+                before: "2026-08-02T14:12:48.063Z",
+              },
             },
           },
           order: "newest",
@@ -345,7 +397,10 @@ describe("Phase A query contracts", () => {
           filters: {
             documents: {
               languages: ["fr"],
-              publishedAt: { after: "2026-08-02" },
+              publishedAt: {
+                after: "2026-08-01T14:12:48.063Z",
+                before: "2026-08-02T14:12:48.063Z",
+              },
             },
           },
           order: "newest",

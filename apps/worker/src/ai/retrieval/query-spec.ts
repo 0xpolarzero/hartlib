@@ -146,15 +146,29 @@ const boundedText = (maxBytes: number) =>
 /** Structural provider fields. Semantic normalization and cross-field checks stay below. */
 const providerText = (maxBytes: number, minimum = 1) => z.string().min(minimum).max(maxBytes);
 
-const providerDate = z
+const RFC3339_UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u;
+const IsoDateTimeSchema = z.iso.datetime();
+
+/** Exact UTC transport form shared by provider and canonical query filters. */
+export const Rfc3339UtcTimestampSchema = z
   .string()
   .max(MAX_HIT_DATE_BYTES)
-  .transform((value) => value.trim())
-  .pipe(z.iso.date());
+  .trim()
+  .refine(
+    (value) => RFC3339_UTC_TIMESTAMP.test(value),
+    "timestamp must use RFC 3339 UTC seconds with an optional one-to-six-digit fraction",
+  )
+  .refine(
+    (value) => IsoDateTimeSchema.safeParse(value).success,
+    "timestamp must be a real RFC 3339 UTC instant",
+  )
+  .meta({ format: "date-time" });
 
-const providerDateInterval = z.strictObject({
-  after: providerDate.optional(),
-  before: providerDate.optional(),
+const providerTimestamp = Rfc3339UtcTimestampSchema;
+
+const providerTimestampInterval = z.strictObject({
+  after: providerTimestamp.optional(),
+  before: providerTimestamp.optional(),
 });
 
 const localResultId = z
@@ -174,29 +188,41 @@ const normalizedList = z
     }
   });
 
-const isoDate = z
-  .string()
-  .transform((value) => value.trim())
-  .refine((value) => /^\d{4}-\d{2}-\d{2}$/u.test(value), "date must be YYYY-MM-DD")
-  .refine((value) => {
-    const [year, month, day] = value.split("-").map(Number);
-    const date = new Date(Date.UTC(year!, month! - 1, day));
-    return (
-      date.getUTCFullYear() === year &&
-      date.getUTCMonth() === month! - 1 &&
-      date.getUTCDate() === day
-    );
-  }, "date is not a real calendar date");
+const utcTimestamp = Rfc3339UtcTimestampSchema;
 
-const dateInterval = z
-  .strictObject({ after: isoDate.optional(), before: isoDate.optional() })
+const timestampParts = (value: string): { readonly whole: string; readonly fraction: string } => {
+  const withoutZone = value.slice(0, -1);
+  const separator = withoutZone.indexOf(".");
+  return separator < 0
+    ? { whole: withoutZone, fraction: "" }
+    : {
+        whole: withoutZone.slice(0, separator),
+        fraction: withoutZone.slice(separator + 1),
+      };
+};
+
+const compareUtcTimestamps = (left: string, right: string): number => {
+  const leftParts = timestampParts(left);
+  const rightParts = timestampParts(right);
+  if (leftParts.whole !== rightParts.whole) {
+    return leftParts.whole < rightParts.whole ? -1 : 1;
+  }
+  const width = Math.max(leftParts.fraction.length, rightParts.fraction.length);
+  const leftFraction = leftParts.fraction.padEnd(width, "0");
+  const rightFraction = rightParts.fraction.padEnd(width, "0");
+  if (leftFraction === rightFraction) return 0;
+  return leftFraction < rightFraction ? -1 : 1;
+};
+
+const timestampInterval = z
+  .strictObject({ after: utcTimestamp.optional(), before: utcTimestamp.optional() })
   .superRefine((interval, context) => {
     if (
       interval.after !== undefined &&
       interval.before !== undefined &&
-      interval.after > interval.before
+      compareUtcTimestamps(interval.after, interval.before) > 0
     ) {
-      context.addIssue({ code: "custom", message: "date interval is reversed" });
+      context.addIssue({ code: "custom", message: "timestamp interval is reversed" });
     }
   });
 
@@ -271,7 +297,7 @@ const makeQueryFiltersSchema = <TList extends z.ZodType, TInterval extends z.Zod
   interval: TInterval,
 ) => z.strictObject(queryFiltersShape(list, interval));
 
-const QueryFiltersSchema = makeQueryFiltersSchema(normalizedList, dateInterval);
+const QueryFiltersSchema = makeQueryFiltersSchema(normalizedList, timestampInterval);
 
 const makeQueryShape = <
   TPurpose extends z.ZodType,
@@ -340,7 +366,7 @@ export const InternalQuerySchema = makeQueryShape({
 /** Provider tool calls often encode omitted optional filters as JSON null. */
 const providerTextList = z.array(providerText(MAX_ATOM_BYTES)).max(MAX_QUERY_ARRAY_VALUE);
 const providerOptionalTextList = providerTextList.nullable().optional();
-const providerOptionalDateInterval = providerDateInterval.nullable().optional();
+const providerOptionalTimestampInterval = providerTimestampInterval.nullable().optional();
 const ProviderQueryFiltersSchema = z
   .strictObject({
     documents: z
@@ -349,14 +375,14 @@ const ProviderQueryFiltersSchema = z
         countries: providerOptionalTextList,
         languages: providerOptionalTextList,
         documentTypes: providerOptionalTextList,
-        publishedAt: providerOptionalDateInterval,
+        publishedAt: providerOptionalTimestampInterval,
       })
       .nullable()
       .optional(),
     chatMessages: z
       .strictObject({
         authors: authorsSchema.nullable().optional(),
-        sentAt: providerOptionalDateInterval,
+        sentAt: providerOptionalTimestampInterval,
       })
       .nullable()
       .optional(),
@@ -745,14 +771,14 @@ const normalizeUniqueStrings = (values: readonly string[] | undefined): readonly
         (value) => value.length > 0,
       );
 
-const normalizeDateInterval = (
+const normalizeTimestampInterval = (
   value: { readonly after?: string | undefined; readonly before?: string | undefined } | undefined,
 ): { readonly after?: string | undefined; readonly before?: string | undefined } | undefined =>
   value === undefined
     ? undefined
     : {
-        ...(value.after === undefined ? {} : { after: value.after.trim() }),
-        ...(value.before === undefined ? {} : { before: value.before.trim() }),
+        ...(value.after === undefined ? {} : { after: value.after }),
+        ...(value.before === undefined ? {} : { before: value.before }),
       };
 
 /** Parse and normalize one provider query without changing its meaning. */
@@ -785,7 +811,7 @@ export const normalizeInternalQuery = (value: unknown): NormalizedInternalQuery 
                 : { documentTypes: normalizeUniqueStrings(documents.documentTypes) }),
               ...(documents.publishedAt === undefined
                 ? {}
-                : { publishedAt: normalizeDateInterval(documents.publishedAt) }),
+                : { publishedAt: normalizeTimestampInterval(documents.publishedAt) }),
             },
           }),
       ...(chatMessages === undefined
@@ -797,7 +823,7 @@ export const normalizeInternalQuery = (value: unknown): NormalizedInternalQuery 
                 : { authors: [...new Set(chatMessages.authors)] }),
               ...(chatMessages.sentAt === undefined
                 ? {}
-                : { sentAt: normalizeDateInterval(chatMessages.sentAt) }),
+                : { sentAt: normalizeTimestampInterval(chatMessages.sentAt) }),
             },
           }),
     },

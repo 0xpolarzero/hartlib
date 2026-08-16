@@ -28,6 +28,7 @@ import {
   BranchReasonCodeSchema,
   InternalQueryPlanSchema,
   PHYSICAL_QUERY_BRANCHES,
+  Rfc3339UtcTimestampSchema,
 } from "../retrieval/query-spec";
 import {
   FusedResultSchema,
@@ -121,7 +122,7 @@ const LoadedTurnSchema = z.strictObject({
   userMessage: z.string(),
   locale: z.string(),
   market: z.string(),
-  currentDate: z.string(),
+  currentTimestamp: Rfc3339UtcTimestampSchema,
   citationNamespace: z.string().regex(/^cn_[A-Za-z0-9_-]{22}$/u),
   acceptanceScope: RunAcceptanceScopeSchema,
 });

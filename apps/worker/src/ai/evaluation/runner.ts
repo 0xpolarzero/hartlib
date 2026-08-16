@@ -172,7 +172,7 @@ export const terminalRequestEvidenceSha256Hex = (
 export const exactPlanTurnRequest = (
   fixture: GoldenEvaluationCase,
   selectedConversation: readonly ExactProductionConversationBinding[],
-  currentDate: string,
+  currentTimestamp: string,
 ): ProviderRequest => ({
   requestClass: "fast",
   model: "glm-5-turbo",
@@ -185,7 +185,7 @@ export const exactPlanTurnRequest = (
         entries: exactProductionConversation(fixture, selectedConversation),
         locale: fixture.locale,
         market: fixture.market,
-        currentDate,
+        currentTimestamp,
       }),
     },
   ],
@@ -204,13 +204,13 @@ export const exactPlanTurnRequest = (
 export const attestExactPlanTurnRequest = (
   fixture: GoldenEvaluationCase,
   selectedConversation: readonly ExactProductionConversationBinding[],
-  currentDate: string,
+  currentTimestamp: string,
 ): {
   readonly inputTokens: number;
   readonly usableInputTokens: number;
   readonly requestSha256Hex: string;
 } => {
-  const request = exactPlanTurnRequest(fixture, selectedConversation, currentDate);
+  const request = exactPlanTurnRequest(fixture, selectedConversation, currentTimestamp);
   const model = resolveRegisteredModel(request.model);
   return {
     inputTokens: model.countRequestTokens(request),

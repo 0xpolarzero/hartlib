@@ -4,12 +4,10 @@ import {
   type LocaleMarketPair,
   type Market,
   isLocale,
-  isMarket,
   resolveRedirectTarget,
 } from "@hartlib/i18n";
 
 const LOCALE_STORAGE_KEY = "hartlib:demo:locale";
-const MARKET_STORAGE_KEY = "hartlib:demo:market";
 const MANUAL_SOURCES_STORAGE_KEY = "hartlib:demo:manual-sources";
 
 export function getStoredLocale(): Locale | null {
@@ -26,25 +24,6 @@ export function setStoredLocale(locale: Locale): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
-  } catch {
-    // Ignore storage failures; demo state stays in memory.
-  }
-}
-
-export function getStoredMarket(): Market | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const value = window.localStorage.getItem(MARKET_STORAGE_KEY);
-    return value && isMarket(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-export function setStoredMarket(market: Market): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(MARKET_STORAGE_KEY, market);
   } catch {
     // Ignore storage failures; demo state stays in memory.
   }
@@ -89,25 +68,25 @@ function readAcceptLanguage(): string | undefined {
  */
 export function detectLocale(): LocaleMarketPair {
   const storedLocale = getStoredLocale();
-  const storedMarket = getStoredMarket();
   const acceptLanguage = readAcceptLanguage();
 
   return resolveRedirectTarget({
     ...(storedLocale !== null ? { storedLocale } : {}),
-    ...(storedMarket !== null ? { storedMarket } : {}),
     ...(acceptLanguage !== undefined ? { acceptLanguage } : {}),
   });
 }
 
 export const resolveDemoLocaleMarket = (
   explicitLocale: Locale | null,
-  storedMarket: Market | null,
   detected: LocaleMarketPair,
   forcedMarket: Market | null = null,
 ): LocaleMarketPair =>
   explicitLocale === null
-    ? detected
+    ? { locale: detected.locale, market: DEFAULT_MARKET_FOR_LOCALE[detected.locale] }
     : {
         locale: explicitLocale,
-        market: forcedMarket ?? storedMarket ?? DEFAULT_MARKET_FOR_LOCALE[explicitLocale],
+        market:
+          forcedMarket === DEFAULT_MARKET_FOR_LOCALE[explicitLocale]
+            ? forcedMarket
+            : DEFAULT_MARKET_FOR_LOCALE[explicitLocale],
       };

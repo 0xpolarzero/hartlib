@@ -228,7 +228,7 @@ const resolve = (currentMessage: string) => {
           entries,
           locale: "en-US",
           market: "US",
-          currentDate: "2026-07-14",
+          currentTimestamp: "2026-07-14T00:00:00.000Z",
         }),
         outputToolName: "emit_plan_turn",
         outputToolDescription: "Emit the validated plan-turn result.",
@@ -816,7 +816,7 @@ describe("deterministic internal retrieval and citation", () => {
           selectedConversation: [],
           locale: "en-US",
           market: "US",
-          currentDate: "2026-07-10",
+          currentTimestamp: "2026-07-10T00:00:00.000Z",
         }),
         outputToolName: "emit_internal_query_plan",
         outputToolDescription: "Emit one complete structured internal query plan.",
@@ -996,7 +996,7 @@ describe("deterministic internal retrieval and citation", () => {
           },
         }),
       ),
-    ).rejects.toThrow(/strict schema|currentDate|selectedConversation/u);
+    ).rejects.toThrow(/strict schema|currentTimestamp|selectedConversation/u);
 
     await expect(
       withBoundaryTask("internal-query-unknown-role", async (agent) =>
@@ -1035,7 +1035,7 @@ describe("deterministic internal retrieval and citation", () => {
             selectedConversation: [],
             locale: "en-US",
             market: "US",
-            currentDate: "2026-07-10",
+            currentTimestamp: "2026-07-10T00:00:00.000Z",
           }),
           outputToolName: "emit_internal_query_plan",
           outputToolDescription: "Emit one complete structured internal query plan.",
@@ -1413,7 +1413,7 @@ const deterministicWorkflowLoad: LoadedTurn = {
   userMessage: "Compare the deterministic evidence.",
   locale: "en-US",
   market: "US",
-  currentDate: "2026-07-14",
+  currentTimestamp: "2026-07-14T00:00:00.000Z",
   citationNamespace: "cn_" + "B".repeat(22),
   acceptanceScope: makeRunAcceptanceScope({
     userId: "deterministic-workflow-user",
@@ -1701,7 +1701,7 @@ const runDeterministicProductionWorkflow = async (
             selectedConversation: [],
             locale: "en-US",
             market: "US",
-            currentDate: "2026-07-14",
+            currentTimestamp: "2026-07-14T00:00:00.000Z",
           }),
           "emit_internal_query_plan",
           z.toJSONSchema(InternalQueryPlanProviderSchema),

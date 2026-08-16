@@ -1,7 +1,7 @@
 import { GoldenEvaluationSetSchema } from "../schema";
 
 const firstMessageDocument =
-  "In 2024, France connected 4.6 GW of new solar capacity. Grid queues remained concentrated in southern regions.";
+  "En 2024, la France a raccordé 4,6 GW de nouvelles capacités solaires. Les files d’attente sont restées concentrées dans les régions du sud.";
 const followUpDocument =
   "The 2025 outlook projects 5.1 GW of additional solar connections, subject to transformer availability.";
 const oldChatEvidence =

@@ -1,11 +1,10 @@
 import {
+  DEFAULT_MARKET_FOR_LOCALE,
   FormattedMessage,
   type Locale,
   LOCALES,
-  MARKETS,
   useIntl,
   useLocale,
-  useMarket,
   useSetLocaleMarket,
 } from "@hartlib/i18n";
 import { cn } from "@hartlib/ui";
@@ -16,18 +15,17 @@ const LABEL_KEY: Record<Locale, string> = {
 };
 
 /**
- * Locale/market switcher for the app header. Lets the user switch between the
- * supported locales and source markets independently.
+ * Paired locale/market switcher for the app header.
  */
 export function LocaleSwitcher() {
   const locale = useLocale();
-  const market = useMarket();
   const setLocaleMarket = useSetLocaleMarket();
   const intl = useIntl();
 
   function handleChange(event: React.ChangeEvent<HTMLSelectElement>) {
     const next = event.target.value as Locale;
-    setLocaleMarket({ locale: next, market });
+    if (!LOCALES.includes(next)) return;
+    setLocaleMarket({ locale: next, market: DEFAULT_MARKET_FOR_LOCALE[next] });
   }
 
   const label = intl.formatMessage({ id: "localeSwitcher.label" });
@@ -47,23 +45,6 @@ export function LocaleSwitcher() {
         {LOCALES.map((value) => (
           <option key={value} value={value}>
             <FormattedMessage id={LABEL_KEY[value]} />
-          </option>
-        ))}
-      </select>
-      <select
-        aria-label={intl.formatMessage({ id: "marketSwitcher.label" })}
-        value={market}
-        onChange={(event) =>
-          setLocaleMarket({ locale, market: event.target.value as (typeof MARKETS)[number] })
-        }
-        className={cn(
-          "h-8 rounded-sm border border-rule bg-paper px-2 text-sm text-ink",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        )}
-      >
-        {MARKETS.map((value) => (
-          <option key={value} value={value}>
-            {value}
           </option>
         ))}
       </select>

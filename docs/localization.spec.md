@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Hartlib separates UI locale from market. Locale is UI language and formatting. Market is source and content scope. They default together but remain technically independent. This separation supports scaling from France to more countries.
+Hartlib pairs UI locale with market. Locale sets UI language and formatting. Market sets source and content scope. The paired choice keeps language and source location aligned while leaving room to add more country pairs later.
 
 ## Supported Locales and Markets
 
@@ -14,8 +14,8 @@ Hartlib separates UI locale from market. Locale is UI language and formatting. M
 ## Conceptual Model
 
 - `locale`: UI language and formatting (dates, numbers, relative time). Controlled by `Intl` APIs and the `@hartlib/i18n` message catalogs.
-- `market`: product and content scope. Controls default public-source selection. Country is first-class source metadata, not a UI category.
-- A French-speaking user in the US may use the `fr-FR` UI with `US` market sources, or vice versa. They default together, but the user can decouple them.
+- `market`: product and content scope. Controls default public-source selection. Country is first-class source metadata, not a UI category. The active market is always `DEFAULT_MARKET_FOR_LOCALE[locale]`.
+- The locale and market are selected together: `fr-FR` always uses `FR` sources and `en-US` always uses `US` sources.
 
 ## Routing
 
@@ -33,7 +33,7 @@ Optional pretty aliases for public demo entry:
 /us -> en-US + US
 ```
 
-Internal state always uses the real codes. A pretty alias is an explicit pair and overrides a conflicting stored market; after parsing, normal route generation uses the canonical locale prefix.
+Internal state always uses the real codes. A pretty alias resolves to its matching locale and market pair; after parsing, normal route generation uses the canonical locale prefix.
 
 Never auto-redirect away from an explicit locale URL. If a user opens `/en-US/client`, honor it.
 
@@ -41,11 +41,10 @@ Never auto-redirect away from an explicit locale URL. If a user opens `/en-US/cl
 
 For neutral entry points like `/` or `/demo` only, resolve the target in this order:
 
-1. Stored locale and stored market choices (cookie or localStorage), validated independently.
+1. Stored locale choice (cookie or localStorage), with its market derived from the locale.
 2. URL locale, if present and valid.
 3. Browser `Accept-Language`.
-4. Optional country signal, if available.
-5. Default to `fr-FR` + `FR`.
+4. Default to `fr-FR` + `FR`.
 
 ## Production Source Defaulting Rules
 
@@ -80,10 +79,11 @@ For neutral entry points like `/` or `/demo` only, resolve the target in this or
 
 ## Locale and Market Switcher
 
-- The navbar exposes explicit locale and market controls. Changing locale preserves the selected market, and changing market preserves the selected locale.
+- The navbar exposes one paired locale and market control. Selecting `fr-FR` selects `FR` sources; selecting `en-US` selects `US` sources.
+- The options are always `Français — France` and `English — United States`, so each language appears in its own language.
 - It switches to the same route in the other locale when possible.
-- It validates and persists both choices independently in localStorage. Invalid persisted market values are ignored and fall back to the locale's safe default.
-- An explicit canonical locale route (`/fr-FR/...` or `/en-US/...`) changes only the UI locale. On initial load or reload it preserves a separately stored valid market, and changing either control preserves the other value. The `/fr` and `/us` demo aliases are the deliberate exception because each denotes the full locale/market pair above.
+- It persists the selected locale in localStorage. The market is derived from `DEFAULT_MARKET_FOR_LOCALE`, so stale or mismatched market values cannot be restored.
+- Canonical locale routes and the `/fr` and `/us` aliases always resolve to their matching locale and market pair.
 - It does not clear production user-selected sources after a manual change. No source-selection mutation exists in the live demo.
 
 ## Terminology

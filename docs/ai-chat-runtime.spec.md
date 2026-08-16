@@ -78,7 +78,7 @@ type LoadedTurn = {
   userMessage: string;
   locale: "fr-FR" | "en-US";
   market: "FR" | "US";
-  currentDate: string;
+  currentTimestamp: string;
   citationNamespace: string;
   acceptanceScope: RunAcceptanceScope;
 };
@@ -178,8 +178,11 @@ normalization and outer trim only. Review reasons are closed codes: accept uses
 `sufficient_coverage`, replacement uses `missed_concept`, `narrow_filter`,
 `wrong_language`, or `unsupported_branch`, and `no_evidence` uses
 `no_supporting_evidence`; arbitrary text never crosses the provider boundary.
-Exact calendar dates, query count, total atom count, and serialized UTF-8 bytes
-have hard contract bounds. Retrieval code applies those bounds before physical SQL,
+Exact RFC 3339 UTC timestamp bounds, query count, total atom count, and serialized
+UTF-8 bytes have hard contract bounds. `publishedAt` and `sentAt` require
+`YYYY-MM-DDTHH:mm:ss`, an optional one-to-six-digit fractional second, and uppercase
+`Z`. Invalid dates, date-only input, minute-only input, offsets, and longer fractions
+fail. Retrieval code applies those bounds before physical SQL,
 then returns explicit branch coverage, truncation, fused candidates, and exact
 hydration proof to A's one review operation.
 
@@ -605,11 +608,11 @@ result as well as the clarification result.
 `load-turn` is deterministic code. It loads only the stable run and request data
 defined in `LoadedTurn`. It does not load conversation bodies, memory
 inventories, source metadata, extraction rows, content hashes, or policy bodies.
-It locks the `ai_runs` row, derives `currentDate` from `ai_runs.created_at` as
-the UTC calendar date, and idempotently writes the `run_started` event in one
-product transaction. Delayed starts and task retries therefore keep the same
-date in plan-turn and retrieval requests, even when the worker clock crosses a
-date boundary.
+It locks the `ai_runs` row, renders `currentTimestamp` from `ai_runs.created_at`
+as an exact RFC 3339 UTC instant, and idempotently writes the `run_started` event
+in one product transaction. It never reads the worker clock. Delayed starts and
+task retries therefore keep the same instant in plan-turn and retrieval requests,
+even when the worker clock crosses a date boundary.
 
 `plan-turn` is the first model task on every turn, including the first. Inside
 its own boundary, current database reads provide the accessible terminal prior
@@ -702,7 +705,7 @@ Every async compute task consumes the installed Smithers task runtime's exact `s
 `plan-turn` runs before every retrieval operation, including on the first turn.
 It receives the current message and a bounded, exact rendering of current
 terminal prior turns read inside the task. It may use stable message and turn
-IDs, locale, market, current date, and the effective request flags. It never
+IDs, locale, market, current timestamp, and the effective request flags. It never
 receives a source list, memory inventory, extraction identity, or policy body.
 
 The model chooses one strict result from `PlanTurnResult`. A `clarify` result
@@ -755,13 +758,19 @@ serialized UTF-8 plan, total atom, provider-output, branch-row, candidate, and
 hydration bounds. A negative-only query must carry a positive indexed filter.
 
 For a broad freshness request such as “what’s new” or “depuis hier”, the provider
-must emit an ordinary date-bounded document query with `order: "newest"`, an
-exact publication-date filter, and empty `all` and `anyOf` arrays.
+must emit an ordinary document query with `publishedAt` bounds
+`[currentTimestamp - 24 hours, currentTimestamp)`, `order: "newest"`, and empty
+`all` and `anyOf` arrays.
 If the user names a subject, the provider may keep atoms for that subject. The
-date filter, not generic words such as `news` or `actualités`, defines the
+timestamp bounds, not generic words such as `news` or `actualités`, define the
 requested time range. The runtime does not detect freshness vocabulary or
 rewrite a provider plan. Initial and replacement plans remain in the
 structured retrieval trace for human review.
+
+The public-document, publisher-document, and chat-message branches preserve the
+supplied instants. Each compiles an `after` bound as `>= after` and a `before`
+bound as `< before`, so every timestamp range is `[after, before)`. No branch
+coerces a bound to midnight or uses an inclusive upper bound.
 
 Before compilation, code resolves document `sourceNames` against the immutable
 accepted scope. Public-source IDs, publisher subscription IDs, company/user
@@ -845,7 +854,7 @@ inspection producer is mounted.
 
 The internal query-plan task receives the resolved or topic question, the
 selected recent conversation rendered for that question, locale, market, and
-current date. It emits one strict `InternalQueryPlan`; code resolves source
+current timestamp. It emits one strict `InternalQueryPlan`; code resolves source
 names inside the accepted scope, compiles every query to all applicable
 stores, runs bounded branches, hydrates and verifies fused results, and
 records branch coverage and truncation. The model never receives source IDs,
@@ -856,7 +865,9 @@ complete query array, every provider-safe fused preview with exact full-content
 token counts, and the complete coverage and truncation arrays. It can accept the
 result, replace the whole query array once, or return `no_evidence`; it cannot
 select individual result IDs. A replacement discards the initial result set and
-is not reviewed again. Retrieval results then enter assembly, which assigns the
+is not reviewed again. For broad freshness, review preserves
+`[currentTimestamp - 24 hours, currentTimestamp)`, newest order, and empty
+generic freshness atoms unless the user named a subject. Retrieval results then enter assembly, which assigns the
 final `cNNN` IDs in deterministic merge order.
 Older selected chat messages are excluded in the code-owned query scope.
 Assistant history is sanitized before hashing and range mapping; user and

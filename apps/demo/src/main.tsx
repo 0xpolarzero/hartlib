@@ -11,15 +11,14 @@ import {
 import { demoDataset, type HartlibPublication, type HartlibSource } from "@hartlib/demo-data";
 import {
   I18nProvider,
+  DEFAULT_MARKET_FOR_LOCALE,
   LOCALES,
-  MARKETS,
   type Locale,
   type LocaleMarketPair,
   type Market,
   FormattedMessage,
   htmlLang,
   isLocale,
-  isMarket,
   useIntl,
   useLocale,
   useMarket,
@@ -40,13 +39,7 @@ import {
   getDemoRouteFromPath,
   resolveDemoRoute,
 } from "./routing";
-import {
-  detectLocale,
-  getStoredMarket,
-  resolveDemoLocaleMarket,
-  setStoredLocale,
-  setStoredMarket,
-} from "./locale-bootstrap";
+import { detectLocale, resolveDemoLocaleMarket, setStoredLocale } from "./locale-bootstrap";
 import {
   Breadcrumbs,
   Button,
@@ -1859,70 +1852,58 @@ function LocaleMarketSwitcher() {
   const intl = useIntl();
   const setLocaleMarket = useSetLocaleMarket();
   const locale = useLocale();
-  const market = useMarket();
 
   return (
-    <div className="flex items-center gap-1">
-      <select
-        value={locale}
-        data-testid="locale-switcher"
-        aria-label={intl.formatMessage({ id: "localeSwitcher.label" })}
-        className="h-7 rounded-sm border border-rule bg-canvas px-1 !text-[12px] font-medium leading-none text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        onChange={(event) => {
-          const next = event.target.value;
-          if (!isLocale(next)) return;
-          setLocaleMarket({ locale: next, market });
-        }}
-      >
-        {LOCALES.map((optionLocale) => (
-          <option key={optionLocale} value={optionLocale}>
-            {intl.formatMessage({
-              id: optionLocale === "fr-FR" ? "localeSwitcher.frFR" : "localeSwitcher.enUS",
-            })}
-          </option>
-        ))}
-      </select>
-      <select
-        value={market}
-        data-testid="market-switcher"
-        aria-label={intl.formatMessage({ id: "marketSwitcher.label" })}
-        className="h-7 rounded-sm border border-rule bg-canvas px-1 !text-[12px] font-medium leading-none text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        onChange={(event) => {
-          const next = event.target.value;
-          if (!isMarket(next)) return;
-          setLocaleMarket({ locale, market: next });
-        }}
-      >
-        {MARKETS.map((optionMarket) => (
-          <option key={optionMarket} value={optionMarket}>
-            {optionMarket}
-          </option>
-        ))}
-      </select>
-    </div>
+    <select
+      value={locale}
+      data-testid="locale-switcher"
+      aria-label={intl.formatMessage({ id: "localeSwitcher.label" })}
+      className="h-7 rounded-sm border border-rule bg-canvas px-1 !text-[12px] font-medium leading-none text-ink outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      onChange={(event) => {
+        const next = event.target.value;
+        if (!isLocale(next)) return;
+        setLocaleMarket({ locale: next, market: DEFAULT_MARKET_FOR_LOCALE[next] });
+      }}
+    >
+      {LOCALES.map((optionLocale) => (
+        <option key={optionLocale} value={optionLocale}>
+          {intl.formatMessage({
+            id: optionLocale === "fr-FR" ? "localeSwitcher.frFR" : "localeSwitcher.enUS",
+          })}
+        </option>
+      ))}
+    </select>
   );
 }
 
 /**
- * Root shell that owns the (locale, market) pair, wires it into the i18n
- * provider, persists user choices, syncs `<html lang>`, and rewrites the URL
- * to the new locale prefix when the user switches.
+ * Root shell that owns the paired locale and derived market, wires them into
+ * the i18n provider, persists the selected locale, syncs `<html lang>`, and
+ * rewrites the URL to the new locale prefix when the user switches.
  */
 function DemoShell() {
   const initial = useMemo<DemoRoute & { resolved: LocaleMarketPair }>(() => {
     const parsed = getDemoRouteFromPath(window.location.pathname);
     const prefix = getDemoLocalePrefixFromPath(window.location.pathname);
-    const resolved = resolveDemoLocaleMarket(
-      parsed.locale,
-      getStoredMarket(),
-      detectLocale(),
-      prefix.forcedMarket,
-    );
+    const resolved = resolveDemoLocaleMarket(parsed.locale, detectLocale(), prefix.forcedMarket);
     return { ...parsed, resolved };
   }, []);
 
   const [locale, setLocale] = useState<Locale>(initial.resolved.locale);
-  const [market, setMarket] = useState<Market>(initial.resolved.market);
+  const market = DEFAULT_MARKET_FOR_LOCALE[locale];
+
+  useEffect(() => {
+    function syncLocaleFromPath() {
+      const pathname = window.location.pathname;
+      const parsed = getDemoRouteFromPath(pathname);
+      const prefix = getDemoLocalePrefixFromPath(pathname);
+      const resolved = resolveDemoLocaleMarket(parsed.locale, detectLocale(), prefix.forcedMarket);
+      setLocale(resolved.locale);
+    }
+
+    window.addEventListener("popstate", syncLocaleFromPath);
+    return () => window.removeEventListener("popstate", syncLocaleFromPath);
+  }, []);
 
   useEffect(() => {
     document.documentElement.lang = htmlLang(locale);
@@ -1944,9 +1925,7 @@ function DemoShell() {
 
   function handleChangeLocaleMarket(next: LocaleMarketPair) {
     setLocale(next.locale);
-    setMarket(next.market);
     setStoredLocale(next.locale);
-    setStoredMarket(next.market);
 
     if (typeof window === "undefined") return;
     const parsed = getDemoRouteFromPath(window.location.pathname);

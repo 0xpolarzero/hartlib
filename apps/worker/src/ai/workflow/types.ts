@@ -515,7 +515,7 @@ export interface LoadedTurn {
   readonly userMessage: string;
   readonly locale: Locale;
   readonly market: Market;
-  readonly currentDate: string;
+  readonly currentTimestamp: string;
   readonly citationNamespace: string;
   readonly acceptanceScope: RunAcceptanceScope;
 }

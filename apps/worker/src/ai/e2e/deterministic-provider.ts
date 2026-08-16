@@ -40,6 +40,7 @@ import {
   PHYSICAL_QUERY_BRANCHES,
   QueryReviewProviderSchema,
   QueryReviewSchema,
+  Rfc3339UtcTimestampSchema,
 } from "../retrieval/query-spec";
 import {
   FallbackContextManifestSchema,
@@ -204,7 +205,7 @@ const structuredPlanInputSchema = z.strictObject({
   ),
   locale: z.string().min(1).max(128),
   market: z.string().min(1).max(128),
-  currentDate: z.string().min(1).max(64),
+  currentTimestamp: Rfc3339UtcTimestampSchema,
 });
 
 const structuredReviewInputSchema = z.strictObject({

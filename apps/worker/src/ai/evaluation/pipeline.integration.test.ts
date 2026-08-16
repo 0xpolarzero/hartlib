@@ -88,6 +88,7 @@ import {
   canonicalJson,
   canonicalSha256Hex,
   canonicalEvaluationFailureReason,
+  CanonicalEvaluationDocumentTimestamp,
   CanonicalEvaluationExecutionConfig,
   CanonicalGoldenFixtureSha256Hex,
   captureEvaluationSession,
@@ -150,6 +151,7 @@ const latestOutputTamperSessionId = "50000000-0000-4000-8000-000000000070";
 const clarificationModelTamperSessionId = "50000000-0000-4000-8000-000000000071";
 const clarificationInputTamperSessionId = "50000000-0000-4000-8000-000000000072";
 const clarificationDateTamperSessionId = "50000000-0000-4000-8000-000000000126";
+const exactTimestampSessionId = "50000000-0000-4000-8000-000000000127";
 const directDigestTamperSessionId = "50000000-0000-4000-8000-000000000073";
 const topicDigestTamperSessionId = "50000000-0000-4000-8000-000000000074";
 const synthesisDigestTamperSessionId = "50000000-0000-4000-8000-000000000075";
@@ -929,6 +931,7 @@ const completeDurableCaptureSession = async (
     | "current_chat_preview"
     | "selected_chat_preview",
   multiWebQuotes = false,
+  runCreatedAt?: string,
 ): Promise<void> => {
   await createEvaluationSession(isolatedDatabaseUrl(), targetSessionId);
   await seedEvaluationSession(isolatedDatabaseUrl(), targetSessionId);
@@ -946,6 +949,29 @@ const completeDurableCaptureSession = async (
       `;
     }),
   );
+  if (runCreatedAt !== undefined) {
+    await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update ai_runs runs
+          set created_at = ${runCreatedAt}::timestamptz
+          from ai_evaluation_case_runs cases
+          where cases.session_id = ${targetSessionId}
+            and cases.ai_run_id = runs.id
+        `;
+        yield* sql`
+          update chat_messages messages
+          set created_at = ${runCreatedAt}::timestamptz
+          from ai_runs runs
+          join ai_evaluation_case_runs cases on cases.ai_run_id = runs.id
+          where cases.session_id = ${targetSessionId}
+            and messages.id = runs.user_message_id
+        `;
+      }),
+    );
+  }
   const rows = await runDb(
     isolatedDatabaseUrl(),
     Effect.gen(function* () {
@@ -989,16 +1015,25 @@ const completeDurableCaptureSession = async (
         `;
       }),
     );
-    const citationNamespace = await runDb(
+    const runSnapshot = await runDb(
       isolatedDatabaseUrl(),
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        const values = yield* sql<{ readonly citationNamespace: string }>`
-          select citation_namespace as "citationNamespace" from ai_runs where id = ${row.runId}
+        const values = yield* sql<{
+          readonly citationNamespace: string;
+          readonly currentTimestamp: string;
+        }>`
+          select citation_namespace as "citationNamespace",
+                 to_char(
+                   created_at at time zone 'UTC',
+                   'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                 ) as "currentTimestamp"
+          from ai_runs where id = ${row.runId}
         `;
-        return values[0]!.citationNamespace;
+        return values[0]!;
       }),
     );
+    const { citationNamespace, currentTimestamp: runCurrentTimestamp } = runSnapshot;
     const selectedIds = fixture.labels.requiredSourceIds;
     const canonicalEvaluationRangesFor = (
       source: (typeof fixture.evidence)[number],
@@ -1163,7 +1198,9 @@ const completeDurableCaptureSession = async (
                 : "Hartlib canonical evaluation",
             documentTitle: `Canonical evidence ${evaluationBindingGoldenSourceId(binding)}`,
             citationUrl: `https://evaluation.invalid/documents/${binding.documentId}`,
-            ...(row.topology === "specialized" ? { publishedAt: "2026-07-01T00:00:00.000Z" } : {}),
+            ...(row.topology === "specialized"
+              ? { publishedAt: CanonicalEvaluationDocumentTimestamp }
+              : {}),
           },
           uses,
         };
@@ -1931,16 +1968,22 @@ const completeDurableCaptureSession = async (
                 : resolution.mode === "clarify" && tamper === "clarification_reordered"
                   ? [...exactConversation].reverse()
                   : exactConversation;
-            const currentDate =
-              tamper === "clarification_date_mismatch" ? "2026-07-11" : "2026-07-10";
-            const exact = attestExactPlanTurnRequest(fixture, attestedConversation, currentDate);
+            const currentTimestamp =
+              tamper === "clarification_date_mismatch"
+                ? "2026-07-11T10:00:00.000000Z"
+                : runCurrentTimestamp;
+            const exact = attestExactPlanTurnRequest(
+              fixture,
+              attestedConversation,
+              currentTimestamp,
+            );
             return {
               requestKind: "plan_turn" as const,
               modelId: "glm-5-turbo" as const,
               ...exact,
               requestedOutputTokens: 2048 as const,
               currentUserMessageId: manifest.userMessageId,
-              currentDate,
+              currentTimestamp,
               conversation: attestedConversation.map(
                 ({ fixtureTurnId: _fixtureTurnId, ...binding }) => binding,
               ),
@@ -2542,8 +2585,10 @@ const completeDurableCaptureSession = async (
             content: isPlan
               ? JSON.stringify({
                   question: fixture.currentMessage,
-                  locale: "en-US",
-                  currentDate: "2026-07-10",
+                  selectedConversation: [],
+                  locale: fixture.locale,
+                  market: fixture.market,
+                  currentTimestamp: runCurrentTimestamp,
                 })
               : JSON.stringify({
                   question: fixture.currentMessage,
@@ -6077,10 +6122,15 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         const documents = yield* sql<{
           readonly durableSourceId: string;
           readonly goldenSourceId: string;
+          readonly publishedAt: string;
           readonly text: string;
         }>`
           select binding->>'sourceId' as "durableSourceId",
                  binding->>'goldenSourceId' as "goldenSourceId",
+                 to_char(
+                   documents.published_at at time zone 'UTC',
+                   'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                 ) as "publishedAt",
                  documents.text
           from ai_evaluation_case_runs runs
           cross join lateral jsonb_array_elements(runs.seed_manifest->'sourceBindings') binding
@@ -6108,6 +6158,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         .find((source) => source.sourceId === document.goldenSourceId);
       expect(fixtureSource?.kind).toBe("document");
       expect(document.durableSourceId).toMatch(/^public:[^:\s]+$/u);
+      expect(document.publishedAt).toBe(CanonicalEvaluationDocumentTimestamp);
       expect(document.text.startsWith(fixtureSource!.content)).toBe(true);
       expect(document.text.slice(fixtureSource!.content.length).trim()).toBe("");
     }
@@ -7507,6 +7558,46 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       "doc:storage-operations",
       "web:market-price-signal",
     ]);
+  }, 120_000);
+
+  it("preserves six-digit run creation timestamps in plan attestations", async () => {
+    const currentTimestamp = "2026-07-10T10:00:00.123456Z";
+    await completeDurableCaptureSession(
+      exactTimestampSessionId,
+      undefined,
+      false,
+      currentTimestamp,
+    );
+    const persistedTimestamps = await runDb(
+      isolatedDatabaseUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly currentTimestamp: string }>`
+          select to_char(
+                   runs.created_at at time zone 'UTC',
+                   'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+                 ) as "currentTimestamp"
+          from ai_runs runs
+          join ai_evaluation_case_runs cases on cases.ai_run_id = runs.id
+          where cases.session_id = ${exactTimestampSessionId}
+          order by cases.case_id, cases.topology
+        `;
+      }),
+    );
+    expect(persistedTimestamps.map((row) => row.currentTimestamp)).toEqual(
+      Array(CanonicalGoldenEvaluationSet.cases.length * 2).fill(currentTimestamp),
+    );
+    await bindEvaluationAnnotations(
+      isolatedDatabaseUrl(),
+      exactTimestampSessionId,
+      labeledAnnotations(exactTimestampSessionId),
+    );
+    await expect(
+      captureEvaluationSession(isolatedDatabaseUrl(), exactTimestampSessionId),
+    ).resolves.toMatchObject({
+      specialized: expect.any(Array),
+      baseline: expect.any(Array),
+    });
   }, 120_000);
 
   it("captures and revalidates the exact durable suite and rejects provenance or annotation tampering", async () => {
@@ -8917,8 +9008,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       {
         sessionId: exposureCoordinateTamperSessionId,
         tamper: "wrong_exposure_coordinate" as const,
-        error:
-          /provider-request-bound attestation|source exposure lacks its exact provider measurement|source exposure binding is absent from its provider measurement/u,
+        error: /source exposure attestation differs from its provider measurement/u,
       },
       {
         sessionId: latestOutputTamperSessionId,
@@ -8969,7 +9059,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         sessionId: chatWebStageTamperSessionId,
         tamper: "chat_as_web_preview" as const,
         error:
-          /invalid exact provider measurement|stage-incompatible|source exposure binding is absent from its provider measurement|durable chat\/message scope/u,
+          /invalid exact provider measurement|stage-incompatible|source exposure attestation differs from its provider measurement|source exposure binding is absent from its provider measurement|durable chat\/message scope/u,
       },
       {
         sessionId: arbitraryTaskTamperSessionId,

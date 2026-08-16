@@ -268,7 +268,7 @@ test.describe("deterministic canonical runtime", () => {
     ]);
   });
 
-  test("locale and market persist independently and public sources never cross markets", async ({
+  test("paired locale and market selection persists and public sources never cross markets", async ({
     page,
   }) => {
     const responseFor = (market: "FR" | "US") => {
@@ -319,41 +319,39 @@ test.describe("deterministic canonical runtime", () => {
 
     await page.reload();
     const localeSwitcher = page.getByTestId("locale-switcher");
-    const marketSwitcher = page.getByTestId("market-switcher");
     await expect(localeSwitcher).toHaveValue("fr-FR");
-    await expect(marketSwitcher).toHaveValue("FR");
-
-    await marketSwitcher.selectOption("US");
-    await expect(page.getByText("US Market Source", { exact: true })).toBeVisible();
-    await expect(page.getByText("FR Market Source", { exact: true })).toHaveCount(0);
-    expect(new URL(page.url()).pathname).toBe("/fr-FR/client");
-    expect(
-      await page.evaluate(() => ({
-        locale: localStorage.getItem("hartlib:demo:locale"),
-        market: localStorage.getItem("hartlib:demo:market"),
-      })),
-    ).toEqual({ locale: "fr-FR", market: "US" });
-
-    releaseFirstFr();
-    await expect(page.getByText("US Market Source", { exact: true })).toBeVisible();
-    await expect(page.getByText("FR Market Source", { exact: true })).toHaveCount(0);
 
     await localeSwitcher.selectOption("en-US");
-    await expect(marketSwitcher).toHaveValue("US");
+    await expect(page.getByText("US Market Source", { exact: true })).toBeVisible();
+    await expect(page.getByText("FR Market Source", { exact: true })).toHaveCount(0);
     expect(new URL(page.url()).pathname).toBe("/en-US/client");
     expect(
       await page.evaluate(() => ({
         locale: localStorage.getItem("hartlib:demo:locale"),
         market: localStorage.getItem("hartlib:demo:market"),
       })),
-    ).toEqual({ locale: "en-US", market: "US" });
+    ).toEqual({ locale: "en-US", market: null });
+
+    releaseFirstFr();
+    await expect(page.getByText("US Market Source", { exact: true })).toBeVisible();
+    await expect(page.getByText("FR Market Source", { exact: true })).toHaveCount(0);
+
+    await localeSwitcher.selectOption("fr-FR");
+    await expect(page.getByText("FR Market Source", { exact: true })).toBeVisible();
+    await expect(page.getByText("US Market Source", { exact: true })).toHaveCount(0);
+    expect(new URL(page.url()).pathname).toBe("/fr-FR/client");
+    expect(
+      await page.evaluate(() => ({
+        locale: localStorage.getItem("hartlib:demo:locale"),
+        market: localStorage.getItem("hartlib:demo:market"),
+      })),
+    ).toEqual({ locale: "fr-FR", market: null });
 
     await page.reload();
-    await expect(page.getByTestId("locale-switcher")).toHaveValue("en-US");
-    await expect(page.getByTestId("market-switcher")).toHaveValue("US");
-    await expect(page.getByText("US Market Source", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("locale-switcher")).toHaveValue("fr-FR");
+    await expect(page.getByText("FR Market Source", { exact: true })).toBeVisible();
     expect(marketsRequested).toEqual(expect.arrayContaining(["FR", "US"]));
-    expect(marketsRequested.at(-1)).toBe("US");
+    expect(marketsRequested.at(-1)).toBe("FR");
   });
 
   test("the demo public feed contains only company-authorized, retrievable sources", async ({
