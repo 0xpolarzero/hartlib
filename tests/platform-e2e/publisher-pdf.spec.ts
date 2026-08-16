@@ -220,7 +220,7 @@ test("publisher uploads a real PDF and the delivered client opens the exact sign
   const citation = seedE2ePublisherDocumentCitation();
   expect(citation.citationUrl).toBe(contentPath);
   await page.goto(`/en-US/chat/${citation.chatId}`);
-  const citationLink = page.getByTestId("citation-reference").filter({ hasText: documentTitle });
+  const citationLink = page.getByTestId("citation-marker");
   await expect(citationLink).toHaveAttribute("href", contentPath);
 
   // The stack intentionally runs on loopback HTTP, where the production

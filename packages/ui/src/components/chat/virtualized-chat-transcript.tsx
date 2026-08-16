@@ -2,6 +2,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, Bot, ChevronDown, ChevronRight, Globe2, Users } from "lucide-react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { FormattedMessage, useIntl } from "@hartlib/i18n";
 import type {
@@ -15,7 +17,7 @@ import type {
 } from "@hartlib/shared";
 
 import { cn } from "../../lib/utils";
-import { parseCitationTags } from "./citation-tags";
+import { parseCitationTags, type CitationParseMode } from "./citation-tags";
 import {
   publisherDocumentCitationTarget,
   type AuthenticatedDocumentOpener,
@@ -167,6 +169,160 @@ const externalSourceLinkProps = (source: PublicCitationRecord | PublicSourceReco
       } as const)
     : {};
 
+const citationMarkerUrlPrefix = "https://hartlib.invalid/inline-citation/";
+
+const citationMarkerHref = (citationIds: readonly string[]): string =>
+  `${citationMarkerUrlPrefix}${citationIds.join(",")}`;
+
+const citationIdsFromMarkerHref = (href: string | undefined): readonly string[] | null => {
+  if (href === undefined || !href.startsWith(citationMarkerUrlPrefix)) return null;
+  const citationIds = href.slice(citationMarkerUrlPrefix.length).split(",");
+  return citationIds.length > 0 && citationIds.every((id) => /^[A-Za-z0-9_-]+$/u.test(id))
+    ? citationIds
+    : null;
+};
+
+const markdownFromAssistantContent = (
+  content: string,
+  knownCitationIds: readonly string[],
+  mode: CitationParseMode,
+): string =>
+  parseCitationTags(content, knownCitationIds, mode)
+    .segments.map((segment) =>
+      segment.type === "text"
+        ? segment.text
+        : `[citation](${citationMarkerHref(segment.citationIds)})`,
+    )
+    .join("");
+
+function AssistantMarkdown({
+  content,
+  citationsById,
+  citationNumbersById,
+  citationMode,
+  formatCitationLabel,
+  onCitationClick,
+}: {
+  readonly content: string;
+  readonly citationsById: ReadonlyMap<string, PublicCitationRecord>;
+  readonly citationNumbersById: ReadonlyMap<string, number>;
+  readonly citationMode: CitationParseMode;
+  readonly formatCitationLabel: (citation: PublicCitationRecord) => string;
+  readonly onCitationClick: (
+    source: PublicCitationRecord | PublicSourceRecord,
+    event: ReactMouseEvent<HTMLAnchorElement>,
+  ) => void;
+}) {
+  const markdown = useMemo(
+    () => markdownFromAssistantContent(content, [...citationsById.keys()], citationMode),
+    [citationMode, citationsById, content],
+  );
+
+  return (
+    <Markdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ node: _node, className, ...props }) => (
+          <p {...props} className={cn("m-0 [&+p]:mt-3", className)} />
+        ),
+        ul: ({ node: _node, className, ...props }) => (
+          <ul {...props} className={cn("my-3 list-disc pl-5", className)} />
+        ),
+        ol: ({ node: _node, className, ...props }) => (
+          <ol {...props} className={cn("my-3 list-decimal pl-5", className)} />
+        ),
+        blockquote: ({ node: _node, className, ...props }) => (
+          <blockquote
+            {...props}
+            className={cn("my-3 border-l-2 border-rule pl-3 text-muted", className)}
+          />
+        ),
+        table: ({ node: _node, className, ...props }) => (
+          <div className="my-3 overflow-x-auto">
+            <table
+              {...props}
+              className={cn("w-full border-collapse text-left text-[13px]", className)}
+            />
+          </div>
+        ),
+        th: ({ node: _node, className, ...props }) => (
+          <th {...props} className={cn("border-b border-rule px-2 py-1 font-medium", className)} />
+        ),
+        td: ({ node: _node, className, ...props }) => (
+          <td {...props} className={cn("border-b border-rule/70 px-2 py-1 align-top", className)} />
+        ),
+        pre: ({ node: _node, className, ...props }) => (
+          <pre
+            {...props}
+            className={cn(
+              "my-3 overflow-x-auto rounded-sm border border-rule bg-canvas p-2 font-mono text-xs leading-5",
+              className,
+            )}
+          />
+        ),
+        code: ({ node: _node, className, ...props }) => (
+          <code
+            {...props}
+            className={cn("rounded-sm bg-canvas px-1 font-mono text-[0.9em]", className)}
+          />
+        ),
+        img: ({ alt }) => (alt ? <span>{alt}</span> : null),
+        a: ({ href, children, node: _node, className, ...props }) => {
+          const citationIds = citationIdsFromMarkerHref(href);
+          if (
+            citationIds !== null &&
+            citationIds.every(
+              (sourceKey) => citationsById.has(sourceKey) && citationNumbersById.has(sourceKey),
+            )
+          ) {
+            return (
+              <span className="whitespace-nowrap">
+                {citationIds.map((sourceKey, citationIndex) => {
+                  const citation = citationsById.get(sourceKey);
+                  const citationNumber = citationNumbersById.get(sourceKey);
+                  if (citation === undefined || citationNumber === undefined) return null;
+                  return (
+                    <CitationMarker
+                      key={`${sourceKey}:${citationIndex}`}
+                      citation={citation}
+                      citationNumber={citationNumber}
+                      ariaLabel={formatCitationLabel(citation)}
+                      onClick={onCitationClick}
+                    />
+                  );
+                })}
+              </span>
+            );
+          }
+
+          const external = href !== undefined && /^https?:\/\//u.test(href);
+          return (
+            <a
+              href={href}
+              {...(external
+                ? {
+                    target: "_blank",
+                    rel: "noopener noreferrer",
+                    referrerPolicy: "no-referrer" as const,
+                  }
+                : {})}
+              {...props}
+              className={cn(
+                "break-all text-accent underline decoration-accent/30 underline-offset-2",
+                className,
+              )}
+            >
+              {children}
+            </a>
+          );
+        },
+      }}
+    >
+      {markdown}
+    </Markdown>
+  );
+}
+
 export function ChatRunOutcome({
   run,
   onResubmit,
@@ -226,18 +382,10 @@ export function ChatBubble({
     () => new Map(citations.map((citation) => [citation.sourceKey, citation])),
     [citations],
   );
-  const parsed = useMemo(
-    () =>
-      parseCitationTags(
-        message.content,
-        [...citationsById.keys()],
-        isAssistant && message.streaming === true ? "streaming" : "final",
-      ),
-    [citationsById, isAssistant, message],
+  const citationNumbersById = useMemo(
+    () => new Map(citations.map((citation, index) => [citation.sourceKey, index + 1])),
+    [citations],
   );
-  const content = isAssistant
-    ? parsed.segments
-    : [{ type: "text" as const, text: message.content }];
   const [documentOpenFailed, setDocumentOpenFailed] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const progressStagesForMessage = useMemo(() => chatProgressStages(activities), [activities]);
@@ -300,31 +448,26 @@ export function ChatBubble({
           {isAssistant ? authorLabels.assistant : authorLabels.client}
         </div>
         <div
-          className="whitespace-pre-wrap font-serif text-sm leading-6"
+          className={cn(
+            "font-serif text-sm leading-6",
+            isAssistant ? "break-words" : "whitespace-pre-wrap",
+          )}
           data-testid="chat-message-content"
         >
-          {content.map((segment, index) => {
-            if (segment.type === "text") return <span key={`text:${index}`}>{segment.text}</span>;
-            return (
-              <span key={`cite:${index}`} className="whitespace-nowrap">
-                {segment.citationIds.map((sourceKey, citationIndex) => {
-                  const citation = citationsById.get(sourceKey);
-                  if (citation === undefined) return sourceKey;
-                  return (
-                    <CitationMarker
-                      key={`${sourceKey}:${citationIndex}`}
-                      citation={citation}
-                      ariaLabel={intl.formatMessage(
-                        { id: "chat.citationMarker" },
-                        { label: sourceLabel(citation) },
-                      )}
-                      onClick={handleSourceClick}
-                    />
-                  );
-                })}
-              </span>
-            );
-          })}
+          {isAssistant ? (
+            <AssistantMarkdown
+              content={message.content}
+              citationsById={citationsById}
+              citationNumbersById={citationNumbersById}
+              citationMode={message.streaming === true ? "streaming" : "final"}
+              formatCitationLabel={(citation) =>
+                intl.formatMessage({ id: "chat.citationMarker" }, { label: sourceLabel(citation) })
+              }
+              onCitationClick={handleSourceClick}
+            />
+          ) : (
+            message.content
+          )}
         </div>
         {isAssistant && message.streaming ? (
           <>
@@ -456,17 +599,6 @@ export function ChatBubble({
             </details>
           </>
         ) : null}
-        {isAssistant && message.citations.length > 0 ? (
-          <div className="mt-2 flex flex-wrap gap-x-2 gap-y-1" data-testid="chat-citations">
-            {message.citations.map((citation) => (
-              <CitationReference
-                key={citation.sourceKey}
-                citation={citation}
-                onClick={handleSourceClick}
-              />
-            ))}
-          </div>
-        ) : null}
         {isAssistant ? (
           <ChatSourcesRead sources={message.sourcesRead} onSourceClick={handleSourceClick} />
         ) : null}
@@ -488,10 +620,12 @@ export function ChatBubble({
 
 function CitationMarker({
   citation,
+  citationNumber,
   ariaLabel,
   onClick,
 }: {
   readonly citation: PublicCitationRecord;
+  readonly citationNumber: number;
   readonly ariaLabel: string;
   readonly onClick: (
     source: PublicCitationRecord | PublicSourceRecord,
@@ -508,33 +642,7 @@ function CitationMarker({
       title={sourceLabel(citation)}
       data-testid="citation-marker"
     >
-      {sourceLabel(citation)}
-    </a>
-  );
-}
-
-function CitationReference({
-  citation,
-  onClick,
-}: {
-  readonly citation: PublicCitationRecord;
-  readonly onClick: (
-    source: PublicCitationRecord | PublicSourceRecord,
-    event: ReactMouseEvent<HTMLAnchorElement>,
-  ) => void;
-}) {
-  return (
-    <a
-      href={sourceHref(citation)}
-      {...externalSourceLinkProps(citation)}
-      onClick={(event) => onClick(citation, event)}
-      className="font-mono text-[11px] text-accent underline decoration-accent/30 underline-offset-2"
-      data-testid="citation-reference"
-    >
-      {sourceLabel(citation)}
-      {"publishedAt" in citation && citation.publishedAt
-        ? ` · ${citation.publishedAt.slice(0, 10)}`
-        : null}
+      [{citationNumber}]
     </a>
   );
 }

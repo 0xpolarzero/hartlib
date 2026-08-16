@@ -226,18 +226,17 @@ test.describe("deterministic canonical runtime", () => {
     await sendAndWait(page, directQuestion);
 
     await expect(latestAssistantContent(page)).not.toContainText("[[cite");
-    await expect(latestAssistant(page).getByTestId("citation-marker").first()).toBeVisible();
-    await expect(latestAssistant(page).getByTestId("citation-reference").first()).toHaveAttribute(
-      "href",
-      /.+/u,
-    );
+    const firstCitation = latestAssistant(page).getByTestId("citation-marker").first();
+    await expect(firstCitation).toBeVisible();
+    await expect(firstCitation).toHaveText("[1]");
+    await expect(latestAssistant(page).getByTestId("chat-citations")).toHaveCount(0);
     await latestAssistant(page).getByTestId("sources-read-toggle").click();
-    await expect(
-      latestAssistant(page)
-        .getByTestId("sources-read-list")
-        .getByTestId("source-read-item")
-        .first(),
-    ).toBeVisible();
+    const firstSourceRead = latestAssistant(page)
+      .getByTestId("sources-read-list")
+      .getByTestId("source-read-item")
+      .first();
+    await expect(firstSourceRead).toBeVisible();
+    await expect(firstSourceRead.getByRole("link")).toHaveAttribute("href", /.+/u);
 
     const state = readE2eRuntimeState();
     expect(state.runs).toHaveLength(1);
@@ -460,7 +459,7 @@ test.describe("deterministic canonical runtime", () => {
       .join("");
     expect(textDeltas).toContain(`[[cite:${sourceKey}]]`);
     expect(textDeltas).not.toMatch(/k_[A-Za-z0-9_-]+_2\b/u);
-    await expect(latestAssistant(page).getByTestId("citation-reference")).toHaveCount(1);
+    await expect(latestAssistant(page).getByTestId("citation-marker")).toHaveCount(1);
   });
 
   test("web toggle reflects effective policy and the selected web path is required", async ({
@@ -926,9 +925,7 @@ test.describe("deterministic canonical runtime", () => {
     await sendAndWait(page, "[use-memory] [cite-all] Apply my saved preference.");
 
     const memoryReference = () =>
-      latestAssistant(page).locator(
-        'a[data-testid="citation-reference"][href^="#memory-revision?"]',
-      );
+      latestAssistant(page).locator('a[data-testid="citation-marker"][href^="#memory-revision?"]');
     await expect(memoryReference()).toHaveCount(1);
     const identity = makeLatestCitedMemoryProvenanceOnly();
     await page.reload();
@@ -1477,12 +1474,12 @@ test.describe("opt-in live provider contract smoke", () => {
     const contextReady = state.events.find((event) => event.type === "context_ready")?.event;
     const sourcesRead = Array.isArray(contextReady?.sourcesRead) ? contextReady.sourcesRead : [];
     expect(sourcesRead.length).toBeGreaterThan(0);
-    await expect(latestAssistant(page).getByTestId("citation-reference").first()).toBeVisible();
+    await expect(latestAssistant(page).getByTestId("citation-marker").first()).toBeVisible();
     const answer = await latestAssistantContent(page).innerText();
     await page.reload();
     await expect(page.getByTestId("chat-message-assistant")).toHaveCount(1);
     await expect(latestAssistantContent(page)).toHaveText(answer);
-    await expect(latestAssistant(page).getByTestId("citation-reference").first()).toBeVisible();
+    await expect(latestAssistant(page).getByTestId("citation-marker").first()).toBeVisible();
   });
 
   test("real provider freshness retrieval returns newest cited documents", async ({ page }) => {
@@ -1501,11 +1498,11 @@ test.describe("opt-in live provider contract smoke", () => {
     const contextReady = state.events.find((event) => event.type === "context_ready")?.event;
     const sourcesRead = Array.isArray(contextReady?.sourcesRead) ? contextReady.sourcesRead : [];
     expect(sourcesRead.length).toBeGreaterThan(0);
-    await expect(latestAssistant(page).getByTestId("citation-reference").first()).toBeVisible();
+    await expect(latestAssistant(page).getByTestId("citation-marker").first()).toBeVisible();
     const answer = await latestAssistantContent(page).innerText();
     await page.reload();
     await expect(page.getByTestId("chat-message-assistant")).toHaveCount(1);
-    await expect(latestAssistant(page).getByTestId("citation-reference").first()).toBeVisible();
+    await expect(latestAssistant(page).getByTestId("citation-marker").first()).toBeVisible();
     await expect(latestAssistantContent(page)).toHaveText(answer);
   });
 
@@ -1537,7 +1534,7 @@ test.describe("opt-in live provider contract smoke", () => {
     )?.event.web as { readonly searchCount: number; readonly fetchCount: number };
     expect(webUsage.searchCount).toBeGreaterThan(0);
     expect(webUsage.fetchCount).toBeGreaterThan(0);
-    await expect(latestAssistant(page).getByTestId("citation-reference").first()).toBeVisible();
+    await expect(latestAssistant(page).getByTestId("citation-marker").first()).toBeVisible();
     await page.reload();
     await expect(page.getByTestId("chat-message-assistant")).toHaveCount(1);
   });

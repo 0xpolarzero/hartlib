@@ -440,19 +440,13 @@ For older-chat sources, citation metadata includes the message ID and a localize
 
 For memory sources, citation metadata includes the memory ID, the exact pre-update memory revision ID, and a localized saved-memory label. Memory citations occur only in the owner's non-shareable `private_owner` chat.
 
-AI answers use special citation tags.
+AI answers use special citation tags and GitHub-flavored Markdown.
 
-The UI renders citation tags as source links.
+The UI renders Markdown without raw HTML or remote images. It preserves tables, renders image syntax as alt text, and renders valid citation tags as compact ordinal source links such as `[1]`. Each link has an accessible source name but does not display a full title or URL in the answer body.
 
 Citation keys are local to one saved assistant message. A citation does not pin its source into any later prompt.
 
-The UI also shows a separate sources-read view.
-
-The sources-read view lists the deduplicated document, older-chat, memory, and web evidence serialized into the direct answer context or a fanout topic-answer context.
-
-Database matches, selector previews, compaction-group/source-tool inputs, and explicitly omitted candidates are not sources read. They are tracked separately as AI exposures for operations and publisher aggregate metrics.
-
-The sources-read view is separate from inline answer citations.
+The UI also shows a separate expandable sources-read view. It contains the source names and links for the answer context.
 
 Client users see sources used for their own AI answers.
 
