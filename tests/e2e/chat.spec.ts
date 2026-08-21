@@ -947,8 +947,18 @@ test.describe("deterministic canonical runtime", () => {
   test("durable provider failure exposes retryable resubmit and accepts an edited resend", async ({
     page,
   }) => {
+    let chatRefreshes = 0;
+    const recordChatRefresh = (request: { method(): string; url(): string }): void => {
+      const url = new URL(request.url());
+      if (request.method() === "GET" && url.pathname === "/v1/chat") chatRefreshes += 1;
+    };
+    page.on("requestfinished", recordChatRefresh);
+
     await sendMessage(page, "[fail] Exercise durable answer failure.");
     await expect(page.getByTestId("chat-run-failed")).toBeVisible({ timeout: 60_000 });
+    await expect.poll(() => chatRefreshes).toBeGreaterThanOrEqual(2);
+    await expect(page.getByTestId("chat-progress-diagnostics")).toBeVisible();
+    await expect(page.getByTestId("chat-composer-input")).toBeEnabled();
     await expect(page.getByTestId("chat-run-resubmit")).toBeVisible();
     const failed = readE2eRuntimeState().runs[0];
     expect(failed).toMatchObject({
@@ -966,6 +976,8 @@ test.describe("deterministic canonical runtime", () => {
     await waitForIdle(page);
     await expect(page.getByTestId("chat-message-assistant")).toHaveCount(1);
     expect(readE2eRuntimeState().runs.map((run) => run.status)).toEqual(["failed", "succeeded"]);
+
+    page.off("requestfinished", recordChatRefresh);
   });
 
   test("start a new chat archives the predecessor and reconciles the optimistic replacement", async ({

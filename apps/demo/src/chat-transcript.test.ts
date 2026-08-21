@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { buildTranscriptMessages } from "./chat-transcript";
+import { initialChatStreamState, reduceChatStream } from "./chat-stream";
+import { buildTranscriptMessages, provisionalRunIdForPhase } from "./chat-transcript";
 
 const sources = [
   {
@@ -85,5 +86,43 @@ describe("buildTranscriptMessages", () => {
       code: "context_compaction_failed",
       retryable: true,
     });
+  });
+
+  it("keeps the failed card when an authoritative refresh clears the active run", () => {
+    const running = reduceChatStream(initialChatStreamState, {
+      seq: 1,
+      event: {
+        type: "activity",
+        stage: "preparing",
+        code: "context_preparation",
+        status: "running",
+      },
+    });
+    const terminal = reduceChatStream(running, {
+      seq: 2,
+      event: {
+        type: "error",
+        code: "context_compaction_failed",
+        retryable: true,
+      },
+    });
+    const authoritativeActiveRunId = null;
+    const failedRunId = provisionalRunIdForPhase(
+      authoritativeActiveRunId,
+      terminal.phase,
+      "run-1",
+    );
+
+    expect(failedRunId).toBe("run-1");
+    expect(
+      buildTranscriptMessages([], failedRunId, terminal.phase, terminal),
+    ).toMatchObject([
+      {
+        id: "streaming:run-1",
+        streaming: true,
+        activityFailure: { code: "context_compaction_failed", retryable: true },
+        activities: [{ code: "context_preparation", status: "failed" }],
+      },
+    ]);
   });
 });

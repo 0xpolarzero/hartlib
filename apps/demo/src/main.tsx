@@ -84,7 +84,7 @@ import {
   type UserScopedConflict,
   type ChatStreamEvent,
 } from "./chat-stream";
-import { buildTranscriptMessages } from "./chat-transcript";
+import { buildTranscriptMessages, provisionalRunIdForPhase } from "./chat-transcript";
 import { DemoPublications, readStoredOr } from "./demo-state";
 import "./styles.css";
 import { loadDemoBrowserConfig } from "./config";
@@ -516,6 +516,7 @@ function App() {
             />
           ) : (
             <ClientFeedsList
+              route={window.location.pathname}
               market={market}
               sources={sources}
               publications={publications}
@@ -613,6 +614,7 @@ function PublisherPublicationDetail({
 }
 
 function ClientFeedsList({
+  route,
   market,
   sources,
   publications,
@@ -621,6 +623,7 @@ function ClientFeedsList({
   onToggleSubscribed,
   resetController,
 }: {
+  route: string;
   market: Market;
   sources: readonly HartlibSource[];
   publications: readonly HartlibPublication[];
@@ -637,6 +640,9 @@ function ClientFeedsList({
     mapApiMessagesToTranscript(initialResetState.projection.messages),
   );
   const [activeRunId, setActiveRunId] = useState<string | null>(initialResetState.activeRunId);
+  const [failedRunId, setFailedRunId] = useState<string | null>(null);
+  const failedRunIdRef = useRef<string | null>(null);
+  const routeRef = useRef(route);
   const [userScopedConflict, setUserScopedConflict] = useState<UserScopedConflict | null>(null);
   const [effectiveWebPolicy, setEffectiveWebPolicy] = useState<EffectiveWebPolicy>(
     initialResetState.projection.effectiveWebPolicy,
@@ -673,6 +679,28 @@ function ClientFeedsList({
   );
 
   useEffect(() => {
+    if (routeRef.current === route) return;
+    routeRef.current = route;
+    const previousFailedRunId = failedRunIdRef.current;
+    if (previousFailedRunId !== null) {
+      clearRunStreamState(window.sessionStorage, previousFailedRunId);
+    }
+    failedRunIdRef.current = null;
+    setFailedRunId(null);
+    setStreamState(initialChatStreamState);
+  }, [route]);
+
+  useEffect(
+    () => () => {
+      const previousFailedRunId = failedRunIdRef.current;
+      if (previousFailedRunId !== null) {
+        clearRunStreamState(window.sessionStorage, previousFailedRunId);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
     if (!resetPending) return;
     document.querySelector<HTMLTextAreaElement>('[data-testid="chat-composer-input"]')?.focus();
   }, [resetPending]);
@@ -685,6 +713,12 @@ function ClientFeedsList({
       const completed = next.phase === "idle" && previous.phase === "pending";
       if (started) {
         chatRefreshSequenceRef.current += 1;
+        const previousFailedRunId = failedRunIdRef.current;
+        if (previousFailedRunId !== null) {
+          clearRunStreamState(window.sessionStorage, previousFailedRunId);
+        }
+        failedRunIdRef.current = null;
+        setFailedRunId(null);
         setChatMessages([]);
         setActiveRunId(null);
         setStreamState(initialChatStreamState);
@@ -813,7 +847,12 @@ function ClientFeedsList({
     };
 
     const handleStreamEvent = (seq: number, event: ChatStreamEvent) => {
-      if (closed || resetController.getState().generation !== resetGeneration) return;
+      if (
+        closed ||
+        routeRef.current !== route ||
+        resetController.getState().generation !== resetGeneration
+      )
+        return;
       const next = reduceChatStream(currentStreamState, { seq, event });
       currentStreamState = next;
       streamSeqRef.current = next.seq;
@@ -846,7 +885,31 @@ function ClientFeedsList({
       if (event.type === "done" || event.type === "error") {
         closed = true;
         closeCurrent();
-        clearRunStreamState(window.sessionStorage, activeRunId);
+        if (event.type === "error") {
+          failedRunIdRef.current = activeRunId;
+          setFailedRunId(activeRunId);
+          persistRunStreamState(window.sessionStorage, {
+            version: 4,
+            runId: activeRunId,
+            lastSeq: next.seq,
+            draft: {
+              runId: activeRunId,
+              text: next.assistantText,
+              attempt: next.attempt,
+              sourcesRead: next.sourcesRead,
+              activities: next.activities,
+              activityHistory: next.activityHistory,
+              context: next.context,
+              memoryUpdated: next.memoryUpdated,
+              terminalFailure: next.error,
+            },
+          });
+          setActiveRunId(null);
+        } else {
+          clearRunStreamState(window.sessionStorage, activeRunId);
+          failedRunIdRef.current = null;
+          setFailedRunId(null);
+        }
         void refreshChat().catch(() => setChatStatus("error"));
         void refreshMemories().catch(() => setMemoriesStatus("error"));
       }
@@ -908,7 +971,7 @@ function ClientFeedsList({
       closed = true;
       closeCurrent();
     };
-  }, [activeRunId, refreshChat, refreshMemories]);
+  }, [activeRunId, refreshChat, refreshMemories, route]);
 
   useEffect(() => {
     if (userScopedConflict === null) return;
@@ -987,6 +1050,13 @@ function ClientFeedsList({
       setChatNotice(null);
       setChatError(null);
       setFailedMessage(null);
+      const previousFailedRunId = failedRunIdRef.current;
+      if (previousFailedRunId !== null) {
+        clearRunStreamState(window.sessionStorage, previousFailedRunId);
+      }
+      failedRunIdRef.current = null;
+      setFailedRunId(null);
+      setStreamState(initialChatStreamState);
 
       try {
         const body = await postDemoChatMessage(request);
@@ -1094,9 +1164,10 @@ function ClientFeedsList({
   }, [publishedIssues, sources]);
 
   const runActive = activeRunId !== null || userScopedConflict !== null;
+  const transcriptRunId = provisionalRunIdForPhase(activeRunId, streamState.phase, failedRunId);
   const transcriptMessages = useMemo(
-    () => buildTranscriptMessages(chatMessages, activeRunId, streamState.phase, streamState),
-    [activeRunId, chatMessages, streamState],
+    () => buildTranscriptMessages(chatMessages, transcriptRunId, streamState.phase, streamState),
+    [chatMessages, streamState, transcriptRunId],
   );
 
   return (
