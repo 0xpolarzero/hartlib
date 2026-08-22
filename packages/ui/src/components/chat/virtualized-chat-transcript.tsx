@@ -1,7 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDown, Bot, ChevronDown, ChevronRight, Globe2, Users } from "lucide-react";
+import { ArrowDown, ChevronDown, ChevronRight, Globe2, Users } from "lucide-react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -9,6 +9,7 @@ import { FormattedMessage, useIntl } from "@hartlib/i18n";
 import type {
   AiRunActivityEvent,
   AiRunActivityStage,
+  AiRunErrorEvent,
   EffectiveWebPolicy,
   PublicContextConsumer,
   PublicCitationRecord,
@@ -39,7 +40,7 @@ export type ChatTranscriptMessage =
       readonly sourcesRead: readonly PublicSourceRecord[];
       readonly activities?: readonly AiRunActivityEvent[];
       readonly diagnostics?: ChatRunDiagnostics;
-      readonly activityFailure?: { readonly code: string; readonly retryable: boolean } | null;
+      readonly activityFailure?: ChatActivityFailure | null;
       readonly streaming?: boolean;
     };
 
@@ -60,7 +61,10 @@ export type ChatRunDiagnostics = {
     readonly discarded: number;
   } | null;
   readonly sequence?: number;
+  readonly terminalFailure?: ChatActivityFailure | null;
 };
+
+type ChatActivityFailure = Omit<AiRunErrorEvent, "type">;
 
 const localizedFailureCodes = new Set([
   "agent_context_budget_exceeded",
@@ -91,9 +95,9 @@ export const chatProgressStages = (
   readonly stage: AiRunActivityStage;
   readonly status: AiRunActivityEvent["status"];
 }[] =>
-  progressStages.flatMap((stage) => {
+  progressStages.map((stage) => {
     const items = activities.filter((activity) => activity.stage === stage);
-    if (items.length === 0) return [];
+    if (items.length === 0) return { stage, status: "waiting" };
     const status = items.some((item) => item.status === "running")
       ? "running"
       : items.some((item) => item.status === "retrying")
@@ -105,7 +109,7 @@ export const chatProgressStages = (
             : items.every((item) => item.status === "complete" || item.status === "skipped")
               ? "complete"
               : "waiting";
-    return [{ stage, status }];
+    return { stage, status };
   });
 
 const chatProgressStatusGlyph = (status: AiRunActivityEvent["status"]): string => {
@@ -124,6 +128,24 @@ const chatProgressStatusGlyph = (status: AiRunActivityEvent["status"]): string =
       return "•";
   }
 };
+
+const isCompletedProgressStatus = (status: AiRunActivityEvent["status"]): boolean =>
+  status === "complete" || status === "skipped";
+
+const completedStagePrefixLength = (
+  stages: readonly ReturnType<typeof chatProgressStages>[number][],
+): number => {
+  let count = 0;
+  for (const stage of stages) {
+    if (!isCompletedProgressStatus(stage.status)) break;
+    count += 1;
+  }
+  return count;
+};
+
+const activityErrorCategoryMessageId = (
+  category: NonNullable<AiRunActivityEvent["errorCategory"]>,
+): string => `chat.progress.error.category.${category}`;
 
 export const isChatTranscriptNearBottom = (
   metrics: {
@@ -147,6 +169,12 @@ const sourceLabel = (source: PublicCitationRecord | PublicSourceRecord): string 
       return source.title;
   }
 };
+
+/** Keep source-list ordinals identical to the ordinals rendered inline. */
+export const citationNumbersBySourceKey = (
+  citations: readonly PublicCitationRecord[],
+): ReadonlyMap<string, number> =>
+  new Map(citations.map((citation, index) => [citation.sourceKey, index + 1]));
 
 const sourceHref = (source: PublicCitationRecord | PublicSourceRecord): string => {
   switch (source.kind) {
@@ -362,6 +390,113 @@ export function ChatRunOutcome({
   );
 }
 
+function ChatProgressRail({
+  stages,
+}: {
+  readonly stages: readonly ReturnType<typeof chatProgressStages>[number][];
+}) {
+  const intl = useIntl();
+  const completedStages = completedStagePrefixLength(stages);
+  const completedSegments = Math.max(0, completedStages - 1);
+  const connectorFillPercent =
+    progressStages.length <= 1
+      ? 0
+      : Math.round((completedSegments / (progressStages.length - 1)) * 100);
+
+  return (
+    <div
+      className="relative mt-3 w-full"
+      data-testid="chat-progress-stage-rail"
+      data-completed-stages={completedStages}
+      aria-label={intl.formatMessage({ id: "chat.progress.rail" })}
+      role="group"
+    >
+      <span
+        className="pointer-events-none absolute left-[10%] right-[10%] top-2 z-0 h-px bg-rule"
+        data-testid="chat-progress-connector"
+        aria-hidden="true"
+      >
+        <span
+          className="absolute inset-y-0 left-0 h-px bg-accent transition-[width] duration-200 ease-out"
+          data-testid="chat-progress-connector-fill"
+          data-fill-percent={connectorFillPercent}
+          style={{ width: `${connectorFillPercent}%` }}
+        />
+      </span>
+      <ol
+        className="relative z-10 grid w-full grid-cols-5 gap-1 font-mono text-[10px] leading-4 sm:gap-2 sm:text-[11px]"
+        aria-label={intl.formatMessage({ id: "chat.progress.rail" })}
+      >
+        {stages.map(({ stage, status }) => (
+          <li
+            key={stage}
+            className={cn(
+              "min-w-0 text-center",
+              status === "running"
+                ? "animate-pulse text-accent"
+                : status === "complete"
+                  ? "text-accent"
+                  : status === "retrying"
+                    ? "text-warning"
+                    : status === "failed"
+                      ? "text-danger"
+                      : "text-muted",
+            )}
+            data-stage={stage}
+            data-status={status}
+            aria-label={`${intl.formatMessage({ id: `chat.progress.stage.${stage}` })}: ${intl.formatMessage({ id: `chat.progress.status.${status}` })}`}
+          >
+            <span
+              className="relative mx-auto flex size-4 items-center justify-center"
+              aria-hidden="true"
+            >
+              {chatProgressStatusGlyph(status)}
+            </span>
+            <span className="block break-words">
+              <FormattedMessage id={`chat.progress.stage.${stage}`} />
+            </span>
+            <span className="sr-only">
+              <FormattedMessage id={`chat.progress.status.${status}`} />
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function ChatAnswerCompletion({
+  sourcesRead,
+  cited,
+}: {
+  readonly sourcesRead: number;
+  readonly cited: number;
+}) {
+  return (
+    <div
+      className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-muted"
+      data-testid="chat-answer-completion"
+      role="status"
+    >
+      <span className="font-medium text-accent" data-testid="chat-answer-ready">
+        <FormattedMessage id="chat.answerReady" />
+      </span>
+      <span aria-hidden="true" className="text-faint">
+        ·
+      </span>
+      <span data-testid="chat-answer-sources-read">
+        <FormattedMessage id="chat.answerSourcesRead" values={{ count: sourcesRead }} />
+      </span>
+      <span aria-hidden="true" className="text-faint">
+        ·
+      </span>
+      <span data-testid="chat-answer-sources-cited">
+        <FormattedMessage id="chat.answerSourcesCited" values={{ count: cited }} />
+      </span>
+    </div>
+  );
+}
+
 export function ChatBubble({
   message,
   authorLabels,
@@ -382,10 +517,7 @@ export function ChatBubble({
     () => new Map(citations.map((citation) => [citation.sourceKey, citation])),
     [citations],
   );
-  const citationNumbersById = useMemo(
-    () => new Map(citations.map((citation, index) => [citation.sourceKey, index + 1])),
-    [citations],
-  );
+  const citationNumbersById = useMemo(() => citationNumbersBySourceKey(citations), [citations]);
   const [documentOpenFailed, setDocumentOpenFailed] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const progressStagesForMessage = useMemo(() => chatProgressStages(activities), [activities]);
@@ -424,29 +556,58 @@ export function ChatBubble({
   return (
     <div
       id={`message-${message.id}`}
-      className={cn("hartlib-chat-row flex", isAssistant ? "justify-start" : "justify-end")}
+      className={cn("hartlib-chat-row flex w-full", isAssistant ? "justify-start" : "justify-end")}
       data-author={message.author}
       data-testid={`chat-message-${message.author}`}
     >
       <div
         className={cn(
-          "hartlib-chat-bubble max-w-[86%] rounded-sm border px-3 py-2",
-          isAssistant ? "border-rule bg-paper text-ink" : "border-accent/25 bg-accent/10 text-ink",
+          "hartlib-chat-bubble text-ink",
+          isAssistant
+            ? "w-full max-w-[72ch] px-0 py-1"
+            : "max-w-[86%] rounded-sm border border-accent/25 bg-accent/10 px-3 py-2",
         )}
+        role="group"
+        aria-labelledby={`chat-message-${message.id}-author`}
+        data-testid={isAssistant ? "chat-assistant-answer-column" : "chat-user-bubble"}
       >
         <div
+          id={`chat-message-${message.id}-author`}
           className={cn(
-            "mb-1.5 flex items-center gap-1.5 font-mono text-[11px] font-medium uppercase tracking-wider",
+            "mb-1.5 font-mono text-[11px] font-medium uppercase tracking-wider",
             isAssistant ? "text-muted" : "text-accent",
           )}
         >
           {isAssistant ? (
-            <Bot className="size-3" aria-hidden="true" />
+            authorLabels.assistant
           ) : (
-            <Users className="size-3" aria-hidden="true" />
+            <span className="inline-flex items-center gap-1.5">
+              <Users className="size-3" aria-hidden="true" />
+              {authorLabels.client}
+            </span>
           )}
-          {isAssistant ? authorLabels.assistant : authorLabels.client}
         </div>
+        {isAssistant && message.streaming ? (
+          <>
+            <ChatProgressRail stages={progressStagesForMessage} />
+            <div
+              className="mt-1 font-mono text-[11px] text-muted"
+              data-testid="chat-provisional-draft"
+              role="status"
+              aria-live="polite"
+            >
+              <FormattedMessage
+                id={
+                  activityFailure === null
+                    ? message.content === ""
+                      ? "chat.progress.active"
+                      : "chat.provisionalDraft"
+                    : "chat.progress.failed"
+                }
+              />
+            </div>
+          </>
+        ) : null}
         <div
           className={cn(
             "font-serif text-sm leading-6",
@@ -469,138 +630,209 @@ export function ChatBubble({
             message.content
           )}
         </div>
+        {isAssistant && !message.streaming ? (
+          <ChatAnswerCompletion sourcesRead={message.sourcesRead.length} cited={citations.length} />
+        ) : null}
         {isAssistant && message.streaming ? (
-          <>
+          <details
+            className="mt-2"
+            open={diagnosticsOpen}
+            onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}
+            data-testid="chat-progress-diagnostics"
+          >
+            <summary className="cursor-pointer font-mono text-[11px] text-accent">
+              <FormattedMessage id="chat.progress.diagnostics" />
+            </summary>
             <div
-              className="mt-1 font-mono text-[11px] text-muted"
-              data-testid="chat-provisional-draft"
-              role="status"
-              aria-live="polite"
+              className="mt-2 space-y-2 font-mono text-[11px]"
+              data-testid="chat-progress-details"
             >
-              <FormattedMessage
-                id={
-                  activityFailure === null
-                    ? message.content === ""
-                      ? "chat.progress.active"
-                      : "chat.provisionalDraft"
-                    : "chat.progress.failed"
-                }
-              />
-            </div>
-            {progressStagesForMessage.length > 0 ? (
-              <ol
-                className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px]"
-                data-testid="chat-progress-stage-rail"
-                aria-label={intl.formatMessage({ id: "chat.progress.rail" })}
-              >
-                {progressStagesForMessage.map(({ stage, status }) => (
-                  <li
-                    key={stage}
-                    className={cn(
-                      "inline-flex items-center gap-1",
-                      status === "running"
-                        ? "animate-pulse text-accent"
-                        : status === "retrying"
-                          ? "text-warning"
-                          : status === "failed"
-                            ? "text-danger"
-                            : "text-muted",
-                    )}
-                    data-status={status}
-                  >
-                    <span aria-hidden="true">{chatProgressStatusGlyph(status)}</span>
-                    <FormattedMessage id={`chat.progress.stage.${stage}`} />
-                    <span className="sr-only">
-                      <FormattedMessage id={`chat.progress.status.${status}`} />
+              <p className="text-muted">
+                <FormattedMessage
+                  id="chat.progress.sources"
+                  values={{ read: message.sourcesRead.length, cited: citations.length }}
+                />
+              </p>
+              <p className="text-muted">
+                <FormattedMessage
+                  id="chat.progress.retries"
+                  values={{ count: retryCount, attempt: maxAttempt }}
+                />
+              </p>
+              {diagnostics.context === null || diagnostics.context === undefined ? null : (
+                <p className="text-muted">
+                  <FormattedMessage
+                    id="chat.progress.context"
+                    values={{
+                      compaction: diagnostics.context.compactionRan
+                        ? intl.formatMessage({ id: "chat.progress.context.compacted" })
+                        : intl.formatMessage({ id: "chat.progress.context.fit" }),
+                      consumers: diagnostics.context.consumers.length,
+                      inputTokens: contextInputTokens,
+                      usableTokens: contextUsableTokens,
+                    }}
+                  />
+                </p>
+              )}
+              {diagnostics.memoryUpdated === null ||
+              diagnostics.memoryUpdated === undefined ? null : (
+                <p className="text-muted">
+                  <FormattedMessage
+                    id="chat.progress.memory"
+                    values={{
+                      created: diagnostics.memoryUpdated.created,
+                      updated: diagnostics.memoryUpdated.updated,
+                      discarded: diagnostics.memoryUpdated.discarded,
+                    }}
+                  />
+                </p>
+              )}
+              {diagnostics.sequence === undefined ? null : (
+                <p className="text-muted">
+                  <FormattedMessage
+                    id="chat.progress.sse"
+                    values={{ sequence: diagnostics.sequence }}
+                  />
+                </p>
+              )}
+              {diagnostics.terminalFailure === null ||
+              diagnostics.terminalFailure === undefined ? null : (
+                <p className="text-danger" data-testid="chat-progress-terminal-error">
+                  <FormattedMessage
+                    id="chat.progress.error.terminal"
+                    values={{
+                      code: diagnostics.terminalFailure.code,
+                      category:
+                        diagnostics.terminalFailure.errorCategory === undefined
+                          ? ""
+                          : intl.formatMessage({
+                              id: activityErrorCategoryMessageId(
+                                diagnostics.terminalFailure.errorCategory,
+                              ),
+                            }),
+                      message: diagnostics.terminalFailure.errorMessage ?? "",
+                    }}
+                  />
+                  {diagnostics.terminalFailure.runId === undefined ? null : (
+                    <span data-testid="chat-progress-terminal-run-id">
+                      {" · "}
+                      <FormattedMessage
+                        id="chat.progress.error.run"
+                        values={{ runId: diagnostics.terminalFailure.runId }}
+                      />
                     </span>
+                  )}
+                  {diagnostics.terminalFailure.occurredAt === undefined ? null : (
+                    <span data-testid="chat-progress-terminal-time">
+                      {" · "}
+                      <FormattedMessage
+                        id="chat.progress.error.time"
+                        values={{ timestamp: diagnostics.terminalFailure.occurredAt }}
+                      />
+                    </span>
+                  )}
+                  {diagnostics.terminalFailure.stage === undefined ? null : (
+                    <span>
+                      {" · "}
+                      <FormattedMessage
+                        id={`chat.progress.stage.${diagnostics.terminalFailure.stage}`}
+                      />
+                    </span>
+                  )}
+                  {diagnostics.terminalFailure.attempt === undefined ? null : (
+                    <span>
+                      {" · "}
+                      <FormattedMessage
+                        id="chat.progress.error.attempt"
+                        values={{ attempt: diagnostics.terminalFailure.attempt }}
+                      />
+                    </span>
+                  )}
+                </p>
+              )}
+              <ol
+                className="space-y-1.5 border-l border-rule pl-2"
+                data-testid="chat-progress-activities"
+              >
+                {activityHistory.map((activity, index) => (
+                  <li key={`${activity.code}:${activity.topicId ?? "all"}:${index}`}>
+                    <span className="text-muted">
+                      <FormattedMessage id={`chat.progress.code.${activity.code}`} />
+                    </span>{" "}
+                    <FormattedMessage id={`chat.progress.status.${activity.status}`} />
+                    {activity.attempt === undefined ? null : (
+                      <span>
+                        {" · "}
+                        <FormattedMessage
+                          id="chat.progress.error.attempt"
+                          values={{ attempt: activity.attempt }}
+                        />
+                      </span>
+                    )}
+                    {activity.durationMs === undefined ? null : ` · ${activity.durationMs}ms`}
+                    {activity.sourceCount === undefined ? null : ` · ${activity.sourceCount}`}
+                    {activity.resultCount === undefined ? null : ` · ${activity.resultCount}`}
+                    {activity.runId === undefined ? null : (
+                      <span data-testid="chat-progress-run-id">
+                        {" · "}
+                        <FormattedMessage
+                          id="chat.progress.error.run"
+                          values={{ runId: activity.runId }}
+                        />
+                      </span>
+                    )}
+                    {activity.occurredAt === undefined ? null : (
+                      <span data-testid="chat-progress-error-time">
+                        {" · "}
+                        <FormattedMessage
+                          id="chat.progress.error.time"
+                          values={{ timestamp: activity.occurredAt }}
+                        />
+                      </span>
+                    )}
+                    {activity.errorCode === undefined &&
+                    activity.errorCategory === undefined &&
+                    activity.errorMessage === undefined ? null : (
+                      <span
+                        className="block pl-2 text-danger"
+                        data-testid="chat-progress-failure-details"
+                      >
+                        {activity.errorCode === undefined ? null : (
+                          <span>
+                            <FormattedMessage
+                              id="chat.progress.error.code"
+                              values={{ code: activity.errorCode }}
+                            />
+                          </span>
+                        )}
+                        {activity.errorCategory === undefined ? null : (
+                          <span>
+                            {" · "}
+                            <FormattedMessage
+                              id={activityErrorCategoryMessageId(activity.errorCategory)}
+                            />
+                          </span>
+                        )}
+                        {activity.errorMessage === undefined ? null : (
+                          <span>
+                            {" · "}
+                            {activity.errorMessage}
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </li>
                 ))}
               </ol>
-            ) : null}
-            <details
-              className="mt-2"
-              open={diagnosticsOpen}
-              onToggle={(event) => setDiagnosticsOpen(event.currentTarget.open)}
-              data-testid="chat-progress-diagnostics"
-            >
-              <summary className="cursor-pointer font-mono text-[11px] text-accent">
-                <FormattedMessage id="chat.progress.diagnostics" />
-              </summary>
-              <div
-                className="mt-2 space-y-2 font-mono text-[11px]"
-                data-testid="chat-progress-details"
-              >
-                <p className="text-muted">
-                  <FormattedMessage
-                    id="chat.progress.sources"
-                    values={{ read: message.sourcesRead.length, cited: citations.length }}
-                  />
-                </p>
-                <p className="text-muted">
-                  <FormattedMessage
-                    id="chat.progress.retries"
-                    values={{ count: retryCount, attempt: maxAttempt }}
-                  />
-                </p>
-                {diagnostics.context === null || diagnostics.context === undefined ? null : (
-                  <p className="text-muted">
-                    <FormattedMessage
-                      id="chat.progress.context"
-                      values={{
-                        compaction: diagnostics.context.compactionRan
-                          ? intl.formatMessage({ id: "chat.progress.context.compacted" })
-                          : intl.formatMessage({ id: "chat.progress.context.fit" }),
-                        consumers: diagnostics.context.consumers.length,
-                        inputTokens: contextInputTokens,
-                        usableTokens: contextUsableTokens,
-                      }}
-                    />
-                  </p>
-                )}
-                {diagnostics.memoryUpdated === null ||
-                diagnostics.memoryUpdated === undefined ? null : (
-                  <p className="text-muted">
-                    <FormattedMessage
-                      id="chat.progress.memory"
-                      values={{
-                        created: diagnostics.memoryUpdated.created,
-                        updated: diagnostics.memoryUpdated.updated,
-                        discarded: diagnostics.memoryUpdated.discarded,
-                      }}
-                    />
-                  </p>
-                )}
-                {diagnostics.sequence === undefined ? null : (
-                  <p className="text-muted">
-                    <FormattedMessage
-                      id="chat.progress.sse"
-                      values={{ sequence: diagnostics.sequence }}
-                    />
-                  </p>
-                )}
-                <ol
-                  className="space-y-1.5 border-l border-rule pl-2"
-                  data-testid="chat-progress-activities"
-                >
-                  {activityHistory.map((activity, index) => (
-                    <li key={`${activity.code}:${activity.topicId ?? "all"}:${index}`}>
-                      <span className="text-muted">
-                        <FormattedMessage id={`chat.progress.code.${activity.code}`} />
-                      </span>{" "}
-                      <FormattedMessage id={`chat.progress.status.${activity.status}`} />
-                      {activity.attempt === undefined ? null : ` · ${activity.attempt}`}
-                      {activity.durationMs === undefined ? null : ` · ${activity.durationMs}ms`}
-                      {activity.sourceCount === undefined ? null : ` · ${activity.sourceCount}`}
-                      {activity.resultCount === undefined ? null : ` · ${activity.resultCount}`}
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            </details>
-          </>
+            </div>
+          </details>
         ) : null}
         {isAssistant ? (
-          <ChatSourcesRead sources={message.sourcesRead} onSourceClick={handleSourceClick} />
+          <ChatSourcesRead
+            sources={message.sourcesRead}
+            citations={citations}
+            onSourceClick={handleSourceClick}
+          />
         ) : null}
         {documentOpenFailed ? (
           <p className="mt-2 font-mono text-[11px] text-danger" role="alert">
@@ -649,40 +881,76 @@ function CitationMarker({
 
 export function ChatSourcesRead({
   sources,
+  citations = [],
   onSourceClick,
 }: {
   readonly sources: readonly PublicSourceRecord[];
+  readonly citations?: readonly PublicCitationRecord[];
   readonly onSourceClick?: (
     source: PublicCitationRecord | PublicSourceRecord,
     event: ReactMouseEvent<HTMLAnchorElement>,
   ) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const intl = useIntl();
+  const disclosureId = useId();
+  const labelId = `${disclosureId}-label`;
+  const listId = `${disclosureId}-list`;
+  const citationNumbersById = useMemo(() => citationNumbersBySourceKey(citations), [citations]);
 
   return (
-    <div className="mt-2 border-t border-rule pt-2">
-      <button
-        type="button"
-        className="inline-flex items-center gap-1 font-mono text-[11px] font-medium text-muted hover:text-accent"
-        onClick={() => setExpanded((current) => !current)}
+    <details
+      className="mt-2 border-t border-rule pt-2"
+      open={expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+      data-testid="sources-read-disclosure"
+    >
+      <summary
+        className="inline-flex cursor-pointer list-none items-center gap-1 font-mono text-[11px] font-medium text-muted hover:text-accent [&::-webkit-details-marker]:hidden"
+        id={labelId}
+        aria-controls={listId}
         aria-expanded={expanded}
         data-testid="sources-read-toggle"
       >
-        {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        {expanded ? (
+          <ChevronDown className="size-3" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="size-3" aria-hidden="true" />
+        )}
         <FormattedMessage id="chat.sourcesRead" values={{ count: sources.length }} />
-      </button>
-      {expanded ? (
-        sources.length > 0 ? (
-          <ul
-            className="mt-1.5 space-y-1 border-l border-rule pl-2"
-            data-testid="sources-read-list"
-          >
-            {sources.map((source) => (
+      </summary>
+      {sources.length > 0 ? (
+        <ul
+          className="mt-1.5 space-y-1 border-l border-rule pl-2"
+          data-testid="sources-read-list"
+          id={listId}
+          role="region"
+          aria-labelledby={labelId}
+        >
+          {sources.map((source) => {
+            const citationNumber = citationNumbersById.get(source.sourceKey);
+            return (
               <li
                 key={source.sourceKey}
                 className="text-xs leading-5 text-muted"
                 data-testid="source-read-item"
               >
+                {citationNumber === undefined ? (
+                  <span className="mr-1 font-mono text-[11px] text-faint" data-cited="false">
+                    <FormattedMessage id="chat.sourceReadUncited" />
+                  </span>
+                ) : (
+                  <span
+                    className="mr-1 font-mono text-[11px] text-accent"
+                    data-cited="true"
+                    aria-label={intl.formatMessage(
+                      { id: "chat.sourceCitationNumber" },
+                      { number: citationNumber },
+                    )}
+                  >
+                    [{citationNumber}]
+                  </span>
+                )}
                 <a
                   href={sourceHref(source)}
                   {...externalSourceLinkProps(source)}
@@ -697,15 +965,21 @@ export function ChatSourcesRead({
                   {source.topicIds.length > 0 ? ` · ${source.topicIds.join(", ")}` : null}
                 </span>
               </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-1.5 text-xs text-muted" data-testid="sources-read-empty">
-            <FormattedMessage id="chat.sourcesReadEmpty" />
-          </p>
-        )
-      ) : null}
-    </div>
+            );
+          })}
+        </ul>
+      ) : (
+        <p
+          className="mt-1.5 text-xs text-muted"
+          data-testid="sources-read-empty"
+          id={listId}
+          role="region"
+          aria-labelledby={labelId}
+        >
+          <FormattedMessage id="chat.sourcesReadEmpty" />
+        </p>
+      )}
+    </details>
   );
 }
 

@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chat answer details proposals</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #20232a;
+        --muted: #68717c;
+        --faint: #9aa3ad;
+        --paper: #fffefa;
+        --canvas: #f5f6f7;
+        --rule: #dfe3e7;
+        --accent: #8a2635;
+        --accent-soft: #f5e7e9;
+        --warning: #8a5c18;
+        --warning-soft: #fff5dd;
+        --danger: #a12c2c;
+        --shadow: 0 18px 45px rgb(29 34 40 / 8%);
+        font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--canvas);
+        color: var(--ink);
+        line-height: 1.55;
+      }
+      main { max-width: 1120px; margin: 0 auto; padding: 48px 24px 80px; }
+      .eyebrow, .meta, code, .label, .status, .stage-name, .stage-state {
+        font-family: "IBM Plex Mono", ui-monospace, monospace;
+      }
+      .eyebrow {
+        margin: 0 0 8px;
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: .12em;
+        text-transform: uppercase;
+      }
+      h1, h2, h3 { line-height: 1.15; }
+      h1 { max-width: 860px; margin: 0; font-size: clamp(32px, 5vw, 58px); letter-spacing: -.035em; }
+      h2 { margin: 0 0 16px; font-size: 28px; letter-spacing: -.02em; }
+      h3 { margin: 28px 0 8px; font-size: 18px; }
+      p { max-width: 78ch; }
+      .lede { max-width: 72ch; margin: 18px 0 0; color: #4d5661; font-size: 18px; }
+      .notice {
+        margin: 28px 0 42px;
+        padding: 16px 18px;
+        border-left: 3px solid var(--accent);
+        background: var(--paper);
+        box-shadow: var(--shadow);
+      }
+      .notice strong { color: var(--accent); }
+      section {
+        margin-top: 44px;
+        padding-top: 34px;
+        border-top: 1px solid var(--rule);
+      }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+      .panel {
+        min-width: 0;
+        padding: 22px;
+        border: 1px solid var(--rule);
+        background: var(--paper);
+      }
+      .panel h3 { margin-top: 0; }
+      .panel ul, .panel ol { margin: 10px 0 0; padding-left: 22px; }
+      .panel li + li { margin-top: 8px; }
+      .good { color: #23623c; }
+      .needs { color: var(--warning); }
+      .blocked { color: var(--danger); }
+      .contract {
+        overflow-x: auto;
+        padding: 16px;
+        border: 1px solid var(--rule);
+        background: #20252b;
+        color: #edf1f4;
+        font: 13px/1.6 "IBM Plex Mono", ui-monospace, monospace;
+        white-space: pre;
+      }
+      .mock {
+        margin: 24px 0;
+        padding: 20px;
+        border: 1px solid var(--rule);
+        background: #eceff1;
+      }
+      .mock-caption { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+      .answer-mock {
+        max-width: 740px;
+        margin: 0 auto;
+        padding: 22px;
+        border: 1px solid var(--rule);
+        background: var(--paper);
+      }
+      .mock-author { margin: 0 0 10px; color: var(--muted); font: 700 11px "IBM Plex Mono", monospace; letter-spacing: .12em; text-transform: uppercase; }
+      .mock-answer { margin: 0; font: 17px/1.65 Georgia, serif; }
+      .cite {
+        display: inline-block;
+        margin-left: 3px;
+        padding: 0 4px;
+        border: 1px solid #c88d96;
+        color: var(--accent);
+        font: 11px "IBM Plex Mono", monospace;
+        vertical-align: super;
+      }
+      .quote-row, .unavailable-row {
+        margin-top: 16px;
+        padding: 12px 14px;
+        border-left: 2px solid var(--accent);
+        background: var(--accent-soft);
+        font-size: 14px;
+      }
+      .unavailable-row { border-left-color: var(--rule); background: #f7f8f8; color: var(--muted); }
+      .quote-row q { display: block; margin-top: 4px; font-family: Georgia, serif; }
+      .source-list { margin: 20px 0 0; padding-top: 14px; border-top: 1px solid var(--rule); }
+      .source-list summary { cursor: pointer; color: var(--muted); font: 700 12px "IBM Plex Mono", monospace; }
+      .source-list ul { margin: 10px 0 0; padding-left: 20px; }
+      .source-list li + li { margin-top: 6px; }
+      .source-num { color: var(--accent); font: 12px "IBM Plex Mono", monospace; }
+      .uncited { color: var(--faint); font: 11px "IBM Plex Mono", monospace; }
+      .debug-mock { max-width: 920px; margin: 0 auto; padding: 20px; border: 1px solid var(--rule); background: var(--paper); }
+      .debug-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--rule); }
+      .debug-head h3 { margin: 0; }
+      .meta { color: var(--muted); font-size: 11px; }
+      .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 16px 0; }
+      .metric { padding: 10px; border: 1px solid var(--rule); }
+      .metric .label { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; }
+      .metric strong { display: block; margin-top: 3px; font-size: 16px; }
+      .stage-list { list-style: none; margin: 12px 0 0; padding: 0; border-top: 1px solid var(--rule); }
+      .stage-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(90px, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--rule); }
+      .stage-name { font-size: 12px; }
+      .stage-state { color: var(--muted); font-size: 11px; }
+      .stage-state.running { color: var(--accent); }
+      .stage-state.failed { color: var(--danger); }
+      .debug-detail { margin-top: 14px; }
+      .debug-detail summary { cursor: pointer; color: var(--accent); font: 12px "IBM Plex Mono", monospace; }
+      .debug-detail pre { margin: 10px 0 0; padding: 12px; overflow-x: auto; background: #f2f4f5; color: #46505b; font: 11px/1.55 "IBM Plex Mono", monospace; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 10px 12px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+      th { color: var(--muted); font: 700 11px "IBM Plex Mono", monospace; text-transform: uppercase; }
+      .exclusions { columns: 2 260px; column-gap: 36px; }
+      .exclusions li { break-inside: avoid; margin-bottom: 7px; }
+      .foot { margin-top: 48px; color: var(--muted); font-size: 13px; }
+      @media (max-width: 720px) {
+        main { padding: 32px 16px 56px; }
+        .grid { grid-template-columns: 1fr; }
+        .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .stage-row { grid-template-columns: 1fr; gap: 3px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Proposal only · 22 August 2026</p>
+      <h1>Quotes and full debug logs for chat answers</h1>
+      <p class="lede">This document proposes two later additions to the answer details surface. It does not change the API, database, retention, or authorization contract.</p>
+      <div class="notice"><strong>Scope guard:</strong> the current UI change covers the unframed answer column, fixed progress rail, and closed sources disclosure. The quote and debug-log changes below are designs only. No source text or new log data is exposed by this proposal.</div>
+
+      <section id="quotes">
+        <h2>1. Actual supporting quotes</h2>
+        <p>Show a short quote beside an inline citation only when the authorized citation record includes the exact supporting text. Keep the answer text and citation marker unchanged. The quote row must never fetch source text in the browser or infer a quote from a title, URL, page range, search snippet, or answer wording.</p>
+        <div class="grid">
+          <article class="panel">
+            <h3 class="good">What exists now</h3>
+            <ul>
+              <li><code>PublicCitationRecord</code> and <code>PublicSourceRecord</code> include an exact normalized <code>quote</code> for web sources. The durable <code>assistant_message_sources.locator</code> also stores that quote and its integrity hash.</li>
+              <li>Document records expose identity, title, URL, and selected ranges in the current shared schema, but no document text. The durable locator binds the ranges to an immutable document version and hash; the browser cannot reconstruct the text from that contract.</li>
+              <li>Earlier-chat records expose a message ID and memory records expose a memory plus revision ID. Their public ranges are empty. The durable source-use rows keep private ranges, while the message or memory text stays outside the public citation projection.</li>
+              <li>Web search snippets are not answer evidence. Only the fetched, normalized quotation selected by the web path is durable answer evidence.</li>
+            </ul>
+          </article>
+          <article class="panel">
+            <h3 class="needs">What needs backend work</h3>
+            <ul>
+              <li>For document, earlier-chat, and memory citations, the server must reconstruct the exact text from the immutable version/message/revision and the saved ranges, then authorize it for the current viewer before serialization.</li>
+              <li>Add a versioned citation field such as <code>quote: { text } | null</code> to the authorized citation projection. Keep the current web quote compatible during migration; do not add quote text to the sources-read list unless the product asks for it.</li>
+              <li>Return <code>null</code> when no safe quote can be reconstructed or the viewer is not allowed to see it. Do not return a reason that could reveal restricted content or authorization state.</li>
+              <li>Bound quote length and encoding in the server contract, preserve the existing source key/order contract, add replay and authorization tests, and update the data-access and runtime specs before enabling it. Keep integrity hashes server-side for verification; never serialize them in the public quote projection.</li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>Proposed empty state</h3>
+        <p>Use one precise, content-free message for every unavailable case: <strong>“Quote unavailable for this source.”</strong> Do not show an empty quote mark, a made-up excerpt, a range, a provider snippet, or a link that suggests the missing text is present. Keep the row visible only when the user opens the citation detail.</p>
+
+        <div class="mock" aria-label="Visual mock of an answer with quote details">
+          <p class="mock-caption">Visual mock · quote details remain secondary to the answer</p>
+          <div class="answer-mock">
+            <p class="mock-author">Assistant · answer</p>
+            <p class="mock-answer">The reform starts on 1 September 2026<span class="cite" aria-label="Inline citation 1">[1]</span>; implementation detail is still limited<span class="cite" aria-label="Inline citation 2">[2]</span>.</p>
+            <details class="source-list" open>
+              <summary>2 sources read</summary>
+              <ul>
+                <li><span class="source-num">[1]</span> Electronic invoicing · quote available <span class="quote-row"><strong>Supporting quote</strong><q>The reform begins on 1 September 2026.</q></span></li>
+                <li><span class="source-num">[2]</span> Implementation note <span class="unavailable-row">Quote unavailable for this source.</span></li>
+                <li><span class="uncited">not cited</span> Read source without an inline citation</li>
+              </ul>
+            </details>
+          </div>
+        </div>
+
+        <h3>Suggested contract shape</h3>
+        <div class="contract">// Proposal only; not an implemented schema
+type PublicCitationQuote =
+  | { readonly text: string }
+  | null;
+
+type PublicCitationRecord = ExistingCitationFields & {
+  readonly quote: PublicCitationQuote;
+};
+
+// The browser renders text only when quote !== null. It never derives text
+// from ranges, URLs, source titles, provider snippets, or answer content.</div>
+      </section>
+
+      <section id="logs">
+        <h2>2. Expandable full debug logs</h2>
+        <p>Offer an owner-only, closed-by-default “Debug details” disclosure beneath the current safe diagnostics. The view should help a user or support worker explain a slow, retried, compacted, or failed run without turning the browser into a prompt, retrieval, or provider console.</p>
+
+        <div class="grid">
+          <article class="panel">
+            <h3 class="good">Safe fields to maximize</h3>
+            <ul>
+              <li>Run identity and public timestamps when the API supplies them; terminal state, retryable flag, normalized error code/category/message, and last SSE sequence.</li>
+              <li>Five-stage history with status, bounded duration, attempt, topic label when already public, and safe result/source counts.</li>
+              <li>Context fit summary: mode, compaction ran or not, consumer count, input/output allowance counts, and usable-token counts already carried by <code>context_ready</code>.</li>
+              <li>Source summary by count and kind: read, cited, and read-but-uncited. Keep source names, URLs, ranges, quotes, and identities out of this log view.</li>
+              <li>Memory outcome counts, model/web usage counts and bytes when already present in the public usage events, answer-start and finalization status, and a clear “stream ended” row.</li>
+            </ul>
+          </article>
+          <article class="panel">
+            <h3 class="blocked">Never include</h3>
+            <ul>
+              <li>Prompts, resolved questions, search queries, answer text, source text, quotations, ranges, hashes, titles, URLs, or source identities.</li>
+              <li>Provider request/response payloads, credentials, authorization headers, raw provider errors, stack traces, SQL, private memory content, or restricted support data.</li>
+              <li>Smithers state, workflow snapshots, internal task graphs, raw coordinates, or fields that let the browser infer a hidden model/provider call.</li>
+              <li>Data from another user, a shared chat’s private memory lane, an unauthorized source, or a source that the current viewer cannot still open.</li>
+            </ul>
+          </article>
+        </div>
+
+        <h3>Current browser contract versus retained-log work</h3>
+        <table>
+          <thead><tr><th>Area</th><th>Current browser contract</th><th>Needed for a fuller retained view</th></tr></thead>
+          <tbody>
+            <tr><td>Stage history</td><td>SSE <code>activity</code> events carry stage, code, status, optional topic, attempt, duration, result/source counts, and normalized failure fields. The current UI keeps an in-memory/session-storage history while the stream is active.</td><td>Authorized API projection from retained events, with a retention rule that survives terminal-event pruning and a stable schema for old runs.</td></tr>
+            <tr><td>Attempts and timings</td><td>Activity attempts/durations and error timestamps may be present. <code>run_started</code> has no timestamp field.</td><td>Expose safe run <code>startedAt</code>, <code>finishedAt</code>/<code>failedAt</code>, elapsed time, and finalization time from the locked run row.</td></tr>
+            <tr><td>Context and memory</td><td><code>context_ready</code> provides mode, compaction flag, source records, and consumer token counts; <code>memory_updated</code> provides created/updated/discarded counts.</td><td>Project counts only, bind them to the terminal run, and retain them after SSE expiry. Do not serialize source records into the log view.</td></tr>
+            <tr><td>Usage and failures</td><td>SSE usage events contain bounded token, web result/byte, and duration counts. Error events carry code, retryable, and normalized category/message fields in the current contract.</td><td>Aggregate a stable safe summary from durable usage rows and normalized failure records; keep raw provider and transport causes discarded.</td></tr>
+            <tr><td>Run identity and cursor</td><td>Run IDs exist on the user outcome/active descriptor and optional activity/error fields; the client tracks the last SSE sequence.</td><td>Return one authorized run identity/timestamp projection and the terminal cursor, with no Smithers identity or state.</td></tr>
+            <tr><td>Sources and citations</td><td>Final messages expose citations and sources-read records; the client can count them and map citation ordinals.</td><td>Return only read/cited/uncited counts by safe kind. Keep names, URLs, quotes, ranges, and source keys in the normal answer/source UI, not the debug log.</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Visual mock</h3>
+        <div class="mock" aria-label="Visual mock of expandable debug logs">
+          <p class="mock-caption">Visual mock · summary first, details on demand</p>
+          <div class="debug-mock">
+            <div class="debug-head">
+              <h3>Debug details</h3>
+              <span class="meta">run run-safe-123 · cursor 18 · ended 2026-08-22 14:18 UTC</span>
+            </div>
+            <div class="summary-grid">
+              <div class="metric"><span class="label">Outcome</span><strong>Complete</strong></div>
+              <div class="metric"><span class="label">Attempts</span><strong>2</strong></div>
+              <div class="metric"><span class="label">Sources</span><strong>4 read · 2 cited</strong></div>
+              <div class="metric"><span class="label">Context</span><strong>Compacted</strong></div>
+            </div>
+            <ol class="stage-list" aria-label="Safe stage history">
+              <li class="stage-row"><span class="stage-name">Understanding</span><span class="stage-state">Complete</span><span class="meta">820 ms · attempt 1</span></li>
+              <li class="stage-row"><span class="stage-name">Evidence</span><span class="stage-state">Complete</span><span class="meta">2.1 s · 4 read</span></li>
+              <li class="stage-row"><span class="stage-name">Preparing</span><span class="stage-state">Complete</span><span class="meta">1 retry · compacted</span></li>
+              <li class="stage-row"><span class="stage-name">Writing</span><span class="stage-state running">Complete</span><span class="meta">1.7 s</span></li>
+              <li class="stage-row"><span class="stage-name">Finishing</span><span class="stage-state">Complete</span><span class="meta">240 ms · memory 1 updated</span></li>
+            </ol>
+            <details class="debug-detail">
+              <summary>Show safe event details</summary>
+              <pre>14:18:01  Understanding  complete  attempt 1  820ms
+14:18:02  Evidence       complete  4 read / 3 results
+14:18:04  Preparing      retrying  attempt 1  context_compaction
+14:18:06  Preparing      complete  compacted  3 consumers
+14:18:08  Writing        complete  1.7s
+14:18:09  Finishing      complete  memory updated 1
+14:18:09  terminal       done      SSE cursor 18</pre>
+            </details>
+          </div>
+        </div>
+
+        <h3>Recommended information hierarchy</h3>
+        <ol>
+          <li><strong>Level 1 — outcome:</strong> status, run ID, terminal time, retry action when allowed, and a short normalized failure message.</li>
+          <li><strong>Level 2 — stage rail:</strong> the same five fixed labels as the active answer rail, with status, attempt, duration, and safe counts.</li>
+          <li><strong>Level 3 — run summary:</strong> context fit/compaction, source read/cited counts, memory counts, usage totals, and SSE cursor.</li>
+          <li><strong>Level 4 — event history:</strong> an expandable chronological list of safe transitions. Keep it closed by default and make each row readable by keyboard and screen reader.</li>
+          <li><strong>Level 5 — support handoff:</strong> offer a copyable safe run ID and normalized failure code only. Do not add a raw-log download.</li>
+        </ol>
+
+        <h3>Proposed API boundary</h3>
+        <p>Prefer an authorized, owner/shared-viewer checked endpoint such as <code>GET /v1/ai-runs/:runId/debug</code>. It should return a strict public schema assembled from <code>ai_run_events</code>, durable usage rows, final source/citation counts, and locked run timestamps. The endpoint must enforce the same chat visibility boundary as SSE, omit restricted fields before serialization, and return an honest unavailable state when terminal events or retained details have expired. A later support-only endpoint may use restricted access, but it must not be reused by the client debug view.</p>
+        <div class="contract">// Proposal only; safe projection, not a current API
+type PublicAiRunDebug = {
+  runId: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  startedAt: string | null;
+  finishedAt: string | null;
+  failedAt: string | null;
+  lastSequence: number | null;
+  stages: Array&lt;{
+    stage: "understanding" | "evidence" | "preparing" | "writing" | "finishing";
+    status: "waiting" | "running" | "complete" | "retrying" | "failed" | "skipped";
+    attempt: number | null;
+    durationMs: number | null;
+    sourceCount: number | null;
+    resultCount: number | null;
+    errorCode: string | null;
+    errorCategory: string | null;
+  }&gt;;
+  sourceSummary: { read: number; cited: number; uncited: number };
+  context: { compactionRan: boolean | null; consumers: number; inputTokens: number | null; usableInputTokens: number | null };
+  memory: { created: number; updated: number; discarded: number } | null;
+  usage: { modelInputTokens: number; modelOutputTokens: number; webSearches: number; webFetches: number } | null;
+  terminalError: { code: string; retryable: boolean; category: string | null; message: string | null } | null;
+};</div>
+      </section>
+
+      <section id="risks">
+        <h2>Safety and rollout notes</h2>
+        <ul class="exclusions">
+          <li>Do not infer quote availability from a source URL or range.</li>
+          <li>Use a generic unavailable quote state to avoid authorization leaks.</li>
+          <li>Keep memory quote support owner-only; shared chats cannot expose saved-memory records.</li>
+          <li>Make debug details closed by default and keyboard reachable.</li>
+          <li>Use bounded counts and lengths; reject unknown fields at the API boundary.</li>
+          <li>Do not make a terminal SSE replay window look like durable history.</li>
+          <li>Keep source order and citation ordinals unchanged.</li>
+          <li>Test reload, expired events, failed retries, and shared-viewer boundaries.</li>
+        </ul>
+      </section>
+
+      <p class="foot">Finding: web quotes exist in the current public and durable citation contract; document, earlier-chat, and memory quote text does not. Safe live activity and summary events exist in SSE, but a fuller retained debug log needs a new authorized projection and retention contract. This file records proposals only.</p>
+    </main>
+  </body>
+</html>

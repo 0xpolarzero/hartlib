@@ -1911,15 +1911,18 @@ deduplicated ordered transition history, and the last SSE sequence in session
 storage schema version 4. It ignores repeated or out-of-order sequences,
 applies replayed transitions in sequence order, and never adds a second row for
 the same retry transition. `run_started` creates an empty assistant progress
-card. The card shows a compact stage rail and an accessible live status while
-work runs. An explicit diagnostics disclosure opts into the transition
+card. The card shows a compact fixed five-slot stage rail before any streamed
+answer text, with a 1px connector whose completed segments use the oxblood
+accent, and an accessible live status while work runs. An explicit diagnostics disclosure opts into the transition
 history and safe counts, attempts, durations, source-read/cited summary,
 context fit or compaction, memory-write outcome, retry, finalization, SSE
 cursor, run identity, timestamps, and failure category/message details. These
 details never include prompts, queries, source text or ranges, provider
 payloads, credentials, Smithers state, or restricted content. The disclosure is
 closed by default and remains replayable without duplicating transitions.
-`done` replaces the card with the saved assistant message. `error` keeps the
+`done` replaces the card with the saved assistant message and its compact
+localized completion row, which reports only source-read and cited counts that
+the saved message carries. `error` keeps the
 safe failed activity card on the current route while the user message keeps its
 localized failure and resubmit controls. A new request or route change clears
 that failed local activity state.
