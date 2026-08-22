@@ -150,31 +150,27 @@ export const renderOfficialGlmProviderRequest = (
   });
 };
 
-const turboProviderAccountingOverhead = (request: ProviderRequest): number => {
+/**
+ * Z.AI's GLM-5-Turbo usage counter has two provider-only accounting rules
+ * that differ from the rendered chat template. The provider ignores the
+ * `strict: false` marker in each function definition (four tokenizer units
+ * per definition). It does not add a unit for an assistant continuation or a
+ * completed tool turn.
+ */
+const turboProviderAccountingAdjustment = (request: ProviderRequest): number => {
   const normalized = normalizeProviderRequest(request);
-  const lastMessage = normalized.messages.at(-1);
-  const assistantContinuation = lastMessage?.role === "assistant" ? 1 : 0;
-  // Z.AI counts one additional framing token for each completed assistant
-  // tool-call turn when the prompt ends in tool results. A later assistant
-  // prose turn replaces that framing in the provider's serialization.
-  const completedToolTurns =
-    lastMessage?.role === "tool"
-      ? normalized.messages.filter(
-          (message) => message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0,
-        ).length
-      : 0;
-  return assistantContinuation + completedToolTurns;
+  const ignoredToolDefinitionTokens = (normalized.tools?.length ?? 0) * 4;
+  return -ignoredToolDefinitionTokens;
 };
 
 const exactCount = (request: ProviderRequest, modelId: RegisteredModel["id"]): number => {
   const template = renderOfficialGlmProviderRequest(request, modelId);
   const templateTokens =
     modelId === "glm-5.2" ? countGlm52TextTokens(template) : countGlmTurboTextTokens(template);
-  // GLM-5-Turbo's live prompt usage matches the pinned template for function
-  // definitions. Its only provider-only framing is the bounded continuation
-  // adjustment above.
+  // GLM-5-Turbo's live prompt usage matches the pinned template after its
+  // ignored strict-field accounting adjustment above.
   return modelId === "glm-5-turbo"
-    ? templateTokens + turboProviderAccountingOverhead(request)
+    ? templateTokens + turboProviderAccountingAdjustment(request)
     : templateTokens;
 };
 
