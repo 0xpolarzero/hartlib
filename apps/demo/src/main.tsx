@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiResponseError, createProductApiClient } from "@hartlib/api-client";
 import {
   clearRunStreamState,
+  latestFailedRunId,
   persistRunStreamState,
   restoreRunStreamState,
 } from "@hartlib/api-client/stream";
@@ -750,6 +751,24 @@ function ClientFeedsList({
       if (resetState.generation !== resetGeneration) return chat;
       setChatMessages(mapApiMessagesToTranscript(chat.messages));
       setActiveRunId(preserveActiveRunId ?? chat.activeRun?.id ?? null);
+      if (preserveActiveRunId === undefined && chat.activeRun === null) {
+        const restoredFailedRunId = latestFailedRunId(chat.messages);
+        const restored =
+          restoredFailedRunId === null
+            ? null
+            : restoreRunStreamState(window.sessionStorage, restoredFailedRunId);
+        if (restored !== null && restored.draft.terminalFailure !== null) {
+          failedRunIdRef.current = restoredFailedRunId;
+          setFailedRunId(restoredFailedRunId);
+          setStreamState(restoreChatStreamState(restored));
+        } else {
+          failedRunIdRef.current = null;
+          setFailedRunId(null);
+          setStreamState((current) =>
+            current.phase === "error" ? initialChatStreamState : current,
+          );
+        }
+      }
       setEffectiveWebPolicy(chat.effectiveWebPolicy);
       if (!chat.effectiveWebPolicy.enabled) setWebSearchEnabled(false);
       setChatStatus("ready");

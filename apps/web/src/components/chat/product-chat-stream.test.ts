@@ -6,6 +6,7 @@ import {
   isDefinitiveStreamHandshakeFailure,
   isTerminalEventUnavailable,
   isWebResearchUnavailable,
+  latestFailedRunId,
   persistRunStreamState,
   reconnectDelayMs,
   reduceRunStreamEvent,
@@ -212,7 +213,7 @@ describe("product chat active-run conflict reconciliation", () => {
     market: "US" as const,
     webSearchEnabled: false,
   };
-  const userMessage = (id: string, status: "queued" | "succeeded") => ({
+  const userMessage = (id: string, status: "queued" | "succeeded" | "failed") => ({
     id,
     author: "user" as const,
     content: request.text,
@@ -220,7 +221,30 @@ describe("product chat active-run conflict reconciliation", () => {
     run:
       status === "queued"
         ? { id: `${id}-run`, status: "queued" as const }
-        : { id: `${id}-run`, status: "succeeded" as const, finishedAt: "2026-01-01T00:01:00.000Z" },
+        : status === "succeeded"
+          ? {
+              id: `${id}-run`,
+              status: "succeeded" as const,
+              finishedAt: "2026-01-01T00:01:00.000Z",
+            }
+          : {
+              id: `${id}-run`,
+              status: "failed" as const,
+              errorCode: "plan_turn_failed",
+              retryable: true,
+              failedAt: "2026-01-01T00:01:00.000Z",
+            },
+  });
+
+  it("finds the newest failed run for terminal stream restoration", () => {
+    expect(
+      latestFailedRunId([
+        userMessage("old-failure", "failed"),
+        userMessage("success", "succeeded"),
+        userMessage("new-failure", "failed"),
+      ]),
+    ).toBe("new-failure-run");
+    expect(latestFailedRunId([userMessage("success", "succeeded")])).toBeNull();
   });
 
   it("attaches only a newly visible active message or chat run after uncertainty", () => {

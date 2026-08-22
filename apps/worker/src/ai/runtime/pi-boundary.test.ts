@@ -964,6 +964,36 @@ describe("exact Pi boundary", () => {
     expect(onUsage).not.toHaveBeenCalled();
   });
 
+  it("does not misclassify a local streaming callback failure as provider transport", async () => {
+    const stream = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: "text_delta" as const, delta: "partial" };
+      },
+    }));
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      stream: stream as never,
+    });
+    const roleCoordinates = { ...coordinates, agentRole: "direct_answer" };
+
+    await expect(
+      inTask(
+        new AbortController(),
+        roleCoordinates.attempt,
+        () =>
+          boundary.stream(request, roleCoordinates, () => {
+            throw new Error("local persistence secret");
+          }),
+        roleCoordinates.loopIteration,
+      ),
+    ).rejects.toMatchObject({
+      code: "answer_failed",
+      category: "workflow",
+      providerStatus: null,
+      diagnosticMessage: "The workflow operation failed.",
+    });
+  });
+
   it("persists measurements for each retry coordinate but usage only for the successful attempt", async () => {
     const firstStarted = deferred<void>();
     const complete = vi
@@ -1012,6 +1042,103 @@ describe("exact Pi boundary", () => {
     ]);
     expect(onUsage).toHaveBeenCalledOnce();
     expect(onUsage).toHaveBeenCalledWith(secondCoordinates, "glm-5-turbo", expect.any(Object));
+  });
+
+  it("classifies a provider rejection with only trusted status metadata", async () => {
+    const providerError = Object.assign(new Error("provider body contains a secret"), {
+      status: 503,
+    });
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      complete: vi.fn(async () => {
+        throw providerError;
+      }) as never,
+    });
+    const roleCoordinates = { ...coordinates, agentRole: "plan_turn" };
+
+    const failure = await inTask(
+      new AbortController(),
+      roleCoordinates.attempt,
+      () => boundary.complete(request, roleCoordinates),
+      roleCoordinates.loopIteration,
+    ).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      code: "plan_turn_failed",
+      category: "provider_response",
+      providerStatus: 503,
+      diagnosticMessage: "The model provider returned an error response (HTTP 503).",
+    });
+    expect(String(failure)).not.toContain("provider body contains a secret");
+    expect(JSON.stringify(failure)).not.toContain("provider body contains a secret");
+  });
+
+  it("classifies a successful HTTP response with an unusable final as provider output", async () => {
+    const failed = {
+      ...assistant(""),
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        reasoning: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "error" as const,
+    };
+    const complete = vi.fn(
+      async (
+        _model: unknown,
+        _context: unknown,
+        options: { readonly onResponse?: (response: { readonly status: number }) => void },
+      ) => {
+        options.onResponse?.({ status: 200 });
+        return failed;
+      },
+    );
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      complete: complete as never,
+    });
+    const roleCoordinates = { ...coordinates, agentRole: "plan_turn" };
+
+    await expect(
+      inTask(
+        new AbortController(),
+        roleCoordinates.attempt,
+        () => boundary.complete(request, roleCoordinates),
+        roleCoordinates.loopIteration,
+      ),
+    ).rejects.toMatchObject({
+      code: "plan_turn_failed",
+      category: "provider_output",
+      providerStatus: null,
+      diagnosticMessage: "The model provider returned an unusable structured result.",
+    });
+  });
+
+  it("keeps a provider transport rejection content-free", async () => {
+    const boundary = new ExactPiBoundary({
+      ...boundaryOptions(),
+      complete: vi.fn(async () => {
+        throw new Error("transport payload sk-live-secret");
+      }) as never,
+    });
+    const roleCoordinates = { ...coordinates, agentRole: "plan_turn" };
+
+    await expect(
+      inTask(
+        new AbortController(),
+        roleCoordinates.attempt,
+        () => boundary.complete(request, roleCoordinates),
+        roleCoordinates.loopIteration,
+      ),
+    ).rejects.toMatchObject({
+      code: "plan_turn_failed",
+      category: "provider_transport",
+      providerStatus: null,
+      diagnosticMessage: "The model provider did not return a response.",
+    });
   });
 
   it("does not persist usage for a provider-returned aborted message", async () => {

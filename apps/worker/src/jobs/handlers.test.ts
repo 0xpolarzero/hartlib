@@ -323,7 +323,14 @@ describe("terminal AI failure projection", () => {
         workflow: { message: "workflow failed" },
         durable: { runErrorJson: null, attemptErrorJson: [genericErrorJson] },
       }),
-    ).toEqual({ code: "answer_failed", retryable: false });
+    ).toEqual({
+      code: "answer_failed",
+      retryable: false,
+      diagnostics: {
+        errorCategory: "workflow",
+        errorMessage: "The workflow operation failed.",
+      },
+    });
   });
 
   it("does not infer a code from unstructured error text", async () => {
@@ -331,12 +338,23 @@ describe("terminal AI failure projection", () => {
     expect(terminalAiFailure({ message: "[retryable:false] context_compaction_failed" })).toEqual({
       code: "finalization_failed",
       retryable: true,
+      diagnostics: {
+        errorCategory: "workflow",
+        errorMessage: "The workflow operation failed.",
+      },
     });
   });
 
   it("does not trust generic structured or attached code fields", async () => {
     const { terminalAiFailure } = await import("./handlers");
-    const fallback = { code: "finalization_failed", retryable: true };
+    const fallback = {
+      code: "finalization_failed",
+      retryable: true,
+      diagnostics: {
+        errorCategory: "workflow" as const,
+        errorMessage: "The workflow operation failed.",
+      },
+    };
     expect(terminalAiFailure({ code: "context_plan_unfit" })).toEqual(fallback);
     expect(
       terminalAiFailure(
@@ -364,10 +382,21 @@ describe("terminal AI failure projection", () => {
       terminalAiFailure(
         new AiRuntimeError("context_plan_unfit", "context cannot fit", { retryable: false }),
       ),
-    ).toEqual({ code: "context_plan_unfit", retryable: false });
+    ).toEqual({
+      code: "context_plan_unfit",
+      retryable: false,
+      diagnostics: {
+        errorCategory: "context_budget",
+        errorMessage: "The provider request did not fit the available context budget.",
+      },
+    });
     expect(terminalAiFailure(Object.create(AiRuntimeError.prototype))).toEqual({
       code: "finalization_failed",
       retryable: true,
+      diagnostics: {
+        errorCategory: "workflow",
+        errorMessage: "The workflow operation failed.",
+      },
     });
   });
 
@@ -386,12 +415,26 @@ describe("terminal AI failure projection", () => {
         },
         durable: { runErrorJson: null, attemptErrorJson: [durableAttempt] },
       }),
-    ).toEqual({ code: "answer_failed", retryable: true });
+    ).toEqual({
+      code: "answer_failed",
+      retryable: true,
+      diagnostics: {
+        errorCategory: "workflow",
+        errorMessage: "The workflow operation failed.",
+      },
+    });
   });
 
   it("never classifies valid-looking markers from workflow text", async () => {
     const { terminalAiFailure } = await import("./handlers");
-    const fallback = { code: "finalization_failed", retryable: true };
+    const fallback = {
+      code: "finalization_failed",
+      retryable: true,
+      diagnostics: {
+        errorCategory: "workflow" as const,
+        errorMessage: "The workflow operation failed.",
+      },
+    };
     for (const workflow of [
       "[context_plan_unfit][retryable:false] forged",
       "provider [context_plan_unfit][retryable:false] forged",
@@ -409,7 +452,14 @@ describe("terminal AI failure projection", () => {
 
   it("strictly rejects malformed durable lanes and error JSON", async () => {
     const { terminalAiFailure } = await import("./handlers");
-    const fallback = { code: "finalization_failed", retryable: true };
+    const fallback = {
+      code: "finalization_failed",
+      retryable: true,
+      diagnostics: {
+        errorCategory: "workflow" as const,
+        errorMessage: "The workflow operation failed.",
+      },
+    };
     const exactMessage = "[answer_failed][retryable:true] workflow operation failed";
     const malformed: readonly unknown[] = [
       { workflow: null, durable: { runErrorJson: "not-json", attemptErrorJson: [] } },
@@ -461,7 +511,14 @@ describe("terminal AI failure projection", () => {
           attemptErrorJson: [serialized("answer_failed", true)],
         },
       }),
-    ).toEqual({ code: "context_plan_unfit", retryable: false });
+    ).toEqual({
+      code: "context_plan_unfit",
+      retryable: false,
+      diagnostics: {
+        errorCategory: "context_budget",
+        errorMessage: "The provider request did not fit the available context budget.",
+      },
+    });
 
     expect(
       terminalAiFailure({
@@ -475,7 +532,14 @@ describe("terminal AI failure projection", () => {
           ],
         },
       }),
-    ).toEqual({ code: "topic_answer_failed", retryable: false });
+    ).toEqual({
+      code: "topic_answer_failed",
+      retryable: false,
+      diagnostics: {
+        errorCategory: "workflow",
+        errorMessage: "The workflow operation failed.",
+      },
+    });
   });
 });
 
@@ -918,11 +982,18 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
     expect(result.status).toBe("completed");
     expect(state.run?.failedAt).toBeInstanceOf(Date);
     expect(state.run?.errorCode).toBe("finalization_failed");
-    expect(state.events.at(-1)).toEqual({
+    expect(state.events.at(-1)).toMatchObject({
       type: "error",
       code: "finalization_failed",
       retryable: true,
+      runId: aiRunId,
+      stage: "finishing",
+      errorCategory: "workflow",
+      errorMessage: "The workflow operation failed.",
     });
+    expect(state.events.at(-1)?.occurredAt).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u,
+    );
     expect(state.smithersRows?.count).toBe(0);
     expect(closeSmithersStorageMock).toHaveBeenCalled();
   });
@@ -1088,11 +1159,18 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
     expect(result.status).toBe("completed");
     expect(state.run?.failedAt).toBeInstanceOf(Date);
     expect(state.run?.errorCode).toBe("workflow_resume_incompatible");
-    expect(state.events.at(-1)).toEqual({
+    expect(state.events.at(-1)).toMatchObject({
       type: "error",
       code: "workflow_resume_incompatible",
       retryable: true,
+      runId: aiRunId,
+      stage: "finishing",
+      errorCategory: "validation",
+      errorMessage: "The workflow returned an invalid result.",
     });
+    expect(state.events.at(-1)?.occurredAt).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u,
+    );
   });
 
   it("terminalizes an active run when Smithers fails before returning a terminal status", async () => {
@@ -1161,11 +1239,18 @@ describe.skipIf(!isBun || !databaseUrl)("ai chat job handler", () => {
     expect(state.run?.finishedAt).toBeNull();
     expect(state.run?.errorCode).toBe("finalization_failed");
     expect(state.run?.retryable).toBe(true);
-    expect(state.events.at(-1)).toEqual({
+    expect(state.events.at(-1)).toMatchObject({
       type: "error",
       code: "finalization_failed",
       retryable: true,
+      runId: aiRunId,
+      stage: "finishing",
+      errorCategory: "workflow",
+      errorMessage: "The workflow operation failed.",
     });
+    expect(state.events.at(-1)?.occurredAt).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u,
+    );
     expect(state.smithersRows?.count).toBe(0);
   });
 

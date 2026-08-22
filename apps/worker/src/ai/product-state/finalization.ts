@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 import { z } from "zod";
 import {
@@ -12,9 +12,16 @@ import {
   parseRunAcceptanceScope,
   publisherIssueAdvisoryLockKey,
   type RunAcceptanceScope,
+  type AiRunActivityErrorCategory,
 } from "@hartlib/shared";
 
-import { isRetryableAiRunError, type AiRunErrorCode } from "../runtime/errors";
+import {
+  aiRunErrorCategoryForCode,
+  aiRuntimeDiagnosticMessage,
+  sanitizeAiRuntimeDiagnosticMessage,
+  isRetryableAiRunError,
+  type AiRunErrorCode,
+} from "../runtime/errors";
 import {
   canonicalizeWebUrl,
   chatMessageEvidenceIdentity,
@@ -5162,11 +5169,18 @@ const persistCitationObservations = (
     }
   });
 
+export interface AiRunFailureDiagnostics {
+  readonly errorCategory: AiRunActivityErrorCategory;
+  readonly errorMessage: string;
+  readonly attempt?: number | undefined;
+}
+
 const transitionToFailure = (
   runId: string,
   code: AiRunErrorCode,
   emittedByTask: string,
   retryable: boolean = isRetryableAiRunError(code),
+  diagnostics?: AiRunFailureDiagnostics,
 ): Effect.Effect<
   { readonly code: AiRunErrorCode; readonly retryable: boolean },
   SqlError | Error,
@@ -5175,6 +5189,13 @@ const transitionToFailure = (
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const activityCode = activityCodeForAiRunError(code);
+    const occurredAtMillis = yield* Clock.currentTimeMillis;
+    const occurredAt = new Date(occurredAtMillis).toISOString();
+    const category = diagnostics?.errorCategory ?? aiRunErrorCategoryForCode(code);
+    const message = sanitizeAiRuntimeDiagnosticMessage(
+      category,
+      diagnostics?.errorMessage ?? aiRuntimeDiagnosticMessage(category, null),
+    );
     yield* appendAiRunEventInTransaction({
       runId,
       emissionKey: `activity:${activityCode}:failed`,
@@ -5183,6 +5204,12 @@ const transitionToFailure = (
         stage: activityStageForCode(activityCode),
         code: activityCode,
         status: "failed",
+        runId,
+        occurredAt,
+        errorCode: code,
+        errorCategory: category,
+        errorMessage: message,
+        ...(diagnostics?.attempt === undefined ? {} : { attempt: diagnostics.attempt }),
       },
       emittedByTask,
     });
@@ -5198,7 +5225,17 @@ const transitionToFailure = (
     yield* appendAiRunEventInTransaction({
       runId,
       emissionKey: "terminal",
-      event: { type: "error", code, retryable },
+      event: {
+        type: "error",
+        code,
+        retryable,
+        runId,
+        stage: activityStageForCode(activityCode),
+        occurredAt,
+        errorCategory: category,
+        errorMessage: message,
+        ...(diagnostics?.attempt === undefined ? {} : { attempt: diagnostics.attempt }),
+      },
       emittedByTask,
     });
     return { code, retryable };
@@ -5623,6 +5660,7 @@ export const failAiRun = (
   code: AiRunErrorCode,
   retryable: boolean = isRetryableAiRunError(code),
   expectedSmithersRunId?: string,
+  diagnostics?: AiRunFailureDiagnostics,
 ): Effect.Effect<TerminalAiRunResult, SqlError | Error, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
@@ -5671,7 +5709,13 @@ export const failAiRun = (
         if (terminal !== null) return terminal;
 
         const usage = yield* appendAggregateAiRunUsageInTransaction(run.id, "failure-handler");
-        const failure = yield* transitionToFailure(run.id, code, "failure-handler", retryable);
+        const failure = yield* transitionToFailure(
+          run.id,
+          code,
+          "failure-handler",
+          retryable,
+          diagnostics,
+        );
         return {
           status: "failed" as const,
           ...failure,

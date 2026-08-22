@@ -1,5 +1,6 @@
 import {
   clearRunStreamState,
+  latestFailedRunId,
   persistRunStreamState,
   restoreRunStreamState,
   runStreamStorageKey,
@@ -15,7 +16,13 @@ import type {
   SendChatMessageRequest,
 } from "@hartlib/shared";
 
-export { clearRunStreamState, persistRunStreamState, restoreRunStreamState, runStreamStorageKey };
+export {
+  clearRunStreamState,
+  latestFailedRunId,
+  persistRunStreamState,
+  restoreRunStreamState,
+  runStreamStorageKey,
+};
 export type { PersistedRunStreamState, StreamDraftState };
 
 export const isTerminalEventUnavailable = (cause: unknown): boolean =>
@@ -222,7 +229,16 @@ export const reduceRunStreamEvent = (
         text: "",
         activities: projection.activities,
         activityHistory: projection.history,
-        terminalFailure: { code: event.code, retryable: event.retryable },
+        terminalFailure: {
+          code: event.code,
+          retryable: event.retryable,
+          ...(event.runId === undefined ? {} : { runId: event.runId }),
+          ...(event.stage === undefined ? {} : { stage: event.stage }),
+          ...(event.attempt === undefined ? {} : { attempt: event.attempt }),
+          ...(event.occurredAt === undefined ? {} : { occurredAt: event.occurredAt }),
+          ...(event.errorCategory === undefined ? {} : { errorCategory: event.errorCategory }),
+          ...(event.errorMessage === undefined ? {} : { errorMessage: event.errorMessage }),
+        },
       },
     };
   }

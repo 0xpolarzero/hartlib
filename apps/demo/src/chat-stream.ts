@@ -3,6 +3,7 @@ import {
   projectAiRunActivity,
   type ActiveAiRunConflict,
   type AiRunEvent,
+  type AiRunErrorEvent,
   type GetChatResponse,
   type PublicSourceRecord,
   type SendChatMessageRequest,
@@ -128,7 +129,7 @@ export type ChatStreamState = {
     readonly updated: number;
     readonly discarded: number;
   } | null;
-  readonly error: { readonly code: string; readonly retryable: boolean } | null;
+  readonly error: Omit<AiRunErrorEvent, "type"> | null;
 };
 
 export const initialChatStreamState: ChatStreamState = {
@@ -294,7 +295,20 @@ export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput)
         sourcesRead: [],
         activities: projection.activities,
         activityHistory: projection.history,
-        error: { code: input.event.code, retryable: input.event.retryable },
+        error: {
+          code: input.event.code,
+          retryable: input.event.retryable,
+          ...(input.event.runId === undefined ? {} : { runId: input.event.runId }),
+          ...(input.event.stage === undefined ? {} : { stage: input.event.stage }),
+          ...(input.event.attempt === undefined ? {} : { attempt: input.event.attempt }),
+          ...(input.event.occurredAt === undefined ? {} : { occurredAt: input.event.occurredAt }),
+          ...(input.event.errorCategory === undefined
+            ? {}
+            : { errorCategory: input.event.errorCategory }),
+          ...(input.event.errorMessage === undefined
+            ? {}
+            : { errorMessage: input.event.errorMessage }),
+        },
       };
     }
   }

@@ -6,6 +6,10 @@ import {
 } from "@hartlib/shared";
 import {
   AiRuntimeError,
+  aiRunErrorCategoryForCode,
+  aiRuntimeDiagnosticMessage,
+  aiRuntimeFailureMetadata,
+  sanitizeAiRuntimeDiagnosticMessage,
   isAbortError,
   isAiRunErrorCode,
   isAiRuntimeError,
@@ -21,6 +25,7 @@ export interface AiPhaseLogEntry {
   readonly phase: string;
   readonly status: AiPhaseStatus;
   readonly runId: string;
+  readonly occurredAt?: string | undefined;
   readonly taskId?: string | undefined;
   readonly topicId?: "t1" | "t2" | "t3" | undefined;
   readonly model?: "glm-5.2" | "glm-5-turbo" | undefined;
@@ -78,6 +83,8 @@ export interface AiPhaseLogEntry {
     | undefined;
   readonly retryable?: boolean | undefined;
   readonly errorCode?: AiRunErrorCode | undefined;
+  readonly errorCategory?: AiRunActivityEvent["errorCategory"] | undefined;
+  readonly errorMessage?: string | undefined;
   readonly outcome?:
     | "single"
     | "fanout"
@@ -146,16 +153,32 @@ export const publicActivityFromPhase = (
         : entry.status === "rejected"
           ? "retrying"
           : "complete";
+  const errorCategory =
+    entry.errorCategory ??
+    (entry.errorCode === undefined ? undefined : aiRunErrorCategoryForCode(entry.errorCode));
+  const errorMessage =
+    errorCategory === undefined
+      ? undefined
+      : sanitizeAiRuntimeDiagnosticMessage(errorCategory, entry.errorMessage);
   return {
     type: "activity",
     stage: activityStageForCode(code),
     code,
     status,
     ...(entry.topicId === undefined ? {} : { topicId: entry.topicId }),
+    ...(entry.runId === undefined ? {} : { runId: entry.runId }),
+    ...(entry.occurredAt === undefined ? {} : { occurredAt: entry.occurredAt }),
     ...(entry.attempt === undefined ? {} : { attempt: entry.attempt }),
     ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
     ...(entry.sourceCount === undefined ? {} : { sourceCount: entry.sourceCount }),
     ...(entry.itemCount === undefined ? {} : { resultCount: entry.itemCount }),
+    ...(entry.status === "failed" || entry.status === "rejected"
+      ? {
+          ...(entry.errorCode === undefined ? {} : { errorCode: entry.errorCode }),
+          ...(errorCategory === undefined ? {} : { errorCategory }),
+          ...(errorMessage === undefined ? {} : { errorMessage }),
+        }
+      : {}),
   };
 };
 
@@ -167,9 +190,14 @@ export const publicActivityFromPhase = (
  */
 export type AiSafePhaseLogFields = Pick<
   AiPhaseLogEntry,
+  | "runId"
+  | "occurredAt"
   | "phase"
   | "status"
+  | "taskId"
   | "attempt"
+  | "loopIteration"
+  | "providerRequestIndex"
   | "durationMs"
   | "inputTokens"
   | "outputTokens"
@@ -207,58 +235,81 @@ export type AiSafePhaseLogFields = Pick<
   | "failureStage"
   | "retryable"
   | "errorCode"
+  | "errorCategory"
+  | "errorMessage"
   | "outcome"
 >;
 
-export const safeAiPhaseLogFields = (entry: AiPhaseLogEntry): AiSafePhaseLogFields => ({
-  phase: entry.phase,
-  status: entry.status,
-  ...(entry.attempt === undefined ? {} : { attempt: entry.attempt }),
-  ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
-  ...(entry.inputTokens === undefined ? {} : { inputTokens: entry.inputTokens }),
-  ...(entry.outputTokens === undefined ? {} : { outputTokens: entry.outputTokens }),
-  ...(entry.totalTokens === undefined ? {} : { totalTokens: entry.totalTokens }),
-  ...(entry.requestedOutputTokens === undefined
-    ? {}
-    : { requestedOutputTokens: entry.requestedOutputTokens }),
-  ...(entry.usableInputTokens === undefined ? {} : { usableInputTokens: entry.usableInputTokens }),
-  ...(entry.afterInputTokens === undefined ? {} : { afterInputTokens: entry.afterInputTokens }),
-  ...(entry.itemCount === undefined ? {} : { itemCount: entry.itemCount }),
-  ...(entry.sourceCount === undefined ? {} : { sourceCount: entry.sourceCount }),
-  ...(entry.topicCount === undefined ? {} : { topicCount: entry.topicCount }),
-  ...(entry.conversationCount === undefined ? {} : { conversationCount: entry.conversationCount }),
-  ...(entry.memoryCount === undefined ? {} : { memoryCount: entry.memoryCount }),
-  ...(entry.consumerCount === undefined ? {} : { consumerCount: entry.consumerCount }),
-  ...(entry.queryCount === undefined ? {} : { queryCount: entry.queryCount }),
-  ...(entry.branchCount === undefined ? {} : { branchCount: entry.branchCount }),
-  ...(entry.applicableBranchCount === undefined
-    ? {}
-    : { applicableBranchCount: entry.applicableBranchCount }),
-  ...(entry.hitCount === undefined ? {} : { hitCount: entry.hitCount }),
-  ...(entry.candidateCount === undefined ? {} : { candidateCount: entry.candidateCount }),
-  ...(entry.groupCount === undefined ? {} : { groupCount: entry.groupCount }),
-  ...(entry.passageCount === undefined ? {} : { passageCount: entry.passageCount }),
-  ...(entry.decisionCount === undefined ? {} : { decisionCount: entry.decisionCount }),
-  ...(entry.selectedCount === undefined ? {} : { selectedCount: entry.selectedCount }),
-  ...(entry.omittedCount === undefined ? {} : { omittedCount: entry.omittedCount }),
-  ...(entry.keepCount === undefined ? {} : { keepCount: entry.keepCount }),
-  ...(entry.compactCount === undefined ? {} : { compactCount: entry.compactCount }),
-  ...(entry.retainCount === undefined ? {} : { retainCount: entry.retainCount }),
-  ...(entry.omitCount === undefined ? {} : { omitCount: entry.omitCount }),
-  ...(entry.tightenCount === undefined ? {} : { tightenCount: entry.tightenCount }),
-  ...(entry.renderedTokenCount === undefined
-    ? {}
-    : { renderedTokenCount: entry.renderedTokenCount }),
-  ...(entry.overByTokens === undefined ? {} : { overByTokens: entry.overByTokens }),
-  ...(entry.capApplied === undefined ? {} : { capApplied: entry.capApplied }),
-  ...(entry.fallbackRan === undefined ? {} : { fallbackRan: entry.fallbackRan }),
-  ...(entry.repairUsed === undefined ? {} : { repairUsed: entry.repairUsed }),
-  ...(entry.action === undefined ? {} : { action: entry.action }),
-  ...(entry.failureStage === undefined ? {} : { failureStage: entry.failureStage }),
-  ...(entry.retryable === undefined ? {} : { retryable: entry.retryable }),
-  ...(entry.errorCode === undefined ? {} : { errorCode: entry.errorCode }),
-  ...(entry.outcome === undefined ? {} : { outcome: entry.outcome }),
-});
+export const safeAiPhaseLogFields = (entry: AiPhaseLogEntry): AiSafePhaseLogFields => {
+  const errorCategory =
+    entry.errorCategory ??
+    (entry.errorCode === undefined ? undefined : aiRunErrorCategoryForCode(entry.errorCode));
+  return {
+    runId: entry.runId,
+    ...(entry.occurredAt === undefined ? {} : { occurredAt: entry.occurredAt }),
+    phase: entry.phase,
+    status: entry.status,
+    ...(entry.taskId === undefined ? {} : { taskId: entry.taskId }),
+    ...(entry.attempt === undefined ? {} : { attempt: entry.attempt }),
+    ...(entry.loopIteration === undefined ? {} : { loopIteration: entry.loopIteration }),
+    ...(entry.providerRequestIndex === undefined
+      ? {}
+      : { providerRequestIndex: entry.providerRequestIndex }),
+    ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
+    ...(entry.inputTokens === undefined ? {} : { inputTokens: entry.inputTokens }),
+    ...(entry.outputTokens === undefined ? {} : { outputTokens: entry.outputTokens }),
+    ...(entry.totalTokens === undefined ? {} : { totalTokens: entry.totalTokens }),
+    ...(entry.requestedOutputTokens === undefined
+      ? {}
+      : { requestedOutputTokens: entry.requestedOutputTokens }),
+    ...(entry.usableInputTokens === undefined ? {} : { usableInputTokens: entry.usableInputTokens }),
+    ...(entry.afterInputTokens === undefined ? {} : { afterInputTokens: entry.afterInputTokens }),
+    ...(entry.itemCount === undefined ? {} : { itemCount: entry.itemCount }),
+    ...(entry.sourceCount === undefined ? {} : { sourceCount: entry.sourceCount }),
+    ...(entry.topicCount === undefined ? {} : { topicCount: entry.topicCount }),
+    ...(entry.conversationCount === undefined ? {} : { conversationCount: entry.conversationCount }),
+    ...(entry.memoryCount === undefined ? {} : { memoryCount: entry.memoryCount }),
+    ...(entry.consumerCount === undefined ? {} : { consumerCount: entry.consumerCount }),
+    ...(entry.queryCount === undefined ? {} : { queryCount: entry.queryCount }),
+    ...(entry.branchCount === undefined ? {} : { branchCount: entry.branchCount }),
+    ...(entry.applicableBranchCount === undefined
+      ? {}
+      : { applicableBranchCount: entry.applicableBranchCount }),
+    ...(entry.hitCount === undefined ? {} : { hitCount: entry.hitCount }),
+    ...(entry.candidateCount === undefined ? {} : { candidateCount: entry.candidateCount }),
+    ...(entry.groupCount === undefined ? {} : { groupCount: entry.groupCount }),
+    ...(entry.passageCount === undefined ? {} : { passageCount: entry.passageCount }),
+    ...(entry.decisionCount === undefined ? {} : { decisionCount: entry.decisionCount }),
+    ...(entry.selectedCount === undefined ? {} : { selectedCount: entry.selectedCount }),
+    ...(entry.omittedCount === undefined ? {} : { omittedCount: entry.omittedCount }),
+    ...(entry.keepCount === undefined ? {} : { keepCount: entry.keepCount }),
+    ...(entry.compactCount === undefined ? {} : { compactCount: entry.compactCount }),
+    ...(entry.retainCount === undefined ? {} : { retainCount: entry.retainCount }),
+    ...(entry.omitCount === undefined ? {} : { omitCount: entry.omitCount }),
+    ...(entry.tightenCount === undefined ? {} : { tightenCount: entry.tightenCount }),
+    ...(entry.renderedTokenCount === undefined
+      ? {}
+      : { renderedTokenCount: entry.renderedTokenCount }),
+    ...(entry.overByTokens === undefined ? {} : { overByTokens: entry.overByTokens }),
+    ...(entry.capApplied === undefined ? {} : { capApplied: entry.capApplied }),
+    ...(entry.fallbackRan === undefined ? {} : { fallbackRan: entry.fallbackRan }),
+    ...(entry.repairUsed === undefined ? {} : { repairUsed: entry.repairUsed }),
+    ...(entry.action === undefined ? {} : { action: entry.action }),
+    ...(entry.failureStage === undefined ? {} : { failureStage: entry.failureStage }),
+    ...(entry.retryable === undefined ? {} : { retryable: entry.retryable }),
+    ...(entry.errorCode === undefined ? {} : { errorCode: entry.errorCode }),
+    ...(errorCategory === undefined ? {} : { errorCategory }),
+    ...(errorCategory === undefined
+      ? {}
+      : {
+          errorMessage: sanitizeAiRuntimeDiagnosticMessage(
+            errorCategory,
+            entry.errorMessage,
+          ),
+        }),
+    ...(entry.outcome === undefined ? {} : { outcome: entry.outcome }),
+  };
+};
 
 type OperationName =
   | "loadTurn"
@@ -837,6 +888,25 @@ const resultErrorCode = (value: unknown, fallback: AiRunErrorCode): AiRunErrorCo
   return typeof code === "string" && isAiRunErrorCode(code) ? code : fallback;
 };
 
+const diagnosticFieldsForCode = (code: AiRunErrorCode) => {
+  const category = aiRunErrorCategoryForCode(code);
+  return {
+    errorCategory: category,
+    errorMessage: aiRuntimeDiagnosticMessage(category, null),
+  } as const;
+};
+
+const diagnosticFieldsForFailure = (error: unknown, fallback: AiRunErrorCode) => {
+  const metadata = aiRuntimeFailureMetadata(error);
+  if (metadata !== undefined) {
+    return {
+      errorCategory: metadata.category,
+      errorMessage: sanitizeAiRuntimeDiagnosticMessage(metadata.category, metadata.message),
+    } as const;
+  }
+  return diagnosticFieldsForCode(fallback);
+};
+
 const durableOperationFailure = (error: unknown, fallback: AiRunErrorCode): Error => {
   if (isAbortError(error) || isAiRuntimeError(error)) return error;
   if (
@@ -890,7 +960,11 @@ export const withAiPhaseLogging = (
         const emit = (entry: Omit<AiPhaseLogEntry, "phase">, includePublicActivity = true) =>
           Promise.all(
             phases.map((phase) => {
-              const phaseEntry = { phase, ...entry };
+              const phaseEntry = {
+                phase,
+                ...entry,
+                occurredAt: entry.occurredAt ?? new Date(now()).toISOString(),
+              };
               const publicActivity = includePublicActivity
                 ? publicActivityFromPhase(phaseEntry, args)
                 : undefined;
@@ -915,6 +989,7 @@ export const withAiPhaseLogging = (
                   status: "failed",
                   durationMs: Math.max(0, now() - startedAt),
                   errorCode: resultErrorCode(result, rule.fallbackErrorCode),
+                  ...diagnosticFieldsForCode(resultErrorCode(result, rule.fallbackErrorCode)),
                 });
                 return result;
               }
@@ -937,6 +1012,7 @@ export const withAiPhaseLogging = (
                 durationMs: Math.max(0, now() - startedAt),
                 ...(isAiRuntimeError(durableError) ? { retryable: durableError.retryable } : {}),
                 errorCode: errorCodeFor(durableError, rule.fallbackErrorCode),
+                ...diagnosticFieldsForFailure(durableError, rule.fallbackErrorCode),
               });
               throw durableError;
             }
@@ -968,6 +1044,7 @@ export const withAiPhaseLogging = (
             durationMs: Math.max(0, now() - startedAt),
             errorCode: errorCodeFor(durableError, rule.fallbackErrorCode),
             ...(isAiRuntimeError(durableError) ? { retryable: durableError.retryable } : {}),
+            ...diagnosticFieldsForFailure(durableError, rule.fallbackErrorCode),
           });
           throw durableError;
         }

@@ -234,10 +234,38 @@ describe("canonical chat schemas", () => {
       durationMs: 120,
       resultCount: 0,
       reason: "search_adjusted",
+      runId: "run-1",
+      occurredAt: "2026-08-21T19:05:56.810Z",
+      errorCode: "plan_turn_failed",
+      errorCategory: "provider_transport",
+      errorMessage: "The model provider did not return a response.",
     } as const;
     expect(decode(activity)).toEqual(activity);
     expect(() => decode({ ...activity, rawQuery: "private query" })).toThrow();
     expect(() => decode({ ...activity, code: "provider_internal_operation" })).toThrow();
+    expect(() => decode({ ...activity, runId: "run secret" })).toThrow();
+    expect(() => decode({ ...activity, occurredAt: "not-a-timestamp" })).toThrow();
+    expect(() => decode({ ...activity, attempt: -1 })).toThrow();
+    expect(() => decode({ ...activity, attempt: 100_001 })).toThrow();
+    expect(() =>
+      decode({
+        ...activity,
+        errorMessage: "x".repeat(513),
+      }),
+    ).toThrow();
+    expect(
+      decode({
+        type: "error",
+        code: "plan_turn_failed",
+        retryable: true,
+        runId: "run-1",
+        stage: "understanding",
+        attempt: 3,
+        occurredAt: "2026-08-21T19:05:58.509Z",
+        errorCategory: "provider_transport",
+        errorMessage: "The model provider did not return a response.",
+      }),
+    ).toMatchObject({ type: "error", errorCategory: "provider_transport" });
   });
 
   it("projects retrieval and compaction failures to preparation or evidence activities", () => {

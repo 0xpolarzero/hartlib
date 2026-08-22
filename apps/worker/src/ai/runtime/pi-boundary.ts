@@ -23,6 +23,7 @@ import {
   aiRunErrorCodeForRole,
   AiRuntimeError,
   isAbortError,
+  isAiRuntimeError,
   isRetryableProviderStatus,
   toAiRuntimeError,
 } from "./errors";
@@ -185,6 +186,7 @@ const validateProviderUsage = (usage: ModelUsage, role: string): void => {
   ) {
     throw new AiRuntimeError(aiRunErrorCodeForRole(role), "provider usage accounting is invalid", {
       taskRetryable: true,
+      category: "provider_response",
     });
   }
 };
@@ -196,20 +198,64 @@ const hasKnownUsage = (usage: ModelUsage): boolean =>
   usage.reasoningTokens > 0 ||
   usage.totalTokens > 0;
 
+/**
+ * Pi normally reports the HTTP status through `onResponse`. The OpenAI
+ * compatible client rejects before that callback for a non-success response,
+ * though, so the adapter error is the only safe status signal in that case.
+ * Read one top-level numeric status only; never inspect provider bodies or
+ * error text for a status-like value.
+ */
+const trustedStatusFromProviderError = (error: unknown): number | undefined => {
+  if (error === null || typeof error !== "object") return undefined;
+  const status = (error as { readonly status?: unknown }).status;
+  return typeof status === "number" && Number.isSafeInteger(status) && status >= 100 && status <= 599
+    ? status
+    : undefined;
+};
+
+const providerBoundaryError = (
+  error: unknown,
+  role: string,
+  observedStatus?: number,
+): Error => {
+  if (isAbortError(error) || isAiRuntimeError(error)) return error;
+  const status = observedStatus ?? trustedStatusFromProviderError(error);
+  const responseStatus = providerResponseStatus(status);
+  return toAiRuntimeError(error, aiRunErrorCodeForRole(role), {
+    category:
+      status === undefined
+        ? "provider_transport"
+        : status >= 400
+          ? "provider_response"
+          : "provider_output",
+    ...(responseStatus === undefined ? {} : { providerStatus: responseStatus }),
+  });
+};
+
+const providerResponseStatus = (status: number | undefined): number | undefined =>
+  status !== undefined && status >= 400 ? status : undefined;
+
 const providerFailure = (
   message: AssistantMessage,
   role: string,
   observedStatus?: number,
 ): AiRuntimeError => {
+  const responseStatus = providerResponseStatus(observedStatus);
   return new AiRuntimeError(aiRunErrorCodeForRole(role), "provider request failed", {
     // Provider-authored error text may influence the owning task's bounded
     // retry lane, but never the durable product retryability.  The latter is
     // the canonical role decision unless trusted transport status metadata is
     // available from Pi's response callback.
     taskRetryable: isRetryableAssistantError(message),
-    ...(observedStatus === undefined
+    category: observedStatus !== undefined && responseStatus === undefined
+      ? "provider_output"
+      : "provider_response",
+    ...(responseStatus === undefined
       ? {}
-      : { providerStatus: observedStatus, retryable: isRetryableProviderStatus(observedStatus) }),
+      : {
+          providerStatus: responseStatus,
+          retryable: isRetryableProviderStatus(responseStatus),
+        }),
   });
 };
 
@@ -477,25 +523,34 @@ export class ExactPiBoundary {
         const providerRequest = gated.request;
         const baseUrl = gated.baseUrl;
         throwIfAborted(signal);
-        const message = await withProviderOriginGuard(baseUrl, () =>
-          this.runComplete(resolveModel(providerRequest, baseUrl), toPiContext(providerRequest), {
-            apiKey: this.options.apiKey,
-            maxTokens: providerRequest.requestedOutputTokens,
-            reasoning: providerRequest.reasoning,
-            maxRetries: 0,
-            ...(signal === undefined ? {} : { signal }),
-            timeoutMs:
-              providerRequest.requestClass === "main"
-                ? this.options.answerTimeoutMs
-                : this.options.fastTimeoutMs,
-            onResponse: (response) => {
-              observedStatus = response.status;
-            },
-            ...(providerRequest.toolChoice === undefined
-              ? {}
-              : { toolChoice: toolChoice(providerRequest.toolChoice) }),
-          } as Parameters<typeof completeSimple>[2]),
-        );
+        let message: AssistantMessage;
+        try {
+          message = await withProviderOriginGuard(baseUrl, () =>
+            this.runComplete(resolveModel(providerRequest, baseUrl), toPiContext(providerRequest), {
+              apiKey: this.options.apiKey,
+              maxTokens: providerRequest.requestedOutputTokens,
+              reasoning: providerRequest.reasoning,
+              maxRetries: 0,
+              ...(signal === undefined ? {} : { signal }),
+              timeoutMs:
+                providerRequest.requestClass === "main"
+                  ? this.options.answerTimeoutMs
+                  : this.options.fastTimeoutMs,
+              onResponse: (response) => {
+                observedStatus = response.status;
+              },
+              ...(providerRequest.toolChoice === undefined
+                ? {}
+                : { toolChoice: toolChoice(providerRequest.toolChoice) }),
+            } as Parameters<typeof completeSimple>[2]),
+          );
+        } catch (error) {
+          throw providerBoundaryError(
+            error,
+            executionCoordinates.agentRole,
+            observedStatus,
+          );
+        }
         return { message, providerRequest, baseUrl };
       }, signal);
       throwIfAborted(signal);
@@ -505,28 +560,30 @@ export class ExactPiBoundary {
         throw aborted;
       }
       const completion = toCompletion(message);
-      validateProviderUsage(completion.usage, executionCoordinates.agentRole);
-      throwIfAborted(signal);
-      if (message.stopReason !== "error" || hasKnownUsage(completion.usage)) {
-        await this.options.hooks?.onUsage?.(
-          executionCoordinates,
-          providerRequest.model,
-          completion.usage,
-        );
-      }
-      throwIfAborted(signal);
       if (message.stopReason === "error") {
+        if (hasKnownUsage(completion.usage)) {
+          validateProviderUsage(completion.usage, executionCoordinates.agentRole);
+          await this.options.hooks?.onUsage?.(
+            executionCoordinates,
+            providerRequest.model,
+            completion.usage,
+          );
+        }
         throw providerFailure(message, executionCoordinates.agentRole, observedStatus);
       }
+      validateProviderUsage(completion.usage, executionCoordinates.agentRole);
+      throwIfAborted(signal);
+      await this.options.hooks?.onUsage?.(
+        executionCoordinates,
+        providerRequest.model,
+        completion.usage,
+      );
+      throwIfAborted(signal);
       return completion;
     } catch (error) {
       throwIfAborted(signal);
       if (isAbortError(error)) throw error;
-      throw toAiRuntimeError(
-        error,
-        aiRunErrorCodeForRole(executionCoordinates.agentRole),
-        observedStatus === undefined ? {} : { providerStatus: observedStatus },
-      );
+      throw toAiRuntimeError(error, aiRunErrorCodeForRole(executionCoordinates.agentRole));
     }
   }
 
@@ -542,34 +599,47 @@ export class ExactPiBoundary {
       ...requireCurrentTaskCoordinates(coordinates.taskId),
     };
     let observedStatus: number | undefined;
+    let providerCallActive = false;
     try {
       const { final, providerRequest } = await this.providerSemaphore.withPermit(async () => {
         const gated = await this.gate(request, executionCoordinates, signal, beforeProviderRequest);
         const providerRequest = gated.request;
         const baseUrl = gated.baseUrl;
         throwIfAborted(signal);
-        const stream = await withProviderOriginGuard(baseUrl, async () =>
-          this.runStream(resolveModel(providerRequest, baseUrl), toPiContext(providerRequest), {
-            apiKey: this.options.apiKey,
-            maxTokens: providerRequest.requestedOutputTokens,
-            reasoning: providerRequest.reasoning,
-            maxRetries: 0,
-            ...(signal === undefined ? {} : { signal }),
-            timeoutMs:
-              providerRequest.requestClass === "main"
-                ? this.options.answerTimeoutMs
-                : this.options.fastTimeoutMs,
-            onResponse: (response) => {
-              observedStatus = response.status;
-            },
-          }),
-        );
+        let stream: Awaited<ReturnType<typeof this.runStream>>;
+        try {
+          providerCallActive = true;
+          stream = await withProviderOriginGuard(baseUrl, async () =>
+            this.runStream(resolveModel(providerRequest, baseUrl), toPiContext(providerRequest), {
+              apiKey: this.options.apiKey,
+              maxTokens: providerRequest.requestedOutputTokens,
+              reasoning: providerRequest.reasoning,
+              maxRetries: 0,
+              ...(signal === undefined ? {} : { signal }),
+              timeoutMs:
+                providerRequest.requestClass === "main"
+                  ? this.options.answerTimeoutMs
+                  : this.options.fastTimeoutMs,
+              onResponse: (response) => {
+                observedStatus = response.status;
+              },
+            }),
+          );
+        } catch (error) {
+          throw providerBoundaryError(
+            error,
+            executionCoordinates.agentRole,
+            observedStatus,
+          );
+        }
         let streamedFinal: AssistantMessage | undefined;
         let deltaIndex = 0;
         for await (const event of stream) {
           throwIfAborted(signal);
           if (event.type === "text_delta") {
+            providerCallActive = false;
             await onDelta(event.delta, deltaIndex++);
+            providerCallActive = true;
             throwIfAborted(signal);
           } else if (event.type === "done") {
             streamedFinal = event.message;
@@ -577,6 +647,7 @@ export class ExactPiBoundary {
             streamedFinal = event.error;
           }
         }
+        providerCallActive = false;
         throwIfAborted(signal);
         return { final: streamedFinal, providerRequest };
       }, signal);
@@ -588,28 +659,33 @@ export class ExactPiBoundary {
         throw aborted;
       }
       const completion = toCompletion(final);
-      validateProviderUsage(completion.usage, executionCoordinates.agentRole);
-      throwIfAborted(signal);
-      if (final.stopReason !== "error" || hasKnownUsage(completion.usage)) {
-        await this.options.hooks?.onUsage?.(
-          executionCoordinates,
-          providerRequest.model,
-          completion.usage,
-        );
-      }
-      throwIfAborted(signal);
       if (final.stopReason === "error") {
+        if (hasKnownUsage(completion.usage)) {
+          validateProviderUsage(completion.usage, executionCoordinates.agentRole);
+          await this.options.hooks?.onUsage?.(
+            executionCoordinates,
+            providerRequest.model,
+            completion.usage,
+          );
+        }
         throw providerFailure(final, executionCoordinates.agentRole, observedStatus);
       }
+      validateProviderUsage(completion.usage, executionCoordinates.agentRole);
+      throwIfAborted(signal);
+      await this.options.hooks?.onUsage?.(
+        executionCoordinates,
+        providerRequest.model,
+        completion.usage,
+      );
+      throwIfAborted(signal);
       return completion;
     } catch (error) {
       throwIfAborted(signal);
       if (isAbortError(error)) throw error;
-      throw toAiRuntimeError(
-        error,
-        aiRunErrorCodeForRole(executionCoordinates.agentRole),
-        observedStatus === undefined ? {} : { providerStatus: observedStatus },
-      );
+      if (providerCallActive) {
+        throw providerBoundaryError(error, executionCoordinates.agentRole, observedStatus);
+      }
+      throw toAiRuntimeError(error, aiRunErrorCodeForRole(executionCoordinates.agentRole));
     }
   }
 }

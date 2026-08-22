@@ -639,17 +639,67 @@ export const AiRunActivityStatus = Schema.Literals([
 ]);
 export type AiRunActivityStatus = Schema.Schema.Type<typeof AiRunActivityStatus>;
 
+/** Content-free categories used to explain a failed AI attempt. */
+export const AiRunActivityErrorCategory = Schema.Literals([
+  "provider_transport",
+  "provider_response",
+  "provider_output",
+  "context_budget",
+  "validation",
+  "authorization",
+  "storage",
+  "workflow",
+  "unknown",
+]);
+export type AiRunActivityErrorCategory = Schema.Schema.Type<typeof AiRunActivityErrorCategory>;
+
+const SafeRunIdentity = Schema.String.pipe(
+  Schema.check(Schema.isNonEmpty()),
+  Schema.check(Schema.isMaxLength(128)),
+  Schema.check(Schema.isPattern(/^[A-Za-z0-9_-]+$/u)),
+);
+const SafeActivityTimestamp = Schema.String.pipe(
+  Schema.check(Schema.isNonEmpty()),
+  Schema.check(Schema.isMaxLength(64)),
+  Schema.check(
+    Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u),
+  ),
+);
+const SafeActivityCode = Schema.String.pipe(
+  Schema.check(Schema.isNonEmpty()),
+  Schema.check(Schema.isMaxLength(96)),
+  Schema.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,95}$/u)),
+);
+const SafeActivityAttempt = Schema.Number.pipe(
+  Schema.check(Schema.isInt()),
+  Schema.check(Schema.isGreaterThanOrEqualTo(0)),
+  Schema.check(Schema.isLessThanOrEqualTo(100_000)),
+);
+const SafeActivityMessage = Schema.String.pipe(
+  Schema.check(Schema.isNonEmpty()),
+  Schema.check(Schema.isMaxLength(512)),
+);
+
 export const AiRunActivityEvent = Schema.Struct({
   type: Schema.Literal("activity"),
   stage: AiRunActivityStage,
   code: AiRunActivityCode,
   status: AiRunActivityStatus,
   topicId: Schema.optional(Schema.Literals(["t1", "t2", "t3"])),
-  attempt: Schema.optional(Schema.Number),
+  attempt: Schema.optional(SafeActivityAttempt),
   durationMs: Schema.optional(Schema.Number),
   sourceCount: Schema.optional(Schema.Number),
   resultCount: Schema.optional(Schema.Number),
   reason: Schema.optional(Schema.Literals(["search_adjusted", "source_validation_failed"])),
+  /** Stable run identity; optional for backwards-compatible replay of old rows. */
+  runId: Schema.optional(SafeRunIdentity),
+  /** RFC 3339 time at which the worker emitted this transition. */
+  occurredAt: Schema.optional(SafeActivityTimestamp),
+  /** Normalized terminal code, present on retrying/failed transitions. */
+  errorCode: Schema.optional(SafeActivityCode),
+  errorCategory: Schema.optional(AiRunActivityErrorCategory),
+  /** Bounded, content-free explanation. Never a provider body or stack trace. */
+  errorMessage: Schema.optional(SafeActivityMessage),
 });
 export type AiRunActivityEvent = Schema.Schema.Type<typeof AiRunActivityEvent>;
 
@@ -678,6 +728,11 @@ export const aiRunActivityTransitionKey = (event: AiRunActivityEvent): string =>
     event.sourceCount ?? "",
     event.resultCount ?? "",
     event.reason ?? "",
+    event.runId ?? "",
+    event.occurredAt ?? "",
+    event.errorCode ?? "",
+    event.errorCategory ?? "",
+    event.errorMessage ?? "",
   ].join("|");
 
 /** Apply one ordered SSE activity transition without duplicating replayed data. */
@@ -876,6 +931,13 @@ export const AiRunEvent = Schema.Union([
     type: Schema.Literal("error"),
     code: Schema.String,
     retryable: Schema.Boolean,
+    runId: Schema.optional(SafeRunIdentity),
+    stage: Schema.optional(AiRunActivityStage),
+    attempt: Schema.optional(SafeActivityAttempt),
+    occurredAt: Schema.optional(SafeActivityTimestamp),
+    errorCategory: Schema.optional(AiRunActivityErrorCategory),
+    errorMessage: Schema.optional(SafeActivityMessage),
   }),
 ]);
 export type AiRunEvent = Schema.Schema.Type<typeof AiRunEvent>;
+export type AiRunErrorEvent = Extract<AiRunEvent, { readonly type: "error" }>;

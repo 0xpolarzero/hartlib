@@ -34,6 +34,7 @@ export function buildTranscriptMessages(
         activityHistory: stream.activityHistory ?? stream.activities,
         context: stream.context ?? null,
         memoryUpdated: stream.memoryUpdated ?? null,
+        ...(stream.error === null ? {} : { terminalFailure: stream.error }),
         ...(stream.seq === undefined ? {} : { sequence: stream.seq }),
       },
       activityFailure: stream.error,

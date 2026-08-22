@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { AiRunActivityErrorCategory } from "@hartlib/shared";
+
 export const AI_RUN_ERROR_CODES = [
   "plan_turn_failed",
   "internal_retrieval_failed",
@@ -87,18 +89,98 @@ export interface AiRuntimeErrorOptions {
   readonly retryable?: boolean | undefined;
   /** Sanitized HTTP status metadata, when Pi exposes one. */
   readonly providerStatus?: number | undefined;
+  /** Closed, content-free category used by logs and run diagnostics. */
+  readonly category?: AiRunActivityErrorCategory | undefined;
 }
 
 export interface AiRuntimeFailureMetadata {
   readonly code: AiRunErrorCode;
   readonly retryable: boolean;
   readonly providerStatus: number | null;
+  readonly category: AiRunActivityErrorCategory;
+  readonly message: string;
 }
 
 const aiRuntimeErrors = new WeakSet<object>();
 const DURABLE_AI_RUNTIME_ERROR_JSON_MAX_LENGTH = 131_072;
 const DURABLE_AI_RUNTIME_ERROR_MESSAGE_MAX_LENGTH = 2_048;
 const DURABLE_AI_RUNTIME_ERROR_STACK_MAX_LENGTH = 65_536;
+
+const runtimeErrorCategoryValues = [
+  "provider_transport",
+  "provider_response",
+  "provider_output",
+  "context_budget",
+  "validation",
+  "authorization",
+  "storage",
+  "workflow",
+  "unknown",
+] as const satisfies readonly AiRunActivityErrorCategory[];
+const runtimeErrorCategorySchema = z.enum(runtimeErrorCategoryValues);
+
+export const aiRunErrorCategoryForCode = (code: AiRunErrorCode): AiRunActivityErrorCategory => {
+  switch (code) {
+    case "agent_context_budget_exceeded":
+    case "context_mandatory_too_large":
+    case "context_plan_unfit":
+    case "synthesis_budget_mismatch":
+    case "context_budget_mismatch":
+      return "context_budget";
+    case "invalid_workflow_output":
+    case "workflow_resume_incompatible":
+      return "validation";
+    case "memory_conflict":
+      return "storage";
+    default:
+      return "workflow";
+  }
+};
+
+export const aiRuntimeDiagnosticMessage = (
+  category: AiRunActivityErrorCategory,
+  providerStatus: number | null,
+): string => {
+  switch (category) {
+    case "provider_transport":
+      return "The model provider did not return a response.";
+    case "provider_response":
+      return providerStatus === null
+        ? "The model provider returned an error response."
+        : `The model provider returned an error response (HTTP ${providerStatus}).`;
+    case "provider_output":
+      return "The model provider returned an unusable structured result.";
+    case "context_budget":
+      return "The provider request did not fit the available context budget.";
+    case "validation":
+      return "The workflow returned an invalid result.";
+    case "authorization":
+      return "The model provider did not authorize the request.";
+    case "storage":
+      return "The workflow could not save its result.";
+    case "workflow":
+      return "The workflow operation failed.";
+    case "unknown":
+      return "The workflow failed at a runtime boundary.";
+  }
+};
+
+/**
+ * Keep diagnostic text code-owned even when it crosses a generic object
+ * boundary. The only variable detail we retain is a validated HTTP status.
+ */
+export const sanitizeAiRuntimeDiagnosticMessage = (
+  category: AiRunActivityErrorCategory,
+  candidate: string | undefined,
+): string => {
+  const generic = aiRuntimeDiagnosticMessage(category, null);
+  if (candidate === generic) return generic;
+  if (category !== "provider_response") return generic;
+  const match = /^The model provider returned an error response \(HTTP ([1-5][0-9]{2})\)\.$/u.exec(
+    candidate ?? "",
+  );
+  return match === null ? generic : aiRuntimeDiagnosticMessage(category, Number(match[1]));
+};
 
 const durableAiRuntimeErrorSchema = z.strictObject({
   name: z.literal("AiRuntimeError"),
@@ -107,10 +189,12 @@ const durableAiRuntimeErrorSchema = z.strictObject({
   code: z.string().optional(),
   retryable: z.boolean().optional(),
   providerStatus: z.number().int().nullable().optional(),
+  category: runtimeErrorCategorySchema.optional(),
+  diagnosticMessage: z.string().max(512).optional(),
 });
 
 const durableAiRuntimeErrorMessagePattern =
-  /^\[([a-z_]+)\]\[retryable:(true|false)\](?:\[provider_status:([1-5][0-9]{2})\])? ([^\r\n[\]]{1,2048})$/u;
+  /^\[([a-z_]+)\]\[retryable:(true|false)\](?:\[provider_status:([1-5][0-9]{2})\])?(?:\[category:([a-z_]+)\])? ([^\r\n[\]]{1,2048})$/u;
 
 const retryableStatus = (status: number): boolean =>
   status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
@@ -127,6 +211,8 @@ export const isAbortError = (error: unknown): error is Error =>
 export class AiRuntimeError extends Error {
   readonly retryable: boolean;
   readonly providerStatus: number | null;
+  readonly category: AiRunActivityErrorCategory;
+  readonly diagnosticMessage: string;
   /** Smithers 0.31.0 honors this structural flag without importing its Effect 3 errors. */
   readonly details:
     | { readonly failureRetryable: false; readonly providerStatus?: number }
@@ -139,16 +225,19 @@ export class AiRuntimeError extends Error {
   ) {
     const retryable = options.retryable ?? isRetryableAiRunError(code);
     const providerStatus = isHttpStatus(options.providerStatus) ? options.providerStatus : null;
+    const category = options.category ?? aiRunErrorCategoryForCode(code);
     // Smithers may retain only Error.message at its durable JSON boundary.
     // Include stable, content-free terminal metadata without adding provider
     // payloads or prompt text. Its generic Error serializer otherwise drops
     // enumerable code/retryable/details fields.
     super(
-      `[${code}][retryable:${retryable}]${providerStatus === null ? "" : `[provider_status:${providerStatus}]`} ${message}`,
+      `[${code}][retryable:${retryable}]${providerStatus === null ? "" : `[provider_status:${providerStatus}]`}[category:${category}] ${message}`,
     );
     this.name = "AiRuntimeError";
     this.retryable = retryable;
     this.providerStatus = providerStatus;
+    this.category = category;
+    this.diagnosticMessage = aiRuntimeDiagnosticMessage(category, providerStatus);
     this.details =
       (options.taskRetryable ?? retryable) === false
         ? {
@@ -176,6 +265,8 @@ export const aiRuntimeFailureMetadata = (error: unknown): AiRuntimeFailureMetada
     code: error.code,
     retryable: error.retryable,
     providerStatus: error.providerStatus,
+    category: error.category,
+    message: error.diagnosticMessage,
   };
 };
 
@@ -196,6 +287,7 @@ export const aiRuntimeFailureMetadataFromDurableJson = (
   const code = match?.[1];
   const retryable = match?.[2];
   const status = match?.[3];
+  const markedCategory = match?.[4];
   if (
     code === undefined ||
     !isAiRunErrorCode(code) ||
@@ -203,7 +295,17 @@ export const aiRuntimeFailureMetadataFromDurableJson = (
   ) {
     return undefined;
   }
+  if (
+    markedCategory !== undefined &&
+    !(runtimeErrorCategoryValues as readonly string[]).includes(markedCategory)
+  ) {
+    return undefined;
+  }
   const parsedStatus = status === undefined ? null : Number(status);
+  const category =
+    parsed.data.category ??
+    (markedCategory as AiRunActivityErrorCategory | undefined) ??
+    aiRunErrorCategoryForCode(code);
   // Smithers normally retains only the generic Error fields. If a richer
   // record survives, require the complete metadata tuple and make sure it
   // agrees with the signed message marker. Reject partial extensions so a
@@ -211,12 +313,21 @@ export const aiRuntimeFailureMetadataFromDurableJson = (
   const hasSerializedMetadata =
     parsed.data.code !== undefined ||
     parsed.data.retryable !== undefined ||
-    parsed.data.providerStatus !== undefined;
+    parsed.data.providerStatus !== undefined ||
+    parsed.data.category !== undefined ||
+    parsed.data.diagnosticMessage !== undefined;
   if (hasSerializedMetadata) {
+    const serializedCategory = category;
+    const serializedMessage = aiRuntimeDiagnosticMessage(serializedCategory, parsedStatus);
     if (
       parsed.data.code !== code ||
       parsed.data.retryable !== (retryable === "true") ||
-      parsed.data.providerStatus !== parsedStatus
+      parsed.data.providerStatus !== parsedStatus ||
+      (markedCategory !== undefined && markedCategory !== category) ||
+      (parsed.data.category !== undefined && parsed.data.diagnosticMessage === undefined) ||
+      (parsed.data.diagnosticMessage !== undefined &&
+        parsed.data.diagnosticMessage !== serializedMessage
+      )
     ) {
       return undefined;
     }
@@ -225,6 +336,8 @@ export const aiRuntimeFailureMetadataFromDurableJson = (
     code,
     retryable: retryable === "true",
     providerStatus: parsedStatus,
+    category,
+    message: aiRuntimeDiagnosticMessage(category, parsedStatus),
   };
 };
 
@@ -257,6 +370,7 @@ export const toAiRuntimeError = (
   const taskRetryable = options.taskRetryable ?? inferredRetryable;
   return new AiRuntimeError(fallbackCode, "runtime boundary failed", {
     ...(providerStatus === undefined ? {} : { providerStatus }),
+    ...(options.category === undefined ? {} : { category: options.category }),
     ...(inferredRetryable === undefined
       ? options.taskRetryable === undefined
         ? {}

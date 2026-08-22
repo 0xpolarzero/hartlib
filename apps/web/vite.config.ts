@@ -6,6 +6,16 @@ import { docs } from "./docs-vite-plugin";
 
 export default defineConfig({
   plugins: [docs(), react(), tailwindcss()],
+  server: {
+    proxy: {
+      "/v1": {
+        target: "http://localhost:3000",
+      },
+      "/public-source-documents": {
+        target: "http://localhost:3000",
+      },
+    },
+  },
   resolve: {
     alias: {
       "@": new URL("./src", import.meta.url).pathname,

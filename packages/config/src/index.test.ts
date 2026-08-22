@@ -402,7 +402,7 @@ describe("central server configuration", () => {
 describe("central browser configuration", () => {
   it("parses demo and production web API origins exactly", () => {
     expect(loadDemoBrowserConfig({})).toEqual({ apiBaseUrl: "http://localhost:3000" });
-    expect(loadWebApiConfig({})).toEqual({ apiBaseUrl: "http://localhost:3000" });
+    expect(loadWebApiConfig({})).toEqual({ apiBaseUrl: "" });
     expect(loadWebApiConfig({ PROD: true })).toEqual({ apiBaseUrl: "" });
     expect(loadWebApiConfig({ VITE_API_BASE_URL: "https://api.hartlib.example" })).toEqual({
       apiBaseUrl: "https://api.hartlib.example",

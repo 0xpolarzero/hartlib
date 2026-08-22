@@ -42,7 +42,7 @@ export interface WebApiConfig {
 
 export const loadWebApiConfig = (env: BrowserEnvironment): WebApiConfig => {
   const production = env.PROD === true;
-  const raw = String(env.VITE_API_BASE_URL ?? (production ? "" : "http://localhost:3000")).trim();
+  const raw = String(env.VITE_API_BASE_URL ?? "").trim();
   return {
     apiBaseUrl: raw === "" ? "" : parseExactHttpOrigin("VITE_API_BASE_URL", raw, production),
   };

@@ -96,6 +96,8 @@ describe("AI phase structured logging", () => {
       taskId: "single-answer",
       attempt: 2,
       errorCode: "answer_failed",
+      errorCategory: "provider_transport",
+      errorMessage: secret,
       ...({
         rawUserText: secret,
         error: secret,
@@ -110,9 +112,13 @@ describe("AI phase structured logging", () => {
       } as object),
     });
     expect(safe).toEqual({
+      runId: "run-2",
       phase: "provider_call",
       status: "failed",
+      taskId: "single-answer",
       errorCode: "answer_failed",
+      errorCategory: "provider_transport",
+      errorMessage: "The model provider did not return a response.",
       attempt: 2,
     });
 
@@ -287,9 +293,11 @@ describe("AI phase structured logging", () => {
       capApplied: true,
       action: "accept",
     });
-    expect(JSON.stringify(entries)).not.toMatch(
-      /PRIVATE|source-1|r001|c001|run-private|single-query-review/iu,
-    );
+    expect(JSON.stringify(entries)).not.toMatch(/source-1|r001|c001/iu);
+    expect(entries.at(0)).toMatchObject({
+      runId: "run-private",
+      taskId: "single-query-review",
+    });
   });
 
   it("applies memory and web activity guards from operation arguments", async () => {

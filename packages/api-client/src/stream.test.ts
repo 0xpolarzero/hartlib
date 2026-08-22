@@ -167,6 +167,49 @@ describe("reload and generic storage codecs", () => {
     expect(restoreRunStreamState(storage, "run-1")).toBeNull();
   });
 
+  it("retains safe terminal diagnostics across reload", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+    persistRunStreamState(storage, {
+      version: 4,
+      runId: "run-2",
+      lastSeq: 10,
+      draft: {
+        runId: "run-2",
+        text: "",
+        attempt: 3,
+        sourcesRead: [],
+        activities: [],
+        activityHistory: [],
+        context: null,
+        memoryUpdated: null,
+        terminalFailure: {
+          code: "plan_turn_failed",
+          retryable: true,
+          runId: "run-2",
+          stage: "understanding",
+          attempt: 3,
+          occurredAt: "2026-08-21T19:05:58.509Z",
+          errorCategory: "provider_transport",
+          errorMessage: "The model provider did not return a response.",
+        },
+      },
+    });
+    expect(restoreRunStreamState(storage, "run-2")?.draft.terminalFailure).toEqual({
+      code: "plan_turn_failed",
+      retryable: true,
+      runId: "run-2",
+      stage: "understanding",
+      attempt: 3,
+      occurredAt: "2026-08-21T19:05:58.509Z",
+      errorCategory: "provider_transport",
+      errorMessage: "The model provider did not return a response.",
+    });
+  });
+
   it("returns a safe fallback signal for corrupt or excess generic JSON", () => {
     const schema = Schema.Struct({ value: Schema.String });
     expect(decodeStoredJson(schema, "not-json")).toBeUndefined();

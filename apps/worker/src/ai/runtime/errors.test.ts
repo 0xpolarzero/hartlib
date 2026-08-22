@@ -32,14 +32,18 @@ describe("AI run error classification", () => {
 
   it("keeps the canonical code at the durable serialized error boundary", () => {
     const error = new AiRuntimeError("answer_failed", "provider stream ended");
-    expect(error.message).toBe("[answer_failed][retryable:true] provider stream ended");
+    expect(error.message).toBe(
+      "[answer_failed][retryable:true][category:workflow] provider stream ended",
+    );
   });
 
   it("does not retain provider payloads or causes when normalizing an unknown failure", () => {
     const secret = "provider payload with user content and sk-live-secret";
     const normalized = toAiRuntimeError(new Error(secret), "answer_failed");
 
-    expect(normalized.message).toBe("[answer_failed][retryable:true] runtime boundary failed");
+    expect(normalized.message).toBe(
+      "[answer_failed][retryable:true][category:workflow] runtime boundary failed",
+    );
     expect("cause" in normalized).toBe(false);
     expect(JSON.stringify(normalized)).not.toContain(secret);
   });
@@ -97,6 +101,8 @@ describe("AI run error classification", () => {
       code: "answer_failed",
       retryable: false,
       providerStatus: 403,
+      category: "workflow",
+      message: "The workflow operation failed.",
     });
     expect(smithersJson).not.toContain("details");
   });
@@ -116,6 +122,8 @@ describe("AI run error classification", () => {
       code: "context_plan_unfit",
       retryable: false,
       providerStatus: null,
+      category: "context_budget",
+      message: "The provider request did not fit the available context budget.",
     });
     expect(isAiRuntimeError(attached)).toBe(false);
     expect(aiRuntimeFailureMetadata(attached)).toBeUndefined();

@@ -20,7 +20,11 @@ import {
   providerSourceExposureProofFromToolResult,
   redactProviderToolResult,
 } from "./provider-request";
-import { aiRunErrorCodeForRole, toAiRuntimeError } from "./errors";
+import {
+  aiRunErrorCodeForRole,
+  aiRuntimeDiagnosticMessage,
+  toAiRuntimeError,
+} from "./errors";
 import { requireCurrentTaskCoordinates } from "./task-cancellation";
 import { resolveRuntimeModel } from "./model-registry";
 
@@ -482,7 +486,11 @@ const exactTaskCoordinates = (coordinates: PiBoundaryCoordinates): PiBoundaryCoo
 const providerOutputError = (
   error: unknown,
   fallbackCode: ReturnType<typeof aiRunErrorCodeForRole>,
-) => toAiRuntimeError(error, fallbackCode, { taskRetryable: true });
+) =>
+  toAiRuntimeError(error, fallbackCode, {
+    taskRetryable: true,
+    category: "provider_output",
+  });
 
 export class CanonicalAgentClient {
   constructor(private readonly boundary: ExactPiBoundary | PiRuntimeBoundary) {}
@@ -563,8 +571,8 @@ export class CanonicalAgentClient {
         console.error("AI_DEBUG_STRUCTURED_PARSE", {
           taskId: input.coordinates.taskId,
           providerRequestIndex: firstCoordinates.providerRequestIndex,
-          completion,
-          error,
+          errorCategory: "provider_output",
+          errorMessage: aiRuntimeDiagnosticMessage("provider_output", null),
         });
       }
       let repair: StructuredRepair | undefined;

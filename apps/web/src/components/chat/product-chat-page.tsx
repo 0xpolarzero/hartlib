@@ -40,6 +40,7 @@ import {
   restoreRunStreamState,
   shouldApplyChatReload,
   isWebResearchUnavailable,
+  latestFailedRunId,
   streamFailureAction,
   type StreamDraftState,
   type UserScopedConflict,
@@ -314,6 +315,14 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
   const routeError = routeStateCurrent ? error : null;
   const routeSending = routeStateCurrent && sending;
   const routeConflict = routeStateCurrent ? userScopedConflict : null;
+  const failedRunId = routeChat === null ? null : latestFailedRunId(routeChat.messages);
+  useEffect(() => {
+    if (runId !== null || failedRunId === null) return;
+    const restored = restoreRunStreamState(window.sessionStorage, failedRunId);
+    if (restored === null || restored.draft.terminalFailure === null) return;
+    streamSeq.current = restored.lastSeq;
+    setDraft(restored.draft);
+  }, [failedRunId, runId]);
   useEffect(() => {
     if (runId === null) return;
     let closed = false;
@@ -470,6 +479,9 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
           activityHistory: routeDraft.activityHistory,
           context: routeDraft.context,
           memoryUpdated: routeDraft.memoryUpdated,
+          ...(routeDraft.terminalFailure === null
+            ? {}
+            : { terminalFailure: routeDraft.terminalFailure }),
           sequence: streamSeq.current,
         },
         streaming: true,

@@ -1,9 +1,12 @@
 import {
   AiRunActivityEvent,
+  AiRunActivityErrorCategory,
   AiRunEvent,
   PublicContextConsumer,
   PublicSourceRecord,
+  type GetChatResponse,
   type AiRunActivityEvent as AiRunActivityEventValue,
+  type AiRunErrorEvent,
   type AiRunEvent as AiRunEventValue,
 } from "@hartlib/shared";
 import { Schema } from "effect";
@@ -144,7 +147,7 @@ export interface StreamDraftState {
     readonly updated: number;
     readonly discarded: number;
   } | null;
-  readonly terminalFailure: { readonly code: string; readonly retryable: boolean } | null;
+  readonly terminalFailure: Omit<AiRunErrorEvent, "type"> | null;
 }
 
 export interface PersistedRunStreamState {
@@ -178,7 +181,45 @@ const StreamDraft = Schema.Struct({
       discarded: NonNegativeInteger,
     }),
   ),
-  terminalFailure: Schema.NullOr(Schema.Struct({ code: Schema.String, retryable: Schema.Boolean })),
+  terminalFailure: Schema.NullOr(
+    Schema.Struct({
+      code: Schema.String.pipe(
+        Schema.check(Schema.isNonEmpty()),
+        Schema.check(Schema.isMaxLength(96)),
+        Schema.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,95}$/u)),
+      ),
+      retryable: Schema.Boolean,
+      runId: Schema.optional(
+        Schema.String.pipe(
+          Schema.check(Schema.isNonEmpty()),
+          Schema.check(Schema.isMaxLength(128)),
+          Schema.check(Schema.isPattern(/^[A-Za-z0-9_-]+$/u)),
+        ),
+      ),
+      stage: Schema.optional(
+        Schema.Literals(["understanding", "evidence", "preparing", "writing", "finishing"]),
+      ),
+      attempt: Schema.optional(
+        NonNegativeInteger.pipe(Schema.check(Schema.isLessThanOrEqualTo(100_000))),
+      ),
+      occurredAt: Schema.optional(
+        Schema.String.pipe(
+          Schema.check(Schema.isNonEmpty()),
+          Schema.check(Schema.isMaxLength(64)),
+          Schema.check(
+            Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u),
+          ),
+        ),
+      ),
+      errorCategory: Schema.optional(AiRunActivityErrorCategory),
+      errorMessage: Schema.optional(
+        Schema.String.pipe(
+          Schema.check(Schema.isNonEmpty()),
+          Schema.check(Schema.isMaxLength(512)),
+        ),
+      ),
+    }),
+  ),
 });
 const PersistedRunStream = Schema.Struct({
   version: Schema.Literal(4),
@@ -188,6 +229,17 @@ const PersistedRunStream = Schema.Struct({
 });
 
 export const runStreamStorageKey = (runId: string): string => `hartlib:web:ai-run-stream:${runId}`;
+
+/** Return the newest failed run whose terminal stream state may be restored. */
+export const latestFailedRunId = (
+  messages: GetChatResponse["messages"],
+): string | null => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.author === "user" && message.run.status === "failed") return message.run.id;
+  }
+  return null;
+};
 
 export const restoreRunStreamState = (
   storage: Pick<Storage, "getItem">,

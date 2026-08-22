@@ -68,7 +68,7 @@ describe("authenticated API fetch", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ credentials: "include" });
-    expect(fetchMock.mock.calls[1]?.[0]).toBe("http://localhost:3000/v1/demo/session");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/v1/demo/session");
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
       method: "POST",
       credentials: "include",

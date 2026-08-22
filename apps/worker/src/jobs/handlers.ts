@@ -29,6 +29,8 @@ import {
 import { DeterministicE2eProviderBoundary } from "../ai/e2e/deterministic-provider";
 import { e2eStreamGateLockKey } from "../ai/e2e/stream-gate";
 import {
+  aiRunErrorCategoryForCode,
+  aiRuntimeDiagnosticMessage,
   aiRuntimeFailureMetadata,
   aiRuntimeFailureMetadataFromDurableJson,
   isRetryableAiRunError,
@@ -62,6 +64,7 @@ import {
   insertAiObservation,
   insertAiRunUsage,
   runAiProductState,
+  type AiRunFailureDiagnostics,
 } from "../ai/product-state/repository";
 import {
   safeFetchPage,
@@ -331,6 +334,7 @@ const topicFromTaskId = (taskId: string): "t1" | "t2" | "t3" | undefined => {
 export interface TerminalAiFailure {
   readonly code: AiRunErrorCode;
   readonly retryable: boolean;
+  readonly diagnostics: AiRunFailureDiagnostics;
 }
 
 const smithersTerminalErrorLaneSchema = z.strictObject({
@@ -346,12 +350,23 @@ const smithersTerminalErrorEnvelopeSchema = z.strictObject({
 const terminalAiFailureFallback = (): TerminalAiFailure => ({
   code: "finalization_failed",
   retryable: isRetryableAiRunError("finalization_failed"),
+  diagnostics: {
+    errorCategory: "workflow",
+    errorMessage: "The workflow operation failed.",
+  },
 });
 
 export const terminalAiFailure = (error: unknown): TerminalAiFailure => {
   const runtimeMetadata = aiRuntimeFailureMetadata(error);
   if (runtimeMetadata !== undefined) {
-    return { code: runtimeMetadata.code, retryable: runtimeMetadata.retryable };
+    return {
+      code: runtimeMetadata.code,
+      retryable: runtimeMetadata.retryable,
+      diagnostics: {
+        errorCategory: runtimeMetadata.category,
+        errorMessage: runtimeMetadata.message,
+      },
+    };
   }
   let envelope: ReturnType<typeof smithersTerminalErrorEnvelopeSchema.safeParse>;
   try {
@@ -369,7 +384,14 @@ export const terminalAiFailure = (error: unknown): TerminalAiFailure => {
   for (const record of orderedDurableRecords) {
     const metadata = aiRuntimeFailureMetadataFromDurableJson(record);
     if (metadata !== undefined) {
-      return { code: metadata.code, retryable: metadata.retryable };
+      return {
+        code: metadata.code,
+        retryable: metadata.retryable,
+        diagnostics: {
+          errorCategory: metadata.category,
+          errorMessage: metadata.message,
+        },
+      };
     }
   }
   return terminalAiFailureFallback();
@@ -520,13 +542,21 @@ const markRunFailedForSmithersTerminalStatus = (
     connectionString,
     Effect.gen(function* () {
       const failure = terminalAiFailure(error);
-      yield* failAiRun(aiRunId, failure.code, failure.retryable, smithersRunId);
+      yield* failAiRun(
+        aiRunId,
+        failure.code,
+        failure.retryable,
+        smithersRunId,
+        failure.diagnostics,
+      );
       yield* Effect.logError("ai chat Smithers run ended terminal without finishing").pipe(
         Effect.annotateLogs({
           aiRunId,
           status,
           errorCode: failure.code,
           retryable: failure.retryable,
+          errorCategory: failure.diagnostics.errorCategory,
+          errorMessage: failure.diagnostics.errorMessage,
         }),
       );
     }),
@@ -927,7 +957,16 @@ export const makeDurableProviderBoundary = (
           inputTokens: measurement.inputTokens,
           requestedOutputTokens: measurement.requestedOutputTokens,
           usableInputTokens: measurement.usableInputTokens,
-          ...(measurement.passed ? {} : { errorCode: "agent_context_budget_exceeded" }),
+          ...(measurement.passed
+            ? {}
+            : {
+                errorCode: "agent_context_budget_exceeded" as const,
+                errorCategory: aiRunErrorCategoryForCode("agent_context_budget_exceeded"),
+                errorMessage: aiRuntimeDiagnosticMessage(
+                  aiRunErrorCategoryForCode("agent_context_budget_exceeded"),
+                  null,
+                ),
+              }),
         });
         throwIfAborted(signal);
       },
