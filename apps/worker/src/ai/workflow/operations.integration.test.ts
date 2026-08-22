@@ -1631,11 +1631,14 @@ class IntegrationAgentClient extends CanonicalAgentClient {
         queries: [
           {
             purpose: "retrieve the requested evidence",
-            ...(chat ? { scope: "chat_messages" } : { scope: "documents" }),
+            targets: [
+              chat
+                ? { kind: "chat_messages" as const, filters: {} }
+                : { kind: "documents" as const, filters: {} },
+            ],
             all: [{ text: term, mode: "term" }],
             anyOf: [],
             not: [],
-            filters: chat ? { chatMessages: {} } : { documents: {} },
             order: "relevance",
           },
         ],
@@ -1665,11 +1668,15 @@ class BroadFreshnessPlanAgent extends IntegrationAgentClient {
         queries: [
           {
             purpose: "find documents published since yesterday",
-            scope: "documents",
+            targets: [
+              {
+                kind: "documents" as const,
+                filters: { publishedAt: { after, before: payload.currentTimestamp } },
+              },
+            ],
             all: [],
             anyOf: [],
             not: [],
-            filters: { documents: { publishedAt: { after, before: payload.currentTimestamp } } },
             order: "newest",
           },
         ],
@@ -1687,11 +1694,15 @@ class FreshnessPlanPassthroughAgent extends IntegrationAgentClient {
         queries: [
           {
             purpose: "find latest news",
-            scope: "documents",
+            targets: [
+              {
+                kind: "documents" as const,
+                filters: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } },
+              },
+            ],
             all: [{ text: "news", mode: "term" }],
             anyOf: [],
             not: [],
-            filters: { documents: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } } },
             order: "relevance",
           },
         ],
@@ -1705,11 +1716,15 @@ class FreshnessPlanPassthroughAgent extends IntegrationAgentClient {
         queries: [
           {
             purpose: "find latest actualités",
-            scope: "documents",
+            targets: [
+              {
+                kind: "documents" as const,
+                filters: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } },
+              },
+            ],
             all: [{ text: "actualités", mode: "term" }],
             anyOf: [],
             not: [],
-            filters: { documents: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } } },
             order: "relevance",
           },
         ],
@@ -1751,10 +1766,10 @@ class ReviewReplacingAgent extends IntegrationAgentClient {
         queries: [
           {
             purpose: "retrieve the macro evidence",
+            targets: [{ kind: "documents" as const, filters: {} }],
             all: [{ text: "liquidity", mode: "term" }],
             anyOf: [],
             not: [],
-            filters: { documents: {} },
             order: "relevance",
           },
         ],
@@ -1781,10 +1796,10 @@ class StructuredReplacementAgent extends IntegrationAgentClient {
         queries: [
           {
             purpose: "retrieve liquidity evidence",
+            targets: [{ kind: "documents" as const, filters: {} }],
             all: [{ text: "liquidity", mode: "term" }],
             anyOf: [],
             not: [],
-            filters: { documents: {} },
             order: "relevance",
           },
         ],
@@ -1801,10 +1816,10 @@ class StructuredReplacementAgent extends IntegrationAgentClient {
               queries: [
                 {
                   purpose: "retrieve expectations evidence",
+                  targets: [{ kind: "documents" as const, filters: {} }],
                   all: [{ text: "expectations", mode: "term" }],
                   anyOf: [],
                   not: [],
-                  filters: { documents: {} },
                   order: "relevance",
                 },
               ],
@@ -1837,10 +1852,10 @@ class StructuredMalformedRecoveryAgent extends IntegrationAgentClient {
                 queries: [
                   {
                     purpose: "retrieve liquidity evidence",
+                    targets: [{ kind: "documents" as const, filters: {} }],
                     all: [{ text: "liquidity", mode: "term" }],
                     anyOf: [],
                     not: [],
-                    filters: { documents: {} },
                     order: "relevance",
                   },
                 ],
@@ -2080,11 +2095,10 @@ class PriorPassageFallbackAgent extends PhaseDCompactionAgent {
         queries: [
           {
             purpose: "retrieve the long chat evidence",
-            scope: "chat_messages",
+            targets: [{ kind: "chat_messages" as const, filters: {} }],
             all: [{ text: "evidence", mode: "term" }],
             anyOf: [],
             not: [],
-            filters: { chatMessages: {} },
             order: "relevance",
           },
         ],
@@ -2763,10 +2777,10 @@ class PublicRetrievalAgent extends IntegrationAgentClient {
         queries: [
           {
             purpose: "retrieve the public signal",
+            targets: [{ kind: "documents" as const, filters: {} }],
             all: [{ text: "beacon", mode: "term" }],
             anyOf: [],
             not: [],
-            filters: { documents: {} },
             order: "relevance",
           },
         ],
@@ -2861,10 +2875,10 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       queries: [
         {
           purpose: "retrieve the named macro evidence",
+          targets: [{ kind: "documents" as const, filters: { sourceNames: [sourceName] } }],
           all: [{ text: "liquidity", mode: "term" as const }],
           anyOf: [],
           not: [],
-          filters: { documents: { sourceNames: [sourceName] } },
           order: "relevance" as const,
         },
       ],
@@ -3011,17 +3025,19 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       action: "search",
       queries: [
         {
-          scope: "documents",
-          all: [],
-          anyOf: [],
-          filters: {
-            documents: {
-              publishedAt: {
-                after: "2026-08-15T14:12:48.063Z",
-                before: "2026-08-16T14:12:48.063000Z",
+          targets: [
+            {
+              kind: "documents",
+              filters: {
+                publishedAt: {
+                  after: "2026-08-15T14:12:48.063Z",
+                  before: "2026-08-16T14:12:48.063000Z",
+                },
               },
             },
-          },
+          ],
+          all: [],
+          anyOf: [],
           order: "newest",
         },
       ],
@@ -3066,11 +3082,15 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
       action: "search",
       queries: [
         {
-          scope: "documents",
+          targets: [
+            {
+              kind: "documents",
+              filters: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } },
+            },
+          ],
           all: [{ text: "actualités", mode: "term" }],
           anyOf: [],
           order: "relevance",
-          filters: { documents: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } } },
         },
       ],
     });
@@ -3092,9 +3112,14 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         action: "search",
         queries: [
           {
+            targets: [
+              {
+                kind: "documents",
+                filters: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } },
+              },
+            ],
             all: [{ text: "news", mode: "term" }],
             order: "relevance",
-            filters: { documents: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } } },
           },
         ],
       },
@@ -3102,9 +3127,14 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
         action: "search",
         queries: [
           {
+            targets: [
+              {
+                kind: "documents",
+                filters: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } },
+              },
+            ],
             all: [{ text: "actualités", mode: "term" }],
             order: "relevance",
-            filters: { documents: { publishedAt: { after: "2026-08-02T00:00:00.000Z" } } },
           },
         ],
       },
@@ -5243,10 +5273,10 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
                      queries: [
                        {
                          purpose: "fixture",
+                         targets: [{ kind: "documents", filters: {} }],
                          all: [{ text: "fixture", mode: "term" }],
                          anyOf: [],
                          not: [],
-                         filters: {},
                          order: "relevance",
                        },
                      ],

@@ -18,8 +18,12 @@ import {
   normalizeQueryReviewProvider,
 } from "./query-spec";
 
+const documentsTarget = (filters: object = {}) => ({ kind: "documents" as const, filters });
+const chatMessagesTarget = (filters: object = {}) => ({ kind: "chat_messages" as const, filters });
+
 const query = (purpose = "Résumé des batteries") => ({
   purpose,
+  targets: [documentsTarget({ languages: [" fr-FR "] })],
   all: [{ text: " batterie ", mode: "term" as const }],
   anyOf: [
     [
@@ -28,7 +32,6 @@ const query = (purpose = "Résumé des batteries") => ({
     ],
   ],
   not: [],
-  filters: { documents: { languages: [" fr-FR "] } },
   order: "relevance" as const,
 });
 
@@ -69,7 +72,7 @@ describe("Phase A query contracts", () => {
           all: [{ text: "  cafe\u0301  ", mode: "term" as const }],
           anyOf: [],
           not: [],
-          filters: { documents: { publishedAt: { after: " 2026-02-01T00:00:00.000Z " } } },
+          targets: [documentsTarget({ publishedAt: { after: " 2026-02-01T00:00:00.000Z " } })],
           order: "relevance" as const,
         },
       ],
@@ -79,32 +82,64 @@ describe("Phase A query contracts", () => {
       queries: [
         {
           ...rawPlan.queries[0],
-          filters: { documents: null, chatMessages: null },
+          targets: [documentsTarget({ publishedAt: null, sourceNames: null })],
         },
       ],
     };
     const parsedNullFilters = InternalQueryPlanProviderSchema.parse(providerNullFilters);
     expect(parsedNullFilters.action).toBe("search");
     if (parsedNullFilters.action === "search") {
-      expect(parsedNullFilters.queries[0]?.filters).toEqual({
-        documents: null,
-        chatMessages: null,
-      });
+      expect(parsedNullFilters.queries[0]?.targets).toEqual([
+        { kind: "documents", filters: { publishedAt: null, sourceNames: null } },
+      ]);
       const providerQuery = parsedNullFilters.queries[0]!;
       const flatAnyOf: typeof providerQuery.anyOf = [{ text: "flat", mode: "term" }];
-      const nullableFilters: typeof providerQuery.filters = {
-        documents: null,
-        chatMessages: null,
+      const nullableFilters: (typeof providerQuery.targets)[number]["filters"] = {
+        publishedAt: null,
+        sourceNames: null,
       };
       expect(flatAnyOf).toEqual([{ text: "flat", mode: "term" }]);
-      expect(nullableFilters).toEqual({ documents: null, chatMessages: null });
+      expect(nullableFilters).toEqual({ publishedAt: null, sourceNames: null });
     }
     const normalizedNullFilters = normalizeInternalQueryPlanProvider(providerNullFilters);
     expect(normalizedNullFilters).toMatchObject({
       action: "search",
-      queries: [{ filters: {} }],
+      queries: [{ targets: [{ kind: "documents", filters: {} }] }],
     });
     expect(() => InternalQueryPlanProviderSchema.parse({ ...rawPlan, extra: true })).toThrow();
+    expect(() =>
+      InternalQueryPlanProviderSchema.parse({
+        ...rawPlan,
+        queries: [{ ...rawPlan.queries[0], targets: [null] }],
+      }),
+    ).toThrow();
+    expect(() =>
+      InternalQueryPlanProviderSchema.parse({
+        ...rawPlan,
+        queries: [
+          {
+            ...rawPlan.queries[0],
+            targets: [{ kind: "documents", filters: null }],
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      InternalQueryPlanProviderSchema.parse({
+        ...rawPlan,
+        queries: [{ ...rawPlan.queries[0], filters: {} }],
+      }),
+    ).toThrow();
+    expect(() =>
+      InternalQueryPlanProviderSchema.parse({
+        ...rawPlan,
+        queries: [{ ...rawPlan.queries[0], scope: "documents" }],
+      }),
+    ).toThrow();
+    const providerQueryWithoutTargets = Object.fromEntries(
+      Object.entries(rawPlan.queries[0]!).filter(([key]) => key !== "targets"),
+    );
+    expect(() => InternalQueryProviderSchema.parse(providerQueryWithoutTargets)).toThrow();
     expect(JSON.stringify(planSchema)).toContain("additionalProperties");
     expect(() =>
       InternalQueryProviderSchema.parse({
@@ -118,7 +153,7 @@ describe("Phase A query contracts", () => {
         queries: [
           {
             ...rawPlan.queries[0],
-            filters: { documents: { publishedAt: { after: "2023-02-29T00:00:00.000Z" } } },
+            targets: [documentsTarget({ publishedAt: { after: "2023-02-29T00:00:00.000Z" } })],
           },
         ],
       }),
@@ -156,12 +191,12 @@ describe("Phase A query contracts", () => {
           all: [{ text: "evidence", mode: "term" as const }],
           anyOf: [],
           not: [],
-          filters: {
-            chatMessages: {
+          targets: [
+            chatMessagesTarget({
               sentAt: { after: "2023-02-29T00:00:00.000Z" },
               authors: ["user", "user"],
-            },
-          },
+            }),
+          ],
           order: "relevance" as const,
         },
       ],
@@ -178,9 +213,12 @@ describe("Phase A query contracts", () => {
         queries: [
           {
             ...plan.queries[0],
-            filters: {
-              chatMessages: { sentAt: { after: "2024-02-29T00:00:00.000Z" }, authors: ["user"] },
-            },
+            targets: [
+              chatMessagesTarget({
+                sentAt: { after: "2024-02-29T00:00:00.000Z" },
+                authors: ["user"],
+              }),
+            ],
           },
         ],
       }),
@@ -240,7 +278,7 @@ describe("Phase A query contracts", () => {
     expect(() =>
       InternalQuerySchema.parse({
         ...query(),
-        filters: { documents: { languages: ["fr"], sql: "drop table" } },
+        targets: [documentsTarget({ languages: ["fr"], sql: "drop table" })],
       }),
     ).toThrow();
   });
@@ -252,43 +290,96 @@ describe("Phase A query contracts", () => {
       anyOf: [],
       not: [{ text: "x", mode: "term" as const }],
     };
-    expect(() => InternalQuerySchema.parse({ ...negativeOnly, filters: {} })).toThrow();
+    expect(() => InternalQuerySchema.parse({ ...negativeOnly, targets: [] })).toThrow();
     expect(() =>
       InternalQuerySchema.parse({
         ...negativeOnly,
-        scope: "documents",
-        filters: { chatMessages: { authors: ["assistant"] } },
+        targets: [chatMessagesTarget({ authors: ["assistant"] })],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      InternalQuerySchema.parse({
+        ...negativeOnly,
+        targets: [documentsTarget({ publishedAt: { after: "2026-01-01T00:00:00.000Z" } })],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      InternalQuerySchema.parse({
+        ...negativeOnly,
+        targets: [chatMessagesTarget({})],
       }),
     ).toThrow();
     expect(() =>
       InternalQuerySchema.parse({
         ...negativeOnly,
-        scope: "documents",
-        filters: { documents: { publishedAt: { after: "2026-01-01T00:00:00.000Z" } } },
+        targets: [
+          documentsTarget({ publishedAt: { after: "2026-01-01T00:00:00.000Z" } }),
+          chatMessagesTarget({ sentAt: { after: "2026-01-01T00:00:00.000Z" } }),
+        ],
       }),
     ).not.toThrow();
     expect(() =>
       InternalQuerySchema.parse({
         ...negativeOnly,
-        filters: { documents: { publishedAt: { after: "2026-01-01T00:00:00.000Z" } } },
+        targets: [chatMessagesTarget({ authors: ["assistant"] })],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      InternalQuerySchema.parse({
+        ...negativeOnly,
+        targets: [
+          documentsTarget({ publishedAt: { after: "2026-01-01T00:00:00.000Z" } }),
+          chatMessagesTarget({}),
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("requires strict unique non-empty discriminated targets", () => {
+    expect(() => InternalQuerySchema.parse({ ...query(), targets: [] })).toThrow();
+    expect(() => InternalQuerySchema.parse({ ...query(), targets: null })).toThrow();
+    const canonicalQueryWithoutTargets = Object.fromEntries(
+      Object.entries(query()).filter(([key]) => key !== "targets"),
+    );
+    expect(() => InternalQuerySchema.parse(canonicalQueryWithoutTargets)).toThrow();
+    expect(() =>
+      InternalQuerySchema.parse({
+        ...query(),
+        targets: [documentsTarget({}), documentsTarget({ languages: ["en"] })],
+      }),
+    ).toThrow(/unique/u);
+    expect(() =>
+      InternalQuerySchema.parse({
+        ...query(),
+        targets: [documentsTarget({ authors: ["user"] })],
       }),
     ).toThrow();
     expect(() =>
       InternalQuerySchema.parse({
-        ...negativeOnly,
-        filters: {
-          documents: { publishedAt: { after: "2026-01-01T00:00:00.000Z" } },
-          chatMessages: { sentAt: { after: "2026-01-01T00:00:00.000Z" } },
-        },
+        ...query(),
+        targets: [chatMessagesTarget({ languages: ["en"] })],
       }),
-    ).not.toThrow();
+    ).toThrow();
     expect(() =>
       InternalQuerySchema.parse({
-        ...negativeOnly,
-        scope: "chat_messages",
-        filters: { chatMessages: { authors: ["assistant"] } },
+        ...query(),
+        targets: [{ kind: "all", filters: {} }],
       }),
-    ).not.toThrow();
+    ).toThrow();
+    expect(() =>
+      InternalQuerySchema.parse({
+        ...query(),
+        targets: [{ kind: "documents", filters: {}, wildcard: true }],
+      }),
+    ).toThrow();
+    expect(() =>
+      InternalQuerySchema.parse({
+        ...query(),
+        targets: [{ kind: "documents" }],
+      }),
+    ).toThrow();
+    expect(() => InternalQuerySchema.parse({ ...query(), scope: "documents" })).toThrow();
+    expect(() => InternalQuerySchema.parse({ ...query(), filters: {} })).toThrow();
   });
 
   it("rejects duplicate normalized atom text even when the mode differs", () => {
@@ -307,28 +398,43 @@ describe("Phase A query contracts", () => {
   it("validates exact RFC3339 UTC timestamp bounds for canonical and provider filters", () => {
     const withTimestamp = (publishedAt: { after?: string; before?: string }) => ({
       ...query(),
-      filters: { documents: { publishedAt } },
+      targets: [documentsTarget({ publishedAt })],
     });
     const withChatTimestamp = (sentAt: { after?: string; before?: string }) => ({
       ...query(),
-      filters: { chatMessages: { sentAt } },
+      targets: [chatMessagesTarget({ sentAt })],
     });
-    const providerPlan = (filters: unknown) => ({
+    const providerPlan = (filters: unknown, kind: "documents" | "chat_messages" = "documents") => ({
       action: "search" as const,
-      queries: [{ ...query(), filters }],
+      queries: [
+        {
+          ...query(),
+          targets: [
+            kind === "documents"
+              ? documentsTarget(filters as object)
+              : chatMessagesTarget(filters as object),
+          ],
+        },
+      ],
     });
     const exact = "2024-02-29T12:34:56.123456Z";
     const canonical = InternalQuerySchema.parse(withTimestamp({ after: ` ${exact} ` }));
-    expect(canonical.filters.documents?.publishedAt?.after).toBe(exact);
+    expect(
+      canonical.targets[0]?.kind === "documents"
+        ? canonical.targets[0].filters.publishedAt?.after
+        : undefined,
+    ).toBe(exact);
     expect(normalizeInternalQuery(withTimestamp({ after: ` ${exact} ` }))).toMatchObject({
-      filters: { documents: { publishedAt: { after: exact } } },
+      targets: [{ kind: "documents", filters: { publishedAt: { after: exact } } }],
     });
     const provider = InternalQueryPlanProviderSchema.parse(
-      providerPlan({ documents: { publishedAt: { after: ` ${exact} ` } } }),
+      providerPlan({ publishedAt: { after: ` ${exact} ` } }),
     );
     expect(
       provider.action === "search"
-        ? provider.queries[0]?.filters?.documents?.publishedAt?.after
+        ? provider.queries[0]?.targets[0]?.kind === "documents"
+          ? provider.queries[0].targets[0].filters.publishedAt?.after
+          : undefined
         : undefined,
     ).toBe(exact);
 
@@ -343,13 +449,11 @@ describe("Phase A query contracts", () => {
       expect(() => InternalQuerySchema.parse(withTimestamp({ after: invalid }))).toThrow();
       expect(() => InternalQuerySchema.parse(withChatTimestamp({ before: invalid }))).toThrow();
       expect(() =>
-        InternalQueryPlanProviderSchema.parse(
-          providerPlan({ documents: { publishedAt: { after: invalid } } }),
-        ),
+        InternalQueryPlanProviderSchema.parse(providerPlan({ publishedAt: { after: invalid } })),
       ).toThrow();
       expect(() =>
         InternalQueryPlanProviderSchema.parse(
-          providerPlan({ chatMessages: { sentAt: { before: invalid } } }),
+          providerPlan({ sentAt: { before: invalid } }, "chat_messages"),
         ),
       ).toThrow();
     }
@@ -369,19 +473,18 @@ describe("Phase A query contracts", () => {
       queries: [
         {
           purpose: "find documents published since yesterday",
-          scope: "documents",
-          all: [],
-          anyOf: [],
-          not: [],
-          filters: {
-            documents: {
+          targets: [
+            documentsTarget({
               languages: ["fr"],
               publishedAt: {
                 after: "2026-08-01T14:12:48.063Z",
                 before: "2026-08-02T14:12:48.063Z",
               },
-            },
-          },
+            }),
+          ],
+          all: [],
+          anyOf: [],
+          not: [],
           order: "newest",
         },
       ],
@@ -391,18 +494,20 @@ describe("Phase A query contracts", () => {
       action: "search",
       queries: [
         {
-          scope: "documents",
-          all: [],
-          anyOf: [],
-          filters: {
-            documents: {
-              languages: ["fr"],
-              publishedAt: {
-                after: "2026-08-01T14:12:48.063Z",
-                before: "2026-08-02T14:12:48.063Z",
+          targets: [
+            {
+              kind: "documents",
+              filters: {
+                languages: ["fr"],
+                publishedAt: {
+                  after: "2026-08-01T14:12:48.063Z",
+                  before: "2026-08-02T14:12:48.063Z",
+                },
               },
             },
-          },
+          ],
+          all: [],
+          anyOf: [],
           order: "newest",
         },
       ],

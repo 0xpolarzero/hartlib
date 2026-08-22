@@ -207,13 +207,23 @@ describe("retrieval and compaction prompt inventory", () => {
     }
   });
   it("requires exact timestamp planning for broad freshness", () => {
-    expect(InternalQueryPlanPrompt).toContain(
-      'publishedAt bounds [currentTimestamp - 24 hours, currentTimestamp), order "newest", and empty all and anyOf arrays',
-    );
-    expect(InternalQueryReviewPrompt).toContain(
-      "[currentTimestamp - 24 hours, currentTimestamp) is the required publishedAt window",
-    );
+    for (const prompt of [InternalQueryPlanPrompt, InternalQueryReviewPrompt]) {
+      expect(prompt).toContain("filters.publishedAt");
+      expect(prompt).toContain("[currentTimestamp - 24 hours, currentTimestamp)");
+      expect(prompt).toContain("empty all and anyOf arrays");
+    }
     expect(InternalQueryReviewPrompt).not.toContain("remove generic lexical terms");
+  });
+  it("requires explicit single-store and multi-store targets", () => {
+    for (const prompt of [InternalQueryPlanPrompt, InternalQueryReviewPrompt]) {
+      expect(prompt).toContain("targets");
+      expect(prompt).toContain('kind:"documents"');
+      expect(prompt).toContain('kind:"chat_messages"');
+      expect(prompt).toContain("Single-store document query uses");
+      expect(prompt).toContain("Single-store older-chat query uses");
+      expect(prompt).toContain("Multi-store query uses");
+      expect(prompt).not.toContain("optional scope");
+    }
   });
 });
 describe("parallel compaction provider contracts", () => {

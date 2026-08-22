@@ -673,11 +673,10 @@ describe("deterministic internal retrieval and citation", () => {
   const structuredResult = () => {
     const query = {
       purpose: "ground the deterministic answer",
-      scope: "documents" as const,
+      targets: [{ kind: "documents" as const, filters: {} }],
       all: [{ text: "solar", mode: "term" as const }],
       anyOf: [],
       not: [],
-      filters: {},
       order: "relevance" as const,
     };
     const hit = {

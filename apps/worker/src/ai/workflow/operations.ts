@@ -112,6 +112,8 @@ import {
 import { CanonicalAgentClient, toolResultJson, zodValidator } from "../runtime/agent-client";
 import {
   AiRuntimeError,
+  aiRuntimeDiagnosticMessage,
+  aiRuntimeFailureMetadata,
   isAiRuntimeError,
   isRetryableAiRunError,
   type AiRunErrorCode,
@@ -1373,7 +1375,8 @@ export class CanonicalWorkflowOperations {
     const queries = plan.action === "search" ? plan.queries : [];
     const resolvedNames = new Map<string, readonly string[]>();
     for (const query of queries) {
-      const names = query.filters.documents?.sourceNames;
+      const names = query.targets.find((target) => target.kind === "documents")?.filters
+        .sourceNames;
       if (names === undefined || names.length === 0) continue;
       const resolved = await this.resolveAcceptedRetrievalScope(load, names, excludedMessageIds);
       resolvedNames.set(JSON.stringify(names), resolved.acceptedSourceIds);
@@ -7598,9 +7601,12 @@ export class CanonicalWorkflowOperations {
       );
     } catch (error) {
       if (process.env.AI_DEBUG_ERRORS === "1") {
+        const metadata = aiRuntimeFailureMetadata(error);
         console.error("AI_DEBUG_FINALIZATION", {
-          message: error instanceof Error ? error.message : String(error),
-          error,
+          aiRunId: load.aiRunId,
+          errorCode: metadata?.code ?? "finalization_failed",
+          errorCategory: metadata?.category ?? "workflow",
+          errorMessage: metadata?.message ?? aiRuntimeDiagnosticMessage("workflow", null),
         });
       }
       throw error;

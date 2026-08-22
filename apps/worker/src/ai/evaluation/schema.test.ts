@@ -38,11 +38,10 @@ const retrievalPlan = {
   queries: [
     {
       purpose: "energy",
-      scope: "documents" as const,
+      targets: [{ kind: "documents" as const, filters: {} }],
       all: [{ text: "solar", mode: "term" as const }],
       anyOf: [],
       not: [],
-      filters: {},
       order: "relevance" as const,
     },
   ],

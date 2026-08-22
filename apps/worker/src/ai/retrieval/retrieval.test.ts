@@ -39,6 +39,10 @@ const baseOptions = {
   recencyHalfLifeDays: 14,
   now,
 } as const;
+const bothTargets = [
+  { kind: "documents" as const, filters: {} },
+  { kind: "chat_messages" as const, filters: {} },
+] as const;
 
 const stagFrText =
   "La stagflation menace la reprise selon plusieurs économistes qui observent la hausse simultanée du chômage et des prix à la consommation.";
@@ -486,7 +490,7 @@ describe("Phase B query-plan execution seam", () => {
           all: [{ text: "alpha", mode: "term" as const }],
           anyOf: [],
           not: [],
-          filters: {},
+          targets: bothTargets,
           order: "relevance" as const,
         },
         {
@@ -494,7 +498,7 @@ describe("Phase B query-plan execution seam", () => {
           all: [{ text: "beta", mode: "term" as const }],
           anyOf: [],
           not: [],
-          filters: {},
+          targets: bothTargets,
           order: "relevance" as const,
         },
       ],
@@ -546,7 +550,7 @@ describe("Phase B query-plan execution seam", () => {
         all: [{ text: `term ${ordinal}`, mode: "term" as const }],
         anyOf: [],
         not: [],
-        filters: {},
+        targets: bothTargets,
         order: "relevance" as const,
       })),
     };
@@ -662,7 +666,7 @@ describe("Phase B query-plan execution seam", () => {
         all: [{ text: `term ${ordinal}`, mode: "term" as const }],
         anyOf: [],
         not: [],
-        filters: {},
+        targets: bothTargets,
         order: "relevance" as const,
       })),
     };
@@ -786,31 +790,33 @@ const structuredSearch = (
       const sourceIds = options.access.sourceIds;
       const query = {
         purpose: request.terms,
-        scope: "documents" as const,
+        targets: [
+          {
+            kind: "documents" as const,
+            filters: {
+              ...(request.countries === undefined ? {} : { countries: request.countries }),
+              ...(request.languages === undefined ? {} : { languages: request.languages }),
+              ...(request.documentTypes === undefined
+                ? {}
+                : { documentTypes: request.documentTypes }),
+              ...(request.publishedAfter === undefined && request.publishedBefore === undefined
+                ? {}
+                : {
+                    publishedAt: {
+                      ...(request.publishedAfter === undefined
+                        ? {}
+                        : { after: request.publishedAfter.slice(0, 10) }),
+                      ...(request.publishedBefore === undefined
+                        ? {}
+                        : { before: request.publishedBefore.slice(0, 10) }),
+                    },
+                  }),
+            },
+          },
+        ],
         all: [{ text: request.terms, mode: "term" as const }],
         anyOf: [],
         not: [],
-        filters: {
-          documents: {
-            ...(request.countries === undefined ? {} : { countries: request.countries }),
-            ...(request.languages === undefined ? {} : { languages: request.languages }),
-            ...(request.documentTypes === undefined
-              ? {}
-              : { documentTypes: request.documentTypes }),
-            ...(request.publishedAfter === undefined && request.publishedBefore === undefined
-              ? {}
-              : {
-                  publishedAt: {
-                    ...(request.publishedAfter === undefined
-                      ? {}
-                      : { after: request.publishedAfter.slice(0, 10) }),
-                    ...(request.publishedBefore === undefined
-                      ? {}
-                      : { before: request.publishedBefore.slice(0, 10) }),
-                  },
-                }),
-          },
-        },
         order: request.orderBy === "recency" ? ("newest" as const) : ("relevance" as const),
       };
       const result = yield* executeInternalQueryPlan(
@@ -1428,10 +1434,10 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           queries: [
             {
               purpose: "schema proof",
+              targets: bothTargets,
               all: [{ text: "stagflation", mode: "term" }],
               anyOf: [],
               not: [],
-              filters: {},
               order: "relevance",
             },
           ],
@@ -1472,11 +1478,10 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           queries: [
             {
               purpose: "chat relevance",
-              scope: "chat_messages",
+              targets: [{ kind: "chat_messages", filters: {} }],
               all: [{ text: "needle", mode: "term" }],
               anyOf: [],
               not: [],
-              filters: {},
               order: "relevance",
             },
           ],
@@ -1508,11 +1513,10 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
           queries: [
             {
               purpose: "literal marker",
-              scope: "chat_messages",
+              targets: [{ kind: "chat_messages", filters: {} }],
               all: [{ text: "needle-only-marker", mode: "term" }],
               anyOf: [],
               not: [],
-              filters: {},
               order: "relevance",
             },
           ],
@@ -1560,11 +1564,10 @@ describe.skipIf(!isBun || !databaseUrl)("retrieval over postgres fts", () => {
       queries: [
         {
           purpose: "current-message boundary",
-          scope: "chat_messages",
+          targets: [{ kind: "chat_messages", filters: {} }],
           all: [{ text: "needle", mode: "term" }],
           anyOf: [],
           not: [],
-          filters: {},
           order: "relevance",
         },
       ],

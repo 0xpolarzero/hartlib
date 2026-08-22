@@ -163,15 +163,25 @@ before any side effect.
 The contract layer also defines the strict values used by the retrieval
 and context boundaries. `InternalQueryPlan` is either `skip` with a
 reason or `search` with one complete array of `InternalQuery` values.
-`InternalQuery` uses bounded `all`, `anyOf`, and `not` atoms, optional
-documents/chat-message filters, and one code-owned sort order. `QueryReview`
-is exactly `accept`, one complete `replace` array, or `no_evidence`.
-`BranchCoverage` records `applicable` versus `not_applicable`, hit counts, the
-operational cap, truncation, and one closed reason code from
+`InternalQuery` uses bounded `all`, `anyOf`, and `not` atoms, one required
+non-empty `targets` array, and one code-owned sort order. Each target is a
+strict discriminated object: exactly
+`{kind:"documents",filters:DocumentFilters}` or
+`{kind:"chat_messages",filters:ChatMessageFilters}`. Target kinds are unique,
+the `filters` object is required, and `{}` means that target has no filters.
+There are no nullable targets, wildcard targets, omitted targets, `scope`, or
+legacy keyed `filters` aliases. A query searches exactly its listed targets;
+multi-store intent lists both target objects and code never adds a target.
+This uses a non-empty discriminated array instead of optional keyed targets:
+omitted or null keys would recreate ambiguity and make multi-store intent less
+explicit.
+`QueryReview` is exactly `accept`, one complete `replace` array, or
+`no_evidence`. `BranchCoverage` records `applicable` versus `not_applicable`,
+hit counts, the operational cap, truncation, and one closed reason code from
 `scope_documents`, `scope_chat_messages`, or `unsupported_country_filter` when
 the branch does not apply. A negative-only query needs a positive indexed
-filter in every applicable store: an omitted scope covers both documents and
-older chat messages, while a declared scope covers only its store. A
+filter for every listed target, so an empty `all`/`anyOf` match cannot search a
+target with only `not` atoms. A
 `not_applicable` branch has no hits and cannot report truncation, and no branch
 may return more hits than its declared cap. Query strings receive NFC
 normalization and outer trim only. Review reasons are closed codes: accept uses
@@ -185,6 +195,14 @@ UTF-8 bytes have hard contract bounds. `publishedAt` and `sentAt` require
 fail. Retrieval code applies those bounds before physical SQL,
 then returns explicit branch coverage, truncation, fused candidates, and exact
 hydration proof to A's one review operation.
+
+The retrieval prompts state target selection with examples: a single-store
+document query is `targets:[{kind:"documents",filters:{}}]`, a single-store
+older-chat query is `targets:[{kind:"chat_messages",filters:{}}]`, and a
+multi-store query lists both objects. For broad freshness, the plan must emit
+exactly one documents target whose filters contain the `publishedAt` window
+`[currentTimestamp - 24 hours, currentTimestamp)`, with `order:"newest"` and
+empty `all` and `anyOf` arrays unless the user named a subject.
 
 One model call means one provider transport request made by direct Pi inside
 the owning Smithers compute task. Pi does not retry. A tool loop may make more
@@ -354,6 +372,8 @@ The worker configuration schema itself is typed and parsed to the exact live mod
 Z.AI transport uses its documented `tool_choice: "auto"` posture. Pi's pinned OpenAI-completions adapter also sends `strict: false` inside every provider-visible function definition. That transport field does not weaken Hartlib's output contract: structured calls and tool loops independently require exactly one schema-valid named terminal call, reject missing, extra, parallel-terminal, or malformed calls, and retry or fail with the owning task's canonical error. Provider-facing discriminated outputs may use a flat root-object parameter schema for documented function-call compatibility, but the exact strict semantic union is validated before an observation or workflow output is accepted.
 
 Pi client retries are disabled. Smithers owns finite task retries and backoff.
+
+The boundary treats a Pi `stopReason: "error"` or rejected provider call as a provider failure, not as an invalid local workflow result. It records known usage only when the provider supplies positive, arithmetically valid counters; a zero-usage error does not create a fabricated usage row. A trusted top-level HTTP status or Pi response callback may add only the numeric status to the safe category/message; provider bodies, credentials, and stack causes are discarded. The owning Smithers task keeps its existing finite retry lane, and a final failure still emits the terminal error after the last attempt.
 
 The configured model must have a locally available exact tokenizer and matching provider chat template registered at worker startup. The final-version tokenizer and template are pinned for the current runtime and evaluation. A model without an exact registered counter is rejected at startup; the production runtime has no estimated-token admission mode.
 
@@ -740,10 +760,12 @@ add a query, remove an atom, or infer a source.
 The Z.AI transport schema uses one flat object root for plans and reviews so
 the provider can emit the action and its fields without a root union. The
 runtime checks those fields, restores canonical branch semantics, and then
-parses the strict contract. Provider JSON may encode an omitted optional filter
-object or filter field as `null`; the transport schema accepts only those known
+parses the strict contract. Provider JSON may encode an omitted approved optional
+filter field as `null`; the transport schema accepts only those known field
 nulls, removes them before canonical parsing, and does not discard unknown
-fields. A provider may flatten one `anyOf` group into an atom list; the runtime
+fields. Target objects and their required `filters` objects are never nullable,
+and the transport shape has no legacy `scope` or keyed `filters` alias. A
+provider may flatten one `anyOf` group into an atom list; the runtime
 wraps that list into one canonical OR group. Canonical nested groups remain
 valid, while malformed or ambiguous groups fail canonical validation. Shared
 transport fields such as an explanatory review reason are discarded or mapped
@@ -755,12 +777,13 @@ adjacency, so the planner uses separate `term` atoms for separate concepts
 unless the user explicitly requests an exact phrase or title.
 No fixed term count constrains the plan. Code enforces only the query count,
 serialized UTF-8 plan, total atom, provider-output, branch-row, candidate, and
-hydration bounds. A negative-only query must carry a positive indexed filter.
+hydration bounds. A negative-only query must carry a positive indexed filter
+for every listed target.
 
 For a broad freshness request such as “what’s new” or “depuis hier”, the provider
-must emit an ordinary document query with `publishedAt` bounds
-`[currentTimestamp - 24 hours, currentTimestamp)`, `order: "newest"`, and empty
-`all` and `anyOf` arrays.
+must emit exactly one documents target whose filters contain the `publishedAt`
+bounds `[currentTimestamp - 24 hours, currentTimestamp)`, with `order: "newest"`
+and empty `all` and `anyOf` arrays.
 If the user names a subject, the provider may keep atoms for that subject. The
 timestamp bounds, not generic words such as `news` or `actualités`, define the
 requested time range. The runtime does not detect freshness vocabulary or
@@ -777,10 +800,11 @@ accepted scope. Public-source IDs, publisher subscription IDs, company/user
 delivery rows, chat ID, and excluded recent message IDs come only from that
 scope. Unknown, foreign, and stale names all produce the same empty authorized
 set; the provider never learns which case occurred. The three physical branches
-are `public_documents`, `publisher_documents`, and `chat_messages`. A declared
-document or chat scope marks the other branches `not_applicable`; a country
-filter marks the publisher branch `not_applicable` with
-`unsupported_country_filter`. Every query/branch pair returns a coverage row,
+are `public_documents`, `publisher_documents`, and `chat_messages`. A query's
+listed target kinds determine which branches are applicable; unlisted target
+branches are `not_applicable`. A country filter marks the publisher branch
+`not_applicable` with `unsupported_country_filter`. Every query/branch pair
+returns a coverage row,
 an operational cap, and an explicit truncation flag.
 
 Each logical query resolves its own names; code never shares one source-ID list
@@ -1736,7 +1760,7 @@ The public event vocabulary is:
 - `usage`: one completed model/web-tool request or the final run aggregate, distinguished by `scope: "request" | "run"` and request `kind: "model" | "web_search" | "web_fetch"`
 - `done`: assistant message ID
 - `activity`: safe progress transition with a stable public stage, code, status, optional topic, attempt, elapsed duration, source/result count, or content-free reason
-- `error`: terminal code and retryable flag
+- `error`: terminal code and retryable flag, plus the safe run identity, stage, attempt, RFC 3339 time, normalized error category, and bounded code-owned message when available
 
 The `usage` payload is:
 
@@ -1820,6 +1844,11 @@ Each retry of a user-visible answer appends a new `answer_started` with a strict
 
 All streamed deltas are provisional until `done`. If terminal `error` arrives after any deltas—including when only the required memory lane failed—the client discards the provisional assistant text, refetches the durable user-message run outcome, and renders its localized unsaved-turn state with a resubmit action only when retryable. It never leaves an apparently successful answer that will disappear silently on reload.
 
+The web and demo clients persist the terminal draft, activity history, and SSE
+cursor in session storage. After a reload, the newest failed user-message run
+selects that stored terminal draft so its safe failure details remain visible;
+the clients never reconnect a run that is already terminal.
+
 The stream closes after `done` or `error`. Ordinary `ai_run_events` are restricted, transient, and pruned 24 hours after the terminal event. An event ledger bound to an evaluation case is retained while its non-failed evaluation session or sealed evidence/annotation can still be revalidated; the ordinary 24-hour prune must not destroy trusted evaluation evidence.
 
 ### Public activity contract and replay
@@ -1845,6 +1874,20 @@ type ActivityEvent = {
   sourceCount?: number;
   resultCount?: number;
   reason?: "search_adjusted" | "source_validation_failed";
+  runId?: string;
+  occurredAt?: string;
+  errorCode?: string;
+  errorCategory?:
+    | "provider_transport"
+    | "provider_response"
+    | "provider_output"
+    | "context_budget"
+    | "validation"
+    | "authorization"
+    | "storage"
+    | "workflow"
+    | "unknown";
+  errorMessage?: string;
 };
 ```
 
@@ -1855,9 +1898,13 @@ items. A task retry uses a new attempt-bearing emission key and updates the
 same logical code/topic item. A retry is `retrying`, not a terminal run
 failure. When a terminal failure maps to a public code, the transition writes
 one `failed` activity for that code before `error`; the terminal `error`
-remains the last event. Activity never carries prompts, search queries, source
-snippets, memory content, opaque source or snapshot IDs, provider logs, stack
-traces, or raw provider errors.
+remains the last event. Failed or retrying transitions carry the stable AI run
+identity, RFC 3339 emission time, normalized error code and category, and a
+bounded code-owned message. These details identify each failed attempt without
+exposing prompts, search queries, source snippets, memory content, opaque source
+or snapshot IDs, provider payloads, credentials, provider logs, stack traces, or
+raw provider errors. The same safe fields are available in the worker's
+structured phase log for each attempt.
 
 The browser stores the latest activity item for each code/topic key, a
 deduplicated ordered transition history, and the last SSE sequence in session
@@ -1867,10 +1914,11 @@ the same retry transition. `run_started` creates an empty assistant progress
 card. The card shows a compact stage rail and an accessible live status while
 work runs. An explicit diagnostics disclosure opts into the transition
 history and safe counts, attempts, durations, source-read/cited summary,
-context fit or compaction, memory-write outcome, retry, finalization, and SSE
-cursor details. These details never include prompts, queries, source text or
-ranges, provider payloads, Smithers state, or restricted content. The disclosure
-is closed by default and remains replayable without duplicating transitions.
+context fit or compaction, memory-write outcome, retry, finalization, SSE
+cursor, run identity, timestamps, and failure category/message details. These
+details never include prompts, queries, source text or ranges, provider
+payloads, credentials, Smithers state, or restricted content. The disclosure is
+closed by default and remains replayable without duplicating transitions.
 `done` replaces the card with the saved assistant message. `error` keeps the
 safe failed activity card on the current route while the user message keeps its
 localized failure and resubmit controls. A new request or route change clears
@@ -2273,9 +2321,9 @@ plan-turn, every structured retrieval/memory/web path, assembly, exact gates,
 compaction plan/groups/fallback, direct/topic/synthesis calls, streaming,
 parallel memory extraction, finalization, and cleanup.
 
-Logs contain stable IDs, task IDs, topic IDs, models, durations, counts, token totals, statuses, and error codes.
+Logs contain stable run and task IDs, topic IDs, models, durations, counts, token totals, statuses, attempts, timestamps, and normalized error code/category/message fields for each failed attempt.
 
-Logs never contain raw user or assistant text, resolved questions, topic questions, selected turns, source text, memory content, search terms, web quotes, context-decision reasons, topic claims, or answer deltas.
+Logs never contain raw user or assistant text, resolved questions, topic questions, selected turns, source text, memory content, search terms, web quotes, context-decision reasons, topic claims, answer deltas, provider payloads, credentials, or stack traces.
 
 Durable restricted observations, not console logs, are the product debugging record.
 
@@ -2405,7 +2453,7 @@ Unknown citation keys remain text and create a defect observation.
 
 Pure tests cover:
 
-- hostile strict query-plan/review inputs, exact dates, negative-only scope checks, branch coverage, and exact query, atom, hit, and UTF-8 bounds
+- hostile strict query-plan/review inputs, exact dates, negative-only target checks, branch coverage, and exact query, atom, hit, and UTF-8 bounds
 - canonical identity conflicts, duplicate physical hits, branch-kind checks, RRF score/provenance proof, stable bytewise ties, and global fusion truncation
 - exact review-model projection and private-field absence
 - sequential candidate IDs, duplicate canonical identities, normalized surrogate-safe ranges, and exact preview reconstruction

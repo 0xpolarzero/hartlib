@@ -1017,10 +1017,10 @@ const seedSingleObservability = (
               queries: [
                 {
                   purpose: "fixture",
+                  targets: [{ kind: "documents", filters: {} }],
                   all: [{ text: "fixture", mode: "term" }],
                   anyOf: [],
                   not: [],
-                  filters: {},
                   order: "relevance",
                 },
               ],
@@ -1395,10 +1395,10 @@ const insertInternalRetrievalPlanAndReview = (
           queries: [
             {
               purpose: "fixture",
+              targets: [{ kind: "documents", filters: {} }],
               all: [{ text: "fixture", mode: "term" }],
               anyOf: [],
               not: [],
-              filters: {},
               order: "relevance",
             },
           ],
@@ -2746,10 +2746,10 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
               queries: [
                 {
                   purpose: "fixture",
+                  targets: [{ kind: "documents", filters: {} }],
                   all: [{ text: "fixture", mode: "term" }],
                   anyOf: [],
                   not: [],
-                  filters: {},
                   order: "relevance",
                 },
               ],

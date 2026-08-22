@@ -288,10 +288,13 @@ const structuredQueriesFor = (question: string, locale?: string) => {
   const purpose = question.trim().normalize("NFC").slice(0, 4_000);
   return structuredTermsFor(question, locale).map((term) => ({
     purpose: `${purpose} (${term})`.slice(0, 4_096),
+    targets: [
+      { kind: "documents" as const, filters: {} },
+      { kind: "chat_messages" as const, filters: {} },
+    ],
     all: [{ text: term, mode: "term" as const }],
     anyOf: [],
     not: [],
-    filters: {},
     order: "relevance" as const,
   }));
 };

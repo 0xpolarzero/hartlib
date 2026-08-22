@@ -20,20 +20,23 @@ const scope = {
 
 const query = {
   purpose: "Find storage evidence",
+  targets: [
+    {
+      kind: "documents" as const,
+      filters: {
+        sourceNames: ["Saved Source"],
+        languages: ["en-US"],
+        publishedAt: {
+          after: "2026-01-01T00:00:00.000Z",
+          before: "2026-02-01T00:00:00.000Z",
+        },
+      },
+    },
+    { kind: "chat_messages" as const, filters: { authors: ["user" as const] } },
+  ],
   all: [{ text: "storage", mode: "term" as const }],
   anyOf: [[{ text: "battery", mode: "phrase" as const }]],
   not: [{ text: "residential", mode: "term" as const }],
-  filters: {
-    documents: {
-      sourceNames: ["Saved Source"],
-      languages: ["en-US"],
-      publishedAt: {
-        after: "2026-01-01T00:00:00.000Z",
-        before: "2026-02-01T00:00:00.000Z",
-      },
-    },
-    chatMessages: { authors: ["user" as const] },
-  },
   order: "relevance" as const,
 };
 
@@ -65,21 +68,42 @@ const parameterValues = (
 
 describe("Phase B physical compilers", () => {
   it("uses the canonical physical branch order", () => {
-    expect(compilePhysicalQueryBranches(query, options).map((branch) => branch.branch)).toEqual(
-      PHYSICAL_QUERY_BRANCHES,
-    );
+    const branches = compilePhysicalQueryBranches(query, options);
+    expect(branches.map((branch) => branch.branch)).toEqual(PHYSICAL_QUERY_BRANCHES);
+    expect(branches.map((branch) => branch.status)).toEqual([
+      "applicable",
+      "applicable",
+      "applicable",
+    ]);
   });
 
-  it("marks scoped branches and unsupported publisher filters without SQL", () => {
-    const documentQuery = { ...query, scope: "documents" as const };
+  it("marks unlisted target branches and unsupported publisher filters without SQL", () => {
+    const documentQuery = {
+      ...query,
+      targets: [query.targets[0]!],
+    };
     expect(compileChatMessagesQuery(documentQuery, options)).toMatchObject({
       branch: "chat_messages",
       status: "not_applicable",
       reason: "scope_documents",
     });
+    const chatQuery = {
+      ...query,
+      targets: [query.targets[1]!],
+    };
+    expect(compilePublicDocumentsQuery(chatQuery, options)).toMatchObject({
+      branch: "public_documents",
+      status: "not_applicable",
+      reason: "scope_chat_messages",
+    });
     const countryQuery = {
       ...query,
-      filters: { ...query.filters, documents: { countries: ["FR"] } },
+      targets: [
+        {
+          kind: "documents" as const,
+          filters: { countries: ["FR"] },
+        },
+      ],
     };
     expect(compilePublisherDocumentsQuery(countryQuery, options)).toMatchObject({
       branch: "publisher_documents",
@@ -134,10 +158,10 @@ describe("Phase B physical compilers", () => {
     const before = "2026-08-16T14:12:48.063Z";
     const bounded = {
       ...query,
-      filters: {
-        documents: { publishedAt: { after, before } },
-        chatMessages: { sentAt: { after, before } },
-      },
+      targets: [
+        { kind: "documents" as const, filters: { publishedAt: { after, before } } },
+        { kind: "chat_messages" as const, filters: { sentAt: { after, before } } },
+      ],
       order: "newest" as const,
     };
     const compiled = [

@@ -36,10 +36,10 @@ import {
 describe("Phase B query review", () => {
   const query = {
     purpose: "Find evidence",
+    targets: [{ kind: "documents" as const, filters: { languages: ["en"] } }],
     all: [{ text: "storage", mode: "term" as const }],
     anyOf: [],
     not: [],
-    filters: { documents: { languages: ["en"] } },
     order: "relevance" as const,
   };
   const plan = { action: "search" as const, queries: [query] };
@@ -366,10 +366,10 @@ describe("structured retrieval query plans", () => {
       queries: [
         {
           purpose: "find older storage",
+          targets: [{ kind: "chat_messages" as const, filters: {} }],
           all: [{ text: "old storage pilot", mode: "term" }],
           anyOf: [],
           not: [],
-          filters: { chatMessages: {} },
           order: "relevance",
         },
       ],
@@ -464,10 +464,10 @@ describe("structured retrieval search contract", () => {
     queries: [
       {
         purpose: "answer the question",
+        targets: [{ kind: "documents" as const, filters: {} }],
         all: [{ text: "solar", mode: "term" as const }],
         anyOf: [],
         not: [],
-        filters: {},
         order: "relevance" as const,
       },
     ],

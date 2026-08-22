@@ -6,7 +6,6 @@ import {
   type InternalQuery,
   type NormalizedInternalQuery,
   type QueryBranch,
-  type QueryScope,
 } from "./query-spec";
 
 export class InvalidQuerySpecError extends Error {}
@@ -209,7 +208,7 @@ const documentFilters = (
   },
   sourceIds: readonly string[],
 ): Statement.Fragment[] => {
-  const filters = query.filters.documents;
+  const filters = query.targets.find((target) => target.kind === "documents")?.filters;
   const fragments: Statement.Fragment[] = [];
   if (fields.sourceColumn !== undefined) {
     if (sourceIds.length === 0) fragments.push(literalFragment("1 = 0"));
@@ -249,7 +248,7 @@ const sourceIdsForQuery = (
   options: PhysicalCompilerOptions,
   kind: "public" | "publisher",
 ): readonly string[] => {
-  const names = query.filters.documents?.sourceNames;
+  const names = query.targets.find((target) => target.kind === "documents")?.filters.sourceNames;
   const resolved =
     names === undefined || names.length === 0
       ? options.acceptedSourceIds
@@ -262,7 +261,7 @@ const sourceIdsForQuery = (
 };
 
 const chatFilters = (query: NormalizedInternalQuery): Statement.Fragment[] => {
-  const filters = query.filters.chatMessages;
+  const filters = query.targets.find((target) => target.kind === "chat_messages")?.filters;
   if (filters === undefined) return [];
   const fragments: Statement.Fragment[] = [];
   if (filters.authors !== undefined && filters.authors.length > 0) {
@@ -293,14 +292,16 @@ const branchNotApplicable = (
   order: NormalizedInternalQuery["order"],
 ): CompiledPhysicalQuery => ({ branch, order, status: "not_applicable", reason, cap });
 
-const scopeStatus = (
-  scope: QueryScope | undefined,
+const targetStatus = (
+  targets: NormalizedInternalQuery["targets"],
   branch: QueryBranch,
 ): BranchReasonCode | undefined => {
-  if (scope === undefined) return undefined;
-  if (scope === "documents" && branch === "chat_messages") return "scope_documents";
-  if (scope === "chat_messages" && branch !== "chat_messages") return "scope_chat_messages";
-  return undefined;
+  const targetKind = branch === "chat_messages" ? "chat_messages" : "documents";
+  return targets.some((target) => target.kind === targetKind)
+    ? undefined
+    : targetKind === "documents"
+      ? "scope_chat_messages"
+      : "scope_documents";
 };
 
 export const compilePublicDocumentsQuery = (
@@ -309,7 +310,7 @@ export const compilePublicDocumentsQuery = (
 ): CompiledPhysicalQuery => {
   const query = normalizedQuery(input);
   const cap = positiveBranchCap(options.branchCap);
-  const reason = scopeStatus(query.scope, "public_documents");
+  const reason = targetStatus(query.targets, "public_documents");
   if (reason !== undefined)
     return branchNotApplicable("public_documents", cap, reason, query.order);
   const sourceIds = sourceIdsForQuery(query, options, "public");
@@ -354,10 +355,13 @@ export const compilePublisherDocumentsQuery = (
 ): CompiledPhysicalQuery => {
   const query = normalizedQuery(input);
   const cap = positiveBranchCap(options.branchCap);
-  const reason = scopeStatus(query.scope, "publisher_documents");
+  const reason = targetStatus(query.targets, "publisher_documents");
   if (reason !== undefined)
     return branchNotApplicable("publisher_documents", cap, reason, query.order);
-  if ((query.filters.documents?.countries?.length ?? 0) > 0) {
+  if (
+    (query.targets.find((target) => target.kind === "documents")?.filters.countries?.length ?? 0) >
+    0
+  ) {
     return branchNotApplicable(
       "publisher_documents",
       cap,
@@ -431,7 +435,7 @@ export const compileChatMessagesQuery = (
 ): CompiledPhysicalQuery => {
   const query = normalizedQuery(input);
   const cap = positiveBranchCap(options.branchCap);
-  const reason = scopeStatus(query.scope, "chat_messages");
+  const reason = targetStatus(query.targets, "chat_messages");
   if (reason !== undefined) return branchNotApplicable("chat_messages", cap, reason, query.order);
   const excluded = [
     ...(options.scope.excludedMessageIds ?? []),

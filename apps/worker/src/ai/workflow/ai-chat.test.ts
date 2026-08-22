@@ -267,10 +267,10 @@ const structuredRetrievalResult = {
     queries: [
       {
         purpose: "structured evidence",
+        targets: [{ kind: "chat_messages" as const, filters: {} }],
         all: [{ text: "evidence", mode: "term" as const }],
         anyOf: [],
         not: [],
-        filters: {},
         order: "relevance" as const,
       },
     ],

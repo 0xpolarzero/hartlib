@@ -76,6 +76,8 @@ import type { RetrievalPlanResult } from "../retrieval/retrieval";
 import {
   InternalQueryPlanProviderSchema,
   QueryReviewProviderSchema,
+  type BranchCoverage,
+  type InternalQueryTarget,
 } from "../retrieval/query-spec";
 import { type CanonicalAiConfig, CanonicalWorkflowOperations } from "../workflow/operations";
 import { compactionGroupTaskId } from "../context/compaction-runtime";
@@ -242,6 +244,56 @@ const structuredReviewSerializedFieldFor = (tamper: string | undefined, index: n
   tamper === "structured_review_preview_wrong_coordinate" && index === 0
     ? "messages[0].content"
     : `messages[1].content.results[${index}].preview`;
+
+const structuredRetrievalTargetsFor = (
+  markers: readonly ProviderVisibleSourceExposureMarker[],
+): readonly InternalQueryTarget[] => {
+  const hasDocumentTarget = markers.some((marker) => marker.sourceKind === "document");
+  const hasChatTarget = markers.some((marker) => marker.sourceKind === "chat_message");
+  return [
+    ...(hasDocumentTarget || !hasChatTarget ? [{ kind: "documents" as const, filters: {} }] : []),
+    ...(hasChatTarget ? [{ kind: "chat_messages" as const, filters: {} }] : []),
+  ];
+};
+
+const structuredRetrievalBranchCoverageFor = (
+  markers: readonly ProviderVisibleSourceExposureMarker[],
+  targets: readonly InternalQueryTarget[],
+): readonly (BranchCoverage & Record<string, unknown>)[] => {
+  const hasDocumentTarget = targets.some((target) => target.kind === "documents");
+  const hasChatTarget = targets.some((target) => target.kind === "chat_messages");
+  const documentHitCount = markers.filter((marker) => marker.sourceKind === "document").length;
+  const chatHitCount = markers.filter((marker) => marker.sourceKind === "chat_message").length;
+  return [
+    {
+      queryOrdinal: 1,
+      branch: "public_documents",
+      status: hasDocumentTarget ? "applicable" : "not_applicable",
+      ...(hasDocumentTarget ? {} : { reason: "scope_chat_messages" as const }),
+      hitCount: hasDocumentTarget ? documentHitCount : 0,
+      truncated: false,
+      cap: 25,
+    },
+    {
+      queryOrdinal: 1,
+      branch: "publisher_documents",
+      status: hasDocumentTarget ? "applicable" : "not_applicable",
+      ...(hasDocumentTarget ? {} : { reason: "scope_chat_messages" as const }),
+      hitCount: hasDocumentTarget ? documentHitCount : 0,
+      truncated: false,
+      cap: 25,
+    },
+    {
+      queryOrdinal: 1,
+      branch: "chat_messages",
+      status: hasChatTarget ? "applicable" : "not_applicable",
+      ...(hasChatTarget ? {} : { reason: "scope_documents" as const }),
+      hitCount: hasChatTarget ? chatHitCount : 0,
+      truncated: false,
+      cap: 25,
+    },
+  ];
+};
 
 const databaseUrlFor = (name: string): string => {
   if (sourceDatabaseUrl === undefined) throw new Error("database test URL is missing");
@@ -436,7 +488,7 @@ class OlderChatEvaluationAgent extends CanonicalAgentClient {
         queries: [
           {
             purpose: "recover the older storage-pilot result",
-            scope: "chat_messages",
+            targets: [{ kind: "chat_messages" as const, filters: {} }],
             all: [
               { text: "storage", mode: "term" },
               { text: "evening", mode: "term" },
@@ -444,7 +496,6 @@ class OlderChatEvaluationAgent extends CanonicalAgentClient {
             ],
             anyOf: [],
             not: [],
-            filters: {},
             order: "relevance",
           },
         ],
@@ -774,14 +825,13 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
         queries: [
           {
             purpose: "answer every regional curtailment result",
-            scope: "documents" as const,
+            targets: [{ kind: "documents" as const, filters: {} }],
             all: [
               { text: "binding", mode: "term" as const },
               { text: "conclusion", mode: "term" as const },
             ],
             anyOf: [],
             not: [],
-            filters: {},
             order: "relevance" as const,
           },
         ],
@@ -2481,13 +2531,10 @@ const completeDurableCaptureSession = async (
       const requestMarkers = sourceMarkersForRequest(taskId, providerRequestIndex, agentRole);
       return {
         purpose: fixture.currentMessage,
-        scope: requestMarkers.some((marker) => marker.sourceKind === "chat_message")
-          ? ("chat_messages" as const)
-          : ("documents" as const),
+        targets: structuredRetrievalTargetsFor(requestMarkers),
         all: [{ text: "canonical", mode: "term" as const }],
         anyOf: [],
         not: [],
-        filters: {},
         order: "relevance" as const,
       };
     };
@@ -2514,42 +2561,7 @@ const completeDurableCaptureSession = async (
         ? []
         : structuredReviewProofMarkersFor(requestMarkers, structuredReviewTamper);
       const query = structuredRetrievalQueryFor(taskId, providerRequestIndex, agentRole);
-      const chatScope = query.scope === "chat_messages";
-      const documentHitCount = requestMarkers.filter(
-        (marker) => marker.sourceKind === "document",
-      ).length;
-      const chatHitCount = requestMarkers.filter(
-        (marker) => marker.sourceKind === "chat_message",
-      ).length;
-      const branchCoverage = [
-        {
-          queryOrdinal: 1,
-          branch: "public_documents" as const,
-          status: chatScope ? ("not_applicable" as const) : ("applicable" as const),
-          ...(chatScope ? { reason: "scope_chat_messages" as const } : {}),
-          hitCount: chatScope ? 0 : documentHitCount,
-          truncated: false,
-          cap: 25,
-        },
-        {
-          queryOrdinal: 1,
-          branch: "publisher_documents" as const,
-          status: chatScope ? ("not_applicable" as const) : ("applicable" as const),
-          ...(chatScope ? { reason: "scope_chat_messages" as const } : {}),
-          hitCount: chatScope ? 0 : documentHitCount,
-          truncated: false,
-          cap: 25,
-        },
-        {
-          queryOrdinal: 1,
-          branch: "chat_messages" as const,
-          status: chatScope ? ("applicable" as const) : ("not_applicable" as const),
-          ...(chatScope ? {} : { reason: "scope_documents" as const }),
-          hitCount: chatScope ? chatHitCount : 0,
-          truncated: false,
-          cap: 25,
-        },
-      ];
+      const branchCoverage = structuredRetrievalBranchCoverageFor(requestMarkers, query.targets);
       const reviewResults = requestMarkers.map((marker, index) => {
         const details = markerDetailsFor(marker);
         const preview = details?.text.slice(0, 300) ?? "";
@@ -6008,6 +6020,59 @@ const assertFocusedTurboRuntimeEvidence = (
   expect(expectedDocument.sourceId).toBe(expectedDocument.source.sourceId);
   expect(expectedDocument.goldenSourceId).toMatch(/^doc:[^:\s]+$/u);
 };
+
+describe("structured retrieval marker projections", () => {
+  it("keeps both target stores and branch coverage for mixed markers", () => {
+    const markers: readonly ProviderVisibleSourceExposureMarker[] = [
+      {
+        sourceKind: "document",
+        logicalSourceIdentity: "public:doc-1",
+        contentItemIdentity: "public:doc-1:version-1:preview-1",
+        exposureStage: "internal_search_preview",
+        visibleTokenCount: 3,
+      },
+      {
+        sourceKind: "chat_message",
+        logicalSourceIdentity: "chat:message-1",
+        contentItemIdentity: "message-1",
+        exposureStage: "internal_search_preview",
+        visibleTokenCount: 4,
+      },
+    ];
+    const targets = structuredRetrievalTargetsFor(markers);
+    expect(targets).toEqual([
+      { kind: "documents", filters: {} },
+      { kind: "chat_messages", filters: {} },
+    ]);
+    expect(structuredRetrievalBranchCoverageFor(markers, targets)).toEqual([
+      {
+        queryOrdinal: 1,
+        branch: "public_documents",
+        status: "applicable",
+        hitCount: 1,
+        truncated: false,
+        cap: 25,
+      },
+      {
+        queryOrdinal: 1,
+        branch: "publisher_documents",
+        status: "applicable",
+        hitCount: 1,
+        truncated: false,
+        cap: 25,
+      },
+      {
+        queryOrdinal: 1,
+        branch: "chat_messages",
+        status: "applicable",
+        hitCount: 1,
+        truncated: false,
+        cap: 25,
+      },
+    ]);
+  });
+});
+
 describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation pipeline", () => {
   let aiChatStorage: SmithersStorage<typeof aiChatSchemas> | undefined;
   it("builds active current structured-review tamper outputs", () => {

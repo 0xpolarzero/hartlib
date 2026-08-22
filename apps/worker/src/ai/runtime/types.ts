@@ -3,6 +3,8 @@ import type { AiRunErrorCode } from "./errors";
 import type { LiveProviderRequest } from "./provider-request";
 import type { EffectiveWebPolicy as SharedEffectiveWebPolicy } from "@hartlib/shared";
 
+export type { InternalQuery } from "../retrieval/query-spec";
+
 export type Locale = "fr-FR" | "en-US";
 export type Market = "FR" | "US";
 export type MemoryKind = "profile" | "preference" | "instruction" | "fact" | "episode";
@@ -42,29 +44,6 @@ export type PlanTurnResult =
         readonly question: string;
         readonly relevantTurnIds: readonly string[];
       }>;
-    };
-
-export type InternalQuery =
-  | {
-      readonly target: "documents";
-      readonly terms?: string | undefined;
-      readonly purpose: string;
-      /** Opaque, one-use server handoff minted by lookup_named_source. */
-      readonly lookupRef?: string | undefined;
-      readonly countries?: readonly string[] | undefined;
-      readonly languages?: readonly string[] | undefined;
-      readonly documentTypes?: readonly string[] | undefined;
-      readonly publishedAfter?: string | undefined;
-      readonly publishedBefore?: string | undefined;
-      readonly orderBy?: "relevance" | "recency" | undefined;
-      readonly limit?: number | undefined;
-    }
-  | {
-      readonly target: "chat_messages";
-      readonly terms: string;
-      readonly purpose: string;
-      readonly beforeMessageId?: string | undefined;
-      readonly limit?: number | undefined;
     };
 
 export type DocumentSource =

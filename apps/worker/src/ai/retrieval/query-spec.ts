@@ -2,7 +2,6 @@ import { z } from "zod";
 
 /* Phase B structured retrieval contracts. */
 
-export type QueryScope = "documents" | "chat_messages";
 export type QueryAtomMode = "term" | "phrase";
 export type QueryOrder = "relevance" | "newest" | "oldest";
 export type QueryBranch = "public_documents" | "publisher_documents" | "chat_messages";
@@ -34,29 +33,33 @@ export interface QueryAtom {
   readonly mode: QueryAtomMode;
 }
 
+export interface DocumentFilters {
+  readonly sourceNames?: readonly string[] | undefined;
+  readonly countries?: readonly string[] | undefined;
+  readonly languages?: readonly string[] | undefined;
+  readonly documentTypes?: readonly string[] | undefined;
+  readonly publishedAt?:
+    | { readonly after?: string | undefined; readonly before?: string | undefined }
+    | undefined;
+}
+
+export interface ChatMessageFilters {
+  readonly authors?: readonly ("user" | "assistant")[] | undefined;
+  readonly sentAt?:
+    | { readonly after?: string | undefined; readonly before?: string | undefined }
+    | undefined;
+}
+
+export type InternalQueryTarget =
+  | { readonly kind: "documents"; readonly filters: DocumentFilters }
+  | { readonly kind: "chat_messages"; readonly filters: ChatMessageFilters };
+
 export interface InternalQuery {
   readonly purpose: string;
-  readonly scope?: QueryScope | undefined;
+  readonly targets: readonly InternalQueryTarget[];
   readonly all: readonly QueryAtom[];
   readonly anyOf: readonly (readonly QueryAtom[])[];
   readonly not: readonly QueryAtom[];
-  readonly filters: {
-    readonly documents?:
-      | {
-          readonly sourceNames?: readonly string[] | undefined;
-          readonly countries?: readonly string[] | undefined;
-          readonly languages?: readonly string[] | undefined;
-          readonly documentTypes?: readonly string[] | undefined;
-          readonly publishedAt?: { readonly after?: string; readonly before?: string } | undefined;
-        }
-      | undefined;
-    readonly chatMessages?:
-      | {
-          readonly authors?: readonly ("user" | "assistant")[] | undefined;
-          readonly sentAt?: { readonly after?: string; readonly before?: string } | undefined;
-        }
-      | undefined;
-  };
   readonly order: QueryOrder;
 }
 
@@ -271,52 +274,72 @@ const authorsSchema = z
     }
   });
 
-const queryFiltersShape = <TList extends z.ZodType, TInterval extends z.ZodType>(
+const documentFiltersShape = <TList extends z.ZodType, TInterval extends z.ZodType>(
   list: TList,
   interval: TInterval,
 ) => ({
-  documents: z
-    .strictObject({
-      sourceNames: list.optional(),
-      countries: list.optional(),
-      languages: list.optional(),
-      documentTypes: list.optional(),
-      publishedAt: interval.optional(),
-    })
-    .optional(),
-  chatMessages: z
-    .strictObject({
-      authors: authorsSchema.optional(),
-      sentAt: interval.optional(),
-    })
-    .optional(),
+  sourceNames: list.optional(),
+  countries: list.optional(),
+  languages: list.optional(),
+  documentTypes: list.optional(),
+  publishedAt: interval.optional(),
 });
 
-const makeQueryFiltersSchema = <TList extends z.ZodType, TInterval extends z.ZodType>(
+const chatMessageFiltersShape = <TInterval extends z.ZodType>(interval: TInterval) => ({
+  authors: authorsSchema.optional(),
+  sentAt: interval.optional(),
+});
+
+const makeDocumentFiltersSchema = <TList extends z.ZodType, TInterval extends z.ZodType>(
   list: TList,
   interval: TInterval,
-) => z.strictObject(queryFiltersShape(list, interval));
+) => z.strictObject(documentFiltersShape(list, interval));
 
-const QueryFiltersSchema = makeQueryFiltersSchema(normalizedList, timestampInterval);
+const makeChatMessageFiltersSchema = <TInterval extends z.ZodType>(interval: TInterval) =>
+  z.strictObject(chatMessageFiltersShape(interval));
+
+const QueryDocumentFiltersSchema = makeDocumentFiltersSchema(normalizedList, timestampInterval);
+const QueryChatMessageFiltersSchema = makeChatMessageFiltersSchema(timestampInterval);
+
+const makeQueryTargetsSchema = <
+  TDocumentFilters extends z.ZodType,
+  TChatMessageFilters extends z.ZodType,
+>(
+  documentFilters: TDocumentFilters,
+  chatMessageFilters: TChatMessageFilters,
+) =>
+  z
+    .array(
+      z.discriminatedUnion("kind", [
+        z.strictObject({ kind: z.literal("documents"), filters: documentFilters }),
+        z.strictObject({ kind: z.literal("chat_messages"), filters: chatMessageFilters }),
+      ]),
+    )
+    .min(1)
+    .max(2)
+    .superRefine((targets, context) => {
+      if (new Set(targets.map((target) => target.kind)).size !== targets.length) {
+        context.addIssue({ code: "custom", message: "target kinds must be unique" });
+      }
+    });
 
 const makeQueryShape = <
   TPurpose extends z.ZodType,
   TAtom extends z.ZodType,
   TAnyOf extends z.ZodType,
-  TFilters extends z.ZodType,
+  TTargets extends z.ZodType,
 >(input: {
   readonly purpose: TPurpose;
   readonly atom: TAtom;
   readonly anyOf: TAnyOf;
-  readonly filters: TFilters;
+  readonly targets: TTargets;
 }) =>
   z.strictObject({
     purpose: input.purpose,
-    scope: z.enum(["documents", "chat_messages"]).optional(),
+    targets: input.targets,
     all: z.array(input.atom).max(MAX_QUERY_ARRAY_VALUE),
     anyOf: input.anyOf,
     not: z.array(input.atom).max(MAX_QUERY_ARRAY_VALUE),
-    filters: input.filters,
     order: z.enum(["relevance", "newest", "oldest"]),
   });
 
@@ -324,7 +347,7 @@ export const InternalQuerySchema = makeQueryShape({
   purpose: normalizedText(MAX_PURPOSE_BYTES),
   atom: QueryAtomSchema,
   anyOf: anyOfAtoms,
-  filters: QueryFiltersSchema,
+  targets: makeQueryTargetsSchema(QueryDocumentFiltersSchema, QueryChatMessageFiltersSchema),
 }).superRefine((query, context) => {
   const atoms = [...query.all, ...query.anyOf.flat(), ...query.not];
   if (atoms.length > MAX_TOTAL_ATOMS) {
@@ -338,27 +361,20 @@ export const InternalQuerySchema = makeQueryShape({
     });
   }
   if (query.all.length === 0 && query.anyOf.length === 0) {
-    const hasFilterValue = (value: object | undefined): boolean => {
-      if (value === undefined) return false;
-      return Object.values(value).some((entry) => {
+    const hasFilterValue = (value: object): boolean =>
+      Object.values(value).some((entry) => {
         if (Array.isArray(entry)) return entry.length > 0;
         if (typeof entry !== "object" || entry === null) return entry !== undefined;
         return Object.values(entry).some((bound) => bound !== undefined);
       });
-    };
-    const hasDocumentFilter = hasFilterValue(query.filters.documents);
-    const hasChatFilter = hasFilterValue(query.filters.chatMessages);
-    const hasIndexedFilter =
-      query.scope === "documents"
-        ? hasDocumentFilter
-        : query.scope === "chat_messages"
-          ? hasChatFilter
-          : hasDocumentFilter && hasChatFilter;
-    if (!hasIndexedFilter) {
-      context.addIssue({
-        code: "custom",
-        message: "negative-only query needs a positive indexed filter",
-      });
+    for (const [index, target] of query.targets.entries()) {
+      if (!hasFilterValue(target.filters)) {
+        context.addIssue({
+          code: "custom",
+          path: ["targets", index, "filters"],
+          message: "negative-only query needs a positive indexed filter for every target",
+        });
+      }
     }
   }
 });
@@ -367,34 +383,28 @@ export const InternalQuerySchema = makeQueryShape({
 const providerTextList = z.array(providerText(MAX_ATOM_BYTES)).max(MAX_QUERY_ARRAY_VALUE);
 const providerOptionalTextList = providerTextList.nullable().optional();
 const providerOptionalTimestampInterval = providerTimestampInterval.nullable().optional();
-const ProviderQueryFiltersSchema = z
-  .strictObject({
-    documents: z
-      .strictObject({
-        sourceNames: providerOptionalTextList,
-        countries: providerOptionalTextList,
-        languages: providerOptionalTextList,
-        documentTypes: providerOptionalTextList,
-        publishedAt: providerOptionalTimestampInterval,
-      })
-      .nullable()
-      .optional(),
-    chatMessages: z
-      .strictObject({
-        authors: authorsSchema.nullable().optional(),
-        sentAt: providerOptionalTimestampInterval,
-      })
-      .nullable()
-      .optional(),
-  })
-  .nullable();
+const ProviderDocumentFiltersSchema = z.strictObject({
+  sourceNames: providerOptionalTextList,
+  countries: providerOptionalTextList,
+  languages: providerOptionalTextList,
+  documentTypes: providerOptionalTextList,
+  publishedAt: providerOptionalTimestampInterval,
+});
+const ProviderChatMessageFiltersSchema = z.strictObject({
+  authors: authorsSchema.nullable().optional(),
+  sentAt: providerOptionalTimestampInterval,
+});
+const ProviderQueryTargetsSchema = makeQueryTargetsSchema(
+  ProviderDocumentFiltersSchema,
+  ProviderChatMessageFiltersSchema,
+);
 
 /** Exact provider-facing shape; canonical parsing performs all normalization below. */
 const providerQueryFields = makeQueryShape({
   purpose: providerText(MAX_PURPOSE_BYTES),
   atom: ProviderQueryAtomSchema,
   anyOf: providerAnyOf,
-  filters: ProviderQueryFiltersSchema,
+  targets: ProviderQueryTargetsSchema,
 });
 
 type InternalQueryProviderValue = z.output<typeof providerQueryFields>;
@@ -423,14 +433,13 @@ const validateQueryBatch = (
       message: "query batch has too many atoms",
     });
   }
-  const queryKeys = queries.map(({ purpose, scope, all, anyOf, not, filters, order }) =>
+  const queryKeys = queries.map(({ purpose, targets, all, anyOf, not, order }) =>
     JSON.stringify({
       purpose,
-      scope: scope ?? null,
+      targets,
       all,
       anyOf,
       not,
-      filters,
       order,
     }),
   );
@@ -741,28 +750,8 @@ export type QueryReviewValue = z.infer<typeof QueryReviewSchema>;
  */
 export type NormalizedInternalQuery = QueryInternalNormalized;
 
-type QueryInternalNormalized = Omit<InternalQueryValue, "filters"> & {
-  readonly filters: {
-    readonly documents?:
-      | {
-          readonly sourceNames?: readonly string[];
-          readonly countries?: readonly string[];
-          readonly languages?: readonly string[];
-          readonly documentTypes?: readonly string[];
-          readonly publishedAt?:
-            | { readonly after?: string | undefined; readonly before?: string | undefined }
-            | undefined;
-        }
-      | undefined;
-    readonly chatMessages?:
-      | {
-          readonly authors?: readonly ("user" | "assistant")[];
-          readonly sentAt?:
-            | { readonly after?: string | undefined; readonly before?: string | undefined }
-            | undefined;
-        }
-      | undefined;
-  };
+type QueryInternalNormalized = Omit<InternalQueryValue, "targets"> & {
+  readonly targets: readonly InternalQueryTarget[];
 };
 const normalizeUniqueStrings = (values: readonly string[] | undefined): readonly string[] =>
   values === undefined
@@ -784,49 +773,45 @@ const normalizeTimestampInterval = (
 /** Parse and normalize one provider query without changing its meaning. */
 export const normalizeInternalQuery = (value: unknown): NormalizedInternalQuery => {
   const parsed = InternalQuerySchema.parse(value);
-  const documents = parsed.filters.documents;
-  const chatMessages = parsed.filters.chatMessages;
   return {
     purpose: parsed.purpose,
-    ...(parsed.scope === undefined ? {} : { scope: parsed.scope }),
+    targets: parsed.targets.map((target) =>
+      target.kind === "documents"
+        ? {
+            kind: target.kind,
+            filters: {
+              ...(target.filters.sourceNames === undefined
+                ? {}
+                : { sourceNames: normalizeUniqueStrings(target.filters.sourceNames) }),
+              ...(target.filters.countries === undefined
+                ? {}
+                : { countries: normalizeUniqueStrings(target.filters.countries) }),
+              ...(target.filters.languages === undefined
+                ? {}
+                : { languages: normalizeUniqueStrings(target.filters.languages) }),
+              ...(target.filters.documentTypes === undefined
+                ? {}
+                : { documentTypes: normalizeUniqueStrings(target.filters.documentTypes) }),
+              ...(target.filters.publishedAt === undefined
+                ? {}
+                : { publishedAt: normalizeTimestampInterval(target.filters.publishedAt) }),
+            },
+          }
+        : {
+            kind: target.kind,
+            filters: {
+              ...(target.filters.authors === undefined
+                ? {}
+                : { authors: [...new Set(target.filters.authors)] }),
+              ...(target.filters.sentAt === undefined
+                ? {}
+                : { sentAt: normalizeTimestampInterval(target.filters.sentAt) }),
+            },
+          },
+    ),
     all: parsed.all.map((atom) => ({ text: atom.text, mode: atom.mode })),
     anyOf: parsed.anyOf.map((group) => group.map((atom) => ({ text: atom.text, mode: atom.mode }))),
     not: parsed.not.map((atom) => ({ text: atom.text, mode: atom.mode })),
-    filters: {
-      ...(documents === undefined
-        ? {}
-        : {
-            documents: {
-              ...(documents.sourceNames === undefined
-                ? {}
-                : { sourceNames: normalizeUniqueStrings(documents.sourceNames) }),
-              ...(documents.countries === undefined
-                ? {}
-                : { countries: normalizeUniqueStrings(documents.countries) }),
-              ...(documents.languages === undefined
-                ? {}
-                : { languages: normalizeUniqueStrings(documents.languages) }),
-              ...(documents.documentTypes === undefined
-                ? {}
-                : { documentTypes: normalizeUniqueStrings(documents.documentTypes) }),
-              ...(documents.publishedAt === undefined
-                ? {}
-                : { publishedAt: normalizeTimestampInterval(documents.publishedAt) }),
-            },
-          }),
-      ...(chatMessages === undefined
-        ? {}
-        : {
-            chatMessages: {
-              ...(chatMessages.authors === undefined
-                ? {}
-                : { authors: [...new Set(chatMessages.authors)] }),
-              ...(chatMessages.sentAt === undefined
-                ? {}
-                : { sentAt: normalizeTimestampInterval(chatMessages.sentAt) }),
-            },
-          }),
-    },
     order: parsed.order,
   };
 };
@@ -858,7 +843,6 @@ export const normalizeInternalQueryProvider = (value: unknown): NormalizedIntern
   return normalizeInternalQuery(
     withoutNullObjectFields({
       ...parsed,
-      filters: parsed.filters ?? {},
       anyOf: normalizeProviderAnyOf(parsed.anyOf),
     }),
   );
