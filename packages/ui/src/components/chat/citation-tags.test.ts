@@ -1,7 +1,7 @@
 import type { PublicSourceRecord } from "@hartlib/shared";
 import { describe, expect, it } from "vitest";
 
-import { citationRecordsFromText, parseCitationTags } from "./citation-tags";
+import { citationRecordsFromText, groupCitationRuns, parseCitationTags } from "./citation-tags";
 
 describe("parseCitationTags", () => {
   it("parses a multi-id citation tag", () => {
@@ -137,5 +137,50 @@ describe("citationRecordsFromText", () => {
   it("holds an open citation tag or opener tail until it is complete", () => {
     expect(citationRecordsFromText("Answer [[cite:k_a", sources)).toEqual([]);
     expect(citationRecordsFromText("Answer [[ci", sources)).toEqual([]);
+  });
+});
+
+describe("groupCitationRuns", () => {
+  it("attaches a tag to the text run before it", () => {
+    expect(groupCitationRuns("Claim one. [[cite:k_a]] Claim two.", ["k_a"])).toEqual({
+      runs: [
+        { text: "Claim one. ", citationIds: ["k_a"] },
+        { text: " Claim two.", citationIds: [] },
+      ],
+      pendingTail: "",
+    });
+  });
+
+  it("merges adjacent tags into one run and keeps repeated ids in order", () => {
+    expect(groupCitationRuns("A [[cite:k_b]][[cite:k_a,k_b]] B.", ["k_a", "k_b"])).toEqual({
+      runs: [
+        { text: "A ", citationIds: ["k_b", "k_a", "k_b"] },
+        { text: " B.", citationIds: [] },
+      ],
+      pendingTail: "",
+    });
+  });
+
+  it("keeps an empty-text run for a leading tag so markers render without a span", () => {
+    expect(groupCitationRuns("[[cite:k_a]] After.", ["k_a"])).toEqual({
+      runs: [
+        { text: "", citationIds: ["k_a"] },
+        { text: " After.", citationIds: [] },
+      ],
+      pendingTail: "",
+    });
+  });
+
+  it("leaves unknown tags as literal text without creating a run", () => {
+    expect(groupCitationRuns("A [[cite:k_missing]] B.", [])).toEqual({
+      runs: [{ text: "A [[cite:k_missing]] B.", citationIds: [] }],
+      pendingTail: "",
+    });
+  });
+
+  it("holds back an incomplete streaming tail like the tag parser", () => {
+    const grouped = groupCitationRuns("Answer [[cite:k_a", ["k_a"]);
+    expect(grouped.runs).toEqual([{ text: "Answer ", citationIds: [] }]);
+    expect(grouped.pendingTail).toBe("[[cite:k_a");
   });
 });

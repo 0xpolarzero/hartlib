@@ -1,8 +1,13 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ChevronDown, ChevronRight, Globe2, Users } from "lucide-react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, SyntheticEvent } from "react";
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import Markdown from "react-markdown";
+import type {
+  CSSProperties,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+  SyntheticEvent,
+} from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { FormattedMessage, useIntl } from "@hartlib/i18n";
@@ -21,7 +26,12 @@ import type {
 } from "@hartlib/shared";
 
 import { cn } from "../../lib/utils";
-import { parseCitationTags, type CitationParseMode } from "./citation-tags";
+import {
+  groupCitationRuns,
+  parseCitationTags,
+  type CitationParseMode,
+  type CitationRun,
+} from "./citation-tags";
 import {
   publisherDocumentCitationTarget,
   type AuthenticatedDocumentOpener,
@@ -208,10 +218,6 @@ const externalSourceLinkProps = (source: PublicCitationRecord | PublicSourceReco
     : {};
 
 const citationMarkerUrlPrefix = "https://hartlib.invalid/inline-citation/";
-
-const citationMarkerHref = (citationIds: readonly string[]): string =>
-  `${citationMarkerUrlPrefix}${citationIds.join(",")}`;
-
 const citationIdsFromMarkerHref = (href: string | undefined): readonly string[] | null => {
   if (href === undefined || !href.startsWith(citationMarkerUrlPrefix)) return null;
   const citationIds = href.slice(citationMarkerUrlPrefix.length).split(",");
@@ -220,7 +226,8 @@ const citationIdsFromMarkerHref = (href: string | undefined): readonly string[] 
     : null;
 };
 
-const markdownFromAssistantContent = (
+/** Complex blocks render through Markdown, so tags become marker links. */
+const markdownWithCitationMarkers = (
   content: string,
   knownCitationIds: readonly string[],
   mode: CitationParseMode,
@@ -229,9 +236,203 @@ const markdownFromAssistantContent = (
     .segments.map((segment) =>
       segment.type === "text"
         ? segment.text
-        : `[citation](${citationMarkerHref(segment.citationIds)})`,
+        : `[citation](${citationMarkerUrlPrefix}${segment.citationIds.join(",")})`,
     )
     .join("");
+
+const answerGutterGridClass = "lg:grid lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-x-4";
+
+/** Split on blank lines while keeping fenced code blocks intact. */
+const splitMarkdownBlocks = (content: string): readonly string[] => {
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let insideFence = false;
+  for (const line of content.split("\n")) {
+    if (/^\s{0,3}(?:```|~~~)/u.test(line)) insideFence = !insideFence;
+    if (!insideFence && line.trim() === "" && current.length > 0) {
+      blocks.push(current.join("\n"));
+      current = [];
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length > 0) blocks.push(current.join("\n"));
+  return blocks;
+};
+
+/**
+ * Blocks whose Markdown structure must not be split at citation markers:
+ * headings, lists, quotes, fences, indented code, and anything table-like.
+ */
+const isComplexBlock = (block: string): boolean => {
+  const firstLineBreak = block.indexOf("\n");
+  const firstLine = firstLineBreak < 0 ? block : block.slice(0, firstLineBreak);
+  return (
+    /^\s{0,3}(?:#{1,6}\s|>|```|~~~|[-*+]\s|\d{1,9}[.)]\s)/u.test(firstLine) ||
+    /^(?:\s{4}|\t)/u.test(firstLine) ||
+    block.includes("|")
+  );
+};
+
+type AnswerBlock =
+  | { readonly kind: "markdown"; readonly content: string; readonly sourceKeys: readonly string[] }
+  | {
+      readonly kind: "runs";
+      readonly runs: readonly CitationRun[];
+      readonly sourceKeys: readonly string[];
+    };
+
+/**
+ * One entry per blank-line-separated block. `sourceKeys` lists citations
+ * first appearing in that block so margin cards align with the text that
+ * cites them; later repeats keep their inline markers only.
+ */
+const buildAnswerBlocks = (
+  content: string,
+  knownCitationIds: readonly string[],
+  mode: CitationParseMode,
+): readonly AnswerBlock[] => {
+  const claimed = new Set<string>();
+  const firstSeenKeys = (keys: readonly string[]): readonly string[] =>
+    keys.filter((key) => {
+      if (claimed.has(key)) return false;
+      claimed.add(key);
+      return true;
+    });
+
+  return splitMarkdownBlocks(content).map((block): AnswerBlock => {
+    if (isComplexBlock(block)) {
+      const sourceKeys = firstSeenKeys(
+        parseCitationTags(block, knownCitationIds, mode).segments.flatMap((segment) =>
+          segment.type === "citations" ? [...segment.citationIds] : [],
+        ),
+      );
+      return { kind: "markdown", content: block, sourceKeys };
+    }
+    const { runs } = groupCitationRuns(block, knownCitationIds, mode);
+    const sourceKeys = firstSeenKeys(runs.flatMap((run) => [...run.citationIds]));
+    return { kind: "runs", runs, sourceKeys };
+  });
+};
+
+type AssistantCitationContext = {
+  readonly citationsById: ReadonlyMap<string, PublicCitationRecord>;
+  readonly citationNumbersById: ReadonlyMap<string, number>;
+  readonly formatCitationLabel: (citation: PublicCitationRecord) => string;
+  readonly onCitationClick: (
+    source: PublicCitationRecord | PublicSourceRecord,
+    event: ReactMouseEvent<HTMLAnchorElement>,
+  ) => void;
+};
+
+const renderCitationMarkers = (
+  citationIds: readonly string[],
+  keyPrefix: string,
+  context: AssistantCitationContext,
+): ReactNode => (
+  <span className="whitespace-nowrap">
+    {citationIds.map((sourceKey, index) => {
+      const citation = context.citationsById.get(sourceKey);
+      const citationNumber = context.citationNumbersById.get(sourceKey);
+      if (citation === undefined || citationNumber === undefined) return null;
+      return (
+        <CitationMarker
+          key={`${keyPrefix}:${sourceKey}:${index}`}
+          citation={citation}
+          citationNumber={citationNumber}
+          ariaLabel={context.formatCitationLabel(citation)}
+          onClick={context.onCitationClick}
+        />
+      );
+    })}
+  </span>
+);
+
+const assistantMarkdownComponents = (
+  context: AssistantCitationContext,
+  inlineParagraphs: boolean,
+): Components => ({
+  p: ({ node: _node, className, children, ...props }) =>
+    inlineParagraphs ? (
+      <>{children}</>
+    ) : (
+      <p {...props} className={cn("m-0 [&+p]:mt-3", className)}>
+        {children}
+      </p>
+    ),
+  ul: ({ node: _node, className, ...props }) => (
+    <ul {...props} className={cn("my-0 list-disc pl-5", className)} />
+  ),
+  ol: ({ node: _node, className, ...props }) => (
+    <ol {...props} className={cn("my-0 list-decimal pl-5", className)} />
+  ),
+  blockquote: ({ node: _node, className, ...props }) => (
+    <blockquote
+      {...props}
+      className={cn("my-0 border-l-2 border-rule pl-3 text-muted", className)}
+    />
+  ),
+  table: ({ node: _node, className, ...props }) => (
+    <div className="my-0 overflow-x-auto">
+      <table {...props} className={cn("w-full border-collapse text-left text-[13px]", className)} />
+    </div>
+  ),
+  th: ({ node: _node, className, ...props }) => (
+    <th {...props} className={cn("border-b border-rule px-2 py-1 font-medium", className)} />
+  ),
+  td: ({ node: _node, className, ...props }) => (
+    <td {...props} className={cn("border-b border-rule/70 px-2 py-1 align-top", className)} />
+  ),
+  pre: ({ node: _node, className, ...props }) => (
+    <pre
+      {...props}
+      className={cn(
+        "my-0 overflow-x-auto rounded-sm border border-rule bg-canvas p-2 font-mono text-xs leading-5",
+        className,
+      )}
+    />
+  ),
+  code: ({ node: _node, className, ...props }) => (
+    <code
+      {...props}
+      className={cn("rounded-sm bg-canvas px-1 font-mono text-[0.9em]", className)}
+    />
+  ),
+  img: ({ alt }) => (alt ? <span>{alt}</span> : null),
+  a: ({ href, children, node: _node, className, ...props }) => {
+    const citationIds = citationIdsFromMarkerHref(href);
+    if (
+      citationIds !== null &&
+      citationIds.every(
+        (sourceKey) =>
+          context.citationsById.has(sourceKey) && context.citationNumbersById.has(sourceKey),
+      )
+    ) {
+      return renderCitationMarkers(citationIds, "marker", context);
+    }
+
+    const external = href !== undefined && /^https?:\/\//u.test(href);
+    return (
+      <a
+        href={href}
+        {...(external
+          ? {
+              target: "_blank",
+              rel: "noopener noreferrer",
+              referrerPolicy: "no-referrer" as const,
+            }
+          : {})}
+        {...props}
+        className={cn(
+          "break-all text-accent underline decoration-accent/30 underline-offset-2",
+          className,
+        )}
+      >
+        {children}
+      </a>
+    );
+  },
+});
 
 function AssistantMarkdown({
   content,
@@ -251,113 +452,167 @@ function AssistantMarkdown({
     event: ReactMouseEvent<HTMLAnchorElement>,
   ) => void;
 }) {
-  const markdown = useMemo(
-    () => markdownFromAssistantContent(content, [...citationsById.keys()], citationMode),
-    [citationMode, citationsById, content],
+  const knownCitationIds = useMemo(() => [...citationsById.keys()], [citationsById]);
+  const blocks = useMemo(
+    () => buildAnswerBlocks(content, knownCitationIds, citationMode),
+    [citationMode, content, knownCitationIds],
+  );
+  const [activeKeys, setActiveKeys] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const activateKeys = (keys: readonly string[]) =>
+    setActiveKeys((previous) => {
+      const next = new Set(previous);
+      for (const key of keys) next.add(key);
+      return next;
+    });
+  const deactivateKeys = (keys: readonly string[]) =>
+    setActiveKeys((previous) => {
+      const next = new Set(previous);
+      let changed = false;
+      for (const key of keys) {
+        if (next.delete(key)) changed = true;
+      }
+      return changed ? next : previous;
+    });
+
+  const citationContext = useMemo(
+    () => ({ citationsById, citationNumbersById, formatCitationLabel, onCitationClick }),
+    [citationNumbersById, citationsById, formatCitationLabel, onCitationClick],
+  );
+  const blockComponents = useMemo(
+    () => assistantMarkdownComponents(citationContext, false),
+    [citationContext],
+  );
+  const inlineComponents = useMemo(
+    () => assistantMarkdownComponents(citationContext, true),
+    [citationContext],
   );
 
   return (
-    <Markdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        p: ({ node: _node, className, ...props }) => (
-          <p {...props} className={cn("m-0 [&+p]:mt-3", className)} />
-        ),
-        ul: ({ node: _node, className, ...props }) => (
-          <ul {...props} className={cn("my-3 list-disc pl-5", className)} />
-        ),
-        ol: ({ node: _node, className, ...props }) => (
-          <ol {...props} className={cn("my-3 list-decimal pl-5", className)} />
-        ),
-        blockquote: ({ node: _node, className, ...props }) => (
-          <blockquote
-            {...props}
-            className={cn("my-3 border-l-2 border-rule pl-3 text-muted", className)}
-          />
-        ),
-        table: ({ node: _node, className, ...props }) => (
-          <div className="my-3 overflow-x-auto">
-            <table
-              {...props}
-              className={cn("w-full border-collapse text-left text-[13px]", className)}
-            />
-          </div>
-        ),
-        th: ({ node: _node, className, ...props }) => (
-          <th {...props} className={cn("border-b border-rule px-2 py-1 font-medium", className)} />
-        ),
-        td: ({ node: _node, className, ...props }) => (
-          <td {...props} className={cn("border-b border-rule/70 px-2 py-1 align-top", className)} />
-        ),
-        pre: ({ node: _node, className, ...props }) => (
-          <pre
-            {...props}
-            className={cn(
-              "my-3 overflow-x-auto rounded-sm border border-rule bg-canvas p-2 font-mono text-xs leading-5",
-              className,
-            )}
-          />
-        ),
-        code: ({ node: _node, className, ...props }) => (
-          <code
-            {...props}
-            className={cn("rounded-sm bg-canvas px-1 font-mono text-[0.9em]", className)}
-          />
-        ),
-        img: ({ alt }) => (alt ? <span>{alt}</span> : null),
-        a: ({ href, children, node: _node, className, ...props }) => {
-          const citationIds = citationIdsFromMarkerHref(href);
-          if (
-            citationIds !== null &&
-            citationIds.every(
-              (sourceKey) => citationsById.has(sourceKey) && citationNumbersById.has(sourceKey),
-            )
-          ) {
-            return (
-              <span className="whitespace-nowrap">
-                {citationIds.map((sourceKey, citationIndex) => {
+    <div className="space-y-3" data-testid="chat-answer-blocks">
+      {blocks.map((block, blockIndex) => {
+        const body =
+          block.kind === "markdown" ? (
+            <Markdown remarkPlugins={[remarkGfm]} components={blockComponents}>
+              {markdownWithCitationMarkers(block.content, knownCitationIds, citationMode)}
+            </Markdown>
+          ) : (
+            block.runs.map((run, runIndex) => {
+              const inline =
+                run.text === "" ? null : (
+                  <Markdown remarkPlugins={[remarkGfm]} components={inlineComponents}>
+                    {run.text}
+                  </Markdown>
+                );
+              if (run.citationIds.length === 0) {
+                return <Fragment key={runIndex}>{inline}</Fragment>;
+              }
+              return (
+                <span
+                  key={runIndex}
+                  data-cite={run.citationIds.join(" ")}
+                  data-testid="cited-span"
+                  className={cn(
+                    "box-decoration-clone rounded-[2px] transition-colors",
+                    run.citationIds.some((key) => activeKeys.has(key))
+                      ? "bg-accent/20 ring-1 ring-accent/30"
+                      : "bg-accent/[0.08]",
+                  )}
+                  onMouseEnter={() => activateKeys(run.citationIds)}
+                  onMouseLeave={() => deactivateKeys(run.citationIds)}
+                >
+                  {inline}
+                  {renderCitationMarkers(
+                    run.citationIds,
+                    `span:${blockIndex}:${runIndex}`,
+                    citationContext,
+                  )}
+                </span>
+              );
+            })
+          );
+        if (block.sourceKeys.length === 0) return <div key={blockIndex}>{body}</div>;
+        return (
+          <div key={blockIndex} className={answerGutterGridClass} data-testid="chat-answer-block">
+            <aside className="hidden lg:block">
+              <div className="space-y-2">
+                {block.sourceKeys.flatMap((sourceKey) => {
                   const citation = citationsById.get(sourceKey);
                   const citationNumber = citationNumbersById.get(sourceKey);
-                  if (citation === undefined || citationNumber === undefined) return null;
-                  return (
-                    <CitationMarker
-                      key={`${sourceKey}:${citationIndex}`}
+                  if (citation === undefined || citationNumber === undefined) return [];
+                  return [
+                    <MarginCitationCard
+                      key={sourceKey}
                       citation={citation}
                       citationNumber={citationNumber}
+                      active={activeKeys.has(sourceKey)}
+                      onActivate={() => activateKeys([sourceKey])}
+                      onDeactivate={() => deactivateKeys([sourceKey])}
                       ariaLabel={formatCitationLabel(citation)}
-                      onClick={onCitationClick}
-                    />
-                  );
+                      onClick={(event) => onCitationClick(citation, event)}
+                    />,
+                  ];
                 })}
-              </span>
-            );
-          }
+              </div>
+            </aside>
+            <div className="min-w-0">{body}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
-          const external = href !== undefined && /^https?:\/\//u.test(href);
-          return (
-            <a
-              href={href}
-              {...(external
-                ? {
-                    target: "_blank",
-                    rel: "noopener noreferrer",
-                    referrerPolicy: "no-referrer" as const,
-                  }
-                : {})}
-              {...props}
-              className={cn(
-                "break-all text-accent underline decoration-accent/30 underline-offset-2",
-                className,
-              )}
-            >
-              {children}
-            </a>
-          );
-        },
-      }}
+function MarginCitationCard({
+  citation,
+  citationNumber,
+  active,
+  onActivate,
+  onDeactivate,
+  ariaLabel,
+  onClick,
+}: {
+  readonly citation: PublicCitationRecord;
+  readonly citationNumber: number;
+  readonly active: boolean;
+  readonly onActivate: () => void;
+  readonly onDeactivate: () => void;
+  readonly ariaLabel: string;
+  readonly onClick: (event: ReactMouseEvent<HTMLAnchorElement>) => void;
+}) {
+  const quote = citationQuote(citation);
+  return (
+    <div
+      data-citation-card={citation.sourceKey}
+      data-testid="margin-citation-card"
+      className={cn(
+        "border-l-2 py-0.5 pl-2 text-xs leading-5 transition-colors",
+        active ? "border-accent bg-accent/[0.06]" : "border-rule",
+      )}
+      onMouseEnter={onActivate}
+      onMouseLeave={onDeactivate}
     >
-      {markdown}
-    </Markdown>
+      <a
+        href={sourceHref(citation)}
+        {...externalSourceLinkProps(citation)}
+        onClick={(event) => onClick(event)}
+        onFocus={onActivate}
+        onBlur={onDeactivate}
+        aria-label={ariaLabel}
+        title={sourceLabel(citation)}
+      >
+        <span className="mr-1 font-mono text-[10px] font-medium text-accent">
+          [{citationNumber}]
+        </span>
+        <span className="text-ink underline decoration-rule underline-offset-2">
+          {sourceLabel(citation)}
+        </span>
+      </a>
+      {quote === null ? null : (
+        <q className="mt-1 line-clamp-6 block break-words font-serif text-[13px] leading-5 text-muted">
+          {quote.text}
+        </q>
+      )}
+    </div>
   );
 }
 
@@ -944,7 +1199,7 @@ export function ChatBubble({
         className={cn(
           "hartlib-chat-bubble text-ink",
           isAssistant
-            ? "w-full max-w-[72ch] px-0 py-1"
+            ? "w-full max-w-[calc(72ch+14rem)] px-0 py-1"
             : "max-w-[86%] rounded-sm border border-accent/25 bg-accent/10 px-3 py-2",
         )}
         role="group"

@@ -287,7 +287,7 @@ describe("assistant Markdown and citations", () => {
     expect(markup).not.toContain("<img");
     expect(markup).not.toContain("tracker.example");
     expect(markup).toMatch(
-      /class="[^"]*w-full max-w-\[72ch\] px-0 py-1[^"]*"[^>]*data-testid="chat-assistant-answer-column"/u,
+      /class="[^"]*w-full max-w-\[calc\(72ch\+14rem\)\] px-0 py-1[^"]*"[^>]*data-testid="chat-assistant-answer-column"/u,
     );
     expect(markup).not.toMatch(
       /class="[^"]*(?:border|bg-paper|rounded)[^"]*"[^>]*data-testid="chat-assistant-answer-column"/u,
@@ -442,5 +442,105 @@ describe("assistant Markdown and citations", () => {
     expect(markup).toContain("The model provider did not return a response.");
     expect(markup).toContain("data-testid=" + '"chat-progress-failure-details"');
     expect(markup).not.toContain("provider body");
+  });
+});
+
+describe("assistant margin notes and cited spans", () => {
+  const webCitation = (sourceKey: string, url: string, label: string) => ({
+    sourceKey,
+    label,
+    kind: "web" as const,
+    title: label,
+    domain: "example.com",
+    url,
+    capturedAt: "2026-08-16T12:00:00.000Z",
+    quote: { text: `Quote for ${label}.` } as const,
+    ranges: [] as const,
+  });
+
+  const renderAssistantMessage = (message: ChatTranscriptMessage): string =>
+    renderToStaticMarkup(
+      createElement(I18nProvider, {
+        locale: "en-US",
+        market: "US",
+        children: createElement(ChatBubble, {
+          message,
+          authorLabels: { assistant: "Assistant", client: "Client" },
+        }),
+      }),
+    );
+
+  it("highlights each cited claim and places its quote card beside the citing block", () => {
+    const markup = renderAssistantMessage({
+      id: "assistant-margins",
+      author: "assistant",
+      content:
+        "First claim [[cite:k_a]].\n\nSecond paragraph cites [[cite:k_b]] and repeats [[cite:k_a]].",
+      citations: [
+        webCitation("k_a", "https://example.com/a", "Source A"),
+        webCitation("k_b", "https://example.com/b", "Source B"),
+      ],
+      sourcesRead: [],
+    });
+
+    expect(markup).toMatch(/<span data-cite="k_a" data-testid="cited-span"/u);
+    expect(markup).toMatch(/<span data-cite="k_b" data-testid="cited-span"/u);
+    expect(markup).toMatch(/data-testid="citation-marker"[^>]*>\[1\]<\/a>/u);
+    expect(markup).toMatch(/data-testid="citation-marker"[^>]*>\[2\]<\/a>/u);
+    expect(markup.match(/data-testid="margin-citation-card"/gu)).toHaveLength(2);
+    expect(markup).toContain("Quote for Source A.");
+    expect(markup.indexOf('data-citation-card="k_a"')).toBeLessThan(
+      markup.indexOf('data-citation-card="k_b"'),
+    );
+    expect(markup.indexOf('data-testid="chat-answer-block"')).toBeLessThan(
+      markup.indexOf('data-cite="k_b"'),
+    );
+  });
+
+  it("keeps complex blocks unsplit while still attaching their citation cards", () => {
+    const markup = renderAssistantMessage({
+      id: "assistant-complex",
+      author: "assistant",
+      content: "| Col |\n| --- |\n| Cell [[cite:k_a]] |\n\n- item cites [[cite:k_b]]",
+      citations: [
+        webCitation("k_a", "https://example.com/a", "Source A"),
+        webCitation("k_b", "https://example.com/b", "Source B"),
+      ],
+      sourcesRead: [],
+    });
+
+    expect(markup).toContain("<table");
+    expect(markup).not.toContain('data-testid="cited-span"');
+    expect(markup).not.toContain("[[cite:");
+    expect(markup).toMatch(/data-testid="citation-marker"[^>]*>\[1\]<\/a>/u);
+    expect(markup).toMatch(/data-testid="citation-marker"[^>]*>\[2\]<\/a>/u);
+    expect(markup.match(/data-testid="margin-citation-card"/gu)).toHaveLength(2);
+  });
+
+  it("renders streaming cards without quotes and without a fabricated excerpt", () => {
+    const markup = renderAssistantMessage({
+      id: "assistant-streaming-cited",
+      author: "assistant",
+      content: "Growing answer [[cite:k_a]].",
+      citations: [
+        {
+          sourceKey: "k_a",
+          kind: "web",
+          title: "Source A",
+          label: "Source A",
+          domain: "example.com",
+          url: "https://example.com/a",
+          capturedAt: "2026-08-16T12:00:00.000Z",
+          quote: null,
+          ranges: [],
+        },
+      ],
+      sourcesRead: [],
+      streaming: true,
+    });
+
+    expect(markup).toContain('data-citation-card="k_a"');
+    expect(markup).not.toContain("<q");
+    expect(markup).not.toContain("Quote for");
   });
 });

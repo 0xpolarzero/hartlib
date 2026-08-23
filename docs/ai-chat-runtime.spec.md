@@ -2187,6 +2187,9 @@ Each assistant message has:
 - inline citations resolved from `citations`
 - a separate sources-read affordance from `sourcesRead`
 - a supporting-quote row inside the opened sources disclosure for each cited source; the row renders only the server-provided quote and otherwise shows the one generic unavailable message
+- on viewports at the `lg` breakpoint and wider, one margin card per cited source, placed in a left gutter beside the block that first cites it; the card shows the citation number, the source label, and the server-provided supporting quote clamped to six lines, and repeats of an already-carded source keep their inline marker only
+- on those viewports, the claim a citation supports is highlighted in place: the text between the previous citation marker (or block start) and the marker is wrapped in a tinted span carrying the cited keys; hovering or focusing either the span or its margin card emphasizes both; paragraphs only — headings, lists, quotes, tables, fences, and indented code keep marker chips without span wrapping
+  - the span is derived in the browser from the stored `[[cite:...]]` tags; the stored message text and the citation contract are unchanged, and streaming answers derive spans from the same tags as they complete
 - an owner-only, closed-by-default `Debug details` disclosure for a settled answer when its `runId` is present; it lazy-loads the safe public projection and shows an honest unavailable state after retention expiry
 - an honest empty state when no source entered the final answer/topic contexts
 

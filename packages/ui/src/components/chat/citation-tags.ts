@@ -12,6 +12,17 @@ export type CitationMarkerSegment = {
 
 export type CitationTagSegment = CitationTextSegment | CitationMarkerSegment;
 
+export type CitationRun = {
+  readonly text: string;
+  /** Citation keys terminating this run; empty for uncited text. */
+  readonly citationIds: readonly string[];
+};
+
+export type GroupedCitationRuns = {
+  readonly runs: readonly CitationRun[];
+  readonly pendingTail: string;
+};
+
 export type ParsedCitationTags = {
   readonly segments: readonly CitationTagSegment[];
   readonly pendingTail: string;
@@ -87,6 +98,50 @@ export function parseCitationTags(
 
   appendText(segments, visible.slice(cursor));
   return { segments, pendingTail };
+}
+
+/**
+ * Derive the answer span each citation supports: a `[[cite:...]]` tag
+ * terminates the claim before it, so a run is the text since the previous
+ * tag (or block start) plus the keys of the tag that closes it. Adjacent
+ * tags share one run; a tag at the start of the text yields an empty-text
+ * run so markers still render without inventing a highlighted span.
+ */
+export function groupCitationRuns(
+  text: string,
+  knownCitationIds: readonly string[],
+  mode: CitationParseMode = "streaming",
+): GroupedCitationRuns {
+  const { segments, pendingTail } = parseCitationTags(text, knownCitationIds, mode);
+  const runs: CitationRun[] = [];
+  let current: { readonly text: string; readonly citationIds: string[] } | null = null;
+
+  const closeCurrent = () => {
+    if (current === null) return;
+    if (current.text.length > 0 || current.citationIds.length > 0) runs.push(current);
+    current = null;
+  };
+
+  for (const segment of segments) {
+    if (segment.type === "citations") {
+      if (current !== null) {
+        current = {
+          text: current.text,
+          citationIds: [...current.citationIds, ...segment.citationIds],
+        };
+      } else {
+        runs.push({ text: "", citationIds: [...segment.citationIds] });
+      }
+      continue;
+    }
+    if (current !== null && current.citationIds.length > 0) closeCurrent();
+    current = {
+      text: current === null ? segment.text : current.text + segment.text,
+      citationIds: [],
+    };
+  }
+  closeCurrent();
+  return { runs, pendingTail };
 }
 
 /**
