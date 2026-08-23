@@ -1500,17 +1500,19 @@ export class CanonicalWorkflowOperations {
     const selectedConversation = recentConversation.filter((entry) =>
       selectedTurnIdSet.has(entry.turnId),
     );
+    const planUser = JSON.stringify({
+      question,
+      selectedConversation: providerConversationEntries(selectedConversation),
+      locale: load.locale,
+      market: load.market,
+      currentTimestamp: load.currentTimestamp,
+    });
+    let planRepairFired = false;
     const plan = (await this.agents.structured({
       requestClass: "fast",
       model: load.acceptanceScope.fastModelId,
       system: InternalQueryPlanPrompt,
-      user: JSON.stringify({
-        question,
-        selectedConversation: providerConversationEntries(selectedConversation),
-        locale: load.locale,
-        market: load.market,
-        currentTimestamp: load.currentTimestamp,
-      }),
+      user: planUser,
       outputToolName: "emit_internal_query_plan",
       outputToolDescription: "Emit one complete structured internal query plan.",
       outputSchema: z.toJSONSchema(InternalQueryPlanProviderSchema),
@@ -1533,13 +1535,25 @@ export class CanonicalWorkflowOperations {
           { includeCurrentUser: false, request },
         );
       },
+      repair: () => {
+        // One code-owned corrective re-ask per attempt. The follow-up
+        // request occupies the next providerRequestIndex and carries its own
+        // measurement, usage, and exposure proof like any other call.
+        planRepairFired = true;
+        return {
+          user: JSON.stringify({
+            ...JSON.parse(planUser),
+            priorValidationFeedback: "schema_invalid",
+          }),
+        };
+      },
     })) as InternalQueryPlanValue;
 
     const excludedMessageIds = selectedConversation.flatMap((entry) => [
       entry.userMessageId,
       ...("assistantMessageId" in entry ? [entry.assistantMessageId] : []),
     ]);
-    let reviewProviderRequestIndex = 1;
+    let nextReviewProviderRequestIndex = planRepairFired ? 2 : 1;
     let previewSlot: "initial" | "replacement" = "initial";
     let pendingPreview:
       | { readonly exposure: QueryReviewExposure; readonly slot: "initial" | "replacement" }
@@ -1563,12 +1577,12 @@ export class CanonicalWorkflowOperations {
           ),
         );
         const previewForRequest = pendingPreview;
-        pendingPreview = undefined;
+        const reviewUser = JSON.stringify(input);
         const review = await this.agents.structured({
           requestClass: "fast",
           model: load.acceptanceScope.fastModelId,
           system: InternalQueryReviewPrompt,
-          user: JSON.stringify(input),
+          user: reviewUser,
           outputToolName: "emit_internal_query_review",
           outputToolDescription: "Review the complete structured retrieval result.",
           outputSchema: z.toJSONSchema(QueryReviewProviderSchema),
@@ -1577,7 +1591,7 @@ export class CanonicalWorkflowOperations {
           reasoning: "medium",
           coordinates: {
             ...taskCoordinates(taskId, "internal_retrieval", reviewCoordinates),
-            providerRequestIndex: reviewProviderRequestIndex++,
+            providerRequestIndex: nextReviewProviderRequestIndex++,
           },
           sourceExposureProofs: reviewProofs,
           onBeforeRequest: async (request, requestCoordinates) => {
@@ -1604,6 +1618,17 @@ export class CanonicalWorkflowOperations {
               request,
               requestCoordinates,
             );
+          },
+          repair: () => {
+            // Reserve the coordinate this corrective re-ask occupies so any
+            // later replacement review stays contiguous from zero.
+            nextReviewProviderRequestIndex += 1;
+            return {
+              user: JSON.stringify({
+                ...JSON.parse(reviewUser),
+                priorValidationFeedback: "schema_invalid",
+              }),
+            };
           },
         });
         return review;

@@ -20,11 +20,7 @@ import {
   providerSourceExposureProofFromToolResult,
   redactProviderToolResult,
 } from "./provider-request";
-import {
-  aiRunErrorCodeForRole,
-  aiRuntimeDiagnosticMessage,
-  toAiRuntimeError,
-} from "./errors";
+import { aiRunErrorCodeForRole, aiRuntimeDiagnosticMessage, toAiRuntimeError } from "./errors";
 import { requireCurrentTaskCoordinates } from "./task-cancellation";
 import { resolveRuntimeModel } from "./model-registry";
 
@@ -478,6 +474,58 @@ const exactTaskCoordinates = (coordinates: PiBoundaryCoordinates): PiBoundaryCoo
 });
 
 /**
+ * Content-free shape facts for one rejected structured completion. Counts,
+ * names, and byte lengths only, so the summary is safe for always-on operator
+ * logs; the full completion stays behind AI_DEBUG_ERRORS.
+ */
+const structuredParseFailureShape = (completion: PiCompletion, outputToolName: string) => ({
+  stopReason: completion.stopReason,
+  toolCallCount: completion.toolCalls.length,
+  terminalToolCallCount: completion.toolCalls.filter((call) => call.name === outputToolName).length,
+  toolCallNames: completion.toolCalls.map((call) => call.name),
+  argumentByteCount: completion.toolCalls.reduce(
+    (total, call) => total + Buffer.byteLength(stableJson(call.arguments ?? {}), "utf8"),
+    0,
+  ),
+  textCharacterCount: completion.text.length,
+});
+
+const reportStructuredParseFailure = (
+  stage: "initial" | "repair",
+  outputToolName: string,
+  coordinates: PiBoundaryCoordinates,
+  completion: PiCompletion,
+): void => {
+  const base = {
+    taskId: coordinates.taskId,
+    agentRole: coordinates.agentRole,
+    attempt: coordinates.attempt,
+    loopIteration: coordinates.loopIteration,
+    providerRequestIndex: coordinates.providerRequestIndex,
+    outputToolName,
+    stage,
+    shape: structuredParseFailureShape(completion, outputToolName),
+  };
+  if (process.env.AI_DEBUG_ERRORS === "1") {
+    console.error("AI_STRUCTURED_PARSE_FAILURE", {
+      ...base,
+      raw: {
+        stopReason: completion.stopReason,
+        text: completion.text,
+        toolCalls: completion.toolCalls.map((call) => ({
+          id: call.id,
+          name: call.name,
+          arguments: call.arguments,
+        })),
+        usage: completion.usage,
+      },
+    });
+    return;
+  }
+  console.error("AI_STRUCTURED_PARSE_FAILURE", base);
+};
+
+/**
  * Provider-authored response-shape failures consume the owning Smithers
  * task's bounded retry budget.  The product retryability remains the role's
  * normal canonical default; boundary-owned typed errors are never routed
@@ -567,14 +615,7 @@ export class CanonicalAgentClient {
     try {
       return parseExactlyOneTerminal(completion, input.outputToolName, input.validate);
     } catch (error) {
-      if (process.env.AI_DEBUG_ERRORS === "1") {
-        console.error("AI_DEBUG_STRUCTURED_PARSE", {
-          taskId: input.coordinates.taskId,
-          providerRequestIndex: firstCoordinates.providerRequestIndex,
-          errorCategory: "provider_output",
-          errorMessage: aiRuntimeDiagnosticMessage("provider_output", null),
-        });
-      }
+      reportStructuredParseFailure("initial", input.outputToolName, firstCoordinates, completion);
       let repair: StructuredRepair | undefined;
       try {
         repair = input.repair?.(error, firstCoordinates);
@@ -614,6 +655,12 @@ export class CanonicalAgentClient {
       try {
         return parseExactlyOneTerminal(repairedCompletion, input.outputToolName, input.validate);
       } catch (repairError) {
+        reportStructuredParseFailure(
+          "repair",
+          input.outputToolName,
+          repairCoordinates,
+          repairedCompletion,
+        );
         throw providerOutputError(repairError, aiRunErrorCodeForRole(input.coordinates.agentRole));
       }
     }

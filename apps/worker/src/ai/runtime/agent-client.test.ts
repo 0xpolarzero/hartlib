@@ -620,6 +620,109 @@ describe("canonical agent tool loop", () => {
     expect(failure).toMatchObject({ code: "plan_turn_failed", retryable: true });
     expect(failure).not.toMatchObject({ details: { failureRetryable: false } });
   });
+  it("reports a content-free parse failure shape without payloads", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const client = new CanonicalAgentClient({
+        complete: vi.fn(async () =>
+          completion([{ id: "call", name: "other_tool", arguments: { nested: { deep: true } } }]),
+        ),
+      } as unknown as ExactPiBoundary);
+
+      await expect(
+        inTask(() =>
+          client.structured({
+            requestClass: "fast",
+            model: "glm-5-turbo",
+            system: "system",
+            user: "user",
+            outputToolName: "emit_plan",
+            outputToolDescription: "Emit plan",
+            outputSchema: { type: "object" },
+            validate: (value) => value,
+            requestedOutputTokens: 64,
+            reasoning: "medium",
+            coordinates: {
+              taskId: "a",
+              loopIteration: 0,
+              attempt: 0,
+              providerRequestIndex: 0,
+              agentRole: "plan_turn",
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: "plan_turn_failed" });
+
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const [event, payload] = errorSpy.mock.calls[0]! as [
+        string,
+        Record<string, unknown> & { shape?: Record<string, unknown>; raw?: unknown },
+      ];
+      expect(event).toBe("AI_STRUCTURED_PARSE_FAILURE");
+      expect(payload).toMatchObject({
+        taskId: "a",
+        agentRole: "plan_turn",
+        stage: "initial",
+        outputToolName: "emit_plan",
+        shape: {
+          toolCallCount: 1,
+          terminalToolCallCount: 0,
+          toolCallNames: ["other_tool"],
+          textCharacterCount: 0,
+        },
+      });
+      expect(payload.raw).toBeUndefined();
+      expect(JSON.stringify(payload)).not.toContain("deep");
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("captures the full failing completion when AI_DEBUG_ERRORS is enabled", async () => {
+    process.env.AI_DEBUG_ERRORS = "1";
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const client = new CanonicalAgentClient({
+        complete: vi.fn(async () =>
+          completion([{ id: "call", name: "other_tool", arguments: { nested: { deep: true } } }]),
+        ),
+      } as unknown as ExactPiBoundary);
+
+      await expect(
+        inTask(() =>
+          client.structured({
+            requestClass: "fast",
+            model: "glm-5-turbo",
+            system: "system",
+            user: "user",
+            outputToolName: "emit_plan",
+            outputToolDescription: "Emit plan",
+            outputSchema: { type: "object" },
+            validate: (value) => value,
+            requestedOutputTokens: 64,
+            reasoning: "medium",
+            coordinates: {
+              taskId: "a",
+              loopIteration: 0,
+              attempt: 0,
+              providerRequestIndex: 3,
+              agentRole: "internal_retrieval",
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: "internal_retrieval_failed" });
+
+      const [, payload] = errorSpy.mock.calls[0]! as [string, Record<string, unknown>];
+      expect(payload.raw).toMatchObject({
+        stopReason: "toolUse",
+        text: "",
+        toolCalls: [{ id: "call", name: "other_tool", arguments: { nested: { deep: true } } }],
+      });
+    } finally {
+      delete process.env.AI_DEBUG_ERRORS;
+      errorSpy.mockRestore();
+    }
+  });
 
   it("repairs one semantic structured result at the next provider request index", async () => {
     const coordinates: unknown[] = [];

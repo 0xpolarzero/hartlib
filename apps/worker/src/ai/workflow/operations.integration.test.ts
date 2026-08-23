@@ -1881,6 +1881,65 @@ class StructuredMalformedRecoveryAgent extends IntegrationAgentClient {
   }
 }
 
+class PlanRepairRecoveryAgent extends CanonicalAgentClient {
+  readonly planUserPayloads: string[] = [];
+
+  constructor() {
+    super({
+      bindAcceptedProviderProfile: () => undefined,
+      complete: async (
+        request: LiveProviderRequest,
+        coordinates: PiBoundaryCoordinates,
+        onBeforeRequest?: BeforeProviderRequest,
+      ) => {
+        await onBeforeRequest?.(
+          request,
+          { ...coordinates, providerRequestSha256Hex: providerRequestSha256Hex(request) },
+          passedMeasurement(request.model),
+        );
+        const toolName = request.tools?.[0]?.name;
+        if (toolName !== "emit_internal_query_plan") {
+          throw new Error(`unexpected plan repair tool ${String(toolName)}`);
+        }
+        const user = request.messages.find((message) => message.role === "user")?.content ?? "";
+        this.planUserPayloads.push(user);
+        if (this.planUserPayloads.length === 1) {
+          return providerToolCompletion(
+            "emit_internal_query_plan",
+            { action: "search", queries: [] },
+            "plan-invalid",
+          );
+        }
+        return providerToolCompletion(
+          "emit_internal_query_plan",
+          {
+            action: "search",
+            queries: [
+              {
+                purpose: "retrieve liquidity evidence",
+                targets: [{ kind: "documents", filters: {} }],
+                all: [{ text: "liquidity", mode: "term" }],
+                anyOf: [],
+                not: [],
+                order: "relevance",
+              },
+            ],
+          },
+          "plan-repaired",
+        );
+      },
+    } as unknown as ExactPiBoundary);
+  }
+
+  override async structured<Output>(input: StructuredCallInput<Output>): Promise<Output> {
+    if (input.outputToolName === "emit_internal_query_review") {
+      await invokeStructuredProviderHook(input);
+      return input.validate({ action: "accept", reason: "sufficient_coverage" });
+    }
+    return super.structured(input);
+  }
+}
+
 class PublisherRetrievalAgent extends IntegrationAgentClient {
   onAfterFirstSearch?: () => Promise<void>;
 }
@@ -3269,6 +3328,63 @@ describe.skipIf(databaseUrl === undefined)("canonical publisher evidence operati
     expect(agent.planCalls).toBe(4);
     expect(agent.reviewCalls).toBe(3);
   });
+
+  it("repairs one schema-invalid plan inside the same attempt before review", async () => {
+    const fixture = await runDb(createFixture);
+    const agent = new PlanRepairRecoveryAgent();
+    const operations = new CanonicalWorkflowOperations(
+      databaseUrlFor(databaseName),
+      phaseBOperationConfig,
+      agent,
+    );
+    const load = await inTask("load-turn", () => operations.loadTurn(fixture.runId));
+    const result = await inTask("repaired-plan-attempt", () =>
+      operations.retrieveStructuredInternal(
+        load,
+        "What changed in liquidity?",
+        "repaired-plan-attempt",
+        [],
+      ),
+    );
+    expect(result?.previewExposures.length).toBeGreaterThan(0);
+    expect(agent.planUserPayloads).toHaveLength(2);
+    const initialPayload = JSON.parse(agent.planUserPayloads[0]!) as Record<string, unknown>;
+    const repairedPayload = JSON.parse(agent.planUserPayloads[1]!) as Record<string, unknown>;
+    expect(initialPayload).not.toHaveProperty("priorValidationFeedback");
+    expect(repairedPayload).toMatchObject({ priorValidationFeedback: "schema_invalid" });
+    const previews = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly payload: Record<string, unknown> }>`
+          select payload
+          from ai_observations
+          where run_id = ${fixture.runId}
+            and kind = 'structured_retrieval_review_preview'
+        `;
+      }),
+    );
+    // Plan initial (0) and repair (1) precede the review request (2), so the
+    // review preview must bind to index 2 without any coordinate collision.
+    expect(previews).toHaveLength(1);
+    expect(previews[0]!.payload).toMatchObject({
+      providerRequestIndex: 2,
+      slot: "initial",
+    });
+    const traces = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly payload: Record<string, unknown> }>`
+          select payload
+          from ai_observations
+          where run_id = ${fixture.runId}
+            and kind = 'structured_retrieval_trace'
+        `;
+      }),
+    );
+    expect(StructuredRetrievalTraceSchema.parse(traces[0]!.payload)).toMatchObject({
+      outcome: "accepted",
+    });
+  }, 120_000);
 
   it("loads the saved provider profile after live provider drift", async () => {
     const fixture = await runDb(createFixture);

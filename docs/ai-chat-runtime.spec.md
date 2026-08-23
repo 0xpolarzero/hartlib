@@ -373,6 +373,10 @@ Z.AI transport uses its documented `tool_choice: "auto"` posture. Pi's pinned Op
 
 Pi client retries are disabled. Smithers owns finite task retries and backoff.
 
+Structured internal retrieval plan and review calls carry one code-owned corrective re-ask per attempt. When the terminal call is missing, duplicated, wrongly named, or schema-invalid, the follow-up request resends the exact same inventory with one added bounded `priorValidationFeedback` enum marker, occupies the next contiguous provider request index, and records its own measurement, usage, source-exposure proof bindings, and review preview at those coordinates. A replacement review stays contiguous after a consumed repair, and the repair consumes no Smithers retry attempt.
+
+A rejected structured completion also emits one content-free operator log line naming the stop reason, tool-call count and names, argument byte length, text character count, and exact coordinates. The full completion text and arguments are printed only when `AI_DEBUG_ERRORS=1` is set in development; they never enter durable error JSON or public activity.
+
 The boundary treats a Pi `stopReason: "error"` or rejected provider call as a provider failure, not as an invalid local workflow result. It records known usage only when the provider supplies positive, arithmetically valid counters; a zero-usage error does not create a fabricated usage row. A trusted top-level HTTP status or Pi response callback may add only the numeric status to the safe category/message; provider bodies, credentials, and stack causes are discarded. The owning Smithers task keeps its existing finite retry lane, and a final failure still emits the terminal error after the last attempt.
 
 The configured model must have a locally available exact tokenizer and matching provider chat template registered at worker startup. The final-version tokenizer and template are pinned for the current runtime and evaluation. A model without an exact registered counter is rejected at startup; the production runtime has no estimated-token admission mode.
