@@ -8,7 +8,7 @@ Hartlib gives you one research conversation across everything you subscribe to â
 2. **It reads what you don't.** Briefings, confidential letters, and official records are dense and scattered; few people read them end to end. Hartlib navigates them for you.
 3. **Plain questions.** No query syntax, no copying context by hand. Ask as you would ask a colleague. Independent parts of a question are researched in parallel and joined into one answer.
 4. **Every answer cited.** Claims point to the exact issue, document, or page they came from, and completed answers keep their citations.
-5. **Answers you can see.** Charts and visualizations grow beside the conversation, so dense material becomes easy to grasp. Today Hartlib returns cited text, summaries, comparisons, and tables; live charts arrive with the visual companion.
+5. **Answers you can see.** Charts and visualizations grow beside the conversation. Say what you want to see differently and the agent redraws it, so dense material becomes easy to grasp. Today Hartlib returns cited text, summaries, comparisons, and tables; live charts arrive with the visual companion.
 
 ## Who it serves
 
