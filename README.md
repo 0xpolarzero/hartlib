@@ -1,34 +1,20 @@
 # Hartlib
 
-Hartlib gives clients one continuing research conversation across their subscriptions. For each question, focused fast passes select only the earlier turns, memories, and source passages that matter, then Hartlib gives one cited answer.
+Hartlib gives you one research conversation across everything you subscribe to — professional briefings, specialist publications, official records. Ask in your own words and get one cited answer you can actually understand.
 
-## One conversation, smart context
+## What makes it different
 
-Keep working in one active conversation. You do not need a new chat for every topic or to copy context by hand. Hartlib rebuilds the context for each question:
+1. **One chat, many agents.** Each question puts several agents to work at once: one selects the earlier messages that matter, another your saved memories, the rest search your sources. You see one answer.
+2. **It reads what you don't.** Briefings, confidential letters, and official records are dense and scattered; few people read them end to end. Hartlib navigates them for you.
+3. **Plain questions.** No query syntax, no copying context by hand. Ask as you would ask a colleague. Independent parts of a question are researched in parallel and joined into one answer.
+4. **Every answer cited.** Claims point to the exact issue, document, or page they came from, and completed answers keep their citations.
+5. **Answers you can see.** Charts and visualizations grow beside the conversation, so dense material becomes easy to grasp. Today Hartlib returns cited text, summaries, comparisons, and tables; live charts arrive with the visual companion.
 
-- relevant earlier turns from the same conversation;
-- relevant memories saved from earlier turns;
-- relevant passages from the publisher issues and official sources available to the chat.
+## Who it serves
 
-Separate fast passes handle the conversation, memories, and sources. Each keeps only what matters for the question. When a question has independent parts, Hartlib researches them in parallel and brings back one answer.
+**Clients** work in one continuing conversation over every subscription at once. They read delivered issues, search the archive directly, and share or archive past work without starting over. When allowed, web search joins their sources.
 
-The active conversation is the main working surface. Share or archive past work without creating another context to manage.
-
-## One answer across sources
-
-Hartlib can connect relevant evidence across multiple publisher subscriptions and official sources your company has enabled. It can compare issues, past coverage, and official records in one answer. Completed answers keep their citations and sources.
-
-Clients can read delivered publications and search the archive directly. Archive search finds documents, not AI answers. When allowed, Hartlib can also search the web for an answer.
-
-## The conversation and its visual companion
-
-Hartlib is designed around a visual companion beside the conversation. A planned final pass will keep long-term memory and the visual view in step with each completed turn. It will turn answers and explanations into live visualizations that change with the discussion.
-
-Today, Hartlib returns cited text answers, summaries, comparisons, and tables.
-
-## For publishers
-
-Publishers use Hartlib to create private subscriptions, publish issues, invite client companies, and manage delivery. Hartlib gives subscribers a searchable, cited research service over the archive while publishers keep their existing content and client relationships.
+**Publishers** create private subscriptions, publish issues, invite client companies, and manage delivery. They keep their content and client relationships; their subscribers get a searchable, cited research service over the archive.
 
 **Status:** Active development. Explore the product in the local demo. Production use is not enabled yet; see [Production readiness](docs/production-readiness.spec.md).
 **Website:** [hartlib.ai](https://hartlib.ai)
