@@ -1,6 +1,6 @@
 # Hartlib
 
-Hartlib gives you one research conversation across everything you subscribe to — professional briefings, specialist publications, official records. Ask in your own words and get one cited answer you can actually understand.
+Hartlib gives you one research conversation across everything you subscribe to — professional briefings, specialist publications, official records. Ask in your own words and get one cited answer you can actually understand, explained with visuals that fit how you think.
 
 ## What makes it different
 

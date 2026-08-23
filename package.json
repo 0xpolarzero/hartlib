@@ -1,5 +1,6 @@
 {
   "name": "hartlib",
+  "description": "A single chat for your subscriptions and densest sources: grounded answers, explained the way you understand best.",
   "private": true,
   "workspaces": [
     "apps/*",
