@@ -1,7 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ChevronDown, ChevronRight, Globe2, Users } from "lucide-react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
-import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, SyntheticEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -13,6 +13,9 @@ import type {
   EffectiveWebPolicy,
   PublicContextConsumer,
   PublicCitationRecord,
+  PublicAiRunDebug,
+  PublicAiRunDebugResponse,
+  PublicCitationQuote,
   PublicSourceRecord,
   UserMessageRunOutcome,
 } from "@hartlib/shared";
@@ -36,6 +39,7 @@ export type ChatTranscriptMessage =
       readonly id: string;
       readonly author: "assistant";
       readonly content: string;
+      readonly runId?: string;
       readonly citations: readonly PublicCitationRecord[];
       readonly sourcesRead: readonly PublicSourceRecord[];
       readonly activities?: readonly AiRunActivityEvent[];
@@ -63,6 +67,8 @@ export type ChatRunDiagnostics = {
   readonly sequence?: number;
   readonly terminalFailure?: ChatActivityFailure | null;
 };
+
+export type ChatAiRunDebugLoader = (runId: string) => Promise<PublicAiRunDebugResponse>;
 
 type ChatActivityFailure = Omit<AiRunErrorEvent, "type">;
 
@@ -168,6 +174,10 @@ const sourceLabel = (source: PublicCitationRecord | PublicSourceRecord): string 
     case "web":
       return source.title;
   }
+};
+
+const citationQuote = (citation: PublicCitationRecord): PublicCitationQuote => {
+  return citation.quote;
 };
 
 /** Keep source-list ordinals identical to the ordinals rendered inline. */
@@ -354,9 +364,11 @@ function AssistantMarkdown({
 export function ChatRunOutcome({
   run,
   onResubmit,
+  onLoadAiRunDebug,
 }: {
   readonly run: UserMessageRunOutcome;
   readonly onResubmit?: () => void;
+  readonly onLoadAiRunDebug?: ChatAiRunDebugLoader;
 }) {
   if (run.status === "succeeded") return null;
 
@@ -386,6 +398,9 @@ export function ChatRunOutcome({
           <FormattedMessage id="chat.resubmit" />
         </button>
       ) : null}
+      {onLoadAiRunDebug === undefined ? null : (
+        <ChatDebugDetails runId={run.id} load={onLoadAiRunDebug} />
+      )}
     </div>
   );
 }
@@ -497,16 +512,381 @@ function ChatAnswerCompletion({
   );
 }
 
+const debugStageLabel = (stage: PublicAiRunDebug["stages"][number]["stage"]): string =>
+  `chat.progress.stage.${stage}`;
+
+const debugEventStageLabel = (stage: PublicAiRunDebug["history"][number]["stage"]): string =>
+  stage === "terminal" ? "chat.debug.terminal" : `chat.progress.stage.${stage}`;
+
+const debugStatusLabel = (status: PublicAiRunDebug["status"]): string =>
+  `chat.debug.status.${status}`;
+
+const debugEventStatusLabel = (status: PublicAiRunDebug["history"][number]["status"]): string =>
+  status === "done"
+    ? "chat.debug.status.done"
+    : status === "terminal"
+      ? "chat.debug.terminal"
+      : `chat.progress.status.${status}`;
+
+const debugValue = (value: string | number | null): string | number => value ?? "—";
+
+const debugCategoryValue = (
+  intl: ReturnType<typeof useIntl>,
+  category: PublicAiRunDebug["history"][number]["errorCategory"],
+): string =>
+  category === null
+    ? intl.formatMessage({ id: "chat.debugUnavailableValue" })
+    : intl.formatMessage({ id: `chat.progress.error.category.${category}` });
+
+function ChatDebugDetails({
+  runId,
+  load,
+}: {
+  readonly runId: string;
+  readonly load: ChatAiRunDebugLoader;
+}) {
+  const intl = useIntl();
+  const disclosureId = useId();
+  const detailsId = `${disclosureId}-details`;
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<
+    | { readonly status: "idle" | "loading" | "error" }
+    | { readonly status: "ready"; readonly debug: PublicAiRunDebug }
+    | { readonly status: "unavailable" }
+  >({ status: "idle" });
+  const loadGeneration = useRef(0);
+
+  useEffect(() => {
+    loadGeneration.current += 1;
+    setOpen(false);
+    setState({ status: "idle" });
+  }, [runId]);
+
+  const loadDebug = () => {
+    const generation = ++loadGeneration.current;
+    setState({ status: "loading" });
+    void load(runId)
+      .then((response) => {
+        if (generation !== loadGeneration.current) return;
+        setState(
+          response.available
+            ? { status: "ready", debug: response.debug }
+            : { status: "unavailable" },
+        );
+      })
+      .catch(() => {
+        if (generation === loadGeneration.current) setState({ status: "error" });
+      });
+  };
+
+  const handleToggle = (event: SyntheticEvent<HTMLDetailsElement>) => {
+    const nextOpen = event.currentTarget.open;
+    setOpen(nextOpen);
+    if (!nextOpen || state.status !== "idle") return;
+    loadDebug();
+  };
+
+  const debug = state.status === "ready" ? state.debug : null;
+  const attempts =
+    debug === null
+      ? 0
+      : debug.stages.reduce((maximum, stage) => Math.max(maximum, stage.attempt ?? 0), 0);
+  const contextLabel =
+    debug?.context.compactionRan === true
+      ? intl.formatMessage({ id: "chat.debug.compacted" })
+      : debug?.context.compactionRan === false
+        ? intl.formatMessage({ id: "chat.debug.fit" })
+        : intl.formatMessage({ id: "chat.debugUnavailableValue" });
+
+  return (
+    <details
+      className="mt-3 border-t border-rule pt-2"
+      open={open}
+      onToggle={handleToggle}
+      data-testid="chat-debug-details"
+    >
+      <summary
+        className="inline-flex cursor-pointer list-none items-center gap-1 font-mono text-[11px] font-medium text-muted hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [&::-webkit-details-marker]:hidden"
+        id={disclosureId}
+        aria-controls={detailsId}
+        aria-expanded={open}
+        data-testid="chat-debug-toggle"
+      >
+        {open ? (
+          <ChevronDown className="size-3" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="size-3" aria-hidden="true" />
+        )}
+        <FormattedMessage id="chat.debugDetails" />
+      </summary>
+      <div
+        id={detailsId}
+        className="mt-2 space-y-3 font-mono text-[11px]"
+        role="region"
+        aria-labelledby={disclosureId}
+        data-testid="chat-debug-panel"
+      >
+        {state.status === "loading" ? (
+          <p
+            className="text-muted"
+            role="status"
+            aria-live="polite"
+            data-testid="chat-debug-loading"
+          >
+            <FormattedMessage id="chat.debugLoading" />
+          </p>
+        ) : state.status === "error" ? (
+          <div className="space-y-1" role="status">
+            <p className="text-muted">
+              <FormattedMessage id="chat.debugLoadFailed" />
+            </p>
+            <button
+              type="button"
+              className="text-accent underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              onClick={loadDebug}
+              data-testid="chat-debug-retry"
+            >
+              <FormattedMessage id="chat.debugRetry" />
+            </button>
+          </div>
+        ) : state.status === "unavailable" ? (
+          <p className="text-muted" role="status" data-testid="chat-debug-unavailable">
+            <FormattedMessage id="chat.debugUnavailable" />
+          </p>
+        ) : debug === null ? null : (
+          <>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" data-testid="chat-debug-summary">
+              <div className="min-w-0 border border-rule px-2 py-1.5">
+                <span className="block text-[10px] uppercase text-muted">
+                  <FormattedMessage id="chat.debug.outcome" />
+                </span>
+                <strong className="mt-0.5 block truncate text-ink">
+                  <FormattedMessage id={debugStatusLabel(debug.status)} />
+                </strong>
+              </div>
+              <div className="min-w-0 border border-rule px-2 py-1.5">
+                <span className="block text-[10px] uppercase text-muted">
+                  <FormattedMessage id="chat.debug.attempts" />
+                </span>
+                <strong className="mt-0.5 block truncate text-ink">{attempts}</strong>
+              </div>
+              <div className="min-w-0 border border-rule px-2 py-1.5">
+                <span className="block text-[10px] uppercase text-muted">
+                  <FormattedMessage id="chat.debug.sources" />
+                </span>
+                <strong className="mt-0.5 block truncate text-ink">
+                  {debug.sourceSummary.read} · {debug.sourceSummary.cited}
+                </strong>
+              </div>
+              <div className="min-w-0 border border-rule px-2 py-1.5">
+                <span className="block text-[10px] uppercase text-muted">
+                  <FormattedMessage id="chat.debug.context" />
+                </span>
+                <strong className="mt-0.5 block truncate text-ink">{contextLabel}</strong>
+              </div>
+            </div>
+            <div className="space-y-1 border-t border-rule pt-2" data-testid="chat-debug-stages">
+              {debug.stages.map((stage) => (
+                <div key={stage.stage} className="min-w-0 border-b border-rule/70 py-1">
+                  <div className="grid min-w-0 gap-1 sm:grid-cols-[minmax(7rem,1fr)_minmax(6rem,1fr)_auto] sm:items-center sm:gap-2">
+                    <span className="truncate text-ink">
+                      <FormattedMessage id={debugStageLabel(stage.stage)} />
+                    </span>
+                    <span className="text-muted">
+                      <FormattedMessage id={`chat.progress.status.${stage.status}`} />
+                    </span>
+                    <span className="text-faint">
+                      {stage.durationMs === null ? "—" : `${stage.durationMs}ms`}
+                      {stage.attempt === null
+                        ? ""
+                        : ` · ${intl.formatMessage({ id: "chat.debug.attemptShort" }, { count: stage.attempt })}`}
+                    </span>
+                  </div>
+                  <p className="mt-1 break-words text-faint">
+                    <FormattedMessage
+                      id="chat.debug.stageMetrics"
+                      values={{
+                        sources: debugValue(stage.sourceCount),
+                        results: debugValue(stage.resultCount),
+                        error: debugValue(stage.errorCode),
+                        category: debugCategoryValue(intl, stage.errorCategory),
+                      }}
+                    />
+                  </p>
+                </div>
+              ))}
+            </div>
+            <div
+              className="grid gap-1 border-t border-rule pt-2 text-muted sm:grid-cols-3"
+              data-testid="chat-debug-times"
+            >
+              <span>
+                <FormattedMessage
+                  id="chat.debug.startedAt"
+                  values={{ value: debugValue(debug.startedAt) }}
+                />
+              </span>
+              <span>
+                <FormattedMessage
+                  id="chat.debug.finishedAt"
+                  values={{ value: debugValue(debug.finishedAt) }}
+                />
+              </span>
+              <span>
+                <FormattedMessage
+                  id="chat.debug.failedAt"
+                  values={{ value: debugValue(debug.failedAt) }}
+                />
+              </span>
+            </div>
+            <div className="grid gap-1 text-muted sm:grid-cols-2">
+              <span>
+                <FormattedMessage
+                  id="chat.debug.contextSummary"
+                  values={{
+                    consumers: debug.context.consumers,
+                    inputTokens: debug.context.inputTokens ?? "—",
+                    usableInputTokens: debug.context.usableInputTokens ?? "—",
+                  }}
+                />
+              </span>
+              <span>
+                <FormattedMessage
+                  id="chat.debug.sourceSummary"
+                  values={{
+                    read: debug.sourceSummary.read,
+                    cited: debug.sourceSummary.cited,
+                    uncited: debug.sourceSummary.uncited,
+                  }}
+                />
+              </span>
+              <span>
+                <FormattedMessage
+                  id="chat.debug.memorySummary"
+                  values={{
+                    created: debug.memory?.created ?? "—",
+                    updated: debug.memory?.updated ?? "—",
+                    discarded: debug.memory?.discarded ?? "—",
+                  }}
+                />
+              </span>
+              <span>
+                <FormattedMessage
+                  id="chat.debug.usageSummary"
+                  values={{
+                    modelInputTokens: debug.usage?.modelInputTokens ?? "—",
+                    modelOutputTokens: debug.usage?.modelOutputTokens ?? "—",
+                    webSearches: debug.usage?.webSearches ?? "—",
+                    webFetches: debug.usage?.webFetches ?? "—",
+                    webResponseBytes: debug.usage?.webResponseBytes ?? "—",
+                  }}
+                />
+              </span>
+            </div>
+            {debug.terminalError === null ? null : (
+              <div className="space-y-1 text-danger" data-testid="chat-debug-terminal-error">
+                <p>
+                  <FormattedMessage
+                    id="chat.debug.terminalError"
+                    values={{
+                      code: debug.terminalError.code,
+                      message: debugValue(debug.terminalError.message),
+                    }}
+                  />
+                </p>
+                <p>
+                  <FormattedMessage
+                    id="chat.debug.terminalRetryable"
+                    values={{
+                      value: debug.terminalError.retryable
+                        ? intl.formatMessage({ id: "chat.debug.yes" })
+                        : intl.formatMessage({ id: "chat.debug.no" }),
+                    }}
+                  />
+                  {" · "}
+                  <FormattedMessage
+                    id="chat.debug.terminalCategory"
+                    values={{ value: debugCategoryValue(intl, debug.terminalError.category) }}
+                  />
+                </p>
+                <p>
+                  <FormattedMessage
+                    id="chat.debug.terminalMessage"
+                    values={{ value: debugValue(debug.terminalError.message) }}
+                  />
+                </p>
+              </div>
+            )}
+            {debug.history.length === 0 ? null : (
+              <details className="border-t border-rule pt-2" data-testid="chat-debug-history">
+                <summary className="cursor-pointer text-accent">
+                  <FormattedMessage
+                    id="chat.debug.history"
+                    values={{ count: debug.history.length }}
+                  />
+                </summary>
+                <ol
+                  className="mt-2 max-h-64 space-y-1 overflow-y-auto border-l border-rule pl-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  tabIndex={0}
+                  aria-label={intl.formatMessage({ id: "chat.debug.historyLabel" })}
+                >
+                  {debug.history.map((event, index) => (
+                    <li
+                      key={`${event.code}:${event.occurredAt ?? ""}:${index}`}
+                      className="break-words text-muted"
+                    >
+                      <div>
+                        <span className="text-ink">
+                          <FormattedMessage id={debugEventStageLabel(event.stage)} />
+                        </span>{" "}
+                        · {event.code} ·{" "}
+                        <FormattedMessage id={debugEventStatusLabel(event.status)} />
+                        {event.topicId === null ? null : ` · ${event.topicId}`}
+                        {event.occurredAt === null ? null : ` · ${event.occurredAt}`}
+                        {event.durationMs === null ? null : ` · ${event.durationMs}ms`}
+                      </div>
+                      <div className="text-faint">
+                        <FormattedMessage
+                          id="chat.debug.eventMetrics"
+                          values={{
+                            attempt: debugValue(event.attempt),
+                            sources: debugValue(event.sourceCount),
+                            results: debugValue(event.resultCount),
+                            error: debugValue(event.errorCode),
+                            category: debugCategoryValue(intl, event.errorCategory),
+                          }}
+                        />
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            )}
+            <p className="text-faint">
+              <FormattedMessage
+                id="chat.debug.runCursor"
+                values={{ runId: debug.runId, sequence: debug.lastSequence ?? "—" }}
+              />
+            </p>
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
 export function ChatBubble({
   message,
   authorLabels,
   onResubmit,
   onOpenAuthenticatedDocument,
+  onLoadAiRunDebug,
 }: {
   readonly message: ChatTranscriptMessage;
   readonly authorLabels: ChatTranscriptAuthorLabels;
   readonly onResubmit?: (message: Extract<ChatTranscriptMessage, { author: "user" }>) => void;
   readonly onOpenAuthenticatedDocument?: AuthenticatedDocumentOpener;
+  readonly onLoadAiRunDebug?: ChatAiRunDebugLoader;
 }) {
   const isAssistant = message.author === "assistant";
   const activities = isAssistant ? (message.activities ?? []) : [];
@@ -632,6 +1012,9 @@ export function ChatBubble({
         </div>
         {isAssistant && !message.streaming ? (
           <ChatAnswerCompletion sourcesRead={message.sourcesRead.length} cited={citations.length} />
+        ) : null}
+        {isAssistant && !message.streaming && message.runId !== undefined && onLoadAiRunDebug ? (
+          <ChatDebugDetails runId={message.runId} load={onLoadAiRunDebug} />
         ) : null}
         {isAssistant && message.streaming ? (
           <details
@@ -843,6 +1226,7 @@ export function ChatBubble({
           <ChatRunOutcome
             run={message.run}
             {...(onResubmit === undefined ? {} : { onResubmit: () => onResubmit(message) })}
+            {...(onLoadAiRunDebug === undefined ? {} : { onLoadAiRunDebug })}
           />
         ) : null}
       </div>
@@ -897,6 +1281,10 @@ export function ChatSourcesRead({
   const labelId = `${disclosureId}-label`;
   const listId = `${disclosureId}-list`;
   const citationNumbersById = useMemo(() => citationNumbersBySourceKey(citations), [citations]);
+  const citationsById = useMemo(
+    () => new Map(citations.map((citation) => [citation.sourceKey, citation])),
+    [citations],
+  );
 
   return (
     <details
@@ -929,6 +1317,8 @@ export function ChatSourcesRead({
         >
           {sources.map((source) => {
             const citationNumber = citationNumbersById.get(source.sourceKey);
+            const citation = citationsById.get(source.sourceKey);
+            const quote = citation === undefined ? null : citationQuote(citation);
             return (
               <li
                 key={source.sourceKey}
@@ -964,6 +1354,28 @@ export function ChatSourcesRead({
                   <FormattedMessage id="chat.tokenCount" values={{ count: source.tokenCount }} />
                   {source.topicIds.length > 0 ? ` · ${source.topicIds.join(", ")}` : null}
                 </span>
+                {citation === undefined ? null : (
+                  <div
+                    className="mt-1 border-l-2 border-accent/30 bg-accent/5 px-2 py-1.5 text-xs text-muted"
+                    data-testid="citation-quote"
+                  >
+                    <span className="font-mono text-[10px] font-medium uppercase tracking-wide text-accent">
+                      <FormattedMessage id="chat.citationQuote" />
+                    </span>
+                    {quote === null ? (
+                      <span
+                        className="mt-0.5 block text-muted"
+                        data-testid="citation-quote-unavailable"
+                      >
+                        <FormattedMessage id="chat.citationQuoteUnavailable" />
+                      </span>
+                    ) : (
+                      <q className="mt-0.5 block break-words font-serif text-sm leading-5 text-ink">
+                        {quote.text}
+                      </q>
+                    )}
+                  </div>
+                )}
               </li>
             );
           })}
@@ -1023,6 +1435,7 @@ export function VirtualizedChatTranscript({
   authorLabels,
   onResubmit,
   onOpenAuthenticatedDocument,
+  onLoadAiRunDebug,
   className,
   height = 544,
   estimateSize = 148,
@@ -1033,6 +1446,8 @@ export function VirtualizedChatTranscript({
   readonly authorLabels: ChatTranscriptAuthorLabels;
   readonly onResubmit?: (message: Extract<ChatTranscriptMessage, { author: "user" }>) => void;
   readonly onOpenAuthenticatedDocument?: AuthenticatedDocumentOpener;
+  /** Owner-authorized lazy loader; omitted for shared viewers. */
+  readonly onLoadAiRunDebug?: ChatAiRunDebugLoader;
   readonly className?: string;
   readonly height?: CSSProperties["height"];
   readonly estimateSize?: number;
@@ -1122,6 +1537,7 @@ export function VirtualizedChatTranscript({
                   {...(onOpenAuthenticatedDocument === undefined
                     ? {}
                     : { onOpenAuthenticatedDocument })}
+                  {...(onLoadAiRunDebug === undefined ? {} : { onLoadAiRunDebug })}
                 />
               </div>
             );

@@ -101,6 +101,27 @@ describe("product API client codecs", () => {
     await expect(client.getChat()).rejects.toMatchObject({ code: "invalid_response_body" });
   });
 
+  it("fetches the owner-only safe debug projection without accepting extra fields", async () => {
+    const safe = { available: false } as const;
+    const calls: string[] = [];
+    const client = createProductApiClient({
+      baseUrl: "https://api.hartlib.example",
+      fetch: async (input) => {
+        calls.push(String(input));
+        return Response.json(safe);
+      },
+    });
+    await expect(client.fetchAiRunDebug("run /1")).resolves.toEqual(safe);
+    expect(calls).toEqual(["https://api.hartlib.example/v1/ai-runs/run%20%2F1/debug"]);
+
+    const excess = createProductApiClient({
+      fetch: async () => Response.json({ ...safe, prompt: "private" }),
+    });
+    await expect(excess.fetchAiRunDebug("run-1")).rejects.toMatchObject({
+      code: "invalid_response_body",
+    });
+  });
+
   it("posts one exact replacement UUID and decodes the complete reset projection", async () => {
     const calls: Array<{ readonly input: string; readonly init: RequestInit | undefined }> = [];
     const reset = {

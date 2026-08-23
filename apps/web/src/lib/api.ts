@@ -22,6 +22,7 @@ export const deleteChat = client.deleteChat;
 export const getChat = client.getChat;
 export const sendChatMessage = client.sendChatMessage;
 export const streamAiRun = client.streamAiRun;
+export const fetchAiRunDebug = client.fetchAiRunDebug;
 export const fetchPublisherDocument = client.fetchPublisherDocument;
 export const fetchMemories = client.fetchMemories;
 export const fetchMemoryRevision = client.fetchMemoryRevision;

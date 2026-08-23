@@ -191,6 +191,25 @@ const getChat = async () => {
   }>(response);
 };
 
+const getSharedChat = async () => {
+  const chat = await getChat();
+  const sharedChatId = crypto.randomUUID();
+  await runDb(
+    isolatedUrl(),
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const companyId = (yield* sql<{ readonly id: string }>`
+        select company_id::text as id from chats where id = ${chat.chat.id}
+      `)[0]!.id;
+      yield* sql`
+        insert into chats (id, user_id, company_id, memory_mode, shared_at)
+        values (${sharedChatId}, 'demo-user', ${companyId}, 'disabled', now())
+      `;
+    }),
+  );
+  return { ...chat, chat: { ...chat.chat, id: sharedChatId } };
+};
+
 const postMessage = (input: Record<string, unknown>) =>
   route(
     request("POST", "/v1/chat/messages", {
@@ -805,7 +824,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
 
   it("returns durable failed outcomes and immutable sources/citations after reload", async () => {
     const chat = await getChat();
-    await runDb(
+    const answeredRunId = await runDb(
       isolatedUrl(),
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -875,6 +894,21 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
             assistant_message_id, source_key, consumer_task_id, rendered_token_count, context_order, ranges
           ) values (${assistant[0]!.id}, 'k_cn_AAAAAAAAAAAAAAAAAAAAAA_1', 'single-answer', 11, 0, '[]'::jsonb)
         `;
+        yield* sql`
+          insert into ai_run_events (run_id, seq, emission_key, event)
+          values
+            (${run[0]!.id}, 1, 'run_started', ${sql.json({ type: "run_started" })}),
+            (${run[0]!.id}, 2, 'activity:request_understanding:all:complete:0', ${sql.json({
+              type: "activity",
+              stage: "understanding",
+              code: "request_understanding",
+              status: "complete",
+              attempt: 1,
+              durationMs: 120,
+            })}),
+            (${run[0]!.id}, 3, 'terminal', ${sql.json({ type: "done", assistantMessageId: assistant[0]!.id })})
+        `;
+        return run[0]!.id;
       }),
     );
     const response = await getChat();
@@ -889,12 +923,35 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         }),
         expect.objectContaining({
           citations: [
-            expect.objectContaining({ sourceKey: "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1", kind: "web" }),
+            expect.objectContaining({
+              sourceKey: "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1",
+              kind: "web",
+              quote: { text: "Quote" },
+            }),
           ],
           sourcesRead: [expect.objectContaining({ tokenCount: 11 })],
         }),
       ]),
     );
+    const debugResponse = await route(
+      request("GET", `/v1/ai-runs/${encodeURIComponent(answeredRunId)}/debug`),
+    );
+    expect(debugResponse.status).toBe(200);
+    const debugBody = await body<{ available: boolean; debug?: Record<string, unknown> }>(
+      debugResponse,
+    );
+    expect(debugBody).toMatchObject({
+      available: true,
+      debug: {
+        runId: answeredRunId,
+        sourceSummary: { read: 1, cited: 1, uncited: 0 },
+        history: expect.arrayContaining([
+          expect.objectContaining({ code: "request_understanding", status: "complete" }),
+        ]),
+      },
+    });
+    expect(JSON.stringify(debugBody)).not.toContain("Answer [[cite:");
+    expect(JSON.stringify(debugBody)).not.toContain("https://example.com/");
   });
 
   it("keeps saved answers readable after source, subscription, memory, and web setting changes", async () => {
@@ -1006,7 +1063,12 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
       expect.arrayContaining([
         expect.objectContaining({
           content: expect.stringContaining("Saved answer"),
-          citations: [expect.objectContaining({ sourceKey })],
+          citations: [
+            expect.objectContaining({
+              sourceKey,
+              quote: { text: "Remember the original preference" },
+            }),
+          ],
         }),
       ]),
     );
@@ -1051,7 +1113,12 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
       expect.arrayContaining([
         expect.objectContaining({
           content: expect.stringContaining("Saved answer"),
-          citations: [expect.objectContaining({ sourceKey })],
+          citations: [
+            expect.objectContaining({
+              sourceKey,
+              quote: { text: "Remember the original preference" },
+            }),
+          ],
         }),
       ]),
     );
@@ -1436,6 +1503,847 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     const response = await route(request("GET", `/v1/ai-runs/${accepted.run.id}/stream`));
     expect(response.status).toBe(410);
     expect(await body(response)).toEqual({ error: "terminal_event_unavailable" });
+    const debugResponse = await route(
+      request("GET", `/v1/ai-runs/${encodeURIComponent(accepted.run.id)}/debug`),
+    );
+    expect(debugResponse.status).toBe(200);
+    expect(await body(debugResponse)).toEqual({ available: false });
+  });
+
+  it("keeps debug denials content-free across authentication, ownership, sharing, revocation, and organization boundaries", async () => {
+    const chat = await getSharedChat();
+    const runId = await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const companyId = (yield* sql<{ readonly id: string }>`
+          select company_id::text as id from chats where id = ${chat.chat.id}
+        `)[0]!.id;
+        const message = (yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content)
+          values (${chat.chat.id}, 'user', 'debug boundary')
+          returning id::text
+        `)[0]!;
+        return (yield* sql<{ readonly id: string }>`
+          insert into ai_runs (
+            chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope
+          ) values (
+            ${chat.chat.id}, 'demo-user', ${message.id}, 'en-US', 'US',
+            ${sql.json(
+              makeRunAcceptanceScope({
+                userId: "demo-user",
+                chatId: chat.chat.id,
+                companyId,
+                memoryMode: "disabled",
+              }),
+            )}
+          )
+          returning id::text
+        `)[0]!.id;
+      }),
+    );
+
+    const unauthenticated = await route(
+      request("GET", `/v1/ai-runs/${encodeURIComponent(runId)}/debug`, {
+        headers: { cookie: "" },
+      }),
+    );
+    expect(unauthenticated.status).toBe(401);
+    expect(await body(unauthenticated)).toEqual({ error: "unauthorized" });
+
+    const owner = await route(request("GET", `/v1/ai-runs/${encodeURIComponent(runId)}/debug`));
+    expect(owner.status).toBe(200);
+    expect(await body(owner)).toMatchObject({ available: true });
+
+    const viewerId = "debug-shared-viewer";
+    const foreignId = "debug-foreign-user";
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const companyId = (yield* sql<{ readonly id: string }>`
+          select company_id::text as id from chats where id = ${chat.chat.id}
+        `)[0]!.id;
+        yield* sql`
+          insert into platform_users (id, primary_email, display_name, clerk_user_id)
+          values (${foreignId}, ${`${foreignId}@example.test`}, 'Foreign viewer', ${`clerk:${foreignId}`})
+        `;
+        yield* sql`
+          insert into platform_users (id, primary_email, display_name, clerk_user_id)
+          values (${viewerId}, ${`${viewerId}@example.test`}, 'Debug viewer', ${`clerk:${viewerId}`})
+        `;
+        yield* sql`
+          insert into client_company_memberships (company_id, user_id, role)
+          values (${companyId}, ${viewerId}, 'member')
+        `;
+      }),
+    );
+
+    let debugUserId = foreignId;
+    let organizationId: string | null = null;
+    const debugAuthenticator: RequestAuthenticator = {
+      authenticateRequest: async () => ({
+        isAuthenticated: true,
+        toAuth: () => ({
+          userId: debugUserId,
+          orgId: organizationId,
+          sessionId: `session:${viewerId}`,
+          factorVerificationAge: [0, 0],
+        }),
+      }),
+    };
+    const clerkRoutes = makeChatRoutes(pgLayer(), { debugAuthenticator });
+    const debugAsViewer = () =>
+      Effect.runPromise(
+        routeRequest(
+          clerkRoutes,
+          new Request(`http://hartlib.test/v1/ai-runs/${encodeURIComponent(runId)}/debug`, {
+            method: "GET",
+          }),
+        ).pipe(Effect.provide(clerkStreamConfigLayer)),
+      );
+    const foreignViewer = await debugAsViewer();
+    expect(foreignViewer.status).toBe(404);
+    expect(await body(foreignViewer)).toEqual({ error: "not_found" });
+
+    debugUserId = viewerId;
+    const sharedViewer = await debugAsViewer();
+    expect(sharedViewer.status).toBe(404);
+    expect(await body(sharedViewer)).toEqual({ error: "not_found" });
+
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_company_memberships
+          set revoked_at = now(), revoked_by_user_id = 'demo-user'
+          where user_id = ${viewerId}
+        `;
+      }),
+    );
+    const revokedViewer = await debugAsViewer();
+    expect(revokedViewer.status).toBe(404);
+    expect(await body(revokedViewer)).toEqual({ error: "not_found" });
+
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_company_memberships
+          set revoked_at = null, revoked_by_user_id = null
+          where user_id = ${viewerId}
+        `;
+      }),
+    );
+    organizationId = "org-wrong";
+    const wrongOrganization = await debugAsViewer();
+    expect(wrongOrganization.status).toBe(404);
+    expect(await body(wrongOrganization)).toEqual({ error: "not_found" });
+  });
+
+  it("authorizes the chat owner debug projection only with current Clerk membership and organization", async () => {
+    const chat = await getChat();
+    const organizationId = `org_debug_owner_${crypto.randomUUID()}`;
+    const runId = await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const companyId = (yield* sql<{ readonly id: string }>`
+          select company_id::text as id from chats where id = ${chat.chat.id}
+        `)[0]!.id;
+        yield* sql`
+          insert into platform_users (id, primary_email, display_name, clerk_user_id)
+          values (
+            'debug-owner-backup', 'debug-owner-backup@example.test',
+            'Debug owner backup', 'clerk:debug-owner-backup'
+          )
+        `;
+        yield* sql`
+          insert into client_company_memberships (company_id, user_id, role)
+          values (${companyId}, 'debug-owner-backup', 'admin')
+        `;
+        yield* sql`
+          update client_companies
+          set clerk_organization_id = ${organizationId}
+          where id = ${companyId}
+        `;
+        const message = (yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content)
+          values (${chat.chat.id}, 'user', 'Clerk owner debug authorization')
+          returning id::text
+        `)[0]!;
+        const runId = (yield* sql<{ readonly id: string }>`
+          insert into ai_runs (
+            chat_id, initiating_user_id, user_message_id, locale, market,
+            acceptance_scope, started_at, failed_at, error_code, retryable
+          ) values (
+            ${chat.chat.id}, 'demo-user', ${message.id}, 'en-US', 'US',
+            ${sql.json(
+              makeRunAcceptanceScope({
+                userId: "demo-user",
+                chatId: chat.chat.id,
+                companyId,
+                memoryMode: "private_owner",
+              }),
+            )},
+            now(), now(), 'provider_transport', true
+          )
+          returning id::text
+        `)[0]!.id;
+        yield* sql`
+          insert into ai_run_events (run_id, seq, emission_key, event)
+          values (
+            ${runId}, 1, 'terminal',
+            ${sql.json({ type: "error", code: "provider_transport", retryable: true })}
+          )
+        `;
+        return runId;
+      }),
+    );
+
+    let organization = organizationId;
+    const ownerAuthenticator: RequestAuthenticator = {
+      authenticateRequest: async () => ({
+        isAuthenticated: true,
+        toAuth: () => ({
+          userId: "demo-user",
+          orgId: organization,
+          sessionId: "session:clerk-owner",
+          factorVerificationAge: [0, 0],
+        }),
+      }),
+    };
+    const ownerDebug = () =>
+      Effect.runPromise(
+        routeRequest(
+          makeChatRoutes(pgLayer(), { debugAuthenticator: ownerAuthenticator }),
+          new Request(`http://hartlib.test/v1/ai-runs/${encodeURIComponent(runId)}/debug`, {
+            method: "GET",
+          }),
+        ).pipe(Effect.provide(clerkStreamConfigLayer)),
+      );
+
+    const authorized = await ownerDebug();
+    expect(authorized.status).toBe(200);
+    expect(await body(authorized)).toMatchObject({ available: true });
+
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_company_memberships
+          set revoked_at = now(), revoked_by_user_id = 'demo-user'
+          where company_id = (select company_id from chats where id = ${chat.chat.id})
+            and user_id = 'demo-user'
+        `;
+      }),
+    );
+    const revokedMembership = await ownerDebug();
+    expect(revokedMembership.status).toBe(404);
+    expect(await body(revokedMembership)).toEqual({ error: "not_found" });
+
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_company_memberships
+          set revoked_at = null, revoked_by_user_id = null
+          where company_id = (select company_id from chats where id = ${chat.chat.id})
+            and user_id = 'demo-user'
+        `;
+      }),
+    );
+    organization = `org_wrong_${crypto.randomUUID()}`;
+    const wrongOrganization = await ownerDebug();
+    expect(wrongOrganization.status).toBe(404);
+    expect(await body(wrongOrganization)).toEqual({ error: "not_found" });
+  });
+
+  it("returns a content-free publisher quote for restricted, deleted, nonrecipient, and shared viewers", async () => {
+    const chat = await getSharedChat();
+    const sourceKey = `k_${"cn_" + "B".repeat(22)}_1`;
+    const deletedSourceKey = `k_${"cn_" + "B".repeat(22)}_2`;
+    const publisherCompanyId = crypto.randomUUID();
+    const subscriptionId = crypto.randomUUID();
+    const accessId = crypto.randomUUID();
+    const issueId = crypto.randomUUID();
+    const documentId = crypto.randomUUID();
+    const snapshotId = crypto.randomUUID();
+    const extractionJobId = crypto.randomUUID();
+    const extractionId = crypto.randomUUID();
+    const deletedDocumentId = crypto.randomUUID();
+    const deletedSnapshotId = crypto.randomUUID();
+    const deletedExtractionJobId = crypto.randomUUID();
+    const deletedExtractionId = crypto.randomUUID();
+    const documentText = "Publisher-only secret evidence";
+    const deletedDocumentText = "Deleted publisher-only evidence";
+    const contentHash = createHash("sha256").update(documentText, "utf8").digest("hex");
+    const deletedContentHash = createHash("sha256")
+      .update(deletedDocumentText, "utf8")
+      .digest("hex");
+    const citationUrl = `/v1/issues/${issueId}/documents/${documentId}/content`;
+    const ranges = [{ pageNumber: 1, charStart: 0, charEnd: documentText.length }] as const;
+    const sourceRanges = [{ charStart: 0, charEnd: documentText.length }] as const;
+    const deletedRanges = [
+      { pageNumber: 1, charStart: 0, charEnd: deletedDocumentText.length },
+    ] as const;
+    const deletedSourceRanges = [{ charStart: 0, charEnd: deletedDocumentText.length }] as const;
+    const companyId = await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return (yield* sql<{ readonly id: string }>`
+          select company_id::text as id from chats where id = ${chat.chat.id}
+        `)[0]!.id;
+      }),
+    );
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        const userMessage = (yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content)
+          values (${chat.chat.id}, 'user', 'Publisher quote authorization fixture')
+          returning id::text
+        `)[0]!;
+        yield* sql`
+          insert into publisher_companies (id, name)
+          values (${publisherCompanyId}, 'Quote publisher')
+        `;
+        yield* sql`
+          insert into publisher_subscriptions (
+            id, publisher_company_id, name, created_by_user_id
+          ) values (${subscriptionId}, ${publisherCompanyId}, 'Quote subscription', 'demo-user')
+        `;
+        yield* sql`
+          insert into publisher_company_memberships (
+            publisher_company_id, user_id, role, accepted_at
+          ) values (${publisherCompanyId}, 'demo-user', 'admin', now())
+        `;
+        yield* sql`
+          insert into client_subscription_accesses (
+            id, subscription_id, client_company_id, state, first_admin_email,
+            accepted_at, subscribed_at, created_by_user_id
+          ) values (
+            ${accessId}, ${subscriptionId}, ${companyId}, 'active',
+            'demo@example.test', now(), now(), 'demo-user'
+          )
+        `;
+        yield* sql`
+          insert into client_employee_subscription_grants (
+            access_id, client_company_id, user_id, granted_by_user_id
+          ) values (${accessId}, ${companyId}, 'demo-user', 'demo-user')
+        `;
+        yield* sql`
+          insert into chat_subscription_sources (
+            chat_id, access_id, client_company_id, subscription_id
+          ) values (${chat.chat.id}, ${accessId}, ${companyId}, ${subscriptionId})
+        `;
+        const run = (yield* sql<{ readonly id: string }>`
+          insert into ai_runs (
+            chat_id, initiating_user_id, user_message_id, locale, market,
+            citation_namespace, acceptance_scope, finished_at
+          ) values (
+            ${chat.chat.id}, 'demo-user', ${userMessage.id}, 'en-US', 'US',
+            ${"cn_" + "B".repeat(22)},
+            ${sql.json(
+              makeRunAcceptanceScope({
+                userId: "demo-user",
+                chatId: chat.chat.id,
+                companyId,
+                subscriptionIds: [subscriptionId],
+                accessIds: [accessId],
+                memoryMode: "disabled",
+              }),
+            )},
+            now()
+          )
+          returning id::text
+        `)[0]!;
+        const assistant = (yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content, assistant_ai_run_id)
+          values (
+            ${chat.chat.id}, 'assistant',
+            ${`Publisher answer [[cite:${sourceKey},${deletedSourceKey}]]`}, ${run.id}
+          )
+          returning id::text
+        `)[0]!;
+        yield* sql`
+          update ai_runs set assistant_message_id = ${assistant.id} where id = ${run.id}
+        `;
+        yield* sql`
+          insert into publisher_issues (
+            id, subscription_id, title, status, created_by_user_id
+          ) values (${issueId}, ${subscriptionId}, 'Quote issue', 'draft', 'demo-user')
+        `;
+        yield* sql`
+          insert into hartlib_documents (
+            id, issue_id, title, original_file_name, object_key, media_type,
+            byte_size, sha256_hex, upload_completed_at, created_by_user_id, language
+          ) values (
+            ${documentId}, ${issueId}, 'Quote document', 'quote.pdf',
+            ${`quote/${documentId}.pdf`}, 'application/pdf', 1, ${"a".repeat(64)},
+            now(), 'demo-user', 'en-US'
+          )
+        `;
+        yield* sql`
+          insert into jobs (id, kind, payload)
+          values (${extractionJobId}, 'extract_pdf_text', '{}'::jsonb)
+        `;
+        yield* sql`
+          insert into hartlib_document_extractions (
+            id, hartlib_document_id, input_sha256_hex, pages,
+            extracted_char_count, created_by_job_id
+          ) values (
+            ${extractionId}, ${documentId}, ${"a".repeat(64)},
+            ${JSON.stringify([{ pageNumber: 1, text: documentText }])}::jsonb,
+            ${documentText.length}, ${extractionJobId}
+          )
+        `;
+        yield* sql`
+          insert into hartlib_document_versions (
+            id, hartlib_document_id, publisher_extraction_id, content_hash,
+            language, canonical_text, text_char_count, page_ranges
+          ) values (
+            ${snapshotId}, ${documentId}, ${extractionId}, ${contentHash},
+            'en-US', ${documentText}, ${documentText.length},
+            ${JSON.stringify(ranges)}::jsonb
+          )
+        `;
+        yield* sql`
+          update hartlib_documents set current_version_id = ${snapshotId} where id = ${documentId}
+        `;
+        yield* sql`
+          insert into hartlib_documents (
+            id, issue_id, title, original_file_name, object_key, media_type,
+            byte_size, sha256_hex, upload_completed_at, deleted_at, deleted_by_user_id,
+            purge_after, created_by_user_id, language
+          ) values (
+            ${deletedDocumentId}, ${issueId}, 'Deleted quote document', 'deleted-quote.pdf',
+            ${`quote/${deletedDocumentId}.pdf`}, 'application/pdf', 1, ${"b".repeat(64)},
+            now(), now(), 'demo-user', now() + interval '30 days', 'demo-user', 'en-US'
+          )
+        `;
+        yield* sql`
+          insert into jobs (id, kind, payload)
+          values (${deletedExtractionJobId}, 'extract_pdf_text', '{}'::jsonb)
+        `;
+        yield* sql`
+          insert into hartlib_document_extractions (
+            id, hartlib_document_id, input_sha256_hex, pages,
+            extracted_char_count, created_by_job_id
+          ) values (
+            ${deletedExtractionId}, ${deletedDocumentId}, ${"b".repeat(64)},
+            ${JSON.stringify([{ pageNumber: 1, text: deletedDocumentText }])}::jsonb,
+            ${deletedDocumentText.length}, ${deletedExtractionJobId}
+          )
+        `;
+        yield* sql`
+          insert into hartlib_document_versions (
+            id, hartlib_document_id, publisher_extraction_id, content_hash,
+            language, canonical_text, text_char_count, page_ranges
+          ) values (
+            ${deletedSnapshotId}, ${deletedDocumentId}, ${deletedExtractionId}, ${deletedContentHash},
+            'en-US', ${deletedDocumentText}, ${deletedDocumentText.length},
+            ${JSON.stringify(deletedRanges)}::jsonb
+          )
+        `;
+        yield* sql`
+          update hartlib_documents
+          set current_version_id = ${deletedSnapshotId}
+          where id = ${deletedDocumentId}
+        `;
+        yield* sql`
+          update publisher_issues
+          set status = 'published', publication_at = now(), published_at = now()
+          where id = ${issueId}
+        `;
+        yield* sql`
+          insert into issue_deliveries (
+            issue_id, subscription_id, access_id, client_company_id, historical
+          ) values (${issueId}, ${subscriptionId}, ${accessId}, ${companyId}, false)
+        `;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator,
+            snapshot_id, publisher_extraction_id, document_source_id, document_id,
+            content_hash, display_label, public_provenance
+          ) values (
+            ${assistant.id}, ${sourceKey}, 'document',
+            ${sql.json({
+              kind: "document",
+              sourceId: `publisher:${subscriptionId}`,
+              documentId,
+              snapshotId,
+              contentHash,
+              ranges: sourceRanges,
+              publisherIssueId: issueId,
+              publisherDocumentId: documentId,
+              publisherExtractionId: extractionId,
+            })},
+            ${snapshotId}, ${extractionId}, ${`publisher:${subscriptionId}`}, ${documentId},
+            ${contentHash}, 'Quote document', ${sql.json({
+              sourceName: "Quote publisher",
+              issueTitle: "Quote issue",
+              documentTitle: "Quote document",
+              citationUrl,
+              publishedAt: "2026-08-22T00:00:00.000Z",
+            })}
+          )
+        `;
+        yield* sql`
+          insert into assistant_message_source_uses (
+            assistant_message_id, source_key, consumer_task_id, topic_id,
+            rendered_token_count, context_order, ranges
+          ) values (
+            ${assistant.id}, ${sourceKey}, 'single-answer', null, 8, 0,
+            ${JSON.stringify(sourceRanges)}::jsonb
+          )
+        `;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator,
+            snapshot_id, publisher_extraction_id, document_source_id, document_id,
+            content_hash, display_label, public_provenance
+          ) values (
+            ${assistant.id}, ${deletedSourceKey}, 'document',
+            ${sql.json({
+              kind: "document",
+              sourceId: `publisher:${subscriptionId}`,
+              documentId: deletedDocumentId,
+              snapshotId: deletedSnapshotId,
+              contentHash: deletedContentHash,
+              ranges: deletedSourceRanges,
+              publisherIssueId: issueId,
+              publisherDocumentId: deletedDocumentId,
+              publisherExtractionId: deletedExtractionId,
+            })},
+            ${deletedSnapshotId}, ${deletedExtractionId}, ${`publisher:${subscriptionId}`},
+            ${deletedDocumentId}, ${deletedContentHash}, 'Deleted quote document', ${sql.json({
+              sourceName: "Quote publisher",
+              issueTitle: "Quote issue",
+              documentTitle: "Deleted quote document",
+              citationUrl: `/v1/issues/${issueId}/documents/${deletedDocumentId}/content`,
+              publishedAt: "2026-08-22T00:00:00.000Z",
+            })}
+          )
+        `;
+        yield* sql`
+          insert into assistant_message_source_uses (
+            assistant_message_id, source_key, consumer_task_id, topic_id,
+            rendered_token_count, context_order, ranges
+          ) values (
+            ${assistant.id}, ${deletedSourceKey}, 'single-answer', null, 8, 1,
+            ${JSON.stringify(deletedSourceRanges)}::jsonb
+          )
+        `;
+      }),
+    );
+
+    const readOwner = async () => {
+      const response = await route(request("GET", `/v1/chats/${chat.chat.id}`));
+      expect(response.status).toBe(200);
+      return body<{ messages: readonly Record<string, unknown>[] }>(response);
+    };
+    const assertQuote = async (expected: { readonly text: string } | null) => {
+      const payload = await readOwner();
+      const assistant = payload.messages.find((message) => message.author === "assistant");
+      expect(assistant).toBeDefined();
+      const citation = (assistant?.citations as readonly Record<string, unknown>[]).find(
+        (item) => item.sourceKey === sourceKey,
+      );
+      expect(citation).toEqual(expect.objectContaining({ sourceKey, quote: expected }));
+      if (expected === null) expect(JSON.stringify(payload)).not.toContain(documentText);
+    };
+    const assertDeletedQuote = async () => {
+      const payload = await readOwner();
+      const assistant = payload.messages.find((message) => message.author === "assistant");
+      const citation = (assistant?.citations as readonly Record<string, unknown>[]).find(
+        (item) => item.sourceKey === deletedSourceKey,
+      );
+      expect(citation).toEqual(
+        expect.objectContaining({ sourceKey: deletedSourceKey, quote: null }),
+      );
+      expect(JSON.stringify(payload)).not.toContain(deletedDocumentText);
+    };
+
+    await assertQuote({ text: documentText });
+    await assertDeletedQuote();
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update publisher_issues
+          set restricted_at = now(), restricted_by_user_id = 'demo-user', restricted_reason = 'test'
+          where id = ${issueId}
+        `;
+      }),
+    );
+    await assertQuote(null);
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update publisher_issues
+          set restricted_at = null, restricted_by_user_id = null, restricted_reason = null
+          where id = ${issueId}
+        `;
+      }),
+    );
+    await assertQuote({ text: documentText });
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into platform_users (id, primary_email, display_name, clerk_user_id)
+          values
+            ('publisher-nonrecipient', 'publisher-nonrecipient@example.test', 'Publisher nonrecipient', 'clerk:publisher-nonrecipient'),
+            ('publisher-shared-viewer', 'publisher-shared-viewer@example.test', 'Publisher viewer', 'clerk:publisher-shared-viewer')
+        `;
+        yield* sql`
+          insert into client_company_memberships (company_id, user_id, role)
+          values
+            (${companyId}, 'publisher-nonrecipient', 'member'),
+            (${companyId}, 'publisher-shared-viewer', 'member')
+        `;
+      }),
+    );
+    let readUserId = "publisher-nonrecipient";
+    const readAuthenticator: RequestAuthenticator = {
+      authenticateRequest: async () => ({
+        isAuthenticated: true,
+        toAuth: () => ({
+          userId: readUserId,
+          orgId: null,
+          sessionId: `session:${readUserId}`,
+          factorVerificationAge: [0, 0],
+        }),
+      }),
+    };
+    const nonrecipientResponse = await Effect.runPromise(
+      routeRequest(
+        makeChatRoutes(pgLayer(), { readAuthenticator }),
+        new Request(`http://hartlib.test/v1/chats/${chat.chat.id}`, { method: "GET" }),
+      ).pipe(Effect.provide(clerkStreamConfigLayer)),
+    );
+    expect(nonrecipientResponse.status).toBe(200);
+    const nonrecipientPayload = await body<{ messages: readonly Record<string, unknown>[] }>(
+      nonrecipientResponse,
+    );
+    const nonrecipientAssistant = nonrecipientPayload.messages.find(
+      (message) => message.author === "assistant",
+    );
+    const nonrecipientCitation = (
+      nonrecipientAssistant?.citations as readonly Record<string, unknown>[]
+    ).find((item) => item.sourceKey === sourceKey);
+    expect(nonrecipientCitation).toEqual(expect.objectContaining({ sourceKey, quote: null }));
+    expect(JSON.stringify(nonrecipientPayload)).not.toContain(documentText);
+
+    readUserId = "publisher-shared-viewer";
+    const sharedViewerResponse = await Effect.runPromise(
+      routeRequest(
+        makeChatRoutes(pgLayer(), { readAuthenticator }),
+        new Request(`http://hartlib.test/v1/chats/${chat.chat.id}`, { method: "GET" }),
+      ).pipe(Effect.provide(clerkStreamConfigLayer)),
+    );
+    expect(sharedViewerResponse.status).toBe(200);
+    const sharedViewerPayload = await body<{ messages: readonly Record<string, unknown>[] }>(
+      sharedViewerResponse,
+    );
+    const sharedAssistant = sharedViewerPayload.messages.find(
+      (message) => message.author === "assistant",
+    );
+    const sharedCitation = (sharedAssistant?.citations as readonly Record<string, unknown>[]).find(
+      (item) => item.sourceKey === sourceKey,
+    );
+    expect(sharedCitation).toEqual(expect.objectContaining({ sourceKey, quote: null }));
+    expect(JSON.stringify(sharedViewerPayload)).not.toContain(documentText);
+  });
+
+  it("nulls an authorized public quote after its source setting is revoked without a leak", async () => {
+    const chat = await getChat();
+    const sourceId = `quote-public-source-${crypto.randomUUID()}`;
+    const documentId = `quote-public-document-${crypto.randomUUID()}`;
+    const artifactId = crypto.randomUUID();
+    const sourceKey = `k_${"cn_" + "Q".repeat(22)}_1`;
+    const canonicalUrl = `https://example.test/public/${documentId}`;
+    const documentText =
+      "Authorized public quote evidence: the source setting permits this exact passage. ".repeat(3);
+    const contentHash = createHash("sha256").update(documentText, "utf8").digest("hex");
+    const ranges = [{ charStart: 0, charEnd: documentText.length }] as const;
+    const companyId = await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return (yield* sql<{ readonly id: string }>`
+          select company_id::text as id from chats where id = ${chat.chat.id}
+        `)[0]!.id;
+      }),
+    );
+
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          insert into public_sources (
+            source_id, display_name, publisher_name, description, ingestion_method,
+            discovery_url, average_chars_per_item
+          ) values (
+            ${sourceId}, 'Public quote source', 'Public publisher', 'Quote authorization fixture',
+            'rss', ${`${canonicalUrl}/feed`}, 1000
+          )
+        `;
+        const bodyText = `<main>${documentText}</main>`;
+        yield* sql`
+          insert into public_source_raw_artifacts (
+            id, source_id, canonical_url, fetched_at, media_type, body, body_hash
+          ) values (
+            ${artifactId}, ${sourceId}, ${canonicalUrl}, now(), 'text/html',
+            ${bodyText}, encode(digest(convert_to(${bodyText}, 'UTF8'), 'sha256'), 'hex')
+          )
+        `;
+        yield* sql`
+          insert into public_source_documents (
+            document_id, source_id, raw_artifact_id, canonical_url, title, text, language,
+            discovered_at, fetched_at, document_type, content_hash, text_char_count
+          ) values (
+            ${documentId}, ${sourceId}, ${artifactId}, ${canonicalUrl}, 'Public quote document',
+            ${documentText}, 'en-US', now(), now(), 'publication', ${contentHash}, ${documentText.length}
+          )
+        `;
+        yield* sql`
+          insert into public_source_items (
+            source_id, canonical_url, external_id, title, published_at, discovered_at,
+            current_content_hash, latest_document_id, latest_raw_artifact_id,
+            last_fetched_at, last_successful_fetch_at
+          ) values (
+            ${sourceId}, ${canonicalUrl}, ${documentId}, 'Public quote document', now(), now(),
+            ${contentHash}, ${documentId}, ${artifactId}, now(), now()
+          )
+        `;
+        yield* sql`
+          insert into client_company_public_source_settings (
+            client_company_id, source_id, enabled, updated_by_user_id
+          ) values (${companyId}, ${sourceId}, true, 'demo-user')
+        `;
+        const userMessage = (yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content)
+          values (${chat.chat.id}, 'user', 'Read the public quote')
+          returning id::text
+        `)[0]!;
+        const run = (yield* sql<{ readonly id: string }>`
+          insert into ai_runs (
+            chat_id, initiating_user_id, user_message_id, locale, market,
+            citation_namespace, acceptance_scope, started_at, finished_at
+          ) values (
+            ${chat.chat.id}, 'demo-user', ${userMessage.id}, 'en-US', 'US',
+            ${"cn_" + "Q".repeat(22)},
+            ${sql.json(
+              makeRunAcceptanceScope({
+                userId: "demo-user",
+                chatId: chat.chat.id,
+                companyId,
+                publicSourceIds: [sourceId],
+                memoryMode: "private_owner",
+              }),
+            )},
+            now(), now()
+          )
+          returning id::text
+        `)[0]!;
+        const assistant = (yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content, assistant_ai_run_id)
+          values (
+            ${chat.chat.id}, 'assistant', ${`Authorized public quote [[cite:${sourceKey}]]`},
+            ${run.id}
+          )
+          returning id::text
+        `)[0]!;
+        yield* sql`
+          update ai_runs set assistant_message_id = ${assistant.id} where id = ${run.id}
+        `;
+        yield* sql`
+          insert into assistant_message_sources (
+            assistant_message_id, source_key, kind, locator,
+            snapshot_id, document_source_id, document_id, content_hash,
+            display_label, public_provenance
+          ) values (
+            ${assistant.id}, ${sourceKey}, 'document',
+            ${sql.json({
+              kind: "document",
+              sourceId: `public:${sourceId}`,
+              documentId,
+              snapshotId: documentId,
+              contentHash,
+              ranges,
+            })},
+            ${documentId}, ${`public:${sourceId}`}, ${documentId}, ${contentHash},
+            'Public quote document', ${sql.json({
+              sourceName: "Public quote source",
+              issueTitle: "Public quote issue",
+              documentTitle: "Public quote document",
+              citationUrl: canonicalUrl,
+              publishedAt: "2026-08-22T00:00:00.000Z",
+            })}
+          )
+        `;
+        yield* sql`
+          insert into assistant_message_source_uses (
+            assistant_message_id, source_key, consumer_task_id, topic_id,
+            rendered_token_count, context_order, ranges
+          ) values (
+            ${assistant.id}, ${sourceKey}, 'single-answer', null, 12, 0,
+            ${JSON.stringify(ranges)}::jsonb
+          )
+        `;
+      }),
+    );
+
+    const readOwner = async () => {
+      const response = await route(request("GET", `/v1/chats/${chat.chat.id}`));
+      expect(response.status).toBe(200);
+      return body<{ messages: readonly Record<string, unknown>[] }>(response);
+    };
+    const readCitation = async () => {
+      const payload = await readOwner();
+      const assistant = payload.messages.find((message) => message.author === "assistant");
+      const citation = (assistant?.citations as readonly Record<string, unknown>[]).find(
+        (item) => item.sourceKey === sourceKey,
+      );
+      expect(citation).toBeDefined();
+      return { payload, citation: citation! };
+    };
+
+    const authorized = await readCitation();
+    expect(authorized.citation).toEqual(
+      expect.objectContaining({ sourceKey, quote: { text: documentText } }),
+    );
+
+    await runDb(
+      isolatedUrl(),
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* sql`
+          update client_company_public_source_settings
+          set enabled = false, updated_at = now()
+          where client_company_id = ${companyId} and source_id = ${sourceId}
+        `;
+      }),
+    );
+    const revoked = await readCitation();
+    expect(revoked.citation).toEqual(expect.objectContaining({ sourceKey, quote: null }));
+    const serialized = JSON.stringify(revoked.payload);
+    expect(serialized).not.toContain(documentText);
+    expect(serialized).not.toContain("source setting permits");
+    expect(serialized).not.toContain("not authorized");
   });
 
   it.each([
@@ -1641,9 +2549,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     const response = await route(request("GET", `/v1/ai-runs/${accepted.run.id}/stream`));
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
-    const first = await reader.read();
-    expect(first.done).toBe(false);
-    expect(new TextDecoder().decode(first.value)).toContain("AUTHORIZED_BEFORE");
+    await expect(readStreamUntil(reader, "AUTHORIZED_BEFORE")).resolves.toContain(
+      "AUTHORIZED_BEFORE",
+    );
 
     await runDb(
       isolatedUrl(),
@@ -1663,9 +2571,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         `;
       }),
     );
-    const after = await reader.read();
-    expect(after.done).toBe(false);
-    expect(new TextDecoder().decode(after.value)).toContain("FORBIDDEN_AFTER");
+    await expect(readStreamUntil(reader, "FORBIDDEN_AFTER")).resolves.toContain("FORBIDDEN_AFTER");
     await reader.cancel();
   });
 
@@ -2363,9 +3269,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     const broadened = await route(request("GET", `/v1/ai-runs/${accepted.run.id}/stream`));
     expect(broadened.status).toBe(200);
     const broadenedReader = broadened.body!.getReader();
-    const broadenedFirst = await broadenedReader.read();
-    expect(broadenedFirst.done).toBe(false);
-    expect(new TextDecoder().decode(broadenedFirst.value)).toContain("WEB");
+    await expect(readStreamUntil(broadenedReader, "WEB")).resolves.toContain("WEB");
     await runDb(
       isolatedUrl(),
       Effect.gen(function* () {
@@ -2385,9 +3289,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         `;
       }),
     );
-    const narrowedEvent = await broadenedReader.read();
-    expect(narrowedEvent.done).toBe(false);
-    expect(new TextDecoder().decode(narrowedEvent.value)).toContain("NARROWED_FORBIDDEN");
+    await expect(readStreamUntil(broadenedReader, "NARROWED_FORBIDDEN")).resolves.toContain(
+      "NARROWED_FORBIDDEN",
+    );
     await broadenedReader.cancel();
     const narrowed = await route(request("GET", `/v1/ai-runs/${accepted.run.id}/stream`));
     expect(narrowed.status).toBe(200);
@@ -2504,9 +3408,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
     const response = await route(request("GET", `/v1/ai-runs/${accepted.run.id}/stream`));
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
-    const first = await reader.read();
-    expect(first.done).toBe(false);
-    expect(new TextDecoder().decode(first.value)).toContain("MEMORY_AUTHORIZED_BEFORE");
+    await expect(readStreamUntil(reader, "MEMORY_AUTHORIZED_BEFORE")).resolves.toContain(
+      "MEMORY_AUTHORIZED_BEFORE",
+    );
     await runDb(
       isolatedUrl(),
       Effect.gen(function* () {
@@ -2523,9 +3427,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical chat and memory API", () => {
         `;
       }),
     );
-    const memoryAfter = await reader.read();
-    expect(memoryAfter.done).toBe(false);
-    expect(new TextDecoder().decode(memoryAfter.value)).toContain("MEMORY_FORBIDDEN_AFTER");
+    await expect(readStreamUntil(reader, "MEMORY_FORBIDDEN_AFTER")).resolves.toContain(
+      "MEMORY_FORBIDDEN_AFTER",
+    );
     await reader.cancel();
   });
 

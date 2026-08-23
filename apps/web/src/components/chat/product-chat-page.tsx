@@ -21,6 +21,7 @@ import { useIntl, useLocale, useMarket } from "@hartlib/i18n";
 import {
   ApiResponseError,
   fetchMemoryRevision,
+  fetchAiRunDebug,
   fetchMemories,
   fetchPublisherDocument,
   getChat,
@@ -61,6 +62,7 @@ const toTranscript = (messages: readonly ChatMessage[]): readonly ChatTranscript
           id: message.id,
           author: "assistant",
           content: message.content,
+          ...(message.runId === undefined ? {} : { runId: message.runId }),
           citations: message.citations,
           sourcesRead: message.sourcesRead,
         },
@@ -746,6 +748,7 @@ export function ProductChatPage({ chatId }: { readonly chatId: string }) {
         className="min-h-[24rem] flex-1"
         height="min(60vh, 42rem)"
         onOpenAuthenticatedDocument={openAuthenticatedDocument}
+        {...(canWrite ? { onLoadAiRunDebug: fetchAiRunDebug } : {})}
         onResubmit={(message) => {
           setText(message.content);
           setError(null);

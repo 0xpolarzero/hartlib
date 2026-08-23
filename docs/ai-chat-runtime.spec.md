@@ -1849,7 +1849,7 @@ cursor in session storage. After a reload, the newest failed user-message run
 selects that stored terminal draft so its safe failure details remain visible;
 the clients never reconnect a run that is already terminal.
 
-The stream closes after `done` or `error`. Ordinary `ai_run_events` are restricted, transient, and pruned 24 hours after the terminal event. An event ledger bound to an evaluation case is retained while its non-failed evaluation session or sealed evidence/annotation can still be revalidated; the ordinary 24-hour prune must not destroy trusted evaluation evidence.
+The stream closes after `done` or `error`. Ordinary `ai_run_events` are restricted, transient, and pruned 24 hours after the terminal event. An event ledger bound to an evaluation case is retained while its non-failed evaluation session or sealed evidence/annotation can still be revalidated; the ordinary 24-hour prune must not destroy trusted evaluation evidence. The owner-only `GET /v1/ai-runs/:runId/debug` projection reads retained safe activity rows, run timestamps, durable usage totals, and final source counts. It returns an explicit unavailable state when a terminal run no longer has a complete retained terminal/event record; it never turns the replay window into durable chat history.
 
 ### Public activity contract and replay
 
@@ -1939,6 +1939,7 @@ Public endpoints:
 - `GET /v1/chat`
 - `POST /v1/chat/messages`
 - `GET /v1/ai-runs/:runId/stream`
+- `GET /v1/ai-runs/:runId/debug` (owner-only safe projection)
 - `GET /v1/memories`
 - `GET /v1/memories/:memoryId/revisions/:revisionId`
 - `POST /v1/memories/:memoryId/revert`
@@ -1993,7 +1994,7 @@ Successful acceptance responds `202` with the durable identities required to att
 }
 ```
 
-`GET /v1/chat` returns the chat, persisted messages, effective web-policy state, authoritative `canWrite`, and `activeRun: null | { id, status: "queued" | "running", streamPath }`. `canWrite` is true only for the chat creator; shared viewers receive false and the UI disables the composer and web toggle. When the route changes, the browser clears route-scoped chat, draft, authorization, and conflict state immediately, keeps the prior projection hidden until the new chat GET completes, and never replays a pending request under the destination chat ID. In demo mode it idempotently ensures the demo workspace, resolves that chat ID, and then uses the same authorized full-chat transaction as an explicit chat read, holding the chat row, company-membership lane, chat-execution lane, live user/company rows, and final authorization through every message, run, source, and source-use query. It cannot mix pre-finalization messages with a post-finalization run outcome. The browser uses `activeRun` after reload and its last received SSE sequence to reconnect. Every transient disconnect or retryable handshake failure first authoritatively reloads the chat and may use capped backoff only while that reload reports the same active run. A definitive stream handshake `401`, `403`, or `404`, or `410 terminal_event_unavailable`, clears provisional stream state, authoritatively reloads the durable chat/memory projections, and never retries that cursor; if the reconciliation is unauthorized it terminates and clears without another loop. A `409` send response includes the typed conflict and the same active-run descriptor shape. Neither response exposes a Smithers run or task ID.
+`GET /v1/chat` returns the chat, persisted messages, effective web-policy state, authoritative `canWrite`, and `activeRun: null | { id, status: "queued" | "running", streamPath }`. `canWrite` is true only for the chat creator; shared viewers receive false and the UI disables the composer, web toggle, and debug-details loader. When the route changes, the browser clears route-scoped chat, draft, authorization, and conflict state immediately, keeps the prior projection hidden until the new chat GET completes, and never replays a pending request under the destination chat ID. In demo mode it idempotently ensures the demo workspace, resolves that chat ID, and then uses the same authorized full-chat transaction as an explicit chat read, holding the chat row, company-membership lane, chat-execution lane, live user/company rows, and final authorization through every message, run, source, and source-use query. It cannot mix pre-finalization messages with a post-finalization run outcome. The browser uses `activeRun` after reload and its last received SSE sequence to reconnect. Every transient disconnect or retryable handshake failure first authoritatively reloads the chat and may use capped backoff only while that reload reports the same active run. A definitive stream handshake `401`, `403`, or `404`, or `410 terminal_event_unavailable`, clears provisional stream state, authoritatively reloads the durable chat/memory projections, and never retries that cursor; if the reconciliation is unauthorized it terminates and clears without another loop. A `409` send response includes the typed conflict and the same active-run descriptor shape. Neither response exposes a Smithers run or task ID.
 
 Every returned user message carries its durable run outcome:
 
@@ -2055,61 +2056,106 @@ Foreign or unknown memory/revision IDs return `404`. A revert after the manageme
 An assistant message returned by `GET /v1/chat` contains:
 
 ```ts
-type PublicSourceLocator =
-  | {
-      kind: "document";
-      lookupRef?: string;
-      issueTitle?: string;
-      documentTitle: string;
-      url: string;
-      publishedAt?: string;
-      ranges: SourceRange[];
-    }
-  | {
-      kind: "chat_message";
-      messageId: string;
-      ranges: [];
-    }
-  | {
-      kind: "memory";
-      memoryId: string;
-      memoryRevisionId: string;
-      ranges: [];
-    }
-  | {
-      kind: "web";
-      title: string;
-      domain: string;
-      url: string;
-      publishedAt?: string;
-      capturedAt: string;
+type PublicDocumentLocator = {
+  kind: "document";
+  sourceName?: string;
+  issueTitle?: string;
+  documentTitle: string;
+  url: string;
+  publishedAt?: string;
+  ranges: SourceRange[];
+};
+
+type PublicChatMessageLocator = {
+  kind: "chat_message";
+  messageId: string;
+  ranges: [];
+};
+
+type PublicMemoryLocator = {
+  kind: "memory";
+  memoryId: string;
+  memoryRevisionId: string;
+  ranges: [];
+};
+
+type PublicWebLocator = {
+  kind: "web";
+  title: string;
+  domain: string;
+  url: string;
+  publishedAt?: string;
+  capturedAt: string;
+  ranges: [];
+};
+
+type PublicCitationRecord =
+  | (PublicDocumentLocator & {
+      sourceKey: string;
+      label: string | null;
+      quote: { readonly text: string } | null;
+    })
+  | (PublicChatMessageLocator & {
+      sourceKey: string;
+      label: string | null;
+      quote: { readonly text: string } | null;
+    })
+  | (PublicMemoryLocator & {
+      sourceKey: string;
+      label: string | null;
+      quote: { readonly text: string } | null;
+    })
+  | (PublicWebLocator & {
+      sourceKey: string;
+      label: string | null;
+      quote: { readonly text: string } | null;
+    });
+
+type PublicSourceRecord =
+  | (PublicDocumentLocator & {
+      sourceKey: string;
+      label: string | null;
+      tokenCount: number;
+      topicIds: Array<"t1" | "t2" | "t3">;
+    })
+  | (PublicChatMessageLocator & {
+      sourceKey: string;
+      label: string | null;
+      tokenCount: number;
+      topicIds: Array<"t1" | "t2" | "t3">;
+    })
+  | (PublicMemoryLocator & {
+      sourceKey: string;
+      label: string | null;
+      tokenCount: number;
+      topicIds: Array<"t1" | "t2" | "t3">;
+    })
+  // `sourcesRead` keeps the legacy web evidence quote. It is decoded
+  // separately from the canonical citation supporting-quote field.
+  | (PublicWebLocator & {
+      sourceKey: string;
+      label: string | null;
+      tokenCount: number;
+      topicIds: Array<"t1" | "t2" | "t3">;
       quote: string;
-      ranges: [];
-    };
-
-type PublicCitationRecord = {
-  sourceKey: string;
-  label: string | null;
-} & PublicSourceLocator;
-
-type PublicSourceRecord = {
-  sourceKey: string;
-  label: string | null;
-  tokenCount: number;
-  topicIds: Array<"t1" | "t2" | "t3">;
-} & PublicSourceLocator;
+    });
 
 type AssistantMessage = {
   id: string;
   author: "assistant";
   content: string;
   createdAt: string;
+  runId?: string;
   citations: PublicCitationRecord[];
   sourcesRead: PublicSourceRecord[];
 };
 ```
 
 Here `ranges` is the normalized document-range union and is empty for non-document kinds. `tokenCount` is the sum of that source's exact JSON-framed marginal counts across direct/topic serialized uses; `topicIds` is their deduplicated stable topic list. The `sourcesRead` element is the same strict `PublicSourceRecord` used by `context_ready`.
+
+`citations[].quote` is the canonical, required supporting-quote field: `{ text: string } | null`, capped at 2,000 UTF-16 characters and 8 KiB. The compatibility decoder accepts omitted non-web quotes and the old web string quote, then normalizes both to this shape; canonical encoding always includes `quote`. The server reconstructs document text from the immutable public or publisher version and saved ranges, earlier-chat text from the same saved message and private source-use ranges, and memory text from the exact saved revision. It verifies those bindings before serialization; the browser never derives a quote from a range, title, URL, provider snippet, or answer text. A missing, expired, deleted, malformed, or unauthorized reconstruction returns the same `null` value. Web `sourcesRead` records keep their legacy string `quote` because they are the source-read evidence contract; citation records never reuse that field. Except for that explicit legacy web `sourcesRead.quote`, quote text appears only on inline citation records, and quote integrity hashes remain server-side.
+
+`GET /v1/ai-runs/:runId/debug` returns either `{ available: false }` or `{ available: true, debug }`. The safe debug projection contains only the owner-authorized run ID, queued/running/succeeded/failed status, public timestamps, last event sequence, five fixed stage summaries, a bounded activity/terminal history, read/cited/uncited source counts, context consumer and token counts with the compaction flag, memory outcome counts, model/web usage totals, and a normalized terminal error. It omits prompts, queries, answer/source text, ranges, quotes, names, URLs, source identities, hashes, provider payloads, credentials, stack traces, and Smithers state. The disclosure fetches only after the user opens it and stays closed by default. Unknown response fields fail the shared decoder; a missing or incomplete retained event record returns `{ available: false }`.
 
 `GET /v1/chat` and trusted evaluation decode the same strict saved-answer
 `source`/`use`/`locator` contract. No alternate decoder, alias, fallback, or
@@ -2140,6 +2186,8 @@ Each assistant message has:
 
 - inline citations resolved from `citations`
 - a separate sources-read affordance from `sourcesRead`
+- a supporting-quote row inside the opened sources disclosure for each cited source; the row renders only the server-provided quote and otherwise shows the one generic unavailable message
+- an owner-only, closed-by-default `Debug details` disclosure for a settled answer when its `runId` is present; it lazy-loads the safe public projection and shows an honest unavailable state after retention expiry
 - an honest empty state when no source entered the final answer/topic contexts
 
 `chat_message` citations link to the earlier message in the same transcript. `memory` citations open the exact owner-only revision view, which may sit inside the memories panel. `document` and `web` citations link to their authorized or canonical URLs.

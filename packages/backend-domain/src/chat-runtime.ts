@@ -5,12 +5,18 @@ import {
   deriveEffectiveWebPolicy,
   makeRunAcceptanceScope,
   normalizeDomainAllowlist,
+  AiRunEvent,
+  type AiRunActivityEvent,
+  type PublicAiRunDebug,
+  type PublicAiRunDebugEvent,
   type AiProviderServiceId,
   type AiProviderEndpointIdentity,
   type EffectiveWebPolicy,
 } from "@hartlib/shared";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import type { SqlClient } from "effect/unstable/sql/SqlClient";
+
+import { minimumReadablePublicSourceTextChars } from "./public-sources";
 
 export interface ChatRuntimeConfiguration {
   readonly authMode: "demo" | "clerk";
@@ -77,6 +83,11 @@ export interface SourceRow {
   /** Kind-specific indexed identities used to verify the immutable source digest. */
   readonly message_id?: string | null;
   readonly memory_revision_id?: string | null;
+  /** Internal-only immutable text used to build an authorized citation quote.
+   * These fields never enter PublicSourceRecord or logs. */
+  readonly document_text?: string | null;
+  readonly memory_revision_text?: string | null;
+  readonly memory_revision_deleted?: boolean | null;
   readonly kind: "document" | "chat_message" | "memory" | "web";
   readonly locator: unknown;
   readonly display_label: string | null;
@@ -295,7 +306,7 @@ const readEffectiveWebPolicy = (chat: ChatRow, config: ChatRuntimeConfiguration,
   });
 
 export const loadChatRuntimeState = (
-  userId: string,
+  identity: ChatRuntimeReadIdentity,
   config: ChatRuntimeConfiguration,
   chatId?: string,
 ) =>
@@ -303,7 +314,7 @@ export const loadChatRuntimeState = (
     const sql = yield* PgClient.PgClient;
     const chat =
       chatId === undefined
-        ? yield* ensureDemoChat(userId)
+        ? yield* ensureDemoChat(identity.userId)
         : (yield* sql<ChatRow>`
             select chat.id::text, chat.user_id, chat.company_id::text, chat.memory_mode,
                    chat.archived_at, chat.created_at, chat.updated_at
@@ -411,7 +422,244 @@ export const loadChatRuntimeState = (
                      (substring(source_key from '_([1-9][0-9]*)$'))::numeric,
                      source_key
           `;
-    return { chat, effectivePolicy, messages, runs, sourceRows, useRows };
+    const citationTagPattern = /\[\[cite:([A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*)\]\]/gu;
+    const citedSourceIdentities = new Set<string>();
+    for (const message of messages) {
+      if (message.author !== "assistant") continue;
+      for (const match of message.content.matchAll(citationTagPattern)) {
+        for (const sourceKey of match[1]?.split(",") ?? []) {
+          citedSourceIdentities.add(`${message.id}\u0000${sourceKey}`);
+        }
+      }
+    }
+    const citedDocumentRows = sourceRows.filter(
+      (row) =>
+        row.kind === "document" &&
+        citedSourceIdentities.has(`${row.assistant_message_id}\u0000${row.source_key}`),
+    );
+    const citedMemoryRows = sourceRows.filter(
+      (row) =>
+        row.kind === "memory" &&
+        citedSourceIdentities.has(`${row.assistant_message_id}\u0000${row.source_key}`),
+    );
+    const authorizedDocumentTexts =
+      citedDocumentRows.length === 0
+        ? []
+        : yield* sql<{
+            readonly assistantMessageId: string;
+            readonly sourceKey: string;
+            readonly documentText: string | null;
+          }>`
+            select sources.assistant_message_id::text as "assistantMessageId",
+                   sources.source_key as "sourceKey",
+                   coalesce(public_documents.text, publisher_versions.canonical_text) as "documentText"
+            from assistant_message_sources sources
+            join chat_messages messages
+              on messages.id = sources.assistant_message_id
+             and messages.chat_id = ${chat.id}
+             and messages.author = 'assistant'
+            left join public_source_documents public_documents
+              on sources.document_source_id like 'public:%'
+             and public_documents.source_id::text = substring(sources.document_source_id from 8)
+             and public_documents.document_id::text = sources.locator->>'documentId'
+            left join hartlib_document_versions publisher_versions
+              on sources.kind = 'document'
+             and sources.publisher_extraction_id = publisher_versions.publisher_extraction_id
+             and publisher_versions.id::text = sources.locator->>'snapshotId'
+             and publisher_versions.hartlib_document_id::text = sources.locator->>'documentId'
+            where sources.kind = 'document'
+              and ${sql.or(
+                citedDocumentRows.map(
+                  (row) =>
+                    sql`(
+                      sources.assistant_message_id = ${row.assistant_message_id}
+                      and sources.source_key = ${row.source_key}
+                    )`,
+                ),
+              )}
+              and (
+                (
+                  sources.document_source_id like 'public:%'
+                  and exists (
+                    select 1
+                    from client_company_public_source_settings settings
+                    join client_companies company
+                      on company.id = settings.client_company_id
+                     and company.recovery_deleted_at is null
+                     and company.purged_at is null
+                    join client_company_memberships membership
+                      on membership.company_id = settings.client_company_id
+                     and membership.user_id = ${identity.userId}
+                     and membership.revoked_at is null
+                    join platform_users users
+                      on users.id = membership.user_id
+                     and users.recovery_deleted_at is null
+                     and users.purged_at is null
+                    join public_source_items current_item
+                      on current_item.source_id = settings.source_id
+                     and current_item.latest_document_id = public_documents.document_id
+                     and current_item.canonical_url = public_documents.canonical_url
+                     and current_item.current_content_hash = public_documents.content_hash
+                     and current_item.latest_raw_artifact_id = public_documents.raw_artifact_id
+                    join public_source_raw_artifacts raw_artifact
+                      on raw_artifact.id = public_documents.raw_artifact_id
+                    where settings.client_company_id = ${chat.company_id}
+                      and settings.source_id = substring(sources.document_source_id from 8)
+                      and settings.enabled
+                      and public_documents.text_char_count >= ${minimumReadablePublicSourceTextChars}
+                      and btrim(lower(split_part(raw_artifact.media_type, ';', 1))) in ('text/html', 'application/pdf')
+                      and hartlib_public_source_https_url_allowed(current_item.canonical_url)
+                      and (
+                        ${identity.mode} = 'demo'
+                        or (
+                          ${identity.mode} = 'clerk'
+                          and ${identity.organizationId}::text is not null
+                          and company.clerk_organization_id = ${identity.organizationId}
+                        )
+                      )
+                  )
+                )
+                or (
+                  sources.publisher_extraction_id is not null
+                  and exists (
+                    select 1
+                    from hartlib_documents document
+                    join publisher_issues issue
+                      on issue.id = document.issue_id
+                     and issue.restricted_at is null
+                     and issue.deleted_at is null
+                    join publisher_subscriptions issue_subscription
+                      on issue_subscription.id = issue.subscription_id
+                    join publisher_companies issue_publisher_company
+                      on issue_publisher_company.id = issue_subscription.publisher_company_id
+                    where document.id::text = sources.locator->>'documentId'
+                      and issue.id::text = sources.locator->>'publisherIssueId'
+                      and document.deleted_at is null
+                      and exists (
+                        select 1
+                        from platform_users users
+                        where users.id = ${identity.userId}
+                          and users.recovery_deleted_at is null
+                          and users.purged_at is null
+                      )
+                      and (
+                        exists (
+                          select 1
+                          from publisher_subscriptions subscription
+                          join publisher_companies publisher_company
+                            on publisher_company.id = subscription.publisher_company_id
+                          join publisher_company_memberships membership
+                            on membership.publisher_company_id = subscription.publisher_company_id
+                           and membership.user_id = ${identity.userId}
+                           and membership.accepted_at is not null
+                          where subscription.id = issue.subscription_id
+                            and (
+                              ${identity.mode} = 'demo'
+                              or ${identity.organizationId}::text is null
+                              or publisher_company.clerk_organization_id = ${identity.organizationId}
+                            )
+                            and (
+                              membership.role = 'admin'
+                              or exists (
+                                select 1
+                                from publisher_membership_subscription_grants grant_row
+                                where grant_row.publisher_company_id = membership.publisher_company_id
+                                  and grant_row.user_id = membership.user_id
+                                  and grant_row.subscription_id = subscription.id
+                              )
+                            )
+                        )
+                        or exists (
+                          select 1
+                          from issue_deliveries delivery
+                          join client_companies company
+                            on company.id = delivery.client_company_id
+                           and company.recovery_deleted_at is null
+                           and company.purged_at is null
+                          join client_company_memberships membership
+                            on membership.company_id = delivery.client_company_id
+                           and membership.user_id = ${identity.userId}
+                           and membership.revoked_at is null
+                          join issue_delivery_recipients recipient
+                            on recipient.issue_id = delivery.issue_id
+                           and recipient.client_company_id = delivery.client_company_id
+                           and recipient.user_id = ${identity.userId}
+                          where delivery.issue_id = issue.id
+                            and (
+                              ${identity.mode} = 'demo'
+                              or ${identity.organizationId}::text is null
+                              or company.clerk_organization_id = ${identity.organizationId}
+                            )
+                        )
+                      )
+                  )
+                )
+              )
+          `;
+    const authorizedMemoryTexts =
+      citedMemoryRows.length === 0
+        ? []
+        : yield* sql<{
+            readonly assistantMessageId: string;
+            readonly sourceKey: string;
+            readonly memoryRevisionText: string | null;
+            readonly memoryRevisionDeleted: boolean | null;
+          }>`
+            select sources.assistant_message_id::text as "assistantMessageId",
+                   sources.source_key as "sourceKey",
+                   revisions.state_after->>'content' as "memoryRevisionText",
+                   (revisions.state_after->>'deleted')::boolean as "memoryRevisionDeleted"
+            from assistant_message_sources sources
+            join chat_messages messages
+              on messages.id = sources.assistant_message_id
+             and messages.chat_id = ${chat.id}
+             and messages.author = 'assistant'
+            join user_memory_revisions revisions
+              on revisions.id = sources.memory_revision_id
+            where sources.kind = 'memory'
+              and ${sql.or(
+                citedMemoryRows.map(
+                  (row) =>
+                    sql`(
+                      sources.assistant_message_id = ${row.assistant_message_id}
+                      and sources.source_key = ${row.source_key}
+                    )`,
+                ),
+              )}
+              and ${chat.user_id} = ${identity.userId}
+          `;
+    const documentTextByIdentity = new Map(
+      authorizedDocumentTexts.map((row) => [
+        `${row.assistantMessageId}\u0000${row.sourceKey}`,
+        row.documentText,
+      ]),
+    );
+    const memoryTextByIdentity = new Map(
+      authorizedMemoryTexts.map((row) => [
+        `${row.assistantMessageId}\u0000${row.sourceKey}`,
+        {
+          text: row.memoryRevisionText,
+          deleted: row.memoryRevisionDeleted,
+        },
+      ]),
+    );
+    const hydratedSourceRows = sourceRows.map((row) => {
+      const documentText = documentTextByIdentity.get(
+        `${row.assistant_message_id}\u0000${row.source_key}`,
+      );
+      if (documentText !== undefined) return { ...row, document_text: documentText };
+      const memoryText = memoryTextByIdentity.get(
+        `${row.assistant_message_id}\u0000${row.source_key}`,
+      );
+      return memoryText === undefined
+        ? row
+        : {
+            ...row,
+            memory_revision_text: memoryText.text,
+            memory_revision_deleted: memoryText.deleted,
+          };
+    });
+    return { chat, effectivePolicy, messages, runs, sourceRows: hydratedSourceRows, useRows };
   });
 
 export const withAuthorizedChatReadLease = <A, E, R>(
@@ -492,12 +740,7 @@ export const loadAuthorizedChatRuntimeState = (
   identity: ChatRuntimeReadIdentity,
   config: ChatRuntimeConfiguration,
   chatId: string,
-) =>
-  withAuthorizedChatReadLease(
-    identity,
-    chatId,
-    loadChatRuntimeState(identity.userId, config, chatId),
-  );
+) => withAuthorizedChatReadLease(identity, chatId, loadChatRuntimeState(identity, config, chatId));
 
 export const loadDemoChatRuntimeState = (
   identity: ChatRuntimeReadIdentity,
@@ -935,6 +1178,334 @@ export const readAuthorizedAiRunEventsAfter = (
       ),
     } satisfies AuthorizedAiRunEventPoll;
   });
+
+export type AuthorizedAiRunDebugRead =
+  | { readonly kind: "unauthorized" }
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "available"; readonly debug: PublicAiRunDebug };
+
+const debugStages = ["understanding", "evidence", "preparing", "writing", "finishing"] as const;
+const debugHistoryLimit = 200;
+const safeDebugCode = (value: unknown): string =>
+  typeof value === "string" && /^[a-z][a-z0-9_]{0,95}$/u.test(value) ? value : "unknown_error";
+const safeDebugCount = (value: unknown): number | null => {
+  const number = typeof value === "bigint" ? Number(value) : Number(value);
+  return Number.isSafeInteger(number) && number >= 0 && number <= 1_000_000_000 ? number : null;
+};
+const safeDebugMetric = (value: unknown): number | null => {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 && number <= 1_000_000_000 ? number : null;
+};
+const debugTimestamp = (value: Date | string | null | undefined): string | null => {
+  if (value === null || value === undefined) return null;
+  const timestamp = value instanceof Date ? value.toISOString() : value;
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u.test(timestamp) ? timestamp : null;
+};
+
+const debugActivityEvent = (
+  event: AiRunActivityEvent,
+  occurredAt: string | null,
+): PublicAiRunDebugEvent => ({
+  stage: event.stage,
+  topicId: event.topicId ?? null,
+  code: safeDebugCode(event.code),
+  status: event.status,
+  occurredAt,
+  attempt: event.attempt === undefined ? null : safeDebugMetric(event.attempt),
+  durationMs: event.durationMs === undefined ? null : safeDebugMetric(event.durationMs),
+  sourceCount: event.sourceCount === undefined ? null : safeDebugMetric(event.sourceCount),
+  resultCount: event.resultCount === undefined ? null : safeDebugMetric(event.resultCount),
+  errorCode: event.errorCode === undefined ? null : safeDebugCode(event.errorCode),
+  errorCategory: event.errorCategory ?? null,
+});
+
+const debugCitedSourceCount = (content: string | null, sourceKeys: readonly string[]): number => {
+  if (content === null) return 0;
+  const known = new Set(sourceKeys);
+  const cited = new Set<string>();
+  for (const match of content.matchAll(/\[\[cite:([A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*)\]\]/gu)) {
+    for (const key of match[1]?.split(",") ?? []) if (known.has(key)) cited.add(key);
+  }
+  return cited.size;
+};
+
+/**
+ * Read the owner-only safe debug projection. The query performs the same
+ * membership and organization checks as the chat read, then strips every
+ * event field except the public activity, count, timing, and normalized error
+ * projection before the value crosses the API boundary.
+ */
+export const readAuthorizedAiRunDebug = (
+  userId: string,
+  organizationId: string | null,
+  runId: string,
+): Effect.Effect<AuthorizedAiRunDebugRead, unknown, PgClient.PgClient> =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const runRows = yield* sql<{
+      readonly id: string;
+      readonly startedAt: Date | null;
+      readonly finishedAt: Date | null;
+      readonly failedAt: Date | null;
+      readonly errorCode: string | null;
+      readonly retryable: boolean | null;
+      readonly assistantMessageId: string | null;
+      readonly assistantContent: string | null;
+    }>`
+      select run.id::text as id,
+             run.started_at as "startedAt",
+             run.finished_at as "finishedAt",
+             run.failed_at as "failedAt",
+             run.error_code as "errorCode",
+             run.retryable,
+             run.assistant_message_id::text as "assistantMessageId",
+             assistant.content as "assistantContent"
+      from ai_runs run
+      join chats chat on chat.id = run.chat_id
+      join client_companies company on company.id = chat.company_id
+      join client_company_memberships membership
+        on membership.company_id = chat.company_id
+       and membership.user_id = ${userId}
+       and membership.revoked_at is null
+      join platform_users viewer
+        on viewer.id = membership.user_id
+       and viewer.recovery_deleted_at is null
+       and viewer.purged_at is null
+      left join chat_messages assistant
+        on assistant.id = run.assistant_message_id
+       and assistant.author = 'assistant'
+      where run.id = ${runId}
+        and chat.user_id = ${userId}
+        and chat.deleted_at is null
+        and company.recovery_deleted_at is null
+        and company.purged_at is null
+        and (${organizationId}::text is null or company.clerk_organization_id = ${organizationId})
+      limit 1
+    `;
+    const run = runRows[0];
+    if (run === undefined) return { kind: "unauthorized" } satisfies AuthorizedAiRunDebugRead;
+
+    const eventRows = yield* sql<{
+      readonly seq: number;
+      readonly event: unknown;
+      readonly createdAt: Date;
+    }>`
+      select seq, event, created_at as "createdAt"
+      from ai_run_events
+      where run_id = ${run.id}::uuid
+      order by seq
+    `;
+    const terminalEvent = eventRows.some((row) => {
+      if (row.event === null || typeof row.event !== "object") return false;
+      const type = (row.event as Record<string, unknown>).type;
+      return type === "done" || type === "error";
+    });
+    if ((run.finishedAt !== null || run.failedAt !== null) && !terminalEvent) {
+      return { kind: "unavailable" } satisfies AuthorizedAiRunDebugRead;
+    }
+
+    const decodedEvents: Array<{
+      readonly seq: number;
+      readonly occurredAt: string | null;
+      readonly event: Schema.Schema.Type<typeof AiRunEvent>;
+    }> = [];
+    try {
+      for (const row of eventRows) {
+        decodedEvents.push({
+          seq: row.seq,
+          occurredAt: debugTimestamp(row.createdAt),
+          event: Schema.decodeUnknownSync(AiRunEvent, { onExcessProperty: "error" })(row.event),
+        });
+      }
+    } catch {
+      return { kind: "unavailable" } satisfies AuthorizedAiRunDebugRead;
+    }
+
+    const activityEvents = decodedEvents.flatMap((row) =>
+      row.event.type === "activity" ? [{ ...row, event: row.event }] : [],
+    );
+    const historyRows = activityEvents.slice(-debugHistoryLimit);
+    const history: PublicAiRunDebugEvent[] = historyRows.map((row) =>
+      debugActivityEvent(row.event, row.event.occurredAt ?? row.occurredAt),
+    );
+    const lastError = [...decodedEvents].reverse().find(
+      (
+        row,
+      ): row is typeof row & {
+        readonly event: Extract<typeof row.event, { readonly type: "error" }>;
+      } => row.event.type === "error",
+    );
+    const doneEvent = [...decodedEvents].reverse().find(
+      (
+        row,
+      ): row is typeof row & {
+        readonly event: Extract<typeof row.event, { readonly type: "done" }>;
+      } => row.event.type === "done",
+    );
+    const terminalErrorEvent =
+      lastError !== undefined && (doneEvent === undefined || lastError.seq > doneEvent.seq)
+        ? lastError
+        : undefined;
+    if (terminalErrorEvent !== undefined) {
+      history.push({
+        stage: terminalErrorEvent.event.stage ?? "terminal",
+        topicId: null,
+        code: safeDebugCode(terminalErrorEvent.event.code),
+        status: "terminal",
+        occurredAt: terminalErrorEvent.event.occurredAt ?? terminalErrorEvent.occurredAt,
+        attempt:
+          terminalErrorEvent.event.attempt === undefined
+            ? null
+            : safeDebugMetric(terminalErrorEvent.event.attempt),
+        durationMs: null,
+        sourceCount: null,
+        resultCount: null,
+        errorCode: safeDebugCode(terminalErrorEvent.event.code),
+        errorCategory: terminalErrorEvent.event.errorCategory ?? null,
+      });
+    } else if (doneEvent !== undefined) {
+      history.push({
+        stage: "terminal",
+        topicId: null,
+        code: "done",
+        status: "done",
+        occurredAt: doneEvent.occurredAt,
+        attempt: null,
+        durationMs: null,
+        sourceCount: null,
+        resultCount: null,
+        errorCode: null,
+        errorCategory: null,
+      });
+    }
+    if (history.length > debugHistoryLimit) history.splice(0, history.length - debugHistoryLimit);
+
+    const latestByStage = new Map<(typeof debugStages)[number], AiRunActivityEvent>();
+    for (const row of activityEvents) latestByStage.set(row.event.stage, row.event);
+    const stages = debugStages.map((stage) => {
+      const event = latestByStage.get(stage);
+      return {
+        stage,
+        status: event?.status ?? "waiting",
+        attempt: event?.attempt === undefined ? null : safeDebugMetric(event.attempt),
+        durationMs: event?.durationMs === undefined ? null : safeDebugMetric(event.durationMs),
+        sourceCount: event?.sourceCount === undefined ? null : safeDebugMetric(event.sourceCount),
+        resultCount: event?.resultCount === undefined ? null : safeDebugMetric(event.resultCount),
+        errorCode: event?.errorCode === undefined ? null : safeDebugCode(event.errorCode),
+        errorCategory: event?.errorCategory ?? null,
+      };
+    });
+
+    let context: PublicAiRunDebug["context"] = {
+      compactionRan: null,
+      consumers: 0,
+      inputTokens: null,
+      usableInputTokens: null,
+    };
+    let memory: PublicAiRunDebug["memory"] = null;
+    for (const row of decodedEvents) {
+      if (row.event.type === "context_ready") {
+        context = {
+          compactionRan: row.event.compactionRan,
+          consumers: row.event.consumers.length,
+          inputTokens: safeDebugCount(
+            row.event.consumers.reduce((sum, consumer) => sum + consumer.inputTokens, 0),
+          ),
+          usableInputTokens: safeDebugCount(
+            row.event.consumers.reduce((sum, consumer) => sum + consumer.usableInputTokens, 0),
+          ),
+        };
+      } else if (row.event.type === "memory_updated") {
+        memory = {
+          created: safeDebugMetric(row.event.created) ?? 0,
+          updated: safeDebugMetric(row.event.updated) ?? 0,
+          discarded: safeDebugMetric(row.event.discarded) ?? 0,
+        };
+      }
+    }
+
+    const sourceRows =
+      run.assistantMessageId === null
+        ? []
+        : yield* sql<{ readonly sourceKey: string }>`
+          select source_key as "sourceKey"
+          from assistant_message_sources
+          where assistant_message_id = ${run.assistantMessageId}::uuid
+        `;
+    const cited = debugCitedSourceCount(
+      run.assistantContent,
+      sourceRows.map((row) => row.sourceKey),
+    );
+    const usageRows = yield* sql<{
+      readonly modelInputTokens: string;
+      readonly modelOutputTokens: string;
+      readonly webSearches: string;
+      readonly webFetches: string;
+      readonly webResponseBytes: string;
+    }>`
+      select coalesce((select sum(input_tokens) from ai_run_usage where run_id = ${run.id}::uuid), 0)::text as "modelInputTokens",
+             coalesce((select sum(output_tokens) from ai_run_usage where run_id = ${run.id}::uuid), 0)::text as "modelOutputTokens",
+             coalesce((select count(*) from ai_external_tool_usage where run_id = ${run.id}::uuid and operation = 'web_search'), 0)::text as "webSearches",
+             coalesce((select count(*) from ai_external_tool_usage where run_id = ${run.id}::uuid and operation = 'web_fetch'), 0)::text as "webFetches",
+             coalesce((select sum(response_bytes) from ai_external_tool_usage where run_id = ${run.id}::uuid), 0)::text as "webResponseBytes"
+    `;
+    const usage = usageRows[0];
+    const usageProjection =
+      usage === undefined
+        ? null
+        : {
+            modelInputTokens: safeDebugCount(usage.modelInputTokens) ?? 0,
+            modelOutputTokens: safeDebugCount(usage.modelOutputTokens) ?? 0,
+            webSearches: safeDebugCount(usage.webSearches) ?? 0,
+            webFetches: safeDebugCount(usage.webFetches) ?? 0,
+            webResponseBytes: safeDebugCount(usage.webResponseBytes) ?? 0,
+          };
+    const status =
+      run.finishedAt !== null
+        ? "succeeded"
+        : run.failedAt !== null
+          ? "failed"
+          : run.startedAt === null
+            ? "queued"
+            : "running";
+    const terminalError =
+      terminalErrorEvent === undefined && run.failedAt !== null
+        ? {
+            code: safeDebugCode(run.errorCode ?? "internal_error"),
+            retryable: run.retryable === true,
+            category: null,
+            message: null,
+          }
+        : terminalErrorEvent === undefined
+          ? null
+          : {
+              code: safeDebugCode(terminalErrorEvent.event.code),
+              retryable: terminalErrorEvent.event.retryable,
+              category: terminalErrorEvent.event.errorCategory ?? null,
+              message: terminalErrorEvent.event.errorMessage ?? null,
+            };
+    const debug: PublicAiRunDebug = {
+      runId: run.id,
+      status,
+      startedAt: debugTimestamp(run.startedAt),
+      finishedAt: debugTimestamp(run.finishedAt),
+      failedAt: debugTimestamp(run.failedAt),
+      lastSequence: eventRows.length === 0 ? null : eventRows[eventRows.length - 1]!.seq,
+      stages,
+      history,
+      sourceSummary: {
+        read: sourceRows.length,
+        cited,
+        uncited: Math.max(0, sourceRows.length - cited),
+      },
+      context,
+      memory,
+      usage: usageProjection,
+      terminalError,
+    };
+    return { kind: "available", debug } satisfies AuthorizedAiRunDebugRead;
+  });
+
 export const readRunStreamContext = (runId: string) =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;

@@ -44,6 +44,7 @@ export {
   ChatWebSearchToggle,
   VirtualizedChatTranscript,
   chatFailureMessageId,
+  type ChatAiRunDebugLoader,
   type ChatTranscriptAuthorLabels,
   type ChatTranscriptMessage,
 } from "./components/chat/virtualized-chat-transcript";

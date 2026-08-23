@@ -29,6 +29,7 @@ export const mapApiMessagesToTranscript = (
           id: message.id,
           author: "assistant",
           content: message.content,
+          ...(message.runId === undefined ? {} : { runId: message.runId }),
           citations: message.citations,
           sourcesRead: message.sourcesRead,
         },

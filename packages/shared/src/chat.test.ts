@@ -14,6 +14,9 @@ import {
   EffectiveWebPolicy,
   GetChatResponse,
   MemoryRecord,
+  PublicAiRunDebugResponse,
+  PublicCitationQuote,
+  PublicCitationRecord,
   PublicSourceRecord,
   ResetProductChatRequest,
   ResetProductChatResponse,
@@ -21,6 +24,168 @@ import {
 } from "./chat";
 
 describe("canonical chat schemas", () => {
+  it("normalizes legacy citation quotes into one canonical required field", () => {
+    const quote = Schema.decodeUnknownSync(PublicCitationQuote);
+    expect(quote({ text: "Exact supporting text" })).toEqual({ text: "Exact supporting text" });
+    expect(quote(null)).toBeNull();
+    expect(() => quote({ text: "x".repeat(2_001) })).toThrow();
+
+    const citation = Schema.decodeUnknownSync(PublicCitationRecord);
+    expect(
+      citation({
+        sourceKey: "k_nonce_1",
+        label: "Document",
+        kind: "document",
+        documentTitle: "Document",
+        url: "/v1/issues/issue/documents/document/content",
+        ranges: [],
+        quote: { text: "Exact supporting text" },
+      }),
+    ).toMatchObject({ quote: { text: "Exact supporting text" } });
+
+    const omittedQuote = citation({
+      sourceKey: "k_nonce_2",
+      label: null,
+      kind: "document",
+      documentTitle: "Document",
+      url: "/v1/issues/issue/documents/document/content",
+      ranges: [],
+    });
+    expect(omittedQuote).toMatchObject({ quote: null });
+    const encodedOmittedQuote = Schema.encodeUnknownSync(PublicCitationRecord)(omittedQuote);
+    expect(encodedOmittedQuote).toMatchObject({ quote: null });
+    expect(Object.hasOwn(encodedOmittedQuote, "quote")).toBe(true);
+    expect(
+      citation({
+        sourceKey: "k_nonce_3",
+        label: null,
+        kind: "web",
+        title: "Web",
+        domain: "example.com",
+        url: "https://example.com/article",
+        capturedAt: "2026-08-22T14:18:00.000Z",
+        quote: "Legacy web text",
+        ranges: [],
+      }),
+    ).toMatchObject({ quote: { text: "Legacy web text" } });
+    const canonical = citation({
+      sourceKey: "k_nonce_4",
+      label: null,
+      kind: "web",
+      title: "Web",
+      domain: "example.com",
+      url: "https://example.com/article",
+      capturedAt: "2026-08-22T14:18:00.000Z",
+      quote: null,
+      ranges: [],
+    });
+    expect(Schema.encodeUnknownSync(PublicCitationRecord)(canonical)).toMatchObject({
+      quote: null,
+    });
+  });
+
+  it("rejects malformed legacy citation quotes", () => {
+    const citation = Schema.decodeUnknownSync(PublicCitationRecord);
+    expect(() =>
+      citation({
+        sourceKey: "k_nonce_5",
+        label: null,
+        kind: "web",
+        title: "Web",
+        domain: "example.com",
+        url: "https://example.com/article",
+        capturedAt: "2026-08-22T14:18:00.000Z",
+        quote: "",
+        ranges: [],
+      }),
+    ).toThrow();
+  });
+
+  it("enforces the debug projection bounds", () => {
+    const debug = Schema.decodeUnknownSync(PublicAiRunDebugResponse, {
+      onExcessProperty: "error",
+    });
+    const safe = {
+      available: true,
+      debug: {
+        runId: "run-safe-1",
+        status: "succeeded",
+        startedAt: "2026-08-22T14:18:00.000Z",
+        finishedAt: "2026-08-22T14:18:09.000Z",
+        failedAt: null,
+        lastSequence: 18,
+        stages: ["understanding", "evidence", "preparing", "writing", "finishing"].map(
+          (stage, index) => ({
+            stage,
+            status: index === 0 ? "complete" : "waiting",
+            attempt: index === 0 ? 1 : null,
+            durationMs: index === 0 ? 820 : null,
+            sourceCount: null,
+            resultCount: null,
+            errorCode: null,
+            errorCategory: null,
+          }),
+        ),
+        history: [
+          {
+            stage: "understanding",
+            topicId: null,
+            code: "request_understanding",
+            status: "complete",
+            occurredAt: "2026-08-22T14:18:01.000Z",
+            attempt: 1,
+            durationMs: 820,
+            sourceCount: null,
+            resultCount: null,
+            errorCode: null,
+            errorCategory: null,
+          },
+        ],
+        sourceSummary: { read: 1, cited: 1, uncited: 0 },
+        context: { compactionRan: false, consumers: 1, inputTokens: 10, usableInputTokens: 20 },
+        memory: null,
+        usage: null,
+        terminalError: null,
+      },
+    } as const;
+    expect(debug(safe)).toEqual(safe);
+    expect(() => debug({ ...safe, debug: { ...safe.debug, prompt: "private" } })).toThrow();
+    expect(debug({ available: false })).toEqual({ available: false });
+    expect(() =>
+      debug({ ...safe, debug: { ...safe.debug, stages: safe.debug.stages.slice(0, 4) } }),
+    ).toThrow();
+    expect(() =>
+      debug({
+        ...safe,
+        debug: {
+          ...safe.debug,
+          stages: [safe.debug.stages[1]!, safe.debug.stages[0]!, ...safe.debug.stages.slice(2)],
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      debug({
+        ...safe,
+        debug: {
+          ...safe.debug,
+          stages: [
+            safe.debug.stages[0]!,
+            safe.debug.stages[1]!,
+            safe.debug.stages[1]!,
+            safe.debug.stages[3]!,
+            safe.debug.stages[4]!,
+          ],
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      debug({
+        ...safe,
+        debug: { ...safe.debug, history: Array(201).fill(safe.debug.history[0]) },
+      }),
+    ).toThrow();
+  });
+
   it("carries the authoritative write capability for shared-chat viewers", () => {
     const decode = Schema.decodeUnknownSync(GetChatResponse);
     const response = decode({

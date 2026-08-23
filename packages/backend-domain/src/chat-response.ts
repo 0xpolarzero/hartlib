@@ -5,6 +5,7 @@ import {
   type AiRunDescriptor,
   type AssistantChatMessage,
   type PublicCitationRecord,
+  type PublicCitationQuote,
   type PublicSourceRecord,
   type UserChatMessage,
 } from "@hartlib/shared";
@@ -450,6 +451,27 @@ const stripHistoricalCitationTags = (value: string): string => {
 
 type ChatMessageRange = { readonly charStart: number; readonly charEnd: number };
 
+const normalizedChatMessageRangeUnion = (
+  ranges: readonly ChatMessageRange[],
+): readonly ChatMessageRange[] => {
+  const ordered = [...ranges].sort(
+    (left, right) => left.charStart - right.charStart || left.charEnd - right.charEnd,
+  );
+  const merged: ChatMessageRange[] = [];
+  for (const range of ordered) {
+    const previous = merged[merged.length - 1];
+    if (previous !== undefined && range.charStart <= previous.charEnd) {
+      merged[merged.length - 1] = {
+        charStart: previous.charStart,
+        charEnd: Math.max(previous.charEnd, range.charEnd),
+      };
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged;
+};
+
 const chatMessageUseRanges = (value: unknown, text: string): readonly ChatMessageRange[] => {
   if (!Array.isArray(value) || value.length === 0 || !isWellFormedUtf16(text)) {
     throw new Error("invalid persisted chat message source ranges");
@@ -593,6 +615,78 @@ const validateConsumerContextOrders = (uses: readonly SourceUseRow[]): void => {
 };
 
 const topicOrder = { t1: 1, t2: 2, t3: 3 } as const;
+
+const maxCitationQuoteChars = 2_000;
+const maxCitationQuoteBytes = 8_192;
+
+const safeCitationQuote = (value: string | null | undefined): PublicCitationQuote => {
+  if (value === null || value === undefined || !isWellFormedUtf16(value)) return null;
+  if (value.trim().length === 0 || value.length > maxCitationQuoteChars) return null;
+  if (new TextEncoder().encode(value).byteLength > maxCitationQuoteBytes) return null;
+  const text = value;
+  return { text };
+};
+
+const quoteFromTextRanges = (
+  text: string | null | undefined,
+  ranges: readonly { readonly charStart: number; readonly charEnd: number }[],
+): PublicCitationQuote => {
+  if (text === null || text === undefined || ranges.length === 0 || !isWellFormedUtf16(text)) {
+    return null;
+  }
+  const parts: string[] = [];
+  for (const range of ranges) {
+    if (
+      !Number.isSafeInteger(range.charStart) ||
+      !Number.isSafeInteger(range.charEnd) ||
+      range.charStart < 0 ||
+      range.charEnd <= range.charStart ||
+      range.charEnd > text.length ||
+      !isUtf16Boundary(text, range.charStart) ||
+      !isUtf16Boundary(text, range.charEnd)
+    ) {
+      return null;
+    }
+    parts.push(text.slice(range.charStart, range.charEnd));
+  }
+  return safeCitationQuote(parts.join("\n…\n"));
+};
+
+const citationQuoteForSource = (
+  row: SourceRow,
+  source: PublicSourceRecord,
+  uses: readonly SourceUseRow[],
+  messages: readonly MessageRow[],
+): PublicCitationQuote => {
+  switch (source.kind) {
+    case "document":
+      return quoteFromTextRanges(row.document_text, source.ranges);
+    case "chat_message": {
+      const sourceMessage = messages.find((message) => message.id === source.messageId);
+      if (sourceMessage === undefined) return null;
+      const sourceText =
+        sourceMessage.author === "assistant"
+          ? stripHistoricalCitationTags(sourceMessage.content)
+          : sourceMessage.content;
+      const ranges = normalizedChatMessageRangeUnion(
+        uses.flatMap((use) => {
+          try {
+            return chatMessageUseRanges(use.ranges, sourceText);
+          } catch {
+            return [];
+          }
+        }),
+      );
+      return quoteFromTextRanges(sourceText, ranges);
+    }
+    case "memory":
+      return row.memory_revision_deleted === true
+        ? null
+        : safeCitationQuote(row.memory_revision_text);
+    case "web":
+      return safeCitationQuote(source.quote);
+  }
+};
 
 const publicSourceFromRow = (
   row: SourceRow,
@@ -755,9 +849,16 @@ const publicSourceFromRow = (
   }
 };
 
-const citationFromSource = (source: PublicSourceRecord): PublicCitationRecord => {
+const citationFromSource = (
+  source: PublicSourceRecord,
+  quote: PublicCitationQuote,
+): PublicCitationRecord => {
   const { tokenCount: _tokenCount, topicIds: _topicIds, ...citation } = source;
-  return citation;
+  const legacyQuote = source.kind === "web" ? source.quote : null;
+  return {
+    ...citation,
+    quote: quote ?? (source.kind === "web" ? safeCitationQuote(legacyQuote) : null),
+  } as PublicCitationRecord;
 };
 
 const citationTagPattern = /\[\[cite:([A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*)\]\]/gu;
@@ -765,6 +866,7 @@ const citationTagPattern = /\[\[cite:([A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*)\]\]/gu
 const citationsForContent = (
   content: string,
   sources: readonly PublicSourceRecord[],
+  quotes: ReadonlyMap<string, PublicCitationQuote>,
 ): readonly PublicCitationRecord[] => {
   const sourceByKey = new Map(sources.map((source) => [source.sourceKey, source]));
   const citations: PublicCitationRecord[] = [];
@@ -773,7 +875,7 @@ const citationsForContent = (
     for (const key of keys) {
       const source = sourceByKey.get(key);
       if (source !== undefined && !citations.some((citation) => citation.sourceKey === key)) {
-        citations.push(citationFromSource(source));
+        citations.push(citationFromSource(source, quotes.get(key) ?? null));
       }
     }
   }
@@ -811,6 +913,11 @@ export const chatMessagesResponseFromRows = (
   useRows: readonly SourceUseRow[],
 ): readonly (UserChatMessage | AssistantChatMessage)[] => {
   const runsByUserMessage = new Map(runs.map((run) => [run.user_message_id, run]));
+  const runsByAssistantMessage = new Map(
+    runs.flatMap((run) =>
+      run.assistant_message_id === null ? [] : [[run.assistant_message_id, run] as const],
+    ),
+  );
   const assistantMessageIds = new Set(
     messages.filter((message) => message.author === "assistant").map((message) => message.id),
   );
@@ -868,6 +975,7 @@ export const chatMessagesResponseFromRows = (
     }
   }
   const sourcesByAssistantMessage = new Map<string, PublicSourceRecord[]>();
+  const citationQuotesByAssistantMessage = new Map<string, Map<string, PublicCitationQuote>>();
   for (const sourceRow of sourceRows) {
     sourceOrdinalFromKey(sourceRow.source_key);
     assertRunCitationNamespace(sourceRow);
@@ -879,6 +987,10 @@ export const chatMessagesResponseFromRows = (
     const rows = sourcesByAssistantMessage.get(sourceRow.assistant_message_id) ?? [];
     rows.push(source);
     sourcesByAssistantMessage.set(sourceRow.assistant_message_id, rows);
+    const quotes =
+      citationQuotesByAssistantMessage.get(sourceRow.assistant_message_id) ?? new Map();
+    quotes.set(sourceRow.source_key, citationQuoteForSource(sourceRow, source, uses, messages));
+    citationQuotesByAssistantMessage.set(sourceRow.assistant_message_id, quotes);
   }
   for (const [assistantMessageId, sources] of sourcesByAssistantMessage) {
     sources.sort((left, right) => {
@@ -923,12 +1035,18 @@ export const chatMessagesResponseFromRows = (
         };
       }
       const sourcesRead = sourcesByAssistantMessage.get(message.id) ?? [];
+      const run = runsByAssistantMessage.get(message.id);
       return {
         id: message.id,
         author: "assistant" as const,
         content: message.content,
         createdAt: message.created_at.toISOString(),
-        citations: citationsForContent(message.content, sourcesRead),
+        ...(run === undefined ? {} : { runId: run.id }),
+        citations: citationsForContent(
+          message.content,
+          sourcesRead,
+          citationQuotesByAssistantMessage.get(message.id) ?? new Map(),
+        ),
         sourcesRead,
       };
     });

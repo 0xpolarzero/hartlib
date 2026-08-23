@@ -1196,6 +1196,7 @@ function ClientFeedsList({
           messages={transcriptMessages}
           authorLabels={chatAuthorLabels}
           onOpenAuthenticatedDocument={openAuthenticatedDocument}
+          onLoadAiRunDebug={demoApi.fetchAiRunDebug}
           onResubmit={(message) => setDraftMessage(message.content)}
         />
 

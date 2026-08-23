@@ -162,9 +162,12 @@ Client employees see shared chats for their client company when they have access
 AI-run SSE handshakes and replay polls authorize only this owner/shared-chat
 boundary. A private run is owner-only and a shared run is available to an
 authorized same-company member; the stream never rechecks each saved source,
-memory revision, grant, or web policy after acceptance. Later settings affect
-later runs, while account deletion, purge, legal restriction, and exact
-viewer/chat identity mismatches remain explicit denials.
+memory revision, grant, or web policy after acceptance. The debug projection is
+stricter: `GET /v1/ai-runs/:runId/debug` is owner-only, checks the current
+membership and organization, and returns only the safe public projection for
+that owner's run. Shared viewers never receive its loader or its response.
+Later settings affect later runs, while account deletion, purge, legal
+restriction, and exact viewer/chat identity mismatches remain explicit denials.
 
 A chat can be shared only if its immutable memory mode was `disabled` before its first AI turn. A private chat whose answers could use the creator's saved memories cannot be promoted to shared.
 
@@ -203,7 +206,7 @@ content. A revoked membership denies the client-company viewer even when the
 historical recipient row remains. The archive may show only rows that the current
 viewer received, so a newly added employee cannot read an earlier company delivery.
 
-The issue/document rows, the complete sorted client-company lane set for every delivered company (discovered independently of the requester's current membership), applicable publisher lane, and live user/company rows remain locked through the bounded signing operation, so membership acceptance, revocation, or account deletion cannot commit between authorization and bearer URL issuance. Publication first derives one exact eligible access-row set (`active` or `ending` through its delivery end), locks every distinct client lane from that sorted set, rechecks the same set, and aborts for retry if it changed; issue deliveries and recipient snapshots use only that proven set. Chat lists and issue details take their applicable sorted membership lanes before the final projection. Full chat reads additionally lock the chat and chat-execution lane through every message, run, and visible-source query. Demo `GET /v1/chat` idempotently ensures the workspace and then uses this same authorized full-projection lease. AI success finalization and fatal failure handling take that same execution lane after the user-memory, chat-row, and company-membership locks and before the run-row lock, making terminal transition, revocation, unshare, deletion, and the entire projection one linearizable ordering. An accepted run's source map, source uses, and event stream are immutable projections and do not trigger current source or policy reauthorization.
+The issue/document rows, the complete sorted client-company lane set for every delivered company (discovered independently of the requester's current membership), applicable publisher lane, and live user/company rows remain locked through the bounded signing operation, so membership acceptance, revocation, or account deletion cannot commit between authorization and bearer URL issuance. Publication first derives one exact eligible access-row set (`active` or `ending` through its delivery end), locks every distinct client lane from that sorted set, rechecks the same set, and aborts for retry if it changed; issue deliveries and recipient snapshots use only that proven set. Chat lists and issue details take their applicable sorted membership lanes before the final projection. Full chat reads additionally lock the chat and chat-execution lane through every message, run, and visible-source query. Demo `GET /v1/chat` idempotently ensures the workspace and then uses this same authorized full-projection lease. AI success finalization and fatal failure handling take that same execution lane after the user-memory, chat-row, and company-membership locks and before the run-row lock, making terminal transition, revocation, unshare, deletion, and the entire projection one linearizable ordering. An accepted run's source map, source uses, and event stream are immutable projections and do not change their saved identities or ranges. Read-time supporting quotes are separate: the server loads text only for cited document keys and only after the current viewer passes the public-source or publisher-document content authorization checks; a denied, restricted, deleted, expired, or malformed reconstruction returns the generic `null` quote without loading text into the projection.
 
 Shared links open inside the authenticated app.
 
@@ -217,7 +220,13 @@ Client company admins control web research settings and web domain allowlists.
 
 New client companies have web research disabled. Admins can enable it only after the deployment names and approves its web-search adapter.
 
-Client users see sources used for their own AI answers.
+Client users see sources used for their own AI answers. Inline citations may
+carry a server-reconstructed supporting quote from the immutable document,
+earlier-chat message, exact memory revision, or normalized web evidence. The
+canonical citation quote is bounded and absent from `sourcesRead`; the legacy
+web `sourcesRead.quote` string remains the one explicit source-read exception.
+Missing or unauthorized text uses one generic unavailable state. The browser
+never reconstructs it from ranges, URLs, snippets, or answer text.
 
 For their own answers, client users can distinguish final sources read from inline cited sources. They do not see SQL-only matches, selector previews, compaction passages, omitted candidates, agent plans, topic packets, or another user's source exposures.
 
@@ -423,9 +432,9 @@ Personal data is retained for the shortest period that supports the service purp
 
 Client chats are retained while the client company account exists.
 
-Chat retention includes messages, per-run web choices, saved-answer source maps, selected web quotations, context-plan observations, source-exposure records, model usage, content-free web search/fetch operation usage, and citation metadata. Internal publisher/public document bodies remain governed by their source records and are referenced by ID and range rather than copied into chat observations.
+Chat retention includes messages, per-run web choices, saved-answer source maps, selected web quotations, context-plan observations, source-exposure records, model usage, content-free web search/fetch operation usage, and citation metadata. Internal publisher/public document bodies remain governed by their source records and are referenced by ID and range rather than copied into chat observations. Document, earlier-chat, and memory supporting quotes are reconstructed at read time from their immutable source rows and private ranges after current document authorization; they are not copied into `sourcesRead` or client logs. The selected web quote remains the explicit legacy `sourcesRead.quote` value, and the canonical citation codec wraps it as `{ text }`.
 
-Terminal Smithers state and transient stream events are operational runtime data, not chat history. Smithers state is deleted after either normal finalization or the fatal-failure handler has committed the Hartlib product terminal transition; the orphan sweep removes terminal leftovers after 24 hours. Stream events are retained for replay for 24 hours after the terminal event, then deleted.
+Terminal Smithers state and transient stream events are operational runtime data, not chat history. Smithers state is deleted after either normal finalization or the fatal-failure handler has committed the Hartlib product terminal transition; the orphan sweep removes terminal leftovers after 24 hours. Stream events are retained for replay for 24 hours after the terminal event, then deleted. The owner debug projection uses the same retained event rows plus durable usage and run timestamps; it returns `{ available: false }` after the required terminal/event record is gone rather than exposing a partial or guessed log.
 
 When a publisher pauses a subscription, the client company keeps existing subscription chats.
 

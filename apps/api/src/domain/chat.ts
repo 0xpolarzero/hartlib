@@ -9,6 +9,7 @@ import {
   loadOwnedChat,
   preflightCredits,
   readAuthorizedAiRunEventsAfter as readAuthorizedAiRunEventsAfterFromDomain,
+  readAuthorizedAiRunDebug,
   readRunStreamContext,
   type AiRunEventRow,
   type AuthorizedAiRunEventPoll,
@@ -19,6 +20,7 @@ import { chatMessagesResponseFromRows, runDescriptor } from "@hartlib/backend-do
 import {
   AiRunEvent,
   normalizeDomainAllowlist,
+  PublicAiRunDebugResponse,
   type ActiveAiRunConflict,
   GetChatResponse,
   SendChatMessageAccepted,
@@ -380,7 +382,9 @@ export const makeChatRoutes = (
   databaseLayer: ApiDatabaseLayerType = ApiDatabaseLayer,
   options?: {
     readonly readAiRunEventsAfter?: AiRunEventPoller;
+    readonly readAuthenticator?: RequestAuthenticator;
     readonly streamAuthenticator?: RequestAuthenticator;
+    readonly debugAuthenticator?: RequestAuthenticator;
   },
 ): readonly Route[] => [
   {
@@ -390,7 +394,9 @@ export const makeChatRoutes = (
       Effect.gen(function* () {
         const config = yield* loadApiConfig;
         if (config.authMode !== "demo") return json({ error: "not_found" }, { status: 404 });
-        const authentication = yield* resolveRequestIdentity(request, config);
+        const authentication = yield* resolveRequestIdentity(request, config, {
+          authenticator: options?.readAuthenticator,
+        });
         if (!authentication.authenticated) return json({ error: "unauthorized" }, { status: 401 });
         return yield* readChat(authentication.identity, config).pipe(
           Effect.provide(databaseLayer),
@@ -419,7 +425,9 @@ export const makeChatRoutes = (
     execute: (request, _url, pathParameters) =>
       Effect.gen(function* () {
         const config = yield* loadApiConfig;
-        const authentication = yield* resolveRequestIdentity(request, config);
+        const authentication = yield* resolveRequestIdentity(request, config, {
+          authenticator: options?.readAuthenticator,
+        });
         if (!authentication.authenticated) return json({ error: "unauthorized" }, { status: 401 });
         const chatId = pathParameters.chatId!;
         return yield* readChat(authentication.identity, config, chatId).pipe(
@@ -489,6 +497,32 @@ export const makeChatRoutes = (
           databaseLayer,
           readAuthorizedAiRunEventsAfter:
             options?.readAiRunEventsAfter ?? readAuthorizedAiRunEventsAfter,
+        });
+      }),
+  },
+  {
+    method: "GET",
+    path: "/v1/ai-runs/:runId/debug",
+    execute: (request, _url, pathParameters) =>
+      Effect.gen(function* () {
+        const runId = pathParameters.runId!;
+        const config = yield* loadApiConfig;
+        const authentication = yield* resolveRequestIdentity(request, config, {
+          authenticator: options?.debugAuthenticator,
+        });
+        if (!authentication.authenticated) return json({ error: "unauthorized" }, { status: 401 });
+        const result = yield* readAuthorizedAiRunDebug(
+          authentication.identity.userId,
+          authentication.identity.organizationId,
+          runId,
+        ).pipe(Effect.provide(databaseLayer));
+        if (result.kind === "unauthorized") return json({ error: "not_found" }, { status: 404 });
+        if (result.kind === "unavailable") {
+          return jsonFromSchema(PublicAiRunDebugResponse, { available: false });
+        }
+        return jsonFromSchema(PublicAiRunDebugResponse, {
+          available: true,
+          debug: result.debug,
         });
       }),
   },

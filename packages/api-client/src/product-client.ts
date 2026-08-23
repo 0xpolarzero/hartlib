@@ -7,6 +7,7 @@ import {
   MemoryRevisionResponse,
   ProductChatListResponse,
   PublicSourcesResponse,
+  PublicAiRunDebugResponse,
   ResetProductChatResponse,
   type ResetProductChatResponse as ResetProductChatResult,
   SendChatMessageAccepted,
@@ -75,6 +76,7 @@ export interface ProductApiClient {
     afterSeq: number,
     signal?: AbortSignal,
   ) => AsyncGenerator<AiRunStreamFrame, void>;
+  readonly fetchAiRunDebug: (runId: string) => Promise<PublicAiRunDebugResponse>;
 }
 
 export const createProductApiClient = (options: ApiTransportOptions): ProductApiClient => {
@@ -202,6 +204,12 @@ export const createProductApiClient = (options: ApiTransportOptions): ProductApi
         if (frame.event.type === "done" || frame.event.type === "error") return;
       }
     },
+    fetchAiRunDebug: (runId) =>
+      transport.json(
+        "GET /v1/ai-runs/:runId/debug",
+        `/v1/ai-runs/${encodeURIComponent(runId)}/debug`,
+        PublicAiRunDebugResponse,
+      ),
   };
 };
 

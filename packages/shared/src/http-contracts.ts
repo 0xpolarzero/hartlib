@@ -6,6 +6,7 @@ import {
   CreateProductChatRequest,
   CreateProductChatResponse,
   GetChatResponse,
+  PublicAiRunDebugResponse,
   ListMemoriesResponse,
   MemoryRecord,
   MemoryRevisionResponse,
@@ -516,6 +517,7 @@ export const httpRouteContracts: Readonly<Record<string, HttpRouteContract>> = {
     ["last-event-id"],
     AiRunStreamHeaders,
   ),
+  "GET /v1/ai-runs/:runId/debug": contract(noBody, jsonSuccess(PublicAiRunDebugResponse)),
   "GET /v1/client-companies/:companyId/subscription-accesses": contract(
     noBody,
     jsonSuccess(SourceAccessListResponse),

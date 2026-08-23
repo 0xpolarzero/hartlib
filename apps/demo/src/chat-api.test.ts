@@ -33,7 +33,7 @@ describe("mapApiMessagesToTranscript", () => {
             domain: "example.com",
             url: "https://example.com/page",
             capturedAt: "2026-07-09T05:00:30.000Z",
-            quote: "Evidence",
+            quote: { text: "Evidence" },
             ranges: [],
           },
         ],

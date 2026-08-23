@@ -108,7 +108,12 @@ export const citationRecordsFromText = (
       const source = byKey.get(key);
       if (source !== undefined && !ordered.some((citation) => citation.sourceKey === key)) {
         const { tokenCount: _tokenCount, topicIds: _topicIds, ...citation } = source;
-        ordered.push(citation);
+        ordered.push({
+          ...citation,
+          // Streaming sources are not the server-authorized citation projection.
+          // Never derive a quote from the public source record in the browser.
+          quote: null,
+        } as PublicCitationRecord);
       }
     }
   }

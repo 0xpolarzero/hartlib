@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import * as SchemaGetter from "effect/SchemaGetter";
 
 import { normalizeDomainAllowlist } from "./web-policy";
 
@@ -268,6 +269,20 @@ const CitationBase = {
   label: Schema.NullOr(Schema.String),
 } as const;
 
+const CitationQuoteText = Schema.String.pipe(
+  Schema.check(Schema.isNonEmpty()),
+  Schema.check(Schema.isMaxLength(2_000)),
+);
+
+/** Exact server-authorized supporting text. A null value is deliberately
+ * content-free and covers every unavailable or unauthorized case. */
+export const PublicCitationQuote = Schema.NullOr(
+  Schema.Struct({
+    text: CitationQuoteText,
+  }),
+);
+export type PublicCitationQuote = Schema.Schema.Type<typeof PublicCitationQuote>;
+
 const SourceBase = {
   ...CitationBase,
   tokenCount: Schema.Number,
@@ -297,30 +312,86 @@ const MemoryLocator = {
   ranges: Schema.Tuple([]),
 } as const;
 
-const WebLocator = {
+const WebLocatorBase = {
   kind: Schema.Literal("web"),
   title: Schema.String,
   domain: Schema.String,
   url: Schema.String,
   publishedAt: Schema.optional(Schema.String),
   capturedAt: Schema.String,
-  quote: Schema.String,
   ranges: Schema.Tuple([]),
 } as const;
 
-export const PublicCitationRecord = Schema.Union([
-  Schema.Struct({ ...CitationBase, ...DocumentLocator }),
-  Schema.Struct({ ...CitationBase, ...ChatMessageLocator }),
-  Schema.Struct({ ...CitationBase, ...MemoryLocator }),
-  Schema.Struct({ ...CitationBase, ...WebLocator }),
+const WebSourceLocator = {
+  ...WebLocatorBase,
+  quote: Schema.String,
+} as const;
+
+const CanonicalCitationRecord = Schema.Union([
+  Schema.Struct({ ...CitationBase, ...DocumentLocator, quote: PublicCitationQuote }),
+  Schema.Struct({ ...CitationBase, ...ChatMessageLocator, quote: PublicCitationQuote }),
+  Schema.Struct({ ...CitationBase, ...MemoryLocator, quote: PublicCitationQuote }),
+  Schema.Struct({ ...CitationBase, ...WebLocatorBase, quote: PublicCitationQuote }),
 ]);
+
+const LegacyCitationRecord = Schema.Union([
+  Schema.Struct({
+    ...CitationBase,
+    ...DocumentLocator,
+    quote: Schema.optional(PublicCitationQuote),
+  }),
+  Schema.Struct({
+    ...CitationBase,
+    ...ChatMessageLocator,
+    quote: Schema.optional(PublicCitationQuote),
+  }),
+  Schema.Struct({
+    ...CitationBase,
+    ...MemoryLocator,
+    quote: Schema.optional(PublicCitationQuote),
+  }),
+  // Web citations used a required string quote before the canonical citation
+  // projection. The compatibility decoder also accepts an omitted or null
+  // value so old mixed-version responses normalize to the one null state.
+  Schema.Struct({
+    ...CitationBase,
+    ...WebLocatorBase,
+    quote: Schema.optional(Schema.NullOr(Schema.Union([Schema.String, PublicCitationQuote]))),
+  }),
+]);
+
+type CanonicalCitationRecord = Schema.Schema.Type<typeof CanonicalCitationRecord>;
+type LegacyCitationRecord = Schema.Schema.Type<typeof LegacyCitationRecord>;
+
+const normalizeLegacyCitationRecord = (value: LegacyCitationRecord): CanonicalCitationRecord => {
+  const quote = value.quote;
+  const normalizedQuote =
+    quote === undefined || quote === null
+      ? null
+      : typeof quote === "string"
+        ? Schema.decodeUnknownSync(PublicCitationQuote)({ text: quote })
+        : quote;
+  return { ...value, quote: normalizedQuote } as CanonicalCitationRecord;
+};
+
+/**
+ * Decode the old omitted/non-object quote fields at the wire boundary. The
+ * decoded value is always the required canonical `{ text } | null` shape;
+ * encoding a canonical value keeps that shape and never emits a legacy string.
+ */
+export const PublicCitationRecord = LegacyCitationRecord.pipe(
+  Schema.decodeTo(CanonicalCitationRecord, {
+    decode: SchemaGetter.transform(normalizeLegacyCitationRecord),
+    encode: SchemaGetter.transform((value: CanonicalCitationRecord) => value),
+  }),
+);
 export type PublicCitationRecord = Schema.Schema.Type<typeof PublicCitationRecord>;
 
 export const PublicSourceRecord = Schema.Union([
   Schema.Struct({ ...SourceBase, ...DocumentLocator }),
   Schema.Struct({ ...SourceBase, ...ChatMessageLocator }),
   Schema.Struct({ ...SourceBase, ...MemoryLocator }),
-  Schema.Struct({ ...SourceBase, ...WebLocator }),
+  Schema.Struct({ ...SourceBase, ...WebSourceLocator }),
 ]);
 export type PublicSourceRecord = Schema.Schema.Type<typeof PublicSourceRecord>;
 
@@ -363,6 +434,8 @@ export const AssistantChatMessage = Schema.Struct({
   author: Schema.Literal("assistant"),
   content: Schema.String,
   createdAt: Schema.String,
+  /** Run identity is used only to request the owner-authorized debug projection. */
+  runId: Schema.optional(Schema.String),
   citations: Schema.Array(PublicCitationRecord),
   sourcesRead: Schema.Array(PublicSourceRecord),
 });
@@ -661,9 +734,7 @@ const SafeRunIdentity = Schema.String.pipe(
 const SafeActivityTimestamp = Schema.String.pipe(
   Schema.check(Schema.isNonEmpty()),
   Schema.check(Schema.isMaxLength(64)),
-  Schema.check(
-    Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u),
-  ),
+  Schema.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u)),
 );
 const SafeActivityCode = Schema.String.pipe(
   Schema.check(Schema.isNonEmpty()),
@@ -679,6 +750,19 @@ const SafeActivityMessage = Schema.String.pipe(
   Schema.check(Schema.isNonEmpty()),
   Schema.check(Schema.isMaxLength(512)),
 );
+const SafeDebugCount = Schema.Number.pipe(
+  Schema.check(Schema.isInt()),
+  Schema.check(Schema.isGreaterThanOrEqualTo(0)),
+  Schema.check(Schema.isLessThanOrEqualTo(1_000_000_000)),
+);
+
+const publicDebugStageOrder = [
+  "understanding",
+  "evidence",
+  "preparing",
+  "writing",
+  "finishing",
+] as const;
 
 export const AiRunActivityEvent = Schema.Struct({
   type: Schema.Literal("activity"),
@@ -702,6 +786,110 @@ export const AiRunActivityEvent = Schema.Struct({
   errorMessage: Schema.optional(SafeActivityMessage),
 });
 export type AiRunActivityEvent = Schema.Schema.Type<typeof AiRunActivityEvent>;
+
+const PublicAiRunDebugEventStatus = Schema.Union([
+  AiRunActivityStatus,
+  Schema.Literals(["terminal", "done"]),
+]);
+
+/** Content-free chronological event projection for the owner debug view. */
+export const PublicAiRunDebugEvent = Schema.Struct({
+  stage: Schema.Union([AiRunActivityStage, Schema.Literal("terminal")]),
+  topicId: Schema.NullOr(Schema.Literals(["t1", "t2", "t3"])),
+  code: SafeActivityCode,
+  status: PublicAiRunDebugEventStatus,
+  occurredAt: Schema.NullOr(SafeActivityTimestamp),
+  attempt: Schema.NullOr(SafeActivityAttempt),
+  durationMs: Schema.NullOr(SafeDebugCount),
+  sourceCount: Schema.NullOr(SafeDebugCount),
+  resultCount: Schema.NullOr(SafeDebugCount),
+  errorCode: Schema.NullOr(SafeActivityCode),
+  errorCategory: Schema.NullOr(AiRunActivityErrorCategory),
+});
+export type PublicAiRunDebugEvent = Schema.Schema.Type<typeof PublicAiRunDebugEvent>;
+
+const PublicAiRunDebugStage = Schema.Struct({
+  stage: AiRunActivityStage,
+  status: AiRunActivityStatus,
+  attempt: Schema.NullOr(SafeActivityAttempt),
+  durationMs: Schema.NullOr(SafeDebugCount),
+  sourceCount: Schema.NullOr(SafeDebugCount),
+  resultCount: Schema.NullOr(SafeDebugCount),
+  errorCode: Schema.NullOr(SafeActivityCode),
+  errorCategory: Schema.NullOr(AiRunActivityErrorCategory),
+});
+
+const PublicAiRunDebugStages = Schema.Array(PublicAiRunDebugStage).pipe(
+  Schema.check(
+    Schema.makeFilter<readonly Schema.Schema.Type<typeof PublicAiRunDebugStage>[]>((stages) =>
+      stages.length === publicDebugStageOrder.length &&
+      stages.every((stage, index) => stage.stage === publicDebugStageOrder[index])
+        ? undefined
+        : "debug stages must contain the five ordered stage entries",
+    ),
+  ),
+);
+
+const PublicAiRunDebugHistory = Schema.Array(PublicAiRunDebugEvent).pipe(
+  Schema.check(
+    Schema.makeFilter<readonly Schema.Schema.Type<typeof PublicAiRunDebugEvent>[]>((history) =>
+      history.length <= 200 ? undefined : "debug history exceeds the 200-row limit",
+    ),
+  ),
+);
+
+export const PublicAiRunDebug = Schema.Struct({
+  runId: SafeRunIdentity,
+  status: Schema.Literals(["queued", "running", "succeeded", "failed"]),
+  startedAt: Schema.NullOr(SafeActivityTimestamp),
+  finishedAt: Schema.NullOr(SafeActivityTimestamp),
+  failedAt: Schema.NullOr(SafeActivityTimestamp),
+  lastSequence: Schema.NullOr(SafeDebugCount),
+  stages: PublicAiRunDebugStages,
+  history: PublicAiRunDebugHistory,
+  sourceSummary: Schema.Struct({
+    read: SafeDebugCount,
+    cited: SafeDebugCount,
+    uncited: SafeDebugCount,
+  }),
+  context: Schema.Struct({
+    compactionRan: Schema.NullOr(Schema.Boolean),
+    consumers: SafeDebugCount,
+    inputTokens: Schema.NullOr(SafeDebugCount),
+    usableInputTokens: Schema.NullOr(SafeDebugCount),
+  }),
+  memory: Schema.NullOr(
+    Schema.Struct({
+      created: SafeDebugCount,
+      updated: SafeDebugCount,
+      discarded: SafeDebugCount,
+    }),
+  ),
+  usage: Schema.NullOr(
+    Schema.Struct({
+      modelInputTokens: SafeDebugCount,
+      modelOutputTokens: SafeDebugCount,
+      webSearches: SafeDebugCount,
+      webFetches: SafeDebugCount,
+      webResponseBytes: SafeDebugCount,
+    }),
+  ),
+  terminalError: Schema.NullOr(
+    Schema.Struct({
+      code: SafeActivityCode,
+      retryable: Schema.Boolean,
+      category: Schema.NullOr(AiRunActivityErrorCategory),
+      message: Schema.NullOr(SafeActivityMessage),
+    }),
+  ),
+});
+export type PublicAiRunDebug = Schema.Schema.Type<typeof PublicAiRunDebug>;
+
+export const PublicAiRunDebugResponse = Schema.Union([
+  Schema.Struct({ available: Schema.Literal(true), debug: PublicAiRunDebug }),
+  Schema.Struct({ available: Schema.Literal(false) }),
+]);
+export type PublicAiRunDebugResponse = Schema.Schema.Type<typeof PublicAiRunDebugResponse>;
 
 export const aiRunActivityKey = (code: AiRunActivityCode, topicId?: "t1" | "t2" | "t3"): string =>
   `${code}${topicId === undefined ? "" : `:${topicId}`}`;

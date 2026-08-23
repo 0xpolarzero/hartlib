@@ -105,7 +105,7 @@ describe("citationRecordsFromText", () => {
         domain: "example.com",
         url: "https://example.com/b",
         capturedAt: "2026-07-14T00:00:00.000Z",
-        quote: "Evidence",
+        quote: null,
         ranges: [],
       },
       {
@@ -114,6 +114,7 @@ describe("citationRecordsFromText", () => {
         kind: "document",
         documentTitle: "Source A",
         url: "https://example.com/a",
+        quote: null,
         ranges: [{ charStart: 0, charEnd: 10 }],
       },
     ]);

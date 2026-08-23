@@ -223,6 +223,12 @@ test.describe("deterministic canonical runtime", () => {
   test("single direct answer persists citations and the exact public sources-read shape", async ({
     page,
   }) => {
+    let debugRequests = 0;
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname.match(/\/v1\/ai-runs\/[^/]+\/debug$/u)) {
+        debugRequests += 1;
+      }
+    });
     await sendAndWait(page, directQuestion);
 
     await expect(latestAssistantContent(page)).not.toContainText("[[cite");
@@ -237,6 +243,77 @@ test.describe("deterministic canonical runtime", () => {
       .first();
     await expect(firstSourceRead).toBeVisible();
     await expect(firstSourceRead.getByRole("link")).toHaveAttribute("href", /.+/u);
+    const firstQuote = latestAssistant(page).getByTestId("citation-quote").first();
+    await expect(firstQuote.locator("q")).toBeVisible();
+    await expect(firstQuote.locator("q")).not.toHaveText("");
+
+    let failFirstDebugRequest = true;
+    let releaseFirstDebugRequest: (() => void) | null = null;
+    let unavailableOnNextDebugRequest = false;
+    const firstDebugRequestReleased = new Promise<void>((resolve) => {
+      releaseFirstDebugRequest = resolve;
+    });
+    await page.route("**/v1/ai-runs/*/debug", async (route) => {
+      if (unavailableOnNextDebugRequest) {
+        unavailableOnNextDebugRequest = false;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ available: false }),
+        });
+        return;
+      }
+      if (!failFirstDebugRequest) {
+        await route.continue();
+        return;
+      }
+      failFirstDebugRequest = false;
+      await firstDebugRequestReleased;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "temporary" }),
+      });
+    });
+    const debugToggle = latestAssistant(page).getByTestId("chat-debug-toggle");
+    await expect(debugToggle).toBeVisible();
+    expect(debugRequests).toBe(0);
+    await debugToggle.click();
+    await expect(latestAssistant(page).getByTestId("chat-debug-loading")).toBeVisible();
+    releaseFirstDebugRequest?.();
+    await expect(latestAssistant(page).getByTestId("chat-debug-retry")).toBeVisible();
+    await latestAssistant(page).getByTestId("chat-debug-retry").click();
+    await expect(latestAssistant(page).getByTestId("chat-debug-summary")).toBeVisible();
+    expect(debugRequests).toBe(2);
+    await expect(latestAssistant(page).getByTestId("chat-debug-times")).toContainText(
+      /(?:Started|Début)/u,
+    );
+    await expect(latestAssistant(page).getByTestId("chat-debug-stages")).toBeVisible();
+    const historyDisclosure = latestAssistant(page).getByTestId("chat-debug-history");
+    await expect(historyDisclosure).toBeVisible();
+    await historyDisclosure.locator("summary").click();
+    const history = historyDisclosure.locator("ol");
+    await expect(history).toBeVisible();
+    await history.evaluate((element) => {
+      element.style.maxHeight = "32px";
+      element.style.height = "32px";
+    });
+    await history.focus();
+    await expect
+      .poll(() => history.evaluate((element) => document.activeElement === element))
+      .toBe(true);
+    await history.press("PageDown");
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    unavailableOnNextDebugRequest = true;
+    await page.reload();
+    await expect(page.getByTestId("chat-transcript")).toBeVisible();
+    await expect(latestAssistant(page).getByTestId("citation-marker").first()).toHaveText("[1]");
+    await expect(latestAssistant(page).getByTestId("chat-debug-toggle")).toBeVisible();
+    await expect(latestAssistant(page).getByTestId("chat-debug-summary")).toHaveCount(0);
+    await latestAssistant(page).getByTestId("chat-debug-toggle").click();
+    await expect(latestAssistant(page).getByTestId("chat-debug-unavailable")).toBeVisible();
+    expect(debugRequests).toBe(3);
 
     const state = readE2eRuntimeState();
     expect(state.runs).toHaveLength(1);
@@ -1486,7 +1563,30 @@ test.describe("opt-in live provider contract smoke", () => {
     const contextReady = state.events.find((event) => event.type === "context_ready")?.event;
     const sourcesRead = Array.isArray(contextReady?.sourcesRead) ? contextReady.sourcesRead : [];
     expect(sourcesRead.length).toBeGreaterThan(0);
+    const sourceUrls = sourcesRead
+      .map((source) => (typeof source.url === "string" ? source.url : null))
+      .filter((url): url is string => url !== null);
+    expect(sourceUrls).toEqual(
+      expect.arrayContaining([
+        "https://e2e.example/fr/solaire-raccordements",
+        "https://e2e.example/fr/stockage-reseau",
+      ]),
+    );
     await expect(latestAssistant(page).getByTestId("citation-marker").first()).toBeVisible();
+    await latestAssistant(page).getByTestId("sources-read-toggle").click();
+    const citedSourceItems = latestAssistant(page)
+      .getByTestId("source-read-item")
+      .filter({ has: page.locator('[data-cited="true"]') });
+    expect(await citedSourceItems.count()).toBeGreaterThanOrEqual(2);
+    const citedSourceUrls = await citedSourceItems
+      .getByRole("link")
+      .evaluateAll((links) => links.map((link) => (link as HTMLAnchorElement).href));
+    expect(citedSourceUrls).toEqual(
+      expect.arrayContaining([
+        "https://e2e.example/fr/solaire-raccordements",
+        "https://e2e.example/fr/stockage-reseau",
+      ]),
+    );
     const answer = await latestAssistantContent(page).innerText();
     await page.reload();
     await expect(page.getByTestId("chat-message-assistant")).toHaveCount(1);

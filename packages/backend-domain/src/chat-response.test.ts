@@ -585,9 +585,11 @@ describe("chat response reload boundaries", () => {
       "Earlier evidence 😀 text",
       "2025-12-31T23:59:00.000Z",
     );
-    const response = reloadChat(sourceMessage, [
-      { charStart: 0, charEnd: sourceMessage.content.length },
-    ]);
+    const response = reloadChat(
+      sourceMessage,
+      [{ charStart: 0, charEnd: sourceMessage.content.length }],
+      { source_key: `k_${citationNamespaceHex}_2` },
+    );
     expect(response).toMatchObject([
       { id: sourceMessage.id, author: "user" },
       {
@@ -601,6 +603,73 @@ describe("chat response reload boundaries", () => {
         ],
       },
     ]);
+    expect(response[1]).toMatchObject({
+      citations: [
+        { sourceKey: `k_${citationNamespaceHex}_2`, quote: { text: "Earlier evidence 😀 text" } },
+      ],
+    });
+  });
+
+  it("reconstructs a document quote on the server without adding text to sourcesRead", () => {
+    const source = documentSource("https://public.example/document");
+    const response = reload([{ ...source, document_text: "Evidence" }]);
+    expect(response[0]).toMatchObject({
+      citations: [{ sourceKey: source.source_key, quote: { text: "Evidence" } }],
+      sourcesRead: [{ sourceKey: source.source_key }],
+    });
+    expect(
+      response[0]?.author === "assistant" ? response[0].sourcesRead[0] : null,
+    ).not.toHaveProperty("quote");
+  });
+
+  it("reconstructs fanout chat quotes from one ordered merged range union", () => {
+    const sourceMessage = chatMessage(
+      "user-fanout-source",
+      "user",
+      "abcdefghij",
+      "2025-12-31T23:59:00.000Z",
+    );
+    const assistant = {
+      ...assistantMessage,
+      content: `Answer [[cite:k_${citationNamespaceHex}_4]]`,
+    };
+    const source = { ...chatSource(sourceMessage.id), assistant_message_id: assistant.id };
+    const response = chatMessagesResponseFromRows(
+      [sourceMessage, assistant],
+      [
+        {
+          id: "run-user-fanout-source",
+          chat_id: "chat-1",
+          user_message_id: sourceMessage.id,
+          assistant_message_id: assistant.id,
+          started_at: new Date("2025-12-31T23:59:01.000Z"),
+          finished_at: new Date("2025-12-31T23:59:02.000Z"),
+          failed_at: null,
+          error_code: null,
+          retryable: null,
+        },
+      ],
+      [source],
+      [
+        {
+          ...use(source.source_key, [{ charStart: 5, charEnd: 10 }], assistant.id),
+          consumer_task_id: "topic-t2-answer",
+          topic_id: "t2",
+          context_order: 0,
+          assistant_message_id: assistant.id,
+        },
+        {
+          ...use(source.source_key, [{ charStart: 0, charEnd: 7 }], assistant.id),
+          consumer_task_id: "topic-t1-answer",
+          topic_id: "t1",
+          context_order: 0,
+          assistant_message_id: assistant.id,
+        },
+      ],
+    );
+    expect(response[1]).toMatchObject({
+      citations: [{ sourceKey: source.source_key, quote: { text: "abcdefghij" } }],
+    });
   });
 
   it("rejects empty, paged, overlapping, adjacent, and out-of-bounds chat ranges", () => {

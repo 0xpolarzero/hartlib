@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ChatBubble,
+  ChatRunOutcome,
   chatFailureMessageId,
   chatProgressStages,
   isChatTranscriptNearBottom,
@@ -29,6 +30,32 @@ describe("chat failure localization", () => {
 });
 
 describe("chat progress and transcript anchoring", () => {
+  it("does not retain debug details when an active run becomes terminal", () => {
+    const loadDebug = async () => ({ available: false as const });
+    const renderOutcome = (run: Parameters<typeof ChatRunOutcome>[0]["run"]) =>
+      renderToStaticMarkup(
+        createElement(I18nProvider, {
+          locale: "en-US",
+          market: "US",
+          children: createElement(ChatRunOutcome, { run, onLoadAiRunDebug: loadDebug }),
+        }),
+      );
+
+    const activeMarkup = renderOutcome({ id: "run-transition", status: "running" });
+    expect(activeMarkup).toContain('data-testid="chat-run-active"');
+    expect(activeMarkup).not.toContain('data-testid="chat-debug-details"');
+
+    const failedMarkup = renderOutcome({
+      id: "run-transition",
+      status: "failed",
+      errorCode: "provider_transport",
+      retryable: true,
+      failedAt: "2026-08-22T12:00:00.000Z",
+    });
+    expect(failedMarkup).toContain('data-testid="chat-run-failed"');
+    expect(failedMarkup).toContain('data-testid="chat-debug-details"');
+  });
+
   it("keeps the compact rail separate from the full diagnostic history", () => {
     const running = {
       type: "activity" as const,
@@ -146,6 +173,7 @@ describe("chat progress and transcript anchoring", () => {
 
 describe("assistant Markdown and citations", () => {
   it("renders Markdown while keeping inline citations compact and source details separate", () => {
+    const longSupportingQuote = `${"Long supporting quote content. ".repeat(120)}End.`;
     const message: ChatTranscriptMessage = {
       id: "assistant-1",
       author: "assistant",
@@ -160,7 +188,7 @@ describe("assistant Markdown and citations", () => {
           domain: "example.com",
           url: "https://example.com/e-invoicing",
           capturedAt: "2026-08-16T12:00:00.000Z",
-          quote: "The reform begins on 1 September 2026.",
+          quote: { text: "The reform begins on 1 September 2026." },
           ranges: [],
         },
         {
@@ -171,7 +199,7 @@ describe("assistant Markdown and citations", () => {
           domain: "example.net",
           url: "https://example.net/implementation",
           capturedAt: "2026-08-16T12:00:00.000Z",
-          quote: "Implementation details remain subject to guidance.",
+          quote: { text: longSupportingQuote },
           ranges: [],
         },
       ],
@@ -250,6 +278,11 @@ describe("assistant Markdown and citations", () => {
     );
     expect(markup).toContain('data-cited="true"');
     expect(markup).toContain('data-cited="false">not cited</span>');
+    expect(markup).toContain('data-testid="citation-quote"');
+    expect(markup).toContain("Supporting quote");
+    expect(markup).toContain("The reform begins on 1 September 2026.");
+    expect(markup).toContain(longSupportingQuote);
+    expect(markup).toMatch(/<q class="[^"]*break-words[^"]*">/u);
     expect(markup).toContain("Untrusted image");
     expect(markup).not.toContain("<img");
     expect(markup).not.toContain("tracker.example");
@@ -259,6 +292,61 @@ describe("assistant Markdown and citations", () => {
     expect(markup).not.toMatch(
       /class="[^"]*(?:border|bg-paper|rounded)[^"]*"[^>]*data-testid="chat-assistant-answer-column"/u,
     );
+  });
+
+  it("keeps unavailable supporting quotes generic and leaves debug details closed", () => {
+    const message: ChatTranscriptMessage = {
+      id: "assistant-details",
+      author: "assistant",
+      content: "A claim [[cite:k_doc_1]].",
+      runId: "run-safe-1",
+      citations: [
+        {
+          sourceKey: "k_doc_1",
+          label: "Implementation note",
+          kind: "document",
+          documentTitle: "Implementation note",
+          url: "/v1/issues/issue-1/documents/document-1/content",
+          ranges: [],
+          quote: null,
+        },
+      ],
+      sourcesRead: [
+        {
+          sourceKey: "k_doc_1",
+          label: "Implementation note",
+          tokenCount: 4,
+          topicIds: [],
+          kind: "document",
+          documentTitle: "Implementation note",
+          url: "/v1/issues/issue-1/documents/document-1/content",
+          ranges: [],
+        },
+      ],
+    };
+    let loads = 0;
+    const markup = renderToStaticMarkup(
+      createElement(I18nProvider, {
+        locale: "en-US",
+        market: "US",
+        children: createElement(ChatBubble, {
+          message,
+          authorLabels: { assistant: "Assistant", client: "Client" },
+          onLoadAiRunDebug: async () => {
+            loads += 1;
+            return { available: false } as const;
+          },
+        }),
+      }),
+    );
+
+    expect(loads).toBe(0);
+    expect(markup).toContain('data-testid="citation-quote-unavailable"');
+    expect(markup).toContain("Quote unavailable for this source.");
+    expect(markup).toContain('data-testid="chat-debug-details"');
+    expect(markup).toContain('data-testid="chat-debug-toggle"');
+    expect(markup).not.toMatch(/<details[^>]*\sopen(?:=|>)/u);
+    expect(markup).not.toContain("Loading safe run details");
   });
 
   it("keeps user ownership in a compact right bubble without using the assistant icon", () => {
