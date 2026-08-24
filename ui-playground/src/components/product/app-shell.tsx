@@ -1,6 +1,6 @@
 import { type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { Languages, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n, type Locale } from "@/i18n";
 import { writePersisted } from "@/lib/storage";
@@ -59,7 +59,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             size="md"
             onClick={() => palette.setOpen(true)}
             aria-keyshortcuts="Meta+K Control+K"
-            className="mx-auto min-w-0 max-w-md flex-1 justify-between bg-surface px-2.5 text-ink-2 opacity-75 hover:bg-paper-deep/60"
+            className="ml-auto min-w-0 max-w-64 flex-1 justify-between bg-surface px-2.5 text-ink-2 opacity-75 hover:bg-paper-deep/60"
           >
             <Search aria-hidden="true" className="!size-3 overflow-visible" />
             <span
@@ -71,7 +71,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <span className="sr-only">{t("palette.open")}</span>
           </Button>
 
-          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <div className="flex shrink-0 items-center gap-1.5">
             {view === "publisher" && <NotificationBell />}
 
             <nav aria-label={t("shell.workspace")} className="hidden md:block">
@@ -116,7 +116,6 @@ export function AppShell({ children }: { children: ReactNode }) {
                   <span className="sr-only"> — {l === "fr" ? "français" : "English"}</span>
                 </button>
               ))}
-              <Languages aria-hidden="true" className="mx-1.5 hidden size-3 text-ink-2 sm:block" />
             </div>
           </div>
         </div>
