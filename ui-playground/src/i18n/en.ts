@@ -222,7 +222,6 @@ export const en: Dict = {
   "demoState.empty": "Empty",
   "demoState.error": "Error",
 
-  "chat.title": "Consultation",
   "chat.emptyTitle": "Query your archive",
   "chat.emptyBody": "Answers cite the documents they read, keep your memories, and feed the visualization pane.",
   "chat.answerLabel": "Assistant answer",
@@ -234,7 +233,6 @@ export const en: Dict = {
   "chat.showVisual": "Show the visualization",
   "chat.sourcesRead": "Sources read — {cited} cited out of {n}",
   "chat.scrollLatest": "Back to latest messages ({n} unread)",
-  "chat.ownerTools": "Internal tools",
   "chat.panes": "Consultation panes",
   "chat.pageSelector": "Consultation pages",
   "chat.pageChat": "Chat",

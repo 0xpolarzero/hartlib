@@ -239,7 +239,6 @@ export const fr: Dict = {
   "demoState.error": "Erreur",
 
   /* chat */
-  "chat.title": "Consultation",
   "chat.emptyTitle": "Interrogez votre archive",
   "chat.emptyBody": "Les réponses citent les documents lus, conservent vos mémoires et alimentent le panneau de visualisation.",
   "chat.answerLabel": "Réponse de l’assistant",
@@ -251,7 +250,6 @@ export const fr: Dict = {
   "chat.showVisual": "Afficher la visualisation",
   "chat.sourcesRead": "Sources lues — {cited} citée(s) sur {n}",
   "chat.scrollLatest": "Revenir aux derniers messages ({n} non lu(s))",
-  "chat.ownerTools": "Outils interne",
   "chat.panes": "Panneaux de la consultation",
   "chat.pageSelector": "Pages de la consultation",
   "chat.pageChat": "Chat",

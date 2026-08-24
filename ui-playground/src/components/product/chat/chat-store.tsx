@@ -66,8 +66,6 @@ export interface ChatApi {
   memoryFocus: MemoryFocus | null;
   openMemoryRevision: (focus: MemoryFocus) => void;
   clearMemoryFocus: () => void;
-  ownerTools: boolean;
-  setOwnerTools: (v: boolean) => void;
   lastAssistantMessage: ChatMessage | null;
   debugRunId: string | null;
   setDebugRunId: (runId: string | null) => void;
@@ -96,7 +94,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [vizHighlightKey, setVizHighlightKey] = useState(0);
   const [showVizRequest, setShowVizRequest] = useState(0);
   const [memoryFocus, setMemoryFocus] = useState<MemoryFocus | null>(null);
-  const [ownerTools, setOwnerTools] = useState(false);
   const [debugRunId, setDebugRunId] = useState<string | null>(null);
   const disposeRef = useRef<(() => void) | null>(null);
   const versionSeq = useRef(0);
@@ -371,8 +368,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       memoryFocus,
       openMemoryRevision,
       clearMemoryFocus,
-      ownerTools,
-      setOwnerTools,
       lastAssistantMessage,
       debugRunId,
       setDebugRunId,
@@ -381,7 +376,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       messages, run, send, resubmit, regenerate, stop, speed,
       webSearch, unread, versions, activeVersionIndex, scrubVersion, restoreVersion, refreshVersion,
       regenerating, vizHighlightKey, showVizRequest, memoryFocus, openMemoryRevision,
-      clearMemoryFocus, ownerTools, lastAssistantMessage, debugRunId,
+      clearMemoryFocus, lastAssistantMessage, debugRunId,
     ],
   );
 

@@ -402,7 +402,7 @@
   transform: translateX(0);
   transition-delay: 0s;
 }
-.subscriber-wide-controls,
+.subscriber-chat-toolbar,
 .subscriber-wide-only {
   display: none;
 }
@@ -492,7 +492,7 @@
   .subscriber-panel[data-open="false"] {
     border-color: transparent;
   }
-  .subscriber-wide-controls {
+  .subscriber-chat-toolbar {
     display: flex;
   }
   .subscriber-wide-only {

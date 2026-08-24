@@ -4,7 +4,7 @@ import { BookOpen, Brain, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelR
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { usePersistedState } from "@/lib/storage";
-import { Button, Segmented, Switch, Tooltip } from "@/components/ui";
+import { Button, Segmented, Tooltip } from "@/components/ui";
 import { ClientPublicationsTable } from "@/components/product/tables";
 import { ChatProvider, useChat } from "@/components/product/chat/chat-store";
 import { MemoriesPanel } from "@/components/product/chat/memories-panel";
@@ -66,8 +66,8 @@ function ChatSurface() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat.showVizRequest]);
 
-  const leftColumn = publicationsOpen ? "22.5rem" : "0px";
-  const rightColumn = memoriesOpen ? "22.5rem" : "0px";
+  const leftColumn = publicationsOpen ? "27rem" : "0px";
+  const rightColumn = memoriesOpen ? "27rem" : "0px";
 
   return (
     <div className="subscriber-chat-viewport -mt-5 flex h-[calc(100dvh-52px)] min-h-0 flex-col overflow-hidden">
@@ -112,55 +112,40 @@ function ChatSurface() {
         </SidePanel>
 
         <section
-          aria-labelledby="chat-heading"
+          aria-label={t("chat.pageChat")}
           className="subscriber-chat-main flex min-h-0 min-w-0 flex-col"
           data-compact-active={workspacePage === "chat"}
           aria-hidden={!isWideDesktop && workspacePage !== "chat"}
           inert={!isWideDesktop && workspacePage !== "chat"}
         >
-          <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4">
-            <h1 id="chat-heading" className="truncate font-display text-[15px] font-medium text-ink">{t("chat.title")}</h1>
-            <div className="ml-auto flex items-center gap-3">
-              <div className="subscriber-wide-controls items-center gap-1">
-                <Tooltip content={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    id="publications-panel-toggle"
-                    aria-label={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}
-                    aria-expanded={publicationsOpen}
-                    aria-controls="publications-panel"
-                    onClick={() => setPublicationsOpen((open) => !open)}
-                  >
-                    {publicationsOpen ? <PanelLeftClose aria-hidden="true" /> : <PanelLeftOpen aria-hidden="true" />}
-                  </Button>
-                </Tooltip>
-                <Tooltip content={memoriesOpen ? t("panels.closeMemories") : t("panels.openMemories")}>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    id="memories-panel-toggle"
-                    aria-label={memoriesOpen ? t("panels.closeMemories") : t("panels.openMemories")}
-                    aria-expanded={memoriesOpen}
-                    aria-controls="memories-panel"
-                    onClick={() => setMemoriesOpen((open) => !open)}
-                  >
-                    {memoriesOpen ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />}
-                  </Button>
-                </Tooltip>
-              </div>
-              <span className="hidden items-center gap-1.5 sm:flex">
-                <Switch
-                  id="owner-tools"
-                  checked={chat.ownerTools}
-                  onCheckedChange={chat.setOwnerTools}
-                  aria-label={t("chat.ownerTools")}
-                />
-                <label htmlFor="owner-tools" className="font-mono text-[11px] text-ink-2">
-                  {t("chat.ownerTools")}
-                </label>
-              </span>
-            </div>
+          <div className="subscriber-chat-toolbar h-8 shrink-0 items-center border-b border-line px-2">
+            <Tooltip content={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                id="publications-panel-toggle"
+                aria-label={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}
+                aria-expanded={publicationsOpen}
+                aria-controls="publications-panel"
+                onClick={() => setPublicationsOpen((open) => !open)}
+              >
+                {publicationsOpen ? <PanelLeftClose aria-hidden="true" /> : <PanelLeftOpen aria-hidden="true" />}
+              </Button>
+            </Tooltip>
+            <span className="flex-1" aria-hidden="true" />
+            <Tooltip content={memoriesOpen ? t("panels.closeMemories") : t("panels.openMemories")}>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                id="memories-panel-toggle"
+                aria-label={memoriesOpen ? t("panels.closeMemories") : t("panels.openMemories")}
+                aria-expanded={memoriesOpen}
+                aria-controls="memories-panel"
+                onClick={() => setMemoriesOpen((open) => !open)}
+              >
+                {memoriesOpen ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />}
+              </Button>
+            </Tooltip>
           </div>
 
           <div className="flex min-h-0 flex-1">
