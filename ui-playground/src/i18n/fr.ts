@@ -29,14 +29,11 @@ export const fr: Dict = {
 
   /* nav */
   "nav.chat": "Consultation",
-  "nav.archive": "Publications reçues",
-  "nav.memories": "Mémoires",
   "nav.gallery": "Galerie de composants",
   "nav.newIssue": "Nouveau numéro",
   "nav.settings": "Paramètres",
   "nav.sources": "Sources",
   "nav.publisherGroup": "Navigation éditeur",
-  "nav.clientGroup": "Navigation abonné",
 
   /* palette */
   "palette.title": "Palette de commandes",
@@ -53,12 +50,6 @@ export const fr: Dict = {
   "palette.switchToEnglish": "Passer en anglais",
   "palette.switchToFrench": "Passer en français",
   "palette.reset": "Réinitialiser les données de démonstration",
-
-  /* archive */
-  "archive.kicker": "Espace abonné",
-  "archive.title": "Publications reçues",
-  "archive.description": "Toutes les publications livrées à votre portefeuille d’abonnements, auxquelles s’ajoute l’archive interrogeable en consultation.",
-  "archive.askArchive": "Interroger l’archive",
 
   /* publisher */
   "publisher.kicker": "Espace éditeur",
@@ -248,6 +239,7 @@ export const fr: Dict = {
   "demoState.error": "Erreur",
 
   /* chat */
+  "chat.title": "Consultation",
   "chat.emptyTitle": "Interrogez votre archive",
   "chat.emptyBody": "Les réponses citent les documents lus, conservent vos mémoires et alimentent le panneau de visualisation.",
   "chat.answerLabel": "Réponse de l’assistant",
@@ -260,12 +252,19 @@ export const fr: Dict = {
   "chat.sourcesRead": "Sources lues — {cited} citée(s) sur {n}",
   "chat.scrollLatest": "Revenir aux derniers messages ({n} non lu(s))",
   "chat.ownerTools": "Outils interne",
-  "chat.openThreads": "Ouvrir la liste des conversations",
-  "chat.loadingThreads": "Chargement des conversations…",
   "chat.panes": "Panneaux de la consultation",
   "chat.tabConversation": "Conversation",
   "chat.tabVisual": "Visualisation",
   "chat.divider": "Redimensionner les panneaux (flèches ; Début/Fin pour réduire)",
+
+  /* panels */
+  "panels.publications": "Publications reçues",
+  "panels.publicationsDescription": "Parcourez les numéros livrés à votre portefeuille tout en gardant la consultation ouverte.",
+  "panels.memories": "Mémoires enregistrées",
+  "panels.openPublications": "Ouvrir les publications reçues",
+  "panels.closePublications": "Fermer les publications reçues",
+  "panels.openMemories": "Ouvrir les mémoires enregistrées",
+  "panels.closeMemories": "Fermer les mémoires enregistrées",
 
   /* run */
   "run.started": "Génération de la réponse engagée.",
@@ -312,39 +311,12 @@ export const fr: Dict = {
   "composer.attached": "Pièce jointe ajoutée : {name}",
   "composer.removeAttachment": "Retirer la pièce jointe {name}",
   "composer.webSearch": "Recherche web",
-  "composer.webSearchOffConfidential": "désactivée — conversation confidentielle",
   "composer.speed": "Vitesse du flux",
   "composer.speedHint": "Accélère ou ralentit la simulation du flux de tokens.",
   "composer.enterHint": "envoyer",
   "composer.shiftEnterHint": "saut de ligne",
 
-  /* threads */
-  "threads.list": "Conversations",
-  "threads.search": "Filtrer les conversations…",
-  "threads.noMatch": "Aucune conversation ne correspond.",
-  "threads.new": "Nouvelle conversation",
-  "threads.shared": "partagée",
-  "threads.actions": "Actions pour « {title} »",
-  "threads.rename": "Renommer",
-  "threads.delete": "Supprimer",
-  "threads.share": "Partager",
-  "threads.deleteTitle": "Supprimer cette conversation ?",
-  "threads.deleteBody": "« {title} » sera retirée de la liste. Les mémoires qu’elle a créées sont conservées.",
-  "threads.deleteConfirm": "Supprimer",
-  "threads.deletedToast": "Conversation supprimée",
-  "threads.shareTitle": "Partager la conversation",
-  "threads.sharePick": "Choisir les collègues",
-  "threads.sharePermission": "Autorisation",
-  "threads.permissionRead": "Lecture seule",
-  "threads.permissionComment": "Lecture et commentaires",
-  "threads.shareNote": "Les destinataires voient la conversation en l’état ; vos mémoires personnelles ne sont jamais partagées.",
-  "threads.shareConfirm": "Partager avec {n} collègue(s)",
-  "threads.sharedToast": "Conversation partagée",
-
   /* memories */
-  "memories.kicker": "Espace abonné",
-  "memories.title": "Mémoires enregistrées",
-  "memories.description": "Ce que l’assistant retient de vos conversations : préférences, échéances, règles de travail. Historique réversible sur 30 jours.",
   "memories.list": "Liste des mémoires",
   "memories.created": "créée le",
   "memories.updated": "modifiée le",
@@ -359,9 +331,6 @@ export const fr: Dict = {
   "memories.deleteA11y": "Supprimer la mémoire « {label} »",
   "memories.emptyTitle": "Aucune mémoire enregistrée",
   "memories.emptyBody": "Les préférences et échéances que vous confierez à l’assistant apparaîtront ici, avec leur historique réversible.",
-  "memories.openFullPage": "Ouvrir la page complète",
-  "memories.backToChat": "Retour à la consultation",
-  "memories.footnote": "Chaque rétablissement ajoute une révision : l’historique ne perd jamais une version. Les suppressions sont des pierres tombales récupérables pendant 30 jours.",
   "memories.revertOrigin": "Rétablie depuis l’historique",
 
   /* viz */
@@ -467,6 +436,8 @@ export const fr: Dict = {
   "gallery.gTextarea": "Textarea multi-ligne…",
   "gallery.gChecks": "Checkbox · Switch",
   "gallery.gRadio": "RadioGroup",
+  "gallery.gPermissionRead": "Lecture seule",
+  "gallery.gPermissionComment": "Lecture et commentaires",
   "gallery.gSelect": "Select",
   "gallery.gSelectNote": "Radix Select — navigation clavier complète, coche d’élément actif.",
   "gallery.gCombobox": "Combobox asynchrone",
@@ -497,6 +468,10 @@ export const fr: Dict = {
   "gallery.gSheetBody": "Panneau coulissant (nav mobile, mémoires, détails) — mêmes garanties de focus que le Dialog.",
   "gallery.gPopoverBody": "Contenu ancré, position négociée avec le viewport.",
   "gallery.gDropdown": "DropdownMenu",
+  "gallery.gMenuActions": "Actions d’exemple",
+  "gallery.gRename": "Renommer",
+  "gallery.gShare": "Partager",
+  "gallery.gDelete": "Supprimer",
   "gallery.gTooltipBody": "Infobulle texte, aussi déclenchée au clavier.",
   "gallery.gTooltipNote": "Tab sur le bouton : l’infobulle s’ouvre au focus.",
   "gallery.gHoverMe": "Survolez-moi",

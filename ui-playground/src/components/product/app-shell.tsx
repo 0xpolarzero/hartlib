@@ -22,18 +22,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const isPublisher = location.pathname.includes("/publisher");
   const view: "publisher" | "client" = isPublisher ? "publisher" : "client";
 
-  const navItems =
-    view === "publisher"
-      ? [
-          { key: "sources", label: t("nav.sources"), to: "/$locale/publisher", params: { locale }, active: location.pathname.endsWith("/publisher") },
-          { key: "new-issue", label: t("nav.newIssue"), to: "/$locale/publisher/issues/new", params: { locale }, active: location.pathname.includes("/issues/new") },
-          { key: "settings", label: t("nav.settings"), to: "/$locale/publisher/settings/notifications", params: { locale }, active: location.pathname.includes("/settings") },
-        ]
-      : [
-          { key: "chat", label: t("nav.chat"), to: "/$locale/client/chat", params: { locale }, active: location.pathname.includes("/client/chat") },
-          { key: "archive", label: t("nav.archive"), to: "/$locale/client", params: { locale }, active: location.pathname.endsWith("/client") },
-          { key: "memories", label: t("nav.memories"), to: "/$locale/client/memories", params: { locale }, active: location.pathname.includes("/memories") },
-        ];
+  const navItems = view === "publisher"
+    ? [
+        { key: "sources", label: t("nav.sources"), to: "/$locale/publisher", params: { locale }, active: location.pathname.endsWith("/publisher") },
+        { key: "new-issue", label: t("nav.newIssue"), to: "/$locale/publisher/issues/new", params: { locale }, active: location.pathname.includes("/issues/new") },
+        { key: "settings", label: t("nav.settings"), to: "/$locale/publisher/settings/notifications", params: { locale }, active: location.pathname.includes("/settings") },
+      ]
+    : null;
 
   return (
     <div className="flex min-h-dvh flex-col bg-paper">
@@ -73,6 +68,16 @@ export function AppShell({ children }: { children: ReactNode }) {
 
           <div className="flex shrink-0 items-center gap-1.5">
             {view === "publisher" && <NotificationBell />}
+
+            {view === "client" && (
+              <Link
+                to="/$locale/components"
+                params={{ locale }}
+                className="hidden py-1 font-mono text-[11px] tracking-wide text-ink-2 underline-offset-2 transition-colors duration-100 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent lg:inline-flex"
+              >
+                {t("nav.gallery")}
+              </Link>
+            )}
 
             <nav aria-label={t("shell.workspace")} className="hidden md:block">
               <Segmented
@@ -120,38 +125,40 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
 
-        <div className="mx-auto max-w-[1440px] px-4">
-          <nav aria-label={view === "publisher" ? t("nav.publisherGroup") : t("nav.clientGroup")}>
-            <ul className="flex items-center gap-4 overflow-x-auto">
-              {navItems.map((item) => (
-                <li key={item.key}>
+        {view === "publisher" && (
+          <div className="mx-auto max-w-[1440px] px-4">
+            <nav aria-label={t("nav.publisherGroup")}>
+              <ul className="flex items-center gap-4 overflow-x-auto">
+                {navItems?.map((item) => (
+                  <li key={item.key}>
+                    <Link
+                      to={item.to}
+                      params={item.params}
+                      search={item.key === "sources" ? { tab: undefined } : undefined}
+                      aria-current={item.active ? "page" : undefined}
+                      className={cn(
+                        "relative inline-flex min-h-9 items-center pb-2 pt-1 text-[13px] transition-colors duration-100",
+                        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+                        item.active ? "font-medium text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-accent" : "text-ink-2 hover:text-ink",
+                      )}
+                    >
+                      {item.label}
+                    </Link>
+                  </li>
+                ))}
+                <li className="ml-auto hidden py-1 lg:block">
                   <Link
-                    to={item.to}
-                    params={item.params}
-                    search={item.key === "sources" ? { tab: undefined } : undefined}
-                    aria-current={item.active ? "page" : undefined}
-                    className={cn(
-                      "relative inline-flex min-h-9 items-center pb-2 pt-1 text-[13px] transition-colors duration-100",
-                      "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-                      item.active ? "font-medium text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-accent" : "text-ink-2 hover:text-ink",
-                    )}
+                    to="/$locale/components"
+                    params={{ locale }}
+                    className="font-mono text-[11px] tracking-wide text-ink-2 underline-offset-2 transition-colors duration-100 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                   >
-                    {item.label}
+                    {t("nav.gallery")}
                   </Link>
                 </li>
-              ))}
-              <li className="ml-auto hidden py-1 lg:block">
-                <Link
-                  to="/$locale/components"
-                  params={{ locale }}
-                  className="font-mono text-[11px] tracking-wide text-ink-2 underline-offset-2 transition-colors duration-100 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                >
-                  {t("nav.gallery")}
-                </Link>
-              </li>
-            </ul>
-          </nav>
-        </div>
+              </ul>
+            </nav>
+          </div>
+        )}
       </header>
 
       <main id="content" tabIndex={-1} className="mx-auto w-full max-w-[1440px] flex-1 px-4 pb-16 pt-5 outline-none">

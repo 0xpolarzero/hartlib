@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
-import { ArrowRightLeft, Globe, LayoutGrid, MessageSquarePlus, Newspaper, PlusCircle, RotateCcw, Settings2 } from "lucide-react";
+import { ArrowRightLeft, Globe, LayoutGrid, MessageSquare, PlusCircle, RotateCcw, Settings2 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { api } from "@/services";
 import {
@@ -68,22 +68,13 @@ export function CommandPalette({ state }: { state: PaletteState }) {
 
             <CommandGroup heading={t("palette.pages")}>
               <CommandItem value={`${t("nav.chat")} consultation chat archives questions`} onSelect={() => go(`/${locale}/client/chat`)}>
-                <MessageSquarePlus />
+                <MessageSquare />
                 {t("nav.chat")}
                 <Kbd className="ml-auto">1</Kbd>
-              </CommandItem>
-              <CommandItem value={`${t("nav.archive")} publications livrées archive client`} onSelect={() => go(`/${locale}/client`)}>
-                <Newspaper />
-                {t("nav.archive")}
-                <Kbd className="ml-auto">2</Kbd>
               </CommandItem>
               <CommandItem value={`${t("nav.newIssue")} créer numéro planifier publisher`} onSelect={() => go(`/${locale}/publisher/issues/new`)}>
                 <PlusCircle />
                 {t("nav.newIssue")}
-              </CommandItem>
-              <CommandItem value={`${t("nav.memories")} mémoires souvenirs memories`} onSelect={() => go(`/${locale}/client/memories`)}>
-                <Settings2 />
-                {t("nav.memories")}
               </CommandItem>
               <CommandItem value={`${t("nav.settings")} notifications paramètres settings`} onSelect={() => go(`/${locale}/publisher/settings/notifications`)}>
                 <Settings2 />

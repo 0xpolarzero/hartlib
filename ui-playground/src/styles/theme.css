@@ -1,0 +1,413 @@
+@import "tailwindcss";
+
+/*
+ * Bref. — editorial palette.
+ * Paper neutrals + one signal accent (deep carmine) reserved for citations,
+ * active states, selection and small marks. Every text pairing below is
+ * verified ≥ 4.5:1 on paper/surface (see README contrast table).
+ */
+@theme {
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-read: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  --color-paper: #faf8f3;
+  --color-paper-deep: #f0ece2;
+  --color-surface: #fffdf9;
+  --color-ink: #211d16;
+  --color-ink-2: #5c5546; /* muted text — 6.9:1 on paper */
+  --color-ink-3: #8a8272; /* decorative glyphs / boundaries only (3.6:1) */
+  --color-line: #e3ddd0;
+  --color-line-2: #cfc7b4;
+  --color-accent: #9d2235; /* 7.3:1 on paper */
+  --color-accent-deep: #7c1626;
+  --color-accent-soft: #f3dfe2;
+  --color-ok: #23694a; /* 5.7:1 */
+  --color-warn: #8a5a12; /* 5.3:1 */
+  --color-danger: #a02c22; /* 6.9:1 */
+  --color-danger-soft: #f5e0dc;
+
+  --radius-tiny: 2px;
+
+  --ease-snap: cubic-bezier(0.23, 1, 0.32, 1);
+
+  --animate-enter: enter 200ms var(--ease-snap) both;
+  --animate-enter-fade: enter-fade 200ms var(--ease-snap) both;
+  --animate-caret: caret 1s steps(1) infinite;
+  --animate-pulse-soft: pulse-soft 1.6s ease-in-out infinite;
+  --animate-pulse-edge: pulse-edge 1.8s ease-in-out 3;
+  --animate-spin-slow: spin 1.1s linear infinite;
+
+  @keyframes enter {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes enter-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes caret {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0;
+    }
+  }
+  @keyframes pulse-soft {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+  @keyframes pulse-edge {
+    0%,
+    100% {
+      opacity: 0;
+    }
+    40% {
+      opacity: 1;
+    }
+  }
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html {
+    background: var(--color-paper);
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--color-ink);
+    background: var(--color-paper);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--color-accent-soft);
+    color: var(--color-accent-deep);
+  }
+
+  /* One focus treatment for the whole app: 2px accent ring, offset to the
+     local surface. Theme-safe on ink fills too (offset keeps it visible). */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 1px;
+  }
+  [data-focus-ring="invert"]:focus-visible {
+    outline-color: var(--color-paper);
+  }
+
+  /* Quiet scrollbars that respect the hairline register. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-2) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-line-2);
+    border-radius: 0;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* Nonessential motion is disabled under reduced motion (WCAG 2.2 §2.3). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* 11px tracked small-caps label used for table headers and meta rows. */
+  .caps-label {
+    font-family: var(--font-sans);
+    font-size: 11px;
+    line-height: 1;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 500;
+  }
+  .font-read {
+    font-family: var(--font-read);
+  }
+  /* Prevent CLS while Newsreader/Fraunces load: metrics-matched fallbacks. */
+  .font-read {
+    font-size-adjust: 0.5 ex;
+  }
+}
+
+/* ── Markdown (reading surface) ─────────────────────────────────────────── */
+.prose-answer {
+  font-family: var(--font-read);
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--color-ink);
+}
+.prose-answer > * + * {
+  margin-top: 0.75rem;
+}
+.prose-answer h1,
+.prose-answer h2,
+.prose-answer h3,
+.prose-answer h4 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  line-height: 1.25;
+  color: var(--color-ink);
+}
+.prose-answer h1 {
+  font-size: 20px;
+  margin-top: 1.4rem;
+}
+.prose-answer h2 {
+  font-size: 17px;
+  margin-top: 1.3rem;
+}
+.prose-answer h3 {
+  font-size: 15px;
+  margin-top: 1.2rem;
+}
+.prose-answer h4 {
+  font-size: 14px;
+  font-style: italic;
+  margin-top: 1.1rem;
+}
+.prose-answer a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.prose-answer a:hover {
+  color: var(--color-accent-deep);
+}
+.prose-answer strong {
+  font-weight: 600;
+}
+.prose-answer em {
+  font-style: italic;
+}
+.prose-answer blockquote {
+  border-left: 2px solid var(--color-line-2);
+  padding-left: 12px;
+  font-style: italic;
+  color: var(--color-ink-2);
+}
+.prose-answer ul,
+.prose-answer ol {
+  padding-left: 20px;
+}
+.prose-answer ul {
+  list-style: disc;
+}
+.prose-answer ol {
+  list-style: decimal;
+}
+.prose-answer li + li {
+  margin-top: 2px;
+}
+.prose-answer li::marker {
+  color: var(--color-ink-3);
+}
+.prose-answer hr {
+  border: 0;
+  border-top: 1px solid var(--color-line);
+  margin: 1.1rem 0;
+}
+.prose-answer code:not(pre code) {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--color-paper-deep);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+.prose-answer table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+}
+.prose-answer th {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 500;
+  color: var(--color-ink-2);
+  text-align: left;
+  border-bottom: 1px solid var(--color-line-2);
+  padding: 6px 10px 6px 0;
+  white-space: nowrap;
+}
+.prose-answer td {
+  border-bottom: 1px solid var(--color-line);
+  padding: 7px 10px 7px 0;
+  font-variant-numeric: tabular-nums;
+}
+.prose-answer pre {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  background: var(--color-paper-deep);
+  border: 1px solid var(--color-line);
+  border-radius: 2px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+/* Syntax highlighting mapped onto the paper palette (rehype-highlight). */
+.hljs {
+  color: var(--color-ink);
+  background: transparent;
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--color-ink-3);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag {
+  color: var(--color-accent-deep);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: var(--color-ok);
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-meta {
+  color: var(--color-warn);
+}
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-attr,
+.hljs-attribute {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+.hljs-type,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-class .hljs-title {
+  color: var(--color-accent);
+}
+.hljs-deletion {
+  color: var(--color-danger);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+/* Virtualized row: prevent layout shift while measuring. */
+.vrow {
+  contain: layout paint style;
+}
+
+/* Subscriber chat frame: side panels occupy real layout tracks and never
+ * float above the conversation. Narrow screens stack the same tracks so the
+ * chat and visualization switch remain usable without a drawer backdrop. */
+.subscriber-chat-layout {
+  display: grid;
+  grid-template-columns: var(--subscriber-left-column) minmax(0, 1fr) var(--subscriber-right-column);
+  transition: grid-template-columns 180ms var(--ease-snap);
+}
+.subscriber-panel {
+  width: 100%;
+  transition: flex-basis 180ms var(--ease-snap), width 180ms var(--ease-snap);
+}
+.subscriber-panel > div {
+  min-width: 0;
+}
+.publications-panel-table table {
+  table-layout: fixed;
+}
+.publications-panel-table th:nth-child(1),
+.publications-panel-table td:nth-child(1) {
+  width: 52%;
+}
+.publications-panel-table th:nth-child(2),
+.publications-panel-table td:nth-child(2) {
+  width: 18%;
+}
+.publications-panel-table th:nth-child(3),
+.publications-panel-table td:nth-child(3) {
+  width: 16%;
+}
+.publications-panel-table th:nth-child(4),
+.publications-panel-table td:nth-child(4) {
+  width: 14%;
+  padding-right: 4px;
+}
+
+@media (max-width: 1023px) {
+  .subscriber-chat-layout {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .subscriber-chat-main {
+    min-height: 0;
+    flex: 1 1 0;
+    order: 2;
+  }
+  .subscriber-panel-left {
+    order: 1;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-line);
+  }
+  .subscriber-panel-right {
+    order: 3;
+    border-left: 0;
+    border-top: 1px solid var(--color-line);
+  }
+  .subscriber-panel[data-open="false"] {
+    flex: 0 0 2.75rem;
+  }
+  .subscriber-panel[data-open="true"] {
+    flex: 0 0 min(34dvh, 25rem);
+  }
+  .subscriber-panel[data-open="false"] > div {
+    height: 2.75rem;
+  }
+}
