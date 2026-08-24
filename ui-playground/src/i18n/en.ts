@@ -43,7 +43,10 @@ export const en: Dict = {
   "palette.navigate": "navigate",
   "palette.select": "select",
   "palette.close": "close",
-  "palette.switchLocale": "Switch language (FR ⇄ EN)",
+  "palette.switchToPublisher": "Switch to publisher",
+  "palette.switchToSubscriber": "Switch to subscriber",
+  "palette.switchToEnglish": "Switch to English",
+  "palette.switchToFrench": "Switch to French",
   "palette.reset": "Reset demo data",
 
   "archive.kicker": "Subscriber space",

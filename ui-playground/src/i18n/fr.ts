@@ -48,7 +48,10 @@ export const fr: Dict = {
   "palette.navigate": "naviguer",
   "palette.select": "choisir",
   "palette.close": "fermer",
-  "palette.switchLocale": "Basculer la langue (FR ⇄ EN)",
+  "palette.switchToPublisher": "Passer à l’espace éditeur",
+  "palette.switchToSubscriber": "Passer à l’espace abonné",
+  "palette.switchToEnglish": "Passer en anglais",
+  "palette.switchToFrench": "Passer en français",
   "palette.reset": "Réinitialiser les données de démonstration",
 
   /* archive */
