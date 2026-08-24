@@ -344,20 +344,70 @@
   contain: layout paint style;
 }
 
-/* Subscriber chat frame: side panels occupy real layout tracks and never
- * float above the conversation. Narrow screens stack the same tracks so the
- * chat and visualization switch remain usable without a drawer backdrop. */
+/* Subscriber chat frame: compact pages share one content region below the
+ * wide-desktop breakpoint. At wide desktop the same mounted panel tracks
+ * reflow the center chat without floating above it. */
+.subscriber-chat-viewport {
+  width: calc(100% + 2rem);
+  margin-left: -1rem;
+}
 .subscriber-chat-layout {
+  position: relative;
   display: grid;
-  grid-template-columns: var(--subscriber-left-column) minmax(0, 1fr) var(--subscriber-right-column);
-  transition: grid-template-columns 180ms var(--ease-snap);
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "workspace";
+  overflow: hidden;
+  transition: grid-template-columns 220ms var(--ease-snap);
+}
+.subscriber-chat-main,
+.subscriber-panel {
+  grid-area: workspace;
+  min-width: 0;
+  min-height: 0;
+}
+.subscriber-chat-main,
+.subscriber-panel {
+  transition:
+    opacity 180ms var(--ease-snap),
+    transform 180ms var(--ease-snap),
+    visibility 0s linear 180ms;
 }
 .subscriber-panel {
   width: 100%;
-  transition: flex-basis 180ms var(--ease-snap), width 180ms var(--ease-snap);
+  border: 0;
 }
-.subscriber-panel > div {
+.subscriber-panel-inner {
   min-width: 0;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateX(var(--subscriber-panel-shift, 0));
+  transition:
+    opacity 180ms var(--ease-snap),
+    transform 180ms var(--ease-snap),
+    visibility 0s linear 180ms;
+}
+.subscriber-panel-left {
+  --subscriber-panel-shift: -12px;
+}
+.subscriber-panel-right {
+  --subscriber-panel-shift: 12px;
+}
+.subscriber-panel[data-panel-visible="true"] .subscriber-panel-inner {
+  pointer-events: auto;
+  visibility: visible;
+  opacity: 1;
+  transform: translateX(0);
+  transition-delay: 0s;
+}
+.subscriber-wide-controls,
+.subscriber-wide-only {
+  display: none;
+}
+.subscriber-compact-nav {
+  display: flex;
 }
 .publications-panel-table table {
   table-layout: fixed;
@@ -380,34 +430,72 @@
   padding-right: 4px;
 }
 
-@media (max-width: 1023px) {
+@media (max-width: 1535px) {
+  .subscriber-chat-main[data-compact-active="false"],
+  .subscriber-panel[data-compact-active="false"] {
+    pointer-events: none;
+    visibility: hidden;
+    opacity: 0;
+  }
+  .subscriber-panel-left[data-compact-active="false"] {
+    transform: translateX(-12px);
+  }
+  .subscriber-panel-right[data-compact-active="false"] {
+    transform: translateX(12px);
+  }
+  .subscriber-chat-main[data-compact-active="true"],
+  .subscriber-panel[data-compact-active="true"] {
+    pointer-events: auto;
+    visibility: visible;
+    opacity: 1;
+    transform: translateX(0);
+    transition-delay: 0s;
+  }
+}
+
+@media (min-width: 1536px) {
+  .subscriber-chat-viewport {
+    width: 100vw;
+    margin-left: calc((100% - 100vw) / 2);
+  }
+  .subscriber-compact-nav {
+    display: none;
+  }
   .subscriber-chat-layout {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+    grid-template-columns: var(--subscriber-left-column) minmax(0, 1fr) var(--subscriber-right-column);
+    grid-template-areas: "left workspace right";
   }
   .subscriber-chat-main {
-    min-height: 0;
-    flex: 1 1 0;
-    order: 2;
+    grid-area: workspace;
+    pointer-events: auto;
+    visibility: visible;
+    opacity: 1;
+    transform: none;
   }
-  .subscriber-panel-left {
-    order: 1;
-    border-right: 0;
-    border-bottom: 1px solid var(--color-line);
+  .subscriber-panel {
+    grid-area: left;
+    pointer-events: auto;
+    visibility: visible;
+    opacity: 1;
+    transform: none;
+    transition: border-color 180ms var(--ease-snap);
+  }
+  .subscriber-panel-left[data-open="true"] {
+    border-right: 1px solid var(--color-line);
+  }
+  .subscriber-panel-right[data-open="true"] {
+    border-left: 1px solid var(--color-line);
   }
   .subscriber-panel-right {
-    order: 3;
-    border-left: 0;
-    border-top: 1px solid var(--color-line);
+    grid-area: right;
   }
   .subscriber-panel[data-open="false"] {
-    flex: 0 0 2.75rem;
+    border-color: transparent;
   }
-  .subscriber-panel[data-open="true"] {
-    flex: 0 0 min(34dvh, 25rem);
+  .subscriber-wide-controls {
+    display: flex;
   }
-  .subscriber-panel[data-open="false"] > div {
-    height: 2.75rem;
+  .subscriber-wide-only {
+    display: inline-flex;
   }
 }

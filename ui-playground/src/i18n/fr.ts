@@ -253,6 +253,8 @@ export const fr: Dict = {
   "chat.scrollLatest": "Revenir aux derniers messages ({n} non lu(s))",
   "chat.ownerTools": "Outils interne",
   "chat.panes": "Panneaux de la consultation",
+  "chat.pageSelector": "Pages de la consultation",
+  "chat.pageChat": "Chat",
   "chat.tabConversation": "Conversation",
   "chat.tabVisual": "Visualisation",
   "chat.divider": "Redimensionner les panneaux (flèches ; Début/Fin pour réduire)",
@@ -260,7 +262,9 @@ export const fr: Dict = {
   /* panels */
   "panels.publications": "Publications reçues",
   "panels.publicationsDescription": "Parcourez les numéros livrés à votre portefeuille tout en gardant la consultation ouverte.",
+  "panels.publicationsShort": "Publications",
   "panels.memories": "Mémoires enregistrées",
+  "panels.memoriesShort": "Mémoires",
   "panels.openPublications": "Ouvrir les publications reçues",
   "panels.closePublications": "Fermer les publications reçues",
   "panels.openMemories": "Ouvrir les mémoires enregistrées",
