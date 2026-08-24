@@ -59,10 +59,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             size="md"
             onClick={() => palette.setOpen(true)}
             aria-keyshortcuts="Meta+K Control+K"
-            className="mx-auto min-w-0 max-w-md flex-1 justify-start bg-surface px-2.5 text-ink-2 hover:bg-paper-deep/60"
+            className="mx-auto min-w-0 max-w-md flex-1 justify-between bg-surface px-2.5 text-ink-2 hover:bg-paper-deep/60"
           >
             <Search aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate text-left font-normal">{t("palette.placeholder")}</span>
             <span
               aria-hidden="true"
               className="shrink-0 rounded-[1px] border border-line-2 bg-paper px-1.5 py-0.5 font-mono text-[10px] font-normal leading-none tracking-wide text-ink-2"
