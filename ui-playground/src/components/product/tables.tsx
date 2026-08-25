@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 import { api } from "@/services";
 import type { DocumentFile, Publication, Source, Subscriber } from "@/services/types";
-import { formatDate, formatNumber, formatPercent } from "@/lib/format";
+import { formatDate, formatDateShort, formatNumber, formatPercent } from "@/lib/format";
 import { useAnnounce } from "@/lib/announce";
 import {
   Badge, Button, Switch, Tooltip, Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
@@ -351,7 +351,15 @@ export function ClientPublicationsTable() {
       {
         accessorKey: "publishedAt",
         header: t("clientPub.colDelivered"),
-        cell: ({ getValue }) => <span className="font-mono text-[12px] text-ink-2">{formatDate(locale, getValue() as string)}</span>,
+        cell: ({ getValue }) => {
+          const iso = getValue() as string;
+          const fullDate = formatDate(locale, iso);
+          return (
+            <time dateTime={iso} title={fullDate} aria-label={fullDate} className="whitespace-nowrap font-mono text-[12px] text-ink-2">
+              {formatDateShort(locale, iso)}
+            </time>
+          );
+        },
       },
       {
         id: "read",
