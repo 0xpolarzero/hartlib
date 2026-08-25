@@ -89,7 +89,7 @@ export const en: Dict = {
   "publications.emptyTitle": "No issues yet",
   "publications.emptyDescription": "Create a first issue to schedule or publish a delivery.",
 
-  "clientPub.title": "Delivered publications",
+  "clientPub.title": "Publications",
   "clientPub.colTitle": "Title",
   "clientPub.colDelivered": "Delivered",
   "clientPub.colRead": "Read",
@@ -240,7 +240,7 @@ export const en: Dict = {
   "chat.tabVisual": "Visualization",
   "chat.divider": "Resize panes (arrow keys; Home/End to collapse)",
 
-  "panels.publications": "Delivered publications",
+  "panels.publications": "Publications",
   "panels.publicationsDescription": "Browse the issues delivered to your subscription portfolio while you keep the consultation in view.",
   "panels.publicationsShort": "Publications",
   "panels.memories": "Saved memories",

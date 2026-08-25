@@ -98,7 +98,7 @@ export const fr: Dict = {
   "publications.emptyDescription": "Créez un premier numéro pour programmer ou publier une livraison.",
 
   /* client publications */
-  "clientPub.title": "Publications reçues",
+  "clientPub.title": "Publications",
   "clientPub.colTitle": "Titre",
   "clientPub.colDelivered": "Livrée le",
   "clientPub.colRead": "Lecture",
@@ -258,7 +258,7 @@ export const fr: Dict = {
   "chat.divider": "Redimensionner les panneaux (flèches ; Début/Fin pour réduire)",
 
   /* panels */
-  "panels.publications": "Publications reçues",
+  "panels.publications": "Publications",
   "panels.publicationsDescription": "Parcourez les numéros livrés à votre portefeuille tout en gardant la consultation ouverte.",
   "panels.publicationsShort": "Publications",
   "panels.memories": "Mémoires enregistrées",
