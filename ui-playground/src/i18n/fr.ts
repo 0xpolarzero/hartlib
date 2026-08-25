@@ -242,7 +242,7 @@ export const fr: Dict = {
   "chat.emptyTitle": "Interrogez votre archive",
   "chat.emptyBody": "Les réponses citent les documents lus, conservent vos mémoires et alimentent le panneau de visualisation.",
   "chat.answerLabel": "Réponse de l’assistant",
-  "chat.assistantLabel": "Bref · réponse",
+  "chat.assistantLabel": "Assistant",
   "chat.sentAtLabel": "Heure d’envoi",
   "chat.transcriptLabel": "Fil de conversation",
   "chat.regenerate": "Régénérer la réponse",
@@ -308,17 +308,13 @@ export const fr: Dict = {
 
   /* composer */
   "composer.label": "Votre question",
-  "composer.placeholder": "Posez une question à l’archive…",
+  "composer.placeholder": "Posez une question…",
   "composer.send": "Envoyer",
   "composer.stop": "Interrompre la génération",
   "composer.attach": "Joindre un fichier",
   "composer.attached": "Pièce jointe ajoutée : {name}",
   "composer.removeAttachment": "Retirer la pièce jointe {name}",
   "composer.webSearch": "Recherche web",
-  "composer.speed": "Vitesse du flux",
-  "composer.speedHint": "Accélère ou ralentit la simulation du flux de tokens.",
-  "composer.enterHint": "envoyer",
-  "composer.shiftEnterHint": "saut de ligne",
 
   /* memories */
   "memories.list": "Liste des mémoires",

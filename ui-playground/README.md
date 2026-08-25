@@ -17,7 +17,7 @@ npm run check:i18n # fr/en key parity + every used key resolves
 npm run build      # production build
 ```
 
-The mock service lives behind one interface (`src/services`). It simulates latency, token streaming, retries and failures deterministically, and persists lightweight demo edits (source renames, subscribers, the single chat, memories, side-panel state and requested widths, visualization sizes, locale, and stream speed) in `localStorage` under the `bref.` prefix. The command-palette action “Réinitialiser les données de démonstration” restores the seed.
+The mock service lives behind one interface (`src/services`). It simulates latency, token streaming, retries and failures deterministically, and persists lightweight demo edits (source renames, subscribers, the single chat, memories, side-panel state and requested widths, visualization sizes, and locale) in `localStorage` under the `bref.` prefix. The command-palette action “Réinitialiser les données de démonstration” restores the seed.
 
 The subscriber chat uses one compact Chat/Publications/Memories page selector below 1536px. At 1536px and wider, the same mounted Publications and Memories panels stay edge-anchored around a centered chat capped at 1440px. Each open panel starts at a 432px minimum (or the natural centered-chat gutter), can be resized to 960px, and keeps the center chat at least 480px wide; each requested width persists separately. Sidebar resize handles use a 12px hit target, with the 1px accent line activating immediately on hover, focus, or drag.
 
@@ -84,7 +84,7 @@ The subscriber chat uses one compact Chat/Publications/Memories page selector be
 | 18 | Virtualized transcript (TanStack Virtual, dynamic heights, anchoring, scroll-to-latest with unread count) | `chat/transcript.tsx` | One persistent chat; while streaming scrolled up |
 | 19 | Message anatomy: compact user bubble; unframed assistant column with mono label | `chat/message.tsx` | The seeded exchange and later questions |
 | 20 | Composer: auto-grow, Enter/Shift+Enter, send⇄Stop morph, attachment chip, web-search toggle, counter | `chat/composer.tsx` | Chat footer; gallery §05 |
-| 21 | Streaming: token SSE, speed control (×0.5–×4), progressive Markdown (Gfm tables, fenced code with highlight + copy), caret, stop/regenerate, optimistic placement | `chat/markdown.tsx`, `services/mock/engine.ts` | Send any scripted question |
+| 21 | Streaming: token SSE, progressive Markdown (Gfm tables, fenced code with highlight + copy), caret, stop/regenerate, optimistic placement | `chat/markdown.tsx`, `services/mock/engine.ts` | Send any scripted question |
 | 22 | Run-stage rail: five stable slots, six statuses with glyph + text, polite announcements (never per-token) | `chat/run-rail.tsx`, live regions in `lib/announce.tsx` | While a run executes; gallery §05 |
 | 23 | Failures: queued, retryable (`RUN-429`, Resubmit), non-retryable (`RUN-X500`) | `chat/message.tsx` (FailureBlock), engine scripts | One chat: « Analyse confidentielle du churn » and fatal scripted input |
 | 24 | Citations: four kinds, highlighted claims open hover/focus previews below lg while margin cards remain at lg+, claim tinting, two-way hover sync, structure-preserving chips | `chat/citations.tsx`, `chat/markdown.tsx` | Growth/arbitration/renewal answers ≥1024 px wide |

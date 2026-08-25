@@ -47,8 +47,6 @@ export interface ChatApi {
   resubmit: () => void;
   regenerate: () => void;
   stop: () => void;
-  speed: number;
-  setSpeed: (s: number) => void;
   webSearch: boolean;
   setWebSearch: (v: boolean) => void;
   unread: number;
@@ -85,7 +83,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [run, setRun] = useState<RunUiState | null>(null);
-  const [speed, setSpeed] = useState(() => readPersisted("chat.speed", 1));
   const [webSearch, setWebSearch] = useState(true);
   const [unread, setUnread] = useState(0);
   const [versions, setVersions] = useState<VisualVersion[]>([]);
@@ -97,10 +94,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [debugRunId, setDebugRunId] = useState<string | null>(null);
   const disposeRef = useRef<(() => void) | null>(null);
   const versionSeq = useRef(0);
-
-  useEffect(() => {
-    writePersisted("chat.speed", speed);
-  }, [speed]);
 
   /** Load persisted versions; seed them from the one chat's visual messages. */
   const loadVersions = useCallback((messages?: ChatMessage[]) => {
@@ -172,7 +165,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         userMessageId,
         text,
         webSearch,
-        speed,
+        speed: 1,
         forceFailure: forceFailure ?? null,
         onEvent: (event) => {
           switch (event.type) {
@@ -240,7 +233,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       });
       disposeRef.current = () => handle.dispose();
     },
-    [announce, appendVersion, locale, speed, t, webSearch],
+    [announce, appendVersion, locale, t, webSearch],
   );
 
   const send = useCallback(
@@ -349,8 +342,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       resubmit,
       regenerate,
       stop,
-      speed,
-      setSpeed,
       webSearch,
       setWebSearch,
       unread,
@@ -373,7 +364,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setDebugRunId,
     }),
     [
-      messages, run, send, resubmit, regenerate, stop, speed,
+      messages, run, send, resubmit, regenerate, stop,
       webSearch, unread, versions, activeVersionIndex, scrubVersion, restoreVersion, refreshVersion,
       regenerating, vizHighlightKey, showVizRequest, memoryFocus, openMemoryRevision,
       clearMemoryFocus, lastAssistantMessage, debugRunId,

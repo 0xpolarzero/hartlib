@@ -1,9 +1,9 @@
 import { useRef, useState } from "react";
-import { ArrowUp, Gauge, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, Paperclip, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 import { useAnnounce } from "@/lib/announce";
-import { AutoTextarea, Button, Popover, PopoverTriggerButton, PopoverContent, Segmented, Switch, Tooltip, Kbd } from "@/components/ui";
+import { AutoTextarea, Button, Switch, Tooltip } from "@/components/ui";
 import { useChat } from "./chat-store";
 
 const MAX = 4000;
@@ -11,8 +11,7 @@ const MAX = 4000;
 /**
  * Composer: auto-growing textarea, Enter sends / Shift+Enter newline, send
  * morphs to Stop while streaming, attachment chip, per-message web-search
- * switch with a typed localized disabled reason, character counter, and a
- * stream-speed control.
+ * switch with a typed localized disabled reason, and character counter.
  */
 export function Composer() {
   const { t } = useI18n();
@@ -93,7 +92,7 @@ export function Composer() {
                 submit();
               }
             }}
-            className="min-w-0 flex-1 border-0 bg-transparent px-1 focus-visible:outline-2 focus-visible:-outline-offset-6 focus-visible:outline-accent"
+            className="min-w-0 min-h-9 flex-1 border-0 bg-transparent px-3 py-2 leading-5 focus-visible:outline-2 focus-visible:-outline-offset-6 focus-visible:outline-accent"
           />
 
           {streaming ? (
@@ -113,7 +112,7 @@ export function Composer() {
           )}
         </div>
 
-        {/* Footer: web search toggle + speed + counter */}
+        {/* Footer: web search toggle + counter */}
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5">
           <span className="flex items-center gap-2">
             <Switch
@@ -127,32 +126,6 @@ export function Composer() {
             </label>
           </span>
 
-          <Popover>
-            <PopoverTriggerButton
-              className="inline-flex h-6 items-center gap-1.5 rounded-tiny font-mono text-[11px] text-ink-2 transition-colors duration-100 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              aria-label={t("composer.speed")}
-            >
-              <Gauge aria-hidden="true" className="size-3" />
-              ×{chat.speed}
-            </PopoverTriggerButton>
-            <PopoverContent className="w-56 p-3">
-              <p className="caps-label mb-2 text-ink-2">{t("composer.speed")}</p>
-              <Segmented
-                aria-label={t("composer.speed")}
-                value={String(chat.speed)}
-                onChange={(v) => chat.setSpeed(Number(v))}
-                options={[
-                  { value: "0.5", label: "×0.5" },
-                  { value: "1", label: "×1" },
-                  { value: "2", label: "×2" },
-                  { value: "4", label: "×4" },
-                ]}
-                className="w-full"
-              />
-              <p className="mt-2 text-[11.5px] leading-snug text-ink-2">{t("composer.speedHint")}</p>
-            </PopoverContent>
-          </Popover>
-
           <p
             aria-live="polite"
             className={cn("ml-auto font-mono text-[11px]", over ? "text-danger" : "text-ink-2")}
@@ -160,9 +133,6 @@ export function Composer() {
             {text.length}/{MAX}
           </p>
         </div>
-        <p className="mt-1 font-mono text-[10px] text-ink-3">
-          <Kbd>↵</Kbd> {t("composer.enterHint")} · <Kbd>⇧↵</Kbd> {t("composer.shiftEnterHint")}
-        </p>
       </div>
     </div>
   );
