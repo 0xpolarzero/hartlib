@@ -52,31 +52,6 @@ export function Composer() {
         )}
 
         <div className="flex items-end gap-2">
-          <Tooltip content={t("composer.attach")}>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={t("composer.attach")}
-              className="text-ink-2"
-              onClick={() => fileRef.current?.click()}
-            >
-              <Paperclip />
-            </Button>
-          </Tooltip>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".pdf,application/pdf,text/markdown,.md"
-            className="sr-only"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) {
-                setAttachment({ name: file.name });
-                announce.status(t("composer.attached", { name: file.name }));
-              }
-              e.target.value = "";
-            }}
-          />
 
           <AutoTextarea
             ref={taRef}
@@ -113,7 +88,32 @@ export function Composer() {
         </div>
 
         {/* Footer: web search toggle + counter */}
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          <Tooltip content={t("composer.attach")}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t("composer.attach")}
+              className="text-ink-2"
+              onClick={() => fileRef.current?.click()}
+            >
+              <Paperclip />
+            </Button>
+          </Tooltip>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".pdf,application/pdf,text/markdown,.md"
+            className="sr-only"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                setAttachment({ name: file.name });
+                announce.status(t("composer.attached", { name: file.name }));
+              }
+              e.target.value = "";
+            }}
+          />
           <span className="flex items-center gap-2">
             <Switch
               id="web-search-toggle"
