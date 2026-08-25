@@ -12,7 +12,7 @@ import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { usePersistedState } from "@/lib/storage";
 import { Button, Segmented } from "@/components/ui";
-import { ClientPublicationsTable } from "@/components/product/tables";
+import { SubscriberLibrary } from "@/components/product/subscriber-subscriptions";
 import { ChatProvider, useChat } from "@/components/product/chat/chat-store";
 import { MemoriesPanel } from "@/components/product/chat/memories-panel";
 import { Transcript } from "@/components/product/chat/transcript";
@@ -30,7 +30,7 @@ export function ClientChatPage() {
   );
 }
 
-type WorkspacePage = "chat" | "publications" | "memories";
+type WorkspacePage = "chat" | "subscriptions" | "memories";
 type SidebarSide = "left" | "right";
 
 const SIDEBAR_MIN_WIDTH = 432;
@@ -104,31 +104,31 @@ function clampSidebarWidth(width: number, minWidth: number, maxWidth: number) {
 }
 
 function ChatSurface() {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const navigate = useNavigate();
-  const search = useSearch({ strict: false }) as { memory?: string; rev?: number };
+  const search = useSearch({ strict: false }) as { memory?: string; rev?: number; subscription?: string; issue?: string };
   const chat = useChat();
   const isWideDesktop = useMediaQuery("(min-width: 1536px)");
   const [mobileTab, setMobileTab] = useState<"conversation" | "visual">("conversation");
   const [workspacePage, setWorkspacePage] = useState<WorkspacePage>("chat");
-  const [publicationsOpen, setPublicationsOpen] = usePersistedState("chat.publicationsOpen", false);
+  const [subscriptionsOpen, setSubscriptionsOpen] = usePersistedState("chat.subscriptionsOpen", false);
   const [memoriesOpen, setMemoriesOpen] = usePersistedState("chat.memoriesOpen", false);
-  const [publicationsWidth, setPublicationsWidth] = usePersistedState("chat.publicationsWidth", SIDEBAR_MIN_WIDTH);
+  const [subscriptionsWidth, setSubscriptionsWidth] = usePersistedState("chat.subscriptionsWidth", SIDEBAR_MIN_WIDTH);
   const [memoriesWidth, setMemoriesWidth] = usePersistedState("chat.memoriesWidth", SIDEBAR_MIN_WIDTH);
   const [sizes, setSizes] = usePersistedState<number[]>("chat.panels", [62, 38]);
   const [resizingSide, setResizingSide] = useState<SidebarSide | null>(null);
   const viewportWidth = useViewportWidth();
   const sidebarTracks = resolveSidebarTracks({
     viewportWidth,
-    leftOpen: publicationsOpen,
+    leftOpen: subscriptionsOpen,
     rightOpen: memoriesOpen,
-    leftRequested: publicationsWidth,
+    leftRequested: subscriptionsWidth,
     rightRequested: memoriesWidth,
   });
 
   const selectWorkspacePage = (page: WorkspacePage) => {
     setWorkspacePage(page);
-    if (page === "publications") setPublicationsOpen(true);
+    if (page === "subscriptions") setSubscriptionsOpen(true);
     if (page === "memories") setMemoriesOpen(true);
   };
 
@@ -141,6 +141,12 @@ function ChatSurface() {
     setWorkspacePage("memories");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search.memory]);
+
+  useEffect(() => {
+    if (!search.subscription) return;
+    setSubscriptionsOpen(true);
+    setWorkspacePage("subscriptions");
+  }, [search.subscription, setSubscriptionsOpen]);
 
   useEffect(() => {
     if (chat.memoryFocus) {
@@ -174,7 +180,7 @@ function ChatSurface() {
           onChange={selectWorkspacePage}
           options={[
             { value: "chat", label: t("chat.pageChat") },
-            { value: "publications", label: t("panels.publicationsShort") },
+            { value: "subscriptions", label: t("panels.subscriptionsShort") },
             { value: "memories", label: t("panels.memoriesShort") },
           ]}
         />
@@ -182,24 +188,35 @@ function ChatSurface() {
       <div className="subscriber-chat-layout min-h-0 flex-1">
         <SidePanel
           side="left"
-          id="publications-panel"
-          label={t("panels.publications")}
-          open={publicationsOpen}
-          compactActive={workspacePage === "publications"}
+          id="subscriptions-panel"
+          label={t("panels.subscriptions")}
+          open={subscriptionsOpen}
+          compactActive={workspacePage === "subscriptions"}
           wide={isWideDesktop}
           width={sidebarTracks.left}
           minWidth={sidebarTracks.leftMin}
           maxWidth={sidebarTracks.leftMax}
-          resizeLabel={t("panels.resizePublications")}
-          onResize={setPublicationsWidth}
+          resizeLabel={t("panels.resizeSubscriptions")}
+          onResize={setSubscriptionsWidth}
           onResizeStart={() => setResizingSide("left")}
           onResizeEnd={() => setResizingSide((current) => (current === "left" ? null : current))}
         >
-          <div className="grid gap-3 p-3">
-            <p className="text-[12px] leading-relaxed text-ink-2">{t("panels.publicationsDescription")}</p>
-            <div className="publications-panel-table">
-              <ClientPublicationsTable />
-            </div>
+          <div className="subscriptions-panel-table">
+            <SubscriberLibrary
+              locale={locale}
+              subscriptionId={search.subscription}
+              issueId={search.issue}
+              onNavigate={({ subscriptionId, issueId }) => {
+                void navigate({
+                  search: ((prev: Record<string, unknown>) => ({
+                    ...prev,
+                    subscription: subscriptionId,
+                    issue: issueId,
+                  })) as never,
+                  replace: true,
+                });
+              }}
+            />
           </div>
         </SidePanel>
 
@@ -215,17 +232,17 @@ function ChatSurface() {
             size="md"
             className={cn(
               "subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-left absolute top-1.5 z-[1] bg-surface gap-1 px-2.5",
-              publicationsOpen ? "-left-14" : "left-3",
+              subscriptionsOpen ? "-left-14" : "left-3",
             )}
-            id="publications-panel-toggle"
-            title={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}
-            aria-label={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}
-            aria-expanded={publicationsOpen}
-            aria-controls="publications-panel"
-            onClick={() => setPublicationsOpen((open) => !open)}
+            id="subscriptions-panel-toggle"
+            title={subscriptionsOpen ? t("panels.closeSubscriptions") : t("panels.openSubscriptions")}
+            aria-label={subscriptionsOpen ? t("panels.closeSubscriptions") : t("panels.openSubscriptions")}
+            aria-expanded={subscriptionsOpen}
+            aria-controls="subscriptions-panel"
+            onClick={() => setSubscriptionsOpen((open) => !open)}
           >
             <BookOpen aria-hidden="true" className="size-3.5" />
-            {publicationsOpen ? (
+            {subscriptionsOpen ? (
               <ChevronLeft aria-hidden="true" className="!size-2.5" />
             ) : (
               <ChevronRight aria-hidden="true" className="!size-2.5" />

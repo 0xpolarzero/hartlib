@@ -52,7 +52,7 @@ For neutral entry points like `/` or `/demo` only, resolve the target in this or
 - The French demo defaults to sources where `country === "FR"`. The US demo defaults to `country === "US"`.
 - The live demo requests `GET /v1/public-sources?market=<FR|US>` on initial load and every market change. It renders only the response tagged for the currently selected market; a late response for the prior market is discarded and cannot leave stale sources or publications visible.
 - Documents keep their own per-document `language`. Individual documents may vary.
-- If a production user manually changes their selected sources, that selection is preserved across locale and market switches. The switcher does not clear manual selections. The live demo has no manual source selection; it uses the server-authorized set.
+- If a production user changes a subscription's enabled state, that choice survives locale and market changes. The locale switcher does not reset it. The live demo exposes the same source-level setting and does not treat it as a per-chat source picker.
 
 ## Translation Catalog Ownership
 
@@ -84,9 +84,9 @@ For neutral entry points like `/` or `/demo` only, resolve the target in this or
 - It switches to the same route in the other locale when possible.
 - It persists the selected locale in localStorage. The market is derived from `DEFAULT_MARKET_FOR_LOCALE`, so stale or mismatched market values cannot be restored.
 - Canonical locale routes and the `/fr` and `/us` aliases always resolve to their matching locale and market pair.
-- It does not clear production user-selected sources after a manual change. No source-selection mutation exists in the live demo.
+- It keeps each subscription's enabled state when the locale or market changes.
 
 ## Terminology
 
-- The French UI term for a source subscription list or feed is **flux**. The English term is **feed**.
-- Internal identifiers use `feed` and `Feed`.
+- The French UI term for the subscriber source list is **abonnements**. The English term is **subscriptions**.
+- Internal UI identifiers use `subscription` and `subscriptions`.

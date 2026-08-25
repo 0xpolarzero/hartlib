@@ -6,6 +6,7 @@ export interface Crumb {
   label: string;
   to?: string;
   params?: Record<string, string>;
+  search?: Record<string, unknown>;
 }
 
 /**
@@ -36,6 +37,7 @@ export function Breadcrumbs({ items, className }: { items: Crumb[]; className?: 
                 <Link
                   to={crumb.to}
                   params={crumb.params}
+                  search={crumb.search as never}
                   className="truncate font-sans text-[12px] text-ink-2 underline-offset-2 transition-colors duration-100 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 >
                   {crumb.label}

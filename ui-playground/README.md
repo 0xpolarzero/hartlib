@@ -19,14 +19,14 @@ npm run build      # production build
 
 The mock service lives behind one interface (`src/services`). It simulates latency, token streaming, retries and failures deterministically, and persists lightweight demo edits (source renames, subscribers, the single chat, memories, side-panel state and requested widths, visualization sizes, and locale) in `localStorage` under the `bref.` prefix. The command-palette action “Réinitialiser les données de démonstration” restores the seed.
 
-The subscriber chat uses one compact Chat/Publications/Memories page selector below 1536px. At 1536px and wider, the same mounted Publications and Memories panels stay edge-anchored around a centered chat capped at 1440px. Each open panel starts at a 432px minimum (or the natural centered-chat gutter), can be resized to 960px, and keeps the center chat at least 480px wide; each requested width persists separately. Sidebar resize handles use a 12px hit target, with the 1px accent line activating immediately on hover, focus, or drag.
+The subscriber chat uses one compact Chat/Subscriptions/Memories page selector below 1536px. At 1536px and wider, the same mounted Subscriptions and Memories panels stay edge-anchored around a centered chat capped at 1440px. Each open panel starts at a 432px minimum (or the natural centered-chat gutter), can be resized to 960px, and keeps the center chat at least 480px wide; each requested width persists separately. Subscriptions list subscribed sources, let users enable or disable retrieval, and drill into source publications and issue details through breadcrumbs. Sidebar resize handles use a 12px hit target, with the 1px accent line activating immediately on hover, focus, or drag.
 
 ## Routes
 
 | Route | View |
 | --- | --- |
 | `/` | Redirects to the stored locale (default `/fr/client/chat`) |
-| `/:locale/client/chat` | One consultation: virtualized transcript, citations, Publications side panel, Memories side panel, visualization pane |
+| `/:locale/client/chat` | One consultation: virtualized transcript, citations, Subscriptions side panel, Memories side panel, visualization pane |
 | `/:locale/publisher?tab=sources\|publications\|documents\|subscribers` | Publisher workspace |
 | `/:locale/publisher/issues/new` | Issue creation flow |
 | `/:locale/publisher/settings/notifications` | Per-account notification email language |
@@ -54,7 +54,7 @@ The subscriber chat uses one compact Chat/Publications/Memories page selector be
 | 7 | DataTable (TanStack Table): multi-sort, facets, global search, column visibility, tri-state selection, bulk bar, pagination, URL state | `components/product/data-table.tsx` | All product tables |
 | 8a | SourcesTable (type badge, latest publication, read-only subscription) | `components/product/tables.tsx` | Publisher › Sources; demo-state control switches data/loading/empty/error |
 | 8b | PublicationsTable (metrics, scheduled treatment, deletion notice, immutable dialog) | same | Publisher › Numéros |
-| 8c | ClientPublicationsTable (delivered only) | same | Subscriber chat › Publications side panel, with independently persisted wide-mode width |
+| 8c | Subscriber subscriptions and source publications tables (delivered only) | `components/product/subscriber-subscriptions.tsx` | Subscriber chat › Subscriptions side panel, with source enablement, issue details, breadcrumbs, and independently persisted wide-mode width |
 | 8d | DocumentsTable (PDF open via blob URL, upload sheet, missing-file error row) | same | Publisher › Documents |
 | 8e | SubscribersTable (pause/resume, delete+undo, draft-add row with company combobox and email validation) | same | Publisher › Abonnés |
 | 9 | Badge, Card, Separator, SectionHeader, MetaRow | `components/ui/atoms.tsx`, `states.tsx` | Gallery §02 |
@@ -93,7 +93,7 @@ The subscriber chat uses one compact Chat/Publications/Memories page selector be
 | 27 | Memory citations open exact revision | `citations.tsx` chip click → `memories-panel.tsx` | Arbitration answer, citation 4 |
 
 Scripted questions in the one chat: growth (+ monthly follow-up revising the chart), arbitration (KPI strip + memory citation), renewal cohort (comparison table), churn (retryable failure then bar chart), and cartography (fatal). The seeded growth exchange loads directly on entry.
-Wide-mode side-panel controls now use the same open/close action for Publications and Memories, and chat content areas include overflow clipping for stable scrolling when panels resize.
+Wide-mode side-panel controls now use the same open/close action for Subscriptions and Memories, and chat content areas include overflow clipping for stable scrolling when panels resize.
 
 The composer dictation control uses the browser's native `SpeechRecognition` (or `webkitSpeechRecognition`) and `navigator.mediaDevices.getUserMedia`. It inserts the result as editable composer text before Send, keeps microphone data local without storing or uploading audio, and shows a local error when either API is not available.
 

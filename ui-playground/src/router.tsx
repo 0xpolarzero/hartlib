@@ -114,9 +114,11 @@ const notificationSettingsRoute = createRoute({
 const clientChatRoute = createRoute({
   getParentRoute: () => localeRoute,
   path: "client/chat",
-  validateSearch: (search: Record<string, unknown>): { memory?: string; rev?: number } => ({
+  validateSearch: (search: Record<string, unknown>): { memory?: string; rev?: number; subscription?: string; issue?: string } => ({
     memory: str(search.memory),
     rev: num(search.rev),
+    subscription: str(search.subscription),
+    issue: str(search.issue),
   }),
   component: ClientChatPage,
 });

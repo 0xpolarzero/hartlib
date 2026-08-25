@@ -447,29 +447,35 @@
 .subscriber-compact-nav {
   display: flex;
 }
-.publications-panel-table table {
-  table-layout: auto;
+.subscriptions-list-table table {
+  table-layout: fixed;
   width: 100%;
 }
-.publications-panel-table th:nth-child(1),
-.publications-panel-table td:nth-child(1) {
-  width: 100%;
+.subscriptions-list-table th:nth-child(1),
+.subscriptions-list-table td:nth-child(1) {
+  width: auto;
   min-width: 0;
-  max-width: 0;
 }
-.publications-panel-table th:nth-child(2),
-.publications-panel-table td:nth-child(2),
-.publications-panel-table th:nth-child(3),
-.publications-panel-table td:nth-child(3),
-.publications-panel-table th:nth-child(4),
-.publications-panel-table td:nth-child(4) {
-  width: max-content;
+.subscriptions-list-table th:nth-child(2),
+.subscriptions-list-table td:nth-child(2) {
   white-space: nowrap;
 }
-.publications-panel-table td:nth-child(3) {
+.subscriptions-list-table th:nth-child(3),
+.subscriptions-list-table td:nth-child(3) {
+  width: 7rem;
+  max-width: 7rem;
+  white-space: nowrap;
+}
+.subscriptions-list-table th:nth-child(4),
+.subscriptions-list-table td:nth-child(4) {
+  width: 4.75rem;
+  max-width: 4.75rem;
+  white-space: nowrap;
+}
+.subscriptions-list-table td:nth-child(3) {
   padding-left: 8px;
 }
-.publications-panel-table td:nth-child(4) {
+.subscriptions-list-table td:nth-child(4) {
   padding-right: 4px;
 }
 

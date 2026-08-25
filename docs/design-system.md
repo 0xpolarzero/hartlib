@@ -154,7 +154,7 @@ Reusable product UI for the demo and MVP lives in `@hartlib/ui`, while apps keep
 
 - `SourcesTable` — publisher source rows with subscriber counts, issue counts, and latest publication date
 - `PublicationsTable` — publisher publication rows with metrics, scheduled-state treatment, and optional scheduled deletion
-- `ClientPublicationsTable` — delivered publication rows without per-publication assistant-context controls; AI source selection is source-level in production and fixed to the authorized set in the live demo
+- `SubscriberLibrary` — subscriber source rows with source-level retrieval switches and a short header tooltip, followed by delivered-publication and issue-detail views linked through clickable `Subscriptions > source > issue` breadcrumbs; publication rows have no separate AI-context control
 - `PublicationDetail` — publication title, metadata, summary, scheduled-state treatment, document list, and editable scheduled-publication fields
 - `DocumentsTable` — document title/description/PDF rows with optional inline editing and upload affordance; storage and PDF opening behavior stay in the consuming app through callbacks
 - `SubscribersTable` — subscriber list, pause/resume/delete controls, and draft subscriber row with company combobox and email validation display

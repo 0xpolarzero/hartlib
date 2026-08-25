@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useToast } from "@/components/ui/toast";
 import type { ColumnDef } from "@tanstack/react-table";
-import { CalendarClock, ExternalLink, FileWarning, Lock, PlusCircle, Upload } from "lucide-react";
+import { CalendarClock, FileWarning, Lock, PlusCircle, Upload } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 import { api } from "@/services";
 import type { DocumentFile, Publication, Source, Subscriber } from "@/services/types";
-import { formatDate, formatDateShort, formatNumber, formatPercent } from "@/lib/format";
+import { formatDate, formatNumber, formatPercent } from "@/lib/format";
 import { useAnnounce } from "@/lib/announce";
 import {
   Badge, Button, Switch, Tooltip, Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
@@ -314,105 +314,6 @@ export function PublicationsTable() {
         </AlertDialogContent>
       </AlertDialog>
     </>
-  );
-}
-
-/* ── ClientPublicationsTable (delivered only) ──────────────────────────── */
-
-export function ClientPublicationsTable() {
-  const { locale, t } = useI18n();
-  const { toast } = useToast();
-  const { data, loading, error, reload } = useTableData(() => api.listPublications());
-  const [demoState, setDemoState] = useDemoState();
-
-  const delivered = useMemo(() => (data ?? []).filter((p) => p.status === "published"), [data]);
-
-  const openDocument = async (publication: Publication) => {
-    const docs = await api.listDocuments();
-    const doc = docs.find((d) => d.publicationId === publication.id && d.url);
-    if (doc?.url) {
-      window.open(doc.url, "_blank", "noopener");
-    } else {
-      toast({
-        title: t("clientPub.openMissingTitle"),
-        description: t("clientPub.openMissingBody"),
-        tone: "error",
-      });
-    }
-  };
-
-  const columns = useMemo<ColumnDef<Publication, unknown>[]>(
-    () => [
-      {
-        accessorKey: "title",
-        header: t("clientPub.colTitle"),
-        cell: ({ getValue }) => <span className="block w-full min-w-0 truncate" title={getValue() as string}>{getValue() as string}</span>,
-      },
-      {
-        accessorKey: "publishedAt",
-        header: t("clientPub.colDelivered"),
-        cell: ({ getValue }) => {
-          const iso = getValue() as string;
-          const fullDate = formatDate(locale, iso);
-          return (
-            <time dateTime={iso} title={fullDate} aria-label={fullDate} className="whitespace-nowrap font-mono text-[12px] text-ink-2">
-              {formatDateShort(locale, iso)}
-            </time>
-          );
-        },
-      },
-      {
-        id: "read",
-        header: t("clientPub.colRead"),
-        // Deterministic pseudo read-state (title checksum) — stable per row.
-        accessorFn: (row) => [...row.title].reduce((acc, ch) => acc + ch.codePointAt(0)!, 0) % 3 !== 0,
-        filterFn: (row, id, value: string[]) => value.includes(String(row.getValue(id))),
-        cell: ({ getValue }) =>
-          getValue() === true ? (
-            <Badge tone="neutral">{t("clientPub.read")}</Badge>
-          ) : (
-            <Badge tone="accent">{t("clientPub.unread")}</Badge>
-          ),
-      },
-      {
-        id: "open",
-        header: "",
-        enableSorting: false,
-        size: 32,
-        cell: ({ row }) => (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={t("clientPub.open")}
-            title={t("clientPub.open")}
-            onClick={() => void openDocument(row.original)}
-          >
-            <ExternalLink aria-hidden="true" className="size-3" />
-          </Button>
-        ),
-      },
-    ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [locale, t],
-  );
-
-  const effective: DemoDataState = error ? "error" : loading ? "loading" : demoState;
-
-  return (
-    <DataTable
-      ariaLabel={t("clientPub.title")}
-      columns={columns}
-      data={delivered}
-      demoState={effective}
-      onRetry={reload}
-      urlKey="cli"
-      facets={["read"]}
-      facetLabel={(_col, value) => (value === "__col" ? t("clientPub.colRead") : value === "true" ? t("clientPub.read") : t("clientPub.unread"))}
-      emptyTitle={t("clientPub.emptyTitle")}
-      emptyDescription={t("clientPub.emptyDescription")}
-      stickyHeader
-      toolbarExtra={<DemoDataControl value={demoState} onChange={setDemoState} label={t("demoState.label")} />}
-    />
   );
 }
 

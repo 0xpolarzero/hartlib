@@ -91,7 +91,10 @@ export class MockApi implements ApiClient {
     // Reset writes a null marker before reloading. Treat that marker as an
     // empty override set instead of dereferencing null during boot.
     const o = readPersisted<Overrides | null>("mock.overrides", EMPTY_OVERRIDES) ?? EMPTY_OVERRIDES;
-    this.sources = o.sources ?? seedSources();
+    this.sources = (o.sources ?? seedSources()).map((source) => ({
+      ...source,
+      subscriptionEnabled: source.subscriptionEnabled ?? source.subscription === "subscribed",
+    }));
     this.publications = o.publications ?? seedPublications();
     this.subscribers = o.subscribers ?? seedSubscribers();
     this.chatMessages = o.chatMessages ?? seedChatMessages();
@@ -143,6 +146,14 @@ export class MockApi implements ApiClient {
   async renameSource(id: string, name: string) {
     await latency(160);
     this.sources = this.sources.map((s) => (s.id === id ? { ...s, name } : s));
+    this.persist();
+  }
+
+  async setSourceSubscriptionEnabled(id: string, enabled: boolean) {
+    await latency(140);
+    this.sources = this.sources.map((source) =>
+      source.id === id ? { ...source, subscriptionEnabled: enabled } : source,
+    );
     this.persist();
   }
 

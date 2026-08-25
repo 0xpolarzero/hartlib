@@ -12,6 +12,8 @@ export interface Source {
   /** Latest issue delivered from this source. */
   latestPublicationAt: string; // ISO
   subscription: SubscriptionState;
+  /** Subscriber-controlled retrieval state for this subscribed source. */
+  subscriptionEnabled: boolean;
   subscriberCount: number;
 }
 
@@ -199,6 +201,7 @@ export interface ApiClient {
   listSubscribers(): Promise<Subscriber[]>;
   listCompanies(query: string): Promise<Company[]>;
   renameSource(id: string, name: string): Promise<void>;
+  setSourceSubscriptionEnabled(id: string, enabled: boolean): Promise<void>;
   addSubscriber(input: { company: string; email: string }): Promise<Subscriber>;
   setSubscriberState(id: string, state: SubscriberState): Promise<void>;
   deleteSubscriber(id: string): Promise<void>;

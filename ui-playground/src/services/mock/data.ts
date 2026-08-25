@@ -42,6 +42,7 @@ export const seedSources = (): Source[] =>
     type: s.type,
     latestPublicationAt: isoDaysAgo(s.days, 8),
     subscription: s.sub ? "subscribed" : "none",
+    subscriptionEnabled: s.sub === 1 && s.id !== "src-3",
     subscriberCount: s.subs,
   }));
 

@@ -180,6 +180,10 @@ export function DataTable<T extends { id: string }>({
   const filteredCount = table.getFilteredRowModel().rows.length;
   const selectedRows = table.getSelectedRowModel().rows.map((r) => r.original);
   const label = (columnId: string, value: string) => (facetLabel ? facetLabel(columnId, value) : value);
+  const visibilityLabel = (column: ReturnType<typeof table.getAllColumns>[number]) => {
+    const header = column.columnDef.header;
+    return typeof header === "string" && header.trim() !== "" ? header : label(column.id, "__col");
+  };
 
   const noResults = rows.length === 0 && demoState === "data" && (globalFilter !== "" || columnFilters.length > 0);
   const isEmpty = rows.length === 0 && demoState === "data" && globalFilter === "" && columnFilters.length === 0;
@@ -268,7 +272,7 @@ export function DataTable<T extends { id: string }>({
             <DropdownMenuLabel>{t("table.visibility")}</DropdownMenuLabel>
             {table
               .getAllColumns()
-              .filter((c) => c.getCanHide())
+              .filter((c) => c.getCanHide() && !(typeof c.columnDef.header === "string" && c.columnDef.header.trim() === ""))
               .map((c) => (
                 <DropdownMenuCheckboxItem
                   key={c.id}
@@ -276,7 +280,7 @@ export function DataTable<T extends { id: string }>({
                   onCheckedChange={(v) => c.toggleVisibility(!!v)}
                   onSelect={(e) => e.preventDefault()}
                 >
-                  {label(c.id, "__col")}
+                  {visibilityLabel(c)}
                 </DropdownMenuCheckboxItem>
               ))}
           </DropdownMenuContent>

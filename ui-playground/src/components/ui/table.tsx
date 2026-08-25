@@ -109,9 +109,9 @@ export function SortableTh({
         )}
       >
         {children}
-        {direction === "asc" && <ArrowUp className="size-3 text-accent" />}
-        {direction === "desc" && <ArrowDown className="size-3 text-accent" />}
-        {!direction && <ArrowUpDown className="size-3 opacity-0 transition-opacity duration-100 group-hover:opacity-60" />}
+        {direction === "asc" && <ArrowUp className="size-3 shrink-0 text-accent" />}
+        {direction === "desc" && <ArrowDown className="size-3 shrink-0 text-accent" />}
+        {!direction && <ArrowUpDown className="size-3 shrink-0 opacity-0 transition-opacity duration-100 group-hover:opacity-60" />}
         {sortRank != null && sortRank > 1 && <span className="font-mono text-[9px] text-accent">{sortRank}</span>}
       </button>
     </Th>
