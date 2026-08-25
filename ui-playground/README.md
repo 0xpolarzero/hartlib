@@ -17,9 +17,9 @@ npm run check:i18n # fr/en key parity + every used key resolves
 npm run build      # production build
 ```
 
-The mock service lives behind one interface (`src/services`). It simulates latency, token streaming, retries and failures deterministically, and persists lightweight demo edits (source renames, subscribers, the single chat, memories, side-panel state, visualization sizes, locale, and stream speed) in `localStorage` under the `bref.` prefix. The command-palette action “Réinitialiser les données de démonstration” restores the seed.
+The mock service lives behind one interface (`src/services`). It simulates latency, token streaming, retries and failures deterministically, and persists lightweight demo edits (source renames, subscribers, the single chat, memories, side-panel state and requested widths, visualization sizes, locale, and stream speed) in `localStorage` under the `bref.` prefix. The command-palette action “Réinitialiser les données de démonstration” restores the seed.
 
-The subscriber chat uses one compact Chat/Publications/Memories page selector below 1536px. At 1536px and wider, the same mounted Publications and Memories panels stay edge-anchored around a centered chat capped at 1440px; each open panel has a 432px minimum and shrinks the chat inward only when the outer gutters are too small.
+The subscriber chat uses one compact Chat/Publications/Memories page selector below 1536px. At 1536px and wider, the same mounted Publications and Memories panels stay edge-anchored around a centered chat capped at 1440px. Each open panel starts at a 432px minimum (or the natural centered-chat gutter), can be resized to 720px, and keeps the center chat at least 576px wide; each requested width persists separately.
 
 ## Routes
 
@@ -54,7 +54,7 @@ The subscriber chat uses one compact Chat/Publications/Memories page selector be
 | 7 | DataTable (TanStack Table): multi-sort, facets, global search, column visibility, tri-state selection, bulk bar, pagination, URL state | `components/product/data-table.tsx` | All product tables |
 | 8a | SourcesTable (type badge, latest publication, read-only subscription) | `components/product/tables.tsx` | Publisher › Sources; demo-state control switches data/loading/empty/error |
 | 8b | PublicationsTable (metrics, scheduled treatment, deletion notice, immutable dialog) | same | Publisher › Numéros |
-| 8c | ClientPublicationsTable (delivered only) | same | Subscriber chat › Publications side panel |
+| 8c | ClientPublicationsTable (delivered only) | same | Subscriber chat › Publications side panel, with independently persisted wide-mode width |
 | 8d | DocumentsTable (PDF open via blob URL, upload sheet, missing-file error row) | same | Publisher › Documents |
 | 8e | SubscribersTable (pause/resume, delete+undo, draft-add row with company combobox and email validation) | same | Publisher › Abonnés |
 | 9 | Badge, Card, Separator, SectionHeader, MetaRow | `components/ui/atoms.tsx`, `states.tsx` | Gallery §02 |
@@ -98,13 +98,13 @@ Scripted questions in the one chat: growth (+ monthly follow-up revising the cha
 
 | # | Item | Files | Demo |
 | --- | --- | --- | --- |
-| 28 | Panel: content, origin turn, timestamps, tombstone, 30-day history, per-revision Revert, empty state | `chat/memories-panel.tsx`, `pages/client-chat.tsx` | Right side panel, closed by default, independently persisted |
+| 28 | Panel: content, origin turn, timestamps, tombstone, 30-day history, per-revision Revert, empty state | `chat/memories-panel.tsx`, `pages/client-chat.tsx` | Right side panel, closed by default, independently persisted with a wide-mode pointer/keyboard resize handle |
 
 ### 7. Visualization companion
 
 | # | Item | Files | Demo |
 | --- | --- | --- | --- |
-| 29 | Split panes (react-resizable-panels): arrow keys resize, Home/End collapse, sizes persist; tabs below lg | `pages/client-chat.tsx` | Drag/focus the divider |
+| 29 | Split panes (react-resizable-panels): arrow keys resize, Home/End collapse, sizes persist; wider chat/visual resize hit area with a restrained grip; tabs below lg | `pages/client-chat.tsx` | Drag/focus the divider |
 | 30 | Sandboxed iframe (`sandbox=""`, no scripts, titled), hand-rolled SVG documents | `chat/viz-pane.tsx`, `services/mock/visuals.ts` | Any visual answer |
 | 31 | Sync on completion, shimmer during regeneration, previous version retained, edge pulse + “Show” | `viz-pane.tsx`, store highlight keys | Send a visual question |
 | 32 | Version rail: scrub, Restore (appends version), Refresh (jittered data), Fullscreen dialog, Download `.html` | `viz-pane.tsx` | Version rail above the canvas |
@@ -127,7 +127,7 @@ Scripted questions in the one chat: growth (+ monthly follow-up revising the cha
 
 - **Contrast** — verified pairs on paper `#faf8f3`: ink `#211d16` ≈ 14.9:1 · muted `#5c5546` ≈ 6.9:1 · accent `#9d2235` ≈ 7.3:1 · ok `#23694a` ≈ 5.7:1 · warn `#8a5a12` ≈ 5.3:1 · danger `#a02c22` ≈ 6.9:1 · white-on-accent ≈ 7.7:1. Faint `#8a8272` is decorative/graphical only (≥3:1), never body text.
 - **Focus** — single `:focus-visible` accent-ring token globally; inverted variant on ink fills; every interactive target ≥24 px.
-- **Keyboard** — palette (⌘K, arrows, Enter), table sort buttons (`aria-sort`, Enter toggles, Shift+Enter multi-sort), faceted filters, column menu, pagination, inline fields (Enter commit / Escape cancel), date picker (arrows, PageUp/Down, Home/End), resizable divider (arrows resize, Home/End collapse — WCAG 2.2 Dragging alternative), version rail, two-step delete.
+- **Keyboard** — palette (⌘K, arrows, Enter), table sort buttons (`aria-sort`, Enter toggles, Shift+Enter multi-sort), faceted filters, column menu, pagination, inline fields (Enter commit / Escape cancel), date picker (arrows, PageUp/Down, Home/End), wide sidebar handles (16px arrows, Home to reset), resizable divider (arrows resize, Home/End collapse — WCAG 2.2 Dragging alternative), version rail, two-step delete.
 - **Live regions** — one persistent polite `role=status` region announces run start, stage changes and completion (“Réponse terminée — N source(s) citée(s)”); one `role=alert` region announces failures. Nothing is announced per token. Success toasts are `role=status`, errors `role=alert`.
 - **Reduced motion** — media query collapses animation/transition durations to near zero.
 - **Tables** — `th[scope=col]`, sortable headers expose `aria-sort`, skeleton rows `aria-hidden`.

@@ -267,6 +267,8 @@ export const fr: Dict = {
   "panels.closePublications": "Fermer les publications reçues",
   "panels.openMemories": "Ouvrir les mémoires enregistrées",
   "panels.closeMemories": "Fermer les mémoires enregistrées",
+  "panels.resizePublications": "Redimensionner le panneau des publications",
+  "panels.resizeMemories": "Redimensionner le panneau des mémoires",
 
   /* run */
   "run.started": "Génération de la réponse engagée.",

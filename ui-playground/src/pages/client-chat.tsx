@@ -1,6 +1,13 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { BookOpen, Brain, PanelLeftClose, PanelRightClose } from "lucide-react";
+import { BookOpen, Brain, GripVertical, PanelLeftClose, PanelRightClose } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { usePersistedState } from "@/lib/storage";
@@ -24,6 +31,77 @@ export function ClientChatPage() {
 }
 
 type WorkspacePage = "chat" | "publications" | "memories";
+type SidebarSide = "left" | "right";
+
+const SIDEBAR_MIN_WIDTH = 432;
+const SIDEBAR_MAX_WIDTH = 720;
+const CHAT_MIN_WIDTH = 576;
+const CHAT_MAX_WIDTH = 1440;
+
+type SidebarTracks = {
+  left: number;
+  leftMin: number;
+  leftMax: number;
+  right: number;
+  rightMin: number;
+  rightMax: number;
+};
+
+function normalizeSidebarWidth(width: number) {
+  if (!Number.isFinite(width)) return SIDEBAR_MIN_WIDTH;
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width));
+}
+
+function sidebarMaxWidth(viewportWidth: number, minWidth: number, otherTrack: number) {
+  return Math.max(minWidth, Math.min(SIDEBAR_MAX_WIDTH, viewportWidth - CHAT_MIN_WIDTH - otherTrack));
+}
+
+function resolveSidebarTracks({
+  viewportWidth,
+  leftOpen,
+  rightOpen,
+  leftRequested,
+  rightRequested,
+}: {
+  viewportWidth: number;
+  leftOpen: boolean;
+  rightOpen: boolean;
+  leftRequested: number;
+  rightRequested: number;
+}): SidebarTracks {
+  const naturalGutter = Math.max(0, (viewportWidth - CHAT_MAX_WIDTH) / 2);
+  const leftMin = Math.max(SIDEBAR_MIN_WIDTH, naturalGutter);
+  const rightMin = Math.max(SIDEBAR_MIN_WIDTH, naturalGutter);
+  let left = leftOpen ? Math.max(leftMin, normalizeSidebarWidth(leftRequested)) : naturalGutter;
+  let right = rightOpen ? Math.max(rightMin, normalizeSidebarWidth(rightRequested)) : naturalGutter;
+
+  // Preserve a usable center when both requested tracks would consume too much
+  // space. Reduce only the portion above each side's effective minimum.
+  const availableForSidebars = Math.max(0, viewportWidth - CHAT_MIN_WIDTH);
+  const overflow = Math.max(0, left + right - availableForSidebars);
+  if (overflow > 0) {
+    const leftFlex = leftOpen ? Math.max(0, left - leftMin) : 0;
+    const rightFlex = rightOpen ? Math.max(0, right - rightMin) : 0;
+    const flexTotal = leftFlex + rightFlex;
+    if (flexTotal > 0) {
+      left -= Math.min(leftFlex, overflow * (leftFlex / flexTotal));
+      right -= Math.min(rightFlex, overflow * (rightFlex / flexTotal));
+    }
+  }
+
+  return {
+    left,
+    leftMin,
+    leftMax: sidebarMaxWidth(viewportWidth, leftMin, right),
+    right,
+    rightMin,
+    rightMax: sidebarMaxWidth(viewportWidth, rightMin, left),
+  };
+}
+
+function clampSidebarWidth(width: number, minWidth: number, maxWidth: number) {
+  return Math.min(maxWidth, Math.max(minWidth, width));
+}
 
 function ChatSurface() {
   const { t } = useI18n();
@@ -35,7 +113,18 @@ function ChatSurface() {
   const [workspacePage, setWorkspacePage] = useState<WorkspacePage>("chat");
   const [publicationsOpen, setPublicationsOpen] = usePersistedState("chat.publicationsOpen", false);
   const [memoriesOpen, setMemoriesOpen] = usePersistedState("chat.memoriesOpen", false);
+  const [publicationsWidth, setPublicationsWidth] = usePersistedState("chat.publicationsWidth", SIDEBAR_MIN_WIDTH);
+  const [memoriesWidth, setMemoriesWidth] = usePersistedState("chat.memoriesWidth", SIDEBAR_MIN_WIDTH);
   const [sizes, setSizes] = usePersistedState<number[]>("chat.panels", [62, 38]);
+  const [resizingSide, setResizingSide] = useState<SidebarSide | null>(null);
+  const viewportWidth = useViewportWidth();
+  const sidebarTracks = resolveSidebarTracks({
+    viewportWidth,
+    leftOpen: publicationsOpen,
+    rightOpen: memoriesOpen,
+    leftRequested: publicationsWidth,
+    rightRequested: memoriesWidth,
+  });
 
   const selectWorkspacePage = (page: WorkspacePage) => {
     setWorkspacePage(page);
@@ -69,14 +158,11 @@ function ChatSurface() {
   return (
     <div
       className="subscriber-chat-viewport -mt-5 flex h-[calc(100dvh-52px)] min-h-0 flex-col overflow-hidden"
+      data-sidebar-resizing={resizingSide ? "true" : undefined}
       style={
         {
-          "--subscriber-left-track": publicationsOpen
-            ? "max(27rem, calc((100vw - 1440px) / 2))"
-            : "max(0px, calc((100vw - 1440px) / 2))",
-          "--subscriber-right-track": memoriesOpen
-            ? "max(27rem, calc((100vw - 1440px) / 2))"
-            : "max(0px, calc((100vw - 1440px) / 2))",
+          "--subscriber-left-track": `${sidebarTracks.left}px`,
+          "--subscriber-right-track": `${sidebarTracks.right}px`,
         } as CSSProperties
       }
     >
@@ -102,6 +188,13 @@ function ChatSurface() {
           compactActive={workspacePage === "publications"}
           wide={isWideDesktop}
           onOpenChange={setPublicationsOpen}
+          width={sidebarTracks.left}
+          minWidth={sidebarTracks.leftMin}
+          maxWidth={sidebarTracks.leftMax}
+          resizeLabel={t("panels.resizePublications")}
+          onResize={setPublicationsWidth}
+          onResizeStart={() => setResizingSide("left")}
+          onResizeEnd={() => setResizingSide((current) => (current === "left" ? null : current))}
           icon={<BookOpen aria-hidden="true" className="size-4" />}
           openIcon={<PanelLeftClose aria-hidden="true" className="size-3.5" />}
           closeLabel={t("panels.closePublications")}
@@ -123,35 +216,33 @@ function ChatSurface() {
         >
           <div className="subscriber-chat-toolbar h-8 shrink-0 items-center border-b border-line px-2">
             {!publicationsOpen && (
-              <Tooltip content={t("panels.openPublications")}>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  id="publications-panel-toggle"
-                  aria-label={t("panels.openPublications")}
-                  aria-expanded={false}
-                  aria-controls="publications-panel"
-                  onClick={() => setPublicationsOpen(true)}
-                >
-                  <BookOpen aria-hidden="true" />
-                </Button>
-              </Tooltip>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                id="publications-panel-toggle"
+                title={t("panels.openPublications")}
+                aria-label={t("panels.openPublications")}
+                aria-expanded={false}
+                aria-controls="publications-panel"
+                onClick={() => setPublicationsOpen(true)}
+              >
+                <BookOpen aria-hidden="true" />
+              </Button>
             )}
             <span className="flex-1" aria-hidden="true" />
             {!memoriesOpen && (
-              <Tooltip content={t("panels.openMemories")}>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  id="memories-panel-toggle"
-                  aria-label={t("panels.openMemories")}
-                  aria-expanded={false}
-                  aria-controls="memories-panel"
-                  onClick={() => setMemoriesOpen(true)}
-                >
-                  <Brain aria-hidden="true" />
-                </Button>
-              </Tooltip>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                id="memories-panel-toggle"
+                title={t("panels.openMemories")}
+                aria-label={t("panels.openMemories")}
+                aria-expanded={false}
+                aria-controls="memories-panel"
+                onClick={() => setMemoriesOpen(true)}
+              >
+                <Brain aria-hidden="true" />
+              </Button>
             )}
           </div>
 
@@ -187,8 +278,13 @@ function ChatSurface() {
                     <Composer />
                   </div>
                 </Panel>
-                <PanelResizeHandle className="group relative flex w-1.5 items-stretch justify-center outline-none" aria-label={t("chat.divider")}>
+                <PanelResizeHandle
+                  className="subscriber-chat-resize-handle group relative flex w-5 cursor-col-resize items-stretch justify-center outline-none"
+                  hitAreaMargins={{ coarse: 16, fine: 8 }}
+                  aria-label={t("chat.divider")}
+                >
                   <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line transition-colors duration-100 group-hover:bg-accent group-data-[resize-handle-state=drag]:bg-accent" />
+                  <GripVertical aria-hidden="true" className="subscriber-chat-divider-grip relative z-[1] my-auto size-4" />
                 </PanelResizeHandle>
                 <Panel defaultSize={sizes[1] ?? 38} minSize={24}>
                   <VizPane />
@@ -206,6 +302,13 @@ function ChatSurface() {
           compactActive={workspacePage === "memories"}
           wide={isWideDesktop}
           onOpenChange={setMemoriesOpen}
+          width={sidebarTracks.right}
+          minWidth={sidebarTracks.rightMin}
+          maxWidth={sidebarTracks.rightMax}
+          resizeLabel={t("panels.resizeMemories")}
+          onResize={setMemoriesWidth}
+          onResizeStart={() => setResizingSide("right")}
+          onResizeEnd={() => setResizingSide((current) => (current === "right" ? null : current))}
           icon={<Brain aria-hidden="true" className="size-4" />}
           openIcon={<PanelRightClose aria-hidden="true" className="size-3.5" />}
           closeLabel={t("panels.closeMemories")}
@@ -229,6 +332,13 @@ function SidePanel({
   compactActive,
   wide,
   onOpenChange,
+  width,
+  minWidth,
+  maxWidth,
+  resizeLabel,
+  onResize,
+  onResizeStart,
+  onResizeEnd,
   icon,
   openIcon,
   closeLabel,
@@ -241,6 +351,13 @@ function SidePanel({
   compactActive: boolean;
   wide: boolean;
   onOpenChange: (open: boolean) => void;
+  width: number;
+  minWidth: number;
+  maxWidth: number;
+  resizeLabel: string;
+  onResize: (width: number) => void;
+  onResizeStart: () => void;
+  onResizeEnd: () => void;
   icon: ReactNode;
   openIcon: ReactNode;
   closeLabel: string;
@@ -253,7 +370,7 @@ function SidePanel({
       id={id}
       className={cn(
         "subscriber-panel subscriber-panel-" + side,
-        "min-h-0 min-w-0 overflow-hidden bg-paper",
+        "relative min-h-0 min-w-0 overflow-hidden bg-paper",
         side === "left" ? "border-r border-line" : "border-l border-line",
       )}
       data-open={open}
@@ -288,8 +405,114 @@ function SidePanel({
         </header>
         <div className="subscriber-panel-scroll min-h-0 flex-1 overflow-x-auto overflow-y-auto">{children}</div>
       </div>
+      {wide && open && (
+        <SidebarResizeHandle
+          side={side}
+          width={width}
+          minWidth={minWidth}
+          maxWidth={maxWidth}
+          label={resizeLabel}
+          onResize={onResize}
+          onResizeStart={onResizeStart}
+          onResizeEnd={onResizeEnd}
+        />
+      )}
     </aside>
   );
+}
+
+function SidebarResizeHandle({
+  side,
+  width,
+  minWidth,
+  maxWidth,
+  label,
+  onResize,
+  onResizeStart,
+  onResizeEnd,
+}: {
+  side: SidebarSide;
+  width: number;
+  minWidth: number;
+  maxWidth: number;
+  label: string;
+  onResize: (width: number) => void;
+  onResizeStart: () => void;
+  onResizeEnd: () => void;
+}) {
+  const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const growsWithRightwardMotion = side === "left";
+
+  const finishPointerResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragRef.current = null;
+    setIsDragging(false);
+    onResizeEnd();
+  };
+
+  return (
+    <div
+      className="subscriber-sidebar-resize-handle"
+      role="separator"
+      tabIndex={0}
+      aria-orientation="vertical"
+      aria-label={label}
+      aria-valuemin={Math.round(minWidth)}
+      aria-valuemax={Math.round(maxWidth)}
+      aria-valuenow={Math.round(width)}
+      data-resize-dragging={isDragging ? "true" : undefined}
+      onKeyDown={(event) => {
+        if (event.key === "Home") {
+          event.preventDefault();
+          onResize(minWidth);
+          return;
+        }
+        const grows = growsWithRightwardMotion ? event.key === "ArrowRight" : event.key === "ArrowLeft";
+        const shrinks = growsWithRightwardMotion ? event.key === "ArrowLeft" : event.key === "ArrowRight";
+        if (!grows && !shrinks) return;
+        event.preventDefault();
+        onResize(clampSidebarWidth(width + (grows ? 16 : -16), minWidth, maxWidth));
+      }}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragRef.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: width };
+        setIsDragging(true);
+        onResizeStart();
+      }}
+      onPointerMove={(event) => {
+        const drag = dragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        const delta = event.clientX - drag.startX;
+        const signedDelta = growsWithRightwardMotion ? delta : -delta;
+        onResize(clampSidebarWidth(drag.startWidth + signedDelta, minWidth, maxWidth));
+      }}
+      onPointerUp={finishPointerResize}
+      onPointerCancel={finishPointerResize}
+    >
+      <GripVertical aria-hidden="true" className="subscriber-sidebar-resize-grip size-4" />
+    </div>
+  );
+}
+
+function useViewportWidth() {
+  const [width, setWidth] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth));
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const update = () => setWidth(window.innerWidth);
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  return width;
 }
 
 function useMediaQuery(query: string) {

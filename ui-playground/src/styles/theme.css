@@ -361,6 +361,9 @@
   overflow: hidden;
   transition: grid-template-columns 220ms var(--ease-snap);
 }
+.subscriber-chat-viewport[data-sidebar-resizing="true"] .subscriber-chat-layout {
+  transition: none;
+}
 .subscriber-chat-main,
 .subscriber-panel {
   grid-area: workspace;
@@ -377,6 +380,51 @@
 .subscriber-panel {
   width: 100%;
   border: 0;
+}
+.subscriber-sidebar-resize-handle {
+  position: absolute;
+  z-index: 10;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  width: 20px;
+  align-items: center;
+  justify-content: center;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  color: var(--color-ink-3);
+}
+.subscriber-panel-left .subscriber-sidebar-resize-handle {
+  right: 0;
+}
+.subscriber-panel-right .subscriber-sidebar-resize-handle {
+  left: 0;
+}
+.subscriber-sidebar-resize-grip {
+  opacity: 0;
+  transition:
+    opacity 100ms ease,
+    color 100ms ease;
+}
+.subscriber-sidebar-resize-handle:hover .subscriber-sidebar-resize-grip,
+.subscriber-sidebar-resize-handle:focus-visible .subscriber-sidebar-resize-grip,
+.subscriber-sidebar-resize-handle[data-resize-dragging="true"] .subscriber-sidebar-resize-grip {
+  opacity: 0.8;
+  color: var(--color-accent);
+}
+.subscriber-chat-resize-handle .subscriber-chat-divider-grip {
+  opacity: 0;
+  color: var(--color-ink-3);
+  transition:
+    opacity 100ms ease,
+    color 100ms ease;
+}
+.subscriber-chat-resize-handle:hover .subscriber-chat-divider-grip,
+.subscriber-chat-resize-handle:focus-visible .subscriber-chat-divider-grip,
+.subscriber-chat-resize-handle[data-resize-handle-state="drag"] .subscriber-chat-divider-grip {
+  opacity: 0.8;
+  color: var(--color-accent);
 }
 .subscriber-panel-inner {
   min-width: 0;

@@ -249,6 +249,8 @@ export const en: Dict = {
   "panels.closePublications": "Close delivered publications",
   "panels.openMemories": "Open saved memories",
   "panels.closeMemories": "Close saved memories",
+  "panels.resizePublications": "Resize the publications panel",
+  "panels.resizeMemories": "Resize the memories panel",
 
   "run.started": "Answer generation started.",
   "run.stage_understanding": "Stage: understanding the question.",
