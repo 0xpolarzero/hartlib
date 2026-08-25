@@ -75,7 +75,7 @@ export function Transcript() {
     // New assistant content while the reader is away: count one unread message.
     if (!atBottom && lastRun && streamLen > 0 && chat.unread === 0) chat.bumpUnread();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lastRun != null]);
+  }, [atBottom, lastRun != null, streamLen, chat.unread]);
 
   const goLatest = () => {
     const el = scrollRef.current;
@@ -181,14 +181,18 @@ export function Transcript() {
       {!atBottom && (
         <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2">
           <Button
-            variant="primary"
-            size="sm"
-            className={cn("pointer-events-auto animate-enter gap-1.5 rounded-full px-3")}
+            variant="secondary"
+            size="icon"
+            className={cn("pointer-events-auto animate-enter rounded-full", chat.unread > 0 && "w-auto gap-1 px-2")}
             onClick={goLatest}
             aria-label={t("chat.scrollLatest", { n: String(chat.unread) })}
           >
             <ArrowDown className="size-3" />
-            {t("chat.scrollLatest", { n: String(chat.unread) })}
+            {chat.unread > 0 && (
+              <span aria-hidden="true" className="text-[10px] font-mono">
+                {chat.unread}
+              </span>
+            )}
           </Button>
         </div>
       )}
