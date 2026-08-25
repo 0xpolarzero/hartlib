@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { BookOpen, Brain, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { BookOpen, Brain, PanelLeftClose, PanelRightClose } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { usePersistedState } from "@/lib/storage";
@@ -30,7 +30,7 @@ function ChatSurface() {
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as { memory?: string; rev?: number };
   const chat = useChat();
-  const isWideDesktop = useMediaQuery("(min-width: 1536px)");
+  const isWideDesktop = useMediaQuery("(min-width: 2304px)");
   const [mobileTab, setMobileTab] = useState<"conversation" | "visual">("conversation");
   const [workspacePage, setWorkspacePage] = useState<WorkspacePage>("chat");
   const [publicationsOpen, setPublicationsOpen] = usePersistedState("chat.publicationsOpen", false);
@@ -66,9 +66,6 @@ function ChatSurface() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat.showVizRequest]);
 
-  const leftColumn = publicationsOpen ? "27rem" : "0px";
-  const rightColumn = memoriesOpen ? "27rem" : "0px";
-
   return (
     <div className="subscriber-chat-viewport -mt-5 flex h-[calc(100dvh-52px)] min-h-0 flex-col overflow-hidden">
       <div className="subscriber-compact-nav flex shrink-0 justify-center border-b border-line px-3 py-1.5">
@@ -84,13 +81,7 @@ function ChatSurface() {
           ]}
         />
       </div>
-      <div
-        className="subscriber-chat-layout min-h-0 flex-1"
-        style={{
-          "--subscriber-left-column": leftColumn,
-          "--subscriber-right-column": rightColumn,
-        } as React.CSSProperties}
-      >
+      <div className="subscriber-chat-layout min-h-0 flex-1">
         <SidePanel
           side="left"
           id="publications-panel"
@@ -119,33 +110,37 @@ function ChatSurface() {
           inert={!isWideDesktop && workspacePage !== "chat"}
         >
           <div className="subscriber-chat-toolbar h-8 shrink-0 items-center border-b border-line px-2">
-            <Tooltip content={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                id="publications-panel-toggle"
-                aria-label={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}
-                aria-expanded={publicationsOpen}
-                aria-controls="publications-panel"
-                onClick={() => setPublicationsOpen((open) => !open)}
-              >
-                {publicationsOpen ? <PanelLeftClose aria-hidden="true" /> : <PanelLeftOpen aria-hidden="true" />}
-              </Button>
-            </Tooltip>
+            {!publicationsOpen && (
+              <Tooltip content={t("panels.openPublications")}>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  id="publications-panel-toggle"
+                  aria-label={t("panels.openPublications")}
+                  aria-expanded={false}
+                  aria-controls="publications-panel"
+                  onClick={() => setPublicationsOpen(true)}
+                >
+                  <BookOpen aria-hidden="true" />
+                </Button>
+              </Tooltip>
+            )}
             <span className="flex-1" aria-hidden="true" />
-            <Tooltip content={memoriesOpen ? t("panels.closeMemories") : t("panels.openMemories")}>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                id="memories-panel-toggle"
-                aria-label={memoriesOpen ? t("panels.closeMemories") : t("panels.openMemories")}
-                aria-expanded={memoriesOpen}
-                aria-controls="memories-panel"
-                onClick={() => setMemoriesOpen((open) => !open)}
-              >
-                {memoriesOpen ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />}
-              </Button>
-            </Tooltip>
+            {!memoriesOpen && (
+              <Tooltip content={t("panels.openMemories")}>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  id="memories-panel-toggle"
+                  aria-label={t("panels.openMemories")}
+                  aria-expanded={false}
+                  aria-controls="memories-panel"
+                  onClick={() => setMemoriesOpen(true)}
+                >
+                  <Brain aria-hidden="true" />
+                </Button>
+              </Tooltip>
+            )}
           </div>
 
           <div className="flex min-h-0 flex-1">
@@ -260,22 +255,24 @@ function SidePanel({
         <header className="flex min-h-10 shrink-0 items-center gap-2 border-b border-line px-3">
           <span className="text-accent">{icon}</span>
           <h2 className="truncate font-display text-[15px] font-medium text-ink">{label}</h2>
-          <Tooltip content={closeLabel}>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="subscriber-wide-only ml-auto"
-              aria-label={closeLabel}
-              aria-expanded={open}
-              aria-controls={id}
-              onClick={() => {
-                onOpenChange(false);
-                document.getElementById(`${id}-toggle`)?.focus();
-              }}
-            >
-              {openIcon}
-            </Button>
-          </Tooltip>
+          {open && (
+            <Tooltip content={closeLabel}>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="subscriber-wide-only ml-auto"
+                aria-label={closeLabel}
+                aria-expanded={open}
+                aria-controls={id}
+                onClick={() => {
+                  onOpenChange(false);
+                  requestAnimationFrame(() => document.getElementById(`${id}-toggle`)?.focus());
+                }}
+              >
+                {openIcon}
+              </Button>
+            </Tooltip>
+          )}
         </header>
         <div className="subscriber-panel-scroll min-h-0 flex-1 overflow-x-auto overflow-y-auto">{children}</div>
       </div>

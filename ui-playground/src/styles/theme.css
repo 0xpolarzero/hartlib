@@ -345,8 +345,8 @@
 }
 
 /* Subscriber chat frame: compact pages share one content region below the
- * wide-desktop breakpoint. At wide desktop the same mounted panel tracks
- * reflow the center chat without floating above it. */
+ * true sidebar breakpoint. At wide desktop the same mounted panel tracks
+ * reflow around the fixed-width center chat without floating above it. */
 .subscriber-chat-viewport {
   width: calc(100% + 2rem);
   margin-left: -1rem;
@@ -430,7 +430,7 @@
   padding-right: 4px;
 }
 
-@media (max-width: 1535px) {
+@media (max-width: 2303px) {
   .subscriber-chat-main[data-compact-active="false"],
   .subscriber-panel[data-compact-active="false"] {
     pointer-events: none;
@@ -453,16 +453,16 @@
   }
 }
 
-@media (min-width: 1536px) {
+@media (min-width: 2304px) {
   .subscriber-chat-viewport {
-    width: 100vw;
-    margin-left: calc((100% - 100vw) / 2);
+    width: min(2304px, 100vw);
+    margin-left: calc((100% - min(2304px, 100vw)) / 2);
   }
   .subscriber-compact-nav {
     display: none;
   }
   .subscriber-chat-layout {
-    grid-template-columns: var(--subscriber-left-column) minmax(0, 1fr) var(--subscriber-right-column);
+    grid-template-columns: 27rem minmax(0, 1440px) 27rem;
     grid-template-areas: "left workspace right";
   }
   .subscriber-chat-main {
@@ -490,7 +490,8 @@
     grid-area: right;
   }
   .subscriber-panel[data-open="false"] {
-    border-color: transparent;
+    border: 0;
+    pointer-events: none;
   }
   .subscriber-chat-toolbar {
     display: flex;
