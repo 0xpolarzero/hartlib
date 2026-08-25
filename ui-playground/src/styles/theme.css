@@ -442,6 +442,9 @@
 .subscriber-wide-only {
   display: none;
 }
+.subscriber-chat-panel-content {
+  padding-right: 8px;
+}
 .subscriber-compact-nav {
   display: flex;
 }

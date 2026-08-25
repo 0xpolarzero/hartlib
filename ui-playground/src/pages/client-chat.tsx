@@ -7,11 +7,11 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { BookOpen, Brain, PanelLeftClose, PanelRightClose } from "lucide-react";
+import { BookOpen, Brain, ChevronLeft, ChevronRight } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { usePersistedState } from "@/lib/storage";
-import { Button, Segmented, Tooltip } from "@/components/ui";
+import { Button, Segmented } from "@/components/ui";
 import { ClientPublicationsTable } from "@/components/product/tables";
 import { ChatProvider, useChat } from "@/components/product/chat/chat-store";
 import { MemoriesPanel } from "@/components/product/chat/memories-panel";
@@ -187,7 +187,6 @@ function ChatSurface() {
           open={publicationsOpen}
           compactActive={workspacePage === "publications"}
           wide={isWideDesktop}
-          onOpenChange={setPublicationsOpen}
           width={sidebarTracks.left}
           minWidth={sidebarTracks.leftMin}
           maxWidth={sidebarTracks.leftMax}
@@ -195,9 +194,6 @@ function ChatSurface() {
           onResize={setPublicationsWidth}
           onResizeStart={() => setResizingSide("left")}
           onResizeEnd={() => setResizingSide((current) => (current === "left" ? null : current))}
-          icon={<BookOpen aria-hidden="true" className="size-4" />}
-          openIcon={<PanelLeftClose aria-hidden="true" className="size-3.5" />}
-          closeLabel={t("panels.closePublications")}
         >
           <div className="grid gap-3 p-3">
             <p className="text-[12px] leading-relaxed text-ink-2">{t("panels.publicationsDescription")}</p>
@@ -214,38 +210,44 @@ function ChatSurface() {
           aria-hidden={!isWideDesktop && workspacePage !== "chat"}
           inert={!isWideDesktop && workspacePage !== "chat"}
         >
-          {!publicationsOpen && (
-            <Button
-              variant="secondary"
-              size="icon-sm"
-              className="subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-left absolute left-3 top-2 z-[1] bg-surface"
-              id="publications-panel-toggle"
-              title={t("panels.openPublications")}
-              aria-label={t("panels.openPublications")}
-              aria-expanded={false}
-              aria-controls="publications-panel"
-              onClick={() => setPublicationsOpen(true)}
-            >
-              <BookOpen aria-hidden="true" />
-            </Button>
-          )}
-          {!memoriesOpen && (
-            <Button
-              variant="secondary"
-              size="icon-sm"
-              className="subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-right absolute right-3 top-2 z-[1] bg-surface"
-              id="memories-panel-toggle"
-              title={t("panels.openMemories")}
-              aria-label={t("panels.openMemories")}
-              aria-expanded={false}
-              aria-controls="memories-panel"
-              onClick={() => setMemoriesOpen(true)}
-            >
-              <Brain aria-hidden="true" />
-            </Button>
-          )}
+          <Button
+            variant="secondary"
+            size="icon-sm"
+            className="subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-left absolute left-3 top-2 z-[1] w-8 gap-0.5 bg-surface"
+            id="publications-panel-toggle"
+            title={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}
+            aria-label={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}
+            aria-expanded={publicationsOpen}
+            aria-controls="publications-panel"
+            onClick={() => setPublicationsOpen((open) => !open)}
+          >
+            <BookOpen aria-hidden="true" className="size-3.5" />
+            {publicationsOpen ? (
+              <ChevronLeft aria-hidden="true" className="!size-2.5" />
+            ) : (
+              <ChevronRight aria-hidden="true" className="!size-2.5" />
+            )}
+          </Button>
+          <Button
+            variant="secondary"
+            size="icon-sm"
+            className="subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-right absolute right-3 top-2 z-[1] w-8 gap-0.5 bg-surface"
+            id="memories-panel-toggle"
+            title={memoriesOpen ? t("panels.closeMemories") : t("panels.openMemories")}
+            aria-label={memoriesOpen ? t("panels.closeMemories") : t("panels.openMemories")}
+            aria-expanded={memoriesOpen}
+            aria-controls="memories-panel"
+            onClick={() => setMemoriesOpen((open) => !open)}
+          >
+            <Brain aria-hidden="true" className="size-3.5" />
+            {memoriesOpen ? (
+              <ChevronRight aria-hidden="true" className="!size-2.5" />
+            ) : (
+              <ChevronLeft aria-hidden="true" className="!size-2.5" />
+            )}
+          </Button>
 
-          <div className="flex min-h-0 flex-1">
+          <div className="flex min-h-0 flex-1 overflow-hidden">
             {/* Below lg: conversation / visualization switch stays local to the chat. */}
             <div className="flex min-h-0 flex-1 flex-col lg:hidden">
               <div className="flex justify-center border-b border-line px-4 py-1.5">
@@ -269,10 +271,10 @@ function ChatSurface() {
             </div>
 
             {/* lg+: resizable chat | visualization split. */}
-            <div className="hidden min-h-0 flex-1 lg:block">
+            <div className="hidden min-h-0 flex-1 overflow-hidden lg:block">
               <PanelGroup direction="horizontal" onLayout={(layout) => setSizes(layout)}>
                 <Panel defaultSize={sizes[0] ?? 62} minSize={30}>
-                  <div className="flex h-full min-h-0 flex-col">
+                  <div className="subscriber-chat-panel-content flex h-full min-h-0 flex-col overflow-hidden">
                     <Transcript />
                     <Composer />
                   </div>
@@ -299,7 +301,6 @@ function ChatSurface() {
           open={memoriesOpen}
           compactActive={workspacePage === "memories"}
           wide={isWideDesktop}
-          onOpenChange={setMemoriesOpen}
           width={sidebarTracks.right}
           minWidth={sidebarTracks.rightMin}
           maxWidth={sidebarTracks.rightMax}
@@ -307,9 +308,6 @@ function ChatSurface() {
           onResize={setMemoriesWidth}
           onResizeStart={() => setResizingSide("right")}
           onResizeEnd={() => setResizingSide((current) => (current === "right" ? null : current))}
-          icon={<Brain aria-hidden="true" className="size-4" />}
-          openIcon={<PanelRightClose aria-hidden="true" className="size-3.5" />}
-          closeLabel={t("panels.closeMemories")}
         >
           <div className="p-3">
             <MemoriesPanel focus={chat.memoryFocus} onClearFocus={chat.clearMemoryFocus} />
@@ -329,7 +327,6 @@ function SidePanel({
   open,
   compactActive,
   wide,
-  onOpenChange,
   width,
   minWidth,
   maxWidth,
@@ -337,9 +334,6 @@ function SidePanel({
   onResize,
   onResizeStart,
   onResizeEnd,
-  icon,
-  openIcon,
-  closeLabel,
   children,
 }: {
   side: "left" | "right";
@@ -348,7 +342,6 @@ function SidePanel({
   open: boolean;
   compactActive: boolean;
   wide: boolean;
-  onOpenChange: (open: boolean) => void;
   width: number;
   minWidth: number;
   maxWidth: number;
@@ -356,30 +349,9 @@ function SidePanel({
   onResize: (width: number) => void;
   onResizeStart: () => void;
   onResizeEnd: () => void;
-  icon: ReactNode;
-  openIcon: ReactNode;
-  closeLabel: string;
   children: ReactNode;
 }) {
   const visible = wide ? open : compactActive;
-  const closeButton = open ? (
-    <Tooltip content={closeLabel}>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        className={cn("subscriber-wide-only", side === "left" && "ml-auto")}
-        aria-label={closeLabel}
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => {
-          onOpenChange(false);
-          requestAnimationFrame(() => document.getElementById(`${id}-toggle`)?.focus());
-        }}
-      >
-        {openIcon}
-      </Button>
-    </Tooltip>
-  ) : null;
 
   return (
     <aside
@@ -397,11 +369,8 @@ function SidePanel({
       inert={!visible}
     >
       <div className="subscriber-panel-inner flex h-full min-h-0 flex-col">
-        <header className="flex min-h-10 shrink-0 items-center gap-2 border-b border-line px-3">
-          {side === "right" && closeButton}
-          <span className="text-accent">{icon}</span>
+        <header className="flex min-h-10 shrink-0 items-center border-b border-line px-3">
           <h2 className="truncate font-display text-[15px] font-medium text-ink">{label}</h2>
-          {side === "left" && closeButton}
         </header>
         <div className="subscriber-panel-scroll min-h-0 flex-1 overflow-x-auto overflow-y-auto">{children}</div>
       </div>

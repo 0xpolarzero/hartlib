@@ -93,6 +93,7 @@ The subscriber chat uses one compact Chat/Publications/Memories page selector be
 | 27 | Memory citations open exact revision | `citations.tsx` chip click → `memories-panel.tsx` | Arbitration answer, citation 4 |
 
 Scripted questions in the one chat: growth (+ monthly follow-up revising the chart), arbitration (KPI strip + memory citation), renewal cohort (comparison table), churn (retryable failure then bar chart), and cartography (fatal). The seeded growth exchange loads directly on entry.
+Wide-mode side-panel controls now use the same open/close action for Publications and Memories, and chat content areas include overflow clipping for stable scrolling when panels resize.
 
 ### 6. Memories
 
