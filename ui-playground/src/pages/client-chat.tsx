@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { BookOpen, Brain, GripVertical, PanelLeftClose, PanelRightClose } from "lucide-react";
+import { BookOpen, Brain, PanelLeftClose, PanelRightClose } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { usePersistedState } from "@/lib/storage";
@@ -209,42 +209,41 @@ function ChatSurface() {
 
         <section
           aria-label={t("chat.pageChat")}
-          className="subscriber-chat-main flex min-h-0 min-w-0 flex-col"
+          className="subscriber-chat-main relative flex min-h-0 min-w-0 flex-col"
           data-compact-active={workspacePage === "chat"}
           aria-hidden={!isWideDesktop && workspacePage !== "chat"}
           inert={!isWideDesktop && workspacePage !== "chat"}
         >
-          <div className="subscriber-chat-toolbar h-8 shrink-0 items-center border-b border-line px-2">
-            {!publicationsOpen && (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                id="publications-panel-toggle"
-                title={t("panels.openPublications")}
-                aria-label={t("panels.openPublications")}
-                aria-expanded={false}
-                aria-controls="publications-panel"
-                onClick={() => setPublicationsOpen(true)}
-              >
-                <BookOpen aria-hidden="true" />
-              </Button>
-            )}
-            <span className="flex-1" aria-hidden="true" />
-            {!memoriesOpen && (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                id="memories-panel-toggle"
-                title={t("panels.openMemories")}
-                aria-label={t("panels.openMemories")}
-                aria-expanded={false}
-                aria-controls="memories-panel"
-                onClick={() => setMemoriesOpen(true)}
-              >
-                <Brain aria-hidden="true" />
-              </Button>
-            )}
-          </div>
+          {!publicationsOpen && (
+            <Button
+              variant="secondary"
+              size="icon-sm"
+              className="subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-left absolute left-3 top-2 z-[1] bg-surface"
+              id="publications-panel-toggle"
+              title={t("panels.openPublications")}
+              aria-label={t("panels.openPublications")}
+              aria-expanded={false}
+              aria-controls="publications-panel"
+              onClick={() => setPublicationsOpen(true)}
+            >
+              <BookOpen aria-hidden="true" />
+            </Button>
+          )}
+          {!memoriesOpen && (
+            <Button
+              variant="secondary"
+              size="icon-sm"
+              className="subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-right absolute right-3 top-2 z-[1] bg-surface"
+              id="memories-panel-toggle"
+              title={t("panels.openMemories")}
+              aria-label={t("panels.openMemories")}
+              aria-expanded={false}
+              aria-controls="memories-panel"
+              onClick={() => setMemoriesOpen(true)}
+            >
+              <Brain aria-hidden="true" />
+            </Button>
+          )}
 
           <div className="flex min-h-0 flex-1">
             {/* Below lg: conversation / visualization switch stays local to the chat. */}
@@ -283,8 +282,7 @@ function ChatSurface() {
                   hitAreaMargins={{ coarse: 16, fine: 8 }}
                   aria-label={t("chat.divider")}
                 >
-                  <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line transition-colors duration-100 group-hover:bg-accent group-data-[resize-handle-state=drag]:bg-accent" />
-                  <GripVertical aria-hidden="true" className="subscriber-chat-divider-grip relative z-[1] my-auto size-4" />
+                  <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line transition-colors duration-100 group-hover:bg-accent group-focus-visible:bg-accent group-data-[resize-handle-state=drag]:bg-accent" />
                 </PanelResizeHandle>
                 <Panel defaultSize={sizes[1] ?? 38} minSize={24}>
                   <VizPane />
@@ -364,13 +362,31 @@ function SidePanel({
   children: ReactNode;
 }) {
   const visible = wide ? open : compactActive;
+  const closeButton = open ? (
+    <Tooltip content={closeLabel}>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className={cn("subscriber-wide-only", side === "left" && "ml-auto")}
+        aria-label={closeLabel}
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => {
+          onOpenChange(false);
+          requestAnimationFrame(() => document.getElementById(`${id}-toggle`)?.focus());
+        }}
+      >
+        {openIcon}
+      </Button>
+    </Tooltip>
+  ) : null;
 
   return (
     <aside
       id={id}
       className={cn(
         "subscriber-panel subscriber-panel-" + side,
-        "relative min-h-0 min-w-0 overflow-hidden bg-paper",
+        "relative min-h-0 min-w-0 overflow-visible bg-paper",
         side === "left" ? "border-r border-line" : "border-l border-line",
       )}
       data-open={open}
@@ -382,26 +398,10 @@ function SidePanel({
     >
       <div className="subscriber-panel-inner flex h-full min-h-0 flex-col">
         <header className="flex min-h-10 shrink-0 items-center gap-2 border-b border-line px-3">
+          {side === "right" && closeButton}
           <span className="text-accent">{icon}</span>
           <h2 className="truncate font-display text-[15px] font-medium text-ink">{label}</h2>
-          {open && (
-            <Tooltip content={closeLabel}>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="subscriber-wide-only ml-auto"
-                aria-label={closeLabel}
-                aria-expanded={open}
-                aria-controls={id}
-                onClick={() => {
-                  onOpenChange(false);
-                  requestAnimationFrame(() => document.getElementById(`${id}-toggle`)?.focus());
-                }}
-              >
-                {openIcon}
-              </Button>
-            </Tooltip>
-          )}
+          {side === "left" && closeButton}
         </header>
         <div className="subscriber-panel-scroll min-h-0 flex-1 overflow-x-auto overflow-y-auto">{children}</div>
       </div>
@@ -496,7 +496,7 @@ function SidebarResizeHandle({
       onPointerUp={finishPointerResize}
       onPointerCancel={finishPointerResize}
     >
-      <GripVertical aria-hidden="true" className="subscriber-sidebar-resize-grip size-4" />
+      <span aria-hidden="true" className="subscriber-sidebar-resize-line" />
     </div>
   );
 }

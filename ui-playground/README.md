@@ -104,7 +104,7 @@ Scripted questions in the one chat: growth (+ monthly follow-up revising the cha
 
 | # | Item | Files | Demo |
 | --- | --- | --- | --- |
-| 29 | Split panes (react-resizable-panels): arrow keys resize, Home/End collapse, sizes persist; wider chat/visual resize hit area with a restrained grip; tabs below lg | `pages/client-chat.tsx` | Drag/focus the divider |
+| 29 | Split panes (react-resizable-panels): arrow keys resize, Home/End collapse, sizes persist; wider chat/visual resize hit area with a thin divider; tabs below lg | `pages/client-chat.tsx` | Drag/focus the divider |
 | 30 | Sandboxed iframe (`sandbox=""`, no scripts, titled), hand-rolled SVG documents | `chat/viz-pane.tsx`, `services/mock/visuals.ts` | Any visual answer |
 | 31 | Sync on completion, shimmer during regeneration, previous version retained, edge pulse + “Show” | `viz-pane.tsx`, store highlight keys | Send a visual question |
 | 32 | Version rail: scrub, Restore (appends version), Refresh (jittered data), Fullscreen dialog, Download `.html` | `viz-pane.tsx` | Version rail above the canvas |

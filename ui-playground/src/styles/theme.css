@@ -380,6 +380,7 @@
 .subscriber-panel {
   width: 100%;
   border: 0;
+  overflow: visible;
 }
 .subscriber-sidebar-resize-handle {
   position: absolute;
@@ -396,38 +397,26 @@
   color: var(--color-ink-3);
 }
 .subscriber-panel-left .subscriber-sidebar-resize-handle {
-  right: 0;
+  right: -10px;
 }
 .subscriber-panel-right .subscriber-sidebar-resize-handle {
-  left: 0;
+  left: -10px;
 }
-.subscriber-sidebar-resize-grip {
-  opacity: 0;
-  transition:
-    opacity 100ms ease,
-    color 100ms ease;
+.subscriber-sidebar-resize-line {
+  width: 1px;
+  height: 100%;
+  flex: none;
+  background: var(--color-line);
+  transition: background-color 100ms ease;
 }
-.subscriber-sidebar-resize-handle:hover .subscriber-sidebar-resize-grip,
-.subscriber-sidebar-resize-handle:focus-visible .subscriber-sidebar-resize-grip,
-.subscriber-sidebar-resize-handle[data-resize-dragging="true"] .subscriber-sidebar-resize-grip {
-  opacity: 0.8;
-  color: var(--color-accent);
-}
-.subscriber-chat-resize-handle .subscriber-chat-divider-grip {
-  opacity: 0;
-  color: var(--color-ink-3);
-  transition:
-    opacity 100ms ease,
-    color 100ms ease;
-}
-.subscriber-chat-resize-handle:hover .subscriber-chat-divider-grip,
-.subscriber-chat-resize-handle:focus-visible .subscriber-chat-divider-grip,
-.subscriber-chat-resize-handle[data-resize-handle-state="drag"] .subscriber-chat-divider-grip {
-  opacity: 0.8;
-  color: var(--color-accent);
+.subscriber-sidebar-resize-handle:hover .subscriber-sidebar-resize-line,
+.subscriber-sidebar-resize-handle:focus-visible .subscriber-sidebar-resize-line,
+.subscriber-sidebar-resize-handle[data-resize-dragging="true"] .subscriber-sidebar-resize-line {
+  background: var(--color-accent);
 }
 .subscriber-panel-inner {
   min-width: 0;
+  overflow: hidden;
   pointer-events: none;
   visibility: hidden;
   opacity: 0;
@@ -450,7 +439,6 @@
   transform: translateX(0);
   transition-delay: 0s;
 }
-.subscriber-chat-toolbar,
 .subscriber-wide-only {
   display: none;
 }
@@ -540,9 +528,6 @@
   .subscriber-panel[data-open="false"] {
     border: 0;
     pointer-events: none;
-  }
-  .subscriber-chat-toolbar {
-    display: flex;
   }
   .subscriber-wide-only {
     display: inline-flex;
