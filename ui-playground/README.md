@@ -87,7 +87,7 @@ The subscriber chat uses one compact Chat/Publications/Memories page selector be
 | 21 | Streaming: token SSE, speed control (×0.5–×4), progressive Markdown (Gfm tables, fenced code with highlight + copy), caret, stop/regenerate, optimistic placement | `chat/markdown.tsx`, `services/mock/engine.ts` | Send any scripted question |
 | 22 | Run-stage rail: five stable slots, six statuses with glyph + text, polite announcements (never per-token) | `chat/run-rail.tsx`, live regions in `lib/announce.tsx` | While a run executes; gallery §05 |
 | 23 | Failures: queued, retryable (`RUN-429`, Resubmit), non-retryable (`RUN-X500`) | `chat/message.tsx` (FailureBlock), engine scripts | One chat: « Analyse confidentielle du churn » and fatal scripted input |
-| 24 | Citations: four kinds, margin cards on lg+, claim tinting, two-way hover sync, structure-preserving chips, inline below lg | `chat/citations.tsx`, `chat/markdown.tsx` | Growth/arbitration/renewal answers ≥1024 px wide |
+| 24 | Citations: four kinds, highlighted claims open hover/focus previews below lg while margin cards remain at lg+, claim tinting, two-way hover sync, structure-preserving chips | `chat/citations.tsx`, `chat/markdown.tsx` | Growth/arbitration/renewal answers ≥1024 px wide |
 | 25 | Sources-read disclosure (server order, read-not-cited marks, quote-unavailable state) | `chat/sources-disclosure.tsx` | Under each answer |
 | 26 | Owner debug drawer: lazy-loaded normalized run projection | `chat/debug-drawer.tsx`, `debug-sheet.tsx`; trigger on messages with a run ID | Press `{}` on an answer with a run |
 | 27 | Memory citations open exact revision | `citations.tsx` chip click → `memories-panel.tsx` | Arbitration answer, citation 4 |
