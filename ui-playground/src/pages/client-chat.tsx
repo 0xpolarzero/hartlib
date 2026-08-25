@@ -212,8 +212,11 @@ function ChatSurface() {
         >
           <Button
             variant="secondary"
-            size="icon-sm"
-            className="subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-left absolute left-3 top-2 z-[1] w-8 gap-0.5 bg-surface"
+            size="md"
+            className={cn(
+              "subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-left absolute top-2 z-[1] bg-surface gap-1 px-2.5",
+              publicationsOpen ? "-left-14" : "left-3",
+            )}
             id="publications-panel-toggle"
             title={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}
             aria-label={publicationsOpen ? t("panels.closePublications") : t("panels.openPublications")}
@@ -230,8 +233,11 @@ function ChatSurface() {
           </Button>
           <Button
             variant="secondary"
-            size="icon-sm"
-            className="subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-right absolute right-3 top-2 z-[1] w-8 gap-0.5 bg-surface"
+            size="md"
+            className={cn(
+              "subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-right absolute top-2 z-[1] bg-surface gap-1 px-2.5",
+              memoriesOpen ? "-right-14" : "right-3",
+            )}
             id="memories-panel-toggle"
             title={memoriesOpen ? t("panels.closeMemories") : t("panels.openMemories")}
             aria-label={memoriesOpen ? t("panels.closeMemories") : t("panels.openMemories")}

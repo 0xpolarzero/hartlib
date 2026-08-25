@@ -522,8 +522,14 @@
   .subscriber-panel-left[data-open="true"] {
     border-right: 1px solid var(--color-line);
   }
+  .subscriber-panel-left[data-open="true"] header {
+    padding-right: 4rem;
+  }
   .subscriber-panel-right[data-open="true"] {
     border-left: 1px solid var(--color-line);
+  }
+  .subscriber-panel-right[data-open="true"] header {
+    padding-left: 4rem;
   }
   .subscriber-panel-right {
     grid-area: right;
