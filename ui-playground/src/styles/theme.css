@@ -388,7 +388,7 @@
   top: 0;
   bottom: 0;
   display: flex;
-  width: 20px;
+  width: 12px;
   align-items: center;
   justify-content: center;
   cursor: col-resize;
@@ -397,17 +397,16 @@
   color: var(--color-ink-3);
 }
 .subscriber-panel-left .subscriber-sidebar-resize-handle {
-  right: -10px;
+  right: -6px;
 }
 .subscriber-panel-right .subscriber-sidebar-resize-handle {
-  left: -10px;
+  left: -6px;
 }
 .subscriber-sidebar-resize-line {
   width: 1px;
   height: 100%;
   flex: none;
   background: var(--color-line);
-  transition: background-color 100ms ease;
 }
 .subscriber-sidebar-resize-handle:hover .subscriber-sidebar-resize-line,
 .subscriber-sidebar-resize-handle:focus-visible .subscriber-sidebar-resize-line,

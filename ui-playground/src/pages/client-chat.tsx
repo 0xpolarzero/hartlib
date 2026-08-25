@@ -34,8 +34,8 @@ type WorkspacePage = "chat" | "publications" | "memories";
 type SidebarSide = "left" | "right";
 
 const SIDEBAR_MIN_WIDTH = 432;
-const SIDEBAR_MAX_WIDTH = 720;
-const CHAT_MIN_WIDTH = 576;
+const SIDEBAR_MAX_WIDTH = 960;
+const CHAT_MIN_WIDTH = 480;
 const CHAT_MAX_WIDTH = 1440;
 
 type SidebarTracks = {

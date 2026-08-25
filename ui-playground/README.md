@@ -19,7 +19,7 @@ npm run build      # production build
 
 The mock service lives behind one interface (`src/services`). It simulates latency, token streaming, retries and failures deterministically, and persists lightweight demo edits (source renames, subscribers, the single chat, memories, side-panel state and requested widths, visualization sizes, locale, and stream speed) in `localStorage` under the `bref.` prefix. The command-palette action “Réinitialiser les données de démonstration” restores the seed.
 
-The subscriber chat uses one compact Chat/Publications/Memories page selector below 1536px. At 1536px and wider, the same mounted Publications and Memories panels stay edge-anchored around a centered chat capped at 1440px. Each open panel starts at a 432px minimum (or the natural centered-chat gutter), can be resized to 720px, and keeps the center chat at least 576px wide; each requested width persists separately.
+The subscriber chat uses one compact Chat/Publications/Memories page selector below 1536px. At 1536px and wider, the same mounted Publications and Memories panels stay edge-anchored around a centered chat capped at 1440px. Each open panel starts at a 432px minimum (or the natural centered-chat gutter), can be resized to 960px, and keeps the center chat at least 480px wide; each requested width persists separately. Sidebar resize handles use a 12px hit target, with the 1px accent line activating immediately on hover, focus, or drag.
 
 ## Routes
 
@@ -99,7 +99,7 @@ Wide-mode side-panel controls now use the same open/close action for Publication
 
 | # | Item | Files | Demo |
 | --- | --- | --- | --- |
-| 28 | Panel: content, origin turn, timestamps, tombstone, 30-day history, per-revision Revert, empty state | `chat/memories-panel.tsx`, `pages/client-chat.tsx` | Right side panel, closed by default, independently persisted with a wide-mode pointer/keyboard resize handle |
+| 28 | Panel: content, origin turn, timestamps, tombstone, 30-day history, per-revision Revert, empty state | `chat/memories-panel.tsx`, `pages/client-chat.tsx` | Right side panel, closed by default, independently persisted with a wide-mode pointer/keyboard resize handle using a 12px hit target and an immediate accent line |
 
 ### 7. Visualization companion
 

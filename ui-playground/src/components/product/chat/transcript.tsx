@@ -183,7 +183,10 @@ export function Transcript() {
           <Button
             variant="secondary"
             size="icon"
-            className={cn("pointer-events-auto animate-enter rounded-full", chat.unread > 0 && "w-auto gap-1 px-2")}
+            className={cn(
+              "pointer-events-auto animate-enter rounded-full bg-surface hover:bg-paper",
+              chat.unread > 0 && "w-auto gap-1 px-2",
+            )}
             onClick={goLatest}
             aria-label={t("chat.scrollLatest", { n: String(chat.unread) })}
           >
