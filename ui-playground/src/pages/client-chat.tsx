@@ -214,7 +214,7 @@ function ChatSurface() {
             variant="secondary"
             size="md"
             className={cn(
-              "subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-left absolute top-2 z-[1] bg-surface gap-1 px-2.5",
+              "subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-left absolute top-1.5 z-[1] bg-surface gap-1 px-2.5",
               publicationsOpen ? "-left-14" : "left-3",
             )}
             id="publications-panel-toggle"
@@ -235,7 +235,7 @@ function ChatSurface() {
             variant="secondary"
             size="md"
             className={cn(
-              "subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-right absolute top-2 z-[1] bg-surface gap-1 px-2.5",
+              "subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-right absolute top-1.5 z-[1] bg-surface gap-1 px-2.5",
               memoriesOpen ? "-right-14" : "right-3",
             )}
             id="memories-panel-toggle"
