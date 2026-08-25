@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { BookOpen, Brain, PanelLeftClose, PanelRightClose } from "lucide-react";
 import { useI18n } from "@/i18n";
@@ -30,7 +30,7 @@ function ChatSurface() {
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as { memory?: string; rev?: number };
   const chat = useChat();
-  const isWideDesktop = useMediaQuery("(min-width: 2304px)");
+  const isWideDesktop = useMediaQuery("(min-width: 1536px)");
   const [mobileTab, setMobileTab] = useState<"conversation" | "visual">("conversation");
   const [workspacePage, setWorkspacePage] = useState<WorkspacePage>("chat");
   const [publicationsOpen, setPublicationsOpen] = usePersistedState("chat.publicationsOpen", false);
@@ -67,7 +67,15 @@ function ChatSurface() {
   }, [chat.showVizRequest]);
 
   return (
-    <div className="subscriber-chat-viewport -mt-5 flex h-[calc(100dvh-52px)] min-h-0 flex-col overflow-hidden">
+    <div
+      className="subscriber-chat-viewport -mt-5 flex h-[calc(100dvh-52px)] min-h-0 flex-col overflow-hidden"
+      style={
+        {
+          "--subscriber-left-track": publicationsOpen ? "27rem" : "0px",
+          "--subscriber-right-track": memoriesOpen ? "27rem" : "0px",
+        } as CSSProperties
+      }
+    >
       <div className="subscriber-compact-nav flex shrink-0 justify-center border-b border-line px-3 py-1.5">
         <Segmented
           size="sm"

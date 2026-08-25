@@ -346,7 +346,7 @@
 
 /* Subscriber chat frame: compact pages share one content region below the
  * true sidebar breakpoint. At wide desktop the same mounted panel tracks
- * reflow around the fixed-width center chat without floating above it. */
+ * reflow around a capped center chat without floating above it. */
 .subscriber-chat-viewport {
   width: calc(100% + 2rem);
   margin-left: -1rem;
@@ -430,7 +430,7 @@
   padding-right: 4px;
 }
 
-@media (max-width: 2303px) {
+@media (max-width: 1535px) {
   .subscriber-chat-main[data-compact-active="false"],
   .subscriber-panel[data-compact-active="false"] {
     pointer-events: none;
@@ -453,16 +453,16 @@
   }
 }
 
-@media (min-width: 2304px) {
+@media (min-width: 1536px) {
   .subscriber-chat-viewport {
-    width: min(2304px, 100vw);
-    margin-left: calc((100% - min(2304px, 100vw)) / 2);
+    width: min(100vw, calc(1440px + var(--subscriber-left-track) + var(--subscriber-right-track)));
+    margin-left: calc((100% - min(100vw, calc(1440px + var(--subscriber-left-track) + var(--subscriber-right-track)))) / 2);
   }
   .subscriber-compact-nav {
     display: none;
   }
   .subscriber-chat-layout {
-    grid-template-columns: 27rem minmax(0, 1440px) 27rem;
+    grid-template-columns: var(--subscriber-left-track) minmax(0, 1440px) var(--subscriber-right-track);
     grid-template-areas: "left workspace right";
   }
   .subscriber-chat-main {
