@@ -100,7 +100,7 @@ export const fr: Dict = {
   /* client publications */
   "clientPub.title": "Publications",
   "clientPub.colTitle": "Titre",
-  "clientPub.colDelivered": "Livrée le",
+  "clientPub.colDelivered": "Date",
   "clientPub.colRead": "Lecture",
   "clientPub.read": "Lue",
   "clientPub.unread": "Non lue",

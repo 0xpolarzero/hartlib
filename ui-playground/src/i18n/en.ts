@@ -91,7 +91,7 @@ export const en: Dict = {
 
   "clientPub.title": "Publications",
   "clientPub.colTitle": "Title",
-  "clientPub.colDelivered": "Delivered",
+  "clientPub.colDelivered": "Date",
   "clientPub.colRead": "Read",
   "clientPub.read": "Read",
   "clientPub.unread": "Unread",
