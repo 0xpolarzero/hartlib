@@ -346,7 +346,7 @@ export function ClientPublicationsTable() {
       {
         accessorKey: "title",
         header: t("clientPub.colTitle"),
-        cell: ({ getValue }) => <span className="block max-w-[44ch] truncate" title={getValue() as string}>{getValue() as string}</span>,
+        cell: ({ getValue }) => <span className="block w-full min-w-0 truncate" title={getValue() as string}>{getValue() as string}</span>,
       },
       {
         accessorKey: "publishedAt",
