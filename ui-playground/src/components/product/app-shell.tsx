@@ -166,7 +166,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         tabIndex={-1}
         className={cn(
           "mx-auto w-full max-w-[1440px] flex-1 outline-none",
-          view === "client" ? "min-h-0 overflow-hidden px-4 pt-5" : "px-4 pb-16 pt-5",
+          view === "client" ? "min-h-0 px-4 pt-5" : "px-4 pb-16 pt-5",
         )}
       >
         {children}
