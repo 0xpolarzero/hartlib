@@ -261,7 +261,7 @@ export const fr: Dict = {
   "panels.publications": "Publications",
   "panels.publicationsDescription": "Parcourez les numéros livrés à votre portefeuille tout en gardant la consultation ouverte.",
   "panels.publicationsShort": "Publications",
-  "panels.memories": "Mémoires enregistrées",
+  "panels.memories": "Mémoires",
   "panels.memoriesShort": "Mémoires",
   "panels.openPublications": "Ouvrir les publications reçues",
   "panels.closePublications": "Fermer les publications reçues",

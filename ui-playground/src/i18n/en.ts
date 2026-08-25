@@ -243,7 +243,7 @@ export const en: Dict = {
   "panels.publications": "Publications",
   "panels.publicationsDescription": "Browse the issues delivered to your subscription portfolio while you keep the consultation in view.",
   "panels.publicationsShort": "Publications",
-  "panels.memories": "Saved memories",
+  "panels.memories": "Memories",
   "panels.memoriesShort": "Memories",
   "panels.openPublications": "Open delivered publications",
   "panels.closePublications": "Close delivered publications",
