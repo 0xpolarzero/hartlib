@@ -452,7 +452,7 @@
 }
 .publications-panel-table th:nth-child(1),
 .publications-panel-table td:nth-child(1) {
-  width: 61%;
+  width: 59%;
 }
 .publications-panel-table th:nth-child(2),
 .publications-panel-table td:nth-child(2) {
@@ -460,7 +460,8 @@
 }
 .publications-panel-table th:nth-child(3),
 .publications-panel-table td:nth-child(3) {
-  width: 16%;
+  width: 18%;
+  padding-left: 8px;
 }
 .publications-panel-table th:nth-child(4),
 .publications-panel-table td:nth-child(4) {
