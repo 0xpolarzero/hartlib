@@ -545,7 +545,7 @@ export function GalleryPage() {
           rows={[
             ["RunRail · stages", "waiting|running|complete|retrying|failed|skipped par slot ; positions stables"],
             ["CitationChip", "ordinal + glyphe de genre (document, web, mémoire, chat) ; HoverCard au survol/focus"],
-            ["Composer", "Entrée envoie, ⇧+Entrée saut de ligne, envoi ⇄ Stop pendant le flux"],
+            ["Composer", "Entrée envoie, ⇧+Entrée saut de ligne, envoi ⇄ Stop pendant le flux, dictée native insérée comme texte modifiable"],
           ]}
         />
       </GallerySection>

@@ -83,7 +83,7 @@ The subscriber chat uses one compact Chat/Publications/Memories page selector be
 | --- | --- | --- | --- |
 | 18 | Virtualized transcript (TanStack Virtual, dynamic heights, anchoring, scroll-to-latest with unread count) | `chat/transcript.tsx` | One persistent chat; while streaming scrolled up |
 | 19 | Message anatomy: compact user bubble; unframed assistant column with mono label | `chat/message.tsx` | The seeded exchange and later questions |
-| 20 | Composer: auto-grow to 10 rows, then scrolls internally; Enter/Shift+Enter, send⇄Stop morph, attachment chip, web-search toggle, counter | `chat/composer.tsx` | Chat footer; gallery §05 |
+| 20 | Composer: auto-grow to 10 rows, then scrolls internally; Enter/Shift+Enter, send⇄Stop morph, attachment chip, web-search toggle, browser dictation with editable transcript | `chat/composer.tsx` | Chat footer; gallery §05 |
 | 21 | Streaming: token SSE, progressive Markdown (Gfm tables, fenced code with highlight + copy), caret, stop/regenerate, optimistic placement | `chat/markdown.tsx`, `services/mock/engine.ts` | Send any scripted question |
 | 22 | Run-stage rail: five stable slots, six statuses with glyph + text, polite announcements (never per-token) | `chat/run-rail.tsx`, live regions in `lib/announce.tsx` | While a run executes; gallery §05 |
 | 23 | Failures: queued, retryable (`RUN-429`, Resubmit), non-retryable (`RUN-X500`) | `chat/message.tsx` (FailureBlock), engine scripts | One chat: « Analyse confidentielle du churn » and fatal scripted input |
@@ -94,6 +94,8 @@ The subscriber chat uses one compact Chat/Publications/Memories page selector be
 
 Scripted questions in the one chat: growth (+ monthly follow-up revising the chart), arbitration (KPI strip + memory citation), renewal cohort (comparison table), churn (retryable failure then bar chart), and cartography (fatal). The seeded growth exchange loads directly on entry.
 Wide-mode side-panel controls now use the same open/close action for Publications and Memories, and chat content areas include overflow clipping for stable scrolling when panels resize.
+
+The composer dictation control uses the browser's native `SpeechRecognition` (or `webkitSpeechRecognition`) and `navigator.mediaDevices.getUserMedia`. It inserts the result as editable composer text before Send, keeps microphone data local without storing or uploading audio, and shows a local error when either API is not available.
 
 ### 6. Memories
 
