@@ -455,8 +455,8 @@
 
 @media (min-width: 1536px) {
   .subscriber-chat-viewport {
-    width: min(100vw, calc(1440px + var(--subscriber-left-track) + var(--subscriber-right-track)));
-    margin-left: calc((100% - min(100vw, calc(1440px + var(--subscriber-left-track) + var(--subscriber-right-track)))) / 2);
+    width: 100vw;
+    margin-left: calc((100% - 100vw) / 2);
   }
   .subscriber-compact-nav {
     display: none;

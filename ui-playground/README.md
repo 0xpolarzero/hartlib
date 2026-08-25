@@ -19,7 +19,7 @@ npm run build      # production build
 
 The mock service lives behind one interface (`src/services`). It simulates latency, token streaming, retries and failures deterministically, and persists lightweight demo edits (source renames, subscribers, the single chat, memories, side-panel state, visualization sizes, locale, and stream speed) in `localStorage` under the `bref.` prefix. The command-palette action “Réinitialiser les données de démonstration” restores the seed.
 
-The subscriber chat uses one compact Chat/Publications/Memories page selector below 1536px. At 1536px and wider, the same mounted Publications and Memories panels reflow as independently persisted 27rem side slots around a centered chat capped at 1440px; the chat only shrinks when expanded sidebars need space.
+The subscriber chat uses one compact Chat/Publications/Memories page selector below 1536px. At 1536px and wider, the same mounted Publications and Memories panels stay edge-anchored around a centered chat capped at 1440px; each open panel has a 432px minimum and shrinks the chat inward only when the outer gutters are too small.
 
 ## Routes
 

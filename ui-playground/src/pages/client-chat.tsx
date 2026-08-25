@@ -71,8 +71,12 @@ function ChatSurface() {
       className="subscriber-chat-viewport -mt-5 flex h-[calc(100dvh-52px)] min-h-0 flex-col overflow-hidden"
       style={
         {
-          "--subscriber-left-track": publicationsOpen ? "27rem" : "0px",
-          "--subscriber-right-track": memoriesOpen ? "27rem" : "0px",
+          "--subscriber-left-track": publicationsOpen
+            ? "max(27rem, calc((100vw - 1440px) / 2))"
+            : "max(0px, calc((100vw - 1440px) / 2))",
+          "--subscriber-right-track": memoriesOpen
+            ? "max(27rem, calc((100vw - 1440px) / 2))"
+            : "max(0px, calc((100vw - 1440px) / 2))",
         } as CSSProperties
       }
     >
