@@ -56,12 +56,13 @@ export function Transcript() {
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    if (bottom && !atBottomRef.current) {
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atEnd = distanceFromBottom <= 1;
+    if (atEnd && !atBottomRef.current) {
       atBottomRef.current = true;
       chat.clearUnread();
       setAtBottom(true);
-    } else if (!bottom && atBottomRef.current) {
+    } else if (!atEnd && atBottomRef.current) {
       atBottomRef.current = false;
       setAtBottom(false);
       if (chat.run) chat.bumpUnread();
@@ -110,10 +111,19 @@ export function Transcript() {
         ref={scrollRef}
         onScroll={onScroll}
         onWheelCapture={(event) => {
-          if (event.deltaY < 0) {
-            atBottomRef.current = false;
-            setAtBottom(false);
-          }
+          const el = scrollRef.current;
+          if (!el || event.deltaY === 0 || el.scrollHeight <= el.clientHeight) return;
+
+          const startingScrollTop = el.scrollTop;
+          atBottomRef.current = false;
+          setAtBottom(false);
+          requestAnimationFrame(() => {
+            const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+            if (el.scrollTop === startingScrollTop && distanceFromBottom <= 1) {
+              atBottomRef.current = true;
+              setAtBottom(true);
+            }
+          });
         }}
         onKeyDownCapture={(event) => {
           if (event.key === "PageUp" || event.key === "Home" || event.key === "ArrowUp") {
