@@ -69,16 +69,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="flex shrink-0 items-center gap-1.5">
             {view === "publisher" && <NotificationBell />}
 
-            {view === "client" && (
-              <Link
-                to="/$locale/components"
-                params={{ locale }}
-                className="hidden py-1 font-mono text-[11px] tracking-wide text-ink-2 underline-offset-2 transition-colors duration-100 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent lg:inline-flex"
-              >
-                {t("nav.gallery")}
-              </Link>
-            )}
-
             <nav aria-label={t("shell.workspace")} className="hidden md:block">
               <Segmented
                 aria-label={t("shell.workspace")}
