@@ -83,7 +83,7 @@ The subscriber chat uses one compact Chat/Publications/Memories page selector be
 | --- | --- | --- | --- |
 | 18 | Virtualized transcript (TanStack Virtual, dynamic heights, anchoring, scroll-to-latest with unread count) | `chat/transcript.tsx` | One persistent chat; while streaming scrolled up |
 | 19 | Message anatomy: compact user bubble; unframed assistant column with mono label | `chat/message.tsx` | The seeded exchange and later questions |
-| 20 | Composer: auto-grow, Enter/Shift+Enter, send⇄Stop morph, attachment chip, web-search toggle, counter | `chat/composer.tsx` | Chat footer; gallery §05 |
+| 20 | Composer: auto-grow to 10 rows, then scrolls internally; Enter/Shift+Enter, send⇄Stop morph, attachment chip, web-search toggle, counter | `chat/composer.tsx` | Chat footer; gallery §05 |
 | 21 | Streaming: token SSE, progressive Markdown (Gfm tables, fenced code with highlight + copy), caret, stop/regenerate, optimistic placement | `chat/markdown.tsx`, `services/mock/engine.ts` | Send any scripted question |
 | 22 | Run-stage rail: five stable slots, six statuses with glyph + text, polite announcements (never per-token) | `chat/run-rail.tsx`, live regions in `lib/announce.tsx` | While a run executes; gallery §05 |
 | 23 | Failures: queued, retryable (`RUN-429`, Resubmit), non-retryable (`RUN-X500`) | `chat/message.tsx` (FailureBlock), engine scripts | One chat: « Analyse confidentielle du churn » and fatal scripted input |

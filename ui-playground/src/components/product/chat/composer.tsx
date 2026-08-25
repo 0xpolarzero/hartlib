@@ -67,7 +67,7 @@ export function Composer() {
                 submit();
               }
             }}
-            className="min-w-0 min-h-9 flex-1 border-0 bg-transparent px-3 py-2 leading-5 focus-visible:outline-2 focus-visible:-outline-offset-6 focus-visible:outline-accent"
+            className="min-w-0 min-h-9 flex-1 overscroll-contain border-0 bg-transparent px-3 py-2 leading-5 focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-accent"
           />
 
           {streaming ? (
