@@ -1,8 +1,0 @@
-{
-  "checkpointId": "persist_frozen_baseline-fe6025a242774643",
-  "value": {
-    "checkpointId": "persist_frozen_baseline-7f5740a1734a9e30",
-    "manifest": "artifacts/implement-ui-playground-demo-cutover/baseline/frozen-manifest.json",
-    "ownership": "artifacts/implement-ui-playground-demo-cutover/baseline/ownership.json"
-  }
-}
